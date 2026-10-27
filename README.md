@@ -10,7 +10,8 @@ A DNS library and a dig-like CLI, `dedens`, written in Rust. Work in progress: n
 - Optional, for `just hack`, `just msrv` and `just deny`: `cargo install cargo-hack cargo-deny`.
 - Optional, for `just rapx` (static analysis): Z3 (`brew install z3`), then `just rapx-install`.
 
-RFC coverage: [`docs/rfc/coverage.md`](docs/rfc/coverage.md).
+Design decisions: [`docs/decisions.md`](docs/decisions.md). RFC coverage:
+[`docs/rfc/coverage.md`](docs/rfc/coverage.md).
 
 ## License
 

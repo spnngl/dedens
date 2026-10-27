@@ -2,13 +2,16 @@
 
 DNS library, dig-like CLI and, later, server. Write the ASCII `dedens` wherever "é" is not allowed.
 
-Read `PLAN.md` before any task: numbered decisions, phase order, each phase's "Done when". It is git-ignored and
-local; update it in the same change whenever the code deviates from it.
+Read `docs/decisions.md` before any task: numbered decisions (`Dn`) with their reasons. Record a new or changed
+decision there in the same change as the code; mark a replaced one superseded instead of reusing its number.
+
+Plans (`PLAN.md`, `plan/`) are local and always git-ignored: phase order and each phase's "Done when". Read
+`PLAN.md` when present; keep decisions and anything worth remembering out of it, in `docs/`.
 
 ## Rules
 
-- Write Rust per the `rs-coding` skill, and agent-facing documents (`AGENTS.md`, `PLAN.md`, docs reached by a
-  pointer) per the `writing-for-agents` skill. Each `AGENTS.md` has a `CLAUDE.md` symlink beside it.
+- Write Rust per the `rs-coding` skill, and agent-facing documents (`AGENTS.md`, `PLAN.md`, `docs/`) per the
+  `writing-for-agents` skill. Each `AGENTS.md` has a `CLAUDE.md` symlink beside it.
 - Work from the RFC text in `docs/rfc/archive/rfcNNNN.txt`, and cite RFC and section in the docs of each item
   implementing one. When an RFC section lands, update its row in
   `docs/rfc/coverage.md` in the same change.
