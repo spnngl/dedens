@@ -3,6 +3,7 @@
 use core::fmt;
 use std::borrow::Cow;
 
+use super::MAX_RDATA_LEN;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::text::{Fields, Quoted, TextError, TextErrorKind, unescape};
 use crate::wire::{Reader, Writer};
@@ -24,6 +25,9 @@ pub enum TxtError {
     /// A string longer than 255 bytes.
     #[error("character string longer than 255 bytes")]
     StringTooLong,
+    /// Strings and their length bytes over the 65535 bytes of an RDATA.
+    #[error("TXT RDATA longer than 65535 bytes")]
+    TooLong,
 }
 
 impl<'a> Txt<'a> {
@@ -31,16 +35,14 @@ impl<'a> Txt<'a> {
     ///
     /// # Errors
     ///
-    /// [`TxtError`] when there is no string, or one is longer than 255 bytes.
+    /// [`TxtError`] when there is no string, one is longer than 255 bytes, or all take more than 65535 bytes.
     pub fn new<'s, I>(strings: I) -> Result<Txt<'static>, TxtError>
     where
         I: IntoIterator<Item = &'s [u8]>,
     {
         let mut wire = Vec::new();
         for s in strings {
-            let len = u8::try_from(s.len()).map_err(|_| TxtError::StringTooLong)?;
-            wire.push(len);
-            wire.extend_from_slice(s);
+            push_string(&mut wire, s)?;
         }
         if wire.is_empty() {
             return Err(TxtError::Empty);
@@ -100,14 +102,22 @@ impl Txt<'static> {
         let mut token = Some(f.next("TXT string")?);
         while let Some(at) = token {
             let s = unescape(at.raw).map_err(|kind| at.error(kind))?;
-            let len = u8::try_from(s.len())
-                .map_err(|_| at.error(TextErrorKind::Txt(TxtError::StringTooLong)))?;
-            wire.push(len);
-            wire.extend_from_slice(&s);
+            push_string(&mut wire, &s).map_err(|e| at.error(TextErrorKind::Txt(e)))?;
             token = f.next_opt();
         }
         Ok(Txt(Cow::Owned(wire)))
     }
+}
+
+/// Appends `s` behind its length byte to the RDATA `wire`.
+fn push_string(wire: &mut Vec<u8>, s: &[u8]) -> Result<(), TxtError> {
+    let len = u8::try_from(s.len()).map_err(|_| TxtError::StringTooLong)?;
+    if wire.len() + 1 + s.len() > MAX_RDATA_LEN {
+        return Err(TxtError::TooLong);
+    }
+    wire.push(len);
+    wire.extend_from_slice(s);
+    Ok(())
 }
 
 /// Each string quoted, separated by spaces.

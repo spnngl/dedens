@@ -23,7 +23,7 @@ pub fn wire(case: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("captured response {path}: {e}"))
 }
 
-/// A zone file of `hosts` hosts under `example.`, about four records each: what a large authoritative zone or a
+/// A zone file of `hosts` hosts under `example.`, about three records each: what a large authoritative zone or a
 /// local data file looks like. It has a SOA first, `$TTL`, relative names, owners left out and a mix of A, AAAA,
 /// MX, TXT, CNAME and SRV. TTLs are plain seconds: `domain` does not read units such as `1h`.
 #[must_use]

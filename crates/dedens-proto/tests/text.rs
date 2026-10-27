@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{dns, record};
+use common::{decode_record, dns, record, record_wire};
 use dedens_proto::{Class, Name, RData, Record, RecordType, TextError, TextErrorKind, Ttl};
 use proptest::prelude::*;
 
@@ -85,13 +85,31 @@ fn ttl_takes_units_and_is_written_in_seconds() {
     assert_eq!(error("x. A 192.0.2.1"), (1, 4, TextErrorKind::NoTtl));
 }
 
-/// `ANY` is both a class and a type mnemonic: a class only before a TTL or a type.
+/// RFC 6895 §3.1-3.2: records have data types and classes only; `ANY` is refused as either.
 #[test]
-fn any_is_a_class_only_before_a_ttl_or_a_type() {
-    let rec = parse(r"x. 60 ANY TYPE731 \# 0").unwrap();
-    assert_eq!((rec.class, rec.rtype()), (Class::ANY, RecordType(731)));
-    let rec = parse(r"x. 60 ANY \# 0").unwrap();
-    assert_eq!((rec.class, rec.rtype()), (Class::IN, RecordType::ANY));
+fn query_and_meta_codes_are_refused() {
+    let class = TextErrorKind::Invalid("class: a query or meta class");
+    let rtype = TextErrorKind::Invalid("record type: a query or meta type");
+    assert_eq!(error(r"x. 60 ANY TYPE731 \# 0"), (1, 7, class));
+    assert_eq!(error(r"x. 60 NONE A 192.0.2.1"), (1, 7, class));
+    assert_eq!(error(r"x. 60 CLASS0 A 192.0.2.1"), (1, 7, class));
+    assert_eq!(error(r"x. 60 CLASS57344 A 192.0.2.1"), (1, 7, class));
+    for meta in [
+        "ANY",
+        "OPT",
+        "AXFR",
+        "IXFR",
+        "TYPE0",
+        "TYPE250",
+        "TYPE65535",
+    ] {
+        assert_eq!(
+            error(&format!(r"x. 60 {meta} \# 0")),
+            (1, 7, rtype),
+            "{meta}"
+        );
+    }
+    assert!(parse(r"x. 60 CLASS65280 TYPE65280 \# 0").is_ok());
 }
 
 #[test]
@@ -175,7 +193,97 @@ fn txt_strings_are_at_most_255_bytes() {
     );
 }
 
+/// RFC 1035 §3.2.1: RDLENGTH is 16 bits, so text that holds more RDATA is refused rather than failing to write.
+#[test]
+fn rdata_over_65535_bytes_is_refused() {
+    let string = format!("\"{}\"", "a".repeat(255));
+    let fits = vec![string.as_str(); 255].join(" ");
+    assert!(parse(&format!("x. 60 TXT {fits}")).is_ok());
+    let over = vec![string.as_str(); 257].join(" ");
+    let e = parse(&format!("x. 60 TXT {over}")).expect_err("refused");
+    assert_eq!(
+        e.kind,
+        TextErrorKind::Txt(dedens_proto::rdata::TxtError::TooLong)
+    );
+    assert_eq!(
+        error(r"x. 60 TYPE731 \# 65536 00"),
+        (1, 15, TextErrorKind::Invalid("\\# length, over 65535"))
+    );
+    let value = "a".repeat(65535);
+    let e = parse(&format!("x. 60 CAA 0 issue {value}")).expect_err("refused");
+    assert_eq!(
+        e.kind,
+        TextErrorKind::Invalid("CAA value: RDATA over 65535 bytes")
+    );
+    let alpn = vec!["a".repeat(255); 230].join(",");
+    let key9 = "b".repeat(10_000);
+    let e = parse(&format!("x. 60 SVCB 1 . alpn={alpn} key9={key9}")).expect_err("refused");
+    assert_eq!(
+        e.kind,
+        TextErrorKind::SvcParams(dedens_proto::rdata::SvcParamsError::TooLong)
+    );
+}
+
+/// RFC 1035 §5.1: only a token that starts with `"` is quoted; names are never quoted.
+#[test]
+fn quotes_start_tokens_and_never_names() {
+    let rec = parse(r#"x. 60 TXT a"b c"d"#).unwrap();
+    assert_eq!(rec.data.to_string(), r#""a\"b" "c\"d""#);
+    assert_eq!(
+        error(r#""a b". 60 A 192.0.2.1"#),
+        (
+            1,
+            1,
+            TextErrorKind::Invalid("domain name: a quote must be escaped")
+        )
+    );
+    assert_eq!(
+        error(r#"x. 60 CAA 0 "issue" "ca""#),
+        (
+            1,
+            13,
+            TextErrorKind::Invalid("CAA tag: 1 to 15 letters or digits, unquoted")
+        )
+    );
+}
+
+/// D9: RDATA invalid for its type is kept opaque, read from text as from the wire.
+#[test]
+fn invalid_generic_rdata_of_a_known_type_stays_opaque() {
+    let rec = parse(r"x. 60 A \# 3 c00002").unwrap();
+    assert!(matches!(&rec.data, RData::Opaque(o) if o.rtype() == RecordType::A));
+    assert_eq!(rec.to_string(), "x.\t60\tIN\tA\t\\# 3 c00002");
+    assert!(matches!(
+        error(r"x. 60 NS \# 1 01").2,
+        TextErrorKind::Rdata(_)
+    ));
+}
+
 proptest! {
+    /// Whatever a record decoded from the wire holds, its text reads back the same (D9, RFC 3597 §5).
+    #[test]
+    fn wire_records_read_back_from_text(
+        rtype in prop_oneof![
+            Just(RecordType::A),
+            Just(RecordType::AAAA),
+            Just(RecordType::TXT),
+            Just(RecordType::CAA),
+            Just(RecordType::SVCB),
+            Just(RecordType::HTTPS),
+            Just(RecordType::MX),
+            Just(RecordType::SOA),
+            (256u16..0xF000).prop_map(RecordType),
+        ],
+        data in prop::collection::vec(any::<u8>(), 0..40),
+    ) {
+        let Ok(decoded) = decode_record(&record_wire(rtype, &data)) else {
+            return Err(TestCaseError::reject("invalid RDATA of a type with names"));
+        };
+        let text = decoded.record.to_string();
+        let read = parse(&text).map_err(|e| TestCaseError::fail(format!("{text}: {e}")))?;
+        prop_assert_eq!(read, decoded.record);
+    }
+
     #[test]
     fn records_read_back_as_written(rec in record()) {
         let text = rec.to_string();
@@ -192,7 +300,7 @@ proptest! {
     }
 
     #[test]
-    fn reading_never_panics(text in "[ -~\t\n]{0,80}") {
+    fn reading_never_panics(text in "[ -~\t\n\r]{0,400}") {
         let _ = parse(&text);
     }
 

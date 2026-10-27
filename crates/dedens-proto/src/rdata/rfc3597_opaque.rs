@@ -3,8 +3,9 @@
 use core::fmt;
 use std::borrow::Cow;
 
+use super::MAX_RDATA_LEN;
 use crate::codes::RecordType;
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::{MAX_NAME_LEN, Name};
 use crate::text::{self, Fields, TextError};
 use crate::wire::{Reader, Writer};
@@ -114,17 +115,23 @@ impl<'a> Opaque<'a> {
     ///
     /// # Errors
     ///
-    /// [`DecodeError`] when `rtype` holds names (see [`RData::may_hold_compressed_names`]) and `data` does not
-    /// parse as its fields with uncompressed names.
+    /// [`DecodeError`] when `data` is over 65535 bytes, or `rtype` holds names (see
+    /// [`RData::may_hold_compressed_names`]) and `data` does not parse as its fields with uncompressed names.
     ///
     /// [`RData::may_hold_compressed_names`]: super::RData::may_hold_compressed_names
     pub fn new(rtype: RecordType, data: &'a [u8]) -> Result<Self, DecodeError> {
+        if data.len() > MAX_RDATA_LEN {
+            return Err(DecodeError {
+                offset: 0,
+                kind: DecodeErrorKind::RdataLength,
+            });
+        }
         let mut r = Reader::new(data);
         let opaque = Self::decode_with(rtype, &mut r, Name::decode_uncompressed)?;
         if r.is_empty() {
             Ok(opaque)
         } else {
-            Err(r.error(crate::error::DecodeErrorKind::RdataLength))
+            Err(r.error(DecodeErrorKind::RdataLength))
         }
     }
 

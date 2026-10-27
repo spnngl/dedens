@@ -201,7 +201,7 @@ impl<'e, 't> Fields<'e, 't> {
 /// The fields of a record before its RDATA: `[TTL] [class] type` or `[class] [TTL] type` (RFC 1035 §5.1).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Head {
-    pub(crate) ttl: Option<u32>,
+    pub(crate) ttl: Option<Ttl>,
     pub(crate) class: Option<Class>,
     pub(crate) rtype: RecordType,
     /// Where the type is written, to report errors about the whole record.
@@ -218,7 +218,7 @@ impl Head {
             let token = f.next("record type")?;
             if token.raw.first().is_some_and(u8::is_ascii_digit) && ttl.is_none() {
                 let secs = seconds(token.raw)
-                    .filter(|&s| s <= Ttl::MAX.get())
+                    .and_then(Ttl::new)
                     .ok_or(token.error(TextErrorKind::Invalid("TTL")))?;
                 ttl = Some(secs);
                 continue;
@@ -228,12 +228,20 @@ impl Head {
                 && let Ok(c) = word.parse::<Class>()
                 && (c != Class::ANY || f.peek().is_some_and(|next| starts_head(next.raw)))
             {
+                if !is_data_class(c) {
+                    return Err(token.error(TextErrorKind::Invalid("class: a query or meta class")));
+                }
                 class = Some(c);
                 continue;
             }
             let rtype = word
                 .parse()
                 .map_err(|_| token.error(TextErrorKind::Invalid("record type")))?;
+            if !is_data_type(rtype) {
+                return Err(
+                    token.error(TextErrorKind::Invalid("record type: a query or meta type"))
+                );
+            }
             return Ok(Self {
                 ttl,
                 class,
@@ -280,6 +288,18 @@ pub(crate) fn write_generic(f: &mut fmt::Formatter<'_>, data: &[u8]) -> fmt::Res
     }
 }
 
+/// Whether a record can have type `rtype`: not 0, OPT, a QTYPE or meta type of 128 to 255, or the reserved 65535
+/// (RFC 6895 section 3.1).
+fn is_data_type(rtype: RecordType) -> bool {
+    rtype != RecordType::OPT && !matches!(u16::from(rtype), 0 | 128..=255 | 65535)
+}
+
+/// Whether a record can have class `class`: not 0, a QCLASS or meta class (128 to 255 with NONE and ANY, 57344 to
+/// 65279), or the reserved 65535 (RFC 6895 section 3.2).
+fn is_data_class(class: Class) -> bool {
+    !matches!(u16::from(class), 0 | 128..=255 | 0xE000..=0xFEFF | 65535)
+}
+
 /// Whether a token can be a TTL or a type, so that an `ANY` before it is a class.
 fn starts_head(raw: &[u8]) -> bool {
     raw.first().is_some_and(u8::is_ascii_digit)
@@ -320,15 +340,19 @@ pub(crate) fn seconds(raw: &[u8]) -> Option<u32> {
     value.is_none().then_some(total)
 }
 
-/// Decodes a character-string (RFC 1035 §5.1, RFC 9460 appendix A): `"` groups and is dropped, `\X` is `X`,
-/// `\DDD` is the byte of that decimal value.
+/// Decodes a character-string (RFC 1035 §5.1, RFC 9460 appendix A): quotes around it are dropped, `\X` is `X`,
+/// `\DDD` is the byte of that decimal value. The lexer ends a quoted token at its closing quote, so any other `"`
+/// is text.
 pub(crate) fn unescape(raw: &[u8]) -> Result<Vec<u8>, TextErrorKind> {
+    let raw = raw
+        .strip_prefix(b"\"")
+        .and_then(|inner| inner.strip_suffix(b"\""))
+        .unwrap_or(raw);
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while let Some(&b) = raw.get(i) {
         i += 1;
         match b {
-            b'"' => {}
             b'\\' => {
                 let (byte, used) = escape(raw.get(i..).unwrap_or_default())?;
                 out.push(byte);
@@ -382,6 +406,8 @@ mod tests {
     fn character_strings_drop_quotes_and_decode_escapes() {
         assert_eq!(unescape(br#""a b\"\\\065\255""#).unwrap(), b"a b\"\\A\xff");
         assert_eq!(unescape(br"x\ y\.").unwrap(), b"x y.");
+        assert_eq!(unescape(br#"a"b"#).unwrap(), b"a\"b");
+        assert_eq!(unescape(br#""""#).unwrap(), b"");
         assert_eq!(unescape(br"\256"), Err(TextErrorKind::BadEscape));
         assert_eq!(unescape(br"\12"), Err(TextErrorKind::BadEscape));
         assert_eq!(unescape(br"a\"), Err(TextErrorKind::BadEscape));

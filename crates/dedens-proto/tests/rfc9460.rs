@@ -35,21 +35,21 @@ fn rdata(parts: &[&[u8]]) -> Vec<u8> {
 #[test]
 fn d1_alias_mode() {
     let s = svcb(&rdata(&[&[0, 0], FOO_EXAMPLE_COM]));
-    assert_eq!(s.priority, 0);
-    assert_eq!(s.target, name_of(&[b"foo", b"example", b"com"]));
-    assert_eq!(s.params, SvcParams::default());
+    assert_eq!(s.priority(), 0);
+    assert_eq!(*s.target(), name_of(&[b"foo", b"example", b"com"]));
+    assert_eq!(*s.params(), SvcParams::default());
 }
 
 #[test]
 fn d2_target_is_the_root() {
     let s = svcb(&[0, 1, 0]);
-    assert_eq!((s.priority, s.target), (1, Name::root()));
+    assert_eq!((s.priority(), s.target().clone()), (1, Name::root()));
 }
 
 #[test]
 fn d2_port() {
     let s = svcb(&rdata(&[&[0, 16], FOO_EXAMPLE_COM, &[0, 3, 0, 2, 0, 0x35]]));
-    assert_eq!(s.params.iter().collect::<Vec<_>>(), [SvcParam::Port(53)]);
+    assert_eq!(s.params().iter().collect::<Vec<_>>(), [SvcParam::Port(53)]);
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn d2_generic_keys() {
         b"hello",
     ]));
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::Unknown {
             key: SvcParamKey(667),
             value: (*b"hello").into()
@@ -74,7 +74,7 @@ fn d2_generic_keys() {
         b"hello\xd2qoo",
     ]));
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::Unknown {
             key: SvcParamKey(667),
             value: (*b"hello\xd2qoo").into()
@@ -99,7 +99,7 @@ fn d2_ipv6_hints() {
         "2001:db8::53:1".parse().unwrap(),
     ];
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::Ipv6Hint(hints)]
     );
 }
@@ -117,7 +117,7 @@ fn d2_ipv6_hint_with_embedded_ipv4() {
     ]));
     let hint = "2001:db8:122:344::192.0.2.33".parse::<Ipv6Addr>().unwrap();
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::Ipv6Hint(vec![hint])]
     );
 }
@@ -136,7 +136,7 @@ fn d2_mandatory_alpn_and_ipv4hint() {
     ]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [
             SvcParam::Mandatory(vec![SvcParamKey::ALPN, SvcParamKey::IPV4HINT]),
             SvcParam::Alpn(vec![(*b"h2").into(), (*b"h3-19").into()]),
@@ -161,7 +161,7 @@ fn d2_alpn_keeps_backslash_and_comma() {
     ]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::Alpn(vec![
             (*b"f\\oo,bar").into(),
             (*b"h2").into()
@@ -181,7 +181,7 @@ fn s9_https_has_the_svcb_format() {
         panic!("not HTTPS")
     };
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [
             SvcParam::Alpn(vec![(*b"h2").into()]),
             SvcParam::NoDefaultAlpn
@@ -207,10 +207,13 @@ fn rfc9461_dohpath() {
     let wire = rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0, 7, 0, 10], b"/dns{?dns}"]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [SvcParam::DohPath("/dns{?dns}".into())]
     );
-    assert_eq!(s.params.get(SvcParamKey::DOHPATH), s.params.iter().next());
+    assert_eq!(
+        s.params().get(SvcParamKey::DOHPATH),
+        s.params().iter().next()
+    );
 }
 
 #[test]
@@ -516,7 +519,7 @@ fn appendix_a_value_escapes() {
         unreachable!("SVCB text reads as SVCB")
     };
     assert_eq!(
-        s.params.iter().collect::<Vec<_>>(),
+        s.params().iter().collect::<Vec<_>>(),
         [
             SvcParam::Ech((*b"\x01\x02\x03").into()),
             SvcParam::DohPath("/q{?dns}".to_owned()),
@@ -533,4 +536,48 @@ fn appendix_a_value_escapes() {
     assert!(from_text("SVCB 1 . ech=AQI").is_err());
     assert!(from_text("SVCB 1 . port=x").is_err());
     assert!(from_text("SVCB 1 . bogus=1").is_err());
+}
+
+/// §2.1: keys are lowercase names or `key` and a number without leading zeros.
+#[test]
+fn keys_are_written_one_way() {
+    assert!(from_text("SVCB 1 . alpn=h2 key0=alpn").is_ok());
+    assert!(from_text("SVCB 1 . key65=x").is_ok());
+    for bad in ["ALPN=h2", "Port=53", "key01=x", "key=x", "key065536=x"] {
+        assert!(from_text(&format!("SVCB 1 . {bad}")).is_err(), "{bad}");
+    }
+}
+
+/// An `ECHConfigList` is never empty; base64 has one text per value (RFC 4648 §3.5).
+#[test]
+fn ech_is_never_empty_and_base64_is_canonical() {
+    let e = from_text("SVCB 1 . ech=\"\"").expect_err("refused");
+    assert_eq!(
+        e.kind,
+        dedens_proto::TextErrorKind::SvcParams(SvcParamsError::Empty(SvcParamKey::ECH))
+    );
+    assert!(from_text("SVCB 1 . ech=Zg==").is_ok());
+    assert!(from_text("SVCB 1 . ech=Zh==").is_err());
+    let mut wire = vec![0, 1, 0];
+    wire.extend_from_slice(&[0, 5, 0, 0]);
+    let decoded = decode_record(&record_wire(RecordType::SVCB, &wire)).expect("kept opaque");
+    assert!(decoded.invalid_rdata.is_some());
+}
+
+/// A refused parameter list is reported at the parameter it names.
+#[test]
+fn parameter_errors_point_at_the_parameter() {
+    let e = from_text("SVCB 1 . port=53 alpn=h2 no-default-alpn mandatory=ipv4hint")
+        .expect_err("refused");
+    assert_eq!(
+        (e.column, e.kind),
+        (
+            60,
+            dedens_proto::TextErrorKind::SvcParams(SvcParamsError::BadMandatory(
+                SvcParamKey::IPV4HINT
+            ))
+        )
+    );
+    let e = from_text("SVCB 1 . port=53 port=54").expect_err("refused");
+    assert_eq!(e.column, 36);
 }

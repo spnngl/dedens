@@ -277,3 +277,146 @@ proptest! {
         prop_assert_eq!(read, Ok(records));
     }
 }
+
+/// Files written on Windows read the same.
+#[test]
+fn crlf_line_ends() {
+    let records =
+        zone("$TTL 60\r\na A 192.0.2.1\r\n  TXT ( \"x\"\r\n  \"y\" )\r\n").expect("reads");
+    assert_eq!(
+        lines(&records),
+        [
+            "a.example.\t60\tIN\tA\t192.0.2.1",
+            "a.example.\t60\tIN\tTXT\t\"x\" \"y\""
+        ]
+    );
+}
+
+/// RFC 6895 §3.1-3.2: query and meta types and classes are not record types or classes.
+#[test]
+fn query_and_meta_codes_are_refused() {
+    let meta_type = TextErrorKind::Invalid("record type: a query or meta type");
+    for (text, column) in [
+        ("a 60 ANY \\# 0", 6),
+        ("a 60 AXFR \\# 0", 6),
+        ("a 60 OPT \\# 0", 6),
+        ("a 60 TYPE0 \\# 0", 6),
+        ("a 60 TYPE65535 \\# 0", 6),
+    ] {
+        assert_eq!(error(text), (1, column, meta_type), "{text}");
+    }
+    let meta_class = TextErrorKind::Invalid("class: a query or meta class");
+    for text in [
+        "a 60 NONE A 192.0.2.1",
+        "a 60 ANY A 192.0.2.1",
+        "a 60 CLASS0 A 192.0.2.1",
+    ] {
+        assert_eq!(error(text), (1, 6, meta_class), "{text}");
+    }
+    assert!(zone("a 60 CH A 192.0.2.1").is_ok());
+}
+
+/// Names are never quoted; a quote in a name must be escaped (as BIND requires).
+#[test]
+fn quoted_names_are_refused() {
+    assert_eq!(
+        error("\"a b\" 60 A 192.0.2.1"),
+        (
+            1,
+            1,
+            TextErrorKind::Invalid("domain name: a quote must be escaped")
+        )
+    );
+    let records = zone("a\\\"b 60 A 192.0.2.1").expect("reads");
+    assert_eq!(lines(&records), ["a\\\"b.example.\t60\tIN\tA\t192.0.2.1"]);
+}
+
+/// RDATA over 65535 bytes cannot be encoded, so it is refused when read.
+#[test]
+fn rdata_over_65535_bytes_is_refused() {
+    let strings = vec![format!("\"{}\"", "a".repeat(255)); 300].join(" ");
+    assert!(zone(&format!("a 60 TXT {strings}")).is_err());
+    let strings = vec![format!("\"{}\"", "a".repeat(255)); 250].join(" ");
+    assert!(zone(&format!("a 60 TXT {strings}")).is_ok());
+}
+
+/// Zone-file tokens, so that random entries get past the lexer.
+const TOKENS: &[&str] = &[
+    "$ORIGIN",
+    "$TTL",
+    "$INCLUDE",
+    "@",
+    ".",
+    "a",
+    "a.b.",
+    "\\#",
+    "0",
+    "1",
+    "60",
+    "1w2d",
+    "IN",
+    "CH",
+    "ANY",
+    "A",
+    "AAAA",
+    "NS",
+    "SOA",
+    "MX",
+    "TXT",
+    "SRV",
+    "CAA",
+    "SVCB",
+    "HTTPS",
+    "TYPE731",
+    "192.0.2.1",
+    "::1",
+    "\"x y\"",
+    "\"",
+    "(",
+    ")",
+    ";c",
+    "\n",
+    "\r\n",
+    " ",
+    "\\",
+    "\\0",
+    "\\255",
+    "alpn=h2",
+    "port=53",
+    "ech=AQID",
+    "mandatory=alpn",
+    "key9=\"a\"",
+    "abcd",
+    "AQID",
+];
+
+proptest! {
+    #[test]
+    fn reading_bytes_never_panics(data in prop::collection::vec(any::<u8>(), 0..2048)) {
+        for entry in ZoneReader::new(&data, Some(dns("example."))) {
+            if entry.is_err() {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn reading_tokens_never_panics(tokens in prop::collection::vec(prop::sample::select(TOKENS), 0..60)) {
+        let text = tokens.join(" ");
+        for entry in ZoneReader::new(text.as_bytes(), Some(dns("example."))) {
+            let Ok(Entry::Record(r)) = entry else {
+                continue;
+            };
+            let again: Record<'_> = r.to_string().parse().map_err(|e| TestCaseError::fail(format!("{r}: {e}")))?;
+            prop_assert_eq!(again, r);
+        }
+    }
+}
+
+/// The fuzzing seed with every type reads in full, so that fuzzing starts from valid entries.
+#[test]
+fn the_fuzzing_seed_reads() {
+    let text = zone_file("every_type.zone");
+    let records = read(&mut ZoneReader::new(&text, None), &[]).expect("reads");
+    assert_eq!(records.len(), 29);
+}

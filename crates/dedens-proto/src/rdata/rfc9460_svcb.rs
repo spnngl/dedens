@@ -8,12 +8,16 @@ use core::fmt;
 use core::net::{Ipv4Addr, Ipv6Addr};
 use std::borrow::Cow;
 
+use super::MAX_RDATA_LEN;
 use crate::codes::code_type;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
 use crate::text::encoding::{Base64, decode_base64};
 use crate::text::{self, Fields, Quoted, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
+
+/// Bytes of `SvcPriority` before the target.
+const PRIORITY_LEN: usize = 2;
 
 code_type! {
     /// `SvcParamKey` (RFC 9460 §14.3.2).
@@ -39,6 +43,18 @@ code_type! {
 impl SvcParamKey {
     /// Reserved, never valid on the wire (RFC 9460 §14.3.2).
     const INVALID: Self = Self(65535);
+
+    /// Reads a key as RFC 9460 §2.1 writes it: a registered name in lowercase, or `key` and the number without
+    /// leading zeros. Stricter than `FromStr`, which takes any case like the other codes.
+    fn from_text(text: &[u8]) -> Option<Self> {
+        if let Some(digits) = text.strip_prefix(b"key") {
+            let canonical = digits.first() != Some(&b'0') || digits == b"0";
+            return canonical.then(|| text::number(digits).map(Self)).flatten();
+        }
+        (0..=Self::DOHPATH.0)
+            .map(Self)
+            .find(|key| key.mnemonic().is_some_and(|m| m.as_bytes() == text))
+    }
 
     /// Keys 0 to 7 have a typed [`SvcParam`] variant; they cannot be carried as [`SvcParam::Unknown`].
     const fn is_known(self) -> bool {
@@ -170,7 +186,8 @@ pub enum SvcParamsError {
     /// A key appears twice, as a parameter or in the `mandatory` list.
     #[error("service parameter {0} appears more than once")]
     Duplicate(SvcParamKey),
-    /// A list-valued parameter has no element, or an ALPN identifier is empty.
+    /// A list-valued parameter or `ech` has no element, or an ALPN identifier is empty. An `ECHConfigList` is at
+    /// least 4 bytes (`<4..2^16-1>` in the ECH specification); `domain` refuses an empty `ech=` too.
     #[error("service parameter {0} has an empty value")]
     Empty(SvcParamKey),
     /// `mandatory` lists a key that is not in the parameters, or itself.
@@ -186,6 +203,9 @@ pub enum SvcParamsError {
     /// over 65535 bytes.
     #[error("malformed service parameters")]
     Malformed,
+    /// Priority, target and parameters over the 65535 bytes of an RDATA.
+    #[error("SVCB RDATA longer than 65535 bytes")]
+    TooLong,
 }
 
 /// The parameters of a SVCB or HTTPS record, in wire form: sorted by key, each key once, internally consistent.
@@ -200,8 +220,8 @@ impl SvcParams<'_> {
     /// # Errors
     ///
     /// [`SvcParamsError`] when a key repeats, a value that needs elements has none, `mandatory` lists itself or a
-    /// missing key, `no-default-alpn` comes without `alpn`, an unknown parameter uses key 0 to 7 or 65535, or a
-    /// value is too long for the wire.
+    /// missing key, `no-default-alpn` comes without `alpn`, an unknown parameter uses key 0 to 7 or 65535, a
+    /// value is too long for the wire, or the list would not fit an RDATA even with the root as target.
     pub fn new(mut params: Vec<SvcParam>) -> Result<SvcParams<'static>, SvcParamsError> {
         params.sort_by_key(SvcParam::key);
         let mut wire = Vec::new();
@@ -221,6 +241,9 @@ impl SvcParams<'_> {
             if let Some(dst) = wire.get_mut(at..at + 2) {
                 dst.copy_from_slice(&len.to_be_bytes());
             }
+        }
+        if wire.len() > MAX_RDATA_LEN - PRIORITY_LEN - 1 {
+            return Err(SvcParamsError::TooLong);
         }
         check(&wire)?;
         Ok(SvcParams(Cow::Owned(wire)))
@@ -304,6 +327,7 @@ fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
             SvcParamKey::MANDATORY
                 | SvcParamKey::ALPN
                 | SvcParamKey::IPV4HINT
+                | SvcParamKey::ECH
                 | SvcParamKey::IPV6HINT
         );
         if needs_elements && value.is_empty() {
@@ -363,17 +387,54 @@ fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
 }
 
 /// A SVCB or HTTPS record: priority 0 is `AliasMode`, anything else `ServiceMode` (RFC 9460 §2.4).
+///
+/// Its wire form fits the 65535 bytes of an RDATA.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Svcb<'a> {
-    /// `SvcPriority`; 0 makes this an alias to `target`.
-    pub priority: u16,
-    /// `TargetName`; the root means "the owner name itself" in `ServiceMode` and "no service" in `AliasMode`.
-    pub target: Name<'a>,
-    /// The service parameters.
-    pub params: SvcParams<'a>,
+    priority: u16,
+    target: Name<'a>,
+    params: SvcParams<'a>,
 }
 
 impl<'a> Svcb<'a> {
+    /// A record of `priority`, `target` and `params`.
+    ///
+    /// # Errors
+    ///
+    /// [`SvcParamsError::TooLong`] when the three take more than 65535 bytes.
+    pub fn new(
+        priority: u16,
+        target: Name<'a>,
+        params: SvcParams<'a>,
+    ) -> Result<Self, SvcParamsError> {
+        if PRIORITY_LEN + target.wire_len() + params.0.len() > MAX_RDATA_LEN {
+            return Err(SvcParamsError::TooLong);
+        }
+        Ok(Self {
+            priority,
+            target,
+            params,
+        })
+    }
+
+    /// `SvcPriority`; 0 makes this an alias to the target.
+    #[must_use]
+    pub const fn priority(&self) -> u16 {
+        self.priority
+    }
+
+    /// `TargetName`; the root means "the owner name itself" in `ServiceMode` and "no service" in `AliasMode`.
+    #[must_use]
+    pub const fn target(&self) -> &Name<'a> {
+        &self.target
+    }
+
+    /// The service parameters.
+    #[must_use]
+    pub const fn params(&self) -> &SvcParams<'a> {
+        &self.params
+    }
+
     /// The same record data, owning its bytes.
     #[must_use]
     pub fn into_owned(self) -> Svcb<'static> {
@@ -414,20 +475,32 @@ impl Svcb<'static> {
         let priority = f.number("SVCB priority")?;
         let target = f.name("SVCB target")?;
         let mut params = Vec::new();
-        let mut first = None;
+        let mut tokens = Vec::new();
         while let Some(token) = f.next_opt() {
-            first.get_or_insert(token);
             params.push(SvcParam::from_text(token.raw).map_err(|kind| token.error(kind))?);
+            tokens.push((token, params.last().map(SvcParam::key)));
         }
-        let params = SvcParams::new(params).map_err(|e| {
+        // The error points at the parameter it names, else at the first one.
+        let at = |e: SvcParamsError| {
+            let named = match e {
+                SvcParamsError::Duplicate(k)
+                | SvcParamsError::Empty(k)
+                | SvcParamsError::ReservedKey(k) => Some(k),
+                SvcParamsError::BadMandatory(_) => Some(SvcParamKey::MANDATORY),
+                SvcParamsError::NoDefaultAlpnWithoutAlpn => Some(SvcParamKey::NO_DEFAULT_ALPN),
+                _ => None,
+            };
+            let token = tokens
+                .iter()
+                .rev()
+                .find(|(_, key)| named.is_some() && *key == named)
+                .or(tokens.first())
+                .map(|(t, _)| *t);
             let kind = TextErrorKind::SvcParams(e);
-            first.map_or_else(|| f.end_error(kind), |t| t.error(kind))
-        })?;
-        Ok(Self {
-            priority,
-            target,
-            params,
-        })
+            token.map_or_else(|| f.end_error(kind), |t| t.error(kind))
+        };
+        let params = SvcParams::new(params).map_err(at)?;
+        Self::new(priority, target, params).map_err(at)
     }
 }
 
@@ -450,15 +523,14 @@ impl SvcParam {
             Some(at) => (raw.get(..at), raw.get(at + 1..)),
             None => (Some(raw), None),
         };
-        let key: SvcParamKey = key
-            .and_then(|k| str::from_utf8(k).ok())
-            .and_then(|k| k.parse().ok())
+        let key = key
+            .and_then(SvcParamKey::from_text)
             .ok_or(TextErrorKind::Invalid("SVCB parameter key"))?;
         let value = value.map(text::unescape).transpose()?.unwrap_or_default();
         Ok(match key {
-            SvcParamKey::MANDATORY => Self::Mandatory(items(&value, "mandatory key", |k| {
-                str::from_utf8(k).ok()?.parse().ok()
-            })?),
+            SvcParamKey::MANDATORY => {
+                Self::Mandatory(items(&value, "mandatory key", SvcParamKey::from_text)?)
+            }
             SvcParamKey::ALPN => Self::Alpn(alpn_ids(&value)?),
             SvcParamKey::NO_DEFAULT_ALPN if value.is_empty() => Self::NoDefaultAlpn,
             SvcParamKey::NO_DEFAULT_ALPN => {

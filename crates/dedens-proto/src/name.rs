@@ -455,6 +455,12 @@ impl Name<'_> {
                     i += used;
                     byte
                 }
+                // Names are never quoted; BIND refuses a bare quote too.
+                b'"' => {
+                    return Err(TextErrorKind::Invalid(
+                        "domain name: a quote must be escaped",
+                    ));
+                }
                 _ => b,
             };
             wire.push(byte);

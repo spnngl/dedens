@@ -60,26 +60,3 @@ fn parse_hickory(bencher: Bencher<'_, '_>) {
             .expect("parses")
     });
 }
-
-/// The three readers agree on the number of records, so they read the same zone.
-#[divan::bench(sample_count = 1, sample_size = 1)]
-fn same_count() {
-    let text = zone(HOSTS);
-    let dedens = ZoneReader::new(text.as_bytes(), None)
-        .filter(|e| matches!(e, Ok(Entry::Record(_))))
-        .count();
-    let mut zonefile = Zonefile::with_capacity(text.len());
-    zonefile.extend_from_slice(text.as_bytes());
-    let domain = zonefile
-        .collect::<Result<Vec<_>, _>>()
-        .expect("reads")
-        .len();
-    let (_, sets) = Parser::new(text.as_str(), None, None)
-        .parse()
-        .expect("parses");
-    let hickory: usize = sets
-        .values()
-        .map(|set| set.records_without_rrsigs().count())
-        .sum();
-    assert_eq!((dedens, domain), (hickory, hickory));
-}

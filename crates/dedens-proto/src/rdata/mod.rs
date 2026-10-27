@@ -21,14 +21,18 @@ pub use rfc1035_soa::Soa;
 pub use rfc1035_txt::{CharacterStrings, Txt, TxtError};
 pub use rfc2782_srv::Srv;
 pub use rfc3597_opaque::Opaque;
-pub use rfc8659_caa::{Caa, InvalidCaaTag};
+pub use rfc8659_caa::{Caa, CaaError};
 pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
 
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
+use crate::record::decode_rdata;
 use crate::text::{self, Fields, TextError, TextErrorKind, encoding};
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
+
+/// The most bytes an RDATA holds: RDLENGTH is 16 bits (RFC 1035 §3.2.1).
+pub(crate) const MAX_RDATA_LEN: usize = 65535;
 
 /// The data of a resource record, borrowed from the message it was decoded from or owned (D7a).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -101,25 +105,6 @@ impl<'a> RData<'a> {
             Self::Https(_) => RecordType::HTTPS,
             Self::Opaque(o) => o.rtype(),
         }
-    }
-
-    /// Whether `rtype` has a typed form here, rather than [`RData::Opaque`].
-    const fn is_typed(rtype: RecordType) -> bool {
-        matches!(
-            rtype,
-            RecordType::A
-                | RecordType::AAAA
-                | RecordType::NS
-                | RecordType::CNAME
-                | RecordType::PTR
-                | RecordType::SOA
-                | RecordType::MX
-                | RecordType::TXT
-                | RecordType::SRV
-                | RecordType::CAA
-                | RecordType::SVCB
-                | RecordType::HTTPS
-        )
     }
 
     /// Whether RDATA of `rtype` may hold compressed names, which receivers decompress (RFC 3597 §4): MUST for the
@@ -228,7 +213,10 @@ impl RData<'static> {
     fn from_generic(rtype: RecordType, f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
         let marker = f.next("\\#")?;
         let declared: usize = f.number("RDATA length")?;
-        let mut data = Vec::with_capacity(declared.min(MAX_MESSAGE_LEN));
+        if declared > MAX_RDATA_LEN {
+            return Err(marker.error(TextErrorKind::Invalid("\\# length, over 65535")));
+        }
+        let mut data = Vec::with_capacity(declared);
         while let Some(token) = f.next_opt() {
             encoding::decode_hex(token.raw, &mut data)
                 .ok_or(token.error(TextErrorKind::Invalid("hex RDATA")))?;
@@ -240,20 +228,18 @@ impl RData<'static> {
             }));
         }
         let invalid = |kind| marker.error(TextErrorKind::Rdata(kind));
-        if !Self::is_typed(rtype) {
-            let opaque = Opaque::new(rtype, &data).map_err(|e| invalid(e.kind))?;
-            return Ok(RData::Opaque(opaque.into_owned()));
-        }
-        let decoded = RData::decode(rtype, &mut Reader::new(&data)).map_err(|e| invalid(e.kind))?;
-        // A name read here may hold a pointer, which means nothing outside a message: refuse what does not
-        // write back to the same bytes.
-        let mut buf = vec![0; MAX_MESSAGE_LEN];
-        let mut w = Writer::uncompressed(&mut buf);
-        let same = decoded.encode(&mut w).is_ok() && w.written() == data.as_slice();
-        if !same {
-            return Err(invalid(DecodeErrorKind::Invalid(
-                "RDATA that does not write back the same",
-            )));
+        // Same rule as the wire (D9): RDATA invalid for its type is kept opaque, unless the type holds names.
+        let (decoded, _) = decode_rdata(rtype, Reader::new(&data)).map_err(|e| invalid(e.kind))?;
+        if Self::may_hold_compressed_names(rtype) {
+            // A name read here may hold a pointer, which means nothing outside a message: refuse what does not
+            // write back to the same bytes.
+            let mut buf = vec![0; data.len()];
+            let mut w = Writer::uncompressed(&mut buf);
+            if decoded.encode(&mut w).is_err() || w.written() != data.as_slice() {
+                return Err(invalid(DecodeErrorKind::Invalid(
+                    "RDATA that does not write back the same",
+                )));
+            }
         }
         Ok(decoded.into_owned())
     }

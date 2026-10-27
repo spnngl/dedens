@@ -155,7 +155,7 @@ fn s5_generic_text_errors() {
         "x. 60 TYPE731 abcd",
         // A pointer inside RDATA means nothing in text.
         r"x. 60 NS \# 2 c00c",
-        r"x. 60 A \# 3 0a0000",
+        r"x. 60 TYPE731 \# 65536 00",
     ] {
         assert!(
             bad.parse::<dedens_proto::Record<'_>>().is_err(),

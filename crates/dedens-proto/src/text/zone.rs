@@ -41,7 +41,7 @@ impl Defaults {
     ) -> Result<Record<'static>, TextError> {
         let head = Head::read(f)?;
         let (line, column) = head.at;
-        let explicit = head.ttl.and_then(Ttl::new);
+        let explicit = head.ttl;
         let ttl = explicit.or(self.ttl).or(self.last_ttl).ok_or(TextError {
             line,
             column,

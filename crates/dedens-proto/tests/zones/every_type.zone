@@ -1,0 +1,38 @@
+; Fuzzing seed: every type with a typed text form, the RFC 9460 appendix D vectors and the generic form of
+; RFC 3597 section 5.
+$ORIGIN example.
+$TTL 1h
+@	IN	SOA	ns hostmaster ( 2026102701 1d 2h 4w 1h )
+	NS	ns
+	NS	ns.other.example.
+	MX	10 mail
+	CAA	128 issue "ca.example; account=1"
+	CAA	0 iodef "mailto:security@example"
+	TXT	"v=spf1 -all" "second \"string\"" plain\ word \065\066
+	HTTPS	1 . alpn="h3,h2" ipv4hint=192.0.2.1,192.0.2.2 ech=AQID ipv6hint=2001:db8::1
+ns	30	A	192.0.2.53
+	AAAA	2001:db8::53
+mail	CH	A	192.0.2.25
+www	CNAME	@
+1.2.0.192.in-addr.arpa.	PTR	www
+_sip._udp	SRV	10 60 5060 sip
+_dns	SVCB	1 dns alpn="dot,h2" port=853 dohpath="/q{?dns}"
+
+; RFC 9460 appendix D.1 and D.2
+d1	HTTPS	0 foo.example.com.
+d2	SVCB	1 .
+d3	SVCB	16 foo.example.com. port=53
+d4	SVCB	1 foo.example.com. key667=hello
+d5	SVCB	1 foo.example.com. key667="hello\210qoo"
+d6	SVCB	1 foo.example.com. ( ipv6hint="2001:db8::1,2001:db8::53:1" )
+d7	SVCB	1 example.com. ipv6hint="2001:db8:122:344::192.0.2.33"
+d8	SVCB	16 foo.example.org. ( alpn=h2,h3-19 mandatory=ipv4hint,alpn ipv4hint=192.0.2.1 )
+d9	SVCB	16 foo.example.org. alpn="f\\\\oo\\,bar,h2"
+d10	SVCB	16 foo.example.org. alpn=f\\\092oo\092,bar,h2
+
+; RFC 3597 section 5
+a	CLASS32	TYPE731	\# 6 abcd (
+		ef 01 23 45 )
+b	HS	TYPE62347	\# 0
+e	IN	A	\# 4 0A000001
+e	CLASS1	TYPE1	10.0.0.2

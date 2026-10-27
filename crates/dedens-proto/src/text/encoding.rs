@@ -56,8 +56,9 @@ impl fmt::Display for Base64<'_> {
     }
 }
 
-/// Decodes padded base64; `None` unless the length is a multiple of four, every byte is of the alphabet and
-/// padding only ends the text.
+/// Decodes padded base64; `None` unless the length is a multiple of four, every byte is of the alphabet, padding
+/// only ends the text and the bits it leaves unused are zero, so that each byte string has one text
+/// (RFC 4648 section 3.5).
 pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
     let (groups, rest) = text.as_chunks::<4>();
     if !rest.is_empty() {
@@ -73,6 +74,10 @@ pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
         for &b in group.get(..4 - pad)? {
             let value = BASE64.iter().position(|&c| c == b)?;
             bits = bits << 6 | u32::try_from(value).ok()?;
+        }
+        // Each `=` leaves two bits of the last character unused.
+        if bits & ((1 << (2 * pad)) - 1) != 0 {
+            return None;
         }
         bits <<= 6 * pad;
         let bytes = bits.to_be_bytes();
@@ -114,5 +119,7 @@ mod tests {
         assert_eq!(decode_base64(b"Z==="), None);
         assert_eq!(decode_base64(b"Zg==Zm8="), None);
         assert_eq!(decode_base64(b"Zg!="), None);
+        assert_eq!(decode_base64(b"Zh=="), None);
+        assert_eq!(decode_base64(b"Zm9="), None);
     }
 }

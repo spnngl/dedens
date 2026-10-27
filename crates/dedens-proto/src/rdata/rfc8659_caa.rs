@@ -3,14 +3,22 @@
 use core::fmt;
 use std::borrow::Cow;
 
+use super::MAX_RDATA_LEN;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::text::{Fields, Quoted, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 /// A CAA tag that is not 1 to 15 ASCII letters or digits (RFC 8659 §4.1.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("CAA tag must be 1 to 15 ASCII letters or digits")]
-pub struct InvalidCaaTag;
+#[non_exhaustive]
+pub enum CaaError {
+    /// A tag that is not 1 to 15 ASCII letters or digits.
+    #[error("CAA tag must be 1 to 15 ASCII letters or digits")]
+    InvalidTag,
+    /// Flags, tag and value over the 65535 bytes of an RDATA.
+    #[error("CAA RDATA longer than 65535 bytes")]
+    TooLong,
+}
 
 /// A CAA property: flags, a tag such as `issue`, and a value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,11 +36,14 @@ impl<'a> Caa<'a> {
     ///
     /// # Errors
     ///
-    /// [`InvalidCaaTag`] when `tag` is not 1 to 15 ASCII letters or digits.
-    pub fn new(flags: u8, tag: &'a [u8], value: &'a [u8]) -> Result<Self, InvalidCaaTag> {
+    /// [`CaaError`] when `tag` is not 1 to 15 ASCII letters or digits, or the value is too long for an RDATA.
+    pub fn new(flags: u8, tag: &'a [u8], value: &'a [u8]) -> Result<Self, CaaError> {
         let valid = (1..=15).contains(&tag.len()) && tag.iter().all(u8::is_ascii_alphanumeric);
         if !valid {
-            return Err(InvalidCaaTag);
+            return Err(CaaError::InvalidTag);
+        }
+        if 2 + tag.len() + value.len() > MAX_RDATA_LEN {
+            return Err(CaaError::TooLong);
         }
         Ok(Self {
             flags,
@@ -101,7 +112,12 @@ impl Caa<'static> {
         let value = f.text("CAA value")?;
         Caa::new(flags, tag.raw, &value)
             .map(Caa::into_owned)
-            .map_err(|_| tag.error(TextErrorKind::Invalid("CAA tag")))
+            .map_err(|e| {
+                tag.error(TextErrorKind::Invalid(match e {
+                    CaaError::InvalidTag => "CAA tag: 1 to 15 letters or digits, unquoted",
+                    CaaError::TooLong => "CAA value: RDATA over 65535 bytes",
+                }))
+            })
     }
 }
 

@@ -178,7 +178,13 @@ Vector's configuration tooling.
   records and `$INCLUDE`s: the caller reads the included file (the library does no file I/O) and reads it with
   `ZoneReader::include`, which keeps the TTL and class defaults and leaves the parent's origin alone. Omitted
   TTL: explicit, else `$TTL`, else the last explicit one, else an error; omitted class: the last one, else IN.
-  The first error stops the reader, with line and column. No `$GENERATE`. A 100 000-record zone reads in
+  The first error stops the reader, with line and column. No `$GENERATE`. Stricter than BIND where BIND
+  only warns: a TTL over 2³¹−1 is an error (BIND uses 0), and there is no fallback to the SOA minimum. Records
+  of a query or meta class or type (RFC 6895 §3.1-3.2, e.g. ANY, NONE, OPT, AXFR) and RDATA over 65535 bytes
+  are refused. RDATA that `\#` gives but its type refuses is kept opaque, as on the wire (D9), so every decoded
+  record reads back from its text. The caller bounds `$INCLUDE` depth and cycles and vets paths from untrusted
+  zones. Zone-level checks (RFC 1035 §5.2: SOA first, one class, records inside the zone, CNAME alone) belong
+  to the later zone-loading layer. A 100 000-record zone reads in
   9 ms, `domain` 10.5 ms, hickory-proto 57 ms (it also builds record sets; `just bench`).
 
 ## Later, undecided

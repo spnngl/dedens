@@ -80,7 +80,10 @@ fuzz target="decode_message" seconds="300":
     cd fuzz
     # The first corpus directory is the one libFuzzer writes to; the captured responses and zone files only seed it.
     mkdir -p "corpus/{{target}}"
-    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}}
+    # A target with a token dictionary in dicts/ gets it.
+    dict=""
+    if [[ -f "dicts/{{target}}.dict" ]]; then dict="-dict=dicts/{{target}}.dict"; fi
+    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}} $dict
 
 # Every fuzz target for `seconds` each, as the scheduled CI job runs them.
 fuzz-all seconds="60":
@@ -90,7 +93,9 @@ fuzz-all seconds="60":
     cd fuzz
     for target in $(cargo fuzz list); do
         mkdir -p "corpus/$target"
-        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}}
+        dict=""
+        if [[ -f "dicts/$target.dict" ]]; then dict="-dict=dicts/$target.dict"; fi
+        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}} $dict
     done
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).

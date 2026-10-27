@@ -103,7 +103,8 @@ fn svc_params() -> impl Strategy<Value = SvcParams<'static>> {
     let others = (
         any::<bool>(),
         prop::option::of(any::<u16>()),
-        prop::option::of(bytes(20)),
+        // An ECHConfigList is never empty.
+        prop::option::of(prop::collection::vec(any::<u8>(), 1..=20)),
         prop::option::of("[a-z/{?}]{0,20}"),
         prop::option::of((8u16..65535, bytes(10))),
         prop::collection::vec(any::<bool>(), 8),
@@ -138,10 +139,8 @@ fn svc_params() -> impl Strategy<Value = SvcParams<'static>> {
 }
 
 fn svcb() -> impl Strategy<Value = Svcb<'static>> {
-    (any::<u16>(), name(), svc_params()).prop_map(|(priority, target, params)| Svcb {
-        priority,
-        target,
-        params,
+    (any::<u16>(), name(), svc_params()).prop_map(|(priority, target, params)| {
+        Svcb::new(priority, target, params).expect("generated records fit an RDATA")
     })
 }
 
@@ -178,8 +177,10 @@ pub(crate) fn rdata() -> impl Strategy<Value = RData<'static>> {
     ]
 }
 
+/// Records of a class that zone files accept: no QCLASS or meta class (RFC 6895 §3.2).
 pub(crate) fn record() -> impl Strategy<Value = Record<'static>> {
-    (name(), any::<u16>(), 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
+    let class = prop_oneof![1u16..128, 256u16..0xE000, 0xFF00u16..0xFFFF];
+    (name(), class, 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
         Record::new(name, Class(class), Ttl::new(ttl).expect("in range"), data)
     })
 }
