@@ -4,7 +4,7 @@
 //! `cargo-fuzz` (nightly) reaches them through the shims in `fuzz_targets/`; `cargo test --lib` (stable,
 //! `just fuzz-smoke`) replays the captured responses plus mutated variants through [`TARGETS`].
 
-use dedens_proto::{EncodeError, Flags, Message};
+use dedens_proto::{EncodeError, Flags, Message, MessageIndex};
 
 #[cfg(test)]
 mod smoke;
@@ -13,7 +13,26 @@ mod smoke;
 pub type Entry = fn(&[u8]);
 
 /// Every target by name; `fuzz_targets/<name>.rs` and this list stay in step (checked by the smoke test).
-pub const TARGETS: &[(&str, Entry)] = &[("decode_message", decode_message)];
+pub const TARGETS: &[(&str, Entry)] =
+    &[("decode_message", decode_message), ("read_view", read_view)];
+
+/// A DNS message off the wire, read in place: it reads what [`Message::decode`] reads, or fails as it does, and
+/// every accessor works on what it accepts.
+///
+/// # Panics
+///
+/// On a disagreement, or a bug in the reader.
+pub fn read_view(data: &[u8]) {
+    let mut index = MessageIndex::new();
+    let viewed = index.read(data).map(|view| view.to_decoded());
+    let decoded = Message::decode(data);
+    // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
+    assert_eq!(
+        format!("{viewed:?}"),
+        format!("{decoded:?}"),
+        "view and decoder agree"
+    );
+}
 
 /// A DNS message off the wire.
 ///

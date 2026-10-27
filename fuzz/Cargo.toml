@@ -23,4 +23,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "read_view"
+path = "fuzz_targets/read_view.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

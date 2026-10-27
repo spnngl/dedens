@@ -8,7 +8,7 @@
 use std::hint::black_box;
 
 use dedens_bench::{CASES, wire};
-use dedens_proto::{Decoded, Message};
+use dedens_proto::{Decoded, Message, MessageIndex};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -59,6 +59,47 @@ fn decode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
         Message::decode(black_box(&wire))
             .expect("decodes")
             .into_owned()
+    });
+}
+
+/// Read in place (D20) and parse every record: the same work as `decode_domain`.
+#[divan::bench(args = CASES)]
+fn view_dedens(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    let mut index = MessageIndex::new();
+    bencher.bench_local(|| {
+        let view = index.read(black_box(&wire)).expect("reads");
+        let mut records = 0;
+        for record in view
+            .answer()
+            .chain(view.authority())
+            .chain(view.additional())
+        {
+            black_box((record.name(), record.ttl(), record.data()));
+            records += 1;
+        }
+        records
+    });
+}
+
+/// Check the message and read its question, as a cache lookup does.
+#[divan::bench(args = CASES)]
+fn question_dedens(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    let mut index = MessageIndex::new();
+    bencher.bench_local(|| {
+        let view = index.read(black_box(&wire)).expect("reads");
+        black_box(view.questions().next().expect("question"));
+    });
+}
+
+/// Read the question only: `domain` checks nothing past it.
+#[divan::bench(args = CASES)]
+fn question_domain(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    bencher.bench_local(|| {
+        let message = DomainMessage::from_octets(black_box(wire.as_slice())).expect("decodes");
+        message.first_question().expect("question")
     });
 }
 

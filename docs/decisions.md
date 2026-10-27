@@ -41,6 +41,13 @@ decision is marked superseded, never reused. The rules a decision produces live 
   re-parsed on each pass (errors at every access).
 - D8 `Message`: header, questions, answer, authority, additional, and EDNS lifted out of additional into its
   own field, so no caller searches for the OPT record.
+- D20 `MessageView`: the same message read in place, for the server's hot path (cache lookups, serving cached
+  bytes with lower TTLs). One pass checks the input exactly as `Message::decode` does (fuzzed against it) and
+  stores two 16-bit offsets per entry in a `MessageIndex` table allocated once at the most entries a 65535-byte
+  message holds (13104, 52 KB), so reading never allocates nor sizes from claimed counts. Fields, names and
+  RDATA are parsed on access. Measured: the check costs 65-80% of a full decode, since parsing names and RDATA,
+  not building records, is most of decoding; the gain is no allocation, O(1) access to any record, and TTL
+  offsets for rewriting a copy of the bytes.
 - D9 Decoder: bounds-checked cursor; a compression pointer must point strictly before the current label, which
   rules out loops, and a name follows at most 127 pointers, which rules out long chains; unknown types stay
   opaque RDATA (RFC 3597); every input decodes or errors (fuzzed).

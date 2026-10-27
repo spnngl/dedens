@@ -3,9 +3,9 @@
 use crate::codes::{Opcode, Rcode, RecordType};
 use crate::edns::{Edns, OptionCode};
 use crate::error::{DecodeError, EncodeError};
-use crate::header::{Counts, Flags, Header};
+use crate::header::{Counts, Flags, HEADER_LEN, Header};
 use crate::question::Question;
-use crate::record::Record;
+use crate::record::{RawRecord, Record};
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// Smallest wire size of a question (root name, type, class) and of a record (root name, fixed fields), used to
@@ -228,7 +228,7 @@ impl<'a> Message<'a> {
     /// Anything else that is wrong is a [`Violation`] in the result (D9).
     pub fn decode(msg: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
         let mut out = Decoded::default();
-        decode_into(&mut Reader::new(msg), &mut out)?;
+        decode_into(msg, &mut out)?;
         Ok(out)
     }
 
@@ -258,7 +258,7 @@ impl<'a> Message<'a> {
         // A `Decoded<'static>` is a `Decoded<'a>`: only its contents must go.
         let mut out: Decoded<'a> = core::mem::take(spare);
         out.clear();
-        match decode_into(&mut Reader::new(msg), &mut out) {
+        match decode_into(msg, &mut out) {
             Ok(()) => Ok(out),
             Err(error) => {
                 *spare = out.recycle();
@@ -401,46 +401,81 @@ fn bounded(claimed: u16, remaining: usize, min_len: usize) -> usize {
     usize::from(claimed).min(remaining / min_len)
 }
 
-/// Reads a message into the empty vectors of `out`.
-fn decode_into<'a>(r: &mut Reader<'a>, out: &mut Decoded<'a>) -> Result<(), DecodeError> {
-    let (header, counts) = Header::decode(r)?;
-    let message = &mut out.message;
-    message.header = header;
-    let violations = &mut out.violations;
+/// One entry of a message, met by [`walk`] in wire order.
+pub(crate) enum Entry<'a> {
+    /// The header, met first.
+    Header(Header, Counts),
+    /// A question.
+    Question(Question<'a>, Span),
+    /// A record of `Section`.
+    Record(Section, RawRecord<'a>, Span),
+    /// The OPT record lifted out as EDNS (D8); a misplaced or extra one is a [`Entry::Record`].
+    Opt(RawRecord<'a>, Span),
+}
 
-    let questions = &mut message.questions;
-    questions.reserve(bounded(counts.questions, r.remaining(), MIN_QUESTION_LEN));
+/// Where an entry sits in the message: the start of its name, and of the fields after it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Span {
+    pub(crate) name: usize,
+    pub(crate) fixed: usize,
+}
+
+/// Reads the structure of `msg`, handing each entry to `sink` in wire order, and pushes the violations it finds:
+/// several questions, a misplaced or extra OPT record, trailing bytes (D9). `sink` reads what it needs of each
+/// entry and pushes the violations of RDATA and options.
+pub(crate) fn walk<'a>(
+    msg: &'a [u8],
+    violations: &mut Vec<Violation>,
+    mut sink: impl FnMut(Entry<'a>, &mut Vec<Violation>) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
+    let mut r = Reader::new(msg);
+    let (header, counts) = Header::decode(&mut r)?;
+    sink(Entry::Header(header, counts), violations)?;
     for _ in 0..counts.questions {
-        questions.push(Question::decode(r)?);
+        let name = r.position();
+        let question = Question::decode(&mut r)?;
+        let fixed = r.position() - 4;
+        sink(Entry::Question(question, Span { name, fixed }), violations)?;
     }
-    if questions.len() > 1 {
+    if counts.questions > 1 {
         violations.push(Violation::MultipleQuestions);
     }
 
-    let Message {
-        answer,
-        authority,
-        additional,
-        edns,
-        ..
-    } = message;
-    read_section(r, Section::Answer, counts.answers, answer, edns, violations)?;
-    read_section(
-        r,
-        Section::Authority,
-        counts.authority,
-        authority,
-        edns,
-        violations,
-    )?;
-    read_section(
-        r,
-        Section::Additional,
-        counts.additional,
-        additional,
-        edns,
-        violations,
-    )?;
+    let mut opt_seen = false;
+    for (section, count) in [
+        (Section::Answer, counts.answers),
+        (Section::Authority, counts.authority),
+        (Section::Additional, counts.additional),
+    ] {
+        for _ in 0..count {
+            let name = r.position();
+            let raw = Record::read_raw(&mut r)?;
+            // Type, class, TTL and RDLENGTH: 10 bytes before the RDATA.
+            let span = Span {
+                name,
+                fixed: raw.rdata.position() - 10,
+            };
+            if raw.rtype == RecordType::OPT {
+                let reject = if section != Section::Additional {
+                    Some(Violation::OptOutsideAdditional)
+                } else if !raw.name.is_root() {
+                    Some(Violation::OptOwnerNotRoot)
+                } else if opt_seen {
+                    Some(Violation::MultipleOpt)
+                } else {
+                    None
+                };
+                if let Some(violation) = reject {
+                    violations.push(violation);
+                } else {
+                    opt_seen = true;
+                    sink(Entry::Opt(raw, span), violations)?;
+                    continue;
+                }
+            }
+            sink(Entry::Record(section, raw, span), violations)?;
+        }
+    }
 
     if !r.is_empty() {
         violations.push(Violation::TrailingBytes { len: r.remaining() });
@@ -448,48 +483,53 @@ fn decode_into<'a>(r: &mut Reader<'a>, out: &mut Decoded<'a>) -> Result<(), Deco
     Ok(())
 }
 
-fn read_section<'a>(
-    r: &mut Reader<'a>,
-    section: Section,
-    count: u16,
-    records: &mut Vec<Record<'a>>,
-    edns: &mut Option<Edns<'a>>,
-    violations: &mut Vec<Violation>,
-) -> Result<(), DecodeError> {
-    records.reserve(bounded(count, r.remaining(), MIN_RECORD_LEN));
-    for _ in 0..count {
-        let raw = Record::read_raw(r)?;
-        if raw.rtype == RecordType::OPT {
-            let reject = if section != Section::Additional {
-                Some(Violation::OptOutsideAdditional)
-            } else if !raw.name.is_root() {
-                Some(Violation::OptOwnerNotRoot)
-            } else if edns.is_some() {
-                Some(Violation::MultipleOpt)
-            } else {
-                None
-            };
-            if let Some(violation) = reject {
-                violations.push(violation);
-            } else {
+/// Reads a message into the empty vectors of `out`.
+fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeError> {
+    let Message {
+        header,
+        questions,
+        answer,
+        authority,
+        additional,
+        edns,
+    } = &mut out.message;
+    walk(msg, &mut out.violations, |entry, violations| {
+        match entry {
+            Entry::Header(read, counts) => {
+                *header = read;
+                // Capped by what the input can hold rather than by the counts it claims.
+                let remaining = msg.len() - HEADER_LEN;
+                questions.reserve(bounded(counts.questions, remaining, MIN_QUESTION_LEN));
+                answer.reserve(bounded(counts.answers, remaining, MIN_RECORD_LEN));
+                authority.reserve(bounded(counts.authority, remaining, MIN_RECORD_LEN));
+                additional.reserve(bounded(counts.additional, remaining, MIN_RECORD_LEN));
+            }
+            Entry::Question(question, _) => questions.push(question),
+            Entry::Opt(raw, _) => {
                 let (parsed, invalid) = Edns::from_opt(raw.class.0, raw.ttl, raw.rdata)?;
                 violations.extend(invalid.into_iter().map(|o| Violation::InvalidOption {
                     code: o.code,
                     error: o.error,
                 }));
                 *edns = Some(parsed);
-                continue;
+            }
+            Entry::Record(section, raw, _) => {
+                let records = match section {
+                    Section::Answer => &mut *answer,
+                    Section::Authority => &mut *authority,
+                    Section::Additional => &mut *additional,
+                };
+                let decoded = Record::from_raw(raw)?;
+                if let Some(error) = decoded.invalid_rdata {
+                    violations.push(Violation::InvalidRdata {
+                        section,
+                        index: records.len(),
+                        error,
+                    });
+                }
+                records.push(decoded.record);
             }
         }
-        let decoded = Record::from_raw(raw)?;
-        if let Some(error) = decoded.invalid_rdata {
-            violations.push(Violation::InvalidRdata {
-                section,
-                index: records.len(),
-                error,
-            });
-        }
-        records.push(decoded.record);
-    }
-    Ok(())
+        Ok(())
+    })
 }

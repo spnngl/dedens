@@ -20,6 +20,7 @@ pub mod name;
 pub mod question;
 pub mod rdata;
 pub mod record;
+pub mod view;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
@@ -31,3 +32,4 @@ pub use name::{Name, NameError};
 pub use question::Question;
 pub use rdata::RData;
 pub use record::{DecodedRecord, Record, Ttl};
+pub use view::{MessageIndex, MessageView};

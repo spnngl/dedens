@@ -28,6 +28,11 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// A reader of `msg` from `pos` to `end`, offsets a previous pass found inside it.
+    pub(crate) const fn range(msg: &'a [u8], pos: usize, end: usize) -> Self {
+        Self { msg, pos, end }
+    }
+
     /// The whole message, for following compression pointers.
     #[must_use]
     pub const fn message(&self) -> &'a [u8] {

@@ -261,29 +261,16 @@ impl<'a> Edns<'a> {
     pub(crate) fn from_opt(
         class: u16,
         ttl: u32,
-        mut rdata: Reader<'a>,
+        rdata: Reader<'a>,
     ) -> Result<(Self, Vec<InvalidOption>), DecodeError> {
         let [ext_rcode, version, flags_hi, flags_lo] = ttl.to_be_bytes();
         let flags = u16::from_be_bytes([flags_hi, flags_lo]);
         let mut options = Vec::new();
         let mut invalid = Vec::new();
-        while !rdata.is_empty() {
-            let code = OptionCode(rdata.u16().map_err(rdlength)?);
-            let len = usize::from(rdata.u16().map_err(rdlength)?);
-            let mut data = rdata.sub(len).map_err(rdlength)?;
-            let raw = data;
-            match EdnsOption::decode_typed(code, &mut data) {
-                Ok(option) => options.push(option),
-                Err(error) => {
-                    invalid.push(InvalidOption { code, error });
-                    let mut raw = raw;
-                    options.push(EdnsOption::Unknown {
-                        code,
-                        data: Cow::Borrowed(raw.rest()),
-                    });
-                }
-            }
-        }
+        read_options(rdata, |option, error| {
+            options.push(option);
+            invalid.extend(error);
+        })?;
         let edns = Self {
             udp_payload: class,
             ext_rcode,
@@ -327,6 +314,35 @@ impl<'a> Edns<'a> {
 }
 
 /// An OPT record whose options run past its RDATA is a RDATA length error.
+/// Reads the options of an OPT record's RDATA, handing each to `each` with, when its content is invalid for its
+/// code, why it is kept as [`EdnsOption::Unknown`].
+///
+/// # Errors
+///
+/// [`DecodeError`] when the option framing is broken: an option cut short or running past the RDATA.
+pub(crate) fn read_options<'a>(
+    mut rdata: Reader<'a>,
+    mut each: impl FnMut(EdnsOption<'a>, Option<InvalidOption>),
+) -> Result<(), DecodeError> {
+    while !rdata.is_empty() {
+        let code = OptionCode(rdata.u16().map_err(rdlength)?);
+        let len = usize::from(rdata.u16().map_err(rdlength)?);
+        let mut data = rdata.sub(len).map_err(rdlength)?;
+        let mut raw = data;
+        match EdnsOption::decode_typed(code, &mut data) {
+            Ok(option) => each(option, None),
+            Err(error) => each(
+                EdnsOption::Unknown {
+                    code,
+                    data: Cow::Borrowed(raw.rest()),
+                },
+                Some(InvalidOption { code, error }),
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn rdlength(mut e: DecodeError) -> DecodeError {
     e.kind = DecodeErrorKind::RdataLength;
     e

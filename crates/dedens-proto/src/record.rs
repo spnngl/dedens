@@ -43,6 +43,16 @@ impl Ttl {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// The TTL of a record of `rtype` with the wire value `secs`: an OPT record kept as a record (D9) holds EDNS
+    /// bits there, not seconds, so it is kept whole.
+    pub(crate) const fn of_record(rtype: RecordType, secs: u32) -> Self {
+        if rtype.0 == RecordType::OPT.0 {
+            Self(secs)
+        } else {
+            Self::from_wire(secs)
+        }
+    }
 }
 
 /// A resource record: owner name, class, TTL and data; the type is the data's.
@@ -67,6 +77,26 @@ pub(crate) struct RawRecord<'a> {
     pub(crate) class: Class,
     pub(crate) ttl: u32,
     pub(crate) rdata: Reader<'a>,
+}
+
+/// Parses the RDATA of a record of `rtype`; RDATA invalid for its type is kept opaque, with why (D9).
+///
+/// # Errors
+///
+/// [`DecodeError`] when the RDATA of a type that may hold compressed names is invalid.
+pub(crate) fn decode_rdata(
+    rtype: RecordType,
+    rdata: Reader<'_>,
+) -> Result<(RData<'_>, Option<DecodeError>), DecodeError> {
+    let mut r = rdata;
+    match RData::decode(rtype, &mut r) {
+        Ok(data) => Ok((data, None)),
+        Err(e) if RData::may_hold_compressed_names(rtype) => Err(e),
+        Err(e) => {
+            let mut bytes = rdata;
+            Ok((RData::Opaque(Opaque::invalid(rtype, bytes.rest())), Some(e)))
+        }
+    }
 }
 
 /// A record and, when its RDATA was invalid for its type, why it was kept opaque (D9).
@@ -147,24 +177,10 @@ impl<'a> Record<'a> {
             rtype,
             class,
             ttl,
-            mut rdata,
+            rdata,
         } = raw;
-        let bytes = rdata;
-        let (data, invalid_rdata) = match RData::decode(rtype, &mut rdata) {
-            Ok(data) => (data, None),
-            Err(e) if RData::may_hold_compressed_names(rtype) => return Err(e),
-            Err(e) => {
-                let mut bytes = bytes;
-                (RData::Opaque(Opaque::invalid(rtype, bytes.rest())), Some(e))
-            }
-        };
-        // The TTL field of an OPT record kept as a record (D9) holds EDNS bits, not seconds: kept whole.
-        let ttl = if rtype == RecordType::OPT {
-            Ttl(ttl)
-        } else {
-            Ttl::from_wire(ttl)
-        };
-        let record = Self::new(name, class, ttl, data);
+        let (data, invalid_rdata) = decode_rdata(rtype, rdata)?;
+        let record = Self::new(name, class, Ttl::of_record(rtype, ttl), data);
         Ok(DecodedRecord {
             record,
             invalid_rdata,
