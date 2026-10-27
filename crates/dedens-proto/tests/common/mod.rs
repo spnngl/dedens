@@ -2,15 +2,18 @@
 
 #![allow(dead_code, reason = "each test crate uses a subset")]
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use dedens_proto::edns::{
+    ClientSubnet, Cookie, Edns, EdnsOption, ExtendedError, InfoCode, OptionCode,
+};
 use dedens_proto::rdata::{
     Caa, CharacterString, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt,
 };
 use dedens_proto::wire::{Reader, Writer};
 use dedens_proto::{
-    Class, Counts, DecodeError, DecodedRecord, Flags, Header, Name, Opcode, Question, RData, Rcode,
-    Record, RecordType, Ttl,
+    Class, Counts, DecodeError, Decoded, DecodedRecord, Flags, Header, Message, Name, Opcode,
+    Question, RData, Rcode, Record, RecordType, Ttl,
 };
 use proptest::prelude::*;
 
@@ -181,6 +184,87 @@ pub(crate) fn record() -> impl Strategy<Value = Record> {
     })
 }
 
+fn client_subnet() -> impl Strategy<Value = ClientSubnet> {
+    let v4 = (any::<u32>(), 0u8..=32, 0u8..=32).prop_map(|(addr, source, scope)| {
+        let mask = u32::MAX.checked_shl(32 - u32::from(source)).unwrap_or(0);
+        (IpAddr::from(Ipv4Addr::from(addr & mask)), source, scope)
+    });
+    let v6 = (any::<u128>(), 0u8..=128, 0u8..=128).prop_map(|(addr, source, scope)| {
+        let mask = u128::MAX.checked_shl(128 - u32::from(source)).unwrap_or(0);
+        (IpAddr::from(Ipv6Addr::from(addr & mask)), source, scope)
+    });
+    prop_oneof![v4, v6].prop_map(|(addr, source, scope)| {
+        ClientSubnet::new(addr, source, scope).expect("masked address")
+    })
+}
+
+pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption> {
+    prop_oneof![
+        bytes(20).prop_map(|b| EdnsOption::Nsid(b.into())),
+        client_subnet().prop_map(EdnsOption::ClientSubnet),
+        (
+            any::<[u8; 8]>(),
+            prop::option::of(prop::collection::vec(any::<u8>(), 8..=32))
+        )
+            .prop_map(|(client, server)| EdnsOption::Cookie(
+                Cookie::new(client, server.as_deref()).expect("8 to 32 bytes")
+            )),
+        prop::option::of(any::<u16>()).prop_map(EdnsOption::Keepalive),
+        (0u16..60).prop_map(EdnsOption::Padding),
+        (any::<u16>(), ".{0,20}").prop_map(|(code, text)| EdnsOption::Ede(ExtendedError {
+            code: InfoCode(code),
+            text
+        })),
+        (100u16..60000, bytes(20)).prop_map(|(code, data)| EdnsOption::Unknown {
+            code: OptionCode(code),
+            data: data.into()
+        }),
+    ]
+}
+
+pub(crate) fn edns() -> impl Strategy<Value = Edns> {
+    (
+        any::<u16>(),
+        any::<u8>(),
+        any::<u8>(),
+        any::<bool>(),
+        0u16..0x8000,
+        prop::collection::vec(edns_option(), 0..=3),
+    )
+        .prop_map(
+            |(udp_payload, ext_rcode, version, dnssec_ok, z, options)| Edns {
+                udp_payload,
+                ext_rcode,
+                version,
+                dnssec_ok,
+                z,
+                options,
+            },
+        )
+}
+
+pub(crate) fn message() -> impl Strategy<Value = Message> {
+    let records = || prop::collection::vec(record(), 0..=3);
+    (
+        header(),
+        prop::collection::vec(question(), 0..=2),
+        records(),
+        records(),
+        records(),
+        prop::option::of(edns()),
+    )
+        .prop_map(
+            |(header, questions, answer, authority, additional, edns)| Message {
+                header,
+                questions,
+                answer,
+                authority,
+                additional,
+                edns,
+            },
+        )
+}
+
 /// A name from labels given without the root.
 pub(crate) fn name_of(labels: &[&[u8]]) -> Name {
     Name::from_labels(labels.iter().copied()).expect("labels are within the limits")
@@ -213,6 +297,32 @@ pub(crate) fn record_wire(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
 /// Decodes the whole of `wire` as one record.
 pub(crate) fn decode_record(wire: &[u8]) -> Result<DecodedRecord, DecodeError> {
     Record::decode(&mut Reader::new(wire))
+}
+
+/// A message with no question and one OPT record (payload 1232, no flags) whose RDATA is `options`.
+pub(crate) fn opt_message(options: &[u8]) -> Vec<u8> {
+    let mut wire = vec![0x12, 0x34, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    wire.extend_from_slice(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0]);
+    wire.extend_from_slice(
+        &u16::try_from(options.len())
+            .expect("short options")
+            .to_be_bytes(),
+    );
+    wire.extend_from_slice(options);
+    wire
+}
+
+/// One EDNS option on the wire: code, length, data.
+pub(crate) fn option_wire(code: u16, data: &[u8]) -> Vec<u8> {
+    let mut wire = code.to_be_bytes().to_vec();
+    wire.extend_from_slice(&u16::try_from(data.len()).expect("short data").to_be_bytes());
+    wire.extend_from_slice(data);
+    wire
+}
+
+/// Decodes a message made by [`opt_message`] and returns it with its violations.
+pub(crate) fn decode_options(options: &[u8]) -> Decoded {
+    Message::decode(&opt_message(options)).expect("well-framed message")
 }
 
 /// A reader over the whole of `bytes`.

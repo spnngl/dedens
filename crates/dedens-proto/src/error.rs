@@ -47,4 +47,7 @@ pub enum EncodeError {
     /// The response code needs an EDNS OPT record to carry its upper bits (RFC 6891 §6.1.3).
     #[error("response code above 15 needs EDNS")]
     RcodeNeedsEdns,
+    /// The response code does not fit in 12 bits (RFC 6891 §6.1.3).
+    #[error("response code above 4095")]
+    RcodeOutOfRange,
 }

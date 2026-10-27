@@ -1,2 +1,7 @@
 [files]
 extend-exclude = ["docs/rfc/archive/"]
+[default.extend-words]
+# Extended DNS Error (RFC 8914)
+ede = "ede"
+Ede = "Ede"
+EDE = "EDE"

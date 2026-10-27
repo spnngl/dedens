@@ -12,8 +12,10 @@
 )]
 
 pub mod codes;
+pub mod edns;
 pub mod error;
 pub mod header;
+pub mod message;
 pub mod name;
 pub mod question;
 pub mod rdata;
@@ -21,8 +23,10 @@ pub mod record;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
+pub use edns::Edns;
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Counts, Flags, Header};
+pub use message::{Decoded, Message, Section, Violation};
 pub use name::{Name, NameError};
 pub use question::Question;
 pub use rdata::RData;

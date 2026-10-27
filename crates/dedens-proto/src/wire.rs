@@ -203,6 +203,22 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// Appends `n` zero bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when they do not fit; nothing is written then.
+    pub fn put_zeros(&mut self, n: usize) -> Result<(), EncodeError> {
+        let end = self.len + n;
+        let dst = self
+            .buf
+            .get_mut(self.len..end)
+            .ok_or(EncodeError::BufferFull)?;
+        dst.fill(0);
+        self.len = end;
+        Ok(())
+    }
+
     /// Appends one byte.
     ///
     /// # Errors
