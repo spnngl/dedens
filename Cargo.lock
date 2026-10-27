@@ -181,10 +181,20 @@ version = "0.1.0"
 name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
+ "dedens-cache",
  "dedens-proto",
  "divan",
  "domain",
  "hickory-proto",
+]
+
+[[package]]
+name = "dedens-cache"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "proptest",
+ "thiserror",
 ]
 
 [[package]]

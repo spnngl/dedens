@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+dedens-cache.workspace = true
 dedens-proto.workspace = true
 divan.workspace = true
 domain.workspace = true
@@ -16,6 +17,10 @@ hickory-proto.workspace = true
 
 [[bench]]
 name = "message"
+harness = false
+
+[[bench]]
+name = "cache"
 harness = false
 
 [lints]

@@ -107,6 +107,18 @@ decision is marked superseded, never reused. The rules a decision produces live 
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow
   with the first fuzz target. RAPx runs weekly, outside the gate: it compiles against rustc internals and
   breaks on nightly changes unrelated to our code.
+- D22 Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
+  per-core threads, split in `Mutex` shards picked by keyed SipHash (`RandomState`) so names chosen to collide
+  cannot pile up. Own code, no `moka`/`quick_cache`: each shard is a slab indexed by hash with S3-FIFO eviction
+  under a byte budget (a scan of one-time names leaves popular ones in place). Whole responses only; an RRset
+  cache comes with the recursive resolver. Key: lowercased question, type, class, DO, CD. A response is checked
+  (RFC 2308 rules, no TC, no violations) and encoded once at insert, without OPT, ID 0, one TTL for all records,
+  with the offsets of its TTL fields; a hit copies the bytes and patches ID, flags, question case and TTLs (no
+  decode, no allocation; a response larger than the client's buffer takes a decode and `encode_truncated`
+  outside the lock). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC 9520: 5 s
+  doubling to 300 s, 30 s when stale data answers) per key; the caller chooses when stale data may answer.
+  Numbers (median, one run): hit including `Query::read` 147/149/170 ns for a/mx/txt_large, insert
+  0.9/1.5/2.5 µs; one hot name on 8 threads 312 ns (one shard lock), 10 000 names on 8 threads 333 ns.
 
 ## CLI
 

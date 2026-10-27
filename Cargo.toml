@@ -11,6 +11,7 @@ repository = "https://github.com/spnngl/dedens"
 publish = false
 
 [workspace.dependencies]
+dedens-cache = { path = "crates/dedens-cache" }
 dedens-net = { path = "crates/dedens-net" }
 dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }

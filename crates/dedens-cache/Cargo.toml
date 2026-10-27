@@ -1,0 +1,19 @@
+[package]
+name = "dedens-cache"
+description = "DNS response cache: shared, sharded, served as patched copies of stored bytes, with serve-stale."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dedens-proto.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

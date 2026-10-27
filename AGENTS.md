@@ -16,6 +16,7 @@ Plans (`PLAN.md`, `plan/`) are local and always git-ignored: phase order and eac
   implementing one. When an RFC section lands, update its row in
   `docs/rfc/coverage.md` in the same change.
 - `dedens-proto` is sans-IO: it encodes and decodes byte slices. Sockets, timers and compio live in `dedens-net`.
+- `dedens-cache` is sans-IO too: the caller passes the time in seconds (D22).
 - `dedens-proto` layout: topic modules (`name`, `header`, `message`, `wire`, `edns`), one RDATA file per type
   or per group of types sharing a format, named after the defining RFC (`rdata/rfc2782_srv.rs`,
   `rdata/rfc1035_domain_name.rs`), conformance tests per RFC (`tests/rfc1035.rs`).
