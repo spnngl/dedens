@@ -5,7 +5,7 @@ use crate::edns::{Edns, OptionCode};
 use crate::error::{DecodeError, EncodeError};
 use crate::header::{Counts, Flags, HEADER_LEN, Header};
 use crate::question::Question;
-use crate::record::{RawRecord, Record};
+use crate::record::{RawRecord, Record, Ttl, decode_rdata};
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// Smallest wire size of a question (root name, type, class) and of a record (root name, fixed fields), used to
@@ -530,15 +530,16 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
                     Section::Authority => &mut *authority,
                     Section::Additional => &mut *additional,
                 };
-                let decoded = Record::from_raw(raw)?;
-                if let Some(error) = decoded.invalid_rdata {
+                let (data, invalid) = decode_rdata(raw.rtype, raw.rdata)?;
+                if let Some(error) = invalid {
                     violations.push(Violation::InvalidRdata {
                         section,
                         index: records.len(),
                         error,
                     });
                 }
-                records.push(decoded.record);
+                let ttl = Ttl::of_record(raw.rtype, raw.ttl);
+                records.push(Record::new(raw.name, raw.class, ttl, data));
             }
         }
         Ok(())

@@ -101,7 +101,14 @@ decision is marked superseded, never reused. The rules a decision produces live 
   pointer), else its runs are copied on the stack. `unsafe` only where a profile shows bounds checks matter:
   replacing the checked slicing of `Reader` with `get_unchecked` was measured no faster. A server decodes with
   `Message::decode_reusing`, into the section vectors of the previous message: no allocation once warm, median
-  ns a/mx/txt_large 77/174/325 against 97/195/341 for decoding and dropping.
+  ns a/mx/txt_large 77/174/325 against 97/195/341 for decoding and dropping. Medians swing up to 2x between
+  runs (threads move between P and E cores), so changes are compared on instructions and cycles retired
+  (`/usr/bin/time -l`) over a fixed iteration count. Parse pass (phase 2), all three captures per iteration,
+  cycles: `decode_reusing` 4323 → 3706 (`domain` 3517, more instructions: 17325 against 15615),
+  `MessageIndex::read` 3301 → 2896, view 5456 → 4618: a `Name` of 24 bytes instead of 32 (16-bit
+  offset; a name past 65535 bytes, only in a larger buffer, is copied out), records built in place, the fixed
+  fields read with one bounds check. Tried and dropped: reading labels from a re-sliced window (2% fewer
+  instructions, no fewer cycles), `#[inline]` hints (no change).
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow

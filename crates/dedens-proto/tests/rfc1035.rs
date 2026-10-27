@@ -65,6 +65,20 @@ fn s4_1_4_a_name_may_be_only_a_pointer_or_labels_then_a_pointer() {
     assert!(r.is_empty());
 }
 
+/// A buffer larger than a DNS message: a compressed name past offset 65535 still decodes.
+#[test]
+fn s4_1_4_a_compressed_name_past_65535_bytes_decodes() {
+    let mut buf = vec![1, b'b', 0];
+    buf.resize(70_000, 0);
+    buf.extend_from_slice(&[1, b'a', 0xC0, 0]);
+    let mut r = reader(&buf);
+    r.bytes(70_000).unwrap();
+    let name = Name::decode(&mut r).unwrap();
+    assert!(r.is_empty());
+    assert_eq!(name, name_of(&[b"a", b"b"]));
+    assert_eq!(name.to_string(), "a.b.");
+}
+
 #[test]
 fn s4_1_4_long_pointer_chains_are_rejected() {
     // The root at 0, then pointers each to the one before: a chain of `hops` pointers ends at the root.

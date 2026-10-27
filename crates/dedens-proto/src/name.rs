@@ -44,11 +44,7 @@ enum Repr<'a> {
     Owned(Box<[u8]>),
     /// A name with compression pointers starting at `start` in `msg`, checked when it was decoded; `len` is the
     /// length of its uncompressed wire form.
-    Packed {
-        msg: &'a [u8],
-        start: usize,
-        len: u8,
-    },
+    Packed { msg: &'a [u8], start: u16, len: u8 },
 }
 
 impl<'a> Name<'a> {
@@ -93,46 +89,9 @@ impl<'a> Name<'a> {
         let (msg, start) = match &self.0 {
             Repr::Slice(wire) => return wire,
             Repr::Owned(wire) => return wire,
-            Repr::Packed { msg, start, .. } => (*msg, *start),
+            Repr::Packed { msg, start, .. } => (*msg, usize::from(*start)),
         };
-        // The runs of labels between pointers, the last one ending in the root label. A single non-empty run,
-        // as for a name that is only a pointer, is returned in place; several are copied into `buf`.
-        let mut single: Option<&[u8]> = None;
-        let mut len = 0;
-        let (mut run, mut pos) = (start, start);
-        while let Some(&first) = msg.get(pos) {
-            let pointer = first & 0xC0 == 0xC0;
-            if first != 0 && !pointer {
-                pos += 1 + usize::from(first);
-                continue;
-            }
-            let end = if pointer { pos } else { pos + 1 };
-            let labels = msg.get(run..end).unwrap_or_default();
-            if !labels.is_empty() {
-                if len == 0 && single.is_none() {
-                    single = Some(labels);
-                } else {
-                    if let Some(first_run) = single.take() {
-                        len = append(buf, len, first_run);
-                    }
-                    len = append(buf, len, labels);
-                }
-            }
-            if !pointer {
-                break;
-            }
-            // Decoding checked that each pointer points before the previous one.
-            let low = msg.get(pos + 1).copied().unwrap_or_default();
-            let target = usize::from(first & 0x3F) << 8 | usize::from(low);
-            if target >= run.min(pos) {
-                break;
-            }
-            (run, pos) = (target, target);
-        }
-        match single {
-            Some(wire) => wire,
-            None => buf.get(..len).filter(|w| !w.is_empty()).unwrap_or(&[0]),
-        }
+        unpack(msg, start, buf)
     }
 
     /// The uncompressed wire form when it is stored as is.
@@ -171,7 +130,7 @@ impl<'a> Name<'a> {
         match &self.0 {
             Repr::Slice(wire) => Labels::new(wire, 0),
             Repr::Owned(wire) => Labels::new(wire, 0),
-            Repr::Packed { msg, start, .. } => Labels::new(msg, *start),
+            Repr::Packed { msg, start, .. } => Labels::new(msg, usize::from(*start)),
         }
     }
 
@@ -275,7 +234,11 @@ impl<'a> Name<'a> {
         let repr = if let Some(resume) = resume {
             r.set_position(resume);
             let len = u8::try_from(len).map_err(|_| at(start, DecodeErrorKind::NameTooLong))?;
-            Repr::Packed { msg, start, len }
+            match u16::try_from(start) {
+                Ok(start) => Repr::Packed { msg, start, len },
+                // Only past the 65535 bytes of a DNS message, in a larger buffer: copied out.
+                Err(_) => Repr::Owned(Box::from(unpack(msg, start, &mut [0; MAX_NAME_LEN]))),
+            }
         } else {
             r.set_position(pos);
             Repr::Slice(msg.get(start..pos).unwrap_or_default())
@@ -290,6 +253,49 @@ impl<'a> Name<'a> {
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.put_bytes(self.to_wire(&mut [0; MAX_NAME_LEN]))
+    }
+}
+
+/// The uncompressed wire form of the name with compression pointers at `start` in `msg`, decoded and checked
+/// before; see [`Name::to_wire`].
+fn unpack<'s>(msg: &'s [u8], start: usize, buf: &'s mut [u8; MAX_NAME_LEN]) -> &'s [u8] {
+    // The runs of labels between pointers, the last one ending in the root label. A single non-empty run,
+    // as for a name that is only a pointer, is returned in place; several are copied into `buf`.
+    let mut single: Option<&[u8]> = None;
+    let mut len = 0;
+    let (mut run, mut pos) = (start, start);
+    while let Some(&first) = msg.get(pos) {
+        let pointer = first & 0xC0 == 0xC0;
+        if first != 0 && !pointer {
+            pos += 1 + usize::from(first);
+            continue;
+        }
+        let end = if pointer { pos } else { pos + 1 };
+        let labels = msg.get(run..end).unwrap_or_default();
+        if !labels.is_empty() {
+            if len == 0 && single.is_none() {
+                single = Some(labels);
+            } else {
+                if let Some(first_run) = single.take() {
+                    len = append(buf, len, first_run);
+                }
+                len = append(buf, len, labels);
+            }
+        }
+        if !pointer {
+            break;
+        }
+        // Decoding checked that each pointer points before the previous one.
+        let low = msg.get(pos + 1).copied().unwrap_or_default();
+        let target = usize::from(first & 0x3F) << 8 | usize::from(low);
+        if target >= run.min(pos) {
+            break;
+        }
+        (run, pos) = (target, target);
+    }
+    match single {
+        Some(wire) => wire,
+        None => buf.get(..len).filter(|w| !w.is_empty()).unwrap_or(&[0]),
     }
 }
 

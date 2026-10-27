@@ -140,10 +140,12 @@ impl<'a> Record<'a> {
     /// Reads the owner name and the fixed fields, and delimits the RDATA without parsing it.
     pub(crate) fn read_raw(r: &mut Reader<'a>) -> Result<RawRecord<'a>, DecodeError> {
         let name = Name::decode(r)?;
-        let rtype = RecordType(r.u16()?);
-        let class = Class(r.u16()?);
-        let ttl = r.u32()?;
-        let len = usize::from(r.u16()?);
+        // Type, class, TTL and RDLENGTH in one bounds check.
+        let [t0, t1, c0, c1, l0, l1, l2, l3, d0, d1] = r.array()?;
+        let rtype = RecordType(u16::from_be_bytes([t0, t1]));
+        let class = Class(u16::from_be_bytes([c0, c1]));
+        let ttl = u32::from_be_bytes([l0, l1, l2, l3]);
+        let len = usize::from(u16::from_be_bytes([d0, d1]));
         let rdata = r.sub(len).map_err(|mut e| {
             e.kind = crate::error::DecodeErrorKind::RdataLength;
             e
