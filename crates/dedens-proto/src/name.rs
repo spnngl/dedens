@@ -110,6 +110,19 @@ impl Name {
     /// [`DecodeError`] when the name runs past the reader, is longer than 255 bytes, has a pointer that does not
     /// point backwards, or a reserved label type.
     pub fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Self::decode_with(r, true)
+    }
+
+    /// Reads a name that must not be compressed, as in new RDATA types (RFC 3597 §4, RFC 9460 §2.2).
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] as [`Name::decode`], and for any compression pointer.
+    pub fn decode_uncompressed(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Self::decode_with(r, false)
+    }
+
+    fn decode_with(r: &mut Reader<'_>, pointers: bool) -> Result<Self, DecodeError> {
         let msg = r.message();
         let mut limit = r.end();
         let mut bound = r.position();
@@ -140,6 +153,12 @@ impl Name {
                     if len == 0 {
                         break;
                     }
+                }
+                0xC0 if !pointers => {
+                    let kind = DecodeErrorKind::Invalid(
+                        "compression pointer in a name that must not be compressed",
+                    );
+                    return Err(at(pos, kind));
                 }
                 0xC0 => {
                     let second = match msg.get(pos + 1) {

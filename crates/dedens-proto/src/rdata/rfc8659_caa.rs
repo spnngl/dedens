@@ -1,0 +1,80 @@
+//! CAA: certification authority authorization (RFC 8659 §4).
+
+use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::wire::{Reader, Writer};
+
+/// A CAA tag that is not 1 to 15 ASCII letters or digits (RFC 8659 §4.1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("CAA tag must be 1 to 15 ASCII letters or digits")]
+pub struct InvalidCaaTag;
+
+/// A CAA property: flags, a tag such as `issue`, and a value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Caa {
+    flags: u8,
+    tag: Box<[u8]>,
+    value: Box<[u8]>,
+}
+
+impl Caa {
+    /// Bit 0 of the flags: a CA that does not understand the property must not issue (RFC 8659 §4.1.1).
+    pub const CRITICAL: u8 = 0x80;
+
+    /// A CAA property.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidCaaTag`] when `tag` is not 1 to 15 ASCII letters or digits.
+    pub fn new(flags: u8, tag: &[u8], value: &[u8]) -> Result<Self, InvalidCaaTag> {
+        let valid = (1..=15).contains(&tag.len()) && tag.iter().all(u8::is_ascii_alphanumeric);
+        if !valid {
+            return Err(InvalidCaaTag);
+        }
+        Ok(Self {
+            flags,
+            tag: tag.into(),
+            value: value.into(),
+        })
+    }
+
+    /// The flags byte.
+    #[must_use]
+    pub const fn flags(&self) -> u8 {
+        self.flags
+    }
+
+    /// Whether the critical flag is set.
+    #[must_use]
+    pub const fn is_critical(&self) -> bool {
+        self.flags & Self::CRITICAL != 0
+    }
+
+    /// The tag, ASCII letters and digits.
+    #[must_use]
+    pub fn tag(&self) -> &[u8] {
+        &self.tag
+    }
+
+    /// The value: the rest of the RDATA, any bytes.
+    #[must_use]
+    pub fn value(&self) -> &[u8] {
+        &self.value
+    }
+
+    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let flags = r.u8()?;
+        let tag_len = usize::from(r.u8()?);
+        let tag = r.bytes(tag_len)?;
+        let value = r.rest();
+        Self::new(flags, tag, value)
+            .map_err(|_| r.error(DecodeErrorKind::Invalid("invalid CAA tag")))
+    }
+
+    pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        let tag_len = u8::try_from(self.tag.len()).map_err(|_| EncodeError::BufferFull)?;
+        w.put_u8(self.flags)?;
+        w.put_u8(tag_len)?;
+        w.put_bytes(&self.tag)?;
+        w.put_bytes(&self.value)
+    }
+}

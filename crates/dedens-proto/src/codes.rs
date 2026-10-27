@@ -56,6 +56,8 @@ macro_rules! code_type {
     };
 }
 
+pub(crate) use code_type;
+
 code_type! {
     /// Resource record TYPE or QTYPE (RFC 1035 §3.2.2, §3.2.3).
     RecordType(u16), "TYPE";

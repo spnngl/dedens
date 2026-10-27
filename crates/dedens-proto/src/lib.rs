@@ -16,6 +16,8 @@ pub mod error;
 pub mod header;
 pub mod name;
 pub mod question;
+pub mod rdata;
+pub mod record;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
@@ -23,3 +25,5 @@ pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Counts, Flags, Header};
 pub use name::{Name, NameError};
 pub use question::Question;
+pub use rdata::RData;
+pub use record::{DecodedRecord, Record, Ttl};

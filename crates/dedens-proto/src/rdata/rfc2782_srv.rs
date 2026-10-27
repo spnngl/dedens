@@ -1,0 +1,38 @@
+//! SRV: service locator (RFC 2782).
+
+use crate::error::{DecodeError, EncodeError};
+use crate::name::Name;
+use crate::wire::{Reader, Writer};
+
+/// A service location: lower priority is tried first, weight shares load among equal priorities.
+///
+/// The target is not compressed when written (RFC 2782, RFC 3597 §4).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Srv {
+    /// Priority of the target host.
+    pub priority: u16,
+    /// Relative weight among targets of the same priority.
+    pub weight: u16,
+    /// Port of the service.
+    pub port: u16,
+    /// Host providing the service; the root means the service is not available.
+    pub target: Name,
+}
+
+impl Srv {
+    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            priority: r.u16()?,
+            weight: r.u16()?,
+            port: r.u16()?,
+            target: Name::decode(r)?,
+        })
+    }
+
+    pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        w.put_u16(self.priority)?;
+        w.put_u16(self.weight)?;
+        w.put_u16(self.port)?;
+        self.target.encode(w)
+    }
+}

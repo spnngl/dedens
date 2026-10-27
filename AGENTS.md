@@ -17,7 +17,8 @@ Plans (`PLAN.md`, `plan/`) are local and always git-ignored: phase order and eac
   `docs/rfc/coverage.md` in the same change.
 - `dedens-proto` is sans-IO: it encodes and decodes byte slices. Sockets, timers and compio live in `dedens-net`.
 - `dedens-proto` layout: topic modules (`name`, `header`, `message`, `wire`, `edns`), one RDATA file per type
-  named after its defining RFC (`rdata/rfc2782_srv.rs`), conformance tests per RFC (`tests/rfc1035.rs`).
+  or per group of types sharing a format, named after the defining RFC (`rdata/rfc2782_srv.rs`,
+  `rdata/rfc1035_domain_name.rs`), conformance tests per RFC (`tests/rfc1035.rs`).
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the
   crate, and `just rapx` read before committing.
 - Use the justfile's pinned `nightly`, called the way the justfile does (`rustup which`, `rustup run`): a

@@ -86,8 +86,12 @@ impl<'a> Reader<'a> {
         Ok(slice)
     }
 
-    /// Reads the bytes `N` needs.
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+    /// Reads `N` bytes as an array.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than `N` bytes are left.
+    pub fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         let mut out = [0; N];
         out.copy_from_slice(self.bytes(N)?);
         Ok(out)

@@ -2,8 +2,16 @@
 
 #![allow(dead_code, reason = "each test crate uses a subset")]
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use dedens_proto::rdata::{
+    Caa, CharacterString, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt,
+};
 use dedens_proto::wire::{Reader, Writer};
-use dedens_proto::{Class, Counts, Flags, Header, Name, Opcode, Question, Rcode, RecordType};
+use dedens_proto::{
+    Class, Counts, DecodeError, DecodedRecord, Flags, Header, Name, Opcode, Question, RData, Rcode,
+    Record, RecordType, Ttl,
+};
 use proptest::prelude::*;
 
 /// A name of up to 5 labels of 1 to 20 arbitrary bytes.
@@ -43,6 +51,136 @@ pub(crate) fn question() -> impl Strategy<Value = Question> {
     })
 }
 
+fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(any::<u8>(), 0..=max)
+}
+
+fn ipv4() -> impl Strategy<Value = Ipv4Addr> {
+    any::<[u8; 4]>().prop_map(Ipv4Addr::from)
+}
+
+fn ipv6() -> impl Strategy<Value = Ipv6Addr> {
+    any::<[u8; 16]>().prop_map(Ipv6Addr::from)
+}
+
+fn soa() -> impl Strategy<Value = Soa> {
+    (name(), name(), any::<[u32; 5]>()).prop_map(
+        |(mname, rname, [serial, refresh, retry, expire, minimum])| Soa {
+            mname,
+            rname,
+            serial,
+            refresh,
+            retry,
+            expire,
+            minimum,
+        },
+    )
+}
+
+fn txt() -> impl Strategy<Value = Txt> {
+    prop::collection::vec(bytes(40), 1..=4).prop_map(|strings| {
+        let strings = strings
+            .iter()
+            .map(|s| CharacterString::new(s).expect("at most 40 bytes"))
+            .collect();
+        Txt::new(strings).expect("at least one string")
+    })
+}
+
+fn caa() -> impl Strategy<Value = Caa> {
+    (any::<u8>(), "[a-zA-Z0-9]{1,15}", bytes(30))
+        .prop_map(|(flags, tag, value)| Caa::new(flags, tag.as_bytes(), &value).expect("valid tag"))
+}
+
+/// The optional parameters of a SVCB record, each present or not, so that keys never repeat.
+fn svc_params() -> impl Strategy<Value = SvcParams> {
+    let alpn = prop::option::of(prop::collection::vec(
+        prop::collection::vec(any::<u8>(), 1..=8).prop_map(Vec::into_boxed_slice),
+        1..=3,
+    ));
+    let v4 = prop::option::of(prop::collection::vec(ipv4(), 1..=3));
+    let v6 = prop::option::of(prop::collection::vec(ipv6(), 1..=3));
+    let others = (
+        any::<bool>(),
+        prop::option::of(any::<u16>()),
+        prop::option::of(bytes(20)),
+        prop::option::of("[a-z/{?}]{0,20}"),
+        prop::option::of((8u16..65535, bytes(10))),
+        prop::collection::vec(any::<bool>(), 8),
+    );
+    (alpn, v4, v6, others).prop_map(
+        |(alpn, v4, v6, (no_default, port, ech, doh, unknown, listed))| {
+            let mut params: Vec<SvcParam> = Vec::new();
+            params.extend(alpn.map(SvcParam::Alpn));
+            params.extend(no_default.then_some(SvcParam::NoDefaultAlpn));
+            params.extend(port.map(SvcParam::Port));
+            params.extend(v4.map(SvcParam::Ipv4Hint));
+            params.extend(ech.map(|c| SvcParam::Ech(c.into())));
+            params.extend(v6.map(SvcParam::Ipv6Hint));
+            params.extend(doh.map(SvcParam::DohPath));
+            params.extend(unknown.map(|(key, value)| SvcParam::Unknown {
+                key: SvcParamKey(key),
+                value: value.into(),
+            }));
+            let mandatory: Vec<SvcParamKey> = params
+                .iter()
+                .zip(listed)
+                .filter_map(|(p, listed)| listed.then_some(p.key()))
+                .collect();
+            if !mandatory.is_empty() {
+                params.push(SvcParam::Mandatory(mandatory));
+            }
+            SvcParams::new(params).expect("generated parameters are valid")
+        },
+    )
+}
+
+fn svcb() -> impl Strategy<Value = Svcb> {
+    (any::<u16>(), name(), svc_params()).prop_map(|(priority, target, params)| Svcb {
+        priority,
+        target,
+        params,
+    })
+}
+
+/// RDATA of every supported type, and of unknown ones.
+pub(crate) fn rdata() -> impl Strategy<Value = RData> {
+    prop_oneof![
+        ipv4().prop_map(RData::A),
+        ipv6().prop_map(RData::Aaaa),
+        name().prop_map(RData::Ns),
+        name().prop_map(RData::Cname),
+        name().prop_map(RData::Ptr),
+        soa().prop_map(RData::Soa),
+        (any::<u16>(), name()).prop_map(|(preference, exchange)| RData::Mx(Mx {
+            preference,
+            exchange
+        })),
+        txt().prop_map(RData::Txt),
+        (any::<[u16; 3]>(), name()).prop_map(|([priority, weight, port], target)| RData::Srv(
+            Srv {
+                priority,
+                weight,
+                port,
+                target
+            }
+        )),
+        caa().prop_map(RData::Caa),
+        svcb().prop_map(RData::Svcb),
+        svcb().prop_map(RData::Https),
+        (300u16..60000, bytes(40)).prop_map(|(rtype, data)| RData::Opaque(Opaque {
+            rtype: RecordType(rtype),
+            data: data.into()
+        })),
+    ]
+}
+
+pub(crate) fn record() -> impl Strategy<Value = Record> {
+    (name(), any::<u16>(), 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
+        Record::new(name, Class(class), Ttl::new(ttl).expect("in range"), data)
+    })
+}
+
 /// A name from labels given without the root.
 pub(crate) fn name_of(labels: &[&[u8]]) -> Name {
     Name::from_labels(labels.iter().copied()).expect("labels are within the limits")
@@ -56,6 +194,25 @@ pub(crate) fn encode_with<E: std::fmt::Debug>(
     let mut w = Writer::new(&mut buf);
     f(&mut w).expect("fits in 65535 bytes");
     w.written().to_vec()
+}
+
+/// A record at the root, class IN, TTL 0, of `rtype` holding `rdata` as is.
+pub(crate) fn record_wire(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
+    let mut wire = vec![0];
+    wire.extend_from_slice(&rtype.0.to_be_bytes());
+    wire.extend_from_slice(&[0, 1, 0, 0, 0, 0]);
+    wire.extend_from_slice(
+        &u16::try_from(rdata.len())
+            .expect("short RDATA")
+            .to_be_bytes(),
+    );
+    wire.extend_from_slice(rdata);
+    wire
+}
+
+/// Decodes the whole of `wire` as one record.
+pub(crate) fn decode_record(wire: &[u8]) -> Result<DecodedRecord, DecodeError> {
+    Record::decode(&mut Reader::new(wire))
 }
 
 /// A reader over the whole of `bytes`.

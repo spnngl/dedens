@@ -1,0 +1,52 @@
+//! RFC 2782: SRV records.
+
+mod common;
+
+use common::{decode_record, encode_with, name_of, record, record_wire};
+use dedens_proto::{RData, RecordType};
+use proptest::prelude::*;
+
+fn srv_rdata(priority: u16, weight: u16, port: u16, target: &[u8]) -> Vec<u8> {
+    [
+        &priority.to_be_bytes()[..],
+        &weight.to_be_bytes(),
+        &port.to_be_bytes(),
+        target,
+    ]
+    .concat()
+}
+
+#[test]
+fn srv_fields_are_priority_weight_port_target() {
+    let wire = srv_rdata(1, 2, 5060, b"\x03sip\x07example\x03com\x00");
+    let decoded = decode_record(&record_wire(RecordType::SRV, &wire)).unwrap();
+    let RData::Srv(srv) = decoded.record.data else {
+        panic!("not SRV")
+    };
+    assert_eq!((srv.priority, srv.weight, srv.port), (1, 2, 5060));
+    assert_eq!(srv.target, name_of(&[b"sip", b"example", b"com"]));
+}
+
+#[test]
+fn the_root_target_means_no_service() {
+    let decoded = decode_record(&record_wire(RecordType::SRV, &srv_rdata(0, 0, 0, &[0]))).unwrap();
+    let RData::Srv(srv) = decoded.record.data else {
+        panic!("not SRV")
+    };
+    assert!(srv.target.is_root());
+}
+
+#[test]
+fn a_target_that_is_not_a_name_is_kept_opaque() {
+    let decoded = decode_record(&record_wire(RecordType::SRV, &[0, 1, 0, 2, 0, 3])).unwrap();
+    assert!(decoded.invalid_rdata.is_some());
+    assert!(matches!(decoded.record.data, RData::Opaque(_)));
+}
+
+proptest! {
+    #[test]
+    fn round_trip(rec in record()) {
+        let wire = encode_with(|w| rec.encode(w));
+        prop_assert_eq!(decode_record(&wire)?.record, rec);
+    }
+}

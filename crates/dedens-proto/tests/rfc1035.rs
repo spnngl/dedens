@@ -2,11 +2,17 @@
 
 mod common;
 
-use common::{counts, encode_with, header, name, name_of, question, reader};
+use std::net::Ipv4Addr;
+
+use common::{
+    counts, decode_record, encode_with, header, name, name_of, question, reader, record,
+    record_wire,
+};
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::name::{MAX_LABEL_LEN, MAX_NAME_LEN};
+use dedens_proto::rdata::{CharacterString, Mx, Soa, Txt};
 use dedens_proto::{
-    Class, Counts, DecodeErrorKind, Header, Name, Opcode, Question, Rcode, RecordType,
+    Class, Counts, DecodeErrorKind, Header, Name, Opcode, Question, RData, Rcode, RecordType,
 };
 use proptest::prelude::*;
 
@@ -156,5 +162,136 @@ proptest! {
         prop_assert!(r.position() <= bytes.len());
         let _ = Question::decode(&mut reader(&bytes));
         let _ = Header::decode(&mut reader(&bytes));
+    }
+}
+
+fn decoded(rtype: RecordType, rdata: &[u8]) -> RData {
+    let d = decode_record(&record_wire(rtype, rdata)).expect("decodes");
+    assert_eq!(d.invalid_rdata, None);
+    d.record.data
+}
+
+#[test]
+fn s3_4_1_a_is_four_octets() {
+    assert_eq!(
+        decoded(RecordType::A, &[192, 0, 2, 1]),
+        RData::A(Ipv4Addr::new(192, 0, 2, 1))
+    );
+    let bad = decode_record(&record_wire(RecordType::A, &[1, 2, 3])).unwrap();
+    assert_eq!(
+        bad.invalid_rdata.map(|e| e.kind),
+        Some(DecodeErrorKind::RdataLength)
+    );
+}
+
+#[test]
+fn s3_3_domain_name_types() {
+    let wire = b"\x03ns1\x07example\x00";
+    let n = name_of(&[b"ns1", b"example"]);
+    assert_eq!(decoded(RecordType::NS, wire), RData::Ns(n.clone()));
+    assert_eq!(decoded(RecordType::CNAME, wire), RData::Cname(n.clone()));
+    assert_eq!(decoded(RecordType::PTR, wire), RData::Ptr(n));
+}
+
+#[test]
+fn s3_3_9_mx_is_preference_then_exchange() {
+    let rdata = decoded(RecordType::MX, b"\x00\x0a\x04mail\x00");
+    assert_eq!(
+        rdata,
+        RData::Mx(Mx {
+            preference: 10,
+            exchange: name_of(&[b"mail"])
+        })
+    );
+}
+
+#[test]
+fn s3_3_13_soa_has_two_names_and_five_integers() {
+    let mut wire = b"\x02ns\x00\x05admin\x00".to_vec();
+    for v in [1u32, 2, 3, 4, 5] {
+        wire.extend_from_slice(&v.to_be_bytes());
+    }
+    let RData::Soa(Soa {
+        mname,
+        rname,
+        serial,
+        refresh,
+        retry,
+        expire,
+        minimum,
+    }) = decoded(RecordType::SOA, &wire)
+    else {
+        panic!("not SOA")
+    };
+    assert_eq!((mname, rname), (name_of(&[b"ns"]), name_of(&[b"admin"])));
+    assert_eq!([serial, refresh, retry, expire, minimum], [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn s3_3_14_txt_is_one_or_more_character_strings() {
+    let rdata = decoded(RecordType::TXT, b"\x03foo\x00\x03bar");
+    let strings = ["foo", "", "bar"].map(|s| CharacterString::new(s.as_bytes()).unwrap());
+    assert_eq!(rdata, RData::Txt(Txt::new(strings.to_vec()).unwrap()));
+    // No string at all, or a string that overruns the RDATA, is invalid.
+    assert!(
+        decode_record(&record_wire(RecordType::TXT, &[]))
+            .unwrap()
+            .invalid_rdata
+            .is_some()
+    );
+    assert!(
+        decode_record(&record_wire(RecordType::TXT, b"\x05ab"))
+            .unwrap()
+            .invalid_rdata
+            .is_some()
+    );
+}
+
+#[test]
+fn s3_3_character_strings_hold_255_octets() {
+    assert!(CharacterString::new(&[0; 255]).is_ok());
+    assert!(CharacterString::new(&[0; 256]).is_err());
+}
+
+#[test]
+fn s3_3_invalid_rdata_of_compressible_types_is_an_error() {
+    for rtype in [
+        RecordType::NS,
+        RecordType::CNAME,
+        RecordType::PTR,
+        RecordType::SOA,
+        RecordType::MX,
+    ] {
+        assert!(decode_record(&record_wire(rtype, &[1])).is_err(), "{rtype}");
+    }
+}
+
+#[test]
+fn s4_1_4_names_in_rdata_follow_pointers_into_the_message() {
+    // "example" at 12 in the owner of the first record; the second record is a CNAME pointing at it.
+    let mut msg = vec![0; 12];
+    msg.extend_from_slice(b"\x07example\x00");
+    msg.extend_from_slice(&[0xC0, 12, 0, 5, 0, 1, 0, 0, 0, 0, 0, 2, 0xC0, 12]);
+    let mut r = reader(&msg);
+    r.bytes(12 + 9).unwrap();
+    let d = dedens_proto::Record::decode(&mut r).unwrap();
+    assert_eq!(d.record.data, RData::Cname(name_of(&[b"example"])));
+    assert!(r.is_empty());
+}
+
+#[test]
+fn s4_1_4_rdlength_bounds_a_name_in_rdata() {
+    // The name runs past RDLENGTH: the RDATA is cut short, not read into the next field.
+    let wire = record_wire(RecordType::NS, b"\x03abc");
+    assert!(decode_record(&wire).is_err());
+}
+
+proptest! {
+    #[test]
+    fn records_round_trip(rec in record()) {
+        let wire = encode_with(|w| rec.encode(w));
+        let d = decode_record(&wire)?;
+        prop_assert_eq!(d.invalid_rdata, None);
+        prop_assert_eq!(d.record, rec);
     }
 }
