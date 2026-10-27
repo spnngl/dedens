@@ -1,0 +1,26 @@
+[package]
+name = "dedens-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
+# function in `src/lib.rs`, which `cargo test --lib` also drives on stable with the captured responses in
+# `crates/dedens-proto/tests/testdata/` as seeds (`just fuzz-smoke`).
+
+[dependencies]
+dedens-proto = { path = "../crates/dedens-proto" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "decode_message"
+path = "fuzz_targets/decode_message.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

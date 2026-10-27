@@ -86,3 +86,7 @@ tmbootpicker.efi
 *.local*
 plan/
 PLAN*.md
+
+# cargo-fuzz
+fuzz/corpus/
+fuzz/artifacts/

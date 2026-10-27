@@ -18,15 +18,19 @@ toolchains:
 # The gate of every change: format, spelling, lint, docs, tests.
 check:
     RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --all --check
+    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --manifest-path fuzz/Cargo.toml --check
     taplo fmt --check
     typos
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
     cargo test --workspace --all-features
+    cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+    cargo test --manifest-path fuzz/Cargo.toml --lib
 
 # Format Rust (pinned nightly rustfmt) and TOML.
 fmt:
     RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --all
+    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --manifest-path fuzz/Cargo.toml
     taplo fmt
 
 # Every feature combination of every crate builds (cargo-hack).
@@ -54,6 +58,36 @@ deny:
 # Benchmarks (divan).
 bench:
     cargo bench --workspace
+
+# Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
+# minutes by default: just fuzz decode_message 60
+fuzz target="decode_message" seconds="300":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The pinned nightly's own cargo and rustc first: cargo-fuzz needs `-Z` flags, and rustup proxies would pick
+    # the stable of rust-toolchain.toml.
+    export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
+    cd fuzz
+    # The first corpus directory is the one libFuzzer writes to; the captured responses only seed it.
+    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
+
+# Every fuzz target for `seconds` each, as the scheduled CI job runs them.
+fuzz-all seconds="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
+    cd fuzz
+    for target in $(cargo fuzz list); do
+        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
+    done
+
+# Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
+fuzz-smoke:
+    cargo test --manifest-path fuzz/Cargo.toml --lib
+
+# Capture fresh responses from public resolvers into crates/dedens-proto/tests/testdata/.
+capture *cases:
+    python3 scripts/capture.py {{cases}}
 
 # Install the pinned RAPx and the nightly's rustc internals. Needs Z3: `brew install z3` or
 # `apt-get install libz3-dev`.
