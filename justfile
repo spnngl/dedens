@@ -59,6 +59,14 @@ deny:
 bench:
     cargo bench --workspace
 
+# Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
+cov:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The pinned stable's own cargo and rustc first: the llvm-tools component belongs to that toolchain.
+    export PATH="$(dirname "$(rustup which rustc)"):$PATH"
+    cargo llvm-cov --workspace --all-features --summary-only
+
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default: just fuzz decode_message 60
 fuzz target="decode_message" seconds="300":

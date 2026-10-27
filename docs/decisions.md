@@ -60,7 +60,10 @@ decision is marked superseded, never reused. The rules a decision produces live 
 
 - D14 Owned decode first, measured with divan; a borrowed zero-copy view once a bench shows the gain. Baselines
   in the same benches: hickory-proto and `domain` (dev-dependencies). Bar: no slower than hickory-proto;
-  beating `domain` is the optimisation target.
+  beating `domain` is the optimisation target. First numbers (Apple M-series, median, ns; `a`/`mx`/`txt_large`
+  = 72/161/1187-byte captured responses): decode dedens 117/333/838, hickory 208/463/1249, domain 94/200/443;
+  encode dedens 37/245/246, hickory 292/969/1343, domain 99/260/362. The bar is met; `domain` is 1.2-1.9x
+  faster to decode because it borrows. The next gain is a borrowed view or inline names, not before a profile.
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow

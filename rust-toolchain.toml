@@ -1,4 +1,4 @@
 [toolchain]
 # Pinned: a new stable brings new clippy lints, which `-D warnings` turns into errors. Renovate bumps it.
 channel = "1.99.1"
-components = ["clippy", "rustfmt"]
+components = ["clippy", "llvm-tools-preview", "rustfmt"]

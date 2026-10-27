@@ -67,6 +67,32 @@ jobs:
           RECIPE: ${{ matrix.recipe }}
         run: just "$RECIPE"
 
+  # Coverage of the tests, shown in the job summary: informational, not part of the gate.
+  coverage:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: just toolchains
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Summarize coverage
+        run: |
+          {
+            echo '```'
+            just cov
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # The one check the ruleset requires: the matrix legs are named after their values, so requiring them
   # would break whenever a matrix changes.
   gate:

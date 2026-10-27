@@ -14,6 +14,9 @@ publish = false
 dedens-net = { path = "crates/dedens-net" }
 dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }
+divan = "0.1.21"
+domain = { version = "0.12.3", default-features = false, features = ["std"] }
+hickory-proto = { version = "0.26.3", default-features = false }
 proptest = "1.12"
 thiserror = "2.0"
 

@@ -128,7 +128,9 @@ impl Name {
         let mut bound = r.position();
         let mut pos = bound;
         let mut resume = None;
-        let mut wire = Vec::with_capacity(32);
+        // One allocation, of the final size: collect on the stack first.
+        let mut buf = [0_u8; MAX_NAME_LEN];
+        let mut len = 0;
         let at = |offset, kind| DecodeError { offset, kind };
         loop {
             let first = match msg.get(pos) {
@@ -137,20 +139,24 @@ impl Name {
             };
             match first & 0xC0 {
                 0x00 => {
-                    let len = usize::from(first);
-                    let end = pos + 1 + len;
+                    let label_len = usize::from(first);
+                    let end = pos + 1 + label_len;
                     if end > limit {
                         return Err(at(pos, DecodeErrorKind::UnexpectedEnd));
                     }
-                    if len != 0 && wire.len() + len + 2 > MAX_NAME_LEN {
+                    if label_len != 0 && len + label_len + 2 > MAX_NAME_LEN {
                         return Err(at(pos, DecodeErrorKind::NameTooLong));
                     }
                     let label = msg
                         .get(pos..end)
                         .ok_or(at(pos, DecodeErrorKind::UnexpectedEnd))?;
-                    wire.extend_from_slice(label);
+                    let slot = buf
+                        .get_mut(len..len + label.len())
+                        .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
+                    slot.copy_from_slice(label);
+                    len += label.len();
                     pos = end;
-                    if len == 0 {
+                    if label_len == 0 {
                         break;
                     }
                 }
@@ -178,7 +184,10 @@ impl Name {
             }
         }
         r.set_position(resume.unwrap_or(pos));
-        Ok(Self(wire.into_boxed_slice()))
+        let wire = buf
+            .get(..len)
+            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
+        Ok(Self(Box::from(wire)))
     }
 
     /// Writes the name uncompressed; see [`Writer::put_name_compressed`] for the names RFC 1035 allows to compress.
