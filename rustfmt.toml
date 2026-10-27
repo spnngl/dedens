@@ -1,4 +1,4 @@
-# Unstable options need nightly rustfmt: `just fmt` (D11).
+# Unstable options need nightly rustfmt: `just fmt`.
 edition = "2024"
 style_edition = "2024"
 imports_granularity = "Module"
