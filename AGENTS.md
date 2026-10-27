@@ -15,7 +15,7 @@ Read `PLAN.md` before any task: it holds every numbered decision, the phase orde
   gets a Miri job.
 - Each `AGENTS.md` has a `CLAUDE.md` symlink beside it.
 - Finish a change when `just check` passes. CI also runs `just hack`, `just msrv`, `just minimal-versions` and
-  `just deny`.
+  `just deny`, and weekly `just rapx` (never required; when `unsafe` changes, run it and read its findings).
 - Commit per phase using the `git-commit` skill; the human pushes. Pull requests fail CI unless every commit
   subject is a Conventional Commit (`type(scope)!: description`; types feat, fix, docs, style, refactor, perf,
   test, build, ci, chore, revert).

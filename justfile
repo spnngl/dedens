@@ -43,3 +43,25 @@ deny:
 # Benchmarks (divan).
 bench:
     cargo bench --workspace
+
+# RAPx static analysis (PLAN.md D12), outside the gate. RAPx builds on rustc internals: its version and its nightly
+# move together, so bump both by hand.
+rapx_version := "0.7.64"
+rapx_toolchain := "nightly-2026-10-26"
+
+# Install the pinned RAPx and its nightly. Needs Z3: `brew install z3` or `apt-get install libz3-dev`.
+rapx-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v brew >/dev/null; then
+        z3="$(brew --prefix z3)"
+        export Z3_SYS_Z3_HEADER="$z3/include/z3.h" LIBRARY_PATH="$z3/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    fi
+    rustup toolchain install {{rapx_toolchain}} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
+    RUSTC="$(rustup which --toolchain {{rapx_toolchain}} rustc)" \
+        rustup run {{rapx_toolchain}} cargo install rapx --version {{rapx_version}} --locked
+
+# RAPx: use-after-free, double free and leaks by default; `just rapx opt` for optimization hints.
+# Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
+rapx *args="check -f -m":
+    CARGO_TARGET_DIR=target/rapx RUSTC="$(rustup which --toolchain {{rapx_toolchain}} rustc)" rustup run {{rapx_toolchain}} cargo rapx {{args}}
