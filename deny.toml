@@ -1,0 +1,22 @@
+# cargo-deny (D12): `just deny`.
+
+[graph]
+all-features = true
+
+[advisories]
+# Unmaintained crates fail the check, transitive ones included.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies carry no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

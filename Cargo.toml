@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/spnngl/dedens"
+publish = false
+
+[workspace.dependencies]
+dedens-net = { path = "crates/dedens-net" }
+dedens-proto = { path = "crates/dedens-proto" }
+dedens-scenario = { path = "crates/dedens-scenario" }
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+# D9: a hot path opts in at module level, with `// SAFETY:` comments and a Miri job.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+# selected restriction
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+multiple_unsafe_ops_per_block = "warn"
+panic = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# `cargo bench` builds with this profile; keep symbols for profilers.
+[profile.bench]
+strip = false
+debug = "line-tables-only"

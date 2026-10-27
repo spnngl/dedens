@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# Each job grants only what it needs.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # `just check` on every supported platform: macos-latest is Apple Silicon (kqueue), Ubuntu runs io_uring.
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Nightly rustfmt only: rustfmt.toml uses unstable options.
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+        with:
+          components: rustfmt
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: just check
+
+  # Build matrix and dependency checks: platform-independent, Linux only.
+  deps:
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: [hack, msrv, minimal-versions, deny]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Nightly cargo for `-Z direct-minimal-versions`.
+      - if: matrix.recipe == 'minimal-versions'
+        uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.recipe }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-hack,cargo-deny
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - env:
+          RECIPE: ${{ matrix.recipe }}
+        run: just "$RECIPE"
+
+  # The one check the ruleset requires: the matrix legs are named after their values, so requiring them
+  # would break whenever a matrix changes.
+  gate:
+    if: always()
+    needs: [check, deps]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Every check passed
+        env:
+          CHECK: ${{ needs.check.result }}
+          DEPS: ${{ needs.deps.result }}
+        run: |
+          [ "$CHECK" = success ] || { echo "::error::check: $CHECK"; exit 1; }
+          [ "$DEPS" = success ] || { echo "::error::deps: $DEPS"; exit 1; }

@@ -93,3 +93,8 @@
 *.rs       text diff=rust
 *.toml     text diff=toml
 Cargo.lock text
+
+# Byte-exact test data: DNS messages captured off the wire, fuzz corpora, snapshots.
+**/testdata/** -text
+fuzz/seeds/**  -text
+*.snap         text eol=lf

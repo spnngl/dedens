@@ -1,0 +1,22 @@
+name: renovate
+
+# Validates renovate.json5 when it or this workflow changes.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - renovate.json5
+      - .github/workflows/renovate.yml
+  pull_request:
+    paths:
+      - renovate.json5
+      - .github/workflows/renovate.yml
+
+permissions: {}
+
+jobs:
+  renovate:
+    permissions:
+      contents: read
+    uses: spnngl/.github/.github/workflows/renovate.yml@main
