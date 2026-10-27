@@ -18,7 +18,10 @@ decision is marked superseded, never reused. The rules a decision produces live 
   since 2025-04), tokio's `io-uring` feature (files only), raw `io-uring` (we would write a runtime). Fallback:
   plain tokio. Risk: compio is 0.x, contained by D5.
 - D5 `dedens-proto` is sans-IO, so a runtime change touches one crate and the server reuses the codec as is.
-- D6 Platforms: Linux and macOS. Toolchain: latest stable, MSRV 1.95, nightly only for rustfmt and tools.
+- D6 Platforms: Linux and macOS. Toolchain: latest stable, pinned in `rust-toolchain.toml` and bumped by
+  Renovate, so a release's new lints arrive as a PR rather than a red CI; MSRV 1.95. One nightly, pinned by date
+  in the justfile and bumped by hand together with RAPx, only for rustfmt, `-Z` flags and RAPx: an unpinned
+  nightly reformats code without any change on our side.
 
 ## Wire format
 

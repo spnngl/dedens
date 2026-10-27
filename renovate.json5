@@ -2,4 +2,14 @@
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
     // The shared preset at HEAD of main.
     "extends": ["github>spnngl/.github:renovate.default.json5"],
+    "customManagers": [
+        {
+            "customType": "regex",
+            "description": "Pinned stable Rust in rust-toolchain.toml.",
+            "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
+            "matchStrings": ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+            "datasourceTemplate": "github-releases",
+            "depNameTemplate": "rust-lang/rust",
+        },
+    ],
 }

@@ -20,7 +20,8 @@ Plans (`PLAN.md`, `plan/`) are local and always git-ignored: phase order and eac
   named after its defining RFC (`rdata/rfc2782_srv.rs`), conformance tests per RFC (`tests/rfc1035.rs`).
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the
   crate, and `just rapx` read before committing.
-- Call nightly the way the justfile does (`rustup which`, `rustup run`): a Homebrew cargo may shadow rustup's.
+- Use the justfile's pinned `nightly`, called the way the justfile does (`rustup which`, `rustup run`): a
+  Homebrew cargo may shadow rustup's.
 - A change is done when `just check` (the gate) passes.
 - Commit per phase using the `git-commit` skill; the human pushes. CI requires every commit subject to be a
   Conventional Commit (`type(scope)!: description`; types feat, fix, docs, style, refactor, perf, test, build,
