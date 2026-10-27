@@ -4,12 +4,15 @@
 //! (RFC 9460 §2.2). [`SvcParams`] only holds a list that is valid and consistent (RFC 9460 §2.4), so a decoded
 //! record can be encoded again and a built one is never rejected by a peer for its parameters.
 
+use core::fmt;
 use core::net::{Ipv4Addr, Ipv6Addr};
 use std::borrow::Cow;
 
 use crate::codes::code_type;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
+use crate::text::encoding::{Base64, decode_base64};
+use crate::text::{self, Fields, Quoted, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 code_type! {
@@ -403,4 +406,173 @@ impl<'a> Svcb<'a> {
         self.target.encode(w)?;
         w.put_bytes(&self.params.0)
     }
+}
+
+impl Svcb<'static> {
+    /// Reads `priority target key=value...`, parameters in any order (RFC 9460 §2.1).
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        let priority = f.number("SVCB priority")?;
+        let target = f.name("SVCB target")?;
+        let mut params = Vec::new();
+        let mut first = None;
+        while let Some(token) = f.next_opt() {
+            first.get_or_insert(token);
+            params.push(SvcParam::from_text(token.raw).map_err(|kind| token.error(kind))?);
+        }
+        let params = SvcParams::new(params).map_err(|e| {
+            let kind = TextErrorKind::SvcParams(e);
+            first.map_or_else(|| f.end_error(kind), |t| t.error(kind))
+        })?;
+        Ok(Self {
+            priority,
+            target,
+            params,
+        })
+    }
+}
+
+/// `priority target key=value...`, parameters in key order.
+impl fmt::Display for Svcb<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.priority, self.target)?;
+        for param in &self.params {
+            write!(f, " {param}")?;
+        }
+        Ok(())
+    }
+}
+
+impl SvcParam {
+    /// Reads `key` or `key=value`, the value a character-string then, for lists, comma-separated items
+    /// (RFC 9460 §2.1, appendix A). A missing value is empty.
+    fn from_text(raw: &[u8]) -> Result<Self, TextErrorKind> {
+        let (key, value) = match raw.iter().position(|&b| b == b'=') {
+            Some(at) => (raw.get(..at), raw.get(at + 1..)),
+            None => (Some(raw), None),
+        };
+        let key: SvcParamKey = key
+            .and_then(|k| str::from_utf8(k).ok())
+            .and_then(|k| k.parse().ok())
+            .ok_or(TextErrorKind::Invalid("SVCB parameter key"))?;
+        let value = value.map(text::unescape).transpose()?.unwrap_or_default();
+        Ok(match key {
+            SvcParamKey::MANDATORY => Self::Mandatory(items(&value, "mandatory key", |k| {
+                str::from_utf8(k).ok()?.parse().ok()
+            })?),
+            SvcParamKey::ALPN => Self::Alpn(alpn_ids(&value)?),
+            SvcParamKey::NO_DEFAULT_ALPN if value.is_empty() => Self::NoDefaultAlpn,
+            SvcParamKey::NO_DEFAULT_ALPN => {
+                return Err(TextErrorKind::Invalid(
+                    "no-default-alpn, which takes no value",
+                ));
+            }
+            SvcParamKey::PORT => {
+                Self::Port(text::number(&value).ok_or(TextErrorKind::Invalid("port"))?)
+            }
+            SvcParamKey::IPV4HINT => Self::Ipv4Hint(items(&value, "ipv4hint address", address)?),
+            SvcParamKey::ECH => Self::Ech(
+                decode_base64(&value)
+                    .ok_or(TextErrorKind::Invalid("ech, base64"))?
+                    .into(),
+            ),
+            SvcParamKey::IPV6HINT => Self::Ipv6Hint(items(&value, "ipv6hint address", address)?),
+            SvcParamKey::DOHPATH => Self::DohPath(
+                String::from_utf8(value)
+                    .map_err(|_| TextErrorKind::Invalid("dohpath, not UTF-8"))?,
+            ),
+            _ => Self::Unknown {
+                key,
+                value: value.into(),
+            },
+        })
+    }
+}
+
+/// Parses the comma-separated items of a value without escapes (RFC 9460 appendix A.1); an empty value is an
+/// empty list, left for [`SvcParams::new`] to refuse.
+fn items<T>(
+    value: &[u8],
+    what: &'static str,
+    parse: impl Fn(&[u8]) -> Option<T>,
+) -> Result<Vec<T>, TextErrorKind> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(|&b| b == b',')
+        .map(|item| parse(item).ok_or(TextErrorKind::Invalid(what)))
+        .collect()
+}
+
+fn address<T: core::str::FromStr>(text: &[u8]) -> Option<T> {
+    str::from_utf8(text).ok()?.parse().ok()
+}
+
+/// Splits an `alpn` value on commas, `\,` and `\\` standing for a comma and a backslash in an identifier
+/// (RFC 9460 appendix A.1).
+fn alpn_ids(value: &[u8]) -> Result<Vec<Box<[u8]>>, TextErrorKind> {
+    let invalid = TextErrorKind::Invalid("alpn identifier");
+    let mut ids = Vec::new();
+    if value.is_empty() {
+        return Ok(ids);
+    }
+    let mut id = Vec::new();
+    let mut bytes = value.iter();
+    while let Some(&b) = bytes.next() {
+        match b {
+            b'\\' => match bytes.next() {
+                Some(&escaped @ (b',' | b'\\')) => id.push(escaped),
+                _ => return Err(invalid),
+            },
+            b',' if id.is_empty() => return Err(invalid),
+            b',' => ids.push(core::mem::take(&mut id).into()),
+            _ => id.push(b),
+        }
+    }
+    if id.is_empty() {
+        return Err(invalid);
+    }
+    ids.push(id.into());
+    Ok(ids)
+}
+
+/// `key=value`, or `key` alone for `no-default-alpn`; lists comma-separated, free-form values quoted.
+impl fmt::Display for SvcParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.key())?;
+        match self {
+            Self::Mandatory(keys) => list(f, keys),
+            Self::Alpn(ids) => {
+                let mut value = Vec::new();
+                for (i, id) in ids.iter().enumerate() {
+                    if i > 0 {
+                        value.push(b',');
+                    }
+                    for &b in &**id {
+                        if matches!(b, b',' | b'\\') {
+                            value.push(b'\\');
+                        }
+                        value.push(b);
+                    }
+                }
+                write!(f, "={}", Quoted(&value))
+            }
+            Self::NoDefaultAlpn => Ok(()),
+            Self::Port(port) => write!(f, "={port}"),
+            Self::Ipv4Hint(hints) => list(f, hints),
+            Self::Ech(config) => write!(f, "={}", Base64(config)),
+            Self::Ipv6Hint(hints) => list(f, hints),
+            Self::DohPath(path) => write!(f, "={}", Quoted(path.as_bytes())),
+            Self::Unknown { value, .. } => write!(f, "={}", Quoted(value)),
+        }
+    }
+}
+
+/// Writes `=` and the items separated by commas.
+fn list<T: fmt::Display>(f: &mut fmt::Formatter<'_>, items: &[T]) -> fmt::Result {
+    for (i, item) in items.iter().enumerate() {
+        f.write_str(if i == 0 { "=" } else { "," })?;
+        write!(f, "{item}")?;
+    }
+    Ok(())
 }

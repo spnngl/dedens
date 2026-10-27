@@ -21,6 +21,7 @@ pub mod query;
 pub mod question;
 pub mod rdata;
 pub mod record;
+pub mod text;
 pub mod view;
 pub mod wire;
 
@@ -34,4 +35,5 @@ pub use query::Query;
 pub use question::Question;
 pub use rdata::RData;
 pub use record::{DecodedRecord, Record, Ttl};
+pub use text::{TextError, TextErrorKind};
 pub use view::{MessageIndex, MessageView};

@@ -354,3 +354,183 @@ proptest! {
         prop_assert_eq!(decoded.record, rec);
     }
 }
+
+/// Reads `example.com. 3600 <rdata>`, which must be a SVCB or HTTPS record.
+fn from_text(rdata: &str) -> Result<Record<'static>, dedens_proto::TextError> {
+    format!("example.com. 3600 {rdata}").parse()
+}
+
+/// RDATA of a record, encoded alone: after the root owner and the 10 fixed bytes.
+fn rdata_wire(rec: &Record<'_>) -> Vec<u8> {
+    let alone = Record::new(Name::root(), Class::IN, Ttl::ZERO, rec.data.clone());
+    encode_with(|w| alone.encode(w))[11..].to_vec()
+}
+
+#[test]
+fn appendix_d_in_presentation_format() {
+    // Text, generic form and wire form of each vector of D.1 and D.2.
+    let vectors: &[(&str, &str, &[u8])] = &[
+        (
+            "HTTPS 0 foo.example.com.",
+            r"HTTPS \# 19 ( 00 00 03 66 6f 6f 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 )",
+            &rdata(&[&[0, 0], FOO_EXAMPLE_COM]),
+        ),
+        ("SVCB 1 .", r"SVCB \# 3 ( 00 01 00 )", &[0, 1, 0]),
+        (
+            "SVCB 16 foo.example.com. port=53",
+            r"SVCB \# 25 0010 03666f6f076578616d706c6503636f6d00 0003 0002 0035",
+            &rdata(&[&[0, 16], FOO_EXAMPLE_COM, &[0, 3, 0, 2, 0, 0x35]]),
+        ),
+        (
+            "SVCB 1 foo.example.com. key667=hello",
+            r"SVCB \# 28 0001 03666f6f076578616d706c6503636f6d00 029b 0005 68656c6c6f",
+            &rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0x02, 0x9b, 0, 5], b"hello"]),
+        ),
+        (
+            r#"SVCB 1 foo.example.com. key667="hello\210qoo""#,
+            r"SVCB \# 32 0001 03666f6f076578616d706c6503636f6d00 029b 0009 68656c6c6fd2716f6f",
+            &rdata(&[
+                &[0, 1],
+                FOO_EXAMPLE_COM,
+                &[0x02, 0x9b, 0, 9],
+                b"hello\xd2qoo",
+            ]),
+        ),
+        (
+            "SVCB 1 foo.example.com. (\n ipv6hint=\"2001:db8::1,2001:db8::53:1\"\n )",
+            concat!(
+                r"SVCB \# 55 0001 03666f6f076578616d706c6503636f6d00 0006 0020",
+                " 20010db8000000000000000000000001 20010db8000000000000000000530001",
+            ),
+            &rdata(&[
+                &[0, 1],
+                FOO_EXAMPLE_COM,
+                &[0, 6, 0, 0x20],
+                &[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                &[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x53, 0, 1],
+            ]),
+        ),
+        (
+            "SVCB 1 example.com. ( ipv6hint=\"2001:db8:122:344::192.0.2.33\" )",
+            r"SVCB \# 35 0001 076578616d706c6503636f6d00 0006 0010 20010db8012203440000 0000c0000221",
+            &rdata(&[
+                &[0, 1],
+                b"\x07example\x03com\x00",
+                &[
+                    0, 6, 0, 0x10, 0x20, 1, 0x0d, 0xb8, 1, 0x22, 3, 0x44, 0, 0, 0, 0, 0xc0, 0, 2,
+                    0x21,
+                ],
+            ]),
+        ),
+        (
+            "SVCB 16 foo.example.org. (\n alpn=h2,h3-19 mandatory=ipv4hint,alpn\n ipv4hint=192.0.2.1\n )",
+            concat!(
+                r"SVCB \# 48 0010 03666f6f076578616d706c65036f726700 0000 0004 0001 0004",
+                " 0001 0009 02 6832 05 68332d3139 0004 0004 c0000201",
+            ),
+            &rdata(&[
+                &[0, 16],
+                FOO_EXAMPLE_ORG,
+                &[0, 0, 0, 4, 0, 1, 0, 4, 0, 1, 0, 9, 2],
+                b"h2",
+                &[5],
+                b"h3-19",
+                &[0, 4, 0, 4, 0xc0, 0, 2, 1],
+            ]),
+        ),
+        (
+            r#"SVCB 16 foo.example.org. alpn="f\\\\oo\\,bar,h2""#,
+            r"SVCB \# 35 0010 03666f6f076578616d706c65036f726700 0001 000c 08 665c6f6f2c626172 02 6832",
+            &rdata(&[
+                &[0, 16],
+                FOO_EXAMPLE_ORG,
+                &[0, 1, 0, 12, 8],
+                b"f\\oo,bar",
+                &[2],
+                b"h2",
+            ]),
+        ),
+        (
+            r"SVCB 16 foo.example.org. alpn=f\\\092oo\092,bar,h2",
+            r"SVCB \# 35 0010 03666f6f076578616d706c65036f726700 0001 000c 08 665c6f6f2c626172 02 6832",
+            &rdata(&[
+                &[0, 16],
+                FOO_EXAMPLE_ORG,
+                &[0, 1, 0, 12, 8],
+                b"f\\oo,bar",
+                &[2],
+                b"h2",
+            ]),
+        ),
+    ];
+    for &(text, generic, wire) in vectors {
+        agrees(text, generic, wire);
+    }
+}
+
+/// The text and generic forms read as the same record of `wire` RDATA, and the record writes back both.
+fn agrees(text: &str, generic: &str, wire: &[u8]) {
+    let rec = from_text(text).unwrap_or_else(|e| unreachable!("{text}: {e}"));
+    assert_eq!(rdata_wire(&rec), wire, "{text}");
+    assert_eq!(
+        from_text(generic).expect("generic form reads"),
+        rec,
+        "{generic}"
+    );
+    assert_eq!(
+        rec.to_string()
+            .parse::<Record<'_>>()
+            .expect("written form reads"),
+        rec,
+        "{rec}"
+    );
+    let written = rec.generic().to_string();
+    assert_eq!(
+        written.parse::<Record<'_>>().expect("generic form reads"),
+        rec
+    );
+}
+
+#[test]
+fn appendix_d3_failures_in_presentation_format() {
+    for text in [
+        "SVCB 1 foo.example.com. ( key123=abc key123=def )",
+        "SVCB 1 foo.example.com. mandatory",
+        "SVCB 1 foo.example.com. alpn",
+        "SVCB 1 foo.example.com. port",
+        "SVCB 1 foo.example.com. ipv4hint",
+        "SVCB 1 foo.example.com. ipv6hint",
+        "SVCB 1 foo.example.com. no-default-alpn=abc",
+        "SVCB 1 foo.example.com. mandatory=key123",
+        "SVCB 1 foo.example.com. mandatory=mandatory",
+        "SVCB 1 foo.example.com. ( mandatory=key123,key123 key123=abc )",
+    ] {
+        assert!(from_text(text).is_err(), "accepted {text}");
+    }
+}
+
+#[test]
+fn appendix_a_value_escapes() {
+    let rec = from_text(r#"SVCB 1 . dohpath="/q{?dns}" key9="a\"b" ech=AQID"#).unwrap();
+    let RData::Svcb(s) = &rec.data else {
+        unreachable!("SVCB text reads as SVCB")
+    };
+    assert_eq!(
+        s.params.iter().collect::<Vec<_>>(),
+        [
+            SvcParam::Ech((*b"\x01\x02\x03").into()),
+            SvcParam::DohPath("/q{?dns}".to_owned()),
+            SvcParam::Unknown {
+                key: SvcParamKey(9),
+                value: (*b"a\"b").into()
+            },
+        ]
+    );
+    assert_eq!(
+        rec.data.to_string(),
+        r#"1 . ech=AQID dohpath="/q{?dns}" key9="a\"b""#
+    );
+    assert!(from_text("SVCB 1 . ech=AQI").is_err());
+    assert!(from_text("SVCB 1 . port=x").is_err());
+    assert!(from_text("SVCB 1 . bogus=1").is_err());
+}

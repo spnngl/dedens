@@ -1,10 +1,12 @@
 //! Unknown and unsupported types: RDATA kept as bytes (RFC 3597 §4-5).
 
+use core::fmt;
 use std::borrow::Cow;
 
 use crate::codes::RecordType;
 use crate::error::{DecodeError, EncodeError};
 use crate::name::{MAX_NAME_LEN, Name};
+use crate::text;
 use crate::wire::{Reader, Writer};
 
 /// RDATA of a type this crate does not interpret, or whose content is invalid for its type (D9).
@@ -15,6 +17,13 @@ use crate::wire::{Reader, Writer};
 pub struct Opaque<'a> {
     rtype: RecordType,
     data: Cow<'a, [u8]>,
+}
+
+/// The generic form of RFC 3597 §5: `\# length hex`.
+impl fmt::Display for Opaque<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        text::write_generic(f, &self.data)
+    }
 }
 
 /// One field of the RDATA of a type that holds names but has no typed form here.

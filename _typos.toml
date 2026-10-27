@@ -1,5 +1,9 @@
 [files]
 extend-exclude = ["docs/rfc/archive/"]
+[default]
+# RFC 4648 §10 base64 test vector
+extend-ignore-re = ['\("fo", "Zm8="\)']
+
 [default.extend-words]
 # Extended DNS Error (RFC 8914)
 ede = "ede"

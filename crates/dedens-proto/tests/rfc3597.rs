@@ -1,4 +1,4 @@
-//! RFC 3597: unknown RR types are kept as opaque RDATA (§4, §5).
+//! RFC 3597: unknown RR types are kept as opaque RDATA (§4), and written in a generic text form (§5).
 
 mod common;
 
@@ -106,5 +106,60 @@ proptest! {
     fn opaque_round_trip(rec in record()) {
         let wire = encode_with(|w| rec.encode(w));
         prop_assert_eq!(decode_record(&wire)?.record, rec);
+    }
+}
+
+#[test]
+fn s5_generic_text_form() {
+    let rec: dedens_proto::Record<'_> =
+        "a.example. 60 CLASS32 TYPE731 \\# 6 abcd (\n ef 01 23 45 )"
+            .parse()
+            .unwrap();
+    assert_eq!((rec.class, rec.rtype()), (Class(32), RecordType(731)));
+    assert_eq!(
+        rec.data,
+        RData::Opaque(Opaque::new(RecordType(731), &[0xab, 0xcd, 0xef, 1, 0x23, 0x45]).unwrap())
+    );
+    assert_eq!(
+        rec.to_string(),
+        "a.example.\t60\tCLASS32\tTYPE731\t\\# 6 abcdef012345"
+    );
+
+    let rec: dedens_proto::Record<'_> = r"b.example. 60 HS TYPE62347 \# 0".parse().unwrap();
+    assert_eq!(
+        (rec.class, rec.data.to_string()),
+        (Class::HS, r"\# 0".to_owned())
+    );
+
+    // A known type written generically reads as its typed form, the same as its own text form.
+    let generic: dedens_proto::Record<'_> = r"e.example. 60 IN A \# 4 0A000001".parse().unwrap();
+    assert_eq!(generic.data, RData::A([10, 0, 0, 1].into()));
+    let typed: dedens_proto::Record<'_> = "e.example. 60 CLASS1 TYPE1 10.0.0.2".parse().unwrap();
+    assert_eq!(
+        (typed.class, typed.data),
+        (Class::IN, RData::A([10, 0, 0, 2].into()))
+    );
+    assert_eq!(
+        generic.generic().to_string(),
+        "e.example.\t60\tIN\tA\t\\# 4 0a000001"
+    );
+}
+
+#[test]
+fn s5_generic_text_errors() {
+    for bad in [
+        r"x. 60 TYPE731 \# 3 abcd",
+        r"x. 60 TYPE731 \# 2 abc",
+        r"x. 60 TYPE731 \# 1 zz",
+        r"x. 60 TYPE731 \#",
+        "x. 60 TYPE731 abcd",
+        // A pointer inside RDATA means nothing in text.
+        r"x. 60 NS \# 2 c00c",
+        r"x. 60 A \# 3 0a0000",
+    ] {
+        assert!(
+            bad.parse::<dedens_proto::Record<'_>>().is_err(),
+            "accepted {bad}"
+        );
     }
 }

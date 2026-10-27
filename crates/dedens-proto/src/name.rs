@@ -2,8 +2,10 @@
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::str::FromStr;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::text::{self, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 /// Longest name in wire form, length bytes and root label included (RFC 1035 §2.3.4).
@@ -410,6 +412,94 @@ impl fmt::Display for Name<'_> {
             f.write_str(".")?;
         }
         Ok(())
+    }
+}
+
+impl Name<'_> {
+    /// Reads a name in presentation form (RFC 1035 §5.1): labels separated by dots, `\X` and `\DDD` escapes
+    /// taken as label bytes; a name not ending in a dot is relative to `origin`, and `@` is `origin`.
+    pub(crate) fn from_text(
+        raw: &[u8],
+        origin: Option<&Name<'_>>,
+    ) -> Result<Name<'static>, TextErrorKind> {
+        match raw {
+            b"." => return Ok(Name::root()),
+            b"@" => {
+                return origin
+                    .map(|o| o.clone().into_owned())
+                    .ok_or(TextErrorKind::RelativeName);
+            }
+            _ => {}
+        }
+        let mut wire = Vec::with_capacity(raw.len() + 2);
+        // Offset of the length byte of the label being read.
+        let mut label = 0;
+        wire.push(0);
+        let mut absolute = false;
+        let mut i = 0;
+        while let Some(&b) = raw.get(i) {
+            i += 1;
+            let byte = match b {
+                b'.' => {
+                    close_label(&mut wire, label)?;
+                    if i == raw.len() {
+                        absolute = true;
+                        break;
+                    }
+                    label = wire.len();
+                    wire.push(0);
+                    continue;
+                }
+                b'\\' => {
+                    let (byte, used) = text::escape(raw.get(i..).unwrap_or_default())?;
+                    i += used;
+                    byte
+                }
+                _ => b,
+            };
+            wire.push(byte);
+        }
+        if absolute {
+            wire.push(0);
+        } else {
+            close_label(&mut wire, label)?;
+            let origin = origin.ok_or(TextErrorKind::RelativeName)?;
+            let mut buf = [0; MAX_NAME_LEN];
+            wire.extend_from_slice(origin.to_wire(&mut buf));
+        }
+        if wire.len() > MAX_NAME_LEN {
+            return Err(TextErrorKind::Name(NameError::NameTooLong));
+        }
+        Ok(Name(Repr::Owned(wire.into_boxed_slice())))
+    }
+}
+
+/// Sets the length byte at `at` for the label after it, which must be 1 to 63 bytes.
+fn close_label(wire: &mut [u8], at: usize) -> Result<(), TextErrorKind> {
+    let len = wire.len() - at - 1;
+    if len == 0 {
+        return Err(TextErrorKind::Name(NameError::EmptyLabel));
+    }
+    let len = u8::try_from(len)
+        .ok()
+        .filter(|&l| usize::from(l) <= MAX_LABEL_LEN)
+        .ok_or(TextErrorKind::Name(NameError::LabelTooLong))?;
+    if let Some(byte) = wire.get_mut(at) {
+        *byte = len;
+    }
+    Ok(())
+}
+
+/// Reads a name in presentation form; one not ending in a dot is taken as absolute, `@` is the root.
+impl FromStr for Name<'static> {
+    type Err = TextError;
+
+    fn from_str(s: &str) -> Result<Self, TextError> {
+        Name::from_text(s.as_bytes(), Some(&Name::root())).map_err(|kind| TextError {
+            line: 1,
+            column: 1,
+            kind,
+        })
     }
 }
 

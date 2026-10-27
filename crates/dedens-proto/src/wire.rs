@@ -285,6 +285,8 @@ pub struct Writer<'a> {
     /// Writes stop here, short of `buf.len()` while a tail is held back.
     limit: usize,
     names: NameTable,
+    /// Whether [`Writer::put_name_compressed`] compresses; off for RDATA written on its own.
+    compress: bool,
 }
 
 impl<'a> Writer<'a> {
@@ -299,6 +301,15 @@ impl<'a> Writer<'a> {
             len: 0,
             limit,
             names: NameTable::new(),
+            compress: true,
+        }
+    }
+
+    /// A writer that never compresses names, for RDATA outside a message (RFC 3597 §5).
+    pub(crate) fn uncompressed(buf: &'a mut [u8]) -> Self {
+        Self {
+            compress: false,
+            ..Self::new(buf)
         }
     }
 
@@ -432,6 +443,9 @@ impl<'a> Writer<'a> {
             buf = [0; MAX_NAME_LEN];
             name.to_wire(&mut buf)
         };
+        if !self.compress {
+            return self.put_bytes(wire);
+        }
         // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
         let mut inline = 0;
         let mut pointer = None;

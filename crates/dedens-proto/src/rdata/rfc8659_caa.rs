@@ -1,8 +1,10 @@
 //! CAA: certification authority authorization (RFC 8659 §4).
 
+use core::fmt;
 use std::borrow::Cow;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::text::{Fields, Quoted, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 /// A CAA tag that is not 1 to 15 ASCII letters or digits (RFC 8659 §4.1.1).
@@ -88,5 +90,25 @@ impl<'a> Caa<'a> {
         w.put_u8(tag_len)?;
         w.put_bytes(&self.tag)?;
         w.put_bytes(&self.value)
+    }
+}
+
+impl Caa<'static> {
+    /// Reads `flags tag value`, the value a character-string of any length (RFC 8659 §4.1.1).
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        let flags = f.number("CAA flags")?;
+        let tag = f.next("CAA tag")?;
+        let value = f.text("CAA value")?;
+        Caa::new(flags, tag.raw, &value)
+            .map(Caa::into_owned)
+            .map_err(|_| tag.error(TextErrorKind::Invalid("CAA tag")))
+    }
+}
+
+/// `flags tag "value"`.
+impl fmt::Display for Caa<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tag = str::from_utf8(&self.tag).unwrap_or_default();
+        write!(f, "{} {tag} {}", self.flags, Quoted(&self.value))
     }
 }

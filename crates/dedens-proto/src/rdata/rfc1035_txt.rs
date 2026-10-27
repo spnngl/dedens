@@ -1,8 +1,10 @@
 //! TXT: text strings (RFC 1035 §3.3.14, §3.3).
 
+use core::fmt;
 use std::borrow::Cow;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::text::{Fields, Quoted, TextError, TextErrorKind, unescape};
 use crate::wire::{Reader, Writer};
 
 /// A TXT RDATA: one or more `<character-string>`s, each up to 255 arbitrary bytes behind a length byte
@@ -88,5 +90,35 @@ impl<'t> Iterator for CharacterStrings<'t> {
         let (s, rest) = rest.split_at_checked(usize::from(len))?;
         self.0 = rest;
         Some(s)
+    }
+}
+
+impl Txt<'static> {
+    /// Reads one or more character-strings, quoted or not (RFC 1035 §5.1).
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        let mut wire = Vec::new();
+        let mut token = Some(f.next("TXT string")?);
+        while let Some(at) = token {
+            let s = unescape(at.raw).map_err(|kind| at.error(kind))?;
+            let len = u8::try_from(s.len())
+                .map_err(|_| at.error(TextErrorKind::Txt(TxtError::StringTooLong)))?;
+            wire.push(len);
+            wire.extend_from_slice(&s);
+            token = f.next_opt();
+        }
+        Ok(Txt(Cow::Owned(wire)))
+    }
+}
+
+/// Each string quoted, separated by spaces.
+impl fmt::Display for Txt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, s) in self.strings().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{}", Quoted(s))?;
+        }
+        Ok(())
     }
 }

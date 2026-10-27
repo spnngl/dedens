@@ -13,6 +13,7 @@ mod rfc3597_opaque;
 mod rfc8659_caa;
 mod rfc9460_svcb;
 
+use core::fmt;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 pub use rfc1035_mx::Mx;
@@ -26,7 +27,8 @@ pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError,
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
-use crate::wire::{Reader, Writer};
+use crate::text::{self, Fields, TextError, TextErrorKind, encoding};
+use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// The data of a resource record, borrowed from the message it was decoded from or owned (D7a).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -99,6 +101,25 @@ impl<'a> RData<'a> {
             Self::Https(_) => RecordType::HTTPS,
             Self::Opaque(o) => o.rtype(),
         }
+    }
+
+    /// Whether `rtype` has a typed form here, rather than [`RData::Opaque`].
+    const fn is_typed(rtype: RecordType) -> bool {
+        matches!(
+            rtype,
+            RecordType::A
+                | RecordType::AAAA
+                | RecordType::NS
+                | RecordType::CNAME
+                | RecordType::PTR
+                | RecordType::SOA
+                | RecordType::MX
+                | RecordType::TXT
+                | RecordType::SRV
+                | RecordType::CAA
+                | RecordType::SVCB
+                | RecordType::HTTPS
+        )
     }
 
     /// Whether RDATA of `rtype` may hold compressed names, which receivers decompress (RFC 3597 §4): MUST for the
@@ -174,5 +195,103 @@ impl<'a> RData<'a> {
             Self::Svcb(svcb) | Self::Https(svcb) => svcb.encode(w),
             Self::Opaque(o) => o.encode(w),
         }
+    }
+}
+
+impl RData<'static> {
+    /// Reads the RDATA of `rtype` from the rest of an entry: its own text form, or `\# length hex` for any type
+    /// (RFC 3597 §5), which a known type decodes into its typed form.
+    pub(crate) fn from_text(rtype: RecordType, f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        if f.peek().is_some_and(|t| t.raw == br"\#") {
+            return Self::from_generic(rtype, f);
+        }
+        Ok(match rtype {
+            RecordType::A => Self::A(f.parse("IPv4 address")?),
+            RecordType::AAAA => Self::Aaaa(f.parse("IPv6 address")?),
+            RecordType::NS => Self::Ns(f.name("NS name")?),
+            RecordType::CNAME => Self::Cname(f.name("CNAME target")?),
+            RecordType::PTR => Self::Ptr(f.name("PTR name")?),
+            RecordType::SOA => Self::Soa(Soa::from_text(f)?),
+            RecordType::MX => Self::Mx(Mx::from_text(f)?),
+            RecordType::TXT => Self::Txt(Txt::from_text(f)?),
+            RecordType::SRV => Self::Srv(Srv::from_text(f)?),
+            RecordType::CAA => Self::Caa(Caa::from_text(f)?),
+            RecordType::SVCB => Self::Svcb(Svcb::from_text(f)?),
+            RecordType::HTTPS => Self::Https(Svcb::from_text(f)?),
+            _ => return Err(f.end_error(TextErrorKind::NeedsGeneric)),
+        })
+    }
+
+    fn from_generic(rtype: RecordType, f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        let marker = f.next("\\#")?;
+        let declared: usize = f.number("RDATA length")?;
+        let mut data = Vec::with_capacity(declared.min(MAX_MESSAGE_LEN));
+        while let Some(token) = f.next_opt() {
+            encoding::decode_hex(token.raw, &mut data)
+                .ok_or(token.error(TextErrorKind::Invalid("hex RDATA")))?;
+        }
+        if data.len() != declared {
+            return Err(marker.error(TextErrorKind::GenericLength {
+                declared,
+                actual: data.len(),
+            }));
+        }
+        let invalid = |kind| marker.error(TextErrorKind::Rdata(kind));
+        if !Self::is_typed(rtype) {
+            let opaque = Opaque::new(rtype, &data).map_err(|e| invalid(e.kind))?;
+            return Ok(RData::Opaque(opaque.into_owned()));
+        }
+        let decoded = RData::decode(rtype, &mut Reader::new(&data)).map_err(|e| invalid(e.kind))?;
+        // A name read here may hold a pointer, which means nothing outside a message: refuse what does not
+        // write back to the same bytes.
+        let mut buf = vec![0; MAX_MESSAGE_LEN];
+        let mut w = Writer::uncompressed(&mut buf);
+        let same = decoded.encode(&mut w).is_ok() && w.written() == data.as_slice();
+        if !same {
+            return Err(invalid(DecodeErrorKind::Invalid(
+                "RDATA that does not write back the same",
+            )));
+        }
+        Ok(decoded.into_owned())
+    }
+}
+
+impl RData<'_> {
+    /// The RDATA in the generic form of RFC 3597 §5, `\# length hex`, whatever its type.
+    #[must_use]
+    pub const fn generic(&self) -> Generic<'_> {
+        Generic(self)
+    }
+}
+
+/// The RDATA in its text form (RFC 1035 §5.1 and the RFC of its type); types without one in the generic form of
+/// RFC 3597 §5.
+impl fmt::Display for RData<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::A(a) => write!(f, "{a}"),
+            Self::Aaaa(a) => write!(f, "{a}"),
+            Self::Ns(n) | Self::Cname(n) | Self::Ptr(n) => write!(f, "{n}"),
+            Self::Soa(soa) => write!(f, "{soa}"),
+            Self::Mx(mx) => write!(f, "{mx}"),
+            Self::Txt(txt) => write!(f, "{txt}"),
+            Self::Srv(srv) => write!(f, "{srv}"),
+            Self::Caa(caa) => write!(f, "{caa}"),
+            Self::Svcb(svcb) | Self::Https(svcb) => write!(f, "{svcb}"),
+            Self::Opaque(o) => write!(f, "{o}"),
+        }
+    }
+}
+
+/// RDATA written in the generic form of RFC 3597 §5; from [`RData::generic`].
+#[derive(Debug, Clone, Copy)]
+pub struct Generic<'r>(&'r RData<'r>);
+
+impl fmt::Display for Generic<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buf = vec![0; MAX_MESSAGE_LEN];
+        let mut w = Writer::uncompressed(&mut buf);
+        self.0.encode(&mut w).map_err(|_| fmt::Error)?;
+        text::write_generic(f, w.written())
     }
 }

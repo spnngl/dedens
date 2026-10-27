@@ -1,7 +1,10 @@
 //! SOA: start of authority (RFC 1035 §3.3.13).
 
+use core::fmt;
+
 use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
+use crate::text::{Fields, TextError};
 use crate::wire::{Reader, Writer};
 
 /// Start of authority. The four intervals are seconds, `minimum` is the negative-caching TTL (RFC 2308 §4).
@@ -63,5 +66,37 @@ impl<'a> Soa<'a> {
             w.put_u32(v)?;
         }
         Ok(())
+    }
+}
+
+impl Soa<'static> {
+    /// Reads `mname rname serial refresh retry expire minimum`; the four intervals may use units (`1h`).
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        Ok(Self {
+            mname: f.name("SOA MNAME")?,
+            rname: f.name("SOA RNAME")?,
+            serial: f.number("SOA serial")?,
+            refresh: f.seconds("SOA refresh")?,
+            retry: f.seconds("SOA retry")?,
+            expire: f.seconds("SOA expire")?,
+            minimum: f.seconds("SOA minimum")?,
+        })
+    }
+}
+
+/// `mname rname serial refresh retry expire minimum`, intervals in seconds.
+impl fmt::Display for Soa<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {} {} {} {}",
+            self.mname,
+            self.rname,
+            self.serial,
+            self.refresh,
+            self.retry,
+            self.expire,
+            self.minimum
+        )
     }
 }

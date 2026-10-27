@@ -1,4 +1,4 @@
-//! RFC 8659: CAA records (§4).
+//! RFC 8659: CAA records (§4), presentation format (§4.1.1).
 
 mod common;
 
@@ -57,5 +57,66 @@ proptest! {
     fn round_trip(rec in record()) {
         let wire = encode_with(|w| rec.encode(w));
         prop_assert_eq!(decode_record(&wire)?.record, rec);
+    }
+}
+
+#[test]
+fn s4_1_1_presentation_format() {
+    for (text, flags, tag, value) in [
+        (
+            r#"certs.example.com. 60 CAA 0 issue "ca1.example.net""#,
+            0,
+            "issue",
+            "ca1.example.net",
+        ),
+        (
+            r#"nocerts.example.com. 60 CAA 0 issue ";""#,
+            0,
+            "issue",
+            ";",
+        ),
+        (
+            r#"account.example.com. 60 CAA 0 issue "ca1.example.net; account=230123""#,
+            0,
+            "issue",
+            "ca1.example.net; account=230123",
+        ),
+        (
+            r#"new.example.com. 60 CAA 128 tbs "Unknown""#,
+            128,
+            "tbs",
+            "Unknown",
+        ),
+        (
+            r"x. 60 CAA 0 iodef mailto:security@example.com",
+            0,
+            "iodef",
+            "mailto:security@example.com",
+        ),
+    ] {
+        let rec: dedens_proto::Record<'_> = text.parse().unwrap();
+        let RData::Caa(caa) = &rec.data else {
+            unreachable!("CAA text reads as CAA")
+        };
+        assert_eq!(
+            (caa.flags(), caa.tag(), caa.value()),
+            (flags, tag.as_bytes(), value.as_bytes())
+        );
+        assert_eq!(
+            rec.to_string().parse::<dedens_proto::Record<'_>>().unwrap(),
+            rec
+        );
+    }
+    let rec: dedens_proto::Record<'_> = r#"x. 60 CAA 0 issue "ca1.example.net""#.parse().unwrap();
+    assert_eq!(rec.data.to_string(), r#"0 issue "ca1.example.net""#);
+    for bad in [
+        r#"x. 60 CAA 0 is-sue "v""#,
+        r#"x. 60 CAA 256 issue "v""#,
+        "x. 60 CAA 0 issue",
+    ] {
+        assert!(
+            bad.parse::<dedens_proto::Record<'_>>().is_err(),
+            "accepted {bad}"
+        );
     }
 }

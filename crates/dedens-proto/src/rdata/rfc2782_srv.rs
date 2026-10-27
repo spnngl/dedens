@@ -1,7 +1,10 @@
 //! SRV: service locator (RFC 2782).
 
+use core::fmt;
+
 use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
+use crate::text::{Fields, TextError};
 use crate::wire::{Reader, Writer};
 
 /// A service location: lower priority is tried first, weight shares load among equal priorities.
@@ -45,5 +48,28 @@ impl<'a> Srv<'a> {
         w.put_u16(self.weight)?;
         w.put_u16(self.port)?;
         self.target.encode(w)
+    }
+}
+
+impl Srv<'static> {
+    /// Reads `priority weight port target`.
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+        Ok(Self {
+            priority: f.number("SRV priority")?,
+            weight: f.number("SRV weight")?,
+            port: f.number("SRV port")?,
+            target: f.name("SRV target")?,
+        })
+    }
+}
+
+/// `priority weight port target`.
+impl fmt::Display for Srv<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {}",
+            self.priority, self.weight, self.port, self.target
+        )
     }
 }

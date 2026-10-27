@@ -42,6 +42,22 @@ macro_rules! code_type {
             }
         }
 
+        impl ::core::str::FromStr for $name {
+            type Err = $crate::codes::UnknownCode;
+
+            /// Reads a mnemonic, any case, or the generic form: the fallback prefix and the decimal value.
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                $( if s.eq_ignore_ascii_case($text) { return Ok(Self::$konst); } )*
+                let unknown = $crate::codes::UnknownCode { prefix: $fallback };
+                let value = s
+                    .get(..$fallback.len())
+                    .filter(|prefix| prefix.eq_ignore_ascii_case($fallback))
+                    .and_then(|_| s.get($fallback.len()..))
+                    .ok_or(unknown)?;
+                $crate::text::number(value.as_bytes()).map(Self).ok_or(unknown)
+            }
+        }
+
         impl From<$int> for $name {
             fn from(value: $int) -> Self {
                 Self(value)
@@ -57,6 +73,14 @@ macro_rules! code_type {
 }
 
 pub(crate) use code_type;
+
+/// Text that is neither a mnemonic nor the generic form of a code (`TYPE65280`, RFC 3597 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("neither a mnemonic nor {prefix} followed by a number")]
+pub struct UnknownCode {
+    /// The prefix of the generic form, such as `TYPE`.
+    pub prefix: &'static str,
+}
 
 code_type! {
     /// Resource record TYPE or QTYPE (RFC 1035 §3.2.2, §3.2.3).

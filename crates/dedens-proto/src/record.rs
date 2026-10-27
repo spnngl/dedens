@@ -1,9 +1,13 @@
 //! Resource records (RFC 1035 §3.2.1, §4.1.3) and their TTL (RFC 2181 §8).
 
+use core::fmt;
+use core::str::FromStr;
+
 use crate::codes::{Class, RecordType};
 use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
 use crate::rdata::{Opaque, RData};
+use crate::text::{self, TextError};
 use crate::wire::{Reader, Writer};
 
 /// A time to live in seconds: 0 to 2^31 - 1 (RFC 2181 §8).
@@ -204,5 +208,53 @@ impl<'a> Record<'a> {
         let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
         w.patch_u16(at, len);
         Ok(())
+    }
+}
+
+impl Record<'_> {
+    /// The record with its RDATA in the generic form of RFC 3597 §5, `\# length hex`.
+    #[must_use]
+    pub const fn generic(&self) -> GenericRecord<'_> {
+        GenericRecord(self)
+    }
+
+    fn write_head(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t",
+            self.name,
+            self.ttl.get(),
+            self.class,
+            self.rtype()
+        )
+    }
+}
+
+/// One line: owner, TTL in seconds, class, type and RDATA, separated by tabs, names absolute (RFC 1035 §5.1).
+impl fmt::Display for Record<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_head(f)?;
+        write!(f, "{}", self.data)
+    }
+}
+
+/// A record written with its RDATA in the generic form; from [`Record::generic`].
+#[derive(Debug, Clone, Copy)]
+pub struct GenericRecord<'r>(&'r Record<'r>);
+
+impl fmt::Display for GenericRecord<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.write_head(f)?;
+        write!(f, "{}", self.0.data.generic())
+    }
+}
+
+/// Reads one record in presentation form: owner, TTL, optional class (IN by default), type and RDATA, TTL and
+/// class in either order (RFC 1035 §5.1). Names not ending in a dot are absolute; `@` is the root.
+impl FromStr for Record<'static> {
+    type Err = TextError;
+
+    fn from_str(s: &str) -> Result<Self, TextError> {
+        text::one_record(s.as_bytes())
     }
 }
