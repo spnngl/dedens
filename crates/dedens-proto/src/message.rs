@@ -244,7 +244,8 @@ impl Message {
             // Start of the run of records of the RRset being written: offset, count, and its first record.
             let mut rrset = (w.len(), 0, None::<&Record>);
             for record in records {
-                if !rrset.2.is_some_and(|first| same_rrset(first, record)) {
+                // Only truncation needs to know where the RRset started.
+                if may_truncate && !rrset.2.is_some_and(|first| same_rrset(first, record)) {
                     rrset = (w.len(), *count, Some(record));
                 }
                 let before = w.len();

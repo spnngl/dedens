@@ -151,43 +151,35 @@ impl<'a> Reader<'a> {
 /// Compression pointers hold 14 bits of offset (RFC 1035 §4.1.4).
 const POINTER_LIMIT: usize = 0x4000;
 
-/// How many name offsets a [`Writer`] remembers; a message with more distinct names compresses the later ones
-/// less.
-const TABLE_CAPACITY: usize = 256;
+/// Slots of the name table: a power of two.
+const TABLE_SLOTS: usize = 256;
 
-/// Hash buckets of the name table: a power of two.
-const BUCKETS: usize = 128;
-
-/// One remembered name: where it starts, and the next name of its bucket (index + 1, 0 for none).
-#[derive(Debug, Clone, Copy, Default)]
-struct Entry {
-    offset: u16,
-    next: u16,
-}
+/// How many name offsets a [`Writer`] remembers, 3/4 of the slots so probes stay short; a message with more
+/// distinct names compresses the later ones less.
+const TABLE_CAPACITY: usize = TABLE_SLOTS / 4 * 3;
 
 /// Offsets of the names written so far, to point to them (RFC 1035 §4.1.4).
 ///
-/// Fixed capacity, so no allocation (D10); hashed on the first label and the length of a name, so a lookup only
-/// compares the few names of one bucket. Names are matched byte for byte against the written message, so each
-/// keeps its own case (RFC 4343 §4).
+/// An open-addressing hash table of offsets, linear probing, keyed on the first label and the length of a name:
+/// fixed capacity, so no allocation (D10), and 512 bytes to clear per message. Names are matched byte for byte
+/// against the written message, so each keeps its own case (RFC 4343 §4).
 #[derive(Debug)]
 struct NameTable {
-    heads: [u16; BUCKETS],
-    entries: [Entry; TABLE_CAPACITY],
+    /// Offset + 1 of a name; 0 is an empty slot.
+    slots: [u16; TABLE_SLOTS],
     len: usize,
 }
 
 impl NameTable {
     const fn new() -> Self {
         Self {
-            heads: [0; BUCKETS],
-            entries: [Entry { offset: 0, next: 0 }; TABLE_CAPACITY],
+            slots: [0; TABLE_SLOTS],
             len: 0,
         }
     }
 
-    /// The bucket of the wire-form name `suffix`.
-    fn bucket(suffix: &[u8]) -> usize {
+    /// The first slot to probe for the wire-form name `suffix`.
+    fn home(suffix: &[u8]) -> usize {
         let label = suffix
             .split_first()
             .and_then(|(&len, rest)| rest.get(..usize::from(len)))
@@ -198,59 +190,49 @@ impl NameTable {
             hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
         }
         hash = (hash ^ u32::try_from(suffix.len()).unwrap_or_default()).wrapping_mul(0x0100_0193);
-        usize::try_from(hash).unwrap_or_default() % BUCKETS
+        usize::try_from(hash >> 24).unwrap_or_default() % TABLE_SLOTS
+    }
+
+    /// Slot indexes from the home of `suffix` on, wrapping around.
+    fn probe(suffix: &[u8]) -> impl Iterator<Item = usize> {
+        let home = Self::home(suffix);
+        (home..TABLE_SLOTS).chain(0..home)
     }
 
     /// Remembers that the name `suffix` starts at `offset`; ignored when it cannot be pointed to or the table is
     /// full.
     fn add(&mut self, offset: usize, suffix: &[u8]) {
-        let bucket = Self::bucket(suffix);
-        if let (Ok(offset), Ok(id), Some(slot), Some(head)) = (
-            u16::try_from(offset),
-            u16::try_from(self.len + 1),
-            self.entries.get_mut(self.len),
-            self.heads.get_mut(bucket),
-        ) && usize::from(offset) < POINTER_LIMIT
-        {
-            *slot = Entry {
-                offset,
-                next: *head,
-            };
-            *head = id;
+        let Ok(stored) = u16::try_from(offset + 1) else {
+            return;
+        };
+        if offset >= POINTER_LIMIT || self.len >= TABLE_CAPACITY {
+            return;
+        }
+        let empty = Self::probe(suffix).find(|&i| self.slots.get(i) == Some(&0));
+        if let Some(slot) = empty.and_then(|i| self.slots.get_mut(i)) {
+            *slot = stored;
             self.len += 1;
         }
     }
 
-    /// Forgets the names starting at or after `len`: the last ones added, each the head of its bucket.
+    /// Forgets the names starting at or after `len`.
+    ///
+    /// They are the last ones added, so no name left behind was probed past their slots: emptying them keeps
+    /// every probe sequence whole.
     fn truncate(&mut self, len: usize) {
-        while let Some(last) = self.len.checked_sub(1).and_then(|i| self.entries.get(i))
-            && usize::from(last.offset) >= len
-        {
-            let id = u16::try_from(self.len).unwrap_or_default();
-            if let Some(head) = self.heads.iter_mut().find(|head| **head == id) {
-                *head = last.next;
+        for slot in &mut self.slots {
+            if usize::from(*slot) > len {
+                *slot = 0;
+                self.len -= 1;
             }
-            self.len -= 1;
         }
     }
 
     /// The offset of an earlier name equal to `suffix` (wire form, root included), if any.
     fn find(&self, written: &[u8], suffix: &[u8]) -> Option<u16> {
-        let mut next = self
-            .heads
-            .get(Self::bucket(suffix))
-            .copied()
-            .unwrap_or_default();
-        while let Some(entry) = next
-            .checked_sub(1)
-            .and_then(|i| self.entries.get(usize::from(i)))
-        {
-            if name_matches(written, usize::from(entry.offset), suffix) {
-                return Some(entry.offset);
-            }
-            next = entry.next;
-        }
-        None
+        Self::probe(suffix)
+            .map_while(|i| self.slots.get(i).and_then(|&s| s.checked_sub(1)))
+            .find(|&offset| name_matches(written, usize::from(offset), suffix))
     }
 }
 
