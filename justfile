@@ -79,6 +79,7 @@ fuzz target="decode_message" seconds="300":
     export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
     cd fuzz
     # The first corpus directory is the one libFuzzer writes to; the captured responses only seed it.
+    mkdir -p "corpus/{{target}}"
     cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
 
 # Every fuzz target for `seconds` each, as the scheduled CI job runs them.
@@ -88,6 +89,7 @@ fuzz-all seconds="60":
     export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
     cd fuzz
     for target in $(cargo fuzz list); do
+        mkdir -p "corpus/$target"
         cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
     done
 
