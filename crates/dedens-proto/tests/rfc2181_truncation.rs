@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use common::{dns, message, rec};
 use dedens_proto::edns::EdnsOption;
@@ -54,12 +54,35 @@ fn s9_lost_answers_set_tc() {
 }
 
 #[test]
-fn s9_lost_additional_data_does_not_set_tc() {
+fn s9_lost_additional_data_does_not_set_tc_and_drops_its_whole_rrset() {
     let message = response(1, 4);
+    let mut buf = vec![0; 17 + 15 * 3];
+    let encoded = message.encode_truncated(&mut buf).unwrap();
+    assert_eq!((encoded.truncated, encoded.dropped), (false, 4));
     let (decoded, tc) = truncated(&message, 17 + 15 * 3);
     assert!(!tc);
     assert_eq!(decoded.answer.len(), 1);
-    assert_eq!(decoded.additional.len(), 2);
+    assert_eq!(
+        decoded.additional,
+        [],
+        "2 of the 4 A records would pass for the whole RRset"
+    );
+}
+
+#[test]
+fn s9_whole_additional_rrsets_before_the_cut_are_kept() {
+    let mut message = response(1, 2);
+    let aaaa = |n| {
+        rec(
+            "",
+            RData::Aaaa(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, n)),
+        )
+    };
+    message.additional.extend([aaaa(1), aaaa(2)]);
+    // Header, question, the answer, the 2 A records and 1 of the 2 AAAA records (27 bytes).
+    let (decoded, tc) = truncated(&message, 17 + 15 * 3 + 27);
+    assert!(!tc);
+    assert_eq!(decoded.additional, message.additional[..2]);
 }
 
 #[test]

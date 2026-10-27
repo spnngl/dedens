@@ -94,6 +94,8 @@ pub struct Encoded {
     pub len: usize,
     /// Whether TC was set because the answer or authority section lost records.
     pub truncated: bool,
+    /// Records left out, from any section.
+    pub dropped: usize,
 }
 
 /// The result of [`Message::decode`]: the message and the rules it breaks.
@@ -205,7 +207,9 @@ impl Message {
     /// (D10).
     ///
     /// Dropping starts at the first record that does not fit; the OPT record is always kept (RFC 6891 §7). TC is
-    /// set only if the answer or authority section lost records, not if only additional data did (RFC 2181 §9).
+    /// set only if the answer or authority section lost records; when only additional data does not fit, TC stays
+    /// clear and the whole `RRset` of the first record that does not fit is dropped, so no partial `RRset` is left
+    /// (RFC 2181 §9). An `RRset` is a run of consecutive records with the same owner, type and class.
     ///
     /// # Errors
     ///
@@ -225,24 +229,48 @@ impl Message {
         }
         let mut written = [0_usize; 3];
         let mut tc = false;
+        let mut opt_written = false;
         let sections = [&self.answer, &self.authority, &self.additional];
-        'sections: for (i, (count, records)) in written.iter_mut().zip(sections).enumerate() {
+        'sections: for (section, (count, records)) in written.iter_mut().zip(sections).enumerate() {
+            if section == 2 {
+                // The OPT record opens the additional section, so a decoder lifts it before any stray OPT
+                // record kept among the additional records (D9).
+                w.release_tail();
+                if let Some(edns) = &self.edns {
+                    edns.encode(&mut w)?;
+                }
+                opt_written = true;
+            }
+            // Start of the run of records of the RRset being written: offset, count, and its first record.
+            let mut rrset = (w.len(), 0, None::<&Record>);
             for record in records {
+                if !rrset.2.is_some_and(|first| same_rrset(first, record)) {
+                    rrset = (w.len(), *count, Some(record));
+                }
                 let before = w.len();
                 match record.encode(&mut w) {
                     Ok(()) => *count += 1,
                     Err(EncodeError::BufferFull) if may_truncate => {
-                        w.truncate(before);
-                        tc = i < 2;
+                        if section < 2 {
+                            // TC tells the client the answer is partial: a partial RRset may stay (RFC 2181 §9).
+                            w.truncate(before);
+                            tc = true;
+                        } else {
+                            // Without TC, a partial RRset would be taken for the whole one: drop all of it.
+                            w.truncate(rrset.0);
+                            *count = rrset.1;
+                        }
                         break 'sections;
                     }
                     Err(e) => return Err(e),
                 }
             }
         }
-        w.release_tail();
-        if let Some(edns) = &self.edns {
-            edns.encode(&mut w)?;
+        if !opt_written {
+            w.release_tail();
+            if let Some(edns) = &self.edns {
+                edns.encode(&mut w)?;
+            }
         }
         let [answers, authority, additional] = written;
         let additional = additional + usize::from(self.edns.is_some());
@@ -257,9 +285,11 @@ impl Message {
         if tc {
             w.patch_u16(2, w.u16_at(2).unwrap_or_default() | Flags::TC.bits());
         }
+        let total = self.answer.len() + self.authority.len() + self.additional.len();
         Ok(Encoded {
             len: w.len(),
             truncated: tc,
+            dropped: total - (answers + authority + written[2]),
         })
     }
 
@@ -269,11 +299,26 @@ impl Message {
     ///
     /// [`EncodeError::BufferFull`] when it is longer than 65535 bytes.
     pub fn to_vec(&self) -> Result<Vec<u8>, EncodeError> {
-        let mut buf = vec![0; MAX_MESSAGE_LEN];
-        let len = self.encode(&mut buf)?;
-        buf.truncate(len);
-        Ok(buf)
+        // Most messages fit in 512 bytes; larger ones are encoded again into a buffer 4 times larger.
+        let mut buf = vec![0; 512];
+        loop {
+            match self.encode(&mut buf) {
+                Ok(len) => {
+                    buf.truncate(len);
+                    return Ok(buf);
+                }
+                Err(EncodeError::BufferFull) if buf.len() < MAX_MESSAGE_LEN => {
+                    buf.resize((buf.len() * 4).min(MAX_MESSAGE_LEN), 0);
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
+}
+
+/// Whether two records belong to the same `RRset`: same owner, type and class (RFC 2181 §5).
+fn same_rrset(a: &Record, b: &Record) -> bool {
+    a.name == b.name && a.rtype() == b.rtype() && a.class == b.class
 }
 
 /// `claimed` entries, capped by how many of at least `min_len` bytes fit in `remaining`.

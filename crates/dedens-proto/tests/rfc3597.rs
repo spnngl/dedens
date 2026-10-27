@@ -13,10 +13,7 @@ fn s4_unknown_types_keep_their_bytes() {
     assert_eq!(decoded.invalid_rdata, None);
     assert_eq!(
         decoded.record.data,
-        RData::Opaque(Opaque {
-            rtype: RecordType(65280),
-            data: (*b"\xDE\xAD").into()
-        })
+        RData::Opaque(Opaque::new(RecordType(65280), &[0xDE, 0xAD]).unwrap())
     );
 }
 
@@ -26,12 +23,59 @@ fn s4_empty_rdata_is_valid() {
     assert_eq!(decoded.invalid_rdata, None);
 }
 
+/// A record owned by `a.` whose RDATA is `rdata`; a pointer to offset 0 in it means `a.`.
+fn owned_by_a(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
+    let mut wire = vec![1, b'a'];
+    wire.extend_from_slice(&record_wire(rtype, rdata));
+    wire
+}
+
 #[test]
-fn s4_an_unsupported_type_with_names_is_not_decompressed() {
-    // RP (17) may look like it holds names, but only the RFC 1035 types are decompressed.
-    let decoded = decode_record(&record_wire(RecordType(17), &[0xC0, 0])).unwrap();
-    assert_eq!(decoded.record.data.rtype(), RecordType(17));
-    assert!(matches!(&decoded.record.data, RData::Opaque(o) if *o.data == [0xC0, 0]));
+fn s4_names_of_rfc_1035_types_are_decompressed() {
+    // MINFO: two names; MB: one.
+    let minfo =
+        decode_record(&owned_by_a(RecordType::MINFO, &[0xC0, 0, 1, b'b', 0xC0, 0])).unwrap();
+    assert_eq!(minfo.invalid_rdata, None);
+    let RData::Opaque(o) = &minfo.record.data else {
+        panic!("not opaque")
+    };
+    assert_eq!(o.data(), [1, b'a', 0, 1, b'b', 1, b'a', 0]);
+    let mb = decode_record(&owned_by_a(RecordType::MB, &[0xC0, 0])).unwrap();
+    assert!(matches!(&mb.record.data, RData::Opaque(o) if o.data() == [1, b'a', 0]));
+}
+
+#[test]
+fn s4_names_of_older_types_with_names_are_decompressed_too() {
+    // NAPTR: order, preference, flags, services, regexp, replacement.
+    let rdata = [&[0, 1, 0, 2, 1, b'u', 0, 0][..], &[0xC0, 0]].concat();
+    let naptr = decode_record(&owned_by_a(RecordType::NAPTR, &rdata)).unwrap();
+    assert!(
+        matches!(&naptr.record.data, RData::Opaque(o) if o.data() == [0, 1, 0, 2, 1, b'u', 0, 0, 1, b'a', 0])
+    );
+    // SRV prohibits compression (RFC 2782), but older servers compressed (RFC 2052).
+    let srv = decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0, 2, 0, 3, 0xC0, 0])).unwrap();
+    assert!(matches!(&srv.record.data, RData::Srv(s) if s.target.to_string() == "a."));
+}
+
+#[test]
+fn s4_invalid_rdata_with_names_is_an_error() {
+    // Bytes holding a pointer mean nothing outside their message (D9).
+    assert!(decode_record(&owned_by_a(RecordType::RP, &[0xC0, 0])).is_err());
+    assert!(decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0xC0, 0])).is_err());
+}
+
+#[test]
+fn s4_opaque_rdata_never_holds_pointers() {
+    assert!(Opaque::new(RecordType::RP, &[0xC0, 0, 0]).is_err());
+    assert!(Opaque::new(RecordType::RP, &[0, 0]).is_ok());
+    assert!(
+        Opaque::new(RecordType::RP, &[0, 0, 7]).is_err(),
+        "bytes after the fields"
+    );
+    assert!(
+        Opaque::new(RecordType(65280), &[0xC0, 0]).is_ok(),
+        "unknown types are not parsed"
+    );
 }
 
 #[test]

@@ -32,7 +32,8 @@ decision is marked superseded, never reused. The rules a decision produces live 
 - D8 `Message`: header, questions, answer, authority, additional, and EDNS lifted out of additional into its
   own field, so no caller searches for the OPT record.
 - D9 Decoder: bounds-checked cursor; a compression pointer must point strictly before the current label, which
-  rules out loops; unknown types stay opaque RDATA (RFC 3597); every input decodes or errors (fuzzed).
+  rules out loops, and a name follows at most 127 pointers, which rules out long chains; unknown types stay
+  opaque RDATA (RFC 3597); every input decodes or errors (fuzzed).
   Strictness: broken structure (lengths, pointers, name size) is an error. A readable message that breaks a
   rule (several OPT, OPT outside additional, OPT owner not root, QDCOUNT > 1 per RFC 9619, trailing bytes)
   decodes and carries the violations: the CLI shows them, the server answers FORMERR. RDATA or an EDNS option
@@ -42,11 +43,16 @@ decision is marked superseded, never reused. The rules a decision produces live 
 - D10 Encoder: writes into a caller buffer with a size limit and no allocation (fits io_uring registered
   buffers), plus a `Vec<u8>` convenience. Compresses names only inside RFC 1035 types (RFC 3597 §4).
   Truncation: stop at the first record that does not fit; set TC only when the answer or authority section lost
-  records, not for additional data (RFC 2181 §9); OPT is always kept (RFC 6891 §7); RFC 9471 glue rules come
-  with the server. Compression table: a fixed-capacity array of earlier name offsets, matched byte for byte, so
-  output keeps each name's case (RFC 4343) and needs no allocation. EDNS UDP payload 1232 by default (DNS Flag Day 2020).
+  records; when only additional data is lost, TC stays clear and the whole cut RRset goes, since without TC a
+  partial RRset passes for the whole one (RFC 2181 §9); OPT is always kept (RFC 6891 §7) and opens the
+  additional section, so it is the OPT a decoder lifts; RFC 9471 glue rules come with the server. Compression
+  table: a fixed-capacity hash table (256 offsets, bucketed on first label and length) of earlier names, matched
+  byte for byte, so output keeps each name's case (RFC 4343) and needs no allocation. Header fields that do not
+  fit their bits (opcode, 4-bit rcode) are an encode error, never masked. EDNS UDP payload 1232 by default (DNS Flag Day 2020).
 - D11 RDATA v1: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT; every other type is opaque
-  RFC 3597 data until added.
+  RFC 3597 data until added. Opaque data never holds a pointer: the other types whose names receivers
+  decompress (RFC 3597 §4: MUST for MD, MF, MB, MG, MR, MINFO; SHOULD for RP, AFSDB, RT, SIG, PX, NXT, NAPTR)
+  are parsed by a field layout and kept opaque with their names expanded.
 - D12 Typed EDNS options v1: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client
   subnet (RFC 7871), TCP keepalive (RFC 7828), NSID (RFC 5001); others opaque. Typed SVCB parameters: RFC 9460
   keys 0-6 and dohpath (RFC 9461); others opaque.

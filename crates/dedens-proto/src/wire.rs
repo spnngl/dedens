@@ -153,63 +153,111 @@ const POINTER_LIMIT: usize = 0x4000;
 
 /// How many name offsets a [`Writer`] remembers; a message with more distinct names compresses the later ones
 /// less.
-const TABLE_CAPACITY: usize = 128;
+const TABLE_CAPACITY: usize = 256;
+
+/// Hash buckets of the name table: a power of two.
+const BUCKETS: usize = 128;
+
+/// One remembered name: where it starts, and the next name of its bucket (index + 1, 0 for none).
+#[derive(Debug, Clone, Copy, Default)]
+struct Entry {
+    offset: u16,
+    next: u16,
+}
 
 /// Offsets of the names written so far, to point to them (RFC 1035 §4.1.4).
 ///
-/// Fixed capacity, so no allocation (D10). Names are matched byte for byte against the written message, so each
+/// Fixed capacity, so no allocation (D10); hashed on the first label and the length of a name, so a lookup only
+/// compares the few names of one bucket. Names are matched byte for byte against the written message, so each
 /// keeps its own case (RFC 4343 §4).
 #[derive(Debug)]
 struct NameTable {
-    offsets: [u16; TABLE_CAPACITY],
+    heads: [u16; BUCKETS],
+    entries: [Entry; TABLE_CAPACITY],
     len: usize,
 }
 
 impl NameTable {
     const fn new() -> Self {
         Self {
-            offsets: [0; TABLE_CAPACITY],
+            heads: [0; BUCKETS],
+            entries: [Entry { offset: 0, next: 0 }; TABLE_CAPACITY],
             len: 0,
         }
     }
 
-    fn offsets(&self) -> &[u16] {
-        self.offsets.get(..self.len).unwrap_or_default()
+    /// The bucket of the wire-form name `suffix`.
+    fn bucket(suffix: &[u8]) -> usize {
+        let label = suffix
+            .split_first()
+            .and_then(|(&len, rest)| rest.get(..usize::from(len)))
+            .unwrap_or_default();
+        // FNV-1a over the first label, then the length.
+        let mut hash: u32 = 0x811C_9DC5;
+        for &b in label {
+            hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+        hash = (hash ^ u32::try_from(suffix.len()).unwrap_or_default()).wrapping_mul(0x0100_0193);
+        usize::try_from(hash).unwrap_or_default() % BUCKETS
     }
 
-    /// Remembers that a name starts at `offset`; ignored when it cannot be pointed to or the table is full.
-    fn add(&mut self, offset: usize) {
-        if let (Ok(offset), Some(slot)) = (u16::try_from(offset), self.offsets.get_mut(self.len))
-            && usize::from(offset) < POINTER_LIMIT
+    /// Remembers that the name `suffix` starts at `offset`; ignored when it cannot be pointed to or the table is
+    /// full.
+    fn add(&mut self, offset: usize, suffix: &[u8]) {
+        let bucket = Self::bucket(suffix);
+        if let (Ok(offset), Ok(id), Some(slot), Some(head)) = (
+            u16::try_from(offset),
+            u16::try_from(self.len + 1),
+            self.entries.get_mut(self.len),
+            self.heads.get_mut(bucket),
+        ) && usize::from(offset) < POINTER_LIMIT
         {
-            *slot = offset;
+            *slot = Entry {
+                offset,
+                next: *head,
+            };
+            *head = id;
             self.len += 1;
         }
     }
 
-    /// Forgets the names starting at or after `len`.
+    /// Forgets the names starting at or after `len`: the last ones added, each the head of its bucket.
     fn truncate(&mut self, len: usize) {
-        while self
-            .offsets()
-            .last()
-            .is_some_and(|&o| usize::from(o) >= len)
+        while let Some(last) = self.len.checked_sub(1).and_then(|i| self.entries.get(i))
+            && usize::from(last.offset) >= len
         {
+            let id = u16::try_from(self.len).unwrap_or_default();
+            if let Some(head) = self.heads.iter_mut().find(|head| **head == id) {
+                *head = last.next;
+            }
             self.len -= 1;
         }
     }
 
     /// The offset of an earlier name equal to `suffix` (wire form, root included), if any.
     fn find(&self, written: &[u8], suffix: &[u8]) -> Option<u16> {
-        self.offsets()
-            .iter()
+        let mut next = self
+            .heads
+            .get(Self::bucket(suffix))
             .copied()
-            .find(|&o| name_matches(written, usize::from(o), suffix))
+            .unwrap_or_default();
+        while let Some(entry) = next
+            .checked_sub(1)
+            .and_then(|i| self.entries.get(usize::from(i)))
+        {
+            if name_matches(written, usize::from(entry.offset), suffix) {
+                return Some(entry.offset);
+            }
+            next = entry.next;
+        }
+        None
     }
 }
 
 /// Whether the name at `offset` in `written`, following its pointers, is the wire-form name `suffix`.
 ///
-/// Pointers in `written` were made by [`Writer::put_name_compressed`] and point backwards, so this ends.
+/// Pointers in `written` were made by [`Writer::put_name_compressed`] and point backwards; one that does not ends
+/// the match, so this always ends.
 fn name_matches(written: &[u8], mut offset: usize, mut suffix: &[u8]) -> bool {
     loop {
         let Some(&len) = written.get(offset) else {
@@ -221,7 +269,11 @@ fn name_matches(written: &[u8], mut offset: usize, mut suffix: &[u8]) -> bool {
                 let Some(&low) = written.get(offset + 1) else {
                     return false;
                 };
-                offset = usize::from(l & 0x3F) << 8 | usize::from(low);
+                let target = usize::from(l & 0x3F) << 8 | usize::from(low);
+                if target >= offset {
+                    return false;
+                }
+                offset = target;
             }
             l => {
                 let end = offset + 1 + usize::from(l);
@@ -354,7 +406,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
-    pub fn reserve_u16(&mut self) -> Result<usize, EncodeError> {
+    pub(crate) fn reserve_u16(&mut self) -> Result<usize, EncodeError> {
         let at = self.len;
         self.put_u16(0)?;
         Ok(at)
@@ -362,14 +414,15 @@ impl<'a> Writer<'a> {
 
     /// The `u16` at `at`, if it is within what was written.
     #[must_use]
-    pub fn u16_at(&self, at: usize) -> Option<u16> {
-        let bytes = self.written().get(at..at + 2)?;
+    pub(crate) fn u16_at(&self, at: usize) -> Option<u16> {
+        let bytes = self.written().get(at..at.checked_add(2)?)?;
         Some(u16::from_be_bytes([*bytes.first()?, *bytes.get(1)?]))
     }
 
     /// Overwrites the `u16` at `at`, an offset [`Writer::reserve_u16`] returned.
-    pub fn patch_u16(&mut self, at: usize, v: u16) {
-        if let Some(dst) = self.buf.get_mut(at..at + 2) {
+    pub(crate) fn patch_u16(&mut self, at: usize, v: u16) {
+        let end = at.saturating_add(2).min(self.len);
+        if let Some(dst) = self.buf.get_mut(at..end).filter(|dst| dst.len() == 2) {
             dst.copy_from_slice(&v.to_be_bytes());
         } else {
             debug_assert!(false, "patch_u16 outside the written bytes");
@@ -408,7 +461,8 @@ impl<'a> Writer<'a> {
         }
         let mut at = 0;
         while let Some(&label_len) = wire.get(at).filter(|&&l| l != 0).filter(|_| at < inline) {
-            self.names.add(first + at);
+            self.names
+                .add(first + at, wire.get(at..).unwrap_or_default());
             at += 1 + usize::from(label_len);
         }
         Ok(())
@@ -419,7 +473,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when fewer than `n` bytes are left.
-    pub fn hold_back(&mut self, n: usize) -> Result<(), EncodeError> {
+    pub(crate) fn hold_back(&mut self, n: usize) -> Result<(), EncodeError> {
         if self.remaining() < n {
             return Err(EncodeError::BufferFull);
         }
@@ -428,12 +482,12 @@ impl<'a> Writer<'a> {
     }
 
     /// Makes the bytes kept by [`Writer::hold_back`] writable.
-    pub fn release_tail(&mut self) {
+    pub(crate) fn release_tail(&mut self) {
         self.limit = self.buf.len();
     }
 
     /// Drops everything written after `len`, to roll back a partial record.
-    pub fn truncate(&mut self, len: usize) {
+    pub(crate) fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
         self.names.truncate(self.len);
     }

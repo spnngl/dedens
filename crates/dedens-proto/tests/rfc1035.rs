@@ -66,6 +66,29 @@ fn s4_1_4_a_name_may_be_only_a_pointer_or_labels_then_a_pointer() {
 }
 
 #[test]
+fn s4_1_4_long_pointer_chains_are_rejected() {
+    // The root at 0, then pointers each to the one before: a chain of `hops` pointers ends at the root.
+    let chain = |hops: u16| {
+        let mut msg = vec![0, 0xC0, 0];
+        for target in (1..hops).map(|i| 1 + 2 * (i - 1)) {
+            msg.extend_from_slice(&(0xC000 | target).to_be_bytes());
+        }
+        let start = msg.len() - 2;
+        let mut r = reader(&msg);
+        r.bytes(start).unwrap();
+        Name::decode(&mut r)
+    };
+    assert_eq!(chain(127).unwrap(), Name::root());
+    assert_eq!(chain(128).unwrap_err().kind, DecodeErrorKind::BadPointer);
+}
+
+#[test]
+fn s5_1_special_characters_are_escaped() {
+    let name = name_of(&[b"a.b\\c\"d(e)f;g@h$i j"]);
+    assert_eq!(name.to_string(), r#"a\.b\\c\"d\(e\)f\;g\@h\$i\032j."#);
+}
+
+#[test]
 fn s4_1_4_label_types_01_and_10_are_rejected() {
     for first in [0x40, 0x7F, 0x80, 0xBF] {
         let err = Name::decode(&mut reader(&[first, 0, 0])).unwrap_err();

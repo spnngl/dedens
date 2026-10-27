@@ -44,6 +44,7 @@ impl SvcParamKey {
 
 /// One service parameter, parsed by key (RFC 9460 §7).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SvcParam {
     /// Keys, besides itself, that a client must understand (RFC 9460 §8).
     Mandatory(Vec<SvcParamKey>),
@@ -167,6 +168,7 @@ impl SvcParam {
 
 /// A parameter list that breaks RFC 9460 (§2.2, §2.4.3, §7, §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum SvcParamsError {
     /// A key appears twice, as a parameter or in the `mandatory` list.
     #[error("service parameter {0} appears more than once")]
@@ -180,6 +182,9 @@ pub enum SvcParamsError {
     /// An unknown-key parameter uses a key that has a typed variant, or the reserved key 65535.
     #[error("key {0} cannot be carried as an unknown parameter")]
     ReservedKey(SvcParamKey),
+    /// `no-default-alpn` without `alpn`, which would leave no protocol to connect with (RFC 9460 §7.1.1).
+    #[error("no-default-alpn without alpn")]
+    NoDefaultAlpnWithoutAlpn,
 }
 
 /// The parameters of a SVCB or HTTPS record: sorted by key, each key once, internally consistent.
@@ -192,7 +197,7 @@ impl SvcParams {
     /// # Errors
     ///
     /// [`SvcParamsError`] when a key repeats, a value that needs elements has none, `mandatory` lists itself or a
-    /// missing key, or an unknown parameter uses key 0 to 7 or 65535.
+    /// missing key, `no-default-alpn` comes without `alpn`, or an unknown parameter uses key 0 to 7 or 65535.
     pub fn new(mut params: Vec<SvcParam>) -> Result<Self, SvcParamsError> {
         params.sort_by_key(SvcParam::key);
         if let Some(pair) = params.windows(2).find(|p| p[0].key() == p[1].key()) {
@@ -227,6 +232,10 @@ impl SvcParams {
             }
         }
         let list = Self(params);
+        if list.get(SvcParamKey::NO_DEFAULT_ALPN).is_some() && list.get(SvcParamKey::ALPN).is_none()
+        {
+            return Err(SvcParamsError::NoDefaultAlpnWithoutAlpn);
+        }
         if let Some(SvcParam::Mandatory(keys)) = list.get(SvcParamKey::MANDATORY)
             && let Some(bad) = keys
                 .iter()

@@ -77,20 +77,26 @@ impl RData {
             Self::Caa(_) => RecordType::CAA,
             Self::Svcb(_) => RecordType::SVCB,
             Self::Https(_) => RecordType::HTTPS,
-            Self::Opaque(o) => o.rtype,
+            Self::Opaque(o) => o.rtype(),
         }
     }
 
-    /// Whether RDATA of `rtype` may hold compressed names (RFC 3597 §4: only the types of RFC 1035).
+    /// Whether RDATA of `rtype` may hold compressed names, which receivers decompress (RFC 3597 §4): MUST for the
+    /// types of RFC 1035, SHOULD for RP, AFSDB, RT, SIG, PX, NXT, NAPTR and SRV.
     ///
     /// Invalid RDATA of these types cannot be kept as opaque bytes, since pointers in it would be meaningless
     /// once the record leaves its message (D9).
     #[must_use]
-    pub const fn has_compressible_names(rtype: RecordType) -> bool {
+    pub const fn may_hold_compressed_names(rtype: RecordType) -> bool {
         matches!(
             rtype,
-            RecordType::NS | RecordType::CNAME | RecordType::SOA | RecordType::PTR | RecordType::MX
-        )
+            RecordType::NS
+                | RecordType::CNAME
+                | RecordType::SOA
+                | RecordType::PTR
+                | RecordType::MX
+                | RecordType::SRV
+        ) || Opaque::holds_names(rtype)
     }
 
     /// Decodes the RDATA of `rtype` from `r`, a reader limited to RDLENGTH bytes; all of them must be used.
@@ -126,10 +132,7 @@ impl RData {
             RecordType::CAA => Self::Caa(Caa::decode(r)?),
             RecordType::SVCB => Self::Svcb(Svcb::decode(r)?),
             RecordType::HTTPS => Self::Https(Svcb::decode(r)?),
-            _ => Self::Opaque(Opaque {
-                rtype,
-                data: r.rest().into(),
-            }),
+            _ => Self::Opaque(Opaque::decode(rtype, r)?),
         })
     }
 

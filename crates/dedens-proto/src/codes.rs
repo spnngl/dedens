@@ -65,20 +65,48 @@ code_type! {
     A = 1, "A";
     /// Authoritative name server (RFC 1035 §3.3.11).
     NS = 2, "NS";
+    /// Mail destination, obsolete (RFC 1035 §3.3.4).
+    MD = 3, "MD";
+    /// Mail forwarder, obsolete (RFC 1035 §3.3.5).
+    MF = 4, "MF";
     /// Canonical name (RFC 1035 §3.3.1).
     CNAME = 5, "CNAME";
     /// Start of authority (RFC 1035 §3.3.13).
     SOA = 6, "SOA";
+    /// Mailbox domain name, experimental (RFC 1035 §3.3.3).
+    MB = 7, "MB";
+    /// Mail group member, experimental (RFC 1035 §3.3.6).
+    MG = 8, "MG";
+    /// Mail rename domain name, experimental (RFC 1035 §3.3.8).
+    MR = 9, "MR";
     /// Domain name pointer (RFC 1035 §3.3.12).
     PTR = 12, "PTR";
+    /// Host information (RFC 1035 §3.3.2).
+    HINFO = 13, "HINFO";
+    /// Mailbox or mail list information, experimental (RFC 1035 §3.3.7).
+    MINFO = 14, "MINFO";
     /// Mail exchange (RFC 1035 §3.3.9).
     MX = 15, "MX";
     /// Text strings (RFC 1035 §3.3.14).
     TXT = 16, "TXT";
+    /// Responsible person (RFC 1183 §2.2).
+    RP = 17, "RP";
+    /// AFS database location (RFC 1183 §1).
+    AFSDB = 18, "AFSDB";
+    /// Route through (RFC 1183 §3.3).
+    RT = 21, "RT";
+    /// Signature, obsolete (RFC 2535 §4).
+    SIG = 24, "SIG";
+    /// X.400 mail mapping (RFC 2163 §4).
+    PX = 26, "PX";
     /// IPv6 address (RFC 3596 §2.1).
     AAAA = 28, "AAAA";
+    /// Next domain, obsolete (RFC 2535 §5).
+    NXT = 30, "NXT";
     /// Service locator (RFC 2782).
     SRV = 33, "SRV";
+    /// Naming authority pointer (RFC 3403 §4).
+    NAPTR = 35, "NAPTR";
     /// EDNS pseudo-record (RFC 6891).
     OPT = 41, "OPT";
     /// Service binding (RFC 9460 §2).

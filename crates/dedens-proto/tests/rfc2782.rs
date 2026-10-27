@@ -37,10 +37,9 @@ fn the_root_target_means_no_service() {
 }
 
 #[test]
-fn a_target_that_is_not_a_name_is_kept_opaque() {
-    let decoded = decode_record(&record_wire(RecordType::SRV, &[0, 1, 0, 2, 0, 3])).unwrap();
-    assert!(decoded.invalid_rdata.is_some());
-    assert!(matches!(decoded.record.data, RData::Opaque(_)));
+fn invalid_rdata_is_an_error() {
+    // The target may hold a pointer (RFC 3597 §4), so the bytes cannot be kept opaque (D9).
+    assert!(decode_record(&record_wire(RecordType::SRV, &[0, 1, 0, 2, 0, 3])).is_err());
 }
 
 proptest! {

@@ -5,7 +5,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::{
-    ClientSubnet, Cookie, Edns, EdnsOption, ExtendedError, InfoCode, OptionCode,
+    ClientSubnet, Cookie, Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode, OptionCode,
 };
 use dedens_proto::rdata::{
     Caa, CharacterString, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt,
@@ -114,6 +114,8 @@ fn svc_params() -> impl Strategy<Value = SvcParams> {
     (alpn, v4, v6, others).prop_map(
         |(alpn, v4, v6, (no_default, port, ech, doh, unknown, listed))| {
             let mut params: Vec<SvcParam> = Vec::new();
+            // no-default-alpn needs alpn (RFC 9460 §7.1.1).
+            let no_default = no_default && alpn.is_some();
             params.extend(alpn.map(SvcParam::Alpn));
             params.extend(no_default.then_some(SvcParam::NoDefaultAlpn));
             params.extend(port.map(SvcParam::Port));
@@ -171,10 +173,9 @@ pub(crate) fn rdata() -> impl Strategy<Value = RData> {
         caa().prop_map(RData::Caa),
         svcb().prop_map(RData::Svcb),
         svcb().prop_map(RData::Https),
-        (300u16..60000, bytes(40)).prop_map(|(rtype, data)| RData::Opaque(Opaque {
-            rtype: RecordType(rtype),
-            data: data.into()
-        })),
+        (300u16..60000, bytes(40)).prop_map(|(rtype, data)| RData::Opaque(
+            Opaque::new(RecordType(rtype), &data).expect("a type without names")
+        )),
     ]
 }
 
@@ -227,20 +228,16 @@ pub(crate) fn edns() -> impl Strategy<Value = Edns> {
         any::<u16>(),
         any::<u8>(),
         any::<u8>(),
-        any::<bool>(),
-        0u16..0x8000,
+        any::<u16>(),
         prop::collection::vec(edns_option(), 0..=3),
     )
-        .prop_map(
-            |(udp_payload, ext_rcode, version, dnssec_ok, z, options)| Edns {
-                udp_payload,
-                ext_rcode,
-                version,
-                dnssec_ok,
-                z,
-                options,
-            },
-        )
+        .prop_map(|(udp_payload, ext_rcode, version, flags, options)| Edns {
+            udp_payload,
+            ext_rcode,
+            version,
+            flags: EdnsFlags::from_bits(flags),
+            options,
+        })
 }
 
 pub(crate) fn message() -> impl Strategy<Value = Message> {

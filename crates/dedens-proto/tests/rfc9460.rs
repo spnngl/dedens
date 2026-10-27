@@ -165,12 +165,35 @@ fn d2_alpn_keeps_backslash_and_comma() {
 
 #[test]
 fn s9_https_has_the_svcb_format() {
-    let wire = rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0, 2, 0, 0]]);
+    let wire = rdata(&[
+        &[0, 1],
+        FOO_EXAMPLE_COM,
+        &[0, 1, 0, 3, 2, b'h', b'2', 0, 2, 0, 0],
+    ]);
     let decoded = decode_record(&record_wire(RecordType::HTTPS, &wire)).unwrap();
     let RData::Https(s) = decoded.record.data else {
         panic!("not HTTPS")
     };
-    assert_eq!(s.params.as_slice(), [SvcParam::NoDefaultAlpn]);
+    assert_eq!(
+        s.params.as_slice(),
+        [
+            SvcParam::Alpn(vec![(*b"h2").into()]),
+            SvcParam::NoDefaultAlpn
+        ]
+    );
+}
+
+#[test]
+fn s7_1_1_no_default_alpn_needs_alpn() {
+    assert_eq!(
+        SvcParams::new(vec![SvcParam::NoDefaultAlpn]),
+        Err(SvcParamsError::NoDefaultAlpnWithoutAlpn)
+    );
+    // Not self-consistent: the record is rejected, kept opaque (RFC 9460 §2.4.3).
+    let wire = rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0, 2, 0, 0]]);
+    let decoded = decode_record(&record_wire(RecordType::HTTPS, &wire)).unwrap();
+    assert!(decoded.invalid_rdata.is_some());
+    assert!(matches!(decoded.record.data, RData::Opaque(_)));
 }
 
 #[test]
@@ -304,10 +327,17 @@ fn building_params_enforces_the_same_rules() {
         SvcParams::new(vec![unknown(65535)]),
         Err(SvcParamsError::ReservedKey(SvcParamKey(65535)))
     );
-    let sorted = SvcParams::new(vec![SvcParam::Port(1), SvcParam::NoDefaultAlpn]).unwrap();
+    let sorted = SvcParams::new(vec![
+        SvcParam::Port(1),
+        SvcParam::Ipv4Hint(vec![Ipv4Addr::LOCALHOST]),
+    ])
+    .unwrap();
     assert_eq!(
         sorted.as_slice(),
-        [SvcParam::NoDefaultAlpn, SvcParam::Port(1)]
+        [
+            SvcParam::Port(1),
+            SvcParam::Ipv4Hint(vec![Ipv4Addr::LOCALHOST])
+        ]
     );
 }
 

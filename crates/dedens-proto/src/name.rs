@@ -10,6 +10,8 @@ use crate::wire::{Reader, Writer};
 pub const MAX_NAME_LEN: usize = 255;
 /// Longest label (RFC 1035 §2.3.4).
 pub const MAX_LABEL_LEN: usize = 63;
+/// Most compression pointers followed in one name: one per label of the longest name.
+const MAX_POINTERS: usize = 127;
 
 /// A label that cannot be part of a [`Name`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -124,13 +126,15 @@ impl Name {
 
     fn decode_with(r: &mut Reader<'_>, pointers: bool) -> Result<Self, DecodeError> {
         let msg = r.message();
+        let start = r.position();
         let mut limit = r.end();
-        let mut bound = r.position();
-        let mut pos = bound;
+        let mut bound = start;
+        let mut pos = start;
+        // Where the reader resumes, set at the first pointer; from then on labels are gathered in `buf`.
         let mut resume = None;
-        // One allocation, of the final size: collect on the stack first.
         let mut buf = [0_u8; MAX_NAME_LEN];
         let mut len = 0;
+        let mut hops = 0;
         let at = |offset, kind| DecodeError { offset, kind };
         loop {
             let first = match msg.get(pos) {
@@ -139,24 +143,23 @@ impl Name {
             };
             match first & 0xC0 {
                 0x00 => {
-                    let label_len = usize::from(first);
-                    let end = pos + 1 + label_len;
+                    let end = pos + 1 + usize::from(first);
                     if end > limit {
                         return Err(at(pos, DecodeErrorKind::UnexpectedEnd));
                     }
-                    if label_len != 0 && len + label_len + 2 > MAX_NAME_LEN {
+                    if first != 0 && len + usize::from(first) + 2 > MAX_NAME_LEN {
                         return Err(at(pos, DecodeErrorKind::NameTooLong));
                     }
-                    let label = msg
-                        .get(pos..end)
-                        .ok_or(at(pos, DecodeErrorKind::UnexpectedEnd))?;
-                    let slot = buf
-                        .get_mut(len..len + label.len())
-                        .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
-                    slot.copy_from_slice(label);
-                    len += label.len();
+                    if resume.is_some() {
+                        let label = msg.get(pos..end).unwrap_or_default();
+                        let slot = buf
+                            .get_mut(len..len + label.len())
+                            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
+                        slot.copy_from_slice(label);
+                    }
+                    len += end - pos;
                     pos = end;
-                    if label_len == 0 {
+                    if first == 0 {
                         break;
                     }
                 }
@@ -172,10 +175,20 @@ impl Name {
                         _ => return Err(at(pos, DecodeErrorKind::UnexpectedEnd)),
                     };
                     let target = usize::from(u16::from_be_bytes([first & 0x3F, second]));
-                    if target >= bound {
+                    // Backward pointers rule out loops, the hop count rules out long chains of them: a name
+                    // has at most 127 labels, each worth at most one pointer.
+                    hops += 1;
+                    if target >= bound || hops > MAX_POINTERS {
                         return Err(at(pos, DecodeErrorKind::BadPointer));
                     }
-                    resume.get_or_insert(pos + 2);
+                    if resume.is_none() {
+                        let labels = msg.get(start..pos).unwrap_or_default();
+                        let slot = buf
+                            .get_mut(..labels.len())
+                            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
+                        slot.copy_from_slice(labels);
+                        resume = Some(pos + 2);
+                    }
                     bound = target;
                     pos = target;
                     limit = msg.len();
@@ -183,11 +196,14 @@ impl Name {
                 _ => return Err(at(pos, DecodeErrorKind::ReservedLabelType)),
             }
         }
-        r.set_position(resume.unwrap_or(pos));
-        let wire = buf
-            .get(..len)
-            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
-        Ok(Self(Box::from(wire)))
+        let wire = if let Some(resume) = resume {
+            r.set_position(resume);
+            buf.get(..len)
+        } else {
+            r.set_position(pos);
+            msg.get(start..pos)
+        };
+        Ok(Self(Box::from(wire.unwrap_or_default())))
     }
 
     /// Writes the name uncompressed; see [`Writer::put_name_compressed`] for the names RFC 1035 allows to compress.
@@ -230,14 +246,16 @@ impl Eq for Name {}
 
 impl Hash for Name {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for b in &self.0 {
-            state.write_u8(b.to_ascii_lowercase());
-        }
+        let mut lower = [0_u8; MAX_NAME_LEN];
+        let lower = lower.get_mut(..self.0.len()).unwrap_or_default();
+        lower.copy_from_slice(&self.0);
+        lower.make_ascii_lowercase();
+        state.write(lower);
     }
 }
 
-/// Presentation form: labels joined by dots, ending in a dot; `.` and `\` inside a label are written `\.` and
-/// `\\`, and bytes outside printable ASCII as `\DDD` (RFC 1035 §5.1).
+/// Presentation form: labels joined by dots, ending in a dot; the special characters `.\"();@$` inside a label
+/// are escaped with `\`, and bytes outside printable ASCII written `\DDD` (RFC 1035 §5.1).
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_root() {
@@ -246,7 +264,9 @@ impl fmt::Display for Name {
         for label in self.labels() {
             for &b in label {
                 match b {
-                    b'.' | b'\\' => write!(f, "\\{}", char::from(b))?,
+                    b'.' | b'\\' | b'"' | b'(' | b')' | b';' | b'@' | b'$' => {
+                        write!(f, "\\{}", char::from(b))?;
+                    }
                     0x21..=0x7E => write!(f, "{}", char::from(b))?,
                     _ => write!(f, "\\{b:03}")?,
                 }

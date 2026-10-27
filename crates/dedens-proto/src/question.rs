@@ -40,7 +40,7 @@ impl Question {
         })
     }
 
-    /// Writes the question, its name uncompressed.
+    /// Writes the question, its name compressed.
     ///
     /// # Errors
     ///

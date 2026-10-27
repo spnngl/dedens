@@ -3,9 +3,9 @@
 mod common;
 
 use common::{decode_options, opt_message, option_wire};
-use dedens_proto::edns::{EdnsOption, OptionCode};
+use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode};
 use dedens_proto::{
-    DecodeErrorKind, EncodeError, Message, Name, Question, Rcode, RecordType, Violation,
+    DecodeErrorKind, EncodeError, Message, Name, Opcode, Question, Rcode, RecordType, Violation,
 };
 use proptest::prelude::*;
 
@@ -31,8 +31,8 @@ fn s6_1_2_fields_of_the_opt_record() {
     let edns = decoded.message.edns.unwrap();
     assert_eq!(edns.udp_payload, 1232);
     assert_eq!((edns.ext_rcode, edns.version), (5, 1));
-    assert!(edns.dnssec_ok);
-    assert_eq!(edns.z, 0x7FFF);
+    assert_eq!(edns.flags, EdnsFlags::from_bits(0xFFFF));
+    assert!(edns.flags.contains(EdnsFlags::DO));
     assert!(
         decoded.message.additional.is_empty(),
         "the OPT record is lifted out of the section"
@@ -43,7 +43,7 @@ fn s6_1_2_fields_of_the_opt_record() {
 #[test]
 fn s6_1_3_the_do_bit_is_the_top_flag_bit() {
     let mut message = Message::query(1, question());
-    message.edns.as_mut().unwrap().dnssec_ok = true;
+    message.edns.as_mut().unwrap().flags = EdnsFlags::DO;
     let wire = message.to_vec().unwrap();
     assert_eq!(wire[wire.len() - 6..wire.len() - 2], [0, 0, 0x80, 0]);
 }
@@ -94,6 +94,26 @@ fn s6_1_1_one_opt_record_at_most() {
         1,
         "the second one is kept opaque"
     );
+}
+
+#[test]
+fn s6_1_3_a_rejected_opt_record_keeps_its_ttl_field() {
+    // Extended rcode 0x80 sets the top bit of the TTL field, which RFC 2181 §8 would make a TTL of 0.
+    let mut wire = opt_message(&[]);
+    wire[11] = 2;
+    wire.extend_from_slice(&[0, 0, 41, 0x02, 0, 0x80, 0, 0x80, 0, 0, 0]);
+    let decoded = Message::decode(&wire).unwrap();
+    assert_eq!(decoded.message.additional[0].ttl.get(), 0x8000_8000);
+}
+
+#[test]
+fn s6_1_3_the_header_rcode_holds_four_bits() {
+    let mut message = Message::default();
+    message.header.rcode = Rcode(16);
+    assert_eq!(message.to_vec(), Err(EncodeError::RcodeOutOfRange));
+    message.header.rcode = Rcode(0);
+    message.header.opcode = Opcode(16);
+    assert_eq!(message.to_vec(), Err(EncodeError::OpcodeOutOfRange));
 }
 
 #[test]

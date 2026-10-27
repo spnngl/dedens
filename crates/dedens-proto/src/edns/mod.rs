@@ -27,8 +27,47 @@ const OPT_FIXED_LEN: usize = 11;
 /// Code and length of an option.
 const OPTION_HEADER_LEN: usize = 4;
 
-/// Mask of the 15 flag bits after DO in the OPT TTL (RFC 6891 §6.1.3).
-const Z_MASK: u16 = 0x7FFF;
+/// The 16 flag bits of an OPT record, the low half of its TTL (RFC 6891 §6.1.3).
+///
+/// Only DO is defined; the other 15 bits (Z) must be zero when sent and are ignored when received, but they are
+/// kept so a message re-encodes as received.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct EdnsFlags(u16);
+
+impl EdnsFlags {
+    /// DNSSEC OK (RFC 3225 §3).
+    pub const DO: Self = Self(0x8000);
+
+    /// The flags of a wire value.
+    #[must_use]
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    /// The wire value.
+    #[must_use]
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Whether every bit of `other` is set.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// These flags with `other` set.
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// These flags with `other` cleared.
+    #[must_use]
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+}
 
 code_type! {
     /// EDNS option code (RFC 6891 §6.1.2, IANA registry).
@@ -159,10 +198,8 @@ pub struct Edns {
     pub ext_rcode: u8,
     /// EDNS version, 0 (RFC 6891 §6.1.3); a responder that does not know it answers BADVERS.
     pub version: u8,
-    /// DNSSEC OK (RFC 3225).
-    pub dnssec_ok: bool,
-    /// The 15 remaining flag bits, which must be zero when sent and ignored when received.
-    pub z: u16,
+    /// The flags: DO and the reserved bits.
+    pub flags: EdnsFlags,
     /// The options, in order.
     pub options: Vec<EdnsOption>,
 }
@@ -173,8 +210,7 @@ impl Default for Edns {
             udp_payload: DEFAULT_UDP_PAYLOAD,
             ext_rcode: 0,
             version: 0,
-            dnssec_ok: false,
-            z: 0,
+            flags: EdnsFlags::default(),
             options: Vec::new(),
         }
     }
@@ -217,8 +253,7 @@ impl Edns {
             udp_payload: class,
             ext_rcode,
             version,
-            dnssec_ok: flags & !Z_MASK != 0,
-            z: flags & Z_MASK,
+            flags: EdnsFlags(flags),
             options,
         };
         Ok((edns, invalid))
@@ -241,8 +276,7 @@ impl Edns {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        let flags = (u16::from(self.dnssec_ok) << 15) | (self.z & Z_MASK);
-        let [flags_hi, flags_lo] = flags.to_be_bytes();
+        let [flags_hi, flags_lo] = self.flags.0.to_be_bytes();
         w.put_u8(0)?;
         w.put_u16(RecordType::OPT.0)?;
         w.put_u16(self.udp_payload)?;

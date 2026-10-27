@@ -7,6 +7,9 @@ use crate::rdata::{Opaque, RData};
 use crate::wire::{Reader, Writer};
 
 /// A time to live in seconds: 0 to 2^31 - 1 (RFC 2181 §8).
+///
+/// One exception: an OPT record kept among the records (D9) keeps its whole TTL field, which holds EDNS bits
+/// (RFC 6891 §6.1.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ttl(u32);
 
@@ -116,8 +119,8 @@ impl Record {
     /// Reads one record.
     ///
     /// RDATA that is well delimited but invalid for its type is kept as [`Opaque`] bytes and reported in
-    /// [`DecodedRecord::invalid_rdata`], except for the types that may hold compressed names (NS, CNAME, SOA, PTR,
-    /// MX): their bytes mean nothing outside the message, so that is an error (D9).
+    /// [`DecodedRecord::invalid_rdata`], except for the types that may hold compressed names
+    /// ([`RData::may_hold_compressed_names`]): their bytes mean nothing outside the message, so that is an error (D9).
     ///
     /// # Errors
     ///
@@ -138,26 +141,26 @@ impl Record {
         let bytes = rdata;
         let (data, invalid_rdata) = match RData::decode(rtype, &mut rdata) {
             Ok(data) => (data, None),
-            Err(e) if RData::has_compressible_names(rtype) => return Err(e),
+            Err(e) if RData::may_hold_compressed_names(rtype) => return Err(e),
             Err(e) => {
                 let mut bytes = bytes;
-                (
-                    RData::Opaque(Opaque {
-                        rtype,
-                        data: bytes.rest().into(),
-                    }),
-                    Some(e),
-                )
+                (RData::Opaque(Opaque::invalid(rtype, bytes.rest())), Some(e))
             }
         };
-        let record = Self::new(name, class, Ttl::from_wire(ttl), data);
+        // The TTL field of an OPT record kept as a record (D9) holds EDNS bits, not seconds: kept whole.
+        let ttl = if rtype == RecordType::OPT {
+            Ttl(ttl)
+        } else {
+            Ttl::from_wire(ttl)
+        };
+        let record = Self::new(name, class, ttl, data);
         Ok(DecodedRecord {
             record,
             invalid_rdata,
         })
     }
 
-    /// Writes the record, names uncompressed.
+    /// Writes the record, compressing its owner and the RDATA names of the RFC 1035 types (RFC 3597 §4).
     ///
     /// # Errors
     ///

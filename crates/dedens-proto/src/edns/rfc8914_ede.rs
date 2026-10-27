@@ -57,6 +57,12 @@ code_type! {
     NETWORK_ERROR = 23, "Network Error";
     /// Invalid data.
     INVALID_DATA = 24, "Invalid Data";
+    /// Signature expired before valid (IANA registry).
+    SIGNATURE_EXPIRED_BEFORE_VALID = 25, "Signature Expired before Valid";
+    /// Too early: 0-RTT data refused (RFC 9250 §4.5).
+    TOO_EARLY = 26, "Too Early";
+    /// Unsupported NSEC3 iterations value (RFC 9276 §3.2).
+    UNSUPPORTED_NSEC3_ITERATIONS = 27, "Unsupported NSEC3 Iterations Value";
 }
 
 /// Why a query failed or what was done to its answer, with optional human-readable text (RFC 8914 §2).

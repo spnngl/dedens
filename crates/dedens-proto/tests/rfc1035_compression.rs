@@ -28,6 +28,27 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
 }
 
 #[test]
+fn hundreds_of_distinct_names_are_all_compressed() {
+    let mut message = Message::query(1, Question::new(dns("example."), RecordType::A));
+    message.edns = None;
+    message.answer = (0..250)
+        .map(|n| {
+            rec(
+                &format!("h{n}.example."),
+                RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+            )
+        })
+        .collect();
+    let wire = message.to_vec().unwrap();
+    // Header, question; each record: its own label, a pointer to `example.`, fixed fields, address.
+    let records: usize = (0..250)
+        .map(|n| 1 + format!("h{n}").len() + 2 + 10 + 4)
+        .sum();
+    assert_eq!(wire.len(), 12 + 9 + 4 + records);
+    assert_eq!(Message::decode(&wire).unwrap().message, message);
+}
+
+#[test]
 fn a_repeated_name_costs_a_two_byte_pointer() {
     let message = answer(vec![rec("example.com", a()), rec("example.com", a())]);
     let wire = message.to_vec().unwrap();

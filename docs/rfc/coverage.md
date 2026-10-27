@@ -7,7 +7,7 @@ Status: `planned` (in the current phases), `partial` (the sections listed are do
 | RFC | Subject | Status | Code | Tests |
 |---|---|---|---|---|
 | [1034](https://datatracker.ietf.org/doc/html/rfc1034) | Concepts and facilities | planned | | |
-| [1035](https://datatracker.ietf.org/doc/html/rfc1035) | Wire format, presentation format, RDATA | partial: §2.3.4, §3.1, §3.2-3.4 (A NS CNAME SOA PTR MX TXT), §4.1.1-4.1.4 (decoding, compression when encoding) | `crates/dedens-proto/src/{name,header,question,record}.rs`, `src/rdata/rfc1035_*.rs` | `crates/dedens-proto/tests/rfc1035{,_compression}.rs` |
+| [1035](https://datatracker.ietf.org/doc/html/rfc1035) | Wire format, presentation format, RDATA | partial: §2.3.4, §3.1, §3.2-3.4 (A NS CNAME SOA PTR MX TXT typed; MD MF MB MG MR MINFO opaque with names expanded), §4.1.1-4.1.4 (decoding, compression when encoding), §5.1 name escapes | `crates/dedens-proto/src/{name,header,question,record}.rs`, `src/rdata/rfc1035_*.rs` | `crates/dedens-proto/tests/rfc1035{,_compression}.rs` |
 | [1123](https://datatracker.ietf.org/doc/html/rfc1123) | Host names, TCP support (§6.1) | planned | | |
 | [2181](https://datatracker.ietf.org/doc/html/rfc2181) | Clarifications: TTL, label length, truncation | partial: §8 TTL, §9 truncation, §11 label contents | `crates/dedens-proto/src/record.rs` | `crates/dedens-proto/tests/rfc2181{,_truncation}.rs` |
 | [2782](https://datatracker.ietf.org/doc/html/rfc2782) | SRV | done | `crates/dedens-proto/src/rdata/rfc2782_srv.rs` | `crates/dedens-proto/tests/rfc2782.rs` |
@@ -25,5 +25,5 @@ Status: `planned` (in the current phases), `partial` (the sections listed are do
 | [8482](https://datatracker.ietf.org/doc/html/rfc8482) | Minimal responses to ANY | planned | | |
 | [8659](https://datatracker.ietf.org/doc/html/rfc8659) | CAA | done | `crates/dedens-proto/src/rdata/rfc8659_caa.rs` | `crates/dedens-proto/tests/rfc8659.rs` |
 | [8914](https://datatracker.ietf.org/doc/html/rfc8914) | Extended DNS errors | done | `crates/dedens-proto/src/edns/rfc8914_ede.rs` | `crates/dedens-proto/tests/rfc8914.rs` |
-| [9460](https://datatracker.ietf.org/doc/html/rfc9460) | SVCB and HTTPS | partial: wire format, §7 keys 0-6, §8 (presentation format and client procedure not yet) | `crates/dedens-proto/src/rdata/rfc9460_svcb.rs` | `crates/dedens-proto/tests/rfc9460.rs` |
+| [9460](https://datatracker.ietf.org/doc/html/rfc9460) | SVCB and HTTPS | partial: wire format, §2.4.3 self-consistency, §7 keys 0-6, §8 (presentation format and client procedure not yet) | `crates/dedens-proto/src/rdata/rfc9460_svcb.rs` | `crates/dedens-proto/tests/rfc9460.rs` |
 | [9619](https://datatracker.ietf.org/doc/html/rfc9619) | QDCOUNT is at most one | partial: §4 decoding flags it (not yet: FORMERR in a server) | `crates/dedens-proto/src/message.rs` | `crates/dedens-proto/tests/message.rs` |

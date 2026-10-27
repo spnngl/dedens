@@ -122,8 +122,8 @@ pub struct Header {
     pub flags: Flags,
     /// Kind of query.
     pub opcode: Opcode,
-    /// The low four bits of the response code; `Message::rcode` adds the upper
-    /// eight from EDNS.
+    /// The low four bits of the response code, 0 to 15; `Message::rcode` adds the upper eight from EDNS, and
+    /// `Message::set_rcode` splits a full one.
     pub rcode: Rcode,
 }
 
@@ -151,16 +151,23 @@ impl Header {
         Ok((header, counts))
     }
 
-    /// Writes the header with `counts`; only the low four bits of the opcode and of the rcode are written.
+    /// Writes the header with `counts`.
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it does not fit.
+    /// [`EncodeError::OpcodeOutOfRange`] or [`EncodeError::RcodeOutOfRange`] when the opcode or the rcode does
+    /// not fit in its four bits; [`EncodeError::BufferFull`] when the header does not fit.
     pub fn encode(&self, counts: Counts, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        let opcode = Some(self.opcode.0)
+            .filter(|&op| op <= 0x0F)
+            .ok_or(EncodeError::OpcodeOutOfRange)?;
+        let rcode = u8::try_from(self.rcode.0)
+            .ok()
+            .filter(|&rcode| rcode <= 0x0F)
+            .ok_or(EncodeError::RcodeOutOfRange)?;
         let [flags_hi, flags_lo] = self.flags.bits().to_be_bytes();
-        let [_, rcode_lo] = self.rcode.0.to_be_bytes();
-        let hi = flags_hi | ((self.opcode.0 & 0x0F) << 3);
-        let lo = flags_lo | (rcode_lo & 0x0F);
+        let hi = flags_hi | (opcode << 3);
+        let lo = flags_lo | rcode;
         w.put_u16(self.id)?;
         w.put_bytes(&[hi, lo])?;
         w.put_u16(counts.questions)?;

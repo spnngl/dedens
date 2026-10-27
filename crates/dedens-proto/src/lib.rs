@@ -23,7 +23,7 @@ pub mod record;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
-pub use edns::Edns;
+pub use edns::{Edns, EdnsFlags};
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Counts, Flags, Header};
 pub use message::{Decoded, Encoded, Message, Section, Violation};
