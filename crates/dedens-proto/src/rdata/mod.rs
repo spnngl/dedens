@@ -278,8 +278,14 @@ pub struct Generic<'r>(&'r RData<'r>);
 
 impl fmt::Display for Generic<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = vec![0; MAX_MESSAGE_LEN];
-        let mut w = Writer::uncompressed(&mut buf);
+        // Most RDATA fits on the stack; only larger RDATA pays for a 64 KiB buffer.
+        let mut small = [0; 512];
+        let mut w = Writer::uncompressed(&mut small);
+        if self.0.encode(&mut w).is_ok() {
+            return text::write_generic(f, w.written());
+        }
+        let mut large = vec![0; MAX_MESSAGE_LEN];
+        let mut w = Writer::uncompressed(&mut large);
         self.0.encode(&mut w).map_err(|_| fmt::Error)?;
         text::write_generic(f, w.written())
     }

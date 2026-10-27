@@ -177,30 +177,30 @@ enum Directive {
 
 /// Reads the directive named by `first`; relative names in it are completed with the current origin.
 fn directive(first: &Token<'_>, f: &mut Fields<'_, '_>) -> Result<Directive, TextError> {
-    let directive = match first.raw.to_ascii_uppercase().as_slice() {
-        b"$ORIGIN" => Directive::Origin(f.name("$ORIGIN name")?),
-        b"$TTL" => {
-            let token = f.next("$TTL value")?;
-            let ttl = super::seconds(token.raw)
-                .and_then(Ttl::new)
-                .ok_or(token.error(TextErrorKind::Invalid("TTL")))?;
-            Directive::Ttl(ttl)
-        }
-        b"$INCLUDE" => {
-            let token = f.next("$INCLUDE file name")?;
-            let file = super::unescape(token.raw)
-                .map_err(|kind| token.error(kind))
-                .and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| token.error(TextErrorKind::Invalid("file name, not UTF-8")))
-                })?;
-            let origin = match f.peek() {
-                Some(_) => Some(f.name("$INCLUDE origin")?),
-                None => None,
-            };
-            Directive::Include { file, origin }
-        }
-        _ => return Err(first.error(TextErrorKind::UnknownDirective)),
+    let is = |name: &[u8]| first.raw.eq_ignore_ascii_case(name);
+    let directive = if is(b"$ORIGIN") {
+        Directive::Origin(f.name("$ORIGIN name")?)
+    } else if is(b"$TTL") {
+        let token = f.next("$TTL value")?;
+        let ttl = super::seconds(token.raw)
+            .and_then(Ttl::new)
+            .ok_or(token.error(TextErrorKind::Invalid("TTL")))?;
+        Directive::Ttl(ttl)
+    } else if is(b"$INCLUDE") {
+        let token = f.next("$INCLUDE file name")?;
+        let file = super::unescape(token.raw)
+            .map_err(|kind| token.error(kind))
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|_| token.error(TextErrorKind::Invalid("file name, not UTF-8")))
+            })?;
+        let origin = match f.peek() {
+            Some(_) => Some(f.name("$INCLUDE origin")?),
+            None => None,
+        };
+        Directive::Include { file, origin }
+    } else {
+        return Err(first.error(TextErrorKind::UnknownDirective));
     };
     f.finish()?;
     Ok(directive)

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use super::MAX_RDATA_LEN;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
-use crate::text::{Fields, Quoted, TextError, TextErrorKind, unescape};
+use crate::text::{Fields, Quoted, TextError, TextErrorKind, unescape_into};
 use crate::wire::{Reader, Writer};
 
 /// A TXT RDATA: one or more `<character-string>`s, each up to 255 arbitrary bytes behind a length byte
@@ -98,11 +98,24 @@ impl<'t> Iterator for CharacterStrings<'t> {
 impl Txt<'static> {
     /// Reads one or more character-strings, quoted or not (RFC 1035 §5.1).
     pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
-        let mut wire = Vec::new();
-        let mut token = Some(f.next("TXT string")?);
+        let first = f.next("TXT string")?;
+        // Escapes only shrink a string: one string never grows the buffer.
+        let mut wire = Vec::with_capacity(first.raw.len() + 1);
+        let mut token = Some(first);
         while let Some(at) = token {
-            let s = unescape(at.raw).map_err(|kind| at.error(kind))?;
-            push_string(&mut wire, &s).map_err(|e| at.error(TextErrorKind::Txt(e)))?;
+            // Unescaped in place behind its length byte, set once the length is known.
+            let len_at = wire.len();
+            wire.push(0);
+            unescape_into(at.raw, &mut wire).map_err(|kind| at.error(kind))?;
+            let txt_error = |e| at.error(TextErrorKind::Txt(e));
+            let len = u8::try_from(wire.len() - len_at - 1)
+                .map_err(|_| txt_error(TxtError::StringTooLong))?;
+            if wire.len() > MAX_RDATA_LEN {
+                return Err(txt_error(TxtError::TooLong));
+            }
+            if let Some(byte) = wire.get_mut(len_at) {
+                *byte = len;
+            }
             token = f.next_opt();
         }
         Ok(Txt(Cow::Owned(wire)))

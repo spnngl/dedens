@@ -344,24 +344,28 @@ pub(crate) fn seconds(raw: &[u8]) -> Option<u32> {
 /// `\DDD` is the byte of that decimal value. The lexer ends a quoted token at its closing quote, so any other `"`
 /// is text.
 pub(crate) fn unescape(raw: &[u8]) -> Result<Vec<u8>, TextErrorKind> {
-    let raw = raw
+    let mut out = Vec::with_capacity(raw.len());
+    unescape_into(raw, &mut out)?;
+    Ok(out)
+}
+
+/// [`unescape`], appending to `out`.
+pub(crate) fn unescape_into(raw: &[u8], out: &mut Vec<u8>) -> Result<(), TextErrorKind> {
+    let mut raw = raw
         .strip_prefix(b"\"")
         .and_then(|inner| inner.strip_suffix(b"\""))
         .unwrap_or(raw);
-    let mut out = Vec::with_capacity(raw.len());
-    let mut i = 0;
-    while let Some(&b) = raw.get(i) {
-        i += 1;
-        match b {
-            b'\\' => {
-                let (byte, used) = escape(raw.get(i..).unwrap_or_default())?;
-                out.push(byte);
-                i += used;
-            }
-            _ => out.push(b),
-        }
+    // Plain runs are copied whole; most strings have no escape at all.
+    while let Some(at) = raw.iter().position(|&b| b == b'\\') {
+        let (plain, rest) = raw.split_at(at);
+        out.extend_from_slice(plain);
+        let rest = rest.get(1..).unwrap_or_default();
+        let (byte, used) = escape(rest)?;
+        out.push(byte);
+        raw = rest.get(used..).unwrap_or_default();
     }
-    Ok(out)
+    out.extend_from_slice(raw);
+    Ok(())
 }
 
 /// The byte an escape stands for, `rest` being what follows the `\`, and how many bytes of `rest` it uses.

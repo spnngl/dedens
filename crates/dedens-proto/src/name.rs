@@ -431,23 +431,24 @@ impl Name<'_> {
             }
             _ => {}
         }
-        let mut wire = Vec::with_capacity(raw.len() + 2);
+        // Built on the stack, then copied into one allocation of the exact size.
+        let mut wire = Stack::default();
         // Offset of the length byte of the label being read.
         let mut label = 0;
-        wire.push(0);
+        wire.push(0)?;
         let mut absolute = false;
         let mut i = 0;
         while let Some(&b) = raw.get(i) {
             i += 1;
             let byte = match b {
                 b'.' => {
-                    close_label(&mut wire, label)?;
+                    wire.close_label(label)?;
                     if i == raw.len() {
                         absolute = true;
                         break;
                     }
-                    label = wire.len();
-                    wire.push(0);
+                    label = wire.len;
+                    wire.push(0)?;
                     continue;
                 }
                 b'\\' => {
@@ -463,37 +464,73 @@ impl Name<'_> {
                 }
                 _ => b,
             };
-            wire.push(byte);
+            wire.push(byte)?;
         }
         if absolute {
-            wire.push(0);
+            wire.push(0)?;
         } else {
-            close_label(&mut wire, label)?;
+            wire.close_label(label)?;
             let origin = origin.ok_or(TextErrorKind::RelativeName)?;
             let mut buf = [0; MAX_NAME_LEN];
-            wire.extend_from_slice(origin.to_wire(&mut buf));
+            wire.extend(origin.to_wire(&mut buf))?;
         }
-        if wire.len() > MAX_NAME_LEN {
-            return Err(TextErrorKind::Name(NameError::NameTooLong));
-        }
-        Ok(Name(Repr::Owned(wire.into_boxed_slice())))
+        Ok(Name(Repr::Owned(wire.as_slice().into())))
     }
 }
 
-/// Sets the length byte at `at` for the label after it, which must be 1 to 63 bytes.
-fn close_label(wire: &mut [u8], at: usize) -> Result<(), TextErrorKind> {
-    let len = wire.len() - at - 1;
-    if len == 0 {
-        return Err(TextErrorKind::Name(NameError::EmptyLabel));
+/// The wire form of a name being read from text: at most [`MAX_NAME_LEN`] bytes.
+struct Stack {
+    bytes: [u8; MAX_NAME_LEN],
+    len: usize,
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        Self {
+            bytes: [0; MAX_NAME_LEN],
+            len: 0,
+        }
     }
-    let len = u8::try_from(len)
-        .ok()
-        .filter(|&l| usize::from(l) <= MAX_LABEL_LEN)
-        .ok_or(TextErrorKind::Name(NameError::LabelTooLong))?;
-    if let Some(byte) = wire.get_mut(at) {
-        *byte = len;
+}
+
+impl Stack {
+    const TOO_LONG: TextErrorKind = TextErrorKind::Name(NameError::NameTooLong);
+
+    fn push(&mut self, byte: u8) -> Result<(), TextErrorKind> {
+        *self.bytes.get_mut(self.len).ok_or(Self::TOO_LONG)? = byte;
+        self.len += 1;
+        Ok(())
     }
-    Ok(())
+
+    fn extend(&mut self, bytes: &[u8]) -> Result<(), TextErrorKind> {
+        let end = self.len + bytes.len();
+        self.bytes
+            .get_mut(self.len..end)
+            .ok_or(Self::TOO_LONG)?
+            .copy_from_slice(bytes);
+        self.len = end;
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
+
+    /// Sets the length byte at `at` for the label after it, which must be 1 to 63 bytes.
+    fn close_label(&mut self, at: usize) -> Result<(), TextErrorKind> {
+        let len = self.len - at - 1;
+        if len == 0 {
+            return Err(TextErrorKind::Name(NameError::EmptyLabel));
+        }
+        let len = u8::try_from(len)
+            .ok()
+            .filter(|&l| usize::from(l) <= MAX_LABEL_LEN)
+            .ok_or(TextErrorKind::Name(NameError::LabelTooLong))?;
+        if let Some(byte) = self.bytes.get_mut(at) {
+            *byte = len;
+        }
+        Ok(())
+    }
 }
 
 /// Reads a name in presentation form; one not ending in a dot is taken as absolute, `@` is the root.

@@ -185,7 +185,7 @@ Vector's configuration tooling.
   record reads back from its text. The caller bounds `$INCLUDE` depth and cycles and vets paths from untrusted
   zones. Zone-level checks (RFC 1035 §5.2: SOA first, one class, records inside the zone, CNAME alone) belong
   to the later zone-loading layer. A 100 000-record zone reads in
-  9 ms, `domain` 10.5 ms, hickory-proto 57 ms (it also builds record sets; `just bench`).
+  7.3 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record sets; `just bench`).
 
 ## Later, undecided
 

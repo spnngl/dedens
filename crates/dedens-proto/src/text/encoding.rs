@@ -4,6 +4,22 @@ use core::fmt;
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// The value of each byte as a base64 character, `NOT_BASE64` for bytes outside the alphabet.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "indexes are below 64; `From` is not const"
+)]
+const BASE64_VALUES: [u8; 256] = {
+    let mut values = [NOT_BASE64; 256];
+    let mut i = 0;
+    while i < BASE64.len() {
+        values[BASE64[i] as usize] = i as u8;
+        i += 1;
+    }
+    values
+};
+const NOT_BASE64: u8 = 0xFF;
+
 /// Writes bytes as lowercase hex.
 pub(crate) struct Hex<'b>(pub(crate) &'b [u8]);
 
@@ -72,8 +88,11 @@ pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
         }
         let mut bits = 0_u32;
         for &b in group.get(..4 - pad)? {
-            let value = BASE64.iter().position(|&c| c == b)?;
-            bits = bits << 6 | u32::try_from(value).ok()?;
+            let value = BASE64_VALUES[usize::from(b)];
+            if value == NOT_BASE64 {
+                return None;
+            }
+            bits = bits << 6 | u32::from(value);
         }
         // Each `=` leaves two bits of the last character unused.
         if bits & ((1 << (2 * pad)) - 1) != 0 {
