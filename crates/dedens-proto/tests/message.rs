@@ -2,7 +2,12 @@
 
 mod common;
 
-use dedens_proto::{Class, DecodeErrorKind, Message, Name, Question, RecordType, Violation};
+use std::net::Ipv4Addr;
+
+use dedens_proto::rdata::RData;
+use dedens_proto::{
+    Class, DecodeErrorKind, Decoded, Message, Name, Question, RecordType, Violation,
+};
 use proptest::prelude::*;
 
 fn question(rtype: RecordType) -> Question<'static> {
@@ -97,6 +102,32 @@ fn invalid_rdata_is_flagged_with_its_place() {
     ));
 }
 
+#[test]
+fn decoding_into_a_spare_reuses_its_vectors() {
+    let message = Message {
+        questions: vec![question(RecordType::A)],
+        answer: (0..4)
+            .map(|i| common::rec(".", RData::A(Ipv4Addr::new(192, 0, 2, i))))
+            .collect(),
+        ..Message::default()
+    };
+    let wire = message.to_vec().unwrap();
+    let mut spare = Decoded::default();
+
+    let first = Message::decode_reusing(&wire, &mut spare).unwrap();
+    assert_eq!(first, Message::decode(&wire).unwrap());
+    let answers = first.message.answer.as_ptr().cast::<u8>();
+    spare = first.recycle();
+    assert_eq!(spare.message.answer, []);
+    let second = Message::decode_reusing(&wire, &mut spare).unwrap();
+    assert_eq!(second.message, message);
+    assert_eq!(second.message.answer.as_ptr().cast::<u8>(), answers);
+
+    spare = second.recycle();
+    assert!(Message::decode_reusing(&wire[..wire.len() - 1], &mut spare).is_err());
+    assert!(spare.message.answer.capacity() >= 4);
+}
+
 proptest! {
     #[test]
     fn round_trip(message in common::message()) {
@@ -108,5 +139,16 @@ proptest! {
     #[test]
     fn decoding_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..300)) {
         let _ = Message::decode(&bytes);
+    }
+
+    #[test]
+    fn decoding_into_a_used_spare_is_decoding(first in common::message(), second in common::message()) {
+        let (first, second) = (first.to_vec().unwrap(), second.to_vec().unwrap());
+        let mut spare = Decoded::default();
+        spare = Message::decode_reusing(&first, &mut spare).unwrap().recycle();
+        prop_assert_eq!(
+            Message::decode_reusing(&second, &mut spare).unwrap(),
+            Message::decode(&second).unwrap()
+        );
     }
 }

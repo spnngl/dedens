@@ -8,7 +8,7 @@
 use std::hint::black_box;
 
 use dedens_bench::{CASES, wire};
-use dedens_proto::Message;
+use dedens_proto::{Decoded, Message};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -27,6 +27,28 @@ fn main() {
 fn decode_dedens(bencher: Bencher<'_, '_>, case: &str) {
     let wire = wire(case);
     bencher.bench_local(|| Message::decode(black_box(&wire)).expect("decodes"));
+}
+
+/// Decode into the vectors of the previous message, as a server does; dropping the records is timed too.
+#[divan::bench(args = CASES)]
+fn decode_dedens_reusing(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    let mut spare = Decoded::default();
+    bencher.bench_local(|| {
+        let decoded = Message::decode_reusing(black_box(&wire), &mut spare).expect("decodes");
+        spare = black_box(decoded).recycle();
+    });
+}
+
+/// Decode and drop the message, timing the drop too: the baseline of `decode_dedens_reusing`.
+#[divan::bench(args = CASES)]
+fn decode_dedens_dropped(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    bencher.bench_local(|| {
+        drop(black_box(
+            Message::decode(black_box(&wire)).expect("decodes"),
+        ));
+    });
 }
 
 /// Decode then copy out of the input, as a cache storing the message does.

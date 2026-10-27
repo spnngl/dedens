@@ -88,7 +88,9 @@ decision is marked superseded, never reused. The rules a decision produces live 
   94/191/432, `into_owned()` after it 138/378/743. Re-encoding a borrowed message costs 13-33% more than an
   owned one (a/mx/txt_large 60/302/351 vs 53/227/305): a name with pointers is used in place when it has one run of labels (an owner that is only a
   pointer), else its runs are copied on the stack. `unsafe` only where a profile shows bounds checks matter:
-  replacing the checked slicing of `Reader` with `get_unchecked` was measured no faster.
+  replacing the checked slicing of `Reader` with `get_unchecked` was measured no faster. A server decodes with
+  `Message::decode_reusing`, into the section vectors of the previous message: no allocation once warm, median
+  ns a/mx/txt_large 77/174/325 against 97/195/341 for decoding and dropping.
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow

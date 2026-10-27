@@ -99,7 +99,7 @@ pub struct Encoded {
 }
 
 /// The result of [`Message::decode`]: the message and the rules it breaks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Decoded<'a> {
     /// The message.
     pub message: Message<'a>,
@@ -116,6 +116,47 @@ impl Decoded<'_> {
             violations: self.violations,
         }
     }
+
+    /// Empties the result, keeping the capacity of its vectors for [`Message::decode_reusing`], and frees it from
+    /// the input it borrowed.
+    #[must_use]
+    pub fn recycle(self) -> Decoded<'static> {
+        let Message {
+            questions,
+            answer,
+            authority,
+            additional,
+            ..
+        } = self.message;
+        Decoded {
+            message: Message {
+                questions: recycle(questions),
+                answer: recycle(answer),
+                authority: recycle(authority),
+                additional: recycle(additional),
+                ..Message::default()
+            },
+            violations: recycle(self.violations),
+        }
+    }
+
+    /// Empties the result, keeping the capacity of its vectors.
+    fn clear(&mut self) {
+        let message = &mut self.message;
+        message.questions.clear();
+        message.answer.clear();
+        message.authority.clear();
+        message.additional.clear();
+        message.edns = None;
+        self.violations.clear();
+    }
+}
+
+/// An empty vector with the allocation of `v`: `T` and `U` differ only by lifetimes, so they share a layout and
+/// the standard library collects in place.
+fn recycle<T, U>(mut v: Vec<T>) -> Vec<U> {
+    v.clear();
+    v.into_iter().filter_map(|_| None).collect()
 }
 
 impl<'a> Message<'a> {
@@ -186,41 +227,44 @@ impl<'a> Message<'a> {
     /// overruns the message, broken EDNS option framing, or invalid RDATA of a type with compressible names.
     /// Anything else that is wrong is a [`Violation`] in the result (D9).
     pub fn decode(msg: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
-        let mut r = Reader::new(msg);
-        let (header, counts) = Header::decode(&mut r)?;
-        let mut violations = Vec::new();
+        let mut out = Decoded::default();
+        decode_into(&mut Reader::new(msg), &mut out)?;
+        Ok(out)
+    }
 
-        let mut questions =
-            Vec::with_capacity(bounded(counts.questions, r.remaining(), MIN_QUESTION_LEN));
-        for _ in 0..counts.questions {
-            questions.push(Question::decode(&mut r)?);
+    /// Reads a message like [`Message::decode`], into the vectors of `spare` so that decoding message after
+    /// message allocates only for one bigger than any before; get `spare` back with [`Decoded::recycle`]. On error,
+    /// `spare` keeps its vectors.
+    ///
+    /// ```
+    /// # use dedens_proto::{Decoded, Message};
+    /// let mut spare = Decoded::default();
+    /// for id in [1, 2] {
+    ///     let wire = [0, id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    ///     let decoded = Message::decode_reusing(&wire, &mut spare)?;
+    ///     assert_eq!(decoded.message.header.id, u16::from(id));
+    ///     spare = decoded.recycle();
+    /// }
+    /// # Ok::<(), dedens_proto::DecodeError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`Message::decode`].
+    pub fn decode_reusing(
+        msg: &'a [u8],
+        spare: &mut Decoded<'static>,
+    ) -> Result<Decoded<'a>, DecodeError> {
+        // A `Decoded<'static>` is a `Decoded<'a>`: only its contents must go.
+        let mut out: Decoded<'a> = core::mem::take(spare);
+        out.clear();
+        match decode_into(&mut Reader::new(msg), &mut out) {
+            Ok(()) => Ok(out),
+            Err(error) => {
+                *spare = out.recycle();
+                Err(error)
+            }
         }
-        if questions.len() > 1 {
-            violations.push(Violation::MultipleQuestions);
-        }
-
-        let mut edns = None;
-        let mut section =
-            |which, count| read_section(&mut r, which, count, &mut edns, &mut violations);
-        let answer = section(Section::Answer, counts.answers)?;
-        let authority = section(Section::Authority, counts.authority)?;
-        let additional = section(Section::Additional, counts.additional)?;
-
-        if !r.is_empty() {
-            violations.push(Violation::TrailingBytes { len: r.remaining() });
-        }
-        let message = Self {
-            header,
-            questions,
-            answer,
-            authority,
-            additional,
-            edns,
-        };
-        Ok(Decoded {
-            message,
-            violations,
-        })
     }
 
     /// Writes the message into `buf` (at most 65535 bytes of it are used), compressing the names RFC 1035
@@ -357,14 +401,62 @@ fn bounded(claimed: u16, remaining: usize, min_len: usize) -> usize {
     usize::from(claimed).min(remaining / min_len)
 }
 
+/// Reads a message into the empty vectors of `out`.
+fn decode_into<'a>(r: &mut Reader<'a>, out: &mut Decoded<'a>) -> Result<(), DecodeError> {
+    let (header, counts) = Header::decode(r)?;
+    let message = &mut out.message;
+    message.header = header;
+    let violations = &mut out.violations;
+
+    let questions = &mut message.questions;
+    questions.reserve(bounded(counts.questions, r.remaining(), MIN_QUESTION_LEN));
+    for _ in 0..counts.questions {
+        questions.push(Question::decode(r)?);
+    }
+    if questions.len() > 1 {
+        violations.push(Violation::MultipleQuestions);
+    }
+
+    let Message {
+        answer,
+        authority,
+        additional,
+        edns,
+        ..
+    } = message;
+    read_section(r, Section::Answer, counts.answers, answer, edns, violations)?;
+    read_section(
+        r,
+        Section::Authority,
+        counts.authority,
+        authority,
+        edns,
+        violations,
+    )?;
+    read_section(
+        r,
+        Section::Additional,
+        counts.additional,
+        additional,
+        edns,
+        violations,
+    )?;
+
+    if !r.is_empty() {
+        violations.push(Violation::TrailingBytes { len: r.remaining() });
+    }
+    Ok(())
+}
+
 fn read_section<'a>(
     r: &mut Reader<'a>,
     section: Section,
     count: u16,
+    records: &mut Vec<Record<'a>>,
     edns: &mut Option<Edns<'a>>,
     violations: &mut Vec<Violation>,
-) -> Result<Vec<Record<'a>>, DecodeError> {
-    let mut records = Vec::with_capacity(bounded(count, r.remaining(), MIN_RECORD_LEN));
+) -> Result<(), DecodeError> {
+    records.reserve(bounded(count, r.remaining(), MIN_RECORD_LEN));
     for _ in 0..count {
         let raw = Record::read_raw(r)?;
         if raw.rtype == RecordType::OPT {
@@ -399,5 +491,5 @@ fn read_section<'a>(
         }
         records.push(decoded.record);
     }
-    Ok(records)
+    Ok(())
 }
