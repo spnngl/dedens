@@ -1,7 +1,6 @@
 # RFC coverage
 
 Where each RFC of [`list.md`](list.md) is implemented and tested. An RFC absent from this table is not started.
-Update the row in the same change as the code.
 
 Status: `planned` (in the current phases), `partial` (the sections listed are done), `done`.
 

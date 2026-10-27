@@ -1,8 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Nightly through `rustup which` and `rustup run`, not `cargo +nightly`: these also work when a cargo outside rustup
-# (Homebrew) comes first in PATH.
-
 # List recipes.
 default:
     @just --list
@@ -44,8 +41,8 @@ deny:
 bench:
     cargo bench --workspace
 
-# RAPx static analysis (PLAN.md D12), outside the gate. RAPx builds on rustc internals: its version and its nightly
-# move together, so bump both by hand.
+# RAPx static analysis, outside the gate. RAPx builds on rustc internals: its version and its nightly move together,
+# so bump both by hand.
 rapx_version := "0.7.64"
 rapx_toolchain := "nightly-2026-10-26"
 

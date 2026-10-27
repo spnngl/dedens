@@ -1,6 +1,6 @@
 name: rapx
 
-# RAPx static analysis (PLAN.md D12): weekly and manual, never required. Findings go to the job summary;
+# RAPx static analysis: weekly and manual, outside the gate. Findings go to the job summary;
 # a failure usually means the pinned RAPx and nightly (justfile) need a bump.
 on:
   schedule:
