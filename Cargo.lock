@@ -178,6 +178,16 @@ name = "dedens"
 version = "0.1.0"
 
 [[package]]
+name = "dedens-bench"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "divan",
+ "domain",
+ "hickory-proto",
+]
+
+[[package]]
 name = "dedens-net"
 version = "0.1.0"
 
@@ -185,9 +195,6 @@ version = "0.1.0"
 name = "dedens-proto"
 version = "0.1.0"
 dependencies = [
- "divan",
- "domain",
- "hickory-proto",
  "proptest",
  "thiserror",
 ]

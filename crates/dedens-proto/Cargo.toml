@@ -12,14 +12,7 @@ publish.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-divan.workspace = true
-domain.workspace = true
-hickory-proto.workspace = true
 proptest.workspace = true
-
-[[bench]]
-name = "message"
-harness = false
 
 [lints]
 workspace = true

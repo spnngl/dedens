@@ -1,0 +1,22 @@
+[package]
+name = "dedens-bench"
+description = "Benches of dedens against other DNS libraries; regular dependencies, so cargo-deny checks them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dedens-proto.workspace = true
+divan.workspace = true
+domain.workspace = true
+hickory-proto.workspace = true
+
+[[bench]]
+name = "message"
+harness = false
+
+[lints]
+workspace = true

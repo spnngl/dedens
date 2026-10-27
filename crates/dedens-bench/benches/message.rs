@@ -95,7 +95,9 @@ fn encode_domain_to_vec(bencher: Bencher<'_, '_>, case: &str) {
     bencher.bench_local(|| {
         // At most 24 names, which these responses do not reach.
         let target = StaticCompressor::new(Vec::new());
-        let mut builder = MessageBuilder::from_target(target).expect("header").question();
+        let mut builder = MessageBuilder::from_target(target)
+            .expect("header")
+            .question();
         for question in &questions {
             builder.push(question).expect("question");
         }

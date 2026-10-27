@@ -55,9 +55,11 @@ minimal-versions:
 deny:
     cargo deny check
 
-# Benchmarks (divan).
+# Benchmarks against other DNS libraries (D14): Rust ones with divan, then Go's miekg/dns, the codec of
+# CoreDNS, when Go is installed.
 bench:
     cargo bench --workspace
+    if command -v go >/dev/null; then cd crates/dedens-bench/go && go test -run '^$' -bench . -benchmem; fi
 
 # Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
 cov:

@@ -46,7 +46,7 @@ decision is marked superseded, never reused. The rules a decision produces live 
   records; when only additional data is lost, TC stays clear and the whole cut RRset goes, since without TC a
   partial RRset passes for the whole one (RFC 2181 §9); OPT is always kept (RFC 6891 §7) and opens the
   additional section, so it is the OPT a decoder lifts; RFC 9471 glue rules come with the server. Compression
-  table: a fixed-capacity hash table (256 offsets, bucketed on first label and length) of earlier names, matched
+  table: an open-addressing hash table of earlier names (256 slots, 192 names, keyed on first label and length), matched
   byte for byte, so output keeps each name's case (RFC 4343) and needs no allocation. Header fields that do not
   fit their bits (opcode, 4-bit rcode) are an encode error, never masked. EDNS UDP payload 1232 by default (DNS Flag Day 2020).
 - D11 RDATA v1: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT; every other type is opaque
@@ -65,11 +65,15 @@ decision is marked superseded, never reused. The rules a decision produces live 
 ## Performance and safety
 
 - D14 Owned decode first, measured with divan; a borrowed zero-copy view once a bench shows the gain. Baselines
-  in the same benches: hickory-proto and `domain` (dev-dependencies). Bar: no slower than hickory-proto;
-  beating `domain` is the optimisation target. First numbers (Apple M-series, median, ns; `a`/`mx`/`txt_large`
-  = 72/161/1187-byte captured responses): decode dedens 117/333/838, hickory 208/463/1249, domain 94/200/443;
-  encode dedens 37/245/246, hickory 292/969/1343, domain 99/260/362. The bar is met; `domain` is 1.2-1.9x
-  faster to decode because it borrows. The next gain is a borrowed view or inline names, not before a profile.
+  in the same benches: hickory-proto and `domain`, plus Go's `miekg/dns` (the codec of CoreDNS) through
+  `go test -bench` on the same files; all in `crates/dedens-bench`, regular dependencies so `cargo deny` checks
+  them. Every encoder compresses names. CoreDNS as a server is measured with dnsperf later. Bar: no slower
+  than hickory-proto; beating `domain` is the optimisation target. Numbers (Apple M-series, median, ns, one
+  run; `a`/`mx`/`txt_large` = 72/161/1187-byte captured responses): decode dedens 208/552/1437, hickory
+  250/708/1791, domain 146/297/620, miekg 281/766/2170; encode into a reused buffer dedens 73/330/461, miekg
+  162/637/1056; encode into a fresh buffer dedens 88/317/718, hickory 416/1291/1697, domain 198/666/771, miekg
+  177/667/1135. The bar is met; `domain` is 1.4-2.3x faster to decode because it borrows. The next gain is a
+  borrowed view or inline names, not before a profile.
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow
