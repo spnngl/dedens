@@ -8,7 +8,8 @@
 use std::hint::black_box;
 
 use dedens_bench::{CASES, wire};
-use dedens_proto::{Decoded, Message, MessageIndex};
+use dedens_proto::edns::{Cookie, EdnsOption};
+use dedens_proto::{Decoded, Message, MessageIndex, Name, Query, Question, RecordType};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -59,6 +60,55 @@ fn decode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
         Message::decode(black_box(&wire))
             .expect("decodes")
             .into_owned()
+    });
+}
+
+/// A typical query: `www.example.com. A`, RD, EDNS with a client cookie, as resolvers send it.
+fn query() -> Vec<u8> {
+    let name = Name::from_labels([&b"www"[..], b"example", b"com"]).expect("valid name");
+    let mut message = Message::query(0x1234, Question::new(name, RecordType::A));
+    let cookie = Cookie::new([1, 2, 3, 4, 5, 6, 7, 8], None).expect("client cookie");
+    if let Some(edns) = message.edns.as_mut() {
+        edns.options.push(EdnsOption::Cookie(cookie));
+    }
+    message.to_vec().expect("encodes")
+}
+
+/// Read a query in place (D21): header, question, EDNS fields, all of it checked.
+#[divan::bench]
+fn query_dedens(bencher: Bencher<'_, '_>) {
+    let wire = query();
+    bencher.bench_local(|| {
+        let query = Query::read(black_box(&wire)).expect("reads");
+        black_box((
+            query.question().cloned(),
+            query.edns().map(|e| e.udp_payload),
+        ));
+    });
+}
+
+/// Decode a query into a `Message`, its EDNS options in a vector.
+#[divan::bench]
+fn query_decode_dedens(bencher: Bencher<'_, '_>) {
+    let wire = query();
+    bencher.bench_local(|| Message::decode(black_box(&wire)).expect("decodes"));
+}
+
+/// Parse a query with `domain`: the question and the OPT record.
+#[divan::bench]
+fn query_domain(bencher: Bencher<'_, '_>) {
+    let wire = query();
+    bencher.bench_local(|| {
+        let message = DomainMessage::from_octets(black_box(wire.as_slice())).expect("parses");
+        let question = message.first_question().expect("question");
+        let opt = message.opt().expect("OPT");
+        black_box((
+            question,
+            opt.udp_payload_size(),
+            opt.opt()
+                .iter::<domain::base::opt::AllOptData<_, _>>()
+                .count(),
+        ));
     });
 }
 

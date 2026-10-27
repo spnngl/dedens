@@ -157,11 +157,7 @@ impl MessageIndex {
 
 /// Position of a section among the parts of [`MessageView::spans`], after the questions.
 const fn part_of(section: Section) -> usize {
-    match section {
-        Section::Answer => 1,
-        Section::Authority => 2,
-        Section::Additional => 3,
-    }
+    section.position() + 1
 }
 
 /// A message checked by [`MessageIndex::read`], read in place: every accessor parses the bytes it needs and never

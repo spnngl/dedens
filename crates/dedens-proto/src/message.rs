@@ -24,6 +24,17 @@ pub enum Section {
     Additional,
 }
 
+impl Section {
+    /// The place of the section in a message, from 0 for the answer.
+    pub(crate) const fn position(self) -> usize {
+        match self {
+            Self::Answer => 0,
+            Self::Authority => 1,
+            Self::Additional => 2,
+        }
+    }
+}
+
 /// A message: header, the four sections, and EDNS.
 ///
 /// The counts of the header are the lengths of the sections, so they are not stored (D8).

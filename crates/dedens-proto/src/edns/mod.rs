@@ -18,7 +18,7 @@ pub use rfc8914_ede::{ExtendedError, InfoCode};
 
 use crate::codes::{RecordType, code_type};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
-use crate::wire::{Reader, Writer};
+use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// The UDP payload size to advertise by default: 1232 bytes avoids IP fragmentation (DNS Flag Day 2020, D10).
 pub const DEFAULT_UDP_PAYLOAD: u16 = 1232;
@@ -28,6 +28,9 @@ const OPT_FIXED_LEN: usize = 11;
 
 /// Code and length of an option.
 const OPTION_HEADER_LEN: usize = 4;
+
+/// Where the header holds ARCOUNT (RFC 1035 §4.1.1).
+const ARCOUNT_AT: usize = 10;
 
 /// The 16 flag bits of an OPT record, the low half of its TTL (RFC 6891 §6.1.3).
 ///
@@ -263,19 +266,18 @@ impl<'a> Edns<'a> {
         ttl: u32,
         rdata: Reader<'a>,
     ) -> Result<(Self, Vec<InvalidOption>), DecodeError> {
-        let [ext_rcode, version, flags_hi, flags_lo] = ttl.to_be_bytes();
-        let flags = u16::from_be_bytes([flags_hi, flags_lo]);
         let mut options = Vec::new();
         let mut invalid = Vec::new();
         read_options(rdata, |option, error| {
             options.push(option);
             invalid.extend(error);
         })?;
+        let view = EdnsView::new(class, ttl, rdata);
         let edns = Self {
-            udp_payload: class,
-            ext_rcode,
-            version,
-            flags: EdnsFlags(flags),
+            udp_payload: view.udp_payload,
+            ext_rcode: view.ext_rcode,
+            version: view.version,
+            flags: view.flags,
             options,
         };
         Ok((edns, invalid))
@@ -297,6 +299,43 @@ impl<'a> Edns<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
+    /// Writes the OPT record after the message in `buf[..len]` and counts it in the header's ARCOUNT, returning
+    /// the new length: how a server adds its EDNS to a response copied from a cache.
+    ///
+    /// ```
+    /// # use dedens_proto::{Edns, Message, Question, RecordType, Name};
+    /// let mut message = Message::query(1, Question::new(Name::root(), RecordType::NS));
+    /// message.edns = None;
+    /// let mut buf = [0; 512];
+    /// let len = message.encode(&mut buf)?;
+    /// let len = Edns::default().append(&mut buf, len)?;
+    /// let decoded = Message::decode(&buf[..len]).expect("decodes");
+    /// assert_eq!(decoded.message.edns, Some(Edns::default()));
+    /// # Ok::<(), dedens_proto::EncodeError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when the record does not fit after `len`, or `buf[..len]` is shorter than a
+    /// header or already counts 65535 additional records.
+    pub fn append(&self, buf: &mut [u8], len: usize) -> Result<usize, EncodeError> {
+        let (message, tail) = buf
+            .split_at_mut_checked(len)
+            .ok_or(EncodeError::BufferFull)?;
+        let arcount = message
+            .get_mut(ARCOUNT_AT..ARCOUNT_AT + 2)
+            .ok_or(EncodeError::BufferFull)?;
+        let count = u16::from_be_bytes([arcount[0], arcount[1]])
+            .checked_add(1)
+            .ok_or(EncodeError::BufferFull)?;
+        let limit = MAX_MESSAGE_LEN.saturating_sub(len).min(tail.len());
+        let mut w = Writer::new(&mut tail[..limit]);
+        self.encode(&mut w)?;
+        let written = w.len();
+        arcount.copy_from_slice(&count.to_be_bytes());
+        Ok(len + written)
+    }
+
     pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         let [flags_hi, flags_lo] = self.flags.0.to_be_bytes();
         w.put_u8(0)?;
@@ -313,7 +352,6 @@ impl<'a> Edns<'a> {
     }
 }
 
-/// An OPT record whose options run past its RDATA is a RDATA length error.
 /// Reads the options of an OPT record's RDATA, handing each to `each` with, when its content is invalid for its
 /// code, why it is kept as [`EdnsOption::Unknown`].
 ///
@@ -321,28 +359,107 @@ impl<'a> Edns<'a> {
 ///
 /// [`DecodeError`] when the option framing is broken: an option cut short or running past the RDATA.
 pub(crate) fn read_options<'a>(
-    mut rdata: Reader<'a>,
+    rdata: Reader<'a>,
     mut each: impl FnMut(EdnsOption<'a>, Option<InvalidOption>),
 ) -> Result<(), DecodeError> {
-    while !rdata.is_empty() {
+    let mut options = Options { rdata };
+    while let Some((option, invalid)) = options.read()? {
+        each(option, invalid);
+    }
+    Ok(())
+}
+
+/// The options of an OPT record that was checked when its message was read, in wire order; an option whose
+/// content is invalid for its code comes as [`EdnsOption::Unknown`] (D9).
+#[derive(Debug, Clone)]
+pub struct Options<'a> {
+    rdata: Reader<'a>,
+}
+
+impl<'a> Options<'a> {
+    /// The next option and, when its content is invalid for its code, why it is kept unknown.
+    fn read(&mut self) -> Result<Option<(EdnsOption<'a>, Option<InvalidOption>)>, DecodeError> {
+        let rdata = &mut self.rdata;
+        if rdata.is_empty() {
+            return Ok(None);
+        }
         let code = OptionCode(rdata.u16().map_err(rdlength)?);
         let len = usize::from(rdata.u16().map_err(rdlength)?);
         let mut data = rdata.sub(len).map_err(rdlength)?;
         let mut raw = data;
-        match EdnsOption::decode_typed(code, &mut data) {
-            Ok(option) => each(option, None),
-            Err(error) => each(
+        Ok(Some(match EdnsOption::decode_typed(code, &mut data) {
+            Ok(option) => (option, None),
+            Err(error) => (
                 EdnsOption::Unknown {
                     code,
                     data: Cow::Borrowed(raw.rest()),
                 },
                 Some(InvalidOption { code, error }),
             ),
-        }
+        }))
     }
-    Ok(())
 }
 
+impl<'a> Iterator for Options<'a> {
+    type Item = EdnsOption<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let read = self
+            .read()
+            .expect("the options were checked when the message was read");
+        read.map(|(option, _)| option)
+    }
+}
+
+/// The OPT record of a message read in place: its fields, and its options read from the input when iterated.
+#[derive(Debug, Clone)]
+pub struct EdnsView<'a> {
+    /// As [`Edns::udp_payload`].
+    pub udp_payload: u16,
+    /// As [`Edns::ext_rcode`].
+    pub ext_rcode: u8,
+    /// As [`Edns::version`].
+    pub version: u8,
+    /// As [`Edns::flags`].
+    pub flags: EdnsFlags,
+    options: Reader<'a>,
+}
+
+impl<'a> EdnsView<'a> {
+    /// The fields of an OPT record whose RDATA was checked with [`read_options`].
+    pub(crate) const fn new(class: u16, ttl: u32, rdata: Reader<'a>) -> Self {
+        let [ext_rcode, version, flags_hi, flags_lo] = ttl.to_be_bytes();
+        Self {
+            udp_payload: class,
+            ext_rcode,
+            version,
+            flags: EdnsFlags(u16::from_be_bytes([flags_hi, flags_lo])),
+            options: rdata,
+        }
+    }
+
+    /// The options, in wire order.
+    #[must_use]
+    pub fn options(&self) -> Options<'a> {
+        Options {
+            rdata: self.options,
+        }
+    }
+
+    /// The same EDNS data with its options parsed into a vector.
+    #[must_use]
+    pub fn to_edns(&self) -> Edns<'a> {
+        Edns {
+            udp_payload: self.udp_payload,
+            ext_rcode: self.ext_rcode,
+            version: self.version,
+            flags: self.flags,
+            options: self.options().collect(),
+        }
+    }
+}
+
+/// An OPT record whose options run past its RDATA is a RDATA length error.
 fn rdlength(mut e: DecodeError) -> DecodeError {
     e.kind = DecodeErrorKind::RdataLength;
     e

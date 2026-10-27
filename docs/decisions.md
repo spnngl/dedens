@@ -48,6 +48,10 @@ decision is marked superseded, never reused. The rules a decision produces live 
   RDATA are parsed on access. Measured: the check costs 65-80% of a full decode, since parsing names and RDATA,
   not building records, is most of decoding; the gain is no allocation, O(1) access to any record, and TTL
   offsets for rewriting a copy of the bytes.
+- D21 `Query`: a query read in place for the server, without the D20 table: header, first question, EDNS as
+  an `EdnsView` (fields, options iterated from the input), violations. Checks all of the message as
+  `Message::decode` does (fuzzed against it), allocates only to list violations. `Edns::append` writes an OPT
+  record after a message already in a buffer, so the server adds its EDNS to cached bytes without re-encoding.
 - D9 Decoder: bounds-checked cursor; a compression pointer must point strictly before the current label, which
   rules out loops, and a name follows at most 127 pointers, which rules out long chains; unknown types stay
   opaque RDATA (RFC 3597); every input decodes or errors (fuzzed).
