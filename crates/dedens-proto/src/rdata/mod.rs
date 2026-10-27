@@ -218,7 +218,10 @@ impl RData<'static> {
             RecordType::CAA => Self::Caa(Caa::from_text(f)?),
             RecordType::SVCB => Self::Svcb(Svcb::from_text(f)?),
             RecordType::HTTPS => Self::Https(Svcb::from_text(f)?),
-            _ => return Err(f.end_error(TextErrorKind::NeedsGeneric)),
+            _ => match Opaque::from_text(rtype, f) {
+                Some(opaque) => Self::Opaque(opaque?),
+                None => return Err(f.end_error(TextErrorKind::NeedsGeneric)),
+            },
         })
     }
 

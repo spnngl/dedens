@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use crate::codes::RecordType;
 use crate::error::{DecodeError, EncodeError};
 use crate::name::{MAX_NAME_LEN, Name};
-use crate::text;
+use crate::text::{self, Fields, TextError};
 use crate::wire::{Reader, Writer};
 
 /// RDATA of a type this crate does not interpret, or whose content is invalid for its type (D9).
@@ -19,11 +19,85 @@ pub struct Opaque<'a> {
     data: Cow<'a, [u8]>,
 }
 
-/// The generic form of RFC 3597 §5: `\# length hex`.
+/// The fields in order for the types made of names and 16-bit numbers only (MD MF MB MG MR MINFO of RFC 1035,
+/// RP AFSDB RT of RFC 1183, PX of RFC 2163); the generic form of RFC 3597 §5, `\# length hex`, for the others.
 impl fmt::Display for Opaque<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        text::write_generic(f, &self.data)
+        match self.text_fields() {
+            Some(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" ")?;
+                    }
+                    match item {
+                        TextItem::Name(name) => write!(f, "{name}")?,
+                        TextItem::Number(n) => write!(f, "{n}")?,
+                    }
+                }
+                Ok(())
+            }
+            None => text::write_generic(f, &self.data),
+        }
     }
+}
+
+/// A field of the types with a text form here.
+enum TextItem<'a> {
+    Name(Name<'a>),
+    Number(u16),
+}
+
+impl Opaque<'_> {
+    /// The fields of RDATA whose type has a text form here, or `None`.
+    fn text_fields(&self) -> Option<Vec<TextItem<'_>>> {
+        let fields = text_layout(self.rtype)?;
+        let mut r = Reader::new(&self.data);
+        let items = fields
+            .iter()
+            .map(|field| match field {
+                Field::Name => Name::decode_uncompressed(&mut r).ok().map(TextItem::Name),
+                _ => r.u16().ok().map(TextItem::Number),
+            })
+            .collect::<Option<Vec<_>>>()?;
+        r.is_empty().then_some(items)
+    }
+}
+
+impl Opaque<'static> {
+    /// Reads the fields of a type made of names and 16-bit numbers only, or `None` for the other types.
+    pub(super) fn from_text(
+        rtype: RecordType,
+        f: &mut Fields<'_, '_>,
+    ) -> Option<Result<Self, TextError>> {
+        let fields = text_layout(rtype)?;
+        let mut data = Vec::new();
+        for field in fields {
+            let read = match field {
+                Field::Name => f.name("domain name").map(|name| {
+                    data.extend_from_slice(name.to_wire(&mut [0; MAX_NAME_LEN]));
+                }),
+                _ => f
+                    .number::<u16>("16-bit number")
+                    .map(|n| data.extend_from_slice(&n.to_be_bytes())),
+            };
+            if let Err(e) = read {
+                return Some(Err(e));
+            }
+        }
+        Some(Ok(Self {
+            rtype,
+            data: Cow::Owned(data),
+        }))
+    }
+}
+
+/// The layout of `rtype` when it is made of names and 16-bit numbers only.
+fn text_layout(rtype: RecordType) -> Option<&'static [Field]> {
+    layout(rtype).filter(|fields| {
+        fields
+            .iter()
+            .all(|field| matches!(field, Field::Name | Field::Bytes(2)))
+    })
 }
 
 /// One field of the RDATA of a type that holds names but has no typed form here.

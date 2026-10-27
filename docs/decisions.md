@@ -171,6 +171,15 @@ Vector's configuration tooling.
   completely, then swaps it atomically (`ArcSwap`); queries in flight finish on the old one; the cache and
   upstream connections live outside it and survive. What needs a restart (listeners, thread count) is decided
   when the server starts.
+- D25 Presentation format and zone files (`dedens-proto::text`, RFC 1035 §5, RFC 2308 §4, RFC 3597 §5): own
+  lexer, base64 and hex, no dependency. Read: BIND TTL units, `\#` for every type (known types decoded to
+  their typed form), case kept as written (RFC 4343 §2.1). Written: one tab-separated line per record,
+  absolute names, TTL in seconds, the typed form (or `\#` on request with `generic()`). `ZoneReader` yields
+  records and `$INCLUDE`s: the caller reads the included file (the library does no file I/O) and reads it with
+  `ZoneReader::include`, which keeps the TTL and class defaults and leaves the parent's origin alone. Omitted
+  TTL: explicit, else `$TTL`, else the last explicit one, else an error; omitted class: the last one, else IN.
+  The first error stops the reader, with line and column. No `$GENERATE`. A 100 000-record zone reads in
+  9 ms, `domain` 10.5 ms, hickory-proto 57 ms (it also builds record sets; `just bench`).
 
 ## Later, undecided
 

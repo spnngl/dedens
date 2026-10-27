@@ -21,9 +21,9 @@ Plans (`PLAN.md`, `plan/`) are local and always git-ignored: phase order and eac
   or per group of types sharing a format, named after the defining RFC (`rdata/rfc2782_srv.rs`,
   `rdata/rfc1035_domain_name.rs`), conformance tests per RFC (`tests/rfc1035.rs`).
 - Test data is real: `just capture` saves responses into `crates/dedens-proto/tests/testdata/`, which `tests/captured.rs`
-  and the fuzz smoke test (`fuzz/`, `just fuzz`) read. A parser of outside data gets a fuzz target in `fuzz/src/lib.rs`.
-  `just bench` compares decoding and encoding with hickory-proto, `domain` and Go's `miekg/dns` (D14); the benches
-  live in `crates/dedens-bench` so `cargo deny` checks what they pull in. `just cov` shows coverage.
+  and the fuzz smoke test (`fuzz/`, `just fuzz`) read; example zone files from the RFCs go in `tests/zones/`.
+  A parser of outside data gets a fuzz target in `fuzz/src/lib.rs`. `just bench` compares decoding, encoding and
+  zone reading with hickory-proto, `domain` and Go's `miekg/dns` (D14); the benches live in `crates/dedens-bench` so `cargo deny` checks what they pull in. `just cov` shows coverage.
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the
   crate, and `just rapx` read before committing.
 - Use the justfile's pinned `nightly`, called the way the justfile does (`rustup which`, `rustup run`): a

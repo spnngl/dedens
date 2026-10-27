@@ -78,9 +78,9 @@ fuzz target="decode_message" seconds="300":
     # the stable of rust-toolchain.toml.
     export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
     cd fuzz
-    # The first corpus directory is the one libFuzzer writes to; the captured responses only seed it.
+    # The first corpus directory is the one libFuzzer writes to; the captured responses and zone files only seed it.
     mkdir -p "corpus/{{target}}"
-    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
+    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}}
 
 # Every fuzz target for `seconds` each, as the scheduled CI job runs them.
 fuzz-all seconds="60":
@@ -90,7 +90,7 @@ fuzz-all seconds="60":
     cd fuzz
     for target in $(cargo fuzz list); do
         mkdir -p "corpus/$target"
-        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata -- -max_total_time={{seconds}}
+        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones -- -max_total_time={{seconds}}
     done
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).

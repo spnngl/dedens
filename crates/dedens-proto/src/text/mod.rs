@@ -4,6 +4,8 @@
 //! absolute names, TTL in seconds, character-strings quoted, bytes outside printable ASCII as `\DDD`.
 //! [`RData::generic`] and [`Record::generic`] write the form of RFC 3597 §5 (`TYPE65280 \# 2 abcd`).
 //!
+//! Zone files: [`ZoneReader`].
+//!
 //! Read: `FromStr` on the same types. Text is bytes (`&[u8]` underneath), since a quoted string may hold any
 //! byte; a known type may be written in the generic form and is read into its typed RDATA (RFC 3597 §5).
 //!
@@ -15,16 +17,19 @@
 
 pub(crate) mod encoding;
 mod lexer;
+mod zone;
 
 use core::fmt;
 use core::str::FromStr;
 
 pub(crate) use lexer::{Lexer, Token};
+use zone::Defaults;
+pub use zone::{Entry, ZoneReader};
 
 use crate::codes::{Class, RecordType};
 use crate::error::DecodeErrorKind;
 use crate::name::{Name, NameError};
-use crate::rdata::{RData, SvcParamsError, TxtError};
+use crate::rdata::{SvcParamsError, TxtError};
 use crate::record::{Record, Ttl};
 
 /// Text that does not hold a valid record, and where.
@@ -93,6 +98,9 @@ pub enum TextErrorKind {
     /// An entry that starts with a blank, before any owner name.
     #[error("no owner name to repeat")]
     NoOwner,
+    /// A `$` entry other than `$ORIGIN`, `$INCLUDE` and `$TTL`.
+    #[error("unknown directive: only $ORIGIN, $INCLUDE and $TTL")]
+    UnknownDirective,
 }
 
 /// Cursor over the fields of one entry.
@@ -182,7 +190,7 @@ impl<'e, 't> Fields<'e, 't> {
     }
 
     /// Checks that no field is left.
-    pub(crate) fn finish(self) -> Result<(), TextError> {
+    pub(crate) fn finish(&self) -> Result<(), TextError> {
         match self.tokens.first() {
             Some(token) => Err(token.error(TextErrorKind::Trailing)),
             None => Ok(()),
@@ -253,17 +261,8 @@ pub(crate) fn one_record(text: &[u8]) -> Result<Record<'static>, TextError> {
     }
     let origin = Name::root();
     let mut f = Fields::new(&tokens, Some(&origin));
-    let name = f.name("owner name")?;
-    let head = Head::read(&mut f)?;
-    let (line, column) = head.at;
-    let ttl = head.ttl.and_then(Ttl::new).ok_or(TextError {
-        line,
-        column,
-        kind: TextErrorKind::NoTtl,
-    })?;
-    let data = RData::from_text(head.rtype, &mut f)?;
-    f.finish()?;
-    let record = Record::new(name, head.class.unwrap_or(Class::IN), ttl, data);
+    let owner = f.name("owner name")?;
+    let record = Defaults::default().record(owner, &mut f)?;
     if lexer.entry(&mut tokens)?.is_some()
         && let Some(first) = tokens.first()
     {

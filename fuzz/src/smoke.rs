@@ -1,5 +1,5 @@
 //! Stable-toolchain stand-in for a short fuzz run: replays every captured response in
-//! `crates/dedens-proto/tests/testdata/` plus truncated and bit-flipped variants through each target. Any panic
+//! `crates/dedens-proto/tests/testdata/` and the zone files of `tests/zones/`, plus truncated and bit-flipped variants through each target. Any panic
 //! fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it into a test).
 
 use std::fs;
@@ -17,20 +17,21 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Captured responses and example zone files: every target gets every seed, whatever format it parses.
 fn seeds() -> Vec<(String, Vec<u8>)> {
-    let dir = root().join("../crates/dedens-proto/tests/testdata");
-    let mut seeds: Vec<_> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|entry| {
+    let mut seeds = Vec::new();
+    for dir in ["testdata", "zones"] {
+        let dir = root().join("../crates/dedens-proto/tests").join(dir);
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
             let path = entry.expect("dir entry").path();
             let name = path
                 .file_name()
                 .expect("file name")
                 .to_string_lossy()
                 .into_owned();
-            (name, fs::read(&path).expect("read seed"))
-        })
-        .collect();
+            seeds.push((name, fs::read(&path).expect("read seed")));
+        }
+    }
     seeds.sort();
     seeds
 }

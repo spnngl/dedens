@@ -37,4 +37,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "parse_zone"
+path = "fuzz_targets/parse_zone.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

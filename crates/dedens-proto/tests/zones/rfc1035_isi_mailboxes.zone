@@ -1,0 +1,8 @@
+; RFC 1035 §5.3: <SUBSYS>ISI-MAILBOXES.TXT, included by rfc1035_isi.zone.
+
+MOE     MB      A.ISI.EDU.
+LARRY   MB      A.ISI.EDU.
+CURLEY  MB      A.ISI.EDU.
+STOOGES MG      MOE
+        MG      LARRY
+        MG      CURLEY

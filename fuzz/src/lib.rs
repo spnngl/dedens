@@ -4,7 +4,8 @@
 //! `cargo-fuzz` (nightly) reaches them through the shims in `fuzz_targets/`; `cargo test --lib` (stable,
 //! `just fuzz-smoke`) replays the captured responses plus mutated variants through [`TARGETS`].
 
-use dedens_proto::{EdnsView, EncodeError, Flags, Message, MessageIndex, Query};
+use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
+use dedens_proto::{EdnsView, EncodeError, Flags, Message, MessageIndex, Name, Query, Record, Ttl};
 
 #[cfg(test)]
 mod smoke;
@@ -17,7 +18,30 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("decode_message", decode_message),
     ("read_view", read_view),
     ("read_query", read_query),
+    ("parse_zone", parse_zone),
 ];
+
+/// A zone file: every record it yields is written as text and read back to the same record, names byte for
+/// byte, and its generic form (RFC 3597 §5) reads back to it too.
+///
+/// # Panics
+///
+/// On a disagreement, or a bug in the reader or writer.
+pub fn parse_zone(data: &[u8]) {
+    // A default TTL, so that files without one, like the example of RFC 1035 §5.3, still yield records.
+    for entry in ZoneReader::new(data, Some(Name::root())).with_ttl(Ttl::ZERO) {
+        let Ok(ZoneEntry::Record(record)) = entry else {
+            continue;
+        };
+        for text in [record.to_string(), record.generic().to_string()] {
+            let again: Record<'_> = text
+                .parse()
+                .unwrap_or_else(|e| panic!("`{text}` reads back: {e}"));
+            // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
+            assert_eq!(format!("{again:?}"), format!("{record:?}"), "`{text}`");
+        }
+    }
+}
 
 /// A DNS query off the wire, read in place: it accepts what [`Message::decode`] accepts, and reads the same
 /// header, first question, EDNS and violations.
