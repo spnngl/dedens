@@ -34,12 +34,17 @@ decision is marked superseded, never reused. The rules a decision produces live 
 - D9 Decoder: bounds-checked cursor; a compression pointer must point strictly before the current label, which
   rules out loops; unknown types stay opaque RDATA (RFC 3597); every input decodes or errors (fuzzed).
   Strictness: broken structure (lengths, pointers, name size) is an error. A readable message that breaks a
-  rule (several OPT, OPT outside additional, QDCOUNT > 1 per RFC 9619, trailing bytes, SVCB key order) decodes
-  and carries the violations: the CLI shows them, the server answers FORMERR.
+  rule (several OPT, OPT outside additional, OPT owner not root, QDCOUNT > 1 per RFC 9619, trailing bytes)
+  decodes and carries the violations: the CLI shows them, the server answers FORMERR. RDATA or an EDNS option
+  that is well delimited but invalid inside (SVCB key order, CAA tag, client subnet prefix) is kept as received,
+  opaque, with a violation, so typed values always hold their invariants. Exception: invalid RDATA of a type
+  whose names may be compressed (RFC 3597 §4) is an error, since its pointers mean nothing outside this message.
 - D10 Encoder: writes into a caller buffer with a size limit and no allocation (fits io_uring registered
   buffers), plus a `Vec<u8>` convenience. Compresses names only inside RFC 1035 types (RFC 3597 §4).
-  Truncation: stop at the first record that does not fit and set TC (RFC 2181 §9); OPT is always kept
-  (RFC 6891 §7); RFC 9471 glue rules come with the server. EDNS UDP payload 1232 by default (DNS Flag Day 2020).
+  Truncation: stop at the first record that does not fit; set TC only when the answer or authority section lost
+  records, not for additional data (RFC 2181 §9); OPT is always kept (RFC 6891 §7); RFC 9471 glue rules come
+  with the server. Compression table: a fixed-capacity array of earlier name offsets, matched byte for byte, so
+  output keeps each name's case (RFC 4343) and needs no allocation. EDNS UDP payload 1232 by default (DNS Flag Day 2020).
 - D11 RDATA v1: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT; every other type is opaque
   RFC 3597 data until added.
 - D12 Typed EDNS options v1: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client
@@ -47,6 +52,9 @@ decision is marked superseded, never reused. The rules a decision produces live 
   keys 0-6 and dohpath (RFC 9461); others opaque.
 - D13 `dedens-proto` layout by topic, RDATA and conformance tests by RFC (rule in `AGENTS.md`). Rejected strict
   `rfcNNNN/` folders: names, the header and rcodes are each defined across several RFCs.
+- D19 Codes (type, class, opcode, rcode, EDNS option, SVCB key) are newtypes over the integer with named
+  constants, not enums with an `Unknown` arm: every value is representable once, and a new code is one constant.
+  `Record` holds no type field: the type comes from its RDATA, so they cannot disagree.
 
 ## Performance and safety
 
