@@ -6,8 +6,8 @@ decision is marked superseded, never reused. The rules a decision produces live 
 ## Scope and architecture
 
 - D1 Crates: `dedens-proto` (wire format), `dedens-net` (transports), `dedens-scenario` (query files, D17),
-  `apps/dedens` (CLI). Later `dedens-resolver`, `dedens-server`, `apps/dedensd` and a kube backend, all built on
-  these crates. CLI and server are separate binaries.
+  `apps/dedens` (CLI). Later `dedens-resolver`, `dedens-server`, `apps/dedensd` (stages such as kubernetes,
+  D23), all built on these crates. CLI and server are separate binaries.
 - D2 Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
   DoQ). A stub resolver and CLI come first; forwarder, recursive and authoritative servers follow.
 - D3 Own wire format, for full control of RFC behaviour and of speed. hickory-dns and NLnet Labs' `domain` are
@@ -144,6 +144,34 @@ decision is marked superseded, never reused. The rules a decision produces live 
   - `--save-wire` writes raw responses, the source of captured test data.
   - Default server from `/etc/resolv.conf`.
 
+## Server
+
+Built after the CLI (PLAN.md phase 7). CoreDNS's job (blocklists, rewrite, kubernetes, forward, cache) with
+Vector's configuration tooling.
+
+- D23 Pipeline: each listener runs an ordered chain of stages; a stage answers, or passes the query on, or
+  passes it on and sees the response on the way back (rewrite undoes its change there). Order comes from the
+  config, not from the build (CoreDNS's fixed `plugin.cfg` order confuses users). Branching is a router stage
+  choosing a chain by zone, client CIDR, listener, qtype or view; no general graph (Vector's DAG serves
+  continuous streams with fan-out and buffers; a query has one response). Match rules are declarative matchers
+  compiled at load; a small typed rule language may come later, VRL-like scripting costs microseconds against a
+  150 ns cache hit. Stage types: built-in ones are variants of one enum dispatched by `match`, each behind a
+  Cargo feature (a config naming a compiled-out type fails with the feature to enable). Others plug in without
+  a fork: the server is a library crate, `dedensd` a thin binary over its registry, and a custom binary
+  registers extra stage types (a trait object, dynamic dispatch only for them). Stages before the cache stay
+  synchronous, without allocation or copy of the query. Dynamic loading (WASM, gRPC) is undecided; if it comes,
+  it is one stage type used after a cache miss (Vector dropped its WASM transform; a Rust dylib needs an ABI
+  workaround; gRPC costs milliseconds).
+- D24 Configuration: a directory of files in TOML, YAML (serde-saphyr) or JSON, one serde model (as D17),
+  merged; each component named, its type chosen by a `type` key. Errors, not warnings: unknown field, duplicate
+  name across files, component defined but used by no listener. `${VAR}` and `${VAR:-default}` interpolate
+  environment variables (`$$` escapes), `SECRET[backend.key]` reads a secret backend. `dedensd validate`
+  builds the whole pipeline without binding; a JSON Schema is generated from the types (schemars); config
+  tests run D17 query files against the built pipeline. Reload (SIGHUP and file watch) builds the new pipeline
+  completely, then swaps it atomically (`ArcSwap`); queries in flight finish on the old one; the cache and
+  upstream connections live outside it and survive. What needs a restart (listeners, thread count) is decided
+  when the server starts.
+
 ## Later, undecided
 
-crates.io publishing, container image, dnsperf benchmarks against Unbound and CoreDNS.
+crates.io publishing, container image, dnsperf benchmarks against Unbound and CoreDNS, dynamic plugins (D23).
