@@ -9,7 +9,8 @@ local; update it in the same change whenever the code deviates from it.
 
 - Write Rust per the `rs-coding` skill, and agent-facing documents (`AGENTS.md`, `PLAN.md`, docs reached by a
   pointer) per the `writing-for-agents` skill. Each `AGENTS.md` has a `CLAUDE.md` symlink beside it.
-- Cite RFC and section in the docs of each item implementing one. When an RFC section lands, update its row in
+- Work from the RFC text in `docs/rfc/archive/rfcNNNN.txt`, and cite RFC and section in the docs of each item
+  implementing one. When an RFC section lands, update its row in
   `docs/rfc/coverage.md` in the same change.
 - `dedens-proto` is sans-IO: it encodes and decodes byte slices. Sockets, timers and compio live in `dedens-net`.
 - `dedens-proto` layout: topic modules (`name`, `header`, `message`, `wire`, `edns`), one RDATA file per type

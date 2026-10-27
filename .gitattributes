@@ -98,3 +98,6 @@ Cargo.lock text
 **/testdata/** -text
 fuzz/seeds/**  -text
 *.snap         text eol=lf
+
+# Verbatim RFC copies (`just rfc-archive`): collapsed in diffs.
+docs/rfc/archive/** -diff

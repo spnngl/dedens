@@ -2,6 +2,8 @@
 
 The Domain Name System (DNS) has evolved over decades through the Internet Engineering Task Force (IETF). While there are hundreds of RFCs touching on DNS, they can be broadly separated into the principal modern standards and the historical, operational, or niche extensions.
 
+Plain-text copies of every RFC below are in [`archive/`](archive/); `just rfc-archive` downloads them again after this list changes.
+
 ---
 
 ## Part 1: Principal DNS RFCs (Modern Core)

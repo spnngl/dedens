@@ -62,3 +62,9 @@ rapx-install:
 # Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
 rapx *args="check -f -m":
     CARGO_TARGET_DIR=target/rapx RUSTC="$(rustup which --toolchain {{rapx_toolchain}} rustc)" rustup run {{rapx_toolchain}} cargo rapx {{args}}
+
+# Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
+rfc-archive:
+    mkdir -p docs/rfc/archive
+    grep -oE "datatracker\.ietf\.org/doc/html/rfc[0-9]+" docs/rfc/list.md | grep -oE "[0-9]+$" | sort -un \
+        | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/rfc{}.txt https://www.rfc-editor.org/rfc/rfc{}.txt
