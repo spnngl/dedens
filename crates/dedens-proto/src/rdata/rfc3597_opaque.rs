@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use crate::codes::RecordType;
 use crate::error::{DecodeError, EncodeError};
-use crate::name::Name;
+use crate::name::{MAX_NAME_LEN, Name};
 use crate::wire::{Reader, Writer};
 
 /// RDATA of a type this crate does not interpret, or whose content is invalid for its type (D9).
@@ -153,7 +153,7 @@ fn read_fields<'a>(
                 let name = name(r)?;
                 packed |= name.is_packed();
                 if let Some(out) = copy.as_deref_mut() {
-                    out.extend_from_slice(&name.as_wire());
+                    out.extend_from_slice(name.to_wire(&mut [0; MAX_NAME_LEN]));
                 }
                 continue;
             }

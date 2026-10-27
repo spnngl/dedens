@@ -1,7 +1,7 @@
 //! Byte cursors: [`Reader`] decodes, [`Writer`] encodes, neither allocates.
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
-use crate::name::Name;
+use crate::name::{MAX_NAME_LEN, Name};
 
 /// Largest DNS message: the 16-bit length prefix of TCP (RFC 1035 §4.2.2) bounds it.
 pub const MAX_MESSAGE_LEN: usize = 65535;
@@ -419,7 +419,14 @@ impl<'a> Writer<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
     pub fn put_name_compressed(&mut self, name: &Name<'_>) -> Result<(), EncodeError> {
-        let wire = name.as_wire();
+        // Only a name decoded with compression pointers is copied, and only its runs of labels.
+        let mut buf;
+        let wire = if let Some(wire) = name.flat() {
+            wire
+        } else {
+            buf = [0; MAX_NAME_LEN];
+            name.to_wire(&mut buf)
+        };
         // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
         let mut inline = 0;
         let mut pointer = None;

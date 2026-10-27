@@ -2,7 +2,6 @@
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
-use core::ops::Deref;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::wire::{Reader, Writer};
@@ -87,32 +86,57 @@ impl<'a> Name<'a> {
         Ok(Name(Repr::Owned(wire.into_boxed_slice())))
     }
 
-    /// The uncompressed wire form, ending in the root label; copied on the stack when the name was decoded with
-    /// compression pointers.
+    /// The uncompressed wire form, ending in the root label: the bytes the name holds, or, for a name decoded
+    /// with compression pointers, a copy into `buf`.
     #[must_use]
-    pub fn as_wire(&self) -> WireForm<'_> {
-        if let Some(wire) = self.flat() {
-            return WireForm::Slice(wire);
-        }
-        let mut buf = [0; MAX_NAME_LEN];
+    pub fn to_wire<'s>(&'s self, buf: &'s mut [u8; MAX_NAME_LEN]) -> &'s [u8] {
+        let (msg, start) = match &self.0 {
+            Repr::Slice(wire) => return wire,
+            Repr::Owned(wire) => return wire,
+            Repr::Packed { msg, start, .. } => (*msg, *start),
+        };
+        // The runs of labels between pointers, the last one ending in the root label. A single non-empty run,
+        // as for a name that is only a pointer, is returned in place; several are copied into `buf`.
+        let mut single: Option<&[u8]> = None;
         let mut len = 0;
-        for label in self.labels() {
-            let end = len + 1 + label.len();
-            if let Some((len_byte, dst)) = buf.get_mut(len..end).and_then(<[u8]>::split_first_mut) {
-                *len_byte = u8::try_from(label.len()).unwrap_or_default();
-                dst.copy_from_slice(label);
+        let (mut run, mut pos) = (start, start);
+        while let Some(&first) = msg.get(pos) {
+            let pointer = first & 0xC0 == 0xC0;
+            if first != 0 && !pointer {
+                pos += 1 + usize::from(first);
+                continue;
             }
-            len = end;
+            let end = if pointer { pos } else { pos + 1 };
+            let labels = msg.get(run..end).unwrap_or_default();
+            if !labels.is_empty() {
+                if len == 0 && single.is_none() {
+                    single = Some(labels);
+                } else {
+                    if let Some(first_run) = single.take() {
+                        len = append(buf, len, first_run);
+                    }
+                    len = append(buf, len, labels);
+                }
+            }
+            if !pointer {
+                break;
+            }
+            // Decoding checked that each pointer points before the previous one.
+            let low = msg.get(pos + 1).copied().unwrap_or_default();
+            let target = usize::from(first & 0x3F) << 8 | usize::from(low);
+            if target >= run.min(pos) {
+                break;
+            }
+            (run, pos) = (target, target);
         }
-        // The root label: `buf` is zeroed.
-        WireForm::Inline {
-            buf,
-            len: u8::try_from(len + 1).unwrap_or(u8::MAX),
+        match single {
+            Some(wire) => wire,
+            None => buf.get(..len).filter(|w| !w.is_empty()).unwrap_or(&[0]),
         }
     }
 
     /// The uncompressed wire form when it is stored as is.
-    fn flat(&self) -> Option<&[u8]> {
+    pub(crate) fn flat(&self) -> Option<&[u8]> {
         match &self.0 {
             Repr::Slice(wire) => Some(wire),
             Repr::Owned(wire) => Some(wire),
@@ -163,7 +187,7 @@ impl<'a> Name<'a> {
         match self.0 {
             Repr::Owned(wire) => Name(Repr::Owned(wire)),
             _ if self.is_root() => Name::root(),
-            _ => Name(Repr::Owned(Box::from(&*self.as_wire()))),
+            _ => Name(Repr::Owned(Box::from(self.to_wire(&mut [0; MAX_NAME_LEN])))),
         }
     }
 
@@ -265,37 +289,17 @@ impl<'a> Name<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        w.put_bytes(&self.as_wire())
+        w.put_bytes(self.to_wire(&mut [0; MAX_NAME_LEN]))
     }
 }
 
-/// The uncompressed wire form of a [`Name`], from [`Name::as_wire`]; dereferences to the bytes.
-#[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a short-lived stack value; the copy avoids allocating"
-)]
-pub enum WireForm<'n> {
-    /// The bytes the name holds.
-    Slice(&'n [u8]),
-    /// A copy, for a name decoded with compression pointers.
-    Inline {
-        /// The wire form, then zeros.
-        buf: [u8; MAX_NAME_LEN],
-        /// Length of the wire form in `buf`.
-        len: u8,
-    },
-}
-
-impl Deref for WireForm<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        match self {
-            Self::Slice(wire) => wire,
-            Self::Inline { buf, len } => buf.get(..usize::from(*len)).unwrap_or_default(),
-        }
+/// Copies `part` into `buf` at `len`, returning the new length; a name never overflows `buf`.
+fn append(buf: &mut [u8; MAX_NAME_LEN], len: usize, part: &[u8]) -> usize {
+    let end = len + part.len();
+    if let Some(dst) = buf.get_mut(len..end) {
+        dst.copy_from_slice(part);
     }
+    end
 }
 
 /// Iterator over the labels of a [`Name`], following the compression pointers of a decoded one.
@@ -370,10 +374,11 @@ impl Eq for Name<'_> {}
 
 impl Hash for Name<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let wire = self.as_wire();
+        let mut buf = [0; MAX_NAME_LEN];
+        let wire = self.to_wire(&mut buf);
         let mut lower = [0_u8; MAX_NAME_LEN];
         let lower = lower.get_mut(..wire.len()).unwrap_or_default();
-        lower.copy_from_slice(&wire);
+        lower.copy_from_slice(wire);
         lower.make_ascii_lowercase();
         state.write(lower);
     }
@@ -418,8 +423,12 @@ mod tests {
 
     #[test]
     fn wire_form_ends_in_the_root_label() {
-        assert_eq!(*name(&[b"a", b"bc"]).as_wire(), [1, b'a', 2, b'b', b'c', 0]);
-        assert_eq!(*Name::root().as_wire(), [0]);
+        let mut buf = [0; MAX_NAME_LEN];
+        assert_eq!(
+            name(&[b"a", b"bc"]).to_wire(&mut buf),
+            [1, b'a', 2, b'b', b'c', 0]
+        );
+        assert_eq!(Name::root().to_wire(&mut buf), [0]);
     }
 
     #[test]
@@ -487,7 +496,10 @@ mod tests {
         let packed = Name::decode(&mut r).unwrap();
         let flat = Name::decode(&mut r).unwrap();
         assert!(packed.is_packed() && !flat.is_packed());
-        assert_eq!(*packed.as_wire(), [1, b'B', 1, b'a', 0]);
+        assert_eq!(
+            packed.to_wire(&mut [0; MAX_NAME_LEN]),
+            [1, b'B', 1, b'a', 0]
+        );
         assert_eq!(packed.wire_len(), 5);
         assert_eq!(packed.labels().collect::<Vec<_>>(), [b"B", b"a"]);
         assert_eq!(packed, flat);

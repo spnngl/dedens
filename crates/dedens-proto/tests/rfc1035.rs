@@ -159,7 +159,8 @@ proptest! {
     #[test]
     fn name_round_trips(name in name()) {
         let wire = encode_with(|w| name.encode(w));
-        prop_assert_eq!(wire.as_slice(), &*name.as_wire());
+        let mut buf = [0; MAX_NAME_LEN];
+        prop_assert_eq!(wire.as_slice(), name.to_wire(&mut buf));
         let mut r = reader(&wire);
         prop_assert_eq!(Name::decode(&mut r)?, name);
         prop_assert!(r.is_empty());

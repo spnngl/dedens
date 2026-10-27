@@ -85,9 +85,10 @@ decision is marked superseded, never reused. The rules a decision produces live 
   177/667/1135. The bar is met; `domain` was 1.4-2.3x faster to decode because it borrowed: the owned decode
   allocated 7 times (328 B) for `a` and 15 times (779 B) for `mx`, `domain` none. Borrowed decode (D7a), same
   run, median ns a/mx/txt_large: dedens 73/153/289 with 3 allocations (the section `Vec`s), `domain`
-  94/191/432, `into_owned()` after it 138/378/743. Re-encoding a borrowed message costs 25-35% more than an
-  owned one: names with pointers are rebuilt on the stack. `unsafe` only where a profile shows bounds checks
-  matter.
+  94/191/432, `into_owned()` after it 138/378/743. Re-encoding a borrowed message costs 13-33% more than an
+  owned one (a/mx/txt_large 60/302/351 vs 53/227/305): a name with pointers is used in place when it has one run of labels (an owner that is only a
+  pointer), else its runs are copied on the stack. `unsafe` only where a profile shows bounds checks matter:
+  replacing the checked slicing of `Reader` with `get_unchecked` was measured no faster.
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow
