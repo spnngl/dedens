@@ -28,19 +28,19 @@ pub enum Section {
 ///
 /// The counts of the header are the lengths of the sections, so they are not stored (D8).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Message {
+pub struct Message<'a> {
     /// The header, without counts; its rcode holds the low 4 bits, see [`Message::rcode`].
     pub header: Header,
     /// The question section; a conforming message has at most one (RFC 9619).
-    pub questions: Vec<Question>,
+    pub questions: Vec<Question<'a>>,
     /// The answer section.
-    pub answer: Vec<Record>,
+    pub answer: Vec<Record<'a>>,
     /// The authority section.
-    pub authority: Vec<Record>,
+    pub authority: Vec<Record<'a>>,
     /// The additional section, without the OPT record.
-    pub additional: Vec<Record>,
+    pub additional: Vec<Record<'a>>,
     /// The OPT record, when the message has one.
-    pub edns: Option<Edns>,
+    pub edns: Option<Edns<'a>>,
 }
 
 /// A message that was decoded although it breaks a rule, and what it breaks (D9).
@@ -100,17 +100,28 @@ pub struct Encoded {
 
 /// The result of [`Message::decode`]: the message and the rules it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Decoded {
+pub struct Decoded<'a> {
     /// The message.
-    pub message: Message,
+    pub message: Message<'a>,
     /// The rules it breaks, in the order found; empty for a conforming message.
     pub violations: Vec<Violation>,
 }
 
-impl Message {
+impl Decoded<'_> {
+    /// The same result, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Decoded<'static> {
+        Decoded {
+            message: self.message.into_owned(),
+            violations: self.violations,
+        }
+    }
+}
+
+impl<'a> Message<'a> {
     /// A recursive query for `question`: RD set, and EDNS advertising the default UDP payload (D10).
     #[must_use]
-    pub fn query(id: u16, question: Question) -> Self {
+    pub fn query(id: u16, question: Question<'a>) -> Self {
         Self {
             header: Header {
                 id,
@@ -121,6 +132,25 @@ impl Message {
             questions: vec![question],
             edns: Some(Edns::default()),
             ..Self::default()
+        }
+    }
+
+    /// The same message, owning its bytes, to keep it past the buffer it was decoded from.
+    #[must_use]
+    pub fn into_owned(self) -> Message<'static> {
+        let owned =
+            |records: Vec<Record<'a>>| records.into_iter().map(Record::into_owned).collect();
+        Message {
+            header: self.header,
+            questions: self
+                .questions
+                .into_iter()
+                .map(Question::into_owned)
+                .collect(),
+            answer: owned(self.answer),
+            authority: owned(self.authority),
+            additional: owned(self.additional),
+            edns: self.edns.map(Edns::into_owned),
         }
     }
 
@@ -155,7 +185,7 @@ impl Message {
     /// [`DecodeError`] when the structure is broken: a section cut short, a bad name or pointer, a RDLENGTH that
     /// overruns the message, broken EDNS option framing, or invalid RDATA of a type with compressible names.
     /// Anything else that is wrong is a [`Violation`] in the result (D9).
-    pub fn decode(msg: &[u8]) -> Result<Decoded, DecodeError> {
+    pub fn decode(msg: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
         let mut r = Reader::new(msg);
         let (header, counts) = Header::decode(&mut r)?;
         let mut violations = Vec::new();
@@ -242,7 +272,7 @@ impl Message {
                 opt_written = true;
             }
             // Start of the run of records of the RRset being written: offset, count, and its first record.
-            let mut rrset = (w.len(), 0, None::<&Record>);
+            let mut rrset = (w.len(), 0, None::<&Record<'_>>);
             for record in records {
                 // Only truncation needs to know where the RRset started.
                 if may_truncate && !rrset.2.is_some_and(|first| same_rrset(first, record)) {
@@ -318,7 +348,7 @@ impl Message {
 }
 
 /// Whether two records belong to the same `RRset`: same owner, type and class (RFC 2181 §5).
-fn same_rrset(a: &Record, b: &Record) -> bool {
+fn same_rrset(a: &Record<'_>, b: &Record<'_>) -> bool {
     a.name == b.name && a.rtype() == b.rtype() && a.class == b.class
 }
 
@@ -327,13 +357,13 @@ fn bounded(claimed: u16, remaining: usize, min_len: usize) -> usize {
     usize::from(claimed).min(remaining / min_len)
 }
 
-fn read_section(
-    r: &mut Reader<'_>,
+fn read_section<'a>(
+    r: &mut Reader<'a>,
     section: Section,
     count: u16,
-    edns: &mut Option<Edns>,
+    edns: &mut Option<Edns<'a>>,
     violations: &mut Vec<Violation>,
-) -> Result<Vec<Record>, DecodeError> {
+) -> Result<Vec<Record<'a>>, DecodeError> {
     let mut records = Vec::with_capacity(bounded(count, r.remaining(), MIN_RECORD_LEN));
     for _ in 0..count {
         let raw = Record::read_raw(r)?;

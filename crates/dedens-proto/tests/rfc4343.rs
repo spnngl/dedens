@@ -33,13 +33,13 @@ fn s3_label_boundaries_are_not_letters() {
 fn s3_case_is_preserved_through_decoding() {
     let wire = [3, b'W', b'w', b'W', 0];
     let decoded = Name::decode(&mut reader(&wire)).unwrap();
-    assert_eq!(decoded.as_wire(), wire);
+    assert_eq!(*decoded.as_wire(), wire);
     assert_eq!(decoded.to_string(), "WwW.");
 }
 
 #[test]
 fn equal_names_hash_alike() {
-    let set: HashSet<Name> = [name_of(&[b"EXAMPLE"]), name_of(&[b"example"])].into();
+    let set: HashSet<Name<'_>> = [name_of(&[b"EXAMPLE"]), name_of(&[b"example"])].into();
     assert_eq!(set.len(), 1);
 }
 

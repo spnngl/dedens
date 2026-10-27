@@ -17,50 +17,70 @@ use core::net::{Ipv4Addr, Ipv6Addr};
 
 pub use rfc1035_mx::Mx;
 pub use rfc1035_soa::Soa;
-pub use rfc1035_txt::{CharacterString, CharacterStringTooLong, EmptyTxt, Txt};
+pub use rfc1035_txt::{CharacterStrings, Txt, TxtError};
 pub use rfc2782_srv::Srv;
 pub use rfc3597_opaque::Opaque;
 pub use rfc8659_caa::{Caa, InvalidCaaTag};
-pub use rfc9460_svcb::{SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
+pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
 
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
 use crate::wire::{Reader, Writer};
 
-/// The data of a resource record.
+/// The data of a resource record, borrowed from the message it was decoded from or owned (D7a).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum RData {
+pub enum RData<'a> {
     /// Host address (RFC 1035 §3.4.1).
     A(Ipv4Addr),
     /// IPv6 address (RFC 3596 §2.2).
     Aaaa(Ipv6Addr),
     /// Authoritative name server (RFC 1035 §3.3.11).
-    Ns(Name),
+    Ns(Name<'a>),
     /// Canonical name (RFC 1035 §3.3.1).
-    Cname(Name),
+    Cname(Name<'a>),
     /// Domain name pointer (RFC 1035 §3.3.12).
-    Ptr(Name),
+    Ptr(Name<'a>),
     /// Start of authority (RFC 1035 §3.3.13).
-    Soa(Soa),
+    Soa(Soa<'a>),
     /// Mail exchange (RFC 1035 §3.3.9).
-    Mx(Mx),
+    Mx(Mx<'a>),
     /// Text strings (RFC 1035 §3.3.14).
-    Txt(Txt),
+    Txt(Txt<'a>),
     /// Service locator (RFC 2782).
-    Srv(Srv),
+    Srv(Srv<'a>),
     /// Certification authority authorization (RFC 8659).
-    Caa(Caa),
+    Caa(Caa<'a>),
     /// Service binding (RFC 9460).
-    Svcb(Svcb),
+    Svcb(Svcb<'a>),
     /// Service binding for HTTPS (RFC 9460 §9); same format as [`RData::Svcb`].
-    Https(Svcb),
+    Https(Svcb<'a>),
     /// Any other type, or content invalid for its type (D9).
-    Opaque(Opaque),
+    Opaque(Opaque<'a>),
 }
 
-impl RData {
+impl<'a> RData<'a> {
+    /// The same data, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> RData<'static> {
+        match self {
+            Self::A(a) => RData::A(a),
+            Self::Aaaa(a) => RData::Aaaa(a),
+            Self::Ns(n) => RData::Ns(n.into_owned()),
+            Self::Cname(n) => RData::Cname(n.into_owned()),
+            Self::Ptr(n) => RData::Ptr(n.into_owned()),
+            Self::Soa(soa) => RData::Soa(soa.into_owned()),
+            Self::Mx(mx) => RData::Mx(mx.into_owned()),
+            Self::Txt(txt) => RData::Txt(txt.into_owned()),
+            Self::Srv(srv) => RData::Srv(srv.into_owned()),
+            Self::Caa(caa) => RData::Caa(caa.into_owned()),
+            Self::Svcb(svcb) => RData::Svcb(svcb.into_owned()),
+            Self::Https(svcb) => RData::Https(svcb.into_owned()),
+            Self::Opaque(o) => RData::Opaque(o.into_owned()),
+        }
+    }
+
     /// The record type this data belongs to.
     #[must_use]
     pub const fn rtype(&self) -> RecordType {
@@ -104,7 +124,7 @@ impl RData {
     /// # Errors
     ///
     /// [`DecodeError`] when the RDATA is shorter or longer than its fields, or a field is invalid.
-    pub(crate) fn decode(rtype: RecordType, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub(crate) fn decode(rtype: RecordType, r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         let data = Self::decode_fields(rtype, r).map_err(|mut e| {
             if e.kind == DecodeErrorKind::UnexpectedEnd {
                 e.kind = DecodeErrorKind::RdataLength;
@@ -118,7 +138,7 @@ impl RData {
         }
     }
 
-    fn decode_fields(rtype: RecordType, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode_fields(rtype: RecordType, r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(match rtype {
             RecordType::A => Self::A(rfc1035_a::decode(r)?),
             RecordType::AAAA => Self::Aaaa(rfc3596_aaaa::decode(r)?),

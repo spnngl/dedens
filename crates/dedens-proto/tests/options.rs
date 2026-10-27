@@ -6,7 +6,7 @@ use common::{decode_options, option_wire};
 use dedens_proto::edns::{EdnsOption, OptionCode};
 use dedens_proto::{Edns, Message};
 
-fn options(code: u16, data: &[u8]) -> Vec<EdnsOption> {
+fn options(code: u16, data: &[u8]) -> Vec<EdnsOption<'static>> {
     decode_options(&option_wire(code, data))
         .message
         .edns
@@ -14,7 +14,7 @@ fn options(code: u16, data: &[u8]) -> Vec<EdnsOption> {
         .options
 }
 
-fn encoded(option: EdnsOption) -> Vec<u8> {
+fn encoded(option: EdnsOption<'_>) -> Vec<u8> {
     let message = Message {
         edns: Some(Edns {
             options: vec![option],
@@ -61,9 +61,9 @@ fn rfc7828_s3_other_lengths_are_invalid() {
 
 #[test]
 fn rfc5001_s2_nsid_is_empty_in_a_query_and_opaque_in_a_response() {
-    assert_eq!(options(3, &[]), [EdnsOption::Nsid([].into())]);
+    assert_eq!(options(3, &[]), [EdnsOption::Nsid(b"".as_slice().into())]);
     assert_eq!(
         options(3, b"ns1.example"),
-        [EdnsOption::Nsid((*b"ns1.example").into())]
+        [EdnsOption::Nsid(b"ns1.example".as_slice().into())]
     );
 }

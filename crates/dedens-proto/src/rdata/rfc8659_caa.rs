@@ -1,5 +1,7 @@
 //! CAA: certification authority authorization (RFC 8659 §4).
 
+use std::borrow::Cow;
+
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::wire::{Reader, Writer};
 
@@ -10,31 +12,41 @@ pub struct InvalidCaaTag;
 
 /// A CAA property: flags, a tag such as `issue`, and a value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Caa {
+pub struct Caa<'a> {
     flags: u8,
-    tag: Box<[u8]>,
-    value: Box<[u8]>,
+    tag: Cow<'a, [u8]>,
+    value: Cow<'a, [u8]>,
 }
 
-impl Caa {
+impl<'a> Caa<'a> {
     /// Bit 0 of the flags: a CA that does not understand the property must not issue (RFC 8659 §4.1.1).
     pub const CRITICAL: u8 = 0x80;
 
-    /// A CAA property.
+    /// A CAA property, borrowing `tag` and `value`.
     ///
     /// # Errors
     ///
     /// [`InvalidCaaTag`] when `tag` is not 1 to 15 ASCII letters or digits.
-    pub fn new(flags: u8, tag: &[u8], value: &[u8]) -> Result<Self, InvalidCaaTag> {
+    pub fn new(flags: u8, tag: &'a [u8], value: &'a [u8]) -> Result<Self, InvalidCaaTag> {
         let valid = (1..=15).contains(&tag.len()) && tag.iter().all(u8::is_ascii_alphanumeric);
         if !valid {
             return Err(InvalidCaaTag);
         }
         Ok(Self {
             flags,
-            tag: tag.into(),
-            value: value.into(),
+            tag: Cow::Borrowed(tag),
+            value: Cow::Borrowed(value),
         })
+    }
+
+    /// The same property, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Caa<'static> {
+        Caa {
+            flags: self.flags,
+            tag: Cow::Owned(self.tag.into_owned()),
+            value: Cow::Owned(self.value.into_owned()),
+        }
     }
 
     /// The flags byte.
@@ -61,7 +73,7 @@ impl Caa {
         &self.value
     }
 
-    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub(super) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         let flags = r.u8()?;
         let tag_len = usize::from(r.u8()?);
         let tag = r.bytes(tag_len)?;

@@ -12,7 +12,7 @@ use proptest::prelude::*;
 const FOO_EXAMPLE_COM: &[u8] = b"\x03foo\x07example\x03com\x00";
 const FOO_EXAMPLE_ORG: &[u8] = b"\x03foo\x07example\x03org\x00";
 
-fn svcb(rdata: &[u8]) -> Svcb {
+fn svcb(rdata: &[u8]) -> Svcb<'static> {
     let decoded = decode_record(&record_wire(RecordType::SVCB, rdata)).expect("decodes");
     assert_eq!(decoded.invalid_rdata, None);
     let RData::Svcb(svcb) = decoded.record.data else {
@@ -49,7 +49,7 @@ fn d2_target_is_the_root() {
 #[test]
 fn d2_port() {
     let s = svcb(&rdata(&[&[0, 16], FOO_EXAMPLE_COM, &[0, 3, 0, 2, 0, 0x35]]));
-    assert_eq!(s.params.as_slice(), [SvcParam::Port(53)]);
+    assert_eq!(s.params.iter().collect::<Vec<_>>(), [SvcParam::Port(53)]);
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn d2_generic_keys() {
         b"hello",
     ]));
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [SvcParam::Unknown {
             key: SvcParamKey(667),
             value: (*b"hello").into()
@@ -74,7 +74,7 @@ fn d2_generic_keys() {
         b"hello\xd2qoo",
     ]));
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [SvcParam::Unknown {
             key: SvcParamKey(667),
             value: (*b"hello\xd2qoo").into()
@@ -98,7 +98,10 @@ fn d2_ipv6_hints() {
         "2001:db8::1".parse::<Ipv6Addr>().unwrap(),
         "2001:db8::53:1".parse().unwrap(),
     ];
-    assert_eq!(s.params.as_slice(), [SvcParam::Ipv6Hint(hints)]);
+    assert_eq!(
+        s.params.iter().collect::<Vec<_>>(),
+        [SvcParam::Ipv6Hint(hints)]
+    );
 }
 
 #[test]
@@ -113,7 +116,10 @@ fn d2_ipv6_hint_with_embedded_ipv4() {
         &value,
     ]));
     let hint = "2001:db8:122:344::192.0.2.33".parse::<Ipv6Addr>().unwrap();
-    assert_eq!(s.params.as_slice(), [SvcParam::Ipv6Hint(vec![hint])]);
+    assert_eq!(
+        s.params.iter().collect::<Vec<_>>(),
+        [SvcParam::Ipv6Hint(vec![hint])]
+    );
 }
 
 #[test]
@@ -130,7 +136,7 @@ fn d2_mandatory_alpn_and_ipv4hint() {
     ]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [
             SvcParam::Mandatory(vec![SvcParamKey::ALPN, SvcParamKey::IPV4HINT]),
             SvcParam::Alpn(vec![(*b"h2").into(), (*b"h3-19").into()]),
@@ -155,7 +161,7 @@ fn d2_alpn_keeps_backslash_and_comma() {
     ]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [SvcParam::Alpn(vec![
             (*b"f\\oo,bar").into(),
             (*b"h2").into()
@@ -175,7 +181,7 @@ fn s9_https_has_the_svcb_format() {
         panic!("not HTTPS")
     };
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [
             SvcParam::Alpn(vec![(*b"h2").into()]),
             SvcParam::NoDefaultAlpn
@@ -201,13 +207,10 @@ fn rfc9461_dohpath() {
     let wire = rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0, 7, 0, 10], b"/dns{?dns}"]);
     let s = svcb(&wire);
     assert_eq!(
-        s.params.as_slice(),
+        s.params.iter().collect::<Vec<_>>(),
         [SvcParam::DohPath("/dns{?dns}".into())]
     );
-    assert_eq!(
-        s.params.get(SvcParamKey::DOHPATH),
-        s.params.as_slice().first()
-    );
+    assert_eq!(s.params.get(SvcParamKey::DOHPATH), s.params.iter().next());
 }
 
 #[test]
@@ -333,7 +336,7 @@ fn building_params_enforces_the_same_rules() {
     ])
     .unwrap();
     assert_eq!(
-        sorted.as_slice(),
+        sorted.iter().collect::<Vec<_>>(),
         [
             SvcParam::Port(1),
             SvcParam::Ipv4Hint(vec![Ipv4Addr::LOCALHOST])

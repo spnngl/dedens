@@ -6,11 +6,11 @@ use crate::wire::{Reader, Writer};
 
 /// Start of authority. The four intervals are seconds, `minimum` is the negative-caching TTL (RFC 2308 §4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Soa {
+pub struct Soa<'a> {
     /// Primary name server of the zone (MNAME).
-    pub mname: Name,
+    pub mname: Name<'a>,
     /// Mailbox of the person responsible (RNAME).
-    pub rname: Name,
+    pub rname: Name<'a>,
     /// Version of the zone.
     pub serial: u32,
     /// Seconds before a secondary refreshes.
@@ -23,8 +23,22 @@ pub struct Soa {
     pub minimum: u32,
 }
 
-impl Soa {
-    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+impl<'a> Soa<'a> {
+    /// The same SOA, owning its names.
+    #[must_use]
+    pub fn into_owned(self) -> Soa<'static> {
+        Soa {
+            mname: self.mname.into_owned(),
+            rname: self.rname.into_owned(),
+            serial: self.serial,
+            refresh: self.refresh,
+            retry: self.retry,
+            expire: self.expire,
+            minimum: self.minimum,
+        }
+    }
+
+    pub(super) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(Self {
             mname: Name::decode(r)?,
             rname: Name::decode(r)?,

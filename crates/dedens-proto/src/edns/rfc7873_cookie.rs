@@ -9,10 +9,13 @@ use crate::wire::{Reader, Writer};
 pub struct InvalidServerCookie;
 
 /// A client cookie of 8 bytes, with the server cookie of 8 to 32 bytes once a server has sent one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Held inline, client then server, so it never allocates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Cookie {
-    client: [u8; 8],
-    server: Option<Box<[u8]>>,
+    /// Client cookie, server cookie, then zeros.
+    wire: [u8; 40],
+    len: u8,
 }
 
 impl Cookie {
@@ -25,22 +28,29 @@ impl Cookie {
         if server.is_some_and(|s| !(8..=32).contains(&s.len())) {
             return Err(InvalidServerCookie);
         }
-        Ok(Self {
-            client,
-            server: server.map(Into::into),
-        })
+        let server = server.unwrap_or_default();
+        let mut wire = [0; 40];
+        let (head, tail) = wire.split_at_mut(8);
+        head.copy_from_slice(&client);
+        tail.get_mut(..server.len())
+            .ok_or(InvalidServerCookie)?
+            .copy_from_slice(server);
+        let len = u8::try_from(8 + server.len()).map_err(|_| InvalidServerCookie)?;
+        Ok(Self { wire, len })
     }
 
     /// The client cookie.
     #[must_use]
-    pub const fn client(&self) -> [u8; 8] {
-        self.client
+    pub fn client(&self) -> [u8; 8] {
+        self.wire.first_chunk().copied().unwrap_or_default()
     }
 
     /// The server cookie, absent in a first query.
     #[must_use]
     pub fn server(&self) -> Option<&[u8]> {
-        self.server.as_deref()
+        self.wire
+            .get(8..usize::from(self.len))
+            .filter(|s| !s.is_empty())
     }
 
     pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
@@ -54,7 +64,6 @@ impl Cookie {
     }
 
     pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        w.put_bytes(&self.client)?;
-        w.put_bytes(self.server().unwrap_or_default())
+        w.put_bytes(self.wire.get(..usize::from(self.len)).unwrap_or_default())
     }
 }

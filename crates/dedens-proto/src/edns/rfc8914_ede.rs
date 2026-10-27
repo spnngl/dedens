@@ -1,5 +1,7 @@
 //! Extended DNS Error option (RFC 8914).
 
+use std::borrow::Cow;
+
 use crate::codes::code_type;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::wire::{Reader, Writer};
@@ -67,21 +69,30 @@ code_type! {
 
 /// Why a query failed or what was done to its answer, with optional human-readable text (RFC 8914 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ExtendedError {
+pub struct ExtendedError<'a> {
     /// What happened.
     pub code: InfoCode,
     /// Free text for humans, possibly empty; always UTF-8 (RFC 8914 §2).
-    pub text: String,
+    pub text: Cow<'a, str>,
 }
 
-impl ExtendedError {
-    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+impl<'a> ExtendedError<'a> {
+    /// The same error, owning its text.
+    #[must_use]
+    pub fn into_owned(self) -> ExtendedError<'static> {
+        ExtendedError {
+            code: self.code,
+            text: Cow::Owned(self.text.into_owned()),
+        }
+    }
+
+    pub(super) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         let code = InfoCode(r.u16()?);
         let text = str::from_utf8(r.rest())
             .map_err(|_| r.error(DecodeErrorKind::Invalid("EXTRA-TEXT is not UTF-8")))?;
         Ok(Self {
             code,
-            text: text.into(),
+            text: Cow::Borrowed(text),
         })
     }
 

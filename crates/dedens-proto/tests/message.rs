@@ -5,7 +5,7 @@ mod common;
 use dedens_proto::{Class, DecodeErrorKind, Message, Name, Question, RecordType, Violation};
 use proptest::prelude::*;
 
-fn question(rtype: RecordType) -> Question {
+fn question(rtype: RecordType) -> Question<'static> {
     Question::new(Name::root(), rtype)
 }
 
@@ -15,7 +15,8 @@ fn s4_two_questions_are_decoded_and_flagged() {
         questions: vec![question(RecordType::A), question(RecordType::AAAA)],
         ..Message::default()
     };
-    let decoded = Message::decode(&message.to_vec().unwrap()).unwrap();
+    let wire = message.to_vec().unwrap();
+    let decoded = Message::decode(&wire).unwrap();
     assert_eq!(decoded.violations, [Violation::MultipleQuestions]);
     assert_eq!(decoded.message, message);
 }
@@ -99,7 +100,8 @@ fn invalid_rdata_is_flagged_with_its_place() {
 proptest! {
     #[test]
     fn round_trip(message in common::message()) {
-        let decoded = Message::decode(&message.to_vec().unwrap()).unwrap();
+        let wire = message.to_vec().unwrap();
+        let decoded = Message::decode(&wire).unwrap();
         prop_assert_eq!(decoded.message, message);
     }
 

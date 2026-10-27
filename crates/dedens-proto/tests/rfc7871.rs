@@ -8,7 +8,7 @@ use common::{decode_options, option_wire};
 use dedens_proto::Violation;
 use dedens_proto::edns::{ClientSubnet, EdnsOption, OptionCode};
 
-fn options(data: &[u8]) -> (Vec<EdnsOption>, Vec<Violation>) {
+fn options(data: &[u8]) -> (Vec<EdnsOption<'static>>, Vec<Violation>) {
     let decoded = decode_options(&option_wire(8, data));
     (
         decoded.message.edns.expect("OPT record").options,

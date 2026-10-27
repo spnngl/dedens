@@ -7,19 +7,19 @@ use crate::wire::{Reader, Writer};
 
 /// What is asked: a name, a type and a class.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Question {
+pub struct Question<'a> {
     /// The name asked about (QNAME).
-    pub name: Name,
+    pub name: Name<'a>,
     /// The type asked for (QTYPE).
     pub qtype: RecordType,
     /// The class asked in (QCLASS).
     pub qclass: Class,
 }
 
-impl Question {
+impl<'a> Question<'a> {
     /// A question in class IN.
     #[must_use]
-    pub const fn new(name: Name, qtype: RecordType) -> Self {
+    pub const fn new(name: Name<'a>, qtype: RecordType) -> Self {
         Self {
             name,
             qtype,
@@ -32,12 +32,22 @@ impl Question {
     /// # Errors
     ///
     /// [`DecodeError`] when the name or the two 16-bit fields are cut short or broken.
-    pub fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(Self {
             name: Name::decode(r)?,
             qtype: RecordType(r.u16()?),
             qclass: Class(r.u16()?),
         })
+    }
+
+    /// The same question, owning its name.
+    #[must_use]
+    pub fn into_owned(self) -> Question<'static> {
+        Question {
+            name: self.name.into_owned(),
+            qtype: self.qtype,
+            qclass: self.qclass,
+        }
     }
 
     /// Writes the question, its name compressed.

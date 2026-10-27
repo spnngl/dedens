@@ -6,10 +6,10 @@ use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
 use crate::wire::{Reader, Writer};
 
-pub(super) fn decode(r: &mut Reader<'_>) -> Result<Name, DecodeError> {
+pub(super) fn decode<'a>(r: &mut Reader<'a>) -> Result<Name<'a>, DecodeError> {
     Name::decode(r)
 }
 
-pub(super) fn encode(name: &Name, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+pub(super) fn encode(name: &Name<'_>, w: &mut Writer<'_>) -> Result<(), EncodeError> {
     w.put_name_compressed(name)
 }

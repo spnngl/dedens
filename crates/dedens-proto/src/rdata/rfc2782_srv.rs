@@ -8,7 +8,7 @@ use crate::wire::{Reader, Writer};
 ///
 /// The target is not compressed when written (RFC 2782, RFC 3597 §4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Srv {
+pub struct Srv<'a> {
     /// Priority of the target host.
     pub priority: u16,
     /// Relative weight among targets of the same priority.
@@ -16,11 +16,22 @@ pub struct Srv {
     /// Port of the service.
     pub port: u16,
     /// Host providing the service; the root means the service is not available.
-    pub target: Name,
+    pub target: Name<'a>,
 }
 
-impl Srv {
-    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+impl<'a> Srv<'a> {
+    /// The same service location, owning its name.
+    #[must_use]
+    pub fn into_owned(self) -> Srv<'static> {
+        Srv {
+            priority: self.priority,
+            weight: self.weight,
+            port: self.port,
+            target: self.target.into_owned(),
+        }
+    }
+
+    pub(super) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(Self {
             priority: r.u16()?,
             weight: r.u16()?,

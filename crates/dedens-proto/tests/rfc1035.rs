@@ -10,7 +10,7 @@ use common::{
 };
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::name::{MAX_LABEL_LEN, MAX_NAME_LEN};
-use dedens_proto::rdata::{CharacterString, Mx, Soa, Txt};
+use dedens_proto::rdata::{Mx, Soa, Txt, TxtError};
 use dedens_proto::{
     Class, Counts, DecodeErrorKind, Header, Name, Opcode, Question, RData, Rcode, RecordType,
 };
@@ -76,7 +76,7 @@ fn s4_1_4_long_pointer_chains_are_rejected() {
         let start = msg.len() - 2;
         let mut r = reader(&msg);
         r.bytes(start).unwrap();
-        Name::decode(&mut r)
+        Name::decode(&mut r).map(Name::into_owned)
     };
     assert_eq!(chain(127).unwrap(), Name::root());
     assert_eq!(chain(128).unwrap_err().kind, DecodeErrorKind::BadPointer);
@@ -159,7 +159,7 @@ proptest! {
     #[test]
     fn name_round_trips(name in name()) {
         let wire = encode_with(|w| name.encode(w));
-        prop_assert_eq!(wire.as_slice(), name.as_wire());
+        prop_assert_eq!(wire.as_slice(), &*name.as_wire());
         let mut r = reader(&wire);
         prop_assert_eq!(Name::decode(&mut r)?, name);
         prop_assert!(r.is_empty());
@@ -188,7 +188,7 @@ proptest! {
     }
 }
 
-fn decoded(rtype: RecordType, rdata: &[u8]) -> RData {
+fn decoded(rtype: RecordType, rdata: &[u8]) -> RData<'static> {
     let d = decode_record(&record_wire(rtype, rdata)).expect("decodes");
     assert_eq!(d.invalid_rdata, None);
     d.record.data
@@ -253,8 +253,12 @@ fn s3_3_13_soa_has_two_names_and_five_integers() {
 #[test]
 fn s3_3_14_txt_is_one_or_more_character_strings() {
     let rdata = decoded(RecordType::TXT, b"\x03foo\x00\x03bar");
-    let strings = ["foo", "", "bar"].map(|s| CharacterString::new(s.as_bytes()).unwrap());
-    assert_eq!(rdata, RData::Txt(Txt::new(strings.to_vec()).unwrap()));
+    let strings = [&b"foo"[..], b"", b"bar"];
+    assert_eq!(rdata, RData::Txt(Txt::new(strings).unwrap()));
+    let RData::Txt(txt) = rdata else {
+        unreachable!("TXT")
+    };
+    assert!(txt.strings().eq(strings));
     // No string at all, or a string that overruns the RDATA, is invalid.
     assert!(
         decode_record(&record_wire(RecordType::TXT, &[]))
@@ -272,8 +276,9 @@ fn s3_3_14_txt_is_one_or_more_character_strings() {
 
 #[test]
 fn s3_3_character_strings_hold_255_octets() {
-    assert!(CharacterString::new(&[0; 255]).is_ok());
-    assert!(CharacterString::new(&[0; 256]).is_err());
+    assert!(Txt::new([&[0; 255][..]]).is_ok());
+    assert_eq!(Txt::new([&[0; 256][..]]), Err(TxtError::StringTooLong));
+    assert_eq!(Txt::new([]), Err(TxtError::Empty));
 }
 
 #[test]

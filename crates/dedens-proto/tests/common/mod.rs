@@ -7,9 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use dedens_proto::edns::{
     ClientSubnet, Cookie, Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode, OptionCode,
 };
-use dedens_proto::rdata::{
-    Caa, CharacterString, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt,
-};
+use dedens_proto::rdata::{Caa, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt};
 use dedens_proto::wire::{Reader, Writer};
 use dedens_proto::{
     Class, Counts, DecodeError, Decoded, DecodedRecord, Flags, Header, Message, Name, Opcode,
@@ -18,7 +16,7 @@ use dedens_proto::{
 use proptest::prelude::*;
 
 /// A name of up to 5 labels of 1 to 20 arbitrary bytes.
-pub(crate) fn name() -> impl Strategy<Value = Name> {
+pub(crate) fn name() -> impl Strategy<Value = Name<'static>> {
     prop::collection::vec(prop::collection::vec(any::<u8>(), 1..=20), 0..=5).prop_map(|labels| {
         Name::from_labels(labels.iter().map(Vec::as_slice)).expect("labels are within the limits")
     })
@@ -46,7 +44,7 @@ pub(crate) fn counts() -> impl Strategy<Value = Counts> {
     })
 }
 
-pub(crate) fn question() -> impl Strategy<Value = Question> {
+pub(crate) fn question() -> impl Strategy<Value = Question<'static>> {
     (name(), any::<u16>(), any::<u16>()).prop_map(|(name, qtype, qclass)| Question {
         name,
         qtype: RecordType(qtype),
@@ -66,7 +64,7 @@ fn ipv6() -> impl Strategy<Value = Ipv6Addr> {
     any::<[u8; 16]>().prop_map(Ipv6Addr::from)
 }
 
-fn soa() -> impl Strategy<Value = Soa> {
+fn soa() -> impl Strategy<Value = Soa<'static>> {
     (name(), name(), any::<[u32; 5]>()).prop_map(
         |(mname, rname, [serial, refresh, retry, expire, minimum])| Soa {
             mname,
@@ -80,23 +78,22 @@ fn soa() -> impl Strategy<Value = Soa> {
     )
 }
 
-fn txt() -> impl Strategy<Value = Txt> {
+fn txt() -> impl Strategy<Value = Txt<'static>> {
     prop::collection::vec(bytes(40), 1..=4).prop_map(|strings| {
-        let strings = strings
-            .iter()
-            .map(|s| CharacterString::new(s).expect("at most 40 bytes"))
-            .collect();
-        Txt::new(strings).expect("at least one string")
+        Txt::new(strings.iter().map(Vec::as_slice)).expect("1 to 4 strings of at most 40 bytes")
     })
 }
 
-fn caa() -> impl Strategy<Value = Caa> {
-    (any::<u8>(), "[a-zA-Z0-9]{1,15}", bytes(30))
-        .prop_map(|(flags, tag, value)| Caa::new(flags, tag.as_bytes(), &value).expect("valid tag"))
+fn caa() -> impl Strategy<Value = Caa<'static>> {
+    (any::<u8>(), "[a-zA-Z0-9]{1,15}", bytes(30)).prop_map(|(flags, tag, value)| {
+        Caa::new(flags, tag.as_bytes(), &value)
+            .expect("valid tag")
+            .into_owned()
+    })
 }
 
 /// The optional parameters of a SVCB record, each present or not, so that keys never repeat.
-fn svc_params() -> impl Strategy<Value = SvcParams> {
+fn svc_params() -> impl Strategy<Value = SvcParams<'static>> {
     let alpn = prop::option::of(prop::collection::vec(
         prop::collection::vec(any::<u8>(), 1..=8).prop_map(Vec::into_boxed_slice),
         1..=3,
@@ -140,7 +137,7 @@ fn svc_params() -> impl Strategy<Value = SvcParams> {
     )
 }
 
-fn svcb() -> impl Strategy<Value = Svcb> {
+fn svcb() -> impl Strategy<Value = Svcb<'static>> {
     (any::<u16>(), name(), svc_params()).prop_map(|(priority, target, params)| Svcb {
         priority,
         target,
@@ -149,7 +146,7 @@ fn svcb() -> impl Strategy<Value = Svcb> {
 }
 
 /// RDATA of every supported type, and of unknown ones.
-pub(crate) fn rdata() -> impl Strategy<Value = RData> {
+pub(crate) fn rdata() -> impl Strategy<Value = RData<'static>> {
     prop_oneof![
         ipv4().prop_map(RData::A),
         ipv6().prop_map(RData::Aaaa),
@@ -174,12 +171,14 @@ pub(crate) fn rdata() -> impl Strategy<Value = RData> {
         svcb().prop_map(RData::Svcb),
         svcb().prop_map(RData::Https),
         (300u16..60000, bytes(40)).prop_map(|(rtype, data)| RData::Opaque(
-            Opaque::new(RecordType(rtype), &data).expect("a type without names")
+            Opaque::new(RecordType(rtype), &data)
+                .expect("a type without names")
+                .into_owned()
         )),
     ]
 }
 
-pub(crate) fn record() -> impl Strategy<Value = Record> {
+pub(crate) fn record() -> impl Strategy<Value = Record<'static>> {
     (name(), any::<u16>(), 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
         Record::new(name, Class(class), Ttl::new(ttl).expect("in range"), data)
     })
@@ -199,7 +198,7 @@ fn client_subnet() -> impl Strategy<Value = ClientSubnet> {
     })
 }
 
-pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption> {
+pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption<'static>> {
     prop_oneof![
         bytes(20).prop_map(|b| EdnsOption::Nsid(b.into())),
         client_subnet().prop_map(EdnsOption::ClientSubnet),
@@ -214,7 +213,7 @@ pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption> {
         (0u16..60).prop_map(EdnsOption::Padding),
         (any::<u16>(), ".{0,20}").prop_map(|(code, text)| EdnsOption::Ede(ExtendedError {
             code: InfoCode(code),
-            text
+            text: text.into()
         })),
         (100u16..60000, bytes(20)).prop_map(|(code, data)| EdnsOption::Unknown {
             code: OptionCode(code),
@@ -223,7 +222,7 @@ pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption> {
     ]
 }
 
-pub(crate) fn edns() -> impl Strategy<Value = Edns> {
+pub(crate) fn edns() -> impl Strategy<Value = Edns<'static>> {
     (
         any::<u16>(),
         any::<u8>(),
@@ -240,7 +239,7 @@ pub(crate) fn edns() -> impl Strategy<Value = Edns> {
         })
 }
 
-pub(crate) fn message() -> impl Strategy<Value = Message> {
+pub(crate) fn message() -> impl Strategy<Value = Message<'static>> {
     let records = || prop::collection::vec(record(), 0..=3);
     (
         header(),
@@ -263,7 +262,7 @@ pub(crate) fn message() -> impl Strategy<Value = Message> {
 }
 
 /// A name from labels given without the root.
-pub(crate) fn name_of(labels: &[&[u8]]) -> Name {
+pub(crate) fn name_of(labels: &[&[u8]]) -> Name<'static> {
     Name::from_labels(labels.iter().copied()).expect("labels are within the limits")
 }
 
@@ -292,8 +291,12 @@ pub(crate) fn record_wire(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
 }
 
 /// Decodes the whole of `wire` as one record.
-pub(crate) fn decode_record(wire: &[u8]) -> Result<DecodedRecord, DecodeError> {
-    Record::decode(&mut Reader::new(wire))
+pub(crate) fn decode_record(wire: &[u8]) -> Result<DecodedRecord<'static>, DecodeError> {
+    let decoded = Record::decode(&mut Reader::new(wire))?;
+    Ok(DecodedRecord {
+        record: decoded.record.into_owned(),
+        invalid_rdata: decoded.invalid_rdata,
+    })
 }
 
 /// A message with no question and one OPT record (payload 1232, no flags) whose RDATA is `options`.
@@ -310,13 +313,13 @@ pub(crate) fn opt_message(options: &[u8]) -> Vec<u8> {
 }
 
 /// A name from its dotted text; `""` is the root.
-pub(crate) fn dns(text: &str) -> Name {
+pub(crate) fn dns(text: &str) -> Name<'static> {
     Name::from_labels(text.split('.').filter(|l| !l.is_empty()).map(str::as_bytes))
         .expect("valid name")
 }
 
 /// An IN record with TTL 60.
-pub(crate) fn rec(owner: &str, data: RData) -> Record {
+pub(crate) fn rec<'a>(owner: &str, data: RData<'a>) -> Record<'a> {
     Record::new(dns(owner), Class::IN, Ttl::new(60).expect("in range"), data)
 }
 
@@ -329,8 +332,10 @@ pub(crate) fn option_wire(code: u16, data: &[u8]) -> Vec<u8> {
 }
 
 /// Decodes a message made by [`opt_message`] and returns it with its violations.
-pub(crate) fn decode_options(options: &[u8]) -> Decoded {
-    Message::decode(&opt_message(options)).expect("well-framed message")
+pub(crate) fn decode_options(options: &[u8]) -> Decoded<'static> {
+    Message::decode(&opt_message(options))
+        .expect("well-framed message")
+        .into_owned()
 }
 
 /// A reader over the whole of `bytes`.

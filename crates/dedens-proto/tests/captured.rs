@@ -11,11 +11,11 @@ fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")
 }
 
-fn capture(name: &str) -> Message {
+fn capture(name: &str) -> Message<'static> {
     let wire = fs::read(dir().join(format!("{name}.bin"))).expect("captured file");
     let decoded = Message::decode(&wire).expect("decodes");
     assert_eq!(decoded.violations, [], "{name}");
-    decoded.message
+    decoded.message.into_owned()
 }
 
 #[test]
@@ -29,7 +29,8 @@ fn every_capture_decodes_and_round_trips() {
             .to_string_lossy()
             .into_owned();
         let message = capture(&name);
-        let again = Message::decode(&message.to_vec().expect("encodes")).expect("decodes again");
+        let wire = message.to_vec().expect("encodes");
+        let again = Message::decode(&wire).expect("decodes again");
         assert_eq!(again.violations, [], "{name}");
         assert_eq!(again.message, message, "{name}");
         count += 1;

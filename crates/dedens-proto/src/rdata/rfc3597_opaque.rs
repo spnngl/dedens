@@ -1,5 +1,7 @@
 //! Unknown and unsupported types: RDATA kept as bytes (RFC 3597 §4-5).
 
+use std::borrow::Cow;
+
 use crate::codes::RecordType;
 use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
@@ -10,9 +12,9 @@ use crate::wire::{Reader, Writer};
 /// The bytes never hold compression pointers: names in the types that may carry compressed ones are decompressed
 /// on decode (RFC 3597 §4), so the bytes keep their meaning outside the message they came from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Opaque {
+pub struct Opaque<'a> {
     rtype: RecordType,
-    data: Box<[u8]>,
+    data: Cow<'a, [u8]>,
 }
 
 /// One field of the RDATA of a type that holds names but has no typed form here.
@@ -24,8 +26,8 @@ enum Field {
     Rest,
 }
 
-impl Opaque {
-    /// RDATA of `rtype` from its wire bytes.
+impl<'a> Opaque<'a> {
+    /// RDATA of `rtype` from its wire bytes, borrowed.
     ///
     /// # Errors
     ///
@@ -33,7 +35,7 @@ impl Opaque {
     /// parse as its fields with uncompressed names.
     ///
     /// [`RData::may_hold_compressed_names`]: super::RData::may_hold_compressed_names
-    pub fn new(rtype: RecordType, data: &[u8]) -> Result<Self, DecodeError> {
+    pub fn new(rtype: RecordType, data: &'a [u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(data);
         let opaque = Self::decode_with(rtype, &mut r, Name::decode_uncompressed)?;
         if r.is_empty() {
@@ -56,10 +58,10 @@ impl Opaque {
     }
 
     /// RDATA of an invalid record of an interpreted type, kept as received (D9); never one that holds names.
-    pub(crate) fn invalid(rtype: RecordType, data: &[u8]) -> Self {
+    pub(crate) const fn invalid(rtype: RecordType, data: &'a [u8]) -> Self {
         Self {
             rtype,
-            data: data.into(),
+            data: Cow::Borrowed(data),
         }
     }
 
@@ -69,35 +71,37 @@ impl Opaque {
     }
 
     /// Reads RDATA of `rtype`, decompressing the names of the types listed in [`layout`].
-    pub(super) fn decode(rtype: RecordType, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub(super) fn decode(rtype: RecordType, r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Self::decode_with(rtype, r, Name::decode)
     }
 
     fn decode_with(
         rtype: RecordType,
-        r: &mut Reader<'_>,
-        name: fn(&mut Reader<'_>) -> Result<Name, DecodeError>,
+        r: &mut Reader<'a>,
+        name: NameFn<'a>,
     ) -> Result<Self, DecodeError> {
         let Some(fields) = layout(rtype) else {
             return Ok(Self::invalid(rtype, r.rest()));
         };
-        let mut data = Vec::with_capacity(r.remaining());
-        for field in fields {
-            match field {
-                Field::Name => data.extend_from_slice(name(r)?.as_wire()),
-                Field::Bytes(n) => data.extend_from_slice(r.bytes(*n)?),
-                Field::CharacterString => {
-                    let len = r.u8()?;
-                    data.push(len);
-                    data.extend_from_slice(r.bytes(usize::from(len))?);
-                }
-                Field::Rest => data.extend_from_slice(r.rest()),
-            }
+        let mut start = *r;
+        let data = if read_fields(fields, r, name, None)? {
+            // Pointers mean nothing outside the message: copy the fields with the names uncompressed.
+            let mut data = Vec::with_capacity(r.position() - start.position());
+            read_fields(fields, &mut start, name, Some(&mut data))?;
+            Cow::Owned(data)
+        } else {
+            Cow::Borrowed(start.bytes(r.position() - start.position())?)
+        };
+        Ok(Self { rtype, data })
+    }
+
+    /// The same RDATA, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Opaque<'static> {
+        Opaque {
+            rtype: self.rtype,
+            data: Cow::Owned(self.data.into_owned()),
         }
-        Ok(Self {
-            rtype,
-            data: data.into(),
-        })
     }
 
     pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
@@ -128,4 +132,45 @@ const fn layout(rtype: RecordType) -> Option<&'static [Field]> {
         RecordType::NXT => &[Name, Rest],
         _ => return None,
     })
+}
+
+/// Reads a name for [`read_fields`]: compressed or not.
+type NameFn<'a> = fn(&mut Reader<'a>) -> Result<Name<'a>, DecodeError>;
+
+/// Reads `fields`, and appends them to `copy` when given, names uncompressed; returns whether a name had
+/// compression pointers.
+fn read_fields<'a>(
+    fields: &[Field],
+    r: &mut Reader<'a>,
+    name: NameFn<'a>,
+    mut copy: Option<&mut Vec<u8>>,
+) -> Result<bool, DecodeError> {
+    let mut packed = false;
+    for field in fields {
+        let mut start = *r;
+        match field {
+            Field::Name => {
+                let name = name(r)?;
+                packed |= name.is_packed();
+                if let Some(out) = copy.as_deref_mut() {
+                    out.extend_from_slice(&name.as_wire());
+                }
+                continue;
+            }
+            Field::Bytes(n) => {
+                r.bytes(*n)?;
+            }
+            Field::CharacterString => {
+                let len = r.u8()?;
+                r.bytes(usize::from(len))?;
+            }
+            Field::Rest => {
+                r.rest();
+            }
+        }
+        if let Some(out) = copy.as_deref_mut() {
+            out.extend_from_slice(start.bytes(r.position() - start.position())?);
+        }
+    }
+    Ok(packed)
 }

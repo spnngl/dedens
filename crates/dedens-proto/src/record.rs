@@ -47,22 +47,22 @@ impl Ttl {
 
 /// A resource record: owner name, class, TTL and data; the type is the data's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Record {
+pub struct Record<'a> {
     /// Owner name.
-    pub name: Name,
+    pub name: Name<'a>,
     /// Class, almost always IN.
     pub class: Class,
     /// Time to live.
     pub ttl: Ttl,
     /// The data, which carries the type.
-    pub data: RData,
+    pub data: RData<'a>,
 }
 
 /// The fixed fields of a record and its RDATA still unparsed, so the message decoder can take an OPT record
 /// before its CLASS and TTL are read as such (RFC 6891 §6.1.2).
 #[derive(Debug, Clone)]
 pub(crate) struct RawRecord<'a> {
-    pub(crate) name: Name,
+    pub(crate) name: Name<'a>,
     pub(crate) rtype: RecordType,
     pub(crate) class: Class,
     pub(crate) ttl: u32,
@@ -71,17 +71,17 @@ pub(crate) struct RawRecord<'a> {
 
 /// A record and, when its RDATA was invalid for its type, why it was kept opaque (D9).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecodedRecord {
+pub struct DecodedRecord<'a> {
     /// The record.
-    pub record: Record,
+    pub record: Record<'a>,
     /// Why the RDATA could not be parsed; it is then [`RData::Opaque`] with the bytes as received.
     pub invalid_rdata: Option<DecodeError>,
 }
 
-impl Record {
+impl<'a> Record<'a> {
     /// A record.
     #[must_use]
-    pub const fn new(name: Name, class: Class, ttl: Ttl, data: RData) -> Self {
+    pub const fn new(name: Name<'a>, class: Class, ttl: Ttl, data: RData<'a>) -> Self {
         Self {
             name,
             class,
@@ -96,8 +96,19 @@ impl Record {
         self.data.rtype()
     }
 
+    /// The same record, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Record<'static> {
+        Record {
+            name: self.name.into_owned(),
+            class: self.class,
+            ttl: self.ttl,
+            data: self.data.into_owned(),
+        }
+    }
+
     /// Reads the owner name and the fixed fields, and delimits the RDATA without parsing it.
-    pub(crate) fn read_raw<'a>(r: &mut Reader<'a>) -> Result<RawRecord<'a>, DecodeError> {
+    pub(crate) fn read_raw(r: &mut Reader<'a>) -> Result<RawRecord<'a>, DecodeError> {
         let name = Name::decode(r)?;
         let rtype = RecordType(r.u16()?);
         let class = Class(r.u16()?);
@@ -126,11 +137,11 @@ impl Record {
     ///
     /// [`DecodeError`] when the name or the fixed fields are cut short, RDLENGTH overruns the message, or the RDATA
     /// of a type with compressible names is invalid.
-    pub fn decode(r: &mut Reader<'_>) -> Result<DecodedRecord, DecodeError> {
+    pub fn decode(r: &mut Reader<'a>) -> Result<DecodedRecord<'a>, DecodeError> {
         Self::from_raw(Self::read_raw(r)?)
     }
 
-    pub(crate) fn from_raw(raw: RawRecord<'_>) -> Result<DecodedRecord, DecodeError> {
+    pub(crate) fn from_raw(raw: RawRecord<'a>) -> Result<DecodedRecord<'a>, DecodeError> {
         let RawRecord {
             name,
             rtype,

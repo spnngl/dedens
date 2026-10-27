@@ -418,7 +418,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
-    pub fn put_name_compressed(&mut self, name: &Name) -> Result<(), EncodeError> {
+    pub fn put_name_compressed(&mut self, name: &Name<'_>) -> Result<(), EncodeError> {
         let wire = name.as_wire();
         // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
         let mut inline = 0;

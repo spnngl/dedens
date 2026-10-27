@@ -9,12 +9,12 @@ use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Edns, Flags, Message, Question, RData, RecordType, Violation};
 use proptest::prelude::*;
 
-fn a(n: u8) -> RData {
+fn a(n: u8) -> RData<'static> {
     RData::A(Ipv4Addr::new(192, 0, 2, n))
 }
 
 /// A question and `answers` A records on the root name: 12 + 5 header and question, 15 bytes per record.
-fn response(answers: u8, additional: u8) -> Message {
+fn response(answers: u8, additional: u8) -> Message<'static> {
     let mut message = Message::query(1, Question::new(dns(""), RecordType::A));
     message.edns = None;
     message.answer = (0..answers).map(|n| rec("", a(n))).collect();
@@ -22,7 +22,7 @@ fn response(answers: u8, additional: u8) -> Message {
     message
 }
 
-fn truncated(message: &Message, size: usize) -> (Message, bool) {
+fn truncated(message: &Message<'_>, size: usize) -> (Message<'static>, bool) {
     let mut buf = vec![0; size];
     let encoded = message
         .encode_truncated(&mut buf)
@@ -34,7 +34,7 @@ fn truncated(message: &Message, size: usize) -> (Message, bool) {
         decoded.message.header.flags.contains(Flags::TC),
         encoded.truncated
     );
-    (decoded.message, encoded.truncated)
+    (decoded.message.into_owned(), encoded.truncated)
 }
 
 #[test]

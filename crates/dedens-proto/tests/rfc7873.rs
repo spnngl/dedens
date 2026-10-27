@@ -8,7 +8,7 @@ use dedens_proto::edns::{Cookie, EdnsOption, OptionCode};
 
 const CLIENT: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
-fn options(data: &[u8]) -> (Vec<EdnsOption>, Vec<Violation>) {
+fn options(data: &[u8]) -> (Vec<EdnsOption<'static>>, Vec<Violation>) {
     let decoded = decode_options(&option_wire(10, data));
     (
         decoded.message.edns.expect("OPT record").options,

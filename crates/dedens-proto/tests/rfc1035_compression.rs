@@ -8,11 +8,11 @@ use common::{dns, rec};
 use dedens_proto::rdata::{Mx, Srv};
 use dedens_proto::{Message, Question, RData, RecordType};
 
-fn a() -> RData {
+fn a() -> RData<'static> {
     RData::A(Ipv4Addr::new(192, 0, 2, 1))
 }
 
-fn answer(records: Vec<dedens_proto::Record>) -> Message {
+fn answer(records: Vec<dedens_proto::Record<'static>>) -> Message<'static> {
     Message {
         answer: records,
         ..Message::default()
@@ -141,12 +141,7 @@ fn names_keep_their_case_and_only_match_byte_for_byte() {
 fn pointers_only_reach_the_first_16384_bytes() {
     let filler = rec(
         "filler.test",
-        RData::Txt(
-            dedens_proto::rdata::Txt::new(vec![
-                dedens_proto::rdata::CharacterString::new(&[b'x'; 255]).unwrap(),
-            ])
-            .unwrap(),
-        ),
+        RData::Txt(dedens_proto::rdata::Txt::new([&[b'x'; 255][..]]).unwrap()),
     );
     let mut records = vec![filler; 70];
     records.push(rec("late.example", a()));

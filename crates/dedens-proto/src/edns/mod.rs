@@ -10,6 +10,8 @@ mod rfc7871_client_subnet;
 mod rfc7873_cookie;
 mod rfc8914_ede;
 
+use std::borrow::Cow;
+
 pub use rfc7871_client_subnet::{ClientSubnet, InvalidClientSubnet};
 pub use rfc7873_cookie::{Cookie, InvalidServerCookie};
 pub use rfc8914_ede::{ExtendedError, InfoCode};
@@ -89,9 +91,9 @@ code_type! {
 /// One option of an OPT record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum EdnsOption {
+pub enum EdnsOption<'a> {
     /// Name server identifier: empty in a query (RFC 5001).
-    Nsid(Box<[u8]>),
+    Nsid(Cow<'a, [u8]>),
     /// Client subnet (RFC 7871).
     ClientSubnet(ClientSubnet),
     /// Cookie (RFC 7873).
@@ -101,17 +103,34 @@ pub enum EdnsOption {
     /// Padding of this many zero bytes (RFC 7830).
     Padding(u16),
     /// Extended DNS Error (RFC 8914).
-    Ede(ExtendedError),
+    Ede(ExtendedError<'a>),
     /// An option without a typed variant, or whose content is invalid for its code (D9).
     Unknown {
         /// The option code.
         code: OptionCode,
         /// The option data as received.
-        data: Box<[u8]>,
+        data: Cow<'a, [u8]>,
     },
 }
 
-impl EdnsOption {
+impl<'a> EdnsOption<'a> {
+    /// The same option, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> EdnsOption<'static> {
+        match self {
+            Self::Nsid(id) => EdnsOption::Nsid(Cow::Owned(id.into_owned())),
+            Self::ClientSubnet(subnet) => EdnsOption::ClientSubnet(subnet),
+            Self::Cookie(cookie) => EdnsOption::Cookie(cookie),
+            Self::Keepalive(timeout) => EdnsOption::Keepalive(timeout),
+            Self::Padding(len) => EdnsOption::Padding(len),
+            Self::Ede(error) => EdnsOption::Ede(error.into_owned()),
+            Self::Unknown { code, data } => EdnsOption::Unknown {
+                code,
+                data: Cow::Owned(data.into_owned()),
+            },
+        }
+    }
+
     /// The option code.
     #[must_use]
     pub const fn code(&self) -> OptionCode {
@@ -140,7 +159,7 @@ impl EdnsOption {
     }
 
     /// Parses the data of option `code`; all of `data` must be used.
-    fn decode_typed(code: OptionCode, data: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode_typed(code: OptionCode, data: &mut Reader<'a>) -> Result<Self, DecodeError> {
         let option = match code {
             OptionCode::NSID => Self::Nsid(rfc5001_nsid::decode(data)),
             OptionCode::CLIENT_SUBNET => Self::ClientSubnet(ClientSubnet::decode(data)?),
@@ -150,7 +169,7 @@ impl EdnsOption {
             OptionCode::EDE => Self::Ede(ExtendedError::decode(data)?),
             _ => Self::Unknown {
                 code,
-                data: data.rest().into(),
+                data: Cow::Borrowed(data.rest()),
             },
         };
         if data.is_empty() {
@@ -190,7 +209,7 @@ pub struct InvalidOption {
 
 /// The content of an OPT record (RFC 6891 §6.1): what the sender supports and the extended header bits.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Edns {
+pub struct Edns<'a> {
     /// Largest UDP message the sender reassembles, in bytes (the OPT CLASS). Values under 512 mean 512
     /// (RFC 6891 §6.2.3); that is left to the user of this field.
     pub udp_payload: u16,
@@ -201,10 +220,10 @@ pub struct Edns {
     /// The flags: DO and the reserved bits.
     pub flags: EdnsFlags,
     /// The options, in order.
-    pub options: Vec<EdnsOption>,
+    pub options: Vec<EdnsOption<'a>>,
 }
 
-impl Default for Edns {
+impl Default for Edns<'_> {
     fn default() -> Self {
         Self {
             udp_payload: DEFAULT_UDP_PAYLOAD,
@@ -216,7 +235,23 @@ impl Default for Edns {
     }
 }
 
-impl Edns {
+impl<'a> Edns<'a> {
+    /// The same EDNS data, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Edns<'static> {
+        Edns {
+            udp_payload: self.udp_payload,
+            ext_rcode: self.ext_rcode,
+            version: self.version,
+            flags: self.flags,
+            options: self
+                .options
+                .into_iter()
+                .map(EdnsOption::into_owned)
+                .collect(),
+        }
+    }
+
     /// Builds the value from an OPT record's CLASS, TTL and RDATA; an option with invalid content is kept
     /// unknown and listed in the second element.
     ///
@@ -226,7 +261,7 @@ impl Edns {
     pub(crate) fn from_opt(
         class: u16,
         ttl: u32,
-        mut rdata: Reader<'_>,
+        mut rdata: Reader<'a>,
     ) -> Result<(Self, Vec<InvalidOption>), DecodeError> {
         let [ext_rcode, version, flags_hi, flags_lo] = ttl.to_be_bytes();
         let flags = u16::from_be_bytes([flags_hi, flags_lo]);
@@ -244,7 +279,7 @@ impl Edns {
                     let mut raw = raw;
                     options.push(EdnsOption::Unknown {
                         code,
-                        data: raw.rest().into(),
+                        data: Cow::Borrowed(raw.rest()),
                     });
                 }
             }

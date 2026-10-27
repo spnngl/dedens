@@ -2,7 +2,8 @@
 //!
 //! Every library does the same work: decode the whole message into typed records, or encode typed records
 //! with name compression. `encode_dedens` writes into a buffer it reuses; every `*_to_vec` encodes into a
-//! fresh `Vec`, as the others always do.
+//! fresh `Vec`, as the others always do. The `*_owned` variants measure `into_owned()`: decoding copies out of
+//! the input, encoding writes names that no longer point into it.
 
 use std::hint::black_box;
 
@@ -14,6 +15,10 @@ use domain::base::{Message as DomainMessage, MessageBuilder};
 use domain::rdata::AllRecordData;
 use hickory_proto::op::Message as HickoryMessage;
 
+// Counts allocations next to time: borrowing exists to remove them (D7a).
+#[global_allocator]
+static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+
 fn main() {
     divan::main();
 }
@@ -22,6 +27,17 @@ fn main() {
 fn decode_dedens(bencher: Bencher<'_, '_>, case: &str) {
     let wire = wire(case);
     bencher.bench_local(|| Message::decode(black_box(&wire)).expect("decodes"));
+}
+
+/// Decode then copy out of the input, as a cache storing the message does.
+#[divan::bench(args = CASES)]
+fn decode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
+    let wire = wire(case);
+    bencher.bench_local(|| {
+        Message::decode(black_box(&wire))
+            .expect("decodes")
+            .into_owned()
+    });
 }
 
 #[divan::bench(args = CASES)]
@@ -52,14 +68,27 @@ fn decode_domain(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn encode_dedens(bencher: Bencher<'_, '_>, case: &str) {
-    let message = Message::decode(&wire(case)).expect("decodes").message;
+    let wire = wire(case);
+    let message = Message::decode(&wire).expect("decodes").message;
+    let mut buf = vec![0; 4096];
+    bencher.bench_local(|| message.encode(black_box(&mut buf)).expect("encodes"));
+}
+
+/// Encode a message owning its bytes: no name to rebuild from compression pointers.
+#[divan::bench(args = CASES)]
+fn encode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
+    let message = Message::decode(&wire(case))
+        .expect("decodes")
+        .message
+        .into_owned();
     let mut buf = vec![0; 4096];
     bencher.bench_local(|| message.encode(black_box(&mut buf)).expect("encodes"));
 }
 
 #[divan::bench(args = CASES)]
 fn encode_dedens_to_vec(bencher: Bencher<'_, '_>, case: &str) {
-    let message = Message::decode(&wire(case)).expect("decodes").message;
+    let wire = wire(case);
+    let message = Message::decode(&wire).expect("decodes").message;
     bencher.bench_local(|| black_box(&message).to_vec().expect("encodes"));
 }
 

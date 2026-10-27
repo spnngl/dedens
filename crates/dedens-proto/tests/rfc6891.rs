@@ -9,7 +9,7 @@ use dedens_proto::{
 };
 use proptest::prelude::*;
 
-fn question() -> Question {
+fn question() -> Question<'static> {
     Question::new(Name::root(), RecordType::A)
 }
 
@@ -160,7 +160,7 @@ fn s6_1_2_an_unknown_option_is_kept() {
         decoded.message.edns.unwrap().options,
         [EdnsOption::Unknown {
             code: OptionCode(0xFF01),
-            data: (*b"data").into()
+            data: b"data".as_slice().into()
         }]
     );
 }

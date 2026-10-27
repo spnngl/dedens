@@ -2,6 +2,7 @@
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::ops::Deref;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::wire::{Reader, Writer};
@@ -28,19 +29,34 @@ pub enum NameError {
     NameTooLong,
 }
 
-/// An absolute domain name.
+/// An absolute domain name, borrowed from the message it was decoded from or owned (D7).
 ///
 /// Labels are arbitrary bytes (RFC 2181 §11) and keep the case they were written in; equality and hashing ignore
-/// ASCII case (RFC 4343 §3). The wire form is stored uncompressed and always valid: labels of 1 to 63 bytes, at
-/// most 255 bytes in total, ending in the root label.
+/// ASCII case (RFC 4343 §3), whatever the representation. The name is always valid: labels of 1 to 63 bytes, at
+/// most 255 bytes in total uncompressed, ending in the root label.
 #[derive(Clone)]
-pub struct Name(Box<[u8]>);
+pub struct Name<'a>(Repr<'a>);
 
-impl Name {
+#[derive(Clone)]
+enum Repr<'a> {
+    /// The uncompressed wire form, a slice of a message or a constant.
+    Slice(&'a [u8]),
+    /// The uncompressed wire form, built or copied.
+    Owned(Box<[u8]>),
+    /// A name with compression pointers starting at `start` in `msg`, checked when it was decoded; `len` is the
+    /// length of its uncompressed wire form.
+    Packed {
+        msg: &'a [u8],
+        start: usize,
+        len: u8,
+    },
+}
+
+impl<'a> Name<'a> {
     /// The root, `.`.
     #[must_use]
-    pub fn root() -> Self {
-        Self(Box::new([0]))
+    pub const fn root() -> Self {
+        Self(Repr::Slice(&[0]))
     }
 
     /// A name from its labels, most specific first, without the root label.
@@ -48,9 +64,9 @@ impl Name {
     /// # Errors
     ///
     /// [`NameError`] when a label is empty or longer than 63 bytes, or the name longer than 255 bytes.
-    pub fn from_labels<'a, I>(labels: I) -> Result<Self, NameError>
+    pub fn from_labels<'l, I>(labels: I) -> Result<Name<'static>, NameError>
     where
-        I: IntoIterator<Item = &'a [u8]>,
+        I: IntoIterator<Item = &'l [u8]>,
     {
         let mut wire = Vec::new();
         for label in labels {
@@ -68,31 +84,71 @@ impl Name {
             wire.extend_from_slice(label);
         }
         wire.push(0);
-        Ok(Self(wire.into_boxed_slice()))
+        Ok(Name(Repr::Owned(wire.into_boxed_slice())))
     }
 
-    /// The uncompressed wire form, ending in the root label.
+    /// The uncompressed wire form, ending in the root label; copied on the stack when the name was decoded with
+    /// compression pointers.
     #[must_use]
-    pub fn as_wire(&self) -> &[u8] {
-        &self.0
+    pub fn as_wire(&self) -> WireForm<'_> {
+        if let Some(wire) = self.flat() {
+            return WireForm::Slice(wire);
+        }
+        let mut buf = [0; MAX_NAME_LEN];
+        let mut len = 0;
+        for label in self.labels() {
+            let end = len + 1 + label.len();
+            if let Some((len_byte, dst)) = buf.get_mut(len..end).and_then(<[u8]>::split_first_mut) {
+                *len_byte = u8::try_from(label.len()).unwrap_or_default();
+                dst.copy_from_slice(label);
+            }
+            len = end;
+        }
+        // The root label: `buf` is zeroed.
+        WireForm::Inline {
+            buf,
+            len: u8::try_from(len + 1).unwrap_or(u8::MAX),
+        }
     }
 
-    /// Length of the wire form.
+    /// The uncompressed wire form when it is stored as is.
+    fn flat(&self) -> Option<&[u8]> {
+        match &self.0 {
+            Repr::Slice(wire) => Some(wire),
+            Repr::Owned(wire) => Some(wire),
+            Repr::Packed { .. } => None,
+        }
+    }
+
+    /// Whether the name was decoded with compression pointers, so it borrows labels from elsewhere in its message.
+    pub(crate) const fn is_packed(&self) -> bool {
+        matches!(self.0, Repr::Packed { .. })
+    }
+
+    /// Length of the uncompressed wire form.
     #[must_use]
     pub fn wire_len(&self) -> usize {
-        self.0.len()
+        match &self.0 {
+            Repr::Slice(wire) => wire.len(),
+            Repr::Owned(wire) => wire.len(),
+            Repr::Packed { len, .. } => usize::from(*len),
+        }
     }
 
     /// Whether this is the root.
     #[must_use]
     pub fn is_root(&self) -> bool {
-        self.0.len() == 1
+        self.wire_len() == 1
     }
 
     /// The labels, most specific first, without the root label.
     #[must_use]
     pub fn labels(&self) -> Labels<'_> {
-        Labels(&self.0)
+        match &self.0 {
+            Repr::Slice(wire) => Labels::new(wire, 0),
+            Repr::Owned(wire) => Labels::new(wire, 0),
+            Repr::Packed { msg, start, .. } => Labels::new(msg, *start),
+        }
     }
 
     /// Number of labels, without the root label.
@@ -101,7 +157,18 @@ impl Name {
         self.labels().count()
     }
 
-    /// Reads a name at the reader's position, following compression pointers (RFC 1035 §4.1.4).
+    /// The same name, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> Name<'static> {
+        match self.0 {
+            Repr::Owned(wire) => Name(Repr::Owned(wire)),
+            _ if self.is_root() => Name::root(),
+            _ => Name(Repr::Owned(Box::from(&*self.as_wire()))),
+        }
+    }
+
+    /// Reads a name at the reader's position, following compression pointers (RFC 1035 §4.1.4); the name borrows
+    /// from the message.
     ///
     /// The reader ends after the name's first pointer, or after its root label when it has none. A pointer must
     /// point strictly before the start of the name being read, and each pointer strictly before the previous
@@ -111,7 +178,7 @@ impl Name {
     ///
     /// [`DecodeError`] when the name runs past the reader, is longer than 255 bytes, has a pointer that does not
     /// point backwards, or a reserved label type.
-    pub fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Self::decode_with(r, true)
     }
 
@@ -120,19 +187,18 @@ impl Name {
     /// # Errors
     ///
     /// [`DecodeError`] as [`Name::decode`], and for any compression pointer.
-    pub fn decode_uncompressed(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub fn decode_uncompressed(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Self::decode_with(r, false)
     }
 
-    fn decode_with(r: &mut Reader<'_>, pointers: bool) -> Result<Self, DecodeError> {
+    fn decode_with(r: &mut Reader<'a>, pointers: bool) -> Result<Self, DecodeError> {
         let msg = r.message();
         let start = r.position();
         let mut limit = r.end();
         let mut bound = start;
         let mut pos = start;
-        // Where the reader resumes, set at the first pointer; from then on labels are gathered in `buf`.
+        // Where the reader resumes, set at the first pointer.
         let mut resume = None;
-        let mut buf = [0_u8; MAX_NAME_LEN];
         let mut len = 0;
         let mut hops = 0;
         let at = |offset, kind| DecodeError { offset, kind };
@@ -149,13 +215,6 @@ impl Name {
                     }
                     if first != 0 && len + usize::from(first) + 2 > MAX_NAME_LEN {
                         return Err(at(pos, DecodeErrorKind::NameTooLong));
-                    }
-                    if resume.is_some() {
-                        let label = msg.get(pos..end).unwrap_or_default();
-                        let slot = buf
-                            .get_mut(len..len + label.len())
-                            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
-                        slot.copy_from_slice(label);
                     }
                     len += end - pos;
                     pos = end;
@@ -181,14 +240,7 @@ impl Name {
                     if target >= bound || hops > MAX_POINTERS {
                         return Err(at(pos, DecodeErrorKind::BadPointer));
                     }
-                    if resume.is_none() {
-                        let labels = msg.get(start..pos).unwrap_or_default();
-                        let slot = buf
-                            .get_mut(..labels.len())
-                            .ok_or(at(pos, DecodeErrorKind::NameTooLong))?;
-                        slot.copy_from_slice(labels);
-                        resume = Some(pos + 2);
-                    }
+                    resume.get_or_insert(pos + 2);
                     bound = target;
                     pos = target;
                     limit = msg.len();
@@ -196,14 +248,15 @@ impl Name {
                 _ => return Err(at(pos, DecodeErrorKind::ReservedLabelType)),
             }
         }
-        let wire = if let Some(resume) = resume {
+        let repr = if let Some(resume) = resume {
             r.set_position(resume);
-            buf.get(..len)
+            let len = u8::try_from(len).map_err(|_| at(start, DecodeErrorKind::NameTooLong))?;
+            Repr::Packed { msg, start, len }
         } else {
             r.set_position(pos);
-            msg.get(start..pos)
+            Repr::Slice(msg.get(start..pos).unwrap_or_default())
         };
-        Ok(Self(Box::from(wire.unwrap_or_default())))
+        Ok(Self(repr))
     }
 
     /// Writes the name uncompressed; see [`Writer::put_name_compressed`] for the names RFC 1035 allows to compress.
@@ -212,43 +265,115 @@ impl Name {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        w.put_bytes(&self.0)
+        w.put_bytes(&self.as_wire())
     }
 }
 
-/// Iterator over the labels of a [`Name`].
-#[derive(Debug, Clone)]
-pub struct Labels<'a>(&'a [u8]);
+/// The uncompressed wire form of a [`Name`], from [`Name::as_wire`]; dereferences to the bytes.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a short-lived stack value; the copy avoids allocating"
+)]
+pub enum WireForm<'n> {
+    /// The bytes the name holds.
+    Slice(&'n [u8]),
+    /// A copy, for a name decoded with compression pointers.
+    Inline {
+        /// The wire form, then zeros.
+        buf: [u8; MAX_NAME_LEN],
+        /// Length of the wire form in `buf`.
+        len: u8,
+    },
+}
 
-impl<'a> Iterator for Labels<'a> {
-    type Item = &'a [u8];
+impl Deref for WireForm<'_> {
+    type Target = [u8];
 
-    fn next(&mut self) -> Option<&'a [u8]> {
-        let (&len, rest) = self.0.split_first()?;
-        if len == 0 {
-            self.0 = &[];
-            return None;
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Slice(wire) => wire,
+            Self::Inline { buf, len } => buf.get(..usize::from(*len)).unwrap_or_default(),
         }
-        let (label, rest) = rest.split_at_checked(usize::from(len))?;
-        self.0 = rest;
-        Some(label)
     }
 }
 
-impl PartialEq for Name {
-    fn eq(&self, other: &Self) -> bool {
-        // Length bytes are at most 63, below `A`, so lowercasing the whole wire form only touches letters.
-        self.0.eq_ignore_ascii_case(&other.0)
+/// Iterator over the labels of a [`Name`], following the compression pointers of a decoded one.
+#[derive(Debug, Clone)]
+pub struct Labels<'n> {
+    buf: &'n [u8],
+    pos: usize,
+    /// Pointers must go strictly below this, as when decoding, so iteration always ends.
+    bound: usize,
+}
+
+impl<'n> Labels<'n> {
+    const fn new(buf: &'n [u8], start: usize) -> Self {
+        Self {
+            buf,
+            pos: start,
+            bound: start,
+        }
     }
 }
 
-impl Eq for Name {}
+impl<'n> Iterator for Labels<'n> {
+    type Item = &'n [u8];
 
-impl Hash for Name {
+    fn next(&mut self) -> Option<&'n [u8]> {
+        loop {
+            let &len = self.buf.get(self.pos)?;
+            match len & 0xC0 {
+                0x00 if len != 0 => {
+                    let start = self.pos + 1;
+                    let end = start + usize::from(len);
+                    let label = self.buf.get(start..end)?;
+                    self.pos = end;
+                    return Some(label);
+                }
+                0xC0 => {
+                    let &low = self.buf.get(self.pos + 1)?;
+                    let target = usize::from(len & 0x3F) << 8 | usize::from(low);
+                    if target >= self.bound {
+                        return None;
+                    }
+                    self.bound = target;
+                    self.pos = target;
+                }
+                // The root label, or a reserved type a checked name never holds.
+                _ => {
+                    self.pos = self.buf.len();
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+impl<'b> PartialEq<Name<'b>> for Name<'_> {
+    fn eq(&self, other: &Name<'b>) -> bool {
+        if let (Some(a), Some(b)) = (self.flat(), other.flat()) {
+            // Length bytes are at most 63, below `A`, so lowercasing the whole wire form only touches letters.
+            return a.eq_ignore_ascii_case(b);
+        }
+        if self.wire_len() != other.wire_len() {
+            return false;
+        }
+        let mut theirs = other.labels();
+        self.labels()
+            .all(|a| theirs.next().is_some_and(|b| a.eq_ignore_ascii_case(b)))
+            && theirs.next().is_none()
+    }
+}
+
+impl Eq for Name<'_> {}
+
+impl Hash for Name<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        let wire = self.as_wire();
         let mut lower = [0_u8; MAX_NAME_LEN];
-        let lower = lower.get_mut(..self.0.len()).unwrap_or_default();
-        lower.copy_from_slice(&self.0);
+        let lower = lower.get_mut(..wire.len()).unwrap_or_default();
+        lower.copy_from_slice(&wire);
         lower.make_ascii_lowercase();
         state.write(lower);
     }
@@ -256,7 +381,7 @@ impl Hash for Name {
 
 /// Presentation form: labels joined by dots, ending in a dot; the special characters `.\"();@$` inside a label
 /// are escaped with `\`, and bytes outside printable ASCII written `\DDD` (RFC 1035 §5.1).
-impl fmt::Display for Name {
+impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_root() {
             return f.write_str(".");
@@ -277,7 +402,7 @@ impl fmt::Display for Name {
     }
 }
 
-impl fmt::Debug for Name {
+impl fmt::Debug for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Name({self})")
     }
@@ -287,14 +412,14 @@ impl fmt::Debug for Name {
 mod tests {
     use super::*;
 
-    fn name(labels: &[&[u8]]) -> Name {
+    fn name(labels: &[&[u8]]) -> Name<'static> {
         Name::from_labels(labels.iter().copied()).unwrap()
     }
 
     #[test]
     fn wire_form_ends_in_the_root_label() {
-        assert_eq!(name(&[b"a", b"bc"]).as_wire(), &[1, b'a', 2, b'b', b'c', 0]);
-        assert_eq!(Name::root().as_wire(), &[0]);
+        assert_eq!(*name(&[b"a", b"bc"]).as_wire(), [1, b'a', 2, b'b', b'c', 0]);
+        assert_eq!(*Name::root().as_wire(), [0]);
     }
 
     #[test]
@@ -349,6 +474,29 @@ mod tests {
         r.bytes(3).unwrap();
         assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"b", b"a"]));
         assert_eq!(r.position(), 7);
+    }
+
+    #[test]
+    fn a_decoded_name_borrows_and_matches_its_owned_copy() {
+        use std::hash::BuildHasher;
+
+        // 0: "a" root; 3: "B" + pointer to 0; 7: "b" "a" root, uncompressed.
+        let msg = [1, b'a', 0, 1, b'B', 0xC0, 0, 1, b'b', 1, b'a', 0];
+        let mut r = Reader::new(&msg);
+        r.bytes(3).unwrap();
+        let packed = Name::decode(&mut r).unwrap();
+        let flat = Name::decode(&mut r).unwrap();
+        assert!(packed.is_packed() && !flat.is_packed());
+        assert_eq!(*packed.as_wire(), [1, b'B', 1, b'a', 0]);
+        assert_eq!(packed.wire_len(), 5);
+        assert_eq!(packed.labels().collect::<Vec<_>>(), [b"B", b"a"]);
+        assert_eq!(packed, flat);
+        let hasher = std::hash::RandomState::new();
+        assert_eq!(hasher.hash_one(&packed), hasher.hash_one(&flat));
+        let owned = packed.clone().into_owned();
+        assert_eq!(owned, packed);
+        assert_eq!(owned.to_string(), "B.a.");
+        assert_ne!(packed, name(&[b"b"]));
     }
 
     #[test]

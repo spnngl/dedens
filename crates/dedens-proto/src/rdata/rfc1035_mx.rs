@@ -6,15 +6,24 @@ use crate::wire::{Reader, Writer};
 
 /// A mail exchange: lower preference is tried first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Mx {
+pub struct Mx<'a> {
     /// Preference of this exchange.
     pub preference: u16,
     /// The host that accepts the mail.
-    pub exchange: Name,
+    pub exchange: Name<'a>,
 }
 
-impl Mx {
-    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+impl<'a> Mx<'a> {
+    /// The same exchange, owning its name.
+    #[must_use]
+    pub fn into_owned(self) -> Mx<'static> {
+        Mx {
+            preference: self.preference,
+            exchange: self.exchange.into_owned(),
+        }
+    }
+
+    pub(super) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(Self {
             preference: r.u16()?,
             exchange: Name::decode(r)?,

@@ -6,7 +6,7 @@ use common::{decode_options, option_wire};
 use dedens_proto::Violation;
 use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode, OptionCode};
 
-fn options(data: &[u8]) -> (Vec<EdnsOption>, Vec<Violation>) {
+fn options(data: &[u8]) -> (Vec<EdnsOption<'static>>, Vec<Violation>) {
     let decoded = decode_options(&option_wire(15, data));
     (
         decoded.message.edns.expect("OPT record").options,
@@ -35,7 +35,7 @@ fn s2_the_text_may_be_empty() {
         options,
         [EdnsOption::Ede(ExtendedError {
             code: InfoCode::STALE_ANSWER,
-            text: String::new()
+            text: "".into()
         })]
     );
 }
@@ -55,7 +55,7 @@ fn s2_the_text_is_utf8() {
         options,
         [EdnsOption::Unknown {
             code: OptionCode::EDE,
-            data: data.into()
+            data: data.as_slice().into()
         }]
     );
 }

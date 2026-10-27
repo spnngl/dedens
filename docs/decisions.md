@@ -25,10 +25,20 @@ decision is marked superseded, never reused. The rules a decision produces live 
 
 ## Wire format
 
-- D7 `Name`: wire-form bytes, case preserved, compared and hashed ASCII case-insensitively (RFC 4343); built
-  only through validating constructors (label 1..=63 bytes, name <= 255). Representation private: a compact
-  heap copy first, a bench picks the final one (inline or borrowed). Rejected: a fixed 255-byte inline buffer,
-  about 300 bytes per record whatever the name.
+- D7 `Name<'a>`: wire-form bytes, case preserved, compared and hashed ASCII case-insensitively (RFC 4343); built
+  only through validating constructors (label 1..=63 bytes, name <= 255). Representation private: a slice of
+  the input when the name has no pointer, the input and the name's offset when it has (labels read on demand,
+  pointers checked once at decode), or owned bytes for a built name. Rejected: a fixed 255-byte inline buffer,
+  about 300 bytes per record whatever the name; copying compressed names at decode, which costs the allocation
+  borrowing removes.
+- D7a Decoding borrows (D14 bench: dedens allocated 7 times for one A record, `domain` none): one set of types
+  with a lifetime, `Message<'a>` down to `Name<'a>`; `Message<'static>` is the owned message, from
+  `into_owned()` or built by hand. Variable-length values (TXT strings, SVCB parameters, CAA, opaque RDATA,
+  EDNS option data, EDE text) are kept as their checked wire bytes, borrowed or owned, read through iterators
+  or accessors, so a decoded value still holds its invariants. SVCB parameters come out of the iterator
+  owned: rare, so their allocation moves to whoever reads them. Sections and EDNS options stay `Vec`s.
+  Rejected: a separate borrowed view next to the owned types (every RDATA type twice); a lazy message
+  re-parsed on each pass (errors at every access).
 - D8 `Message`: header, questions, answer, authority, additional, and EDNS lifted out of additional into its
   own field, so no caller searches for the OPT record.
 - D9 Decoder: bounds-checked cursor; a compression pointer must point strictly before the current label, which
@@ -64,7 +74,7 @@ decision is marked superseded, never reused. The rules a decision produces live 
 
 ## Performance and safety
 
-- D14 Owned decode first, measured with divan; a borrowed zero-copy view once a bench shows the gain. Baselines
+- D14 Decode borrows (D7a); measured with divan, including the cost of `into_owned()`. Baselines
   in the same benches: hickory-proto and `domain`, plus Go's `miekg/dns` (the codec of CoreDNS) through
   `go test -bench` on the same files; all in `crates/dedens-bench`, regular dependencies so `cargo deny` checks
   them. Every encoder compresses names. CoreDNS as a server is measured with dnsperf later. Bar: no slower
@@ -72,8 +82,12 @@ decision is marked superseded, never reused. The rules a decision produces live 
   run; `a`/`mx`/`txt_large` = 72/161/1187-byte captured responses): decode dedens 208/552/1437, hickory
   250/708/1791, domain 146/297/620, miekg 281/766/2170; encode into a reused buffer dedens 73/330/461, miekg
   162/637/1056; encode into a fresh buffer dedens 88/317/718, hickory 416/1291/1697, domain 198/666/771, miekg
-  177/667/1135. The bar is met; `domain` is 1.4-2.3x faster to decode because it borrows. The next gain is a
-  borrowed view or inline names, not before a profile.
+  177/667/1135. The bar is met; `domain` was 1.4-2.3x faster to decode because it borrowed: the owned decode
+  allocated 7 times (328 B) for `a` and 15 times (779 B) for `mx`, `domain` none. Borrowed decode (D7a), same
+  run, median ns a/mx/txt_large: dedens 73/153/289 with 3 allocations (the section `Vec`s), `domain`
+  94/191/432, `into_owned()` after it 138/378/743. Re-encoding a borrowed message costs 25-35% more than an
+  owned one: names with pointers are rebuilt on the stack. `unsafe` only where a profile shows bounds checks
+  matter.
 - D15 `unsafe` is a hot-path tool: the bench comes first, Miri and RAPx follow.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, the fuzz workflow
