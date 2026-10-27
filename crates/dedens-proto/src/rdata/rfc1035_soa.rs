@@ -37,8 +37,8 @@ impl Soa {
     }
 
     pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        self.mname.encode(w)?;
-        self.rname.encode(w)?;
+        w.put_name_compressed(&self.mname)?;
+        w.put_name_compressed(&self.rname)?;
         for v in [
             self.serial,
             self.refresh,

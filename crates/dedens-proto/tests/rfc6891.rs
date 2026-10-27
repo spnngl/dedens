@@ -159,7 +159,9 @@ proptest! {
     #[test]
     fn round_trip(edns in common::edns()) {
         let message = Message { edns: Some(edns), ..Message::default() };
-        let decoded = Message::decode(&message.to_vec().unwrap()).unwrap();
+        let wire = message.to_vec().unwrap();
+        prop_assert_eq!(wire.len(), 12 + message.edns.as_ref().unwrap().wire_len());
+        let decoded = Message::decode(&wire).unwrap();
         prop_assert_eq!(decoded.violations, []);
         prop_assert_eq!(decoded.message, message);
     }

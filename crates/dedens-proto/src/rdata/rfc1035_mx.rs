@@ -23,6 +23,6 @@ impl Mx {
 
     pub(super) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.put_u16(self.preference)?;
-        self.exchange.encode(w)
+        w.put_name_compressed(&self.exchange)
     }
 }

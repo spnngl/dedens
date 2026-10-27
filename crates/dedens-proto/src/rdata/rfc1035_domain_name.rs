@@ -11,5 +11,5 @@ pub(super) fn decode(r: &mut Reader<'_>) -> Result<Name, DecodeError> {
 }
 
 pub(super) fn encode(name: &Name, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-    name.encode(w)
+    w.put_name_compressed(name)
 }

@@ -181,7 +181,7 @@ impl Name {
         Ok(Self(wire.into_boxed_slice()))
     }
 
-    /// Writes the name uncompressed.
+    /// Writes the name uncompressed; see [`Writer::put_name_compressed`] for the names RFC 1035 allows to compress.
     ///
     /// # Errors
     ///

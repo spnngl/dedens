@@ -21,6 +21,12 @@ use crate::wire::{Reader, Writer};
 /// The UDP payload size to advertise by default: 1232 bytes avoids IP fragmentation (DNS Flag Day 2020, D10).
 pub const DEFAULT_UDP_PAYLOAD: u16 = 1232;
 
+/// Root owner, type, CLASS, TTL and RDLENGTH of an OPT record.
+const OPT_FIXED_LEN: usize = 11;
+
+/// Code and length of an option.
+const OPTION_HEADER_LEN: usize = 4;
+
 /// Mask of the 15 flag bits after DO in the OPT TTL (RFC 6891 §6.1.3).
 const Z_MASK: u16 = 0x7FFF;
 
@@ -78,6 +84,19 @@ impl EdnsOption {
             Self::Padding(_) => OptionCode::PADDING,
             Self::Ede(_) => OptionCode::EDE,
             Self::Unknown { code, .. } => *code,
+        }
+    }
+
+    /// The length of the option data on the wire.
+    fn data_len(&self) -> usize {
+        match self {
+            Self::Nsid(id) => id.len(),
+            Self::ClientSubnet(subnet) => 4 + usize::from(subnet.source_prefix()).div_ceil(8),
+            Self::Cookie(cookie) => 8 + cookie.server().map_or(0, <[u8]>::len),
+            Self::Keepalive(timeout) => 2 * usize::from(timeout.is_some()),
+            Self::Padding(len) => usize::from(*len),
+            Self::Ede(error) => 2 + error.text.len(),
+            Self::Unknown { data, .. } => data.len(),
         }
     }
 
@@ -203,6 +222,17 @@ impl Edns {
             options,
         };
         Ok((edns, invalid))
+    }
+
+    /// The length of the OPT record on the wire, which truncation keeps room for (RFC 6891 §7).
+    #[must_use]
+    pub fn wire_len(&self) -> usize {
+        OPT_FIXED_LEN
+            + self
+                .options
+                .iter()
+                .map(|o| OPTION_HEADER_LEN + o.data_len())
+                .sum::<usize>()
     }
 
     /// Writes the OPT record: root owner, type OPT, CLASS and TTL from the fields (RFC 6891 §6.1.2).

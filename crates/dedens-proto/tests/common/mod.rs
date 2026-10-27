@@ -312,6 +312,17 @@ pub(crate) fn opt_message(options: &[u8]) -> Vec<u8> {
     wire
 }
 
+/// A name from its dotted text; `""` is the root.
+pub(crate) fn dns(text: &str) -> Name {
+    Name::from_labels(text.split('.').filter(|l| !l.is_empty()).map(str::as_bytes))
+        .expect("valid name")
+}
+
+/// An IN record with TTL 60.
+pub(crate) fn rec(owner: &str, data: RData) -> Record {
+    Record::new(dns(owner), Class::IN, Ttl::new(60).expect("in range"), data)
+}
+
 /// One EDNS option on the wire: code, length, data.
 pub(crate) fn option_wire(code: u16, data: &[u8]) -> Vec<u8> {
     let mut wire = code.to_be_bytes().to_vec();

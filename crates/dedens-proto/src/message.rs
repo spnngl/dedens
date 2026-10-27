@@ -87,6 +87,15 @@ pub enum Violation {
     },
 }
 
+/// How much of a message [`Message::encode_truncated`] wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encoded {
+    /// Bytes written.
+    pub len: usize,
+    /// Whether TC was set because the answer or authority section lost records.
+    pub truncated: bool,
+}
+
 /// The result of [`Message::decode`]: the message and the rules it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decoded {
@@ -182,36 +191,76 @@ impl Message {
         })
     }
 
-    /// Writes the message into `buf` (at most 65535 bytes of it are used), names uncompressed.
+    /// Writes the message into `buf` (at most 65535 bytes of it are used), compressing the names RFC 1035
+    /// allows to (RFC 1035 §4.1.4, RFC 3597 §4).
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it does not fit, or a section has more than 65535 entries.
+    /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodeError> {
+        self.encode_into(buf, false).map(|encoded| encoded.len)
+    }
+
+    /// Like [`Message::encode`], but when the records do not fit, writes the ones that do and drops the rest
+    /// (D10).
+    ///
+    /// Dropping starts at the first record that does not fit; the OPT record is always kept (RFC 6891 §7). TC is
+    /// set only if the answer or authority section lost records, not if only additional data did (RFC 2181 §9).
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when the header, the questions and the OPT record do not fit.
+    pub fn encode_truncated(&self, buf: &mut [u8]) -> Result<Encoded, EncodeError> {
+        self.encode_into(buf, true)
+    }
+
+    fn encode_into(&self, buf: &mut [u8], may_truncate: bool) -> Result<Encoded, EncodeError> {
         let mut w = Writer::new(buf);
-        let additional = self.additional.len() + usize::from(self.edns.is_some());
-        let counts = Counts {
-            questions: count(self.questions.len())?,
-            answers: count(self.answer.len())?,
-            authority: count(self.authority.len())?,
-            additional: count(additional)?,
-        };
-        self.header.encode(counts, &mut w)?;
+        self.header.encode(Counts::default(), &mut w)?;
         for q in &self.questions {
             q.encode(&mut w)?;
         }
-        for record in self
-            .answer
-            .iter()
-            .chain(&self.authority)
-            .chain(&self.additional)
-        {
-            record.encode(&mut w)?;
+        if let Some(edns) = &self.edns {
+            w.hold_back(edns.wire_len())?;
         }
+        let mut written = [0_usize; 3];
+        let mut tc = false;
+        let sections = [&self.answer, &self.authority, &self.additional];
+        'sections: for (i, (count, records)) in written.iter_mut().zip(sections).enumerate() {
+            for record in records {
+                let before = w.len();
+                match record.encode(&mut w) {
+                    Ok(()) => *count += 1,
+                    Err(EncodeError::BufferFull) if may_truncate => {
+                        w.truncate(before);
+                        tc = i < 2;
+                        break 'sections;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        w.release_tail();
         if let Some(edns) = &self.edns {
             edns.encode(&mut w)?;
         }
-        Ok(w.len())
+        let [answers, authority, additional] = written;
+        let additional = additional + usize::from(self.edns.is_some());
+        for (at, n) in [
+            (4, self.questions.len()),
+            (6, answers),
+            (8, authority),
+            (10, additional),
+        ] {
+            w.patch_u16(at, u16::try_from(n).map_err(|_| EncodeError::BufferFull)?);
+        }
+        if tc {
+            w.patch_u16(2, w.u16_at(2).unwrap_or_default() | Flags::TC.bits());
+        }
+        Ok(Encoded {
+            len: w.len(),
+            truncated: tc,
+        })
     }
 
     /// Writes the message into a new vector.
@@ -225,10 +274,6 @@ impl Message {
         buf.truncate(len);
         Ok(buf)
     }
-}
-
-fn count(len: usize) -> Result<u16, EncodeError> {
-    u16::try_from(len).map_err(|_| EncodeError::BufferFull)
 }
 
 /// `claimed` entries, capped by how many of at least `min_len` bytes fit in `remaining`.

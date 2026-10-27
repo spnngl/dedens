@@ -26,7 +26,7 @@ pub use codes::{Class, Opcode, Rcode, RecordType};
 pub use edns::Edns;
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Counts, Flags, Header};
-pub use message::{Decoded, Message, Section, Violation};
+pub use message::{Decoded, Encoded, Message, Section, Violation};
 pub use name::{Name, NameError};
 pub use question::Question;
 pub use rdata::RData;

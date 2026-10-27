@@ -1,6 +1,7 @@
 //! Byte cursors: [`Reader`] decodes, [`Writer`] encodes, neither allocates.
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::name::Name;
 
 /// Largest DNS message: the 16-bit length prefix of TCP (RFC 1035 §4.2.2) bounds it.
 pub const MAX_MESSAGE_LEN: usize = 65535;
@@ -147,11 +148,104 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Compression pointers hold 14 bits of offset (RFC 1035 §4.1.4).
+const POINTER_LIMIT: usize = 0x4000;
+
+/// How many name offsets a [`Writer`] remembers; a message with more distinct names compresses the later ones
+/// less.
+const TABLE_CAPACITY: usize = 128;
+
+/// Offsets of the names written so far, to point to them (RFC 1035 §4.1.4).
+///
+/// Fixed capacity, so no allocation (D10). Names are matched byte for byte against the written message, so each
+/// keeps its own case (RFC 4343 §4).
+#[derive(Debug)]
+struct NameTable {
+    offsets: [u16; TABLE_CAPACITY],
+    len: usize,
+}
+
+impl NameTable {
+    const fn new() -> Self {
+        Self {
+            offsets: [0; TABLE_CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn offsets(&self) -> &[u16] {
+        self.offsets.get(..self.len).unwrap_or_default()
+    }
+
+    /// Remembers that a name starts at `offset`; ignored when it cannot be pointed to or the table is full.
+    fn add(&mut self, offset: usize) {
+        if let (Ok(offset), Some(slot)) = (u16::try_from(offset), self.offsets.get_mut(self.len))
+            && usize::from(offset) < POINTER_LIMIT
+        {
+            *slot = offset;
+            self.len += 1;
+        }
+    }
+
+    /// Forgets the names starting at or after `len`.
+    fn truncate(&mut self, len: usize) {
+        while self
+            .offsets()
+            .last()
+            .is_some_and(|&o| usize::from(o) >= len)
+        {
+            self.len -= 1;
+        }
+    }
+
+    /// The offset of an earlier name equal to `suffix` (wire form, root included), if any.
+    fn find(&self, written: &[u8], suffix: &[u8]) -> Option<u16> {
+        self.offsets()
+            .iter()
+            .copied()
+            .find(|&o| name_matches(written, usize::from(o), suffix))
+    }
+}
+
+/// Whether the name at `offset` in `written`, following its pointers, is the wire-form name `suffix`.
+///
+/// Pointers in `written` were made by [`Writer::put_name_compressed`] and point backwards, so this ends.
+fn name_matches(written: &[u8], mut offset: usize, mut suffix: &[u8]) -> bool {
+    loop {
+        let Some(&len) = written.get(offset) else {
+            return false;
+        };
+        match len {
+            0 => return suffix == [0],
+            l if l & 0xC0 == 0xC0 => {
+                let Some(&low) = written.get(offset + 1) else {
+                    return false;
+                };
+                offset = usize::from(l & 0x3F) << 8 | usize::from(low);
+            }
+            l => {
+                let end = offset + 1 + usize::from(l);
+                let Some(label) = written.get(offset..end) else {
+                    return false;
+                };
+                let Some(rest) = suffix.strip_prefix(label) else {
+                    return false;
+                };
+                suffix = rest;
+                offset = end;
+            }
+        }
+    }
+}
+
 /// A cursor writing into a caller-provided buffer, at most [`MAX_MESSAGE_LEN`] bytes of it.
 #[derive(Debug)]
 pub struct Writer<'a> {
     buf: &'a mut [u8],
     len: usize,
+    /// Writes stop here, short of `buf.len()` while a tail is held back.
+    limit: usize,
+    names: NameTable,
 }
 
 impl<'a> Writer<'a> {
@@ -160,7 +254,13 @@ impl<'a> Writer<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
         let cap = buf.len().min(MAX_MESSAGE_LEN);
         let (buf, _) = buf.split_at_mut(cap);
-        Self { buf, len: 0 }
+        let limit = buf.len();
+        Self {
+            buf,
+            len: 0,
+            limit,
+            names: NameTable::new(),
+        }
     }
 
     /// Bytes written so far.
@@ -178,7 +278,7 @@ impl<'a> Writer<'a> {
     /// Bytes still available.
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        self.buf.len() - self.len
+        self.limit - self.len
     }
 
     /// What was written.
@@ -196,7 +296,8 @@ impl<'a> Writer<'a> {
         let end = self.len + bytes.len();
         let dst = self
             .buf
-            .get_mut(self.len..end)
+            .get_mut(self.len..end.min(self.limit))
+            .filter(|dst| dst.len() == bytes.len())
             .ok_or(EncodeError::BufferFull)?;
         dst.copy_from_slice(bytes);
         self.len = end;
@@ -212,7 +313,8 @@ impl<'a> Writer<'a> {
         let end = self.len + n;
         let dst = self
             .buf
-            .get_mut(self.len..end)
+            .get_mut(self.len..end.min(self.limit))
+            .filter(|dst| dst.len() == n)
             .ok_or(EncodeError::BufferFull)?;
         dst.fill(0);
         self.len = end;
@@ -258,6 +360,13 @@ impl<'a> Writer<'a> {
         Ok(at)
     }
 
+    /// The `u16` at `at`, if it is within what was written.
+    #[must_use]
+    pub fn u16_at(&self, at: usize) -> Option<u16> {
+        let bytes = self.written().get(at..at + 2)?;
+        Some(u16::from_be_bytes([*bytes.first()?, *bytes.get(1)?]))
+    }
+
     /// Overwrites the `u16` at `at`, an offset [`Writer::reserve_u16`] returned.
     pub fn patch_u16(&mut self, at: usize, v: u16) {
         if let Some(dst) = self.buf.get_mut(at..at + 2) {
@@ -267,9 +376,66 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// Writes `name`, ending in a pointer to the longest earlier name it ends with, and remembers it for the
+    /// names after it (RFC 1035 §4.1.4). Only for names of types RFC 1035 defines (RFC 3597 §4); others are
+    /// written with [`Name::encode`].
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
+    pub fn put_name_compressed(&mut self, name: &Name) -> Result<(), EncodeError> {
+        let wire = name.as_wire();
+        // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
+        let mut inline = 0;
+        let mut pointer = None;
+        while let Some(&label_len) = wire.get(inline).filter(|&&l| l != 0) {
+            let suffix = wire.get(inline..).unwrap_or_default();
+            if let Some(target) = self.names.find(self.written(), suffix) {
+                pointer = Some(target);
+                break;
+            }
+            inline += 1 + usize::from(label_len);
+        }
+        let first = self.len;
+        let tail = if pointer.is_some() { 2 } else { 1 };
+        if self.remaining() < inline + tail {
+            return Err(EncodeError::BufferFull);
+        }
+        self.put_bytes(wire.get(..inline).unwrap_or_default())?;
+        match pointer {
+            Some(target) => self.put_u16(0xC000 | target)?,
+            None => self.put_u8(0)?,
+        }
+        let mut at = 0;
+        while let Some(&label_len) = wire.get(at).filter(|&&l| l != 0).filter(|_| at < inline) {
+            self.names.add(first + at);
+            at += 1 + usize::from(label_len);
+        }
+        Ok(())
+    }
+
+    /// Keeps the last `n` bytes of the buffer free for what is written after [`Writer::release_tail`].
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when fewer than `n` bytes are left.
+    pub fn hold_back(&mut self, n: usize) -> Result<(), EncodeError> {
+        if self.remaining() < n {
+            return Err(EncodeError::BufferFull);
+        }
+        self.limit -= n;
+        Ok(())
+    }
+
+    /// Makes the bytes kept by [`Writer::hold_back`] writable.
+    pub fn release_tail(&mut self) {
+        self.limit = self.buf.len();
+    }
+
     /// Drops everything written after `len`, to roll back a partial record.
     pub fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
+        self.names.truncate(self.len);
     }
 }
 

@@ -163,7 +163,7 @@ impl Record {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        self.name.encode(w)?;
+        w.put_name_compressed(&self.name)?;
         w.put_u16(self.rtype().0)?;
         w.put_u16(self.class.0)?;
         w.put_u32(self.ttl.get())?;

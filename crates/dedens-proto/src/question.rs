@@ -46,7 +46,7 @@ impl Question {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        self.name.encode(w)?;
+        w.put_name_compressed(&self.name)?;
         w.put_u16(self.qtype.0)?;
         w.put_u16(self.qclass.0)
     }
