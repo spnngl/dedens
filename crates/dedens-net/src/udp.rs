@@ -82,6 +82,8 @@ impl UdpPool {
 #[derive(Debug)]
 struct Mux {
     socket: Rc<UdpSocket>,
+    /// Its local address, asked once: a system call.
+    local: SocketAddr,
     waiting: Rc<RefCell<Waiting>>,
     /// Cancelled with the socket.
     _receiving: JoinHandle<()>,
@@ -97,10 +99,12 @@ impl Mux {
         };
         let socket = UdpSocket::bind(local).await?;
         socket.connect(server).await?;
+        let local = socket.local_addr()?;
         let (socket, waiting) = (Rc::new(socket), Rc::<RefCell<Waiting>>::default());
         let receiving = spawn(receive(Rc::clone(&socket), Rc::clone(&waiting)));
         Ok(Self {
             socket,
+            local,
             waiting,
             _receiving: receiving,
         })
@@ -199,12 +203,9 @@ pub struct UdpQuery {
 
 impl UdpQuery {
     /// The local address: the source address the OS picked to reach the server, and the port.
-    ///
-    /// # Errors
-    ///
-    /// The OS cannot tell.
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.mux.socket.local_addr()
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.mux.local
     }
 
     /// Waits for datagrams with ID `id` from now on, as the query goes with a new one.

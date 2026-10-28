@@ -35,7 +35,7 @@ async fn the_os_picks_the_source_port() {
         .query(server, 0, 1, SIZE)
         .await
         .expect("a socket");
-    assert_ne!(query.local_addr().expect("an address").port(), 0);
+    assert_ne!(query.local_addr().port(), 0);
 }
 
 /// Queries on one socket each get the response with their ID, the later one first here.
@@ -45,7 +45,7 @@ async fn queries_on_one_socket_get_their_own_responses() {
     let pool = UdpPool::new(4);
     let mut first = pool.query(server, 1, 1, SIZE).await.expect("a socket");
     let mut second = pool.query(server, 5, 2, SIZE).await.expect("a socket");
-    assert_eq!(first.local_addr().ok(), second.local_addr().ok());
+    assert_eq!(first.local_addr(), second.local_addr());
     first.send(&query_with_id(1)).await.expect("sent");
     second.send(&query_with_id(2)).await.expect("sent");
     let two = second.recv(soon()).await.expect("received");
@@ -62,7 +62,7 @@ async fn sockets_are_picked_modulo_the_pool_size() {
     let pool = UdpPool::new(2);
     let port = async |pick| {
         let query = pool.query(server, pick, 1, SIZE).await.expect("a socket");
-        query.local_addr().expect("an address").port()
+        query.local_addr().port()
     };
     let (a, b, c) = (port(0).await, port(1).await, port(2).await);
     assert_ne!(a, b);

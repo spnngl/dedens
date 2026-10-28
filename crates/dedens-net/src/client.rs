@@ -173,7 +173,7 @@ impl Client {
                     .query(server, pick, query.header.id, usize::from(size))
                     .await
                     .map_err(ClientError::Udp)?;
-                udp.insert(waiting).local_addr().map_err(ClientError::Udp)?
+                udp.insert(waiting).local_addr()
             }
             Transport::Tcp => {
                 let deadline = after(Instant::now(), options.timeout);

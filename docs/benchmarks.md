@@ -107,7 +107,9 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   → 478k-480k queries/s, average latency 1.2 → 1.0 ms. 16 tasks a socket instead of 4: 475k-516k, within noise.
 - Forwarding (`forward`): `dedensd` without a cache, every query sent over UDP to a second `dedensd` on its own
   core answering from its cache. A socket per upstream query → a pool of 256 muxed sockets (D50): 124.6k-124.9k
-  → 126.5k-127.7k queries/s, no loss, average latency 4.0 → 3.9 ms.
+  → 126.5k-127.7k queries/s, no loss, average latency 4.0 → 3.9 ms. The front `dedensd` is the limit, at 99% of
+  its core against 31% for the upstream one, most of it in the kernel (loopback sends, wakeups). Its local
+  address asked once a socket, not once a query (`getsockname` was 2.4% of the profile): 124.7k → 129.3k-129.9k.
 
 ## Zone files (D25)
 
