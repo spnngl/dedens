@@ -166,3 +166,14 @@ fn a_cookie_is_returned_with_a_server_part() {
     assert_eq!(cookie.client(), [1, 2, 3, 4, 5, 6, 7, 8]);
     assert!(cookie.server().is_some());
 }
+
+#[test]
+fn referrals_are_told_from_other_responses() {
+    let zone = |name: &str| capture(name).referral().map(ToString::to_string);
+    assert_eq!(zone("referral_root").as_deref(), Some("com."));
+    assert_eq!(zone("referral_com").as_deref(), Some("example.com."));
+    // An answer, NXDOMAIN (with a SOA), an HINFO answer and SERVFAIL are not.
+    for name in ["a", "nxdomain_soa", "any_rfc8482", "ede"] {
+        assert_eq!(zone(name), None, "{name}");
+    }
+}

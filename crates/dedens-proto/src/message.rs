@@ -6,6 +6,7 @@ use crate::codes::{Opcode, Rcode, RecordType};
 use crate::edns::{Edns, EdnsOption, OptionCode};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::{Counts, Flags, HEADER_LEN, Header};
+use crate::name::Name;
 use crate::question::Question;
 use crate::record::{DecodedRecord, RawRecord, Record};
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
@@ -221,6 +222,27 @@ impl<'a> Message<'a> {
     pub fn rcode(&self) -> Rcode {
         let ext = self.edns.as_ref().map_or(0, |e| e.ext_rcode);
         Rcode((u16::from(ext) << 4) | (self.header.rcode.0 & 0x0F))
+    }
+
+    /// The zone a response refers the query down to (RFC 1034 §4.3.2 step 3b): the owner of its first NS record
+    /// when it is a referral, NOERROR without answer or AA, its authority holding NS records and no SOA; with a
+    /// SOA it is NODATA (RFC 2308 §2.2).
+    #[must_use]
+    pub fn referral(&self) -> Option<&Name<'a>> {
+        if self.rcode() != Rcode::NOERROR
+            || !self.answer.is_empty()
+            || self.header.flags.contains(Flags::AA)
+            || self
+                .authority
+                .iter()
+                .any(|r| r.rdata.rtype() == RecordType::SOA)
+        {
+            return None;
+        }
+        self.authority
+            .iter()
+            .find(|r| r.rdata.rtype() == RecordType::NS)
+            .map(|r| &r.name)
     }
 
     /// Sets the response code, splitting it between the header and the OPT record.
