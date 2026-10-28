@@ -13,8 +13,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
-- Order after the server forwarder: kubernetes stage, recursive resolver (with an RRset cache), authoritative
-  (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG), DNSSEC, DoT/DoH/DoQ.
+- Order after the server forwarder: kubernetes stage, recursive resolver (with an RRset cache, priming per
+  RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
+  DNSSEC, DoT/DoH/DoQ, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
+  (RFC 9567) with the server.
 - Server reload: what needs a restart (listeners, thread count); decided when the server starts.
 - Dynamic stage loading (D23): WASM or gRPC, as one stage type after a cache miss, or never. Against: Vector
   dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.

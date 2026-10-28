@@ -144,7 +144,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   compact output by default (doggo-like), dig's layout behind a flag, `--json` with a stable schema (the
   server's tests read it), `+short`, color; several names, types or servers per run, concurrent, side by side;
   timing, transport, sizes, EDNS, cookies and EDE in words; `+trace`; `--repeat N` with latency percentiles;
-  `--save-wire` (the source of captured test data); default server from `/etc/resolv.conf`.
+  `--save-wire` (the source of captured test data); default server from `/etc/resolv.conf`. `-x ADDR` asks PTR
+  for the `in-addr.arpa` or `ip6.arpa` name of an address (RFC 1035 §3.5, RFC 3152). The `resolv.conf`
+  search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a debugging tool asks for
+  the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and shown as such,
+  with labels mixing scripts flagged (IDN homographs).
 
 ## Server
 

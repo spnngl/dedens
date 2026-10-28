@@ -21,6 +21,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 2181](https://datatracker.ietf.org/doc/html/rfc2181):** Clarifications to the DNS Specification
 * **[RFC 2308](https://datatracker.ietf.org/doc/html/rfc2308):** Negative Caching of DNS Queries (Ncache)
 * **[RFC 2782](https://datatracker.ietf.org/doc/html/rfc2782):** A DNS RR for specifying the location of services (SRV)
+* **[RFC 3152](https://datatracker.ietf.org/doc/html/rfc3152):** Delegation of IP6.ARPA (reverse lookup of IPv6 addresses)
 * **[RFC 3596](https://datatracker.ietf.org/doc/html/rfc3596):** DNS Extensions to Support IP Version 6 (AAAA records)
 * **[RFC 3597](https://datatracker.ietf.org/doc/html/rfc3597):** Handling of Unknown DNS Resource Record (RR) Types
 * **[RFC 4343](https://datatracker.ietf.org/doc/html/rfc4343):** Domain Name System (DNS) Case Insensitivity Clarification
@@ -32,6 +33,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 6891](https://datatracker.ietf.org/doc/html/rfc6891):** Extension Mechanisms for DNS (EDNS0)
 * **[RFC 7766](https://datatracker.ietf.org/doc/html/rfc7766):** DNS Transport over TCP - Implementation Requirements
 * **[RFC 7873](https://datatracker.ietf.org/doc/html/rfc7873):** Domain Name System (DNS) Cookies
+* **[RFC 8109](https://datatracker.ietf.org/doc/html/rfc8109):** Initializing a DNS Resolver with Priming Queries
 * **[RFC 8482](https://datatracker.ietf.org/doc/html/rfc8482):** Providing Minimal-Sized Responses to DNS Queries That Have QTYPE=ANY
 * **[RFC 8914](https://datatracker.ietf.org/doc/html/rfc8914):** Extended DNS Errors
 * **[RFC 8945](https://datatracker.ietf.org/doc/html/rfc8945):** Secret Key Transaction Authentication for DNS (TSIG)
@@ -70,9 +72,11 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 8932](https://datatracker.ietf.org/doc/html/rfc8932):** Recommendations for DNS Privacy Service Operators
 * **[RFC 9103](https://datatracker.ietf.org/doc/html/rfc9103):** DNS Zone Transfer over TLS (XoT)
 * **[RFC 9156](https://datatracker.ietf.org/doc/html/rfc9156):** DNS Query Name Minimisation to Improve Privacy (Obsoletes RFC 7816)
+* **[RFC 9230](https://datatracker.ietf.org/doc/html/rfc9230):** Oblivious DNS over HTTPS (ODoH, Experimental), optional, after DoH
 * **[RFC 9250](https://datatracker.ietf.org/doc/html/rfc9250):** DNS over Dedicated QUIC Connections (DoQ)
 * **[RFC 9461](https://datatracker.ietf.org/doc/html/rfc9461):** Service Binding Mapping for DNS Servers
 * **[RFC 9462](https://datatracker.ietf.org/doc/html/rfc9462):** Discovery of Designated Resolvers (DDR)
+* **[RFC 9953](https://datatracker.ietf.org/doc/html/rfc9953):** DNS over the Constrained Application Protocol (DoC), for constrained IoT networks; experimental in dédéns, last of the transports
 
 ### Authentication, Linking, and Local Discovery
 * **[RFC 6698](https://datatracker.ietf.org/doc/html/rfc6698):** The DNS-Based Authentication of Named Entities (DANE) Transport Layer Security (TLS) Protocol: TLSA
@@ -106,7 +110,9 @@ This section includes older drafts that were superseded, informational RFCs, nic
 ### Operational Guidelines & Best Practices
 * **[RFC 1591](https://datatracker.ietf.org/doc/html/rfc1591):** Domain Name System Structure and Delegation
 * **[RFC 1912](https://datatracker.ietf.org/doc/html/rfc1912):** Common DNS Operational and Configuration Errors
+* **[RFC 2182](https://datatracker.ietf.org/doc/html/rfc2182):** Selection and Operation of Secondary DNS Servers (BCP 16)
 * **[RFC 3833](https://datatracker.ietf.org/doc/html/rfc3833):** Threat Analysis of the Domain Name System
+* **[RFC 4697](https://datatracker.ietf.org/doc/html/rfc4697):** Observed DNS Resolution Misbehavior (BCP 123)
 * **[RFC 5358](https://datatracker.ietf.org/doc/html/rfc5358):** Preventing Use of Recursive Nameservers in Reflector Attacks
 * **[RFC 5625](https://datatracker.ietf.org/doc/html/rfc5625):** DNS Proxy Implementation Guidelines
 * **[RFC 6303](https://datatracker.ietf.org/doc/html/rfc6303):** Locally Served DNS Zones
@@ -126,6 +132,7 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 5892](https://datatracker.ietf.org/doc/html/rfc5892):** IDNA: The Unicode Code Points
 * **[RFC 5893](https://datatracker.ietf.org/doc/html/rfc5893):** IDNA: Right-to-Left Scripts
 * **[RFC 5894](https://datatracker.ietf.org/doc/html/rfc5894):** IDNA: Background, Explanation, and Rationale
+* **[RFC 5895](https://datatracker.ietf.org/doc/html/rfc5895):** Mapping Characters for IDNA2008
 
 ### Specialized / Niche Resource Records & Extensions
 * **[RFC 1183](https://datatracker.ietf.org/doc/html/rfc1183):** New DNS RR Definitions (AFSDB, RP, X25, ISDN, RT)
@@ -152,6 +159,7 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 8145](https://datatracker.ietf.org/doc/html/rfc8145):** Signaling Trust Anchor Knowledge in DNSSEC
 * **[RFC 8490](https://datatracker.ietf.org/doc/html/rfc8490):** DNS Stateful Operations (DSO)
 * **[RFC 8509](https://datatracker.ietf.org/doc/html/rfc8509):** A Root Key Trust Anchor Sentinel for DNSSEC
+* **[RFC 9567](https://datatracker.ietf.org/doc/html/rfc9567):** DNS Error Reporting (Report-Channel EDNS option)
 * **[RFC 9615](https://datatracker.ietf.org/doc/html/rfc9615):** Automatic DNSSEC Bootstrapping Using Authenticated Signals from the Zone's Operator
 
 ### Assorted Informational & Experimental
