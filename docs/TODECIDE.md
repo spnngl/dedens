@@ -36,6 +36,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   DNSSEC, DoT/DoH/DoQ, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
   (RFC 9567) with the server.
 - Server reload: what needs a restart (listeners, thread count). Default: decide with reload, which D44 defers.
+- A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
+  response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
+  touch an upstream exchange.
+- Blocklists downloaded from URLs and refreshed, with allow-exceptions. Default: with reload.
+- A systemd-resolved replacement plugin for desktop Linux: the stub on 127.0.0.53, per-link servers and
+  routing domains pushed over D-Bus `org.freedesktop.resolve1` by NetworkManager and systemd-networkd,
+  `stub-resolv.conf`, `/etc/hosts`, the synthesized names (localhost, the hostname, `_gateway`). Default:
+  study the interfaces it must keep (`src/resolve/` of systemd) after reload lands; dynamic upstreams need it.
 - Dynamic stage loading (D23): WASM or gRPC, as one stage type after a cache miss, or never. Against: Vector
   dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.
 - A small typed rule language for matchers (D23), beyond declarative matchers.
