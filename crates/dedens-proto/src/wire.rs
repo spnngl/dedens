@@ -435,6 +435,34 @@ impl<'a> Writer<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
     pub fn put_name_compressed(&mut self, name: &Name<'_>) -> Result<(), EncodeError> {
+        self.put_name_found(name).map(drop)
+    }
+
+    /// Writes the owner of a record: a pointer to `previous` when given, the offset where the previous record's
+    /// owner can be found, if it is the same name; otherwise as [`Writer::put_name_compressed`] does. Returns the
+    /// offset to give for the next record, so a record set's owner is looked up once, as Unbound does.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
+    pub(crate) fn put_owner(
+        &mut self,
+        name: &Name<'_>,
+        previous: Option<u16>,
+    ) -> Result<Option<u16>, EncodeError> {
+        match previous {
+            Some(target) if self.compress => {
+                self.put_u16(0xC000 | target)?;
+                Ok(Some(target))
+            }
+            _ => self.put_name_found(name),
+        }
+    }
+
+    /// [`Writer::put_name_compressed`], returning an offset a pointer to the name can use: where its first label
+    /// was written, or what the pointer written for all of it points to. `None` for the root, whose one byte is
+    /// shorter than a pointer, and for names past what a pointer reaches.
+    fn put_name_found(&mut self, name: &Name<'_>) -> Result<Option<u16>, EncodeError> {
         // Only a name decoded with compression pointers is copied, and only its runs of labels.
         let mut buf;
         let wire = if let Some(wire) = name.flat() {
@@ -444,7 +472,7 @@ impl<'a> Writer<'a> {
             name.to_wire(&mut buf)
         };
         if !self.compress {
-            return self.put_bytes(wire);
+            return self.put_bytes(wire).map(|()| None);
         }
         // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
         let mut inline = 0;
@@ -473,7 +501,11 @@ impl<'a> Writer<'a> {
                 .add(first + at, wire.get(at..).unwrap_or_default());
             at += 1 + usize::from(label_len);
         }
-        Ok(())
+        Ok(match pointer {
+            Some(target) if inline == 0 => Some(target),
+            _ if inline == 0 => None,
+            _ => u16::try_from(first).ok().filter(|_| first < POINTER_LIMIT),
+        })
     }
 
     /// Keeps the last `n` bytes of the buffer free for what is written after [`Writer::release_tail`].

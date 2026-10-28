@@ -316,6 +316,8 @@ impl<'a> Message<'a> {
         let mut written = [0_usize; 3];
         let mut tc = false;
         let mut opt_written = false;
+        // The previous record, and where a pointer to its owner may point.
+        let mut previous = None::<(&Record<'_>, u16)>;
         let sections = [&self.answer, &self.authority, &self.additional];
         'sections: for (section, (count, records)) in written.iter_mut().zip(sections).enumerate() {
             if section == 2 {
@@ -335,8 +337,14 @@ impl<'a> Message<'a> {
                     rrset = (w.len(), *count, Some(record));
                 }
                 let before = w.len();
-                match record.encode(&mut w) {
-                    Ok(()) => *count += 1,
+                let owner = previous
+                    .filter(|(p, _)| p.name.same_wire(&record.name))
+                    .map(|(_, at)| at);
+                match record.encode_after(&mut w, owner) {
+                    Ok(at) => {
+                        *count += 1;
+                        previous = at.map(|at| (record, at));
+                    }
                     Err(EncodeError::BufferFull) if may_truncate => {
                         if section < 2 {
                             // TC tells the client the answer is partial: a partial RRset may stay (RFC 2181 §9).

@@ -129,6 +129,15 @@ fn rdata_names_of_other_types_are_not_compressed_nor_pointed_to() {
 }
 
 #[test]
+fn a_record_set_written_again_from_its_decoding_is_the_same_bytes() {
+    let message = answer((0..3).map(|_| rec("www.example.com", a())).collect());
+    let wire = message.to_vec().unwrap();
+    assert_eq!(occurrences(&wire, b"\x03www"), 1);
+    let decoded = Message::decode(&wire).unwrap().message;
+    assert_eq!(decoded.to_vec().unwrap(), wire);
+}
+
+#[test]
 fn names_keep_their_case_and_only_match_byte_for_byte() {
     let message = answer(vec![rec("Example.COM", a()), rec("example.com", a())]);
     let wire = message.to_vec().unwrap();

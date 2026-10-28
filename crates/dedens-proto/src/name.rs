@@ -105,6 +105,25 @@ impl<'a> Name<'a> {
         }
     }
 
+    /// Whether both names have the same uncompressed wire form, case included: `==` ignores case (RFC 4343), name
+    /// compression must not (D10).
+    pub(crate) fn same_wire(&self, other: &Name<'_>) -> bool {
+        match (&self.0, &other.0) {
+            // Two names whose labels start at the same place of the same message: the owners of one RRset in a
+            // decoded message, each a pointer to the same name.
+            (
+                Repr::Packed { msg, start, .. },
+                Repr::Packed {
+                    msg: m, start: s, ..
+                },
+            ) if core::ptr::eq(*msg, *m) && first_label(msg, *start) == first_label(m, *s) => true,
+            _ => match (self.flat(), other.flat()) {
+                (Some(a), Some(b)) => a == b,
+                _ => self.wire_len() == other.wire_len() && self.labels().eq(other.labels()),
+            },
+        }
+    }
+
     /// Whether the name was decoded with compression pointers, so it borrows labels from elsewhere in its message.
     pub(crate) const fn is_packed(&self) -> bool {
         matches!(self.0, Repr::Packed { .. })
@@ -256,6 +275,22 @@ impl<'a> Name<'a> {
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.put_bytes(self.to_wire(&mut [0; MAX_NAME_LEN]))
     }
+}
+
+/// Where the first label of the name at `start` in `msg` lies, past the pointers it starts with; decoding
+/// checked that each points before the previous one.
+fn first_label(msg: &[u8], start: u16) -> usize {
+    let mut pos = usize::from(start);
+    while let [high, low, ..] = msg.get(pos..).unwrap_or_default()
+        && high & 0xC0 == 0xC0
+    {
+        let target = usize::from(high & 0x3F) << 8 | usize::from(*low);
+        if target >= pos {
+            break;
+        }
+        pos = target;
+    }
+    pos
 }
 
 /// The uncompressed wire form of the name with compression pointers at `start` in `msg`, decoded and checked

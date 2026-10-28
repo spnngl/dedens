@@ -42,7 +42,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   error, since their pointers mean nothing outside the message.
 - D10 Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered buffers), plus a
   `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), through a fixed open-addressing
-  table matched byte for byte (case kept, no allocation). Truncation stops at the first record that does not
+  table matched byte for byte (case kept, no allocation); a record with the owner of the previous one points
+  to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the first record that does not
   fit; TC only when answer or authority lost records; a cut additional RRset goes whole, since without TC a
   partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC 6891 §7). Header
   fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day 2020).

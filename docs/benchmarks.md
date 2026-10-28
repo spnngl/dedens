@@ -46,7 +46,8 @@ the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower tha
 - `reply_info_parse` keeps RDATA as wire bytes, only decompressing names.
 - The TXT encode gap is not RDATA: once dedens copied RDATA bytes too (D28), it stayed at 359 ns. A profile
   puts it in owner names: `put_name_compressed`, its table lookups and `Name::to_wire`, once per record.
-  Unbound writes an RRset's owner once and a pointer to it for each further record.
+  Unbound writes an RRset's owner once and a pointer to it for each further record; dedens now does too (D10):
+  `encode` 65/396/367 → 55/351/170, owned 56/325/307 → 49/278/158 (same session, three runs).
 - Zone: `sldns_fp2wire_rr_buf` reads a `FILE` token by token, as Unbound's auth-zone does.
 
 ## RDATA as bytes (D28)

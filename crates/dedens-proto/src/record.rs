@@ -375,7 +375,17 @@ impl<'a> Record<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        w.put_name_compressed(&self.name)?;
+        self.encode_after(w, None).map(drop)
+    }
+
+    /// [`Record::encode`], its owner a pointer to `owner` if given ([`Writer::put_owner`]); returns the offset
+    /// to give the next record when it has the same owner.
+    pub(crate) fn encode_after(
+        &self,
+        w: &mut Writer<'_>,
+        owner: Option<u16>,
+    ) -> Result<Option<u16>, EncodeError> {
+        let owner = w.put_owner(&self.name, owner)?;
         w.put_u16(self.rtype().0)?;
         w.put_u16(self.class.0)?;
         w.put_u32(self.ttl.get())?;
@@ -383,7 +393,7 @@ impl<'a> Record<'a> {
         self.rdata.encode(w)?;
         let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
         w.patch_u16(at, len);
-        Ok(())
+        Ok(owner)
     }
 }
 
