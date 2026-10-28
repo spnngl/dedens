@@ -7,17 +7,22 @@
 #![forbid(unsafe_code)]
 
 mod config;
+mod reload;
 mod serve;
 
 use std::io::{self, IsTerminal, Write};
 use std::panic::{self, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
 use anyhow::Context;
 use clap::error::ErrorKind;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use dedens_server::Pipeline;
+
+use crate::config::Config;
+use crate::reload::{Current, Fixed};
 
 /// A DNS server: answers from its cache and forwards the rest to upstream servers.
 #[derive(Debug, Parser)]
@@ -29,8 +34,17 @@ struct Args {
     /// Debug events with -v, trace events with -vv.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
+    /// How events are written on stderr: one JSON object a line, or text for people.
+    #[arg(long, global = true, value_enum, default_value_t = LogFormat::Json)]
+    log_format: LogFormat,
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum LogFormat {
+    Json,
+    Text,
 }
 
 #[derive(Debug, Subcommand)]
@@ -41,7 +55,7 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    diagnostics(args.verbose);
+    diagnostics(args.verbose, args.log_format);
     // Global, for `dedensd validate --config FILE`, so clap cannot require it.
     let Some(file) = args.config else {
         Args::command()
@@ -52,26 +66,35 @@ fn main() -> anyhow::Result<()> {
             .exit()
     };
     let path = file.display();
-    let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {path}"))?;
-    let config = config::read(&text, |name| std::env::var(name).ok())
-        .with_context(|| format!("in {path}"))?;
+    let config = load(&file, &Pipeline::default())?;
     if let Some(Command::Validate) = args.command {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
     }
-    let (pipeline, zero_buffers) = (Arc::new(config.pipeline), config.zero_buffers);
+    let current = Arc::new(Current::new(config.pipeline));
+    let zero_buffers = config.zero_buffers;
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..threads())
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
     tracing::info!(config = %path, listen = ?config.listen, threads = sockets.len(), "serving");
+    #[cfg(unix)]
+    reload::on_hangup(
+        file.clone(),
+        Arc::clone(&current),
+        Fixed {
+            listen: config.listen,
+            zero_buffers,
+        },
+    )
+    .context("cannot handle SIGHUP")?;
     let (ended, end) = mpsc::channel();
     for sockets in sockets {
-        let (pipeline, ended) = (Arc::clone(&pipeline), ended.clone());
+        let (current, ended) = (Arc::clone(&current), ended.clone());
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
                 serve::runtime().and_then(|runtime| {
-                    runtime.block_on(serve::serve(sockets, pipeline, zero_buffers))
+                    runtime.block_on(serve::serve(sockets, current, zero_buffers))
                 })
             }));
             let _ =
@@ -81,6 +104,18 @@ fn main() -> anyhow::Result<()> {
     drop(ended);
     // Threads serve until one fails to start or panics; each sends before ending.
     end.recv()?.context("cannot serve")
+}
+
+/// The configuration in `file`, its cache stage that of `previous` while its settings are the same.
+///
+/// # Errors
+///
+/// A file that does not read, or a configuration [`config::read`] refuses.
+fn load(file: &Path, previous: &Pipeline) -> anyhow::Result<Config> {
+    let path = file.display();
+    let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {path}"))?;
+    config::read(&text, |name| std::env::var(name).ok(), previous)
+        .with_context(|| format!("in {path}"))
 }
 
 /// The serving threads: one per core on Linux, where `SO_REUSEPORT` spreads queries across their sockets; one
@@ -93,16 +128,20 @@ fn threads() -> usize {
     }
 }
 
-/// Prints `tracing` events on stderr, as text: info, debug with `-v`, trace with `-vv` (D30).
-fn diagnostics(verbose: u8) {
+/// Prints `tracing` events on stderr, in `format`: info, debug with `-v`, trace with `-vv` (D30).
+fn diagnostics(verbose: u8, format: LogFormat) {
     let level = match verbose {
         0 => tracing::Level::INFO,
         1 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    tracing_subscriber::fmt()
+    let events = tracing_subscriber::fmt()
         .with_max_level(level)
-        .with_writer(io::stderr)
-        .with_ansi(io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
-        .init();
+        .with_writer(io::stderr);
+    match format {
+        LogFormat::Json => events.json().init(),
+        LogFormat::Text => events
+            .with_ansi(io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+            .init(),
+    }
 }

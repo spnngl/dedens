@@ -28,6 +28,7 @@ use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail, ensure};
@@ -64,7 +65,7 @@ enum StageFile {
         tries: Option<NonZeroU8>,
     },
     /// Names and addresses (D54): `entries`, lines in the format of `/etc/hosts`, then those of `file`, read
-    /// once at start; each record with `ttl` seconds, 3600 unless set; `fallthrough` passing a listed name's
+    /// at start and on reload; each record with `ttl` seconds, 3600 unless set; `fallthrough` passing a listed name's
     /// other types to the next stage.
     Hosts {
         #[serde(default)]
@@ -75,7 +76,7 @@ enum StageFile {
         fallthrough: bool,
     },
     /// Names blocked with their subdomains (D54): `entries`, one name or a line in the format of `/etc/hosts`
-    /// each, then those of `file`, read once at start; answered as `action` says, `nxdomain` unless set, the
+    /// each, then those of `file`, read at start and on reload; answered as `action` says, `nxdomain` unless set, the
     /// addresses of `null` with `ttl` seconds, 3600 unless set.
     Blocklist {
         #[serde(default)]
@@ -110,14 +111,19 @@ pub(crate) struct Config {
     pub(crate) pipeline: Pipeline,
 }
 
-/// Reads `text`, a configuration file, taking `${VAR}` from `env`.
+/// Reads `text`, a configuration file, taking `${VAR}` from `env`. The cache stage of `previous`, the pipeline a
+/// reload replaces, is kept when its settings are unchanged, so its answers stay.
 ///
 /// # Errors
 ///
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
 /// query on; a second cache stage, which would never be filled; settings a stage refuses.
-pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
+pub(crate) fn read(
+    text: &str,
+    env: impl Fn(&str) -> Option<String>,
+    previous: &Pipeline,
+) -> anyhow::Result<Config> {
     let text = interpolate(text, env)?;
     let file: File = serde_saphyr::from_str(&text)?;
     ensure!(!file.listen.is_empty(), "`listen` has no address");
@@ -139,7 +145,16 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
                 if built.iter().any(|stage| matches!(stage, Stage::Cache(_))) {
                     bail!("stage `{name}` is a second cache stage, which upstream answers would never fill");
                 }
-                Stage::Cache(Cache::new(config).with_context(|| format!("stage `{name}`"))?)
+                let kept = previous.stages().iter().find_map(|stage| match stage {
+                    Stage::Cache(cache) if *cache.config() == config => Some(Arc::clone(cache)),
+                    _ => None,
+                });
+                match kept {
+                    Some(cache) => Stage::Cache(cache),
+                    None => Stage::Cache(Arc::new(
+                        Cache::new(config).with_context(|| format!("stage `{name}`"))?,
+                    )),
+                }
             }
             StageFile::Forward {
                 servers,
@@ -287,7 +302,10 @@ mod tests {
     }
 
     fn error(text: &str) -> String {
-        format!("{:#}", read(text, env).expect_err("refused"))
+        format!(
+            "{:#}",
+            read(text, env, &Pipeline::default()).expect_err("refused")
+        )
     }
 
     const MINIMAL: &str = "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
@@ -332,16 +350,20 @@ mod tests {
     #[test]
     fn a_caching_forwarder_reads() {
         let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
-        let config = read(text, env).unwrap();
+        let config = read(text, env, &Pipeline::default()).unwrap();
         assert_eq!(config.listen, ["127.0.0.1:5353".parse().unwrap()]);
-        assert!(read(MINIMAL, env).is_ok());
+        assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
     }
 
     #[test]
     fn buffers_are_zeroed_unless_set_not_to() {
-        assert!(read(MINIMAL, env).unwrap().zero_buffers);
+        assert!(
+            read(MINIMAL, env, &Pipeline::default())
+                .unwrap()
+                .zero_buffers
+        );
         let text = format!("zero_buffers: false\n{MINIMAL}");
-        assert!(!read(&text, env).unwrap().zero_buffers);
+        assert!(!read(&text, env, &Pipeline::default()).unwrap().zero_buffers);
     }
 
     #[test]
@@ -406,7 +428,7 @@ mod tests {
         )
         .unwrap();
         let ok = stage("good").replace("{ENTRY}", "192.0.2.2 scanner.lan");
-        assert!(read(&ok, env).is_ok());
+        assert!(read(&ok, env, &Pipeline::default()).is_ok());
         for (text, message) in [
             (
                 stage("bad").replace("{ENTRY}", "192.0.2.2 scanner.lan"),
@@ -428,6 +450,28 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_keeps_the_cache_while_its_settings_stay() {
+        let text = |cache: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        let cache = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Cache(cache)) => Arc::clone(cache),
+            stage => unreachable!("{stage:?}"),
+        };
+        let first = read(&text(""), env, &Pipeline::default()).unwrap().pipeline;
+        let same = read(&text("    max_ttl: 604800\n"), env, &first)
+            .unwrap()
+            .pipeline;
+        assert!(Arc::ptr_eq(&cache(&first), &cache(&same)));
+        let changed = read(&text("    max_ttl: 3600\n"), env, &same)
+            .unwrap()
+            .pipeline;
+        assert!(!Arc::ptr_eq(&cache(&same), &cache(&changed)));
+    }
+
+    #[test]
     fn blocklists_read_their_action() {
         let text = |action: &str| {
             format!(
@@ -439,7 +483,10 @@ mod tests {
             "    action: nxdomain\n",
             "    action: null\n    ttl: 60\n",
         ] {
-            assert!(read(&text(action), env).is_ok(), "{action}");
+            assert!(
+                read(&text(action), env, &Pipeline::default()).is_ok(),
+                "{action}"
+            );
         }
         assert!(error(&text("    action: drop\n")).contains("drop"));
     }

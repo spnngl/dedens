@@ -32,6 +32,8 @@ use futures_util::lock::Mutex;
 use futures_util::{Stream, StreamExt};
 use socket2::{Domain, Socket, Type};
 
+use crate::reload::Current;
+
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
@@ -113,7 +115,14 @@ const TCP_SPARE_BUFFERS: usize = 32;
 
 /// What the tasks of one thread share.
 struct Thread {
-    pipeline: Arc<Pipeline>,
+    current: Arc<Current>,
+    /// The pipeline taken from `current`, with its generation; behind an `Rc`, so a query holding it touches no
+    /// count shared with other threads.
+    #[expect(
+        clippy::redundant_allocation,
+        reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+    )]
+    pipeline: RefCell<(u64, Rc<Arc<Pipeline>>)>,
     client: Client,
     upstream: Slots,
     connections: Slots,
@@ -124,6 +133,20 @@ struct Thread {
 }
 
 impl Thread {
+    /// The pipeline for a query: the one taken last, unless a reload replaced it since.
+    #[expect(
+        clippy::redundant_allocation,
+        reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+    )]
+    fn pipeline(&self) -> Rc<Arc<Pipeline>> {
+        let mut held = self.pipeline.borrow_mut();
+        let generation = self.current.generation();
+        if held.0 != generation {
+            *held = (generation, Rc::new(self.current.get()));
+        }
+        Rc::clone(&held.1)
+    }
+
     /// A reply buffer of `size` bytes: a spare one for TCP's size, zeroed unless the configuration says not to,
     /// else a new one.
     fn buffer(&self, size: usize) -> Vec<u8> {
@@ -196,7 +219,7 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
     Runtime::builder().with_proactor(proactor).build()
 }
 
-/// Answers on `sockets` with `pipeline`, zeroing reused reply buffers when `zero_buffers`, until the end of the
+/// Answers on `sockets` with the pipeline of `current`, zeroing reused reply buffers when `zero_buffers`, until the end of the
 /// process.
 ///
 /// # Errors
@@ -204,11 +227,12 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 /// A socket the runtime cannot take.
 pub(crate) async fn serve(
     sockets: Sockets,
-    pipeline: Arc<Pipeline>,
+    current: Arc<Current>,
     zero_buffers: bool,
 ) -> io::Result<()> {
     let thread = Rc::new(Thread {
-        pipeline,
+        pipeline: RefCell::new((current.generation(), Rc::new(current.get()))),
+        current,
         client: Client::new(),
         upstream: Slots::new(UPSTREAM_QUERIES),
         connections: Slots::new(TCP_CONNECTIONS),
@@ -255,9 +279,8 @@ async fn udp_queries(
         let Some(peer) = datagram.addr().and_then(|addr| addr.as_socket()) else {
             continue;
         };
-        let step = thread
-            .pipeline
-            .query(datagram.data(), Transport::Udp, now(), &mut out);
+        let pipeline = thread.pipeline();
+        let step = pipeline.query(datagram.data(), Transport::Udp, now(), &mut out);
         // The buffer goes back to the pool before the reply waits to be sent.
         drop(datagram);
         let upstream = match step {
@@ -280,7 +303,7 @@ async fn udp_queries(
         spawn(async move {
             let deliver = async |out, len| send(&socket, out, len, peer).await;
             let size = usize::from(DEFAULT_UDP_PAYLOAD);
-            answer(&thread, upstream, Transport::Udp, size, deliver).await;
+            answer(&thread, &pipeline, upstream, Transport::Udp, size, deliver).await;
             drop(slot);
         })
         .detach();
@@ -354,10 +377,8 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
     let mut reader = BufReader::new(reader);
     let mut out = vec![0; MAX_MESSAGE_LEN];
     while let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, read_message(&mut reader)).await {
-        let upstream = match thread
-            .pipeline
-            .query(&query, Transport::Tcp, now(), &mut out)
-        {
+        let pipeline = thread.pipeline();
+        let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
             Step::Reply(len) => {
                 if reply(&replies, &out[..len]).await {
                     continue;
@@ -386,7 +407,15 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
                 reply(&replies, &out[..len]).await;
                 out
             };
-            answer(&thread, upstream, Transport::Tcp, MAX_MESSAGE_LEN, deliver).await;
+            answer(
+                &thread,
+                &pipeline,
+                upstream,
+                Transport::Tcp,
+                MAX_MESSAGE_LEN,
+                deliver,
+            )
+            .await;
             drop(slot);
             let _ = done.try_recv();
         })
@@ -405,18 +434,18 @@ async fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) -> bool {
     }
 }
 
-/// Asks the upstream servers for `upstream` in turn, over `transport`, the client's, each with the forward stage's
+/// Asks the upstream servers for `upstream`, from `pipeline`, in turn, over `transport`, the client's, each with the forward stage's
 /// timeout and tries (D42), and hands `deliver` the replies to send, in a buffer of `size` bytes taken only then:
 /// expired data when the client response timer runs out first, resolution going on to refresh the cache (RFC 8767
 /// §5), then the response's unless that went out; none after a prefetch. `deliver` gives the buffer back.
 async fn answer(
     thread: &Thread,
+    pipeline: &Pipeline,
     mut upstream: Box<Upstream>,
     transport: Transport,
     size: usize,
     mut deliver: impl AsyncFnMut(Vec<u8>, usize) -> Vec<u8>,
 ) {
-    let pipeline = &thread.pipeline;
     let mut options = Options::default();
     options.transport = transport;
     (options.timeout, options.tries) = upstream.patience();

@@ -8,12 +8,13 @@ use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Name, RecordType, Ttl};
+use serde_json::Value;
 
 /// A captured response of `dedens-proto`'s test data.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
@@ -137,18 +138,26 @@ fn free_port() -> SocketAddr {
 }
 
 /// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream` with one try of
-/// 1 s, `cache` lines of settings for the cache stage, as `"    key: value\n"`; in the temporary directory, each
-/// call writes its own.
+/// 1 s, `cache` lines of settings for the cache stage, as `"    key: value\n"`.
 pub(crate) fn config(listen: &str, upstream: &str, cache: &str) -> PathBuf {
+    write_config(&forwarder(listen, upstream, cache))
+}
+
+/// The text of [`config`].
+fn forwarder(listen: &str, upstream: &str, cache: &str) -> String {
+    format!(
+        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 1000\n    tries: 1\n"
+    )
+}
+
+/// `text` in a configuration file of the temporary directory, each call its own.
+pub(crate) fn write_config(text: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "dedensd-{}-{}.yaml",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let text = format!(
-        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 1000\n    tries: 1\n"
-    );
     std::fs::write(&path, text).expect("a configuration file");
     path
 }
@@ -157,6 +166,10 @@ pub(crate) fn config(listen: &str, upstream: &str, cache: &str) -> PathBuf {
 pub(crate) struct Server {
     child: Child,
     pub(crate) addr: SocketAddr,
+    /// Its configuration file.
+    pub(crate) config: PathBuf,
+    /// Its events, one JSON object a line on stderr (D30).
+    events: mpsc::Receiver<Value>,
 }
 
 impl Drop for Server {
@@ -167,34 +180,70 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// Starts `dedensd` on a free port, configured by [`config`], and waits until it logs that it serves: its
-    /// sockets are bound then. A connection accepted earlier could be another server's, on a port both were handed
-    /// (with `SO_REUSEPORT` on Linux, both even bind it). So servers start one at a time, and one that cannot bind,
-    /// its port taken meanwhile by another socket, exits and is started again on another port.
+    /// Starts `dedensd` configured by [`config`]; see [`Server::configured`].
     pub(crate) fn start(upstream: SocketAddr, cache: &str) -> Self {
+        Self::configured(|listen| forwarder(listen, &upstream.to_string(), cache))
+    }
+
+    /// Starts `dedensd` on a free port, configured by `text` of the address to listen on, and waits until it logs
+    /// that it serves: its sockets are bound then. A connection accepted earlier could be another server's, on a
+    /// port both were handed (with `SO_REUSEPORT` on Linux, both even bind it). So servers start one at a time,
+    /// and one that cannot bind, its port taken meanwhile by another socket, exits and is started again on another
+    /// port.
+    pub(crate) fn configured(text: impl Fn(&str) -> String) -> Self {
         static STARTING: Mutex<()> = Mutex::new(());
         let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
         let mut tries = 0;
         loop {
             let addr = free_port();
+            let config = write_config(&text(&addr.to_string()));
             let mut child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
                 .arg("--config")
-                .arg(config(&addr.to_string(), &upstream.to_string(), cache))
+                .arg(&config)
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("dedensd starts");
             let stderr = child.stderr.take().expect("its piped stderr");
-            let mut lines = BufReader::new(stderr).lines().map_while(Result::ok);
-            // Ends at the end of stderr, when the server exits.
-            if lines.any(|line| line.contains("serving")) {
-                // Read on, so a full pipe never blocks the server.
-                thread::spawn(move || lines.for_each(drop));
-                return Self { child, addr };
+            let (send, events) = mpsc::channel();
+            // Reads to the end of stderr, when the server exits, so a full pipe never blocks it.
+            thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if let Ok(event) = serde_json::from_str(&line) {
+                        let _ = send.send(event);
+                    }
+                }
+            });
+            let mut server = Self {
+                child,
+                addr,
+                config,
+                events,
+            };
+            if server.event("serving").is_some() {
+                return server;
             }
-            let _ = child.wait();
+            let _ = server.child.wait();
             tries += 1;
             assert!(tries < 10, "dedensd binds a free port");
         }
+    }
+
+    /// The next event whose message is `message`, skipping others; `None` once the server exited.
+    pub(crate) fn event(&mut self, message: &str) -> Option<Value> {
+        self.events
+            .iter()
+            .find(|event| event["fields"]["message"] == message)
+    }
+
+    /// Sends SIGHUP, asking for a reload (D55).
+    #[cfg(unix)]
+    pub(crate) fn hang_up(&self) {
+        let status = Command::new("kill")
+            .arg("-HUP")
+            .arg(self.child.id().to_string())
+            .status()
+            .expect("kill runs");
+        assert!(status.success(), "kill -HUP");
     }
 }
 

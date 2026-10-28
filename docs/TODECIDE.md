@@ -35,7 +35,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
   DNSSEC, DoT/DoH/DoQ, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
   (RFC 9567) with the server.
-- Server reload: what needs a restart (listeners, thread count). Default: decide with reload, which D44 defers.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.

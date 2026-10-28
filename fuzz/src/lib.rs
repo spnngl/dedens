@@ -12,6 +12,7 @@
 
 use core::ops::RangeInclusive;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_net::resolv_conf::ResolvConf;
@@ -273,7 +274,9 @@ pub fn serve_query(data: &[u8]) {
     let mut out = vec![0; MAX_MESSAGE_LEN];
     for transport in [Transport::Udp, Transport::Tcp] {
         let pipeline = Pipeline::new(vec![
-            Stage::Cache(Cache::new(Config::default()).expect("the default settings")),
+            Stage::Cache(Arc::new(
+                Cache::new(Config::default()).expect("the default settings"),
+            )),
             Stage::Forward(Forward::new(&[server]).expect("one server")),
         ]);
         if let Step::Reply(len) = pipeline.query(data, transport, 0, &mut out) {

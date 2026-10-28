@@ -6,6 +6,7 @@ mod common;
 
 use std::borrow::Cow;
 use std::num::NonZeroU8;
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{caching, captured, decode, query_for, run_at, servers, wire};
@@ -259,7 +260,7 @@ fn the_timer_is_the_cache_stages_and_the_patience_the_forward_stages() {
     };
     let tries = NonZeroU8::MIN;
     let patient = Pipeline::new(vec![
-        Stage::Cache(Cache::new(config).expect("valid settings")),
+        Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
         Stage::Forward(
             forward
                 .with_timeout(Duration::from_millis(500))

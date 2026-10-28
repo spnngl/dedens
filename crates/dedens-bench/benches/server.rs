@@ -5,6 +5,7 @@
 
 use std::hint::black_box;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Config};
@@ -31,7 +32,9 @@ fn query_for(response: &[u8]) -> Vec<u8> {
 fn forwarding() -> Pipeline {
     let server = SocketAddr::from(([192, 0, 2, 53], 53));
     Pipeline::new(vec![
-        Stage::Cache(Cache::new(Config::default()).expect("the default config is valid")),
+        Stage::Cache(Arc::new(
+            Cache::new(Config::default()).expect("the default config is valid"),
+        )),
         Stage::Forward(Forward::new(&[server]).expect("a server")),
     ])
 }

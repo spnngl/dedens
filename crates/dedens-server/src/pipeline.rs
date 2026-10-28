@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::net::SocketAddr;
 use std::num::NonZeroU8;
+use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Key, StalePolicy};
@@ -18,8 +19,9 @@ use crate::reply::Client;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Stage {
-    /// Answers from the cache, stores what a later stage asked upstream, and holds failures (D43).
-    Cache(Cache),
+    /// Answers from the cache, stores what a later stage asked upstream, and holds failures (D43). Shared: a
+    /// pipeline built on reload keeps the cache of the one it replaces.
+    Cache(Arc<Cache>),
     /// Asks upstream servers: the last stage a query reaches.
     Forward(Forward),
     /// Answers from what it holds, or passes the query on (D54).
@@ -87,6 +89,12 @@ impl Pipeline {
         Self {
             stages: stages.into(),
         }
+    }
+
+    /// The stages, in order.
+    #[must_use]
+    pub fn stages(&self) -> &[Stage] {
+        &self.stages
     }
 
     /// Answers `wire`, a query that came over `transport` at `now` (seconds, any monotonic origin), writing any
@@ -230,7 +238,7 @@ impl Pipeline {
     fn cache(&self, index: usize) -> Option<&Cache> {
         match self.stages.get(index) {
             Some(Stage::Cache(cache)) => Some(cache),
-            _ => None,
+            Some(Stage::Forward(_) | Stage::Plugin(_)) | None => None,
         }
     }
 

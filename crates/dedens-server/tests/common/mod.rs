@@ -4,6 +4,7 @@
 #![allow(dead_code, reason = "each test file uses part of the helpers")]
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
 use dedens_proto::{Flags, Message, Name, Rcode};
@@ -27,7 +28,9 @@ pub(crate) fn forwarder() -> Pipeline {
 /// A pipeline with a cache of the default settings, then forwarding to [`servers`].
 pub(crate) fn caching() -> Pipeline {
     Pipeline::new(vec![
-        Stage::Cache(Cache::new(Config::default()).expect("the default settings")),
+        Stage::Cache(Arc::new(
+            Cache::new(Config::default()).expect("the default settings"),
+        )),
         Stage::Forward(Forward::new(&servers()).expect("servers")),
     ])
 }

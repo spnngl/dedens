@@ -303,7 +303,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `${VAR}` is replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML.
   Errors: unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
   after a forward stage (which answers every query). `dedensd validate` reads the file and builds the pipeline
-  without binding. Later, with need: a directory merged, `SECRET[..]`, JSON Schema, reload.
+  without binding; SIGHUP reloads it (D55). Later, with need: a directory merged, `SECRET[..]`, JSON Schema.
 - D45 Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
   waits `timeout_ms` per query (default 3000, slow authoritative chains take over 1 s) and sends each server
   `tries` queries (default 2), carried on `Upstream` (`Upstream::patience`). A cache stage's
@@ -378,7 +378,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   holds the name's data as local knowledge (RFC 1035 §4.1.1, RFC 9499 §6), clear when it applies a policy.
   Plugins answer queries without RD too: their data is local. Rejected: a stage enum per plugin in the core
   (each plugin would grow `dedens-server`); plugins writing the reply themselves (each would redo D41's flags,
-  OPT and sizing). Files are read once at start, until D24's reload.
+  OPT and sizing). Files are read at start and on each reload (D55).
   - `hosts`: lines in the `/etc/hosts` format, inline then from a file; A, AAAA and the PTR of each address to
     its first name, TTL 3600 unless set (as `CoreDNS`); a listed name asked another type has no data (RFC 2308
     §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
@@ -388,6 +388,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     without names of one label or starting with `localhost`: such files open with their host's own entries
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
     Downloading lists and allow-exceptions later.
+- D55 `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+  is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
+  before each query (one atomic load) and takes the new pipeline under a lock only when it changed, holding it in
+  an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
+  started on. The cache stage is an `Arc<Cache>` kept while its settings are unchanged, else a new empty one. A
+  file that does not read, or a hosts or blocklist file it names, leaves the running pipeline and logs an error;
+  `listen` and `zero_buffers` take a restart (a warning), as does the thread count. Counted in
+  `dedensd_reloads_total{result="ok|error"}`. The handler comes from `signal-hook`, installed before the
+  server logs that it serves, so no SIGHUP ends the process. Rejected: compio's `signal`, which restores the
+  default action between two waits, so a second SIGHUP during a reload would end the process; `arc-swap`,
+  whose guards may not be held across an await and whose `Arc` clones share a count between threads. Later:
+  watching the file, and upstreams pushed while running (D-Bus, for a systemd-resolved replacement).
 
 ## Observability
 
@@ -398,6 +410,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the server counts where it calls them. The cache counts lookups by outcome, prefetches, inserts and evictions
   (names in `crates/dedens-cache/src/metrics.rs`); spans belong to net, server and CLI, not to hot paths of proto
   or cache. `dedensd` will export Prometheus (not yet: it builds the cache without `metrics`); the CLI prints
-  `tracing-subscriber` text on stderr, `-v` for debug (dropped messages, retries, fallbacks, `+trace` referrals, a
+  `tracing-subscriber` text on stderr (`dedensd` one JSON object a line, `--log-format text` for people, so tests
+  and log pipelines read fields, not prose), `-v` for debug (dropped messages, retries, fallbacks, `+trace` referrals, a
   span per hop) and `-vv` for trace (every message sent and received), without `env-filter` and its regexes; its
   `dedens: …` errors stay plain output. OpenTelemetry later. Cost in `docs/benchmarks.md`.
