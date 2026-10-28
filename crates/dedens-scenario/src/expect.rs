@@ -90,8 +90,18 @@ impl TryFrom<String> for Expected {
             Ok(record) => (record, true),
             // Read again with a TTL after the owner, which the comparison then ignores.
             Err(error) if error.kind == TextErrorKind::NoTtl => {
-                let (owner, rest) = line.trim_start().split_once([' ', '\t']).ok_or(error)?;
-                (format!("{owner} 0 {rest}").parse()?, false)
+                let (owner, rest) = line.split_once([' ', '\t']).ok_or(error)?;
+                let record =
+                    format!("{owner} 0 {rest}")
+                        .parse()
+                        .map_err(|mut error: TextError| {
+                            // A column of the line as written: past the owner, the TTL added two bytes.
+                            if error.column > owner.len() {
+                                error.column = (error.column - 2).max(owner.len() + 1);
+                            }
+                            error
+                        })?;
+                (record, false)
             }
             Err(error) => return Err(error),
         };

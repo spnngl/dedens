@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
-use dedens_proto::{Message, Name, RecordType};
-use dedens_scenario::{CookieOption, Id, Latency, QueryFile, Timeout};
+use dedens_net::exchange::{self, Transport};
+use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
+use dedens_proto::{Flags, Message, Name, Question, RecordType};
+use dedens_scenario::{CookieOption, Id, Latency, Options, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.
 const A: &[u8] = include_bytes!("../../dedens-proto/tests/testdata/a.bin");
@@ -156,7 +158,20 @@ fn an_expected_record_without_a_ttl_reports_what_is_wrong() {
     )
     .expect_err("an invalid address")
     .to_string();
-    assert!(!error.contains("no TTL"), "{error}");
+    assert!(
+        error.ends_with("line 1, column 19: invalid IPv4 address"),
+        "{error}"
+    );
+    // With a TTL, the line is read once.
+    let error = QueryFile::parse(
+        "queries: [{name: example.com, type: A, expect: {answer: ['example.com. 60 IN A 192.0.2']}}]",
+    )
+    .expect_err("an invalid address")
+    .to_string();
+    assert!(
+        error.ends_with("line 1, column 22: invalid IPv4 address"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -167,6 +182,7 @@ fn ids_name_the_server_without_the_dns_port() {
             .as_str()
             .to_owned()
     };
+    assert_eq!(id.to_string(), "example.com_A");
     assert_eq!(at("192.0.2.1:53"), "example.com_A@192.0.2.1");
     assert_eq!(at("[2001:db8::1]:53"), "example.com_A@2001:db8::1");
     assert_eq!(at("[2001:db8::1]:5353"), "example.com_A@[2001:db8::1]:5353");
@@ -185,4 +201,44 @@ fn latency_needs_an_answer() {
         ),
         (1, 10, 10, 30)
     );
+}
+
+#[test]
+fn options_build_the_query_and_the_exchange() {
+    let question = Question::new(Name::root(), RecordType::NS);
+    let plain = Options::default();
+    let query = plain.query(question.clone());
+    assert_eq!(query.header.flags, Flags::RD.with(Flags::AD));
+    let edns = query.edns.expect("EDNS by default");
+    assert_eq!((edns.flags, edns.options.len()), (EdnsFlags::default(), 0));
+    let exchange = plain.exchange();
+    assert_eq!(exchange, exchange::Options::default());
+    assert!(exchange.tcp_fallback && exchange.cookies);
+
+    let cookie = Cookie::new([1, 2, 3, 4, 5, 6, 7, 8], None).expect("a client cookie");
+    let set = Options {
+        tcp: Some(true),
+        ignore: Some(true),
+        dnssec: Some(true),
+        nsid: Some(true),
+        cookie: Some(CookieOption::Fixed(cookie)),
+        ..Options::default()
+    };
+    let edns = set.query(question).edns.expect("EDNS by default");
+    assert_eq!(edns.flags, EdnsFlags::DO);
+    assert_eq!(
+        edns.options,
+        [
+            EdnsOption::Nsid(Vec::new().into()),
+            EdnsOption::Cookie(cookie)
+        ]
+    );
+    let exchange = set.exchange();
+    assert_eq!(exchange.transport, Transport::Tcp);
+    assert!(!exchange.tcp_fallback && exchange.cookies);
+    let off = Options {
+        cookie: Some(CookieOption::Off),
+        ..Options::default()
+    };
+    assert!(!off.exchange().cookies);
 }
