@@ -174,7 +174,7 @@ impl<'f, 't> Fields<'f, 't> {
     }
 
     /// A decimal number: digits only.
-    pub(crate) fn number<T: FromStr>(&mut self, what: &'static str) -> Result<T, TextError> {
+    pub(crate) fn number<T: TryFrom<u64>>(&mut self, what: &'static str) -> Result<T, TextError> {
         let token = self.next(what)?;
         number(token.raw).ok_or(token.error(TextErrorKind::Invalid(what)))
     }
@@ -234,9 +234,8 @@ impl Head {
                 ttl = Some(secs);
                 continue;
             }
-            let word = str::from_utf8(token.raw).unwrap_or_default();
             if class.is_none()
-                && let Ok(c) = word.parse::<Class>()
+                && let Ok(c) = Class::from_bytes(token.raw)
                 && (c != Class::ANY || f.peek()?.is_some_and(|next| starts_head(next.raw)))
             {
                 if !is_data_class(c) {
@@ -245,8 +244,7 @@ impl Head {
                 class = Some(c);
                 continue;
             }
-            let rtype = word
-                .parse()
+            let rtype = RecordType::from_bytes(token.raw)
                 .map_err(|_| token.error(TextErrorKind::Invalid("record type")))?;
             if !is_data_type(rtype) {
                 return Err(
@@ -318,16 +316,24 @@ fn is_data_class(class: Class) -> bool {
 
 /// Whether a token can be a TTL or a type, so that an `ANY` before it is a class.
 fn starts_head(raw: &[u8]) -> bool {
-    raw.first().is_some_and(u8::is_ascii_digit)
-        || str::from_utf8(raw).is_ok_and(|w| w.parse::<RecordType>().is_ok())
+    raw.first().is_some_and(u8::is_ascii_digit) || RecordType::from_bytes(raw).is_ok()
 }
 
-/// A decimal number of digits only, no sign or blank.
-pub(crate) fn number<T: FromStr>(raw: &[u8]) -> Option<T> {
-    if raw.is_empty() || !raw.iter().all(u8::is_ascii_digit) {
+/// A decimal number of digits only, no sign or blank; read from the bytes, as checking them as UTF-8 for
+/// `FromStr` costs more than reading them.
+pub(crate) fn number<T: TryFrom<u64>>(raw: &[u8]) -> Option<T> {
+    if raw.is_empty() {
         return None;
     }
-    str::from_utf8(raw).ok()?.parse().ok()
+    let mut value: u64 = 0;
+    for &b in raw {
+        let digit = b.wrapping_sub(b'0');
+        if digit > 9 {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u64::from(digit))?;
+    }
+    T::try_from(value).ok()
 }
 
 /// Seconds, plain or as numbers each followed by a unit `w`, `d`, `h`, `m` or `s`, any case (BIND).

@@ -25,6 +25,17 @@ macro_rules! code_type {
                     _ => None,
                 }
             }
+
+            /// [`FromStr`](::core::str::FromStr) on bytes, as zone files are read.
+            pub(crate) fn from_bytes(s: &[u8]) -> Result<Self, $crate::codes::UnknownCode> {
+                $( if s.eq_ignore_ascii_case($text.as_bytes()) { return Ok(Self::$konst); } )*
+                let unknown = $crate::codes::UnknownCode { prefix: $fallback };
+                s.split_at_checked($fallback.len())
+                    .filter(|(prefix, _)| prefix.eq_ignore_ascii_case($fallback.as_bytes()))
+                    .and_then(|(_, value)| $crate::text::number(value))
+                    .map(Self)
+                    .ok_or(unknown)
+            }
         }
 
         impl ::core::fmt::Display for $name {
@@ -47,14 +58,7 @@ macro_rules! code_type {
 
             /// Reads a mnemonic, any case, or the generic form: the fallback prefix and the decimal value.
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                $( if s.eq_ignore_ascii_case($text) { return Ok(Self::$konst); } )*
-                let unknown = $crate::codes::UnknownCode { prefix: $fallback };
-                let value = s
-                    .get(..$fallback.len())
-                    .filter(|prefix| prefix.eq_ignore_ascii_case($fallback))
-                    .and_then(|_| s.get($fallback.len()..))
-                    .ok_or(unknown)?;
-                $crate::text::number(value.as_bytes()).map(Self).ok_or(unknown)
+                Self::from_bytes(s.as_bytes())
             }
         }
 
