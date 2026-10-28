@@ -114,7 +114,8 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   158.0k-158.2k, average latency 3.7 → 3.1 ms; UDP and TCP from the cache unchanged (506k-516k, 1.86M-1.93M).
 - Forwarding over TCP (`forward-tcp`), the same against itself: 84.5k-88.6k. A 65535-byte reply buffer zeroed
   for each query → kept per thread and reused (D52): 83.9k → 90.1k-92.3k unzeroed; zeroed on reuse, the default:
-  79.4k-87.6k against 87.1k-90.0k unzeroed in the same run. The front `dedensd` is at 100% of its
+  79.4k-87.6k against 87.1k-90.0k unzeroed in the same run. Upstream queries queued meanwhile written together,
+  up to 65535 bytes, as replies to clients are: 86.4k-88.3k → 273.5k-278.3k, average latency 5.7 → 1.8 ms. The front `dedensd` is at 100% of its
   core: 27% in kernel wakeups, 9% reading the clock.
 
 ## Zone files (D25)

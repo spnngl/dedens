@@ -293,11 +293,16 @@ async fn run(
     write(writer, &state, &queue).await;
 }
 
-/// Writes each queued message whole, until a write fails or the connection closes; closes the connection once no
-/// query has been waiting for the idle timeout (RFC 7766 §6.2.3), and shuts its side down.
+/// The bytes past which no more queued message joins a write.
+const BATCH_LEN: usize = 65535;
+
+/// Writes each queued message whole, those queued meanwhile with it up to [`BATCH_LEN`] bytes: one write, and one
+/// wake-up of the server, for many. Stops when a write fails or the connection closes; closes the connection once
+/// no query has been waiting for the idle timeout (RFC 7766 §6.2.3), and shuts its side down.
 async fn write(mut stream: TcpStream, state: &RefCell<State>, queue: &flume::Receiver<Vec<u8>>) {
     /// How often to look again while queries wait, so a zero timeout does not spin.
     const RECHECK: Duration = Duration::from_millis(100);
+    let mut batch = Vec::new();
     loop {
         let wake = {
             let state = state.borrow();
@@ -316,8 +321,16 @@ async fn write(mut stream: TcpStream, state: &RefCell<State>, queue: &flume::Rec
             Err(_) => {}
             // An empty message, the reader's wake-up call, writes nothing.
             Ok(Ok(framed)) => {
-                if stream.write_all(framed).await.0.is_err() {
-                    break;
+                batch.clear();
+                batch.extend_from_slice(&framed);
+                while batch.len() < BATCH_LEN
+                    && let Ok(framed) = queue.try_recv()
+                {
+                    batch.extend_from_slice(&framed);
+                }
+                match stream.write_all(batch).await {
+                    BufResult(Ok(()), written) => batch = written,
+                    BufResult(Err(_), _) => break,
                 }
             }
             Ok(Err(_)) => break,
