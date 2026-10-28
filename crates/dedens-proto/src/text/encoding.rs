@@ -21,7 +21,7 @@ const BASE64_VALUES: [u8; 256] = {
 const NOT_BASE64: u8 = 0xFF;
 
 /// Writes bytes as lowercase hex.
-pub(crate) struct Hex<'b>(pub(crate) &'b [u8]);
+pub struct Hex<'b>(pub &'b [u8]);
 
 impl fmt::Display for Hex<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,7 +30,7 @@ impl fmt::Display for Hex<'_> {
 }
 
 /// Appends the bytes of hex digits, any case, to `out`; `None` for an odd count or a non-hex byte.
-pub(crate) fn decode_hex(text: &[u8], out: &mut Vec<u8>) -> Option<()> {
+pub fn decode_hex(text: &[u8], out: &mut Vec<u8>) -> Option<()> {
     let (pairs, odd) = text.as_chunks::<2>();
     if !odd.is_empty() {
         return None;

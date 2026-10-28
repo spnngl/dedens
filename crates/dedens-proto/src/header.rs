@@ -92,6 +92,15 @@ impl Flags {
             .filter(move |&(flag, _)| self.contains(flag))
             .map(|(_, name)| name)
     }
+
+    /// The flag of a name of [`names`](Self::names), in any case.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::NAMES
+            .into_iter()
+            .find(|(_, known)| name.eq_ignore_ascii_case(known))
+            .map(|(flag, _)| flag)
+    }
 }
 
 flag_set!(Flags);

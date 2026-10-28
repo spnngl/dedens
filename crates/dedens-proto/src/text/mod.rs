@@ -23,6 +23,7 @@ use core::fmt;
 use core::ops::RangeInclusive;
 use core::str::FromStr;
 
+pub use encoding::{Hex, decode_hex};
 pub(crate) use lexer::{Lexer, Token};
 use zone::Defaults;
 pub use zone::{Entry, ZoneReader};
