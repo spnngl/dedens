@@ -31,13 +31,14 @@ fn freshness(found: Lookup) -> Option<Freshness> {
 fn expired_data_answers_only_when_allowed() {
     let (cache, q) = cached();
     let later = T0 + 61;
+    // Kept, not served: the caller resolves, and may answer with it once the client's timer runs out.
     assert_eq!(
         lookup(&cache, &q, later, StalePolicy::Never).0,
-        Lookup::Miss
+        Lookup::Expired
     );
     assert_eq!(
         lookup(&cache, &q, later, StalePolicy::IfFailing).0,
-        Lookup::Miss
+        Lookup::Expired
     );
     let (found, served) = lookup(&cache, &q, later, StalePolicy::Always);
     assert_eq!(freshness(found), Some(Freshness::Stale));
@@ -62,7 +63,7 @@ fn stale_data_answers_while_resolution_fails() {
     );
     assert_eq!(
         lookup(&cache, &q, later + 30, StalePolicy::IfFailing).0,
-        Lookup::Miss
+        Lookup::Expired
     );
 }
 

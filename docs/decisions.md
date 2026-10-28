@@ -329,6 +329,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`ClientError::is_local`: no randomness, no socket, any socket error but the network or server refusing,
   resetting or unreachable) is `Pipeline::abandon`: SERVFAIL, no next server, no hold. The configuration refuses
   a second cache stage (it would never be filled). A panicking serving thread ends `dedensd` with an error.
+  The client response timer of D45 runs only when the cache keeps expired data for the query
+  (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
+  `Query::read`, and the pipeline decodes it once.
 - D47 `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP connection closed), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore) and 10 s to write a

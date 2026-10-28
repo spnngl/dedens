@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{
-    DecodeError, Decoded, Edns, EdnsView, EncodeError, Header, Message, Query, Question,
+    DecodeError, Decoded, Edns, EdnsView, EncodeError, Header, Message, Query, Question, Rcode,
     RecordType, Violation,
 };
 use proptest::prelude::*;
@@ -15,6 +15,7 @@ use proptest::prelude::*;
 /// What a query reader keeps of a decoded message.
 type Summary<'a> = (
     Header,
+    Rcode,
     Option<Question<'a>>,
     Option<Edns<'a>>,
     Vec<Violation>,
@@ -28,6 +29,7 @@ fn summary(decoded: Decoded<'_>) -> Summary<'_> {
     } = decoded;
     (
         message.header,
+        message.rcode(),
         message.questions.into_iter().next(),
         message.edns,
         violations,
@@ -38,6 +40,7 @@ fn assert_agrees(wire: &[u8]) {
     let read = Query::read(wire).map(|q| {
         (
             q.header(),
+            q.rcode(),
             q.question().cloned(),
             q.edns().map(EdnsView::to_edns),
             q.violations().to_vec(),

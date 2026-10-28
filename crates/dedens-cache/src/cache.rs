@@ -56,6 +56,9 @@ pub enum Lookup {
     Failed,
     /// Resolve.
     Miss,
+    /// Resolve: expired data is kept, which `stale` did not allow; [`StalePolicy::Always`] would serve it, once
+    /// the client response timer runs out (RFC 8767 §5).
+    Expired,
 }
 
 /// A response cache shared by threads, sharded to keep lock waits short.
@@ -144,13 +147,19 @@ impl Cache {
                     !entry.prefetched && response.ending(now, self.config.prefetch_percent);
                 entry.prefetched |= prefetch;
                 (response.left(now), Freshness::Fresh { prefetch })
-            } else if now < response.stale_until
-                && match stale {
+            } else if now < response.stale_until {
+                let allowed = match stale {
                     StalePolicy::Never => false,
                     StalePolicy::IfFailing => nothing == Lookup::Failed,
                     StalePolicy::Always => true,
+                };
+                if !allowed {
+                    return if nothing == Lookup::Failed {
+                        nothing
+                    } else {
+                        Lookup::Expired
+                    };
                 }
-            {
                 (self.config.stale_answer_ttl, Freshness::Stale)
             } else {
                 return nothing;

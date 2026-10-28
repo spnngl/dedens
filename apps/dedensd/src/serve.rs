@@ -29,6 +29,9 @@ use socket2::{Domain, Socket, Type};
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
+/// Bytes a UDP socket may hold before the OS drops datagrams (`SO_RCVBUF`).
+const UDP_RECEIVE_BUFFER: usize = 4 << 20;
+
 /// Connections waiting to be accepted, per TCP listener.
 const TCP_BACKLOG: i32 = 1024;
 
@@ -69,6 +72,9 @@ fn socket(addr: SocketAddr, ty: Type) -> io::Result<Socket> {
     }
     if ty == Type::STREAM {
         socket.set_reuse_address(true)?;
+    } else {
+        // Room for bursts: the OS default, about 200 KiB on Linux, drops queries under load. The OS may cap it.
+        socket.set_recv_buffer_size(UDP_RECEIVE_BUFFER)?;
     }
     #[cfg(target_os = "linux")]
     socket.set_reuse_port(true)?;

@@ -69,9 +69,8 @@ pub struct Upstream {
     forward: usize,
     next: usize,
     cache: Option<usize>,
-    /// The forward stage's.
-    timeout: Duration,
-    tries: NonZeroU8,
+    /// The forward stage's timeout and tries.
+    patience: (Duration, NonZeroU8),
     /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
     stale_after: Option<Duration>,
     /// A cell: [`Pipeline::stale`] answers while the caller still sends [`Upstream::request`].
@@ -123,7 +122,7 @@ impl Pipeline {
                 Some(question) if matches!(question.qtype, RecordType::AXFR | RecordType::IXFR) => {
                     Rcode::REFUSED
                 }
-                Some(_) => return self.run(wire, &query, &client, now, out),
+                Some(_) => return self.run(&query, &client, now, out),
             }
         };
         reply(&client, Message::default(), rcode, out)
@@ -132,14 +131,7 @@ impl Pipeline {
     /// Runs the stages on a query that passed the core's checks. Without RD, only fresh cached data answers: no
     /// stale data (RFC 8767 §5), no upstream query (RFC 1034 §4.3.1), REFUSED with EDE 20 (Not Authoritative,
     /// RFC 8914 §4.21) otherwise.
-    fn run(
-        &self,
-        wire: &[u8],
-        query: &Query<'_>,
-        client: &Client<'_>,
-        now: u32,
-        out: &mut [u8],
-    ) -> Step {
+    fn run(&self, query: &Query<'_>, client: &Client<'_>, now: u32, out: &mut [u8]) -> Step {
         let recursion = client.header.flags.contains(Flags::RD);
         let stale = if recursion {
             StalePolicy::IfFailing
@@ -147,16 +139,15 @@ impl Pipeline {
             StalePolicy::Never
         };
         let mut cache = None;
+        let mut expired = false;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
                 Stage::Cache(stored) => match cache::look(stored, query, client, now, stale, out) {
                     Looked::Reply { len, refresh } => {
                         if refresh
-                            && let Some(mut upstream) =
-                                self.upstream(index, wire, query, client, Some(index))
+                            && let Some(upstream) = self.upstream(index, query, client, Some(index))
                         {
-                            upstream.purpose = Cell::new(Purpose::Prefetch);
-                            upstream.stale_after = None;
+                            upstream.purpose.set(Purpose::Prefetch);
                             return Step::Refresh(len, upstream);
                         }
                         return Step::Reply(len);
@@ -165,6 +156,7 @@ impl Pipeline {
                         return reply(client, Message::default(), Rcode::SERVFAIL, out);
                     }
                     Looked::Failed | Looked::Miss => cache = Some(index),
+                    Looked::Expired => (cache, expired) = (Some(index), true),
                 },
                 Stage::Forward(_) if !recursion => {
                     return client
@@ -177,9 +169,16 @@ impl Pipeline {
                         .map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
-                    return self
-                        .upstream(index, wire, query, client, cache)
-                        .map_or(Step::Drop, Step::Upstream);
+                    let Some(mut upstream) = self.upstream(index, query, client, cache) else {
+                        return Step::Drop;
+                    };
+                    // The client response timer, only when expired data could answer once it runs out.
+                    upstream.stale_after = cache
+                        .and_then(|index| self.cache(index))
+                        .map(|cache| cache.config().stale_answer_after_ms)
+                        .filter(|&ms| expired && ms > 0)
+                        .map(|ms| Duration::from_millis(u64::from(ms)));
+                    return Step::Upstream(upstream);
                 }
             }
         }
@@ -190,7 +189,6 @@ impl Pipeline {
     fn upstream(
         &self,
         from: usize,
-        wire: &[u8],
         query: &Query<'_>,
         client: &Client<'_>,
         cache: Option<usize>,
@@ -204,23 +202,16 @@ impl Pipeline {
                     Stage::Forward(forward) => Some((index, forward)),
                     Stage::Cache(_) => None,
                 })?;
-        let (timeout, tries) = forward.patience();
-        let stale_after = cache
-            .and_then(|index| self.cache(index))
-            .map(|cache| cache.config().stale_answer_after_ms)
-            .filter(|&ms| ms > 0)
-            .map(|ms| Duration::from_millis(u64::from(ms)));
         Some(Box::new(Upstream {
-            query: wire.into(),
+            query: query.wire().into(),
             transport: client.transport,
             request: forward::request(client, query.question()?),
             server: *forward.servers().first()?,
             forward: index,
             next: 1,
             cache,
-            timeout,
-            tries,
-            stale_after,
+            patience: forward.patience(),
+            stale_after: None,
             purpose: Cell::new(Purpose::Reply),
         }))
     }
@@ -356,7 +347,7 @@ impl Upstream {
     /// [`Pipeline::receive`]: the forward stage's.
     #[must_use]
     pub const fn patience(&self) -> (Duration, NonZeroU8) {
-        (self.timeout, self.tries)
+        self.patience
     }
 
     /// How long after the client's query to call [`Pipeline::stale`], resolution going on: the client response

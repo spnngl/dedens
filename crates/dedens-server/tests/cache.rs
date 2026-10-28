@@ -234,6 +234,8 @@ fn without_expired_data_the_client_waits_for_resolution() {
     let pipeline = caching();
     let response = captured("a");
     let upstream = upstream_of(&pipeline, &query_for(&response), 0);
+    // No timer to wait for: nothing could answer when it ran out.
+    assert_eq!(upstream.stale_after(), None);
     let mut out = vec![0; 65535];
     assert_eq!(pipeline.stale(&upstream, 0, &mut out), None);
     let step = pipeline.receive(upstream, Some(&response), 0, &mut out);

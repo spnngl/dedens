@@ -17,6 +17,7 @@ recorder = ["metrics", "dep:metrics-util"]
 [dependencies]
 dedens-cache.workspace = true
 dedens-proto.workspace = true
+dedens-server.workspace = true
 divan.workspace = true
 # Zone file readers, for `benches/zone.rs`.
 domain = { workspace = true, features = ["zonefile"] }
@@ -33,6 +34,10 @@ harness = false
 
 [[bench]]
 name = "zone"
+harness = false
+
+[[bench]]
+name = "server"
 harness = false
 
 [lints]

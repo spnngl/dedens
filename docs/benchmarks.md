@@ -84,6 +84,12 @@ removed `MessageView` read every record in 178/505/1093 ns.
   +16 (`a`) to +30 (`txt_large`) instructions. Cycles differ within noise, single-threaded and on 8 threads
   (hot name and 10 000 names, ±30% between runs).
 
+## Server hit path (D23, D43)
+
+- `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
+  into a 1232-byte buffer, a/mx/txt_large: 204/143/163 ns and one 192-byte allocation a hit (the stale option
+  pushed to size the reply, the upstream query built for nothing) → 97/97/118 ns, none (same session).
+
 ## Zone files (D25)
 
 A generated 100 000-record zone: dedens 7.3-7.5 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record

@@ -1,6 +1,7 @@
 //! A query read in place, for a server (D21): the header, the question and the EDNS settings it answers by,
 //! checked as [`Message::decode`](crate::Message::decode) checks them, without allocating.
 
+use crate::codes::Rcode;
 use crate::edns::{EdnsView, read_options};
 use crate::error::DecodeError;
 use crate::header::Header;
@@ -91,6 +92,13 @@ impl<'a> Query<'a> {
     #[must_use]
     pub const fn header(&self) -> Header {
         self.header
+    }
+
+    /// The RCODE, extended by the OPT record's upper bits as [`Message::rcode`](crate::Message::rcode).
+    #[must_use]
+    pub fn rcode(&self) -> Rcode {
+        let ext = self.edns.as_ref().map_or(0, |edns| edns.ext_rcode);
+        Rcode((u16::from(ext) << 4) | (self.header.rcode.0 & 0x0F))
     }
 
     /// The first question; a query without one has nothing to answer.

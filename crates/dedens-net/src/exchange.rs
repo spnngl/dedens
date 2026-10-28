@@ -25,8 +25,8 @@ use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
-use dedens_proto::edns::{Cookie, EdnsOption, OptionCode};
-use dedens_proto::{EncodeError, Flags, Message, Name, Question, Rcode};
+use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
+use dedens_proto::{EncodeError, Flags, Message, Name, Query, Question, Rcode, Violation};
 
 /// The transport a query goes over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,22 +229,22 @@ impl Exchange {
             debug!(server = %self.server, %from, ?transport, "dropped: from another address or over another transport");
             return Progress::Wait(self);
         }
-        let Ok(decoded) = Message::decode(bytes) else {
+        // Checked as `Message::decode` checks, without building the message: the caller decodes it if it wants.
+        let Ok(response) = Query::read(bytes) else {
             debug!(server = %self.server, "dropped: unreadable");
             return Progress::Wait(self);
         };
-        let response = &decoded.message;
-        if !self.answers(response) {
-            debug!(server = %self.server, id = response.header.id, "dropped: not the response (QR, ID, opcode or question)");
+        let rcode = response.rcode();
+        if !self.answers(&response, rcode) {
+            debug!(server = %self.server, id = response.header().id, "dropped: not the response (QR, ID, opcode or question)");
             return Progress::Wait(self);
         }
-        let Ok(cookie) = self.cookie_of(response) else {
+        let Ok(cookie) = self.cookie_of(&response) else {
             debug!(server = %self.server, "dropped: without the client cookie sent, or the server cookie");
             return Progress::Wait(self);
         };
-        let rcode = response.rcode();
         if self.options.tcp_fallback
-            && response.header.flags.contains(Flags::TC)
+            && response.header().flags.contains(Flags::TC)
             && self.transport == Transport::Udp
         {
             debug!(server = %self.server, "truncated: asking again over TCP");
@@ -253,7 +253,7 @@ impl Exchange {
         if self.options.edns_fallback
             && !self.edns_dropped
             && self.query.edns.is_some()
-            && response.edns.is_none()
+            && response.edns().is_none()
             && (rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP)
         {
             debug!(server = %self.server, %rcode, "no EDNS in the response: asking again without EDNS");
@@ -305,39 +305,39 @@ impl Exchange {
     }
 
     /// Whether `response` answers the query: QR, ID, opcode and questions (RFC 5452 §9.1).
-    fn answers(&self, response: &Message<'_>) -> bool {
-        let header = response.header;
+    fn answers(&self, response: &Query<'_>, rcode: Rcode) -> bool {
+        let header = response.header();
         if !header.flags.contains(Flags::QR)
             || header.id != self.query.header.id
             || header.opcode != self.query.header.opcode
         {
             return false;
         }
-        let rcode = response.rcode();
-        if response.questions.is_empty() && (rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP) {
-            return true;
+        let several = response
+            .violations()
+            .contains(&Violation::MultipleQuestions);
+        match (response.question(), self.query.questions.as_slice()) {
+            (None, []) => true,
+            (None, _) => rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP,
+            (Some(got), [sent]) => {
+                !several && same_question(got, sent, self.options.random_case.is_some())
+            }
+            (Some(_), _) => false,
         }
-        let exact = self.options.random_case.is_some();
-        response.questions.len() == self.query.questions.len()
-            && response
-                .questions
-                .iter()
-                .zip(&self.query.questions)
-                .all(|(got, sent)| same_question(got, sent, exact))
     }
 
     /// The cookie of `response`, or `Err` when it must be dropped (RFC 7873 §5.3): the first COOKIE option counts.
-    fn cookie_of(&self, response: &Message<'_>) -> Result<Option<Cookie>, Forged> {
+    fn cookie_of(&self, response: &Query<'_>) -> Result<Option<Cookie>, Forged> {
         let Some(sent) = cookie_in(&self.query) else {
             return Ok(None);
         };
         let first = response
-            .edns
-            .iter()
-            .flat_map(|edns| &edns.options)
+            .edns()
+            .into_iter()
+            .flat_map(EdnsView::options)
             .find(|option| option.code() == OptionCode::COOKIE);
         match first {
-            Some(EdnsOption::Cookie(got)) if got.client() == sent.client() => Ok(Some(*got)),
+            Some(EdnsOption::Cookie(got)) if got.client() == sent.client() => Ok(Some(got)),
             // A wrong client cookie, or an invalid length (kept as an unknown option).
             Some(_) => Err(Forged),
             None if sent.server().is_some() => Err(Forged),

@@ -22,7 +22,7 @@ fn positive_answer_lives_as_long_as_its_shortest_ttl() {
     insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0 + 40, NEVER);
     assert_eq!(ttls(&served.unwrap()), [60, 60]);
-    assert_eq!(lookup(&cache, &q, T0 + 100, NEVER).0, Lookup::Miss);
+    assert_eq!(lookup(&cache, &q, T0 + 100, NEVER).0, Lookup::Expired);
 }
 
 /// §5: the negative TTL is the lesser of the SOA's TTL and its MINIMUM.
@@ -42,7 +42,7 @@ fn nxdomain_lives_as_long_as_the_soa_allows() {
     let served = served.unwrap();
     assert_eq!(served.rcode(), Rcode::NXDOMAIN);
     assert_eq!(ttls(&served), [50]);
-    assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Miss);
+    assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Expired);
 }
 
 /// §2.2 NODATA: NOERROR, no answer, SOA in authority.
@@ -206,7 +206,7 @@ fn nodata_after_a_cname_is_negative() {
     let served = served.unwrap();
     assert_eq!(served.answer.len(), 1);
     assert_eq!(ttls(&served), [60, 60]);
-    assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Miss);
+    assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Expired);
 }
 
 /// §2.1: NXDOMAIN at the end of a chain is denied by the zone of the chain's last name.

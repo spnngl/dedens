@@ -15,7 +15,7 @@
 //!     tries: 2
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::time::Duration;
@@ -87,19 +87,17 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let mut stages = file.stages;
-    let mut listed = BTreeSet::new();
     let mut built = Vec::with_capacity(file.pipeline.len());
-    for name in &file.pipeline {
+    for (index, name) in file.pipeline.iter().enumerate() {
         if let Some(Stage::Forward(_)) = built.last() {
             bail!("stage `{name}` comes after a forward stage, which answers every query");
         }
         let Some(stage) = stages.remove(name) else {
-            if listed.contains(name) {
+            if file.pipeline[..index].contains(name) {
                 bail!("stage `{name}` is listed twice in `pipeline`");
             }
             bail!("stage `{name}` is listed in `pipeline` but not defined in `stages`");
         };
-        listed.insert(name);
         built.push(match stage {
             StageFile::Cache(config) => {
                 if built.iter().any(|stage| matches!(stage, Stage::Cache(_))) {

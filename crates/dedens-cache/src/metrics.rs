@@ -77,7 +77,7 @@ impl Metrics {
                 ..
             }) => self.stale.increment(1),
             Lookup::Failed => self.failed.increment(1),
-            Lookup::Miss => self.misses.increment(1),
+            Lookup::Miss | Lookup::Expired => self.misses.increment(1),
         }
     }
 

@@ -382,7 +382,7 @@ fn only_hits_keep_an_entry() {
     );
     insert(&cache, &expired, &r, T0).unwrap();
     for _ in 0..3 {
-        assert_eq!(lookup(&cache, &expired, T0 + 10, NEVER).0, Lookup::Miss);
+        assert_eq!(lookup(&cache, &expired, T0 + 10, NEVER).0, Lookup::Expired);
     }
     for i in 0..5_000 {
         let name = format!("cold{i}.example");
