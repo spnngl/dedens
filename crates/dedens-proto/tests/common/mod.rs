@@ -6,6 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::{
     ClientSubnet, Cookie, Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode, OptionCode,
+    UnknownOption,
 };
 use dedens_proto::rdata::{Caa, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt};
 use dedens_proto::wire::{Reader, Writer};
@@ -234,10 +235,11 @@ pub(crate) fn edns_option() -> impl Strategy<Value = EdnsOption<'static>> {
             code: InfoCode(code),
             text: text.into()
         })),
-        (100u16..60000, bytes(20)).prop_map(|(code, data)| EdnsOption::Unknown {
-            code: OptionCode(code),
-            data: data.into()
-        }),
+        (100u16..60000, bytes(20)).prop_map(|(code, data)| EdnsOption::Unknown(
+            UnknownOption::new(OptionCode(code), &data)
+                .expect("codes from 100 have no typed form")
+                .into_owned()
+        )),
     ]
 }
 

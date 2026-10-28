@@ -4,7 +4,7 @@ mod common;
 
 use common::{decode_options, option_wire};
 use dedens_proto::Violation;
-use dedens_proto::edns::{Cookie, EdnsOption, OptionCode};
+use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
 
 const CLIENT: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -58,10 +58,9 @@ fn s4_other_lengths_are_kept_unknown() {
         );
         assert_eq!(
             options,
-            [EdnsOption::Unknown {
-                code: OptionCode::COOKIE,
-                data: data.into()
-            }]
+            [EdnsOption::Unknown(
+                UnknownOption::new(OptionCode::COOKIE, &data).expect("invalid cookie")
+            )]
         );
     }
 }

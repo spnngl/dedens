@@ -60,7 +60,7 @@ fn s6_bits_past_the_source_prefix_must_be_zero() {
     assert_eq!(violations, []);
     let (options, violations) = options(&[0, 1, 20, 0, 192, 0, 0x2F]);
     assert_eq!(violations.len(), 1, "bits set past /20");
-    assert!(matches!(options.as_slice(), [EdnsOption::Unknown { .. }]));
+    assert!(matches!(options.as_slice(), [EdnsOption::Unknown(_)]));
 }
 
 #[test]
@@ -90,6 +90,6 @@ fn s6_unknown_families_and_wrong_lengths_are_invalid() {
             ),
             "{data:?}"
         );
-        assert!(matches!(options.as_slice(), [EdnsOption::Unknown { .. }]));
+        assert!(matches!(options.as_slice(), [EdnsOption::Unknown(_)]));
     }
 }

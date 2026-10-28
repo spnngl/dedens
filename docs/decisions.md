@@ -53,7 +53,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   pointer.
 - D12 Typed EDNS options: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client subnet
   (RFC 7871), TCP keepalive (RFC 7828), NSID (RFC 5001). Typed SVCB keys: RFC 9460 keys 0-6 and dohpath (RFC
-  9461). Others opaque.
+  9461). Others opaque. An opaque option (`UnknownOption::new`) refuses data that reads as its typed option, so
+  an option has one form and equals itself read back.
 - D13 Topic modules, RDATA and conformance tests by RFC (`crates/dedens-proto/AGENTS.md`). Rejected strict
   `rfcNNNN/` folders: names, the header and rcodes are each defined across several RFCs.
 - D19 Codes (type, class, opcode, rcode, EDNS option, SVCB key) are newtypes with named constants, not enums

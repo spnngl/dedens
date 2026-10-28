@@ -107,15 +107,67 @@ pub enum EdnsOption<'a> {
     Padding(u16),
     /// Extended DNS Error (RFC 8914).
     Ede(ExtendedError<'a>),
-    /// An option without a typed variant, or whose content is invalid for its code (D9). Built by hand with data
-    /// valid for a typed code, it is written the same but does not compare equal to the typed variant read back:
-    /// use the typed variant.
-    Unknown {
-        /// The option code.
-        code: OptionCode,
-        /// The option data as received.
-        data: Cow<'a, [u8]>,
-    },
+    /// An option without a typed variant, or whose content is invalid for its code (D9).
+    Unknown(UnknownOption<'a>),
+}
+
+/// The data of an option kept as bytes: its code has no typed variant, or the data is invalid for its code (D9).
+///
+/// [`UnknownOption::new`] refuses data that reads as a typed option, so an option has one form and compares
+/// equal to itself read back.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnknownOption<'a> {
+    code: OptionCode,
+    data: Cow<'a, [u8]>,
+}
+
+impl<'a> UnknownOption<'a> {
+    /// The option `code` with `data`.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] when `data` is longer than 65535 bytes, or reads as the typed [`EdnsOption`] of `code`:
+    /// build that variant instead.
+    pub fn new(code: OptionCode, data: &'a [u8]) -> Result<Self, DecodeError> {
+        let error = |kind| DecodeError { offset: 0, kind };
+        if data.len() > usize::from(u16::MAX) {
+            return Err(error(DecodeErrorKind::RdataLength));
+        }
+        match EdnsOption::decode_typed(code, &mut Reader::new(data)) {
+            Ok(EdnsOption::Unknown(_)) | Err(_) => Ok(Self::borrowed(code, data)),
+            Ok(_) => Err(error(DecodeErrorKind::Invalid(
+                "option data with a typed form",
+            ))),
+        }
+    }
+
+    const fn borrowed(code: OptionCode, data: &'a [u8]) -> Self {
+        Self {
+            code,
+            data: Cow::Borrowed(data),
+        }
+    }
+
+    /// The option code.
+    #[must_use]
+    pub const fn code(&self) -> OptionCode {
+        self.code
+    }
+
+    /// The option data.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// The same option, owning its bytes.
+    #[must_use]
+    pub fn into_owned(self) -> UnknownOption<'static> {
+        UnknownOption {
+            code: self.code,
+            data: Cow::Owned(self.data.into_owned()),
+        }
+    }
 }
 
 impl<'a> EdnsOption<'a> {
@@ -129,10 +181,7 @@ impl<'a> EdnsOption<'a> {
             Self::Keepalive(timeout) => EdnsOption::Keepalive(timeout),
             Self::Padding(len) => EdnsOption::Padding(len),
             Self::Ede(error) => EdnsOption::Ede(error.into_owned()),
-            Self::Unknown { code, data } => EdnsOption::Unknown {
-                code,
-                data: Cow::Owned(data.into_owned()),
-            },
+            Self::Unknown(unknown) => EdnsOption::Unknown(unknown.into_owned()),
         }
     }
 
@@ -146,7 +195,7 @@ impl<'a> EdnsOption<'a> {
             Self::Keepalive(_) => OptionCode::KEEPALIVE,
             Self::Padding(_) => OptionCode::PADDING,
             Self::Ede(_) => OptionCode::EDE,
-            Self::Unknown { code, .. } => *code,
+            Self::Unknown(unknown) => unknown.code,
         }
     }
 
@@ -159,7 +208,7 @@ impl<'a> EdnsOption<'a> {
             Self::Keepalive(timeout) => 2 * usize::from(timeout.is_some()),
             Self::Padding(len) => usize::from(*len),
             Self::Ede(error) => 2 + error.text.len(),
-            Self::Unknown { data, .. } => data.len(),
+            Self::Unknown(unknown) => unknown.data.len(),
         }
     }
 
@@ -172,10 +221,7 @@ impl<'a> EdnsOption<'a> {
             OptionCode::KEEPALIVE => Self::Keepalive(rfc7828_keepalive::decode(data)?),
             OptionCode::PADDING => Self::Padding(rfc7830_padding::decode(data)),
             OptionCode::EDE => Self::Ede(ExtendedError::decode(data)?),
-            _ => Self::Unknown {
-                code,
-                data: Cow::Borrowed(data.rest()),
-            },
+            _ => Self::Unknown(UnknownOption::borrowed(code, data.rest())),
         };
         if data.is_empty() {
             Ok(option)
@@ -194,7 +240,7 @@ impl<'a> EdnsOption<'a> {
             Self::Keepalive(timeout) => rfc7828_keepalive::encode(*timeout, w)?,
             Self::Padding(len) => rfc7830_padding::encode(*len, w)?,
             Self::Ede(error) => error.encode(w)?,
-            Self::Unknown { data, .. } => w.put_bytes(data)?,
+            Self::Unknown(unknown) => w.put_bytes(&unknown.data)?,
         }
         let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
         w.patch_u16(at, len);
@@ -392,10 +438,7 @@ impl<'a> Options<'a> {
         Ok(Some(match EdnsOption::decode_typed(code, &mut data) {
             Ok(option) => (option, None),
             Err(error) => (
-                EdnsOption::Unknown {
-                    code,
-                    data: Cow::Borrowed(raw.rest()),
-                },
+                EdnsOption::Unknown(UnknownOption::borrowed(code, raw.rest())),
                 Some(InvalidOption { code, error }),
             ),
         }))

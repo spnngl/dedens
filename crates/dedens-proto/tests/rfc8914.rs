@@ -4,7 +4,7 @@ mod common;
 
 use common::{decode_options, option_wire};
 use dedens_proto::Violation;
-use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode, OptionCode};
+use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode, OptionCode, UnknownOption};
 
 fn options(data: &[u8]) -> (Vec<EdnsOption<'static>>, Vec<Violation>) {
     let decoded = decode_options(&option_wire(15, data));
@@ -53,10 +53,9 @@ fn s2_the_text_is_utf8() {
     ));
     assert_eq!(
         options,
-        [EdnsOption::Unknown {
-            code: OptionCode::EDE,
-            data: data.as_slice().into()
-        }]
+        [EdnsOption::Unknown(
+            UnknownOption::new(OptionCode::EDE, &data).expect("invalid EDE")
+        )]
     );
 }
 
@@ -64,7 +63,7 @@ fn s2_the_text_is_utf8() {
 fn s2_without_an_info_code_it_is_invalid() {
     let (options, violations) = options(&[7]);
     assert_eq!(violations.len(), 1);
-    assert!(matches!(options.as_slice(), [EdnsOption::Unknown { .. }]));
+    assert!(matches!(options.as_slice(), [EdnsOption::Unknown(_)]));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{decode_options, opt_message, option_wire};
-use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode};
+use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::{
     DecodeErrorKind, EncodeError, Message, Name, Opcode, Question, Rcode, RecordType, Violation,
 };
@@ -158,11 +158,23 @@ fn s6_1_2_an_unknown_option_is_kept() {
     assert_eq!(decoded.violations, []);
     assert_eq!(
         decoded.message.edns.unwrap().options,
-        [EdnsOption::Unknown {
-            code: OptionCode(0xFF01),
-            data: b"data".as_slice().into()
-        }]
+        [EdnsOption::Unknown(
+            UnknownOption::new(OptionCode(0xFF01), b"data").expect("untyped code")
+        )]
     );
+}
+
+#[test]
+fn s6_1_2_an_unknown_option_has_no_typed_form() {
+    // A valid client cookie must be the typed option, so the same option is never two different values.
+    assert!(UnknownOption::new(OptionCode::COOKIE, &[1; 8]).is_err());
+    // Invalid data for a typed code is kept as bytes, as when read (D9).
+    let short = UnknownOption::new(OptionCode::COOKIE, &[1; 7]).expect("invalid cookie");
+    assert_eq!(
+        (short.code(), short.data()),
+        (OptionCode::COOKIE, [1; 7].as_slice())
+    );
+    assert!(UnknownOption::new(OptionCode(0xFF01), &vec![0; 65536]).is_err());
 }
 
 #[test]

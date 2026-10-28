@@ -3,7 +3,7 @@
 mod common;
 
 use common::{decode_options, option_wire};
-use dedens_proto::edns::{EdnsOption, OptionCode};
+use dedens_proto::edns::{EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::{Edns, Message};
 
 fn options(code: u16, data: &[u8]) -> Vec<EdnsOption<'static>> {
@@ -51,10 +51,9 @@ fn rfc7828_s3_other_lengths_are_invalid() {
         assert_eq!(decoded.violations.len(), 1);
         assert_eq!(
             decoded.message.edns.expect("OPT record").options,
-            [EdnsOption::Unknown {
-                code: OptionCode::KEEPALIVE,
-                data: data.into()
-            }]
+            [EdnsOption::Unknown(
+                UnknownOption::new(OptionCode::KEEPALIVE, data).expect("invalid keepalive")
+            )]
         );
     }
 }
