@@ -20,6 +20,8 @@ use compio::BufResult;
 use compio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use compio::net::TcpStream;
 use compio::runtime::JoinHandle;
+use dedens_proto::Query;
+use dedens_proto::edns::EdnsOption;
 
 use crate::exchange::after;
 
@@ -358,54 +360,17 @@ async fn read_message(stream: &mut impl AsyncRead) -> io::Result<Vec<u8>> {
     read.map(|()| message)
 }
 
-/// The edns-tcp-keepalive timeout of a response, if it has one (RFC 7828 §3.2.2).
-///
-/// Every response on a connection comes through here: rather than decode it, this walks to the OPT record of the
-/// additional section and reads its options (RFC 6891 §6.1.2). A message too short for what it says has none.
+/// The edns-tcp-keepalive timeout of a response, if it has one (RFC 7828 §3.2.2): every response on a connection
+/// comes through here, so it is read in place, not decoded.
 fn keepalive(message: &[u8]) -> Option<Duration> {
-    /// The type of the OPT record (RFC 6891 §6.1.1).
-    const OPT: u16 = 41;
-    /// The code of edns-tcp-keepalive (RFC 7828 §3.1).
-    const KEEPALIVE: u16 = 11;
-    let u16_at =
-        |at: usize| -> Option<u16> { Some(u16::from_be_bytes(*message.get(at..)?.first_chunk()?)) };
-    // The four counts follow the ID and the flags (RFC 1035 §4.1.1).
-    let mut at = 12;
-    for _ in 0..u16_at(4)? {
-        // The name, then the type and the class.
-        at = skip_name(message, at)? + 4;
-    }
-    let before = usize::from(u16_at(6)?) + usize::from(u16_at(8)?);
-    for record in 0..before + usize::from(u16_at(10)?) {
-        // The name, then the type, class, TTL, RDLENGTH and RDATA (RFC 1035 §4.1.3).
-        at = skip_name(message, at)?;
-        let rdata = at + 10;
-        let end = rdata + usize::from(u16_at(at + 8)?);
-        if record >= before && u16_at(at)? == OPT {
-            // Each option: its code, its length, its value.
-            let mut option = rdata;
-            while option < end {
-                let len = usize::from(u16_at(option + 2)?);
-                if u16_at(option)? == KEEPALIVE && len == 2 && option + 6 <= end {
-                    return Some(Duration::from_millis(u64::from(u16_at(option + 4)?) * 100));
-                }
-                option += 4 + len;
+    Query::read(message)
+        .ok()?
+        .edns()?
+        .options()
+        .find_map(|option| match option {
+            EdnsOption::Keepalive(Some(timeout)) => {
+                Some(Duration::from_millis(u64::from(timeout) * 100))
             }
-            return None;
-        }
-        at = end;
-    }
-    None
-}
-
-/// Where the name at `at` ends: past its root label or its compression pointer (RFC 1035 §4.1.4).
-fn skip_name(message: &[u8], mut at: usize) -> Option<usize> {
-    loop {
-        match *message.get(at)? {
-            0 => return Some(at + 1),
-            len @ 1..=63 => at += 1 + usize::from(len),
-            0xC0.. => return Some(at + 2),
-            _ => return None,
-        }
-    }
+            _ => None,
+        })
 }
