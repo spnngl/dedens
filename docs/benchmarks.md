@@ -37,9 +37,9 @@ the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower tha
 
 | Measure | dedens | Unbound |
 |---|---|---|
-| Structure check, records located: `decode_reusing` / `parse_packet` | 117/227/510 | 98/193/415 |
-| Owned decode: `decode_owned` / `reply_info_parse` | 188/460/975 | 143/376/594 |
-| Encode, reused buffer: `encode` / `reply_info_encode` with OPT | 64/333/362 | 44/312/109 |
+| Structure check, records located: `decode_dedens_reusing` / `parse_packet` | 117/227/510 | 98/193/415 |
+| Owned decode: `decode_dedens_owned` / `reply_info_parse` | 188/460/975 | 143/376/594 |
+| Encode, reused buffer: `encode_dedens` / `reply_info_encode` with OPT | 64/333/362 | 44/312/109 |
 | Zone, 100 006 records | 7.7 ms | 94.9 ms |
 
 - `parse_packet` does not read RDATA; `decode_reusing` checks every RDATA and EDNS option.
@@ -47,7 +47,7 @@ the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower tha
 - The TXT encode gap is not RDATA: once dedens copied RDATA bytes too (D28), it stayed at 359 ns. A profile
   puts it in owner names: `put_name_compressed`, its table lookups and `Name::to_wire`, once per record.
   Unbound writes an RRset's owner once and a pointer to it for each further record; dedens now does too (D10):
-  `encode` 65/396/367 → 55/351/170, owned 56/325/307 → 49/278/158 (same session, three runs).
+  `encode_dedens` 65/396/367 → 55/351/170, `encode_dedens_owned` 56/325/307 → 49/278/158 (same session, three runs).
 - Zone: `sldns_fp2wire_rr_buf` reads a `FILE` token by token, as Unbound's auth-zone does.
 
 ## RDATA as bytes (D28)
@@ -57,9 +57,9 @@ answer (954 → 1047).
 
 | Measure | typed records | bytes |
 |---|---|---|
-| `decode_reusing` | 125/260/573 | 125/260/568 |
-| `decode_owned` | 192/621/954 | 194/631/1047 |
-| `encode`, reused buffer | 65/406/354 | 66/409/364 |
+| `decode_dedens_reusing` | 125/260/573 | 125/260/568 |
+| `decode_dedens_owned` | 192/621/954 | 194/631/1047 |
+| `encode_dedens`, reused buffer | 65/406/354 | 66/409/364 |
 | `decode_typed_dedens`: decode, then `data()` on every record | | 146/341/729 |
 | `decode_domain` | | 99/218/492 |
 

@@ -123,7 +123,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dependencies so `cargo deny` checks them; Unbound's C codec, built from a pinned release by
   `just bench-unbound`. CoreDNS and Unbound as servers: dnsperf, later. `unsafe` only where a profile
   shows bounds checks matter. A server decodes with `Message::decode_reusing`: no allocation once warm.
-- D15 `unsafe` is a hot-path tool: the bench first, then Miri and RAPx.
+- D15 `unsafe` is a hot-path tool: the bench first, then Miri and RAPx. Every crate root has
+  `#![forbid(unsafe_code)]`, which nothing below can override; a crate opting in replaces it with the
+  workspace's `deny` (`Cargo.toml`) and allows `unsafe_code` on the one module of the measured hot path.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, fuzzing with the
   first fuzz target. RAPx weekly, outside the gate: it builds on rustc internals and breaks on unrelated

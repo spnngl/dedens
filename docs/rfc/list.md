@@ -134,6 +134,9 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 5894](https://datatracker.ietf.org/doc/html/rfc5894):** IDNA: Background, Explanation, and Rationale
 * **[RFC 5895](https://datatracker.ietf.org/doc/html/rfc5895):** Mapping Characters for IDNA2008
 
+### Data Encodings
+* **[RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648):** The Base16, Base32, and Base64 Data Encodings (base64 and hex in presentation format)
+
 ### Specialized / Niche Resource Records & Extensions
 * **[RFC 1183](https://datatracker.ietf.org/doc/html/rfc1183):** New DNS RR Definitions (AFSDB, RP, X25, ISDN, RT)
 * **[RFC 1706](https://datatracker.ietf.org/doc/html/rfc1706):** DNS NSAP Resource Records (Historic)
