@@ -1,0 +1,35 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, server.addr.port())"
+---
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: N
+;; flags: qr aa; QUERY: 1, ANSWER: 1, AUTHORITY: 5, ADDITIONAL: 7
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+; COOKIE: 0102030405060708010000006ae0f8c601acb17b6e317182 (good)
+;; QUESTION SECTION:
+;isc.org.			IN	SOA
+
+;; ANSWER SECTION:
+isc.org.		7200	IN	SOA	ns-int.isc.org. hostmaster.isc.org. 2026102355 7200 3600 24796800 3600
+
+;; AUTHORITY SECTION:
+isc.org.		7200	IN	NS	ns1.isc.org.
+isc.org.		7200	IN	NS	ns2.isc.org.
+isc.org.		7200	IN	NS	nsp.dnsnode.net.
+isc.org.		7200	IN	NS	ns.isc.afilias-nst.info.
+isc.org.		7200	IN	NS	ns3.isc.org.
+
+;; ADDITIONAL SECTION:
+ns1.isc.org.		7200	IN	A	149.20.2.26
+ns2.isc.org.		7200	IN	A	199.6.1.52
+ns3.isc.org.		7200	IN	A	51.75.79.143
+ns1.isc.org.		7200	IN	AAAA	2001:500:6b:2::26
+ns2.isc.org.		7200	IN	AAAA	2001:500:60:d::52
+ns3.isc.org.		7200	IN	AAAA	2001:41d0:701:1100::2c92
+
+;; Query time: N msec
+;; SERVER: 127.0.0.1#PORT(127.0.0.1) (UDP)
+;; MSG SIZE  rcvd: 370

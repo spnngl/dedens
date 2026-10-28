@@ -9,14 +9,14 @@ says what it holds.
 |---|---|---|
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
-| `crates/dedens-net` | UDP and TCP transports on compio over a sans-IO exchange (phase 4: exchange done) | sockets, timers |
+| `crates/dedens-net` | UDP and TCP transports on compio over a sans-IO exchange; `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the `--json` report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
-| `apps/dedens` | CLI (empty) | via `dedens-net` |
+| `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
-Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`. Planned: `apps/dedens` on
-`dedens-net` and `dedens-scenario`; later `dedens-resolver`, `dedens-server` and `apps/dedensd` on all of them.
+Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both. Planned:
+`dedens-resolver`, `dedens-server` and `apps/dedensd` on all of them.
 
 ## Data flow
 

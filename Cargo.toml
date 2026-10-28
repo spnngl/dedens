@@ -11,6 +11,12 @@ repository = "https://github.com/spnngl/dedens"
 publish = false
 
 [workspace.dependencies]
+# D32: the CLI. anstream strips the colors of anstyle where the terminal or NO_COLOR refuses them.
+anstream = "1.0.0"
+anstyle = "1.0.14"
+anyhow = "1.0.104"
+assert_cmd = "2.2.2"
+clap = { version = "4.6.7", features = ["derive"] }
 # D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS.
 compio = { version = "0.19.2", default-features = false, features = [
   "io-uring",
@@ -29,9 +35,12 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 # D27: query IDs and client cookies.
 getrandom = "0.4.3"
 hickory-proto = { version = "0.26.3", default-features = false }
+# D32: Unicode names to A-labels (UTS 46), and the scripts of their labels.
+idna = "1.1.0"
 insta = "1.49"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
+predicates = "3.1.4"
 proptest = "1.12"
 # D17: query files and the `--json` output (D35).
 serde = { version = "1.0.229", features = ["derive"] }
@@ -39,7 +48,9 @@ serde-saphyr = { version = "2.0.0", default-features = false, features = [
   "deserialize",
 ] }
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 thiserror = "2.0"
+unicode-script = "0.5.8"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

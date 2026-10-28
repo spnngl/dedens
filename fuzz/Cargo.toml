@@ -14,6 +14,7 @@ cargo-fuzz = true
 
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
+dedens-net = { path = "../crates/dedens-net" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 # The second implementation of `differential_hickory`; the same version as the workspace's (D14).
@@ -60,6 +61,13 @@ bench = false
 [[bin]]
 name = "parse_query_file"
 path = "fuzz_targets/parse_query_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_resolv_conf"
+path = "fuzz_targets/parse_resolv_conf.rs"
 test = false
 doc = false
 bench = false

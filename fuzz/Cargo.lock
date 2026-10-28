@@ -316,6 +316,7 @@ name = "dedens-fuzz"
 version = "0.0.0"
 dependencies = [
  "dedens-cache",
+ "dedens-net",
  "dedens-proto",
  "dedens-scenario",
  "hickory-proto",

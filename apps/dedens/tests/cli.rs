@@ -1,0 +1,442 @@
+//! The command against a loopback server answering with captured responses: every option, each output, query
+//! files, the exit codes (D33).
+
+mod common;
+
+use std::time::{Duration, Instant};
+
+use assert_cmd::Command;
+use common::{Responder, Transport};
+use dedens_proto::edns::{EdnsOption, OptionCode};
+use dedens_proto::{Class, EdnsFlags, Flags, Message, RecordType};
+use predicates::prelude::*;
+use predicates::str::contains;
+
+/// The command, without colors and with a resolv.conf that does not exist.
+fn dedens() -> Command {
+    let mut command = assert_cmd::cargo_bin_cmd!("dedens");
+    command
+        .env("DEDENS_RESOLV_CONF", "/nonexistent/resolv.conf")
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE");
+    command
+}
+
+/// The standard output of a run that exits with `code`.
+fn run(args: &[&str], code: i32) -> String {
+    let output = dedens()
+        .args(args)
+        .assert()
+        .code(code)
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).expect("UTF-8")
+}
+
+/// `text` with the run's own numbers replaced by `N`: RTT, message ID, the server's port.
+fn redact(text: &str, port: u16) -> String {
+    let mut text = text
+        .replace(&format!(":{port}"), ":PORT")
+        .replace(&format!("#{port}"), "#PORT");
+    for prefix in [" in ", "id: ", "Query time: ", "\"rtt_us\":", "\"id\":"] {
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find(prefix) {
+            let (before, after) = rest.split_at(at + prefix.len());
+            out.push_str(before);
+            let digits = after
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(after.len());
+            if digits > 0 {
+                out.push('N');
+            }
+            rest = &after[digits..];
+        }
+        out.push_str(rest);
+        text = out;
+    }
+    text
+}
+
+/// The queries `responder` received, decoded.
+fn queries(responder: &Responder) -> Vec<(Transport, Message<'static>)> {
+    responder
+        .queries()
+        .into_iter()
+        .map(|(transport, wire)| {
+            let message = Message::decode(&wire)
+                .expect("a query")
+                .message
+                .into_owned();
+            (transport, message)
+        })
+        .collect()
+}
+
+#[test]
+fn compact_output_lists_each_query_in_argument_order() {
+    let server = Responder::start(&["ede", "nxdomain_soa"]);
+    let out = run(
+        &[
+            &server.at(),
+            "dnssec-failed.org",
+            "nonexistent.invalid",
+            "+nocookie",
+        ],
+        0,
+    );
+    insta::assert_snapshot!("compact", redact(&out, server.addr.port()));
+}
+
+#[test]
+fn dig_output_has_dig_layout() {
+    let server = Responder::start(&["cookie"]);
+    let out = run(
+        &[
+            &server.at(),
+            "isc.org",
+            "SOA",
+            "+cookie=0102030405060708",
+            "--dig",
+        ],
+        0,
+    );
+    insta::assert_snapshot!("dig", redact(&out, server.addr.port()));
+}
+
+#[test]
+fn short_output_is_the_answer_data() {
+    let server = Responder::start(&["mx"]);
+    let out = run(&[&server.at(), "gmail.com", "MX", "+short"], 0);
+    insta::assert_snapshot!("short", out);
+}
+
+#[test]
+fn json_output_is_one_object_per_line() {
+    let server = Responder::start(&["nsid", "aaaa"]);
+    let out = run(&[&server.at(), "example.com", "+nsid", "--json"], 0);
+    insta::assert_snapshot!("json", redact(&out, server.addr.port()));
+    let out = run(
+        &[
+            &server.at(),
+            "example.com",
+            "cloudflare.com",
+            "AAAA",
+            "A",
+            "--json",
+            "+tries=1",
+            "+time=200ms",
+        ],
+        9,
+    );
+    assert_eq!(out.lines().count(), 2, "two answered of four: {out}");
+    for line in out.lines() {
+        serde_json::from_str::<serde_json::Value>(line).expect("a JSON object");
+    }
+}
+
+#[test]
+fn colors_follow_the_choice_and_no_color() {
+    let server = Responder::start(&["a"]);
+    let at = server.at();
+    let escape = contains("\u{1b}[");
+    dedens()
+        .args([&at, "example.com", "--color=always"])
+        .assert()
+        .success()
+        .stdout(escape.clone());
+    dedens()
+        .args([&at, "example.com"])
+        .assert()
+        .success()
+        .stdout(escape.clone().not());
+    dedens()
+        .args([&at, "example.com"])
+        .env("CLICOLOR_FORCE", "1")
+        .assert()
+        .stdout(escape.clone());
+    dedens()
+        .args([&at, "example.com"])
+        .env("CLICOLOR_FORCE", "1")
+        .env("NO_COLOR", "1")
+        .assert()
+        .stdout(escape.not());
+}
+
+#[test]
+fn query_options_set_the_query() {
+    let server = Responder::start(&["nsid"]);
+    let at = server.at();
+    run(
+        &[
+            &at,
+            "example.com",
+            "+norecurse",
+            "+cd",
+            "+noad",
+            "+dnssec",
+            "+bufsize=4000",
+            "+nsid",
+            "+nocookie",
+        ],
+        0,
+    );
+    run(&[&at, "example.com", "+noedns", "+tcp"], 0);
+    run(&[&at, "example.com", "+cookie=0102030405060708"], 0);
+    let queries = queries(&server);
+    let [
+        (Transport::Udp, flagged),
+        (Transport::Tcp, plain),
+        (Transport::Udp, cookie),
+    ] = &queries[..]
+    else {
+        panic!("three queries: {queries:?}");
+    };
+    assert_eq!(flagged.header.flags, Flags::CD);
+    let edns = flagged.edns.as_ref().expect("EDNS");
+    assert_eq!(edns.udp_payload, 4000);
+    assert!(edns.flags.contains(EdnsFlags::DO));
+    assert_eq!(
+        edns.options
+            .iter()
+            .map(EdnsOption::code)
+            .collect::<Vec<_>>(),
+        [OptionCode::NSID]
+    );
+    assert_eq!(plain.header.flags, Flags::RD.with(Flags::AD));
+    assert!(plain.edns.is_none());
+    let Some(EdnsOption::Cookie(sent)) = cookie.edns.as_ref().and_then(|e| e.options.first())
+    else {
+        panic!("a cookie: {cookie:?}");
+    };
+    assert_eq!(sent.client(), [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn a_truncated_answer_is_asked_again_over_tcp_unless_ignored() {
+    let server = Responder::start(&["truncated", "txt_large"]);
+    let at = server.at();
+    let full = run(&[&at, "google.com", "TXT", "+short"], 0);
+    assert!(full.lines().count() > 1, "{full}");
+    let kept = run(&[&at, "google.com", "TXT", "+ignore", "--json"], 0);
+    assert!(kept.contains("\"tc\""), "{kept}");
+    let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(transports, [Transport::Udp, Transport::Tcp, Transport::Udp]);
+}
+
+#[test]
+fn no_reply_exits_9_after_the_tries() {
+    let server = Responder::start(&[]);
+    let started = Instant::now();
+    dedens()
+        .args([&server.at(), "example.com", "+tries=2", "+time=100ms"])
+        .assert()
+        .code(9)
+        .stderr(contains("example.com_A"));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(server.queries().len(), 2);
+}
+
+#[test]
+fn usage_errors_exit_2() {
+    for args in [
+        &["--bogus"][..],
+        &["+tries=0"],
+        &["+cookie=01"],
+        &["-x", "example.com"],
+        &["--short", "--dig"],
+    ] {
+        dedens().args(args).assert().code(2);
+    }
+}
+
+#[test]
+fn words_and_reverse_addresses_make_the_questions() {
+    let server = Responder::start(&[]);
+    let at = server.at();
+    let args = [
+        &at,
+        "CH",
+        "TXT",
+        "version.bind",
+        "-x",
+        "192.0.2.1",
+        "-x",
+        "2001:db8::1",
+        "+tries=1",
+        "+time=100ms",
+    ];
+    dedens().args(args).assert().code(9);
+    let mut asked: Vec<_> = queries(&server)
+        .iter()
+        .map(|(_, q)| {
+            let question = &q.questions[0];
+            (question.name.to_string(), question.qtype, question.qclass)
+        })
+        .collect();
+    asked.sort();
+    let ip6 = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.";
+    assert_eq!(
+        asked,
+        [
+            (ip6.to_owned(), RecordType::PTR, Class::CH),
+            (
+                "1.2.0.192.in-addr.arpa.".to_owned(),
+                RecordType::PTR,
+                Class::CH
+            ),
+            ("version.bind.".to_owned(), RecordType::TXT, Class::CH),
+        ]
+    );
+}
+
+#[test]
+fn search_tries_the_resolv_conf_domains() {
+    let server = Responder::start(&["cname_chain"]);
+    let conf = tempfile::NamedTempFile::new().expect("a file");
+    std::fs::write(conf.path(), "nameserver 192.0.2.1\nsearch github.com\n").expect("written");
+    let at = server.at();
+    dedens()
+        .args([&at, "www", "+search", "+short"])
+        .env("DEDENS_RESOLV_CONF", conf.path())
+        .assert()
+        .success()
+        .stdout(contains("github.com."));
+    dedens()
+        .args([&at, "www", "+tries=1", "+time=100ms"])
+        .env("DEDENS_RESOLV_CONF", conf.path())
+        .assert()
+        .code(9);
+    let names: Vec<_> = queries(&server)
+        .iter()
+        .map(|(_, q)| q.questions[0].name.to_string())
+        .collect();
+    assert_eq!(names, ["www.github.com.", "www."]);
+}
+
+#[test]
+fn without_a_server_resolv_conf_gives_it() {
+    let conf = tempfile::NamedTempFile::new().expect("a file");
+    std::fs::write(conf.path(), "search example.com\n").expect("written");
+    dedens()
+        .arg("example.com")
+        .env("DEDENS_RESOLV_CONF", conf.path())
+        .assert()
+        .code(10)
+        .stderr(contains("no server"));
+    dedens()
+        .arg("example.com")
+        .assert()
+        .code(10)
+        .stderr(contains("/nonexistent/resolv.conf"));
+}
+
+#[test]
+fn unicode_names_are_asked_as_a_labels() {
+    let server = Responder::start(&[]);
+    dedens()
+        .args([
+            &server.at(),
+            "Bücher.example",
+            "pаypal.example",
+            "+tries=1",
+            "+time=100ms",
+        ])
+        .assert()
+        .code(9)
+        .stderr(contains("pаypal mixes scripts: Latin, Cyrillic"));
+    let mut names: Vec<_> = queries(&server)
+        .iter()
+        .map(|(_, q)| q.questions[0].name.to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["xn--bcher-kva.example.", "xn--pypal-4ve.example."]);
+}
+
+#[test]
+fn query_files_check_expectations() {
+    let server = Responder::start(&["a", "mx", "nxdomain_soa"]);
+    let dir = tempfile::tempdir().expect("a directory");
+    let file = dir.path().join("queries.yaml");
+    let yaml = r"server: SERVER
+options: {cookie: false}
+queries:
+  - name: example.com
+    type: A
+    expect: {rcode: NOERROR, flags: [qr, ra]}
+  - id: mail
+    name: gmail.com
+    type: MX
+    expect:
+      answer:
+        - gmail.com. 397 MX 5 gmail-smtp-in.l.google.com.
+        - gmail.com. MX 10 alt1.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 20 alt2.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 30 alt3.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 40 alt4.gmail-smtp-in.l.google.com.
+  - name: nonexistent.invalid
+    type: A
+    expect: {rcode: NOERROR, flags: [aa], answer: []}
+"
+    .replace("SERVER", &server.addr.to_string());
+    std::fs::write(&file, yaml).expect("written");
+    let file = file.to_str().expect("UTF-8");
+    dedens()
+        .args([
+            "-f",
+            file,
+            "--only",
+            "example.com_A",
+            "--only",
+            "mail",
+            "+short",
+        ])
+        .assert()
+        .success();
+    dedens()
+        .args(["-f", file, "--only", "nonexistent.invalid_A", "+short"])
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "nonexistent.invalid_A: rcode NXDOMAIN instead of NOERROR",
+        ))
+        .stderr(contains("flag aa not set"));
+    dedens()
+        .args(["-f", file, "--only", "nope"])
+        .assert()
+        .code(10)
+        .stderr(contains("no query with id nope"));
+    let json = format!(
+        r#"{{"queries": [{{"name": "example.com", "type": "A", "server": "{}"}}]}}"#,
+        server.addr
+    );
+    dedens()
+        .args(["-f", "-", "--format", "json", "+short"])
+        .write_stdin(json)
+        .assert()
+        .success();
+}
+
+#[test]
+fn save_wire_writes_each_response() {
+    let server = Responder::start(&["a"]);
+    let dir = tempfile::tempdir().expect("a directory");
+    let out = dir.path().join("wire");
+    dedens()
+        .args([&server.at(), "example.com", "+short", "--save-wire"])
+        .arg(&out)
+        .assert()
+        .success();
+    let saved = std::fs::read(out.join("example.com_A.bin")).expect("saved");
+    let captured = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/dedens-proto/tests/testdata/a.bin"
+    ))
+    .expect("captured");
+    assert_eq!(
+        saved[2..],
+        captured[2..],
+        "the response as received, its ID aside"
+    );
+}

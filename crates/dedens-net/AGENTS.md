@@ -6,6 +6,7 @@ DNS transports (UDP, TCP, later DoT, DoH, DoQ) on compio (D4): the only crate th
   no randomness.
 - `src/udp.rs`, `src/tcp.rs`: the transports, thin over compio; `tcp.rs` keeps one connection per server.
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
+- `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
 - `tests/rfcNNNN.rs`: the exchange driven by hand, one file per RFC; `tests/udp.rs`, `tests/tcp.rs`, `tests/client.rs`:
   the transports and the client against scripted servers on the loopback address (`tests/common/loopback.rs`); `tests/common/` builds messages and
   steps.

@@ -13,5 +13,6 @@
 
 pub mod client;
 pub mod exchange;
+pub mod resolv_conf;
 pub mod tcp;
 pub mod udp;

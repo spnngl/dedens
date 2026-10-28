@@ -12,6 +12,7 @@
 use core::ops::RangeInclusive;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
+use dedens_net::resolv_conf::ResolvConf;
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::{
@@ -39,6 +40,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_name", parse_name),
     ("differential_hickory", differential_hickory),
     ("parse_query_file", parse_query_file),
+    ("parse_resolv_conf", parse_resolv_conf),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -332,6 +334,29 @@ pub fn parse_query_file(data: &[u8]) {
             message
                 .to_vec()
                 .unwrap_or_else(|e| panic!("{} encodes: {e}", query.id()));
+        }
+    }
+}
+
+/// Arbitrary text as `/etc/resolv.conf`: `ndots` stays at most 15, and any of its words has the name itself and at
+/// most one candidate per search domain.
+///
+/// # Panics
+///
+/// On a bug in the reader.
+pub fn parse_resolv_conf(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let conf = ResolvConf::parse(text);
+    assert!(conf.ndots <= 15, "ndots {} above 15", conf.ndots);
+    for word in text.split_ascii_whitespace() {
+        if let Some(candidates) = conf.candidates(word) {
+            assert!(
+                !candidates.is_empty() && candidates.len() <= conf.search.len() + 1,
+                "{word}: {} candidates",
+                candidates.len()
+            );
         }
     }
 }
