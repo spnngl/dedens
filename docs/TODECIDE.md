@@ -16,7 +16,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one
   name: 364 ns a hit, against about 100 ns on one thread). Measure under the server's thread-per-core load
   first, then pick: read-mostly hot entries, per-core copies, or a lock-free read path.
-
+- An encoder that also returns the TTL offsets it wrote, so `Cache::insert` skips its own pass over the
+  response bytes. Default: add it when that pass shows in a profile of the server.
+- `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
+  numbers. Default: add them with TSIG, in the authoritative phase.
 - Order after the server forwarder: kubernetes stage, recursive resolver (with an RRset cache, priming per
   RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
   DNSSEC, DoT/DoH/DoQ, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
