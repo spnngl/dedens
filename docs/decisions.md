@@ -187,8 +187,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
   anything after `--` alone, then clap parses. One option set for both spellings (clap derived on
   `dedens_scenario::Options` behind its `clap` feature), one help. An option needing EDNS (`bufsize`, `dnssec`,
-  `nsid`, `cookie`) with `+noedns` is a usage error; several `@servers` and AXFR/IXFR are refused until
-  supported. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
+  `nsid`, `cookie`) with `+noedns` is a usage error; AXFR/IXFR are refused until supported; several
+  `@servers`: D38. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
   Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
   written after it, and one without any the types written before the first name, else A. Output formats: D37;
   color with anstream/anstyle, `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
@@ -230,6 +230,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
   expectations in `failures`. Serialized only, until the server's tests need to read it back. Replaces D35,
   whose objects held every field however empty.
+- D38 Several `@servers`: each query is asked of each, the blocks of one query together in argument order,
+  each id then `name_type@server` (port left out when 53) so `--save-wire` keeps them apart. A query file's
+  queries go to the command line's servers when given. The human format ends a query's blocks with
+  `servers disagree: a, b vs c` when the rcodes or answer records, TTL and order aside, differ; JSON and YAML
+  leave the comparison to their reader. A server that does not answer is left out of it.
 
 ## Server
 

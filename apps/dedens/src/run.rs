@@ -30,7 +30,8 @@ struct Job {
     names: Vec<Name<'static>>,
     qtype: RecordType,
     qclass: Class,
-    server: SocketAddr,
+    /// The servers to ask, side by side; never empty.
+    servers: Vec<SocketAddr>,
     options: Options,
     expect: Option<Expect>,
 }
@@ -60,26 +61,49 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new());
-        let mut jobs = jobs.into_iter();
+        // One task per job and server, the servers of a job one after the other: a group.
+        let mut tasks = jobs.into_iter().enumerate().flat_map(|(group, job)| {
+            let job = Rc::new(job);
+            let servers = job.servers.clone();
+            servers.into_iter().map(move |server| {
+                let id = match job.servers.len() {
+                    1 => job.id.clone(),
+                    _ => job.id.at(server),
+                };
+                (group, id, Rc::clone(&job), server)
+            })
+        });
         let mut running = VecDeque::new();
         let (mut code, mut printed) = (0, false);
+        // The answers of the group being printed, compared once it is all printed.
+        let (mut group_now, mut answers) = (None, Vec::new());
         loop {
             let room = IN_FLIGHT - running.len();
-            running.extend(jobs.by_ref().take(room).map(|job| {
-                let client = Rc::clone(&client);
-                let id = job.id.clone();
-                (
-                    id,
-                    compio::runtime::spawn(async move { ask(&client, &job).await }),
-                )
+            running.extend(tasks.by_ref().take(room).map(|(group, id, job, server)| {
+                let (client, task_id) = (Rc::clone(&client), id.clone());
+                let task = async move { ask(&client, &job, server, task_id).await };
+                (group, id, compio::runtime::spawn(task))
             }));
-            let Some((id, handle)) = running.pop_front() else {
+            let next = running.pop_front();
+            if next.as_ref().map(|(group, ..)| *group) != group_now {
+                if format == Format::Human {
+                    output::disagreement(&mut out, &answers)?;
+                }
+                answers.clear();
+                group_now = next.as_ref().map(|(group, ..)| *group);
+            }
+            let Some((_, id, handle)) = next else {
                 break;
             };
             let outcome = handle
                 .await
                 .map_err(|e| anyhow::Error::from(io::Error::from(e)))
                 .and_then(|outcome| outcome);
+            if let Ok((report, _)) = &outcome
+                && let Some(exchange) = &report.exchange
+            {
+                answers.push((exchange.server, output::Answers::of(report)));
+            }
             code = code.max(show(cli, format, &mut out, &id, outcome, &mut printed)?);
         }
         io::Result::Ok(code)
@@ -125,8 +149,13 @@ fn show(
     Ok(code)
 }
 
-/// Asks `job`, trying its names in turn while the response is NXDOMAIN.
-async fn ask(client: &Client, job: &Job) -> anyhow::Result<(Report, Vec<u8>)> {
+/// Asks `job` of `server`, trying its names in turn while the response is NXDOMAIN; `id` names the report.
+async fn ask(
+    client: &Client,
+    job: &Job,
+    server: SocketAddr,
+    id: Id,
+) -> anyhow::Result<(Report, Vec<u8>)> {
     let options = job.options.exchange();
     for (index, name) in job.names.iter().enumerate() {
         let question = Question {
@@ -135,11 +164,11 @@ async fn ask(client: &Client, job: &Job) -> anyhow::Result<(Report, Vec<u8>)> {
             qclass: job.qclass,
         };
         let response = client
-            .exchange(&job.options.query(question), job.server, &options)
+            .exchange(&job.options.query(question), server, &options)
             .await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
-            let mut report = Report::exchanged(job.id.clone(), job.server, &response, &decoded);
+            let mut report = Report::exchanged(id, server, &response, &decoded);
             if let Some(expect) = &job.expect {
                 report.failures = expect.check(&decoded.message);
             }
@@ -170,16 +199,19 @@ fn no_reply(error: &anyhow::Error) -> bool {
 /// The queries of the command line: its words (see [`args::lookups`]), then the `-x` addresses asked PTR.
 fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     let (lookups, qclass) = args::lookups(&cli.words, !cli.reverse.is_empty());
-    let conf = (cli.search || cli.server().is_none())
+    let conf = (cli.search || cli.servers().is_empty())
         .then(resolv_conf)
         .transpose()?;
-    let server = server(cli.server(), conf.as_ref(), cli.port)?;
+    let servers = match servers(cli, conf.as_ref())? {
+        servers if servers.is_empty() => vec![server(None, conf.as_ref(), cli.port)?],
+        servers => servers,
+    };
     let job = |names: Vec<Name<'static>>, qtype| Job {
         id: Id::of(&names[0], qtype),
         names,
         qtype,
         qclass,
-        server,
+        servers: servers.clone(),
         options: cli.options,
         expect: None,
     };
@@ -225,9 +257,10 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
         bail!("{}: no query with id {id}", path.display());
     }
     let missing = file.server.is_none() && file.queries.iter().any(|q| q.server.is_none());
-    let conf = (cli.server().is_none() && missing)
+    let conf = (cli.servers().is_empty() && missing)
         .then(resolv_conf)
         .transpose()?;
+    let servers = servers(cli, conf.as_ref())?;
     file.queries
         .into_iter()
         .filter(|q| cli.only.is_empty() || cli.only.contains(&q.id()))
@@ -235,12 +268,12 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             let id = query.id();
             let options = cli.options.or(query.options).or(file.options);
             options.check().with_context(|| format!("{id}"))?;
-            let named = cli
-                .server()
-                .or(query.server.as_deref())
-                .or(file.server.as_deref());
+            let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
-                server: server(named, conf.as_ref(), cli.port)?,
+                servers: match &servers {
+                    servers if servers.is_empty() => vec![server(named, conf.as_ref(), cli.port)?],
+                    servers => servers.clone(),
+                },
                 id,
                 names: vec![query.name],
                 qtype: query.qtype,
@@ -259,6 +292,14 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("cannot read {}", path.display()))?;
     Ok(ResolvConf::parse(&text))
+}
+
+/// The addresses of the servers of the command line, in order.
+fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<SocketAddr>> {
+    cli.servers()
+        .iter()
+        .map(|named| server(Some(named), conf, cli.port))
+        .collect()
 }
 
 /// The address of `named`, else of the first name server of `conf`: an address, IPv6 possibly in brackets or

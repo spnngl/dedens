@@ -24,8 +24,8 @@ pub(crate) struct Cli {
     /// name is asked the types after it, else those before the first name, else A; no name asks NS of the root.
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
-    /// The server: an address, with or without a port, or a host name. Default: the first `nameserver` of
-    /// /etc/resolv.conf.
+    /// A server: an address, with or without a port, or a host name; each query is asked of each, side by side.
+    /// Default: the first `nameserver` of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
     /// The port of a server given without one.
@@ -97,18 +97,12 @@ impl Cli {
         if let Err(error) = cli.options.check() {
             usage(ErrorKind::ArgumentConflict, error.to_string());
         }
-        if cli.server.len() > 1 {
-            usage(
-                ErrorKind::ArgumentConflict,
-                "several servers: not supported yet".to_owned(),
-            );
-        }
         cli
     }
 
-    /// The server given, if any.
-    pub(crate) fn server(&self) -> Option<&str> {
-        self.server.first().map(String::as_str)
+    /// The servers given, in order.
+    pub(crate) fn servers(&self) -> &[String] {
+        &self.server
     }
 }
 

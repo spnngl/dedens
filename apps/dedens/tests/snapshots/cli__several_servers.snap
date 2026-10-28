@@ -1,0 +1,15 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: redacted(&out)
+---
+dnssec-failed.org. A  SERVFAIL (server failure)  N ms from 127.0.0.1:PORT over UDP
+EDNS 1232 bytes · DNSSEC OK · 46/103 bytes
+EDE 9 DNSKEY Missing: no SEP matching the DS found for dnssec-failed.org.
+
+dnssec-failed.org. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
+answer
+  dnssec-failed.org.  5m  A       96.99.227.255
+                          TYPE46  \# 101 00010d020000012c6ae2a7f26ad9421680100d646e737365632d6661696c6564036f7267006f8dba653da07d9ab1616b297e263df3dc10af9392a2644774cc8bb4fb24cd2a04c992038d4cc3af02adc0646a476944accbb36667fc24903a6b01486ca4a3fb
+checking disabled · EDNS 1232 bytes · DNSSEC OK · 46/232 bytes
+EDE 9 DNSKEY Missing: no SEP matching the DS found for dnssec-failed.org.
+servers disagree: 127.0.0.1:PORT vs 127.0.0.1:PORT

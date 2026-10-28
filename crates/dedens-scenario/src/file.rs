@@ -1,6 +1,7 @@
 //! The query file (D34, D36): a server and options for all, then the queries, each with its own.
 
 use std::fmt;
+use std::net::SocketAddr;
 use std::str::FromStr;
 
 use dedens_proto::{Name, RecordType};
@@ -82,6 +83,16 @@ impl Id {
             Some(name) => name,
         };
         Self(format!("{name}_{qtype}"))
+    }
+
+    /// The id of this query asked of `server`, one of several: `example.com_A@1.1.1.1`, the port left out when
+    /// 53.
+    #[must_use]
+    pub fn at(&self, server: SocketAddr) -> Self {
+        match server.port() {
+            53 => Self(format!("{}@{}", self.0, server.ip())),
+            _ => Self(format!("{}@{server}", self.0)),
+        }
     }
 
     /// The id as text.

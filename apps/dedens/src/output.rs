@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 
 use anstyle::{AnsiColor, Style};
 use dedens_scenario::{EdnsReport, OptionReport, RecordReport, Report, Transport};
@@ -116,12 +117,7 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
             exchange.rtt_us / 1000,
             exchange.rtt_us % 1000 / 100
         )?;
-        // The DNS port goes without saying.
-        match exchange.server {
-            server if server.port() == 53 => write!(out, "{}", server.ip())?,
-            server => write!(out, "{server}")?,
-        }
-        write!(out, " over {transport}")?;
+        write!(out, "{} over {transport}", server(exchange.server))?;
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
         }
@@ -199,6 +195,66 @@ fn edns_words(edns: &EdnsReport, words: &mut Vec<String>) {
                 words.push(format!("{name} {data}").trim_end().to_owned());
             }
         }
+    }
+}
+
+/// What servers asked the same question are compared on: the rcode and the answer records, without TTL or order.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Answers {
+    rcode: String,
+    records: Vec<String>,
+}
+
+impl Answers {
+    pub(crate) fn of(report: &Report) -> Self {
+        let mut records: Vec<String> = report
+            .answer
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {} {} {}",
+                    r.name.to_ascii_lowercase(),
+                    r.class,
+                    r.rtype,
+                    r.data
+                )
+            })
+            .collect();
+        records.sort_unstable();
+        Self {
+            rcode: report.header.rcode.clone(),
+            records,
+        }
+    }
+}
+
+/// Prints which servers answered alike, when not all did: `servers disagree: 1.1.1.1, 8.8.8.8 vs 9.9.9.9`.
+pub(crate) fn disagreement(
+    out: &mut impl Write,
+    answers: &[(SocketAddr, Answers)],
+) -> io::Result<()> {
+    let mut alike: Vec<(&Answers, Vec<String>)> = Vec::new();
+    for (address, answer) in answers {
+        match alike.iter_mut().find(|(other, _)| *other == answer) {
+            Some((_, servers)) => servers.push(server(*address)),
+            None => alike.push((answer, vec![server(*address)])),
+        }
+    }
+    if alike.len() < 2 {
+        return Ok(());
+    }
+    let groups: Vec<String> = alike
+        .iter()
+        .map(|(_, servers)| servers.join(", "))
+        .collect();
+    writeln!(out, "{BAD}servers disagree{BAD:#}: {}", groups.join(" vs "))
+}
+
+/// `address` without the DNS port, which goes without saying.
+fn server(address: SocketAddr) -> String {
+    match address.port() {
+        53 => address.ip().to_string(),
+        _ => address.to_string(),
     }
 }
 

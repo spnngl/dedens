@@ -1,7 +1,7 @@
 # Real responses from public servers, saved as <id>.bin by `just capture [ids...]`. Each query goes over UDP;
 # a truncated response is asked again over TCP unless `ignore` keeps it. Never edit the .bin files by hand.
 server: 1.1.1.1
-options: {recurse: true, ad: false, cookie: false, bufsize: 1232}
+options: {recurse: true, adflag: false, cookie: false, bufsize: 1232}
 queries:
   - {id: a, name: example.com, type: A}
   - {id: aaaa, name: cloudflare.com, type: AAAA}
@@ -25,6 +25,11 @@ queries:
     name: dnssec-failed.org
     type: A
     options: {dnssec: true}
+  # The same, validation off: the answer the validating servers refuse.
+  - id: ede_cd
+    name: dnssec-failed.org
+    type: A
+    options: {dnssec: true, cdflag: true}
   - id: nsid
     name: example.com
     type: A

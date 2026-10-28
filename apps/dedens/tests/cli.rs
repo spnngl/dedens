@@ -263,7 +263,6 @@ fn usage_errors_exit_2() {
         &["+cookie=01"],
         &["-x", "example.com"],
         &["+noedns", "+nsid"],
-        &["@192.0.2.1", "@192.0.2.2"],
         &["@"],
         &["-f", "queries.yaml", "example.com"],
         &["+nosave-wire"],
@@ -421,6 +420,62 @@ queries:
         .write_stdin(json)
         .assert()
         .success();
+}
+
+#[test]
+fn several_servers_answer_side_by_side() {
+    let (validating, not) = (Responder::start(&["ede"]), Responder::start(&["ede_cd"]));
+    let (first, second) = (validating.addr.port(), not.addr.port());
+    let at = [validating.at(), not.at()];
+    let redacted = |out: &str| redact(&redact(out, first), second);
+    let out = run(&[&at[0], &at[1], "dnssec-failed.org", "+nocookie"], 0);
+    insta::assert_snapshot!("several_servers", redacted(&out));
+    let out = run(&[&at[0], &at[1], "dnssec-failed.org", "--json"], 0);
+    let ids: Vec<String> = out
+        .lines()
+        .map(|line| {
+            let report: serde_json::Value = serde_json::from_str(line).expect("a JSON object");
+            report["id"].as_str().expect("an id").to_owned()
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            format!("dnssec-failed.org_A@127.0.0.1:{first}"),
+            format!("dnssec-failed.org_A@127.0.0.1:{second}")
+        ]
+    );
+    // TTLs and record order aside, these two agree.
+    let (a, nsid) = (Responder::start(&["a"]), Responder::start(&["nsid"]));
+    let out = run(&[&a.at(), &nsid.at(), "example.com", "--color=never"], 0);
+    assert_eq!(out.matches("answer").count(), 2, "{out}");
+    assert!(!out.contains("disagree"), "{out}");
+}
+
+#[test]
+fn query_files_go_to_every_server_given() {
+    let (a, nsid) = (Responder::start(&["a"]), Responder::start(&["nsid"]));
+    let file = "queries: [{name: example.com, type: A, server: 192.0.2.1}]";
+    let out = dedens()
+        .args(["-f", "-", "+short", &a.at(), &nsid.at()])
+        .write_stdin(file)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8_lossy(&out).lines().count(), 4);
+    assert_eq!((a.queries().len(), nsid.queries().len()), (1, 1));
+}
+
+#[test]
+fn the_capture_file_reads() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/dedens-proto/tests/testdata/capture.yaml"
+    ))
+    .expect("capture.yaml");
+    dedens_scenario::QueryFile::parse(&text).expect("a query file");
 }
 
 #[test]
