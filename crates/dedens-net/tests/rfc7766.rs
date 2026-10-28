@@ -30,6 +30,20 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     assert_eq!(got.sends, 2);
 }
 
+/// dig's `+ignore`.
+#[test]
+fn without_tcp_fallback_a_truncated_response_is_the_response() {
+    let now = t0();
+    let query = query();
+    let mut options = Options::default();
+    options.tcp_fallback = false;
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let got = expect_response(udp(start(&query, options, now), &wire(&truncated), now));
+    assert_eq!(got.transport, Transport::Udp);
+    assert_eq!(got.wire, wire(&truncated));
+}
+
 #[test]
 fn a_truncated_response_over_tcp_is_the_response() {
     let now = t0();

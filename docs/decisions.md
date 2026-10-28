@@ -177,6 +177,29 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a debugging tool asks for
   the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and shown as such,
   with labels mixing scripts flagged (IDN homographs).
+- D32 CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
+  `+noopt` → `--no-opt`, `+opt=v` → `--opt v`), then clap parses. One option set for both spellings, one help.
+  Several names and types per run go concurrently on one compio runtime. Output: compact by default (one line
+  per record, a footer in words), `--dig` for dig's layout, `+short`, `--json`; color with anstream/anstyle,
+  `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
+  RFC 5895) and `unicode-script` for mixed-script labels, both in `apps/dedens`: the library stays ASCII.
+  `resolv.conf` read by our own parser (`nameserver`, `search`, `domain`, `ndots`); no Windows yet.
+- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
+  9 no reply; 10 any other error.
+- D34 Query file schema (D17): top-level `server` and `options`, then `queries`, each with `id` (the
+  `--save-wire` file name; default `name_type`), `name`, `type`, its own `server`/`options`, and `expect`:
+  `rcode`, `flags` that must be set, and `answer`/`authority`/`additional` as presentation lines compared as
+  sets, the TTL compared only when written. `--save-wire DIR` writes the response to `DIR/<id>.bin`. Options
+  are dig's `+` options by name (`tcp`, `ignore`, `recurse`, `cd`, `ad`, `edns`, `bufsize`, `dnssec`, `nsid`,
+  `cookie`, `timeout`, `tries`), each one left out inherited (command line, query, file, dig's default);
+  `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and `+nocookie` need
+  `dedens-net` exchange options `tcp_fallback` and `cookies`.
+- D35 `--json` prints one object per query (server, transport, RTT, sizes, header, question, sections, EDNS),
+  each record `{name, ttl, class, type, data}` with `data` its presentation text. Server, transport, RTT
+  (`rtt_us`), sends and query size sit in an `exchange` object, absent for a response read from a file; EDNS
+  options are typed (`nsid`, `cookie`, `ede`, else `other` with the data in words); broken expectations go
+  in `failures`. The types live in
+  `dedens-scenario`, so the server's tests read the same schema.
 
 ## Server
 

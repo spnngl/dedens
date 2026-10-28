@@ -10,12 +10,12 @@ says what it holds.
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-net` | UDP and TCP transports on compio over a sans-IO exchange (phase 4: exchange done) | sockets, timers |
-| `crates/dedens-scenario` | Query files: queries, options, expectations (empty) | none |
+| `crates/dedens-scenario` | Query files: queries, options, expectations; the `--json` report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
 | `apps/dedens` | CLI (empty) | via `dedens-net` |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
-Everything builds on `dedens-proto`; `dedens-cache` is its only user so far. Planned: `apps/dedens` on
+Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`. Planned: `apps/dedens` on
 `dedens-net` and `dedens-scenario`; later `dedens-resolver`, `dedens-server` and `apps/dedensd` on all of them.
 
 ## Data flow

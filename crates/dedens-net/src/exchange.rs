@@ -41,8 +41,11 @@ pub enum Transport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
-    /// The transport of the first query; UDP falls back to TCP on a truncated response. Default: UDP.
+    /// The transport of the first query. Default: UDP.
     pub transport: Transport,
+    /// Whether a truncated response over UDP sends the query again over TCP (RFC 7766 §5); off, it is the
+    /// response, as dig's `+ignore`. Default: on.
+    pub tcp_fallback: bool,
     /// Queries sent before giving up when no response comes, the first one included. Default: 3.
     pub tries: NonZeroU8,
     /// How long to wait for a response to each query. Default: 5 s.
@@ -53,16 +56,21 @@ pub struct Options {
     /// Random bits for `0x20` (draft-vixie-dnsext-dns0x20): when set, the case of each letter of the question
     /// names follows these bits, and a response must repeat the names in the same case. Default: off.
     pub random_case: Option<[u8; 32]>,
+    /// Whether [`Client::exchange`](crate::client::Client::exchange) adds a client cookie to a query with EDNS
+    /// and none of its own (RFC 7873 §5.1). Default: on.
+    pub cookies: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             transport: Transport::Udp,
+            tcp_fallback: true,
             tries: NonZeroU8::MIN.saturating_add(2),
             timeout: Duration::from_secs(5),
             edns_fallback: true,
             random_case: None,
+            cookies: true,
         }
     }
 }
@@ -230,7 +238,10 @@ impl Exchange {
             return Progress::Wait(self);
         };
         let rcode = response.rcode();
-        if response.header.flags.contains(Flags::TC) && self.transport == Transport::Udp {
+        if self.options.tcp_fallback
+            && response.header.flags.contains(Flags::TC)
+            && self.transport == Transport::Udp
+        {
             return self.send_changed(Transport::Tcp, now);
         }
         if self.options.edns_fallback

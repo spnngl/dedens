@@ -82,7 +82,8 @@ impl Client {
 
     /// Sends `query` to `server` and returns the response, with the retries and fallbacks of `options` (D27).
     ///
-    /// The query goes with a random ID, and a cookie when it has EDNS and none of its own.
+    /// The query goes with a random ID, and a cookie when it has EDNS and none of its own, unless
+    /// [`Options::cookies`] is off.
     ///
     /// # Errors
     ///
@@ -117,7 +118,11 @@ impl Client {
                 self.tcp.local_addr(server, deadline).await?
             }
         };
-        let pair = self.add_cookie(&mut query, (source.ip(), server))?;
+        let pair = if options.cookies {
+            self.add_cookie(&mut query, (source.ip(), server))?
+        } else {
+            None
+        };
         let mut exchange = Exchange::start(query, server, *options, Instant::now())?;
         let response = loop {
             match self.step(exchange, udp.as_mut()).await? {

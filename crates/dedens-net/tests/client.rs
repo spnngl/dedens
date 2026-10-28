@@ -110,6 +110,18 @@ async fn a_query_without_edns_goes_without_a_cookie() {
     assert_eq!(cookie_of(&response.query), None);
 }
 
+#[compio::test]
+async fn without_cookies_a_query_goes_without_one() {
+    let server = udp_responder(|query| Some(answer_plainly(query))).await;
+    let mut options = Options::default();
+    options.cookies = false;
+    let response = Client::new()
+        .exchange(&common::query(), server, &options)
+        .await
+        .expect("a response");
+    assert_eq!(cookie_of(&response.query), None);
+}
+
 /// RFC 7873 §5.3: a response with the client cookie alone leaves the server cookie known.
 #[compio::test]
 async fn a_response_without_a_server_cookie_keeps_the_known_one() {

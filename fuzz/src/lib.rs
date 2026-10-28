@@ -15,9 +15,10 @@ use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record,
-    RecordType, Ttl, message,
+    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Question,
+    Record, RecordType, Ttl, message,
 };
+use dedens_scenario::{Format, QueryFile};
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -37,6 +38,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("cache_insert", cache_insert),
     ("parse_name", parse_name),
     ("differential_hickory", differential_hickory),
+    ("parse_query_file", parse_query_file),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -306,6 +308,30 @@ pub fn parse_zone(data: &[u8]) {
             };
             // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
             assert_eq!(format!("{again:?}"), format!("{record:?}"), "`{text}`");
+        }
+    }
+}
+
+/// A query file (D34), as JSON and as YAML: what reads builds its queries and exchange options.
+///
+/// # Panics
+///
+/// On a bug in the reader or in building a query.
+pub fn parse_query_file(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    for format in [Format::Json, Format::Yaml] {
+        let Ok(file) = QueryFile::parse(text, format) else {
+            continue;
+        };
+        for query in &file.queries {
+            let options = query.options.or(file.options);
+            let _ = options.exchange();
+            let message = options.query(Question::new(query.name.clone(), query.qtype));
+            message
+                .to_vec()
+                .unwrap_or_else(|e| panic!("{} encodes: {e}", query.id()));
         }
     }
 }
