@@ -304,7 +304,110 @@ impl Shard {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    impl Shard {
+        /// Checks the byte counts against the entries, the queues against the index, and the budget.
+        fn check(&self) {
+            for (queue, slots, bytes) in [
+                (Queue::Small, &self.small, self.small_bytes),
+                (Queue::Main, &self.main, self.main_bytes),
+            ] {
+                let mut sum = 0;
+                for &slot in slots {
+                    let entry = self.slab[slot as usize]
+                        .as_ref()
+                        .expect("queued slots hold an entry");
+                    assert_eq!(entry.queue, queue);
+                    assert_eq!(self.index[&entry.hash], slot);
+                    sum += entry.cost();
+                }
+                assert_eq!(sum, bytes, "{queue:?}");
+            }
+            assert_eq!(self.small.len() + self.main.len(), self.index.len());
+            assert!(
+                self.used() <= self.budget,
+                "{} > {}",
+                self.used(),
+                self.budget
+            );
+            assert!(
+                self.index
+                    .keys()
+                    .all(|hash| !self.ghosts.stamps.contains_key(hash))
+            );
+        }
+    }
+
+    /// An entry of `len` key bytes for `hash`.
+    fn key(hash: u64, len: usize) -> Vec<u8> {
+        vec![u8::try_from(hash % 256).expect("a byte"); len]
+    }
+
+    proptest! {
+        /// Any run of updates and hits keeps the byte counts exact and the entries within the budget.
+        #[test]
+        fn accounting_stays_exact(
+            budget in MIN_BUDGET..8 * MIN_BUDGET,
+            ops in prop::collection::vec((0_u64..24, 1..=MAX_KEY_LEN, any::<bool>()), 1..300),
+        ) {
+            let mut shard = Shard::new(budget);
+            for (hash, len, hit) in ops {
+                let key = key(hash, len);
+                if hit {
+                    if let Some(entry) = shard.get(hash, &key) {
+                        entry.hit();
+                    }
+                } else {
+                    shard.update(hash, &key, |entry| entry.failures += 1);
+                }
+                shard.check();
+            }
+        }
+    }
+
+    /// An entry hit in small moves to main, and stays while hit; without hits it leaves after a few rounds.
+    #[test]
+    fn hits_keep_an_entry_for_a_while() {
+        let mut shard = Shard::new(10 * MIN_BUDGET);
+        failure(&mut shard, 0);
+        shard.get(0, &[0; MAX_KEY_LEN]).expect("stored").hit();
+        for hash in 1..=30 {
+            failure(&mut shard, hash);
+            shard.check();
+        }
+        let slot = shard.index[&0];
+        assert_eq!(
+            shard.slab[slot as usize].as_ref().map(|e| e.queue),
+            Some(Queue::Main)
+        );
+        // Hits in main buy rounds; keys coming back from the ghosts go to main and push it out in the end.
+        for _ in 0..2 {
+            shard.get(0, &[0; MAX_KEY_LEN]).expect("stored").hit();
+        }
+        for _ in 0..10 {
+            // Back within ten evictions, while their ghosts last.
+            for hash in 1..=15 {
+                failure(&mut shard, hash);
+                shard.check();
+            }
+        }
+        assert!(shard.get(0, &[0; MAX_KEY_LEN]).is_none());
+    }
+
+    /// A key of another length under a stored hash replaces its entry.
+    #[test]
+    fn another_key_under_a_hash_replaces_the_entry() {
+        let mut shard = Shard::new(10 * MIN_BUDGET);
+        shard.update(7, &key(7, 10), |_| {});
+        shard.update(7, &key(7, 200), |_| {});
+        shard.check();
+        assert_eq!(shard.len(), 1);
+        assert!(shard.get(7, &key(7, 10)).is_none());
+        assert_eq!(shard.used(), ENTRY_OVERHEAD + 200);
+    }
 
     /// A hash met again, then remembered again, survives the trimming of its first, stale place.
     #[test]

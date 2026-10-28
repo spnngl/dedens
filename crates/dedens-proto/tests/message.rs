@@ -159,6 +159,18 @@ fn decoding_into_a_spare_reuses_its_vectors() {
     assert!(spare.message.answer.capacity() >= 4);
 }
 
+/// A message takes at most 65535 bytes, the most TCP's length prefix tells (RFC 1035 §4.2.2).
+#[test]
+fn messages_up_to_65535_bytes_decode() {
+    let wire = vec![0; 65_535];
+    let decoded = Message::decode(&wire).expect("readable");
+    assert_eq!(
+        decoded.violations,
+        [Violation::TrailingBytes { len: 65_535 - 12 }]
+    );
+    assert!(Message::decode(&vec![0; 65_536]).is_err());
+}
+
 proptest! {
     #[test]
     fn round_trip(message in common::message()) {

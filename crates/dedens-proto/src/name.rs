@@ -663,6 +663,24 @@ mod tests {
     }
 
     #[test]
+    fn label_count_leaves_out_the_root() {
+        assert_eq!(Name::root().label_count(), 0);
+        assert_eq!(name(&[b"b", b"a"]).label_count(), 2);
+    }
+
+    #[test]
+    fn uncompressed_names_refuse_pointers() {
+        let msg = [&[0; 12][..], &[1, b'a', 0, 1, b'b', 0xC0, 12]].concat();
+        let mut r = Reader::new(&msg);
+        r.bytes(15).unwrap();
+        let error = Name::decode_uncompressed(&mut r).unwrap_err();
+        assert!(
+            matches!(error.kind, DecodeErrorKind::Invalid(_)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn name_length_limit_is_255_with_the_root() {
         // 3 labels of 63 bytes = 192, plus one of 61 = 62 bytes of wire form: 254 + root = 255.
         let long = [b'a'; 63];

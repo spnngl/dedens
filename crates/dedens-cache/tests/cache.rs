@@ -498,6 +498,91 @@ fn configs_breaking_the_bounds_are_refused() {
     );
 }
 
+/// Each bound is inclusive: the edge values are taken, one past refused.
+#[test]
+fn config_bounds_are_inclusive() {
+    let base = Config::default;
+    for config in [
+        Config {
+            failure_min: 300,
+            failure_max: 300,
+            stale_recheck: 300,
+            ..base()
+        },
+        Config {
+            prefetch_percent: 100,
+            ..base()
+        },
+        Config {
+            shards: 1 << 16,
+            capacity: usize::MAX,
+            ..base()
+        },
+    ] {
+        assert_eq!(config.validate(), Ok(()), "{config:?}");
+    }
+    for (config, error) in [
+        (
+            Config {
+                failure_min: 0,
+                ..base()
+            },
+            ConfigError::FailureHold,
+        ),
+        (
+            Config {
+                failure_min: 21,
+                failure_max: 20,
+                stale_recheck: 20,
+                ..base()
+            },
+            ConfigError::FailureHold,
+        ),
+        (
+            Config {
+                prefetch_percent: 101,
+                ..base()
+            },
+            ConfigError::PrefetchPercent(101),
+        ),
+    ] {
+        assert_eq!(config.validate(), Err(error), "{config:?}");
+    }
+}
+
+/// Keys spread over the shards: the cache holds more than one shard's budget.
+#[test]
+fn keys_spread_over_the_shards() {
+    let name = |i: u32| format!("n{i:02}.example");
+    let store = |cache: &Cache, i| {
+        let r = response(
+            &name(i),
+            RecordType::A,
+            Rcode::NOERROR,
+            vec![a(&name(i), 600, 1)],
+            vec![],
+        );
+        insert(cache, &query(1, &name(i), RecordType::A), &r, T0).unwrap();
+    };
+    let probe = small_cache();
+    assert_eq!(probe.used(), 0);
+    store(&probe, 0);
+    let entry = probe.used();
+    assert!(entry > 0);
+    // Four shards of 30 entries each: 40 keys fit unless most land in one shard.
+    let cache = Cache::new(Config {
+        capacity: 4 * 30 * entry,
+        shards: 4,
+        ..Config::default()
+    })
+    .unwrap();
+    for i in 0..40 {
+        store(&cache, i);
+    }
+    assert_eq!(cache.len(), 40);
+    assert_eq!(cache.used(), 40 * entry);
+}
+
 /// A failure record fits the smallest budget, keeping `used` within the capacity.
 #[test]
 fn failures_keep_to_the_budget() {

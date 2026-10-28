@@ -67,7 +67,8 @@ impl Flags {
     /// Checking disabled (RFC 4035 §3.2.2).
     pub const CD: Self = Self(0x0010);
 
-    const MASK: u16 = 0x8000 | 0x0400 | 0x0200 | 0x0100 | 0x0080 | 0x0040 | 0x0020 | 0x0010;
+    /// QR and AA to CD: the word without the opcode and rcode bits.
+    const MASK: u16 = 0x87F0;
     const NAMES: [(Self, &str); 8] = [
         (Self::QR, "qr"),
         (Self::AA, "aa"),
@@ -200,6 +201,7 @@ impl Header {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edns::EdnsFlags;
 
     #[test]
     fn flags_and_opcode_and_rcode_share_two_bytes() {
@@ -236,5 +238,29 @@ mod tests {
         let flags = Flags::CD | Flags::QR | Flags::AA;
         assert_eq!(flags.names().collect::<Vec<_>>(), ["qr", "aa", "cd"]);
         assert!(!flags.without(Flags::AA).contains(Flags::AA));
+    }
+
+    #[test]
+    fn flag_sets_add_remove_and_show_their_flags() {
+        let qr_rd = Flags::QR.with(Flags::RD);
+        assert_eq!(qr_rd.bits(), 0x8100);
+        assert_eq!(qr_rd.with(Flags::QR), qr_rd);
+        assert_eq!(qr_rd.without(Flags::QR), Flags::RD);
+        assert_eq!(qr_rd.without(Flags::AA), qr_rd);
+        assert!(qr_rd.contains(Flags::QR));
+        assert!(!qr_rd.contains(Flags::QR.with(Flags::AA)));
+        assert_eq!(format!("{qr_rd:?}"), r#"{"qr", "rd"}"#);
+        assert_eq!(Flags::from_word(0xFFFF).names().count(), 8);
+        assert_eq!(Flags::from_word(0x780F), Flags::NONE);
+
+        let dnssec_ok = EdnsFlags::default().with(EdnsFlags::DO);
+        assert_eq!(dnssec_ok.bits(), 0x8000);
+        assert!(!EdnsFlags::default().contains(EdnsFlags::DO));
+        assert_eq!(dnssec_ok.with(EdnsFlags::DO), dnssec_ok);
+        assert_eq!(dnssec_ok.without(EdnsFlags::DO), EdnsFlags::default());
+        assert_eq!(
+            EdnsFlags::default().without(EdnsFlags::DO),
+            EdnsFlags::default()
+        );
     }
 }
