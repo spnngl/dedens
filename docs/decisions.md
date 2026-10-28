@@ -196,12 +196,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `cookie`, `timeout`, `tries`), each one left out inherited (command line, query, file, dig's default);
   `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and `+nocookie` need
   `dedens-net` exchange options `tcp_fallback` and `cookies`.
-- D35 `--json` prints one object per query and line (JSON lines, so a run streams) (server, transport, RTT, sizes, header, question, sections, EDNS),
-  each record `{name, ttl, class, type, data}` with `data` its presentation text. Server, transport, RTT
-  (`rtt_us`), sends and query size sit in an `exchange` object, absent for a response read from a file; EDNS
-  options are typed (`nsid`, `cookie`, `ede`, else `other` with the data in words); broken expectations go
-  in `failures`. The types live in
-  `dedens-scenario`, so the server's tests read the same schema.
+- D35 `--json` prints one object per query and line (JSON lines, so a run streams): server, transport, RTT,
+  sizes, header, question, sections, EDNS; each record `{name, ttl, class, type, data}` with `data` its
+  presentation text. Server, transport, RTT (`rtt_us`), sends and query size sit in an `exchange` object, absent
+  for a response read from a file; EDNS options are typed (`nsid`, `cookie`, `ede`, else `other` with the data
+  in words); broken expectations go in `failures`. The types live in `dedens-scenario`, so the server's tests
+  read the same schema.
 
 ## Server
 
