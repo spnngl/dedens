@@ -616,6 +616,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-plugins"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "dedens-server",
+ "thiserror",
+]
+
+[[package]]
 name = "dedens-proto"
 version = "0.1.0"
 dependencies = [
@@ -653,6 +662,7 @@ dependencies = [
  "compio",
  "dedens-cache",
  "dedens-net",
+ "dedens-plugins",
  "dedens-proto",
  "dedens-scenario",
  "dedens-server",

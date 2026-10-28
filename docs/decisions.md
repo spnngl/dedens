@@ -378,7 +378,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   holds the name's data as local knowledge (RFC 1035 §4.1.1, RFC 9499 §6), clear when it applies a policy.
   Plugins answer queries without RD too: their data is local. Rejected: a stage enum per plugin in the core
   (each plugin would grow `dedens-server`); plugins writing the reply themselves (each would redo D41's flags,
-  OPT and sizing).
+  OPT and sizing). Files are read once at start, until D24's reload.
+  - `hosts`: lines in the `/etc/hosts` format, inline then from a file; A, AAAA and the PTR of each address to
+    its first name, TTL 3600 unless set (as `CoreDNS`); a listed name asked another type has no data (RFC 2308
+    §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
 
 ## Observability
 

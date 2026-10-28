@@ -14,6 +14,7 @@ clap.workspace = true
 compio.workspace = true
 dedens-cache = { workspace = true, features = ["serde"] }
 dedens-net = { workspace = true, features = ["tracing"] }
+dedens-plugins.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
 flume.workspace = true

@@ -4,8 +4,12 @@
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53"]
 //! zero_buffers: true
-//! pipeline: [cache, upstream]
+//! pipeline: [hosts, cache, upstream]
 //! stages:
+//!   hosts:
+//!     type: hosts
+//!     entries: ["192.0.2.10 printer.lan"]
+//!     file: /etc/hosts
 //!   cache:
 //!     type: cache
 //!     capacity: 67108864
@@ -17,12 +21,16 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroU32};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 use dedens_cache::Cache;
+use dedens_plugins::Hosts;
+use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage};
 use serde::Deserialize;
 
@@ -51,6 +59,17 @@ enum StageFile {
         servers: Vec<Server>,
         timeout_ms: Option<NonZeroU32>,
         tries: Option<NonZeroU8>,
+    },
+    /// Names and addresses (D54): `entries`, lines in the format of `/etc/hosts`, then those of `file`, read
+    /// once at start; each record with `ttl` seconds, 3600 unless set; `fallthrough` passing a listed name's
+    /// other types to the next stage.
+    Hosts {
+        #[serde(default)]
+        entries: Vec<String>,
+        file: Option<PathBuf>,
+        ttl: Option<u32>,
+        #[serde(default)]
+        fallthrough: bool,
     },
 }
 
@@ -125,6 +144,16 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
                 }
                 Stage::Forward(forward)
             }
+            StageFile::Hosts {
+                entries,
+                file,
+                ttl,
+                fallthrough,
+            } => {
+                let hosts = hosts(&entries, file.as_deref(), ttl.unwrap_or(HOSTS_TTL), fallthrough)
+                    .with_context(|| format!("stage `{name}`"))?;
+                Stage::Plugin(Box::new(hosts))
+            }
         });
     }
     if let Some(name) = stages.keys().next() {
@@ -134,6 +163,38 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
         listen: file.listen,
         zero_buffers: file.zero_buffers.unwrap_or(true),
         pipeline: Pipeline::new(built),
+    })
+}
+
+/// The TTL of hosts records unless set, as the hosts plugin of `CoreDNS` gives them.
+const HOSTS_TTL: u32 = 3600;
+
+/// The hosts of `entries`, then of the file at `path`.
+fn hosts(
+    entries: &[String],
+    path: Option<&Path>,
+    ttl: u32,
+    fallthrough: bool,
+) -> anyhow::Result<Hosts> {
+    let mut text = String::new();
+    for entry in entries {
+        text.push_str(entry);
+        text.push('\n');
+    }
+    let before = text.lines().count();
+    if let Some(path) = path {
+        let file =
+            fs::read_to_string(path).with_context(|| format!("reading `{}`", path.display()))?;
+        text.push_str(&file);
+    }
+    Hosts::new(&text, Ttl::from_wire(ttl), fallthrough).map_err(|error| {
+        match (
+            error.line.checked_sub(before).filter(|&line| line > 0),
+            path,
+        ) {
+            (Some(line), Some(path)) => anyhow!("`{}` line {line}: {}", path.display(), error.kind),
+            _ => anyhow!("entry {}: {}", error.line, error.kind),
+        }
     })
 }
 
@@ -299,12 +360,51 @@ mod tests {
         }
     }
 
+    /// A hosts stage before the forward stage: entries, then a file, its lines counted from its first.
+    #[test]
+    fn hosts_read_entries_then_their_file() {
+        let path = std::env::temp_dir().join(format!("dedensd-hosts-{}", std::process::id()));
+        let stage = |file: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [hosts, up]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 printer.lan', '{{ENTRY}}']\n    file: {}\n    ttl: 60\n    fallthrough: true\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+                path.join(file).display()
+            )
+        };
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("good"), "127.0.0.1 localhost\n").unwrap();
+        std::fs::write(
+            path.join("bad"),
+            "# fine\n127.0.0.1 localhost\nnope localhost\n",
+        )
+        .unwrap();
+        let ok = stage("good").replace("{ENTRY}", "192.0.2.2 scanner.lan");
+        assert!(read(&ok, env).is_ok());
+        for (text, message) in [
+            (
+                stage("bad").replace("{ENTRY}", "192.0.2.2 scanner.lan"),
+                "line 3: `nope` is not an IP address",
+            ),
+            (
+                stage("good").replace("{ENTRY}", "192.0.2.2"),
+                "entry 2: an address without a name",
+            ),
+            (
+                stage("none").replace("{ENTRY}", "192.0.2.2 scanner.lan"),
+                "reading",
+            ),
+        ] {
+            let message_read = error(&text);
+            assert!(message_read.contains(message), "{message}: {message_read}");
+        }
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
     #[test]
     fn yaml_outside_the_model_is_refused() {
         for (text, needle) in [
             (format!("{MINIMAL}threads: 2\n"), "threads"),
             (MINIMAL.replace("servers:", "upstreams:"), "upstreams"),
-            (MINIMAL.replace("forward", "hosts"), "hosts"),
+            (MINIMAL.replace("forward", "rewrite"), "rewrite"),
             (format!("{MINIMAL}  up:\n    type: cache\n"), "up"),
             ("listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    size: 1\n".to_owned(), "size"),
             (MINIMAL.replace("192.0.2.1", "example.com"), "example.com"),

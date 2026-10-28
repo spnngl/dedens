@@ -27,13 +27,14 @@ compio = { version = "0.19.2", default-features = false, features = [
 ] }
 dedens-cache = { path = "crates/dedens-cache" }
 dedens-net = { path = "crates/dedens-net" }
+dedens-plugins = { path = "crates/dedens-plugins" }
 dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }
 dedens-server = { path = "crates/dedens-server" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-# dedensd: the lock its tasks take turns with on a UDP socket'"'"'s stream of datagrams; compio depends on it already.
+# dedensd: the lock its tasks take turns with on a UDP socket's stream of datagrams; compio depends on it already.
 futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] }
