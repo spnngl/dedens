@@ -3,25 +3,29 @@
 //! [`Client::exchange`] gives each query a random ID and, when it has EDNS and no cookie of the caller's, a cookie
 //! (RFC 7873 §4.1, §5.1): the client cookie is drawn at random for each pair of source and server addresses, so it
 //! changes with either, and the server cookie is the last one that server sent, kept for the life of the client.
+//! The source address is that of the socket the query goes out of, open before the query is encoded.
 //! A client lives on one thread, as compio tasks do.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
-use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport};
+use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport, after};
 use crate::tcp::{TcpError, TcpPool};
 use crate::udp::UdpChannel;
 
 /// How long a TCP connection stays open without a query waiting, unless the server asks for less (RFC 7766
 /// §6.2.3, RFC 7828 §3.2.2).
 const TCP_IDLE: Duration = Duration::from_secs(10);
+
+/// The UDP payload size of a query without EDNS, and the least one with it means (RFC 6891 §6.2.3).
+const MIN_UDP_PAYLOAD: u16 = 512;
 
 /// Why [`Client::exchange`] got no response.
 #[derive(Debug, thiserror::Error)]
@@ -94,11 +98,29 @@ impl Client {
         let mut id = [0; 2];
         getrandom::fill(&mut id).map_err(ClientError::Random)?;
         query.header.id = u16::from_be_bytes(id);
-        let pair = self.add_cookie(&mut query, server)?;
-        let mut exchange = Exchange::start(&query, server, options.clone(), Instant::now())?;
+        // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
+        // so a late response to an earlier try still counts (D27).
         let mut udp = None;
+        let source = match options.transport {
+            Transport::Udp => {
+                // Room for the largest response the query asks for (RFC 6891 §6.2.3); TCP takes any larger.
+                let size = query.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
+                    edns.udp_payload.max(MIN_UDP_PAYLOAD)
+                });
+                let channel = UdpChannel::connect(server, usize::from(size))
+                    .await
+                    .map_err(ClientError::Udp)?;
+                udp.insert(channel).local_addr().map_err(ClientError::Udp)?
+            }
+            Transport::Tcp => {
+                let deadline = after(Instant::now(), options.timeout);
+                self.tcp.local_addr(server, deadline).await?
+            }
+        };
+        let pair = self.add_cookie(&mut query, (source.ip(), server))?;
+        let mut exchange = Exchange::start(query, server, *options, Instant::now())?;
         let response = loop {
-            match self.step(exchange, &mut udp).await? {
+            match self.step(exchange, udp.as_mut()).await? {
                 Progress::Send(next) => {
                     self.keep_cookie(pair, next.cookie());
                     exchange = next;
@@ -126,20 +148,13 @@ impl Client {
     async fn step(
         &self,
         exchange: Exchange,
-        udp: &mut Option<UdpChannel>,
+        udp: Option<&mut UdpChannel>,
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
         match exchange.transport() {
             Transport::Udp => {
-                // One socket for the whole exchange, so a late response to an earlier try still counts (D27).
-                let channel = match udp {
-                    Some(channel) => channel,
-                    None => udp.insert(
-                        UdpChannel::connect(server)
-                            .await
-                            .map_err(ClientError::Udp)?,
-                    ),
-                };
+                let channel =
+                    udp.expect("an exchange over UDP started over UDP, which opened the socket");
                 channel
                     .send(exchange.wire())
                     .await
@@ -178,7 +193,7 @@ impl Client {
     fn add_cookie(
         &self,
         query: &mut Message<'_>,
-        server: SocketAddr,
+        pair: (IpAddr, SocketAddr),
     ) -> Result<Option<(IpAddr, SocketAddr)>, ClientError> {
         let Some(edns) = &mut query.edns else {
             return Ok(None);
@@ -190,7 +205,6 @@ impl Client {
         {
             return Ok(None);
         }
-        let pair = (source_ip(server).map_err(ClientError::Udp)?, server);
         let mut all = self.cookies.borrow_mut();
         let cookies = match all.entry(pair) {
             Entry::Occupied(known) => known.into_mut(),
@@ -209,15 +223,4 @@ impl Client {
         edns.options.push(EdnsOption::Cookie(cookie));
         Ok(Some(pair))
     }
-}
-
-/// The address the OS would send from to reach `server`: a UDP socket connected, nothing sent.
-fn source_ip(server: SocketAddr) -> io::Result<IpAddr> {
-    let any = match server {
-        SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-    };
-    let probe = std::net::UdpSocket::bind((any, 0))?;
-    probe.connect(server)?;
-    Ok(probe.local_addr()?.ip())
 }

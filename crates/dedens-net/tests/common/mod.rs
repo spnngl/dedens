@@ -42,6 +42,15 @@ pub(crate) fn cookie(server: Option<&[u8]>) -> Cookie {
     Cookie::new(CLIENT_COOKIE, server).expect("a valid cookie")
 }
 
+/// The cookie a message carries.
+pub(crate) fn cookie_of(wire: &[u8]) -> Option<Cookie> {
+    let edns = Message::decode(wire).expect("a message").message.edns?;
+    edns.options.into_iter().find_map(|option| match option {
+        EdnsOption::Cookie(cookie) => Some(cookie),
+        _ => None,
+    })
+}
+
 /// A response to `query` with `rcode`: same ID, opcode and questions, QR set, EDNS when the query has it.
 pub(crate) fn response(query: &Message<'_>, rcode: Rcode) -> Message<'static> {
     let mut response = query.clone().into_owned();
@@ -68,7 +77,7 @@ pub(crate) fn secs(n: u64) -> Duration {
 }
 
 pub(crate) fn start(query: &Message<'_>, options: Options, now: Instant) -> Exchange {
-    Exchange::start(query, server(), options, now).expect("the query encodes")
+    Exchange::start(query.clone(), server(), options, now).expect("the query encodes")
 }
 
 /// Hands `bytes` from the server over UDP to `exchange`.

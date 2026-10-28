@@ -6,9 +6,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use common::loopback::{Peer, answer, id, listen, query_with_id};
-use dedens_net::tcp::{Frames, TcpError, TcpPool, frame};
+use dedens_net::tcp::{TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
-use proptest::prelude::*;
+use dedens_proto::{Message, Record};
 
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
@@ -18,25 +18,26 @@ fn pool() -> Rc<TcpPool> {
     Rc::new(TcpPool::new(Duration::from_secs(5)))
 }
 
-proptest! {
-    /// RFC 7766 §8: the reads may cut the stream anywhere.
-    #[test]
-    fn frames_come_out_whole_however_the_stream_is_cut(
-        messages in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..300), 1..5),
-        cut in 1..50usize,
-    ) {
-        let stream: Vec<u8> = messages.iter().flat_map(|m| frame(m).expect("short")).collect();
-        let mut frames = Frames::new();
-        let mut out = Vec::new();
-        for piece in stream.chunks(cut) {
-            frames.push(piece);
-            while let Some(message) = frames.next_message() {
-                out.push(message.to_vec());
-            }
-        }
-        prop_assert_eq!(out, messages);
-        prop_assert_eq!(frames.pending(), 0);
+/// RFC 7766 §8: the stream may come cut anywhere, even inside the length.
+#[compio::test]
+async fn a_response_cut_in_pieces_comes_out_whole() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(21), deadline()).await
+        })
+    };
+    let mut peer = Peer::accept(&listener).await;
+    let query = peer.read().await.expect("a query");
+    let framed = frame(&answer(&query, Vec::new())).expect("a message under 64 KiB");
+    for piece in [&framed[..1], &framed[1..5], &framed[5..]] {
+        peer.write_bytes(piece.to_vec()).await;
+        compio::time::sleep(Duration::from_millis(20)).await;
     }
+    let response = asked.await.expect("joined").expect("a response");
+    assert_eq!(id(&response), 21);
 }
 
 #[test]
@@ -220,9 +221,16 @@ async fn the_server_keepalive_shortens_the_idle_timeout() {
     };
     let mut peer = Peer::accept(&listener).await;
     let query = peer.read().await.expect("a query");
-    // One unit is 100 ms.
-    peer.write(&[answer(&query, vec![EdnsOption::Keepalive(Some(1))])])
-        .await;
+    // Records and another option before it, the keepalive found all the same. One unit is 100 ms.
+    let plain = answer(&query, Vec::new());
+    let mut response = Message::decode(&plain).expect("a response").message;
+    let record = |text: &str| text.parse::<Record<'static>>().expect("a record");
+    response.answer = vec![record("example.com. 300 IN A 192.0.2.1")];
+    response.authority = vec![record("example.com. 300 IN NS ns.example.com.")];
+    response.additional = vec![record("ns.example.com. 300 IN A 192.0.2.53")];
+    response.edns.as_mut().expect("EDNS").options =
+        vec![EdnsOption::Padding(3), EdnsOption::Keepalive(Some(1))];
+    peer.write(&[common::wire(&response)]).await;
     assert!(asked.await.expect("joined").is_ok());
     let closed = compio::time::timeout(Duration::from_secs(2), peer.read()).await;
     assert_eq!(closed, Ok(None));

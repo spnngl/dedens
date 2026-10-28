@@ -6,20 +6,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use common::cookie_of;
 use common::loopback::{answer, id, responders, udp_responder};
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Failure, Options, Transport};
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{Message, Rcode};
-
-/// The cookie a message carries.
-fn cookie(wire: &[u8]) -> Option<Cookie> {
-    let edns = Message::decode(wire).expect("a message").message.edns?;
-    edns.options.into_iter().find_map(|option| match option {
-        EdnsOption::Cookie(cookie) => Some(cookie),
-        _ => None,
-    })
-}
 
 fn answer_plainly(query: &[u8]) -> Vec<u8> {
     answer(query, Vec::new())
@@ -65,7 +57,7 @@ async fn the_server_cookie_goes_back_to_its_server() {
     let seen = Rc::clone(&queries);
     let server = udp_responder(move |query| {
         seen.borrow_mut().push(query.to_vec());
-        let client = cookie(query).expect("a cookie").client();
+        let client = cookie_of(query).expect("a cookie").client();
         let returned = Cookie::new(client, Some(SERVER_COOKIE)).expect("a valid cookie");
         Some(answer(query, vec![EdnsOption::Cookie(returned)]))
     })
@@ -76,12 +68,12 @@ async fn the_server_cookie_goes_back_to_its_server() {
             .exchange(&common::query(), server, &Options::default())
             .await
             .expect("a response");
-        assert!(cookie(&response.wire).is_some());
+        assert!(cookie_of(&response.wire).is_some());
     }
     let queries = queries.borrow();
     let (first, second) = (
-        cookie(&queries[0]).expect("a cookie"),
-        cookie(&queries[1]).expect("a cookie"),
+        cookie_of(&queries[0]).expect("a cookie"),
+        cookie_of(&queries[1]).expect("a cookie"),
     );
     assert_eq!(first.server(), None);
     assert_eq!(second.client(), first.client());
@@ -115,7 +107,7 @@ async fn a_query_without_edns_goes_without_a_cookie() {
         .exchange(&query, server, &Options::default())
         .await
         .expect("a response");
-    assert_eq!(cookie(&response.query), None);
+    assert_eq!(cookie_of(&response.query), None);
 }
 
 /// RFC 7873 §5.3: a response with the client cookie alone leaves the server cookie known.
@@ -129,7 +121,7 @@ async fn a_response_without_a_server_cookie_keeps_the_known_one() {
         // Only the first response carries a server cookie.
         let server_cookie = seen.is_empty().then_some(SERVER_COOKIE);
         seen.push(query.to_vec());
-        let client = cookie(query).expect("a cookie").client();
+        let client = cookie_of(query).expect("a cookie").client();
         let returned = Cookie::new(client, server_cookie).expect("a valid cookie");
         Some(answer(query, vec![EdnsOption::Cookie(returned)]))
     })
@@ -141,7 +133,7 @@ async fn a_response_without_a_server_cookie_keeps_the_known_one() {
             .await
             .expect("a response");
     }
-    let third = cookie(&queries.borrow()[2]).expect("a cookie");
+    let third = cookie_of(&queries.borrow()[2]).expect("a cookie");
     assert_eq!(third.server(), Some(SERVER_COOKIE));
 }
 
@@ -156,7 +148,7 @@ async fn the_fresh_cookie_of_a_badcookie_is_kept_when_the_exchange_fails() {
         let mut seen = seen.borrow_mut();
         seen.push(query.to_vec());
         (seen.len() == 1).then(|| {
-            let client = cookie(query).expect("a cookie").client();
+            let client = cookie_of(query).expect("a cookie").client();
             let fresh = Cookie::new(client, Some(FRESH)).expect("a valid cookie");
             let query = Message::decode(query).expect("a query").message;
             let mut response = common::response(&query, Rcode::BADCOOKIE);
@@ -173,6 +165,6 @@ async fn the_fresh_cookie_of_a_badcookie_is_kept_when_the_exchange_fails() {
     assert!(failed.is_err(), "{failed:?}");
     let _ = client.exchange(&common::query(), server, &options).await;
     // The first query of the second exchange, after the BADCOOKIE retry.
-    let next = cookie(&queries.borrow()[2]).expect("a cookie");
+    let next = cookie_of(&queries.borrow()[2]).expect("a cookie");
     assert_eq!(next.server(), Some(FRESH));
 }

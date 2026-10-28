@@ -4,8 +4,8 @@
 mod common;
 
 use common::{
-    CLIENT_COOKIE, cookie, expect_response, expect_send, expect_wait, query, query_with_cookie,
-    response, sent, server, start, t0, udp, wire,
+    CLIENT_COOKIE, cookie, cookie_of, expect_response, expect_send, expect_wait, query,
+    query_with_cookie, response, sent, server, start, t0, udp, wire,
 };
 use dedens_net::exchange::{Options, Transport};
 use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
@@ -22,18 +22,6 @@ fn with_options(query: &Message<'_>, rcode: Rcode, options: Vec<EdnsOption<'stat
 
 fn the_cookie(server: &[u8]) -> EdnsOption<'static> {
     EdnsOption::Cookie(cookie(Some(server)))
-}
-
-/// The cookie the exchange sends now.
-fn sent_cookie(message: &Message<'_>) -> Option<Cookie> {
-    message
-        .edns
-        .iter()
-        .flat_map(|e| &e.options)
-        .find_map(|o| match o {
-            EdnsOption::Cookie(c) => Some(*c),
-            _ => None,
-        })
 }
 
 #[test]
@@ -143,13 +131,16 @@ fn badcookie_is_retried_with_the_fresh_cookie_then_over_tcp() {
     let exchange = expect_send(udp(exchange, &bad(&query, SERVER_COOKIE), now));
     assert_eq!(exchange.transport(), Transport::Udp);
     let retried = sent(&exchange);
-    assert_eq!(sent_cookie(&retried), Some(cookie(Some(SERVER_COOKIE))));
+    assert_eq!(
+        cookie_of(exchange.wire()),
+        Some(cookie(Some(SERVER_COOKIE)))
+    );
 
     let newer = b"server.cookie.02";
     let exchange = expect_send(udp(exchange, &bad(&retried, newer), now));
     assert_eq!(exchange.transport(), Transport::Tcp);
     let over_tcp = sent(&exchange);
-    assert_eq!(sent_cookie(&over_tcp), Some(cookie(Some(newer))));
+    assert_eq!(cookie_of(exchange.wire()), Some(cookie(Some(newer))));
 
     // A third BADCOOKIE is the response.
     let last = bad(&over_tcp, newer);

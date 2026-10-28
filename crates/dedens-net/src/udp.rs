@@ -10,24 +10,25 @@ use std::time::Instant;
 
 use compio::BufResult;
 use compio::net::UdpSocket;
-use dedens_proto::wire::MAX_MESSAGE_LEN;
 
 /// A UDP socket connected to one server.
 #[derive(Debug)]
 pub struct UdpChannel {
     socket: UdpSocket,
-    server: SocketAddr,
     /// The last datagram received; its allocation is reused.
     buf: Vec<u8>,
+    /// The largest datagram received whole.
+    size: usize,
 }
 
 impl UdpChannel {
-    /// Opens a socket on port 0 of the unspecified address of `server`'s family, connected to `server`.
+    /// Opens a socket on port 0 of the unspecified address of `server`'s family, connected to `server`, that
+    /// receives datagrams of up to `size` bytes: the UDP payload size the queries advertise (RFC 6891 §6.2.3).
     ///
     /// # Errors
     ///
     /// The socket cannot be opened or connected.
-    pub async fn connect(server: SocketAddr) -> io::Result<Self> {
+    pub async fn connect(server: SocketAddr, size: usize) -> io::Result<Self> {
         let local = match server {
             SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
             SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
@@ -36,18 +37,12 @@ impl UdpChannel {
         socket.connect(server).await?;
         Ok(Self {
             socket,
-            server,
-            buf: Vec::with_capacity(MAX_MESSAGE_LEN),
+            buf: Vec::with_capacity(size),
+            size,
         })
     }
 
-    /// The server.
-    #[must_use]
-    pub const fn server(&self) -> SocketAddr {
-        self.server
-    }
-
-    /// The local address, with the port the OS picked.
+    /// The local address: the source address the OS picked to reach the server, and the port.
     ///
     /// # Errors
     ///
@@ -75,6 +70,9 @@ impl UdpChannel {
 
     /// Receives the next datagram from the server, or `None` once `deadline` passes.
     ///
+    /// A datagram larger than the size given to [`UdpChannel::connect`] comes cut to that size: a server that
+    /// honours the advertised size never sends one, and the exchange drops it as unreadable.
+    ///
     /// # Errors
     ///
     /// The receive fails, for instance with [`io::ErrorKind::ConnectionRefused`] after an ICMP port unreachable.
@@ -85,8 +83,9 @@ impl UdpChannel {
         let Ok(BufResult(received, buf)) =
             compio::time::timeout_at(deadline, self.socket.recv(buf)).await
         else {
-            // The buffer went with the cancelled receive.
-            self.buf = Vec::with_capacity(MAX_MESSAGE_LEN);
+            // The buffer went with the cancelled receive. Getting it back would take a cancel token per receive,
+            // more than this allocation after each timeout.
+            self.buf = Vec::with_capacity(self.size);
             return Ok(None);
         };
         self.buf = buf;

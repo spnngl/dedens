@@ -1,12 +1,11 @@
 //! A scripted server on the loopback address: each test drives its side by hand.
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use compio::BufResult;
-use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
-use dedens_net::tcp::{Frames, frame};
+use dedens_net::tcp::frame;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Rcode};
 
@@ -36,25 +35,6 @@ pub(crate) fn id(message: &[u8]) -> u16 {
         .id
 }
 
-/// A UDP server that answers each query, after `delay`.
-pub(crate) async fn udp_server(delay: Duration) -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-    let addr = socket.local_addr().expect("an address");
-    compio::runtime::spawn(async move {
-        let mut buf = Vec::with_capacity(65535);
-        loop {
-            buf.clear();
-            let BufResult(received, back) = socket.recv_from(buf).await;
-            buf = back;
-            let Ok((_, from)) = received else { return };
-            compio::time::sleep(delay).await;
-            let _ = socket.send_to(answer(&buf, Vec::new()), from).await;
-        }
-    })
-    .detach();
-    addr
-}
-
 /// A TCP listener on the loopback address.
 pub(crate) async fn listen() -> (TcpListener, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -67,30 +47,19 @@ pub(crate) async fn listen() -> (TcpListener, SocketAddr) {
 /// The server's side of a TCP connection.
 pub(crate) struct Peer {
     stream: TcpStream,
-    frames: Frames,
 }
 
 impl Peer {
     pub(crate) async fn accept(listener: &TcpListener) -> Self {
         let (stream, _) = listener.accept().await.expect("a connection");
-        Self {
-            stream,
-            frames: Frames::new(),
-        }
+        Self { stream }
     }
 
     /// The next query, or `None` once the client closed its side.
     pub(crate) async fn read(&mut self) -> Option<Vec<u8>> {
-        loop {
-            if let Some(message) = self.frames.next_message() {
-                return Some(message.to_vec());
-            }
-            let BufResult(read, buf) = self.stream.read(Vec::with_capacity(4096)).await;
-            if !matches!(read, Ok(n) if n > 0) {
-                return None;
-            }
-            self.frames.push(&buf);
-        }
+        let len = self.stream.read_u16().await.ok()?;
+        let BufResult(read, query) = self.stream.read_exact(Vec::with_capacity(len.into())).await;
+        read.ok().map(|()| query)
     }
 
     /// Writes `messages`, each framed, in one write.
@@ -99,6 +68,11 @@ impl Peer {
             .iter()
             .flat_map(|m| frame(m).expect("a message under 64 KiB"))
             .collect();
+        self.write_bytes(bytes).await;
+    }
+
+    /// Writes `bytes` as they are.
+    pub(crate) async fn write_bytes(&mut self, bytes: Vec<u8>) {
         let BufResult(written, _) = self.stream.write_all(bytes).await;
         written.expect("the client reads");
     }

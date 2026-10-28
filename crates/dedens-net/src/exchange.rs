@@ -12,7 +12,7 @@
 //! let server: SocketAddr = "192.0.2.53:53".parse()?;
 //! let query = Message::query(0x1234, Question::new(Name::root(), RecordType::NS));
 //! let now = Instant::now();
-//! let exchange = Exchange::start(&query, server, Options::default(), now)?;
+//! let exchange = Exchange::start(query, server, Options::default(), now)?;
 //! assert_eq!(exchange.transport(), Transport::Udp);
 //! // Send exchange.wire(), wait until exchange.deadline(); nothing came back:
 //! let deadline = exchange.deadline();
@@ -29,7 +29,7 @@ use dedens_proto::edns::{Cookie, EdnsOption, OptionCode};
 use dedens_proto::{EncodeError, Flags, Message, Name, Question, Rcode};
 
 /// The transport a query goes over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// UDP: a new connected socket on port 0 for each query sent (D27).
     Udp,
@@ -38,7 +38,7 @@ pub enum Transport {
 }
 
 /// How an exchange behaves; the default is dig's (D27).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
     /// The transport of the first query; UDP falls back to TCP on a truncated response. Default: UDP.
@@ -137,12 +137,12 @@ impl Exchange {
     ///
     /// [`EncodeError`] when the query cannot be encoded.
     pub fn start(
-        query: &Message<'_>,
+        query: Message<'_>,
         server: SocketAddr,
         options: Options,
         now: Instant,
     ) -> Result<Self, EncodeError> {
-        let mut query = query.clone().into_owned();
+        let mut query = query.into_owned();
         if let Some(bits) = &options.random_case {
             for question in &mut query.questions {
                 question.name = random_case(&question.name, bits);
