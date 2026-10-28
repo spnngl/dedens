@@ -19,6 +19,8 @@ divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
 hickory-proto = { version = "0.26.3", default-features = false }
 insta = "1.49"
+metrics = "0.24.6"
+metrics-util = { version = "0.20.4", default-features = false }
 proptest = "1.12"
 thiserror = "2.0"
 

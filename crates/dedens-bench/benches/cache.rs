@@ -3,6 +3,9 @@
 //! `hit` serves real responses on one thread; `hit_hot` has every thread ask one name (one shard lock), and
 //! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response
 //! already decoded, as a forwarder has it.
+//!
+//! Features `metrics` (counters on, no recorder) and `recorder` (counters on and recorded) measure the cache's
+//! counters (D30).
 
 use std::cell::Cell;
 use std::hash::{BuildHasher, RandomState};
@@ -15,6 +18,10 @@ use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, 
 use divan::Bencher;
 
 fn main() {
+    #[cfg(feature = "recorder")]
+    metrics_util::debugging::DebuggingRecorder::new()
+        .install()
+        .expect("no recorder installed yet");
     divan::main();
 }
 

@@ -179,3 +179,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   without binding; JSON Schema from the types (schemars); config tests run D17 query files. Reload (SIGHUP,
   file watch) builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one;
   cache and upstream connections survive.
+
+## Observability
+
+- D30 Metrics through the `metrics` facade, tracing through `tracing`; each library takes them behind its own
+  `metrics` or `tracing` Cargo feature, compiled away without it, and the binaries turn them on by default.
+  Handles are made once with the component, not looked up per event; no recorder means no-op handles.
+  `dedens-proto` has none: its functions are pure and return errors, violations and truncation as values, which
+  the server counts where it calls them. The cache counts lookups by outcome, prefetches, inserts and evictions
+  (names in `crates/dedens-cache/src/metrics.rs`); spans belong to net, server and CLI, not to hot paths of proto
+  or cache. `dedensd` exports Prometheus; the CLI prints `tracing-subscriber` text under `-v`; OpenTelemetry
+  later. Cost in `docs/benchmarks.md`.

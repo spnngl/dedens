@@ -9,6 +9,7 @@ use dedens_proto::{Decoded, Query};
 
 use crate::config::{Config, ConfigError};
 use crate::key::Key;
+use crate::metrics::Metrics;
 use crate::response::{NotCached, Response};
 use crate::shard::Shard;
 
@@ -63,6 +64,7 @@ pub struct Cache {
     shards: Box<[Mutex<Shard>]>,
     hasher: RandomState,
     config: Config,
+    metrics: Metrics,
 }
 
 impl Cache {
@@ -81,6 +83,7 @@ impl Cache {
             // Keyed SipHash: names chosen to collide cannot pile up in one shard or slot.
             hasher: RandomState::new(),
             config,
+            metrics: Metrics::new(),
         })
     }
 
@@ -109,6 +112,12 @@ impl Cache {
         stale: StalePolicy,
         out: &mut [u8],
     ) -> Lookup {
+        let found = self.find(query, now, stale, out);
+        self.metrics.lookup(found);
+        found
+    }
+
+    fn find(&self, query: &Query<'_>, now: u32, stale: StalePolicy, out: &mut [u8]) -> Lookup {
         debug_assert!(
             out.len() >= Self::MIN_OUT,
             "lookup takes at least Cache::MIN_OUT bytes"
@@ -188,16 +197,20 @@ impl Cache {
         let key = Key::of(query).ok_or(NotCached::Query)?;
         let response = Response::build(&key, response, now, &self.config)?;
         let (hash, shard) = self.shard(&key);
-        let mut shard = lock(shard);
-        if !shard.fits(key.as_bytes().len(), &response) {
-            return Err(NotCached::TooLarge);
-        }
-        shard.update(hash, key.as_bytes(), |entry| {
-            entry.response = Some(response);
-            entry.prefetched = false;
-            entry.failures = 0;
-            entry.hold_until = 0;
-        });
+        let evicted = {
+            let mut shard = lock(shard);
+            if !shard.fits(key.as_bytes().len(), &response) {
+                return Err(NotCached::TooLarge);
+            }
+            shard.update(hash, key.as_bytes(), |entry| {
+                entry.response = Some(response);
+                entry.prefetched = false;
+                entry.failures = 0;
+                entry.hold_until = 0;
+            })
+        };
+        self.metrics.inserted();
+        self.metrics.evicted(evicted);
         Ok(())
     }
 
@@ -216,7 +229,7 @@ impl Cache {
         let config = &self.config;
         let (hash, shard) = self.shard(key);
         let mut hold = 0;
-        lock(shard).update(hash, key.as_bytes(), |entry| {
+        let evicted = lock(shard).update(hash, key.as_bytes(), |entry| {
             if self.held(entry.hold_until, now) {
                 hold = entry.hold_until - now;
                 return;
@@ -235,6 +248,7 @@ impl Cache {
             }
             entry.hold_until = now.saturating_add(hold);
         });
+        self.metrics.evicted(evicted);
         hold
     }
 

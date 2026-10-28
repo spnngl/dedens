@@ -73,6 +73,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
   decoding the bytes again.
 - 8 threads, medians: one hot name 364 ns (one shard lock), 10 000 names 448 ns (each thread walks the names
   from its own start, buffers made outside the timing).
+- Counters (D30), `just bench` features of `dedens-bench`, 10 million hits under `/usr/bin/time -l`: feature off,
+  none; `metrics` without a recorder, +8 instructions a hit; `recorder` (atomic counters, as an exporter's),
+  +16 (`a`) to +30 (`txt_large`) instructions. Cycles differ within noise, single-threaded and on 8 threads
+  (hot name and 10 000 names, ±30% between runs).
 
 ## Zone files (D25)
 

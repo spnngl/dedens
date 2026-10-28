@@ -186,9 +186,14 @@ impl Shard {
         (*entry.key == *key).then_some(entry)
     }
 
-    /// Changes the entry of `key`, creating it if needed, then evicts down to the budget. An entry of another key
-    /// with the same hash is replaced.
-    pub(crate) fn update(&mut self, hash: u64, key: &[u8], change: impl FnOnce(&mut Entry)) {
+    /// Changes the entry of `key`, creating it if needed, then evicts down to the budget, and returns the number of
+    /// entries evicted. An entry of another key with the same hash is replaced.
+    pub(crate) fn update(
+        &mut self,
+        hash: u64,
+        key: &[u8],
+        change: impl FnOnce(&mut Entry),
+    ) -> usize {
         let slot = if let Some(&slot) = self.index.get(&hash) {
             let entry = self.slab[slot as usize]
                 .as_mut()
@@ -218,7 +223,7 @@ impl Shard {
             }
             slot
         };
-        self.evict(slot);
+        self.evict(slot)
     }
 
     fn bytes(&mut self, queue: Queue) -> &mut usize {
@@ -239,8 +244,9 @@ impl Shard {
         }
     }
 
-    /// Evicts until the entries fit the budget, never `keep`, the entry just changed.
-    fn evict(&mut self, keep: u32) {
+    /// Evicts until the entries fit the budget, never `keep`, the entry just changed; returns the number evicted.
+    fn evict(&mut self, keep: u32) -> usize {
+        let mut evicted = 0;
         let others = |q: &VecDeque<u32>| q.len() > 1 || q.front().is_some_and(|&s| s != keep);
         while self.used() > self.budget {
             let from_small = match (others(&self.small), others(&self.main)) {
@@ -276,12 +282,14 @@ impl Shard {
             } else {
                 let hash = entry.hash;
                 self.remove(slot);
+                evicted += 1;
                 if from_small {
                     // As many ghosts as entries.
                     self.ghosts.remember(hash, self.index.len().max(1));
                 }
             }
         }
+        evicted
     }
 
     fn remove(&mut self, slot: u32) {

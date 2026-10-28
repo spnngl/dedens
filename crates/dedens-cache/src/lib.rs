@@ -8,6 +8,9 @@
 //!
 //! RFCs: 2308 (negative caching), 8767 (serve-stale), 9520 (resolution failures), 2181 §5.2/§9, 4343, 6895 §3.1
 //! (meta types are not cached), 7871 §7.3.1 (nor answers for a client subnet).
+//!
+//! Feature `metrics`: lookup, insert, prefetch and eviction counters through the `metrics` facade; without it
+//! they compile away.
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -21,6 +24,7 @@
 mod cache;
 mod config;
 mod key;
+mod metrics;
 mod response;
 mod shard;
 

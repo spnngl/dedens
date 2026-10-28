@@ -8,11 +8,18 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Counters through the `metrics` facade (D30).
+metrics = ["dep:metrics"]
+
 [dependencies]
 dedens-proto.workspace = true
+metrics = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+metrics.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
 proptest.workspace = true
 
 [lints]
