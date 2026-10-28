@@ -181,8 +181,11 @@ Vector's configuration tooling.
   The first error stops the reader, with line and column. No `$GENERATE`. Stricter than BIND where BIND
   only warns: a TTL over 2³¹−1 is an error (BIND uses 0), and there is no fallback to the SOA minimum. Records
   of a query or meta class or type (RFC 6895 §3.1-3.2, e.g. ANY, NONE, OPT, AXFR) and RDATA over 65535 bytes
-  are refused. RDATA that `\#` gives but its type refuses is kept opaque, as on the wire (D9), so every decoded
-  record reads back from its text. The caller bounds `$INCLUDE` depth and cycles and vets paths from untrusted
+  are refused. A `"` opens a quoted part at the start of a token, or after the first `=` in SVCB parameters
+  only (RFC 9460 §2.1), as BIND does; a `\` that ends a line outside quotes is an error, since it would join
+  two entries. RDATA that `\#` gives but its type refuses is kept opaque, as on the wire (D9), and
+  `ZoneReader` says why (`DecodedRecord`); so every decoded record of a data type and class reads back from its
+  text. The caller bounds `$INCLUDE` depth and cycles and vets paths from untrusted
   zones. Zone-level checks (RFC 1035 §5.2: SOA first, one class, records inside the zone, CNAME alone) belong
   to the later zone-loading layer. A 100 000-record zone reads in
   7.3 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record sets; `just bench`).

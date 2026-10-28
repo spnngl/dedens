@@ -185,12 +185,16 @@ impl<'a> RData<'a> {
 
 impl RData<'static> {
     /// Reads the RDATA of `rtype` from the rest of an entry: its own text form, or `\# length hex` for any type
-    /// (RFC 3597 §5), which a known type decodes into its typed form.
-    pub(crate) fn from_text(rtype: RecordType, f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
-        if f.peek().is_some_and(|t| t.raw == br"\#") {
+    /// (RFC 3597 §5), which a known type decodes into its typed form. With the RDATA, why `\#` bytes invalid for
+    /// their type were kept opaque (D9).
+    pub(crate) fn from_text(
+        rtype: RecordType,
+        f: &mut Fields<'_, '_>,
+    ) -> Result<(Self, Option<DecodeError>), TextError> {
+        if f.peek()?.is_some_and(|t| t.raw == br"\#") {
             return Self::from_generic(rtype, f);
         }
-        Ok(match rtype {
+        let data = match rtype {
             RecordType::A => Self::A(f.parse("IPv4 address")?),
             RecordType::AAAA => Self::Aaaa(f.parse("IPv6 address")?),
             RecordType::NS => Self::Ns(f.name("NS name")?),
@@ -203,21 +207,30 @@ impl RData<'static> {
             RecordType::CAA => Self::Caa(Caa::from_text(f)?),
             RecordType::SVCB => Self::Svcb(Svcb::from_text(f)?),
             RecordType::HTTPS => Self::Https(Svcb::from_text(f)?),
-            _ => match Opaque::from_text(rtype, f) {
-                Some(opaque) => Self::Opaque(opaque?),
-                None => return Err(f.end_error(TextErrorKind::NeedsGeneric)),
-            },
-        })
+            _ => {
+                if let Some(opaque) = Opaque::from_text(rtype, f) {
+                    Self::Opaque(opaque?)
+                } else {
+                    let kind = TextErrorKind::NeedsGeneric;
+                    let at = f.peek()?;
+                    return Err(at.map_or_else(|| f.end_error(kind), |t| t.error(kind)));
+                }
+            }
+        };
+        Ok((data, None))
     }
 
-    fn from_generic(rtype: RecordType, f: &mut Fields<'_, '_>) -> Result<Self, TextError> {
+    fn from_generic(
+        rtype: RecordType,
+        f: &mut Fields<'_, '_>,
+    ) -> Result<(Self, Option<DecodeError>), TextError> {
         let marker = f.next("\\#")?;
         let declared: usize = f.number("RDATA length")?;
         if declared > MAX_RDATA_LEN {
             return Err(marker.error(TextErrorKind::Invalid("\\# length, over 65535")));
         }
         let mut data = Vec::with_capacity(declared);
-        while let Some(token) = f.next_opt() {
+        while let Some(token) = f.next_opt()? {
             encoding::decode_hex(token.raw, &mut data)
                 .ok_or(token.error(TextErrorKind::Invalid("hex RDATA")))?;
         }
@@ -229,7 +242,8 @@ impl RData<'static> {
         }
         let invalid = |kind| marker.error(TextErrorKind::Rdata(kind));
         // Same rule as the wire (D9): RDATA invalid for its type is kept opaque, unless the type holds names.
-        let (decoded, _) = decode_rdata(rtype, Reader::new(&data)).map_err(|e| invalid(e.kind))?;
+        let (decoded, why) =
+            decode_rdata(rtype, Reader::new(&data)).map_err(|e| invalid(e.kind))?;
         if Self::may_hold_compressed_names(rtype) {
             // A name read here may hold a pointer, which means nothing outside a message: refuse what does not
             // write back to the same bytes.
@@ -241,7 +255,7 @@ impl RData<'static> {
                 )));
             }
         }
-        Ok(decoded.into_owned())
+        Ok((decoded.into_owned(), why))
     }
 }
 

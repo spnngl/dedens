@@ -177,12 +177,30 @@ pub(crate) fn rdata() -> impl Strategy<Value = RData<'static>> {
     ]
 }
 
-/// Records of a class that zone files accept: no QCLASS or meta class (RFC 6895 §3.2).
+/// Records of any class.
 pub(crate) fn record() -> impl Strategy<Value = Record<'static>> {
-    let class = prop_oneof![1u16..128, 256u16..0xE000, 0xFF00u16..0xFFFF];
+    records(any::<u16>().prop_map(Class))
+}
+
+/// Records that zone files accept: of a data class, no QCLASS or meta class (RFC 6895 §3.2).
+pub(crate) fn zone_record() -> impl Strategy<Value = Record<'static>> {
+    records(data_class())
+}
+
+fn records(class: impl Strategy<Value = Class>) -> impl Strategy<Value = Record<'static>> {
     (name(), class, 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
-        Record::new(name, Class(class), Ttl::new(ttl).expect("in range"), data)
+        Record::new(name, class, Ttl::new(ttl).expect("in range"), data)
     })
+}
+
+/// A class that records may have: not 0, a QCLASS or meta class, or 65535 (RFC 6895 §3.2).
+pub(crate) fn data_class() -> impl Strategy<Value = Class> {
+    prop_oneof![1u16..128, 256u16..0xE000, 0xFF00u16..0xFFFF].prop_map(Class)
+}
+
+/// A type that records may have: not 0, OPT, a QTYPE or meta type, or 65535 (RFC 6895 §3.1).
+pub(crate) fn data_type() -> impl Strategy<Value = RecordType> {
+    prop_oneof![1u16..41, 42u16..128, 256u16..65535].prop_map(RecordType)
 }
 
 fn client_subnet() -> impl Strategy<Value = ClientSubnet> {

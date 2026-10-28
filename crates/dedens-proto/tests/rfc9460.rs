@@ -326,6 +326,13 @@ fn building_params_enforces_the_same_rules() {
         Err(SvcParamsError::BadMandatory(SvcParamKey::PORT))
     );
     assert_eq!(
+        SvcParams::new(vec![
+            SvcParam::Mandatory(vec![SvcParamKey::PORT, SvcParamKey::PORT]),
+            SvcParam::Port(1)
+        ]),
+        Err(SvcParamsError::MandatoryTwice(SvcParamKey::PORT))
+    );
+    assert_eq!(
         SvcParams::new(vec![unknown(3)]),
         Err(SvcParamsError::ReservedKey(SvcParamKey(3)))
     );
@@ -543,7 +550,14 @@ fn appendix_a_value_escapes() {
 fn keys_are_written_one_way() {
     assert!(from_text("SVCB 1 . alpn=h2 key0=alpn").is_ok());
     assert!(from_text("SVCB 1 . key65=x").is_ok());
-    for bad in ["ALPN=h2", "Port=53", "key01=x", "key=x", "key065536=x"] {
+    for bad in [
+        "ALPN=h2",
+        "Port=53",
+        "key01=x",
+        "key=x",
+        "key065536=x",
+        "key65536=x",
+    ] {
         assert!(from_text(&format!("SVCB 1 . {bad}")).is_err(), "{bad}");
     }
 }
@@ -580,4 +594,14 @@ fn parameter_errors_point_at_the_parameter() {
     );
     let e = from_text("SVCB 1 . port=53 port=54").expect_err("refused");
     assert_eq!(e.column, 36);
+    let e = from_text("SVCB 1 . alpn=h2 mandatory=alpn,alpn").expect_err("refused");
+    assert_eq!(
+        (e.column, e.kind),
+        (
+            36,
+            dedens_proto::TextErrorKind::SvcParams(SvcParamsError::MandatoryTwice(
+                SvcParamKey::ALPN
+            ))
+        )
+    );
 }

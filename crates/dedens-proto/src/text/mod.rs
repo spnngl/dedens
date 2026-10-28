@@ -103,57 +103,66 @@ pub enum TextErrorKind {
     UnknownDirective,
 }
 
-/// Cursor over the fields of one entry.
+/// Cursor over the fields of one entry, read from the lexer as they are asked for.
 #[derive(Debug)]
-pub(crate) struct Fields<'e, 't> {
-    tokens: &'e [Token<'t>],
-    origin: Option<&'e Name<'static>>,
-    /// Where a missing field is reported: the end of the entry.
-    end: (usize, usize),
+pub(crate) struct Fields<'f, 't> {
+    lexer: &'f mut Lexer<'t>,
+    origin: Option<&'f Name<'static>>,
+    /// The next token, read ahead by [`Fields::peek`], and the lexer as it was before it.
+    peeked: Option<(Token<'t>, Lexer<'t>)>,
+    /// Whether a quote may open after the first `=` of a token (see [`Lexer::token`]).
+    pairs: bool,
 }
 
-impl<'e, 't> Fields<'e, 't> {
-    pub(crate) fn new(tokens: &'e [Token<'t>], origin: Option<&'e Name<'static>>) -> Self {
-        let end = tokens
-            .last()
-            .map_or((1, 1), |t| (t.line, t.column + t.raw.len()));
+impl<'f, 't> Fields<'f, 't> {
+    pub(crate) const fn new(lexer: &'f mut Lexer<'t>, origin: Option<&'f Name<'static>>) -> Self {
         Self {
-            tokens,
+            lexer,
             origin,
-            end,
+            peeked: None,
+            pairs: false,
         }
     }
 
-    /// An error at the end of the entry.
-    pub(crate) const fn end_error(&self, kind: TextErrorKind) -> TextError {
-        TextError {
-            line: self.end.0,
-            column: self.end.1,
-            kind,
+    /// An error right after the last field read.
+    pub(crate) fn end_error(&self, kind: TextErrorKind) -> TextError {
+        let (line, column) = self
+            .peeked
+            .as_ref()
+            .map_or(self.lexer.end(), |(_, before)| before.end());
+        TextError { line, column, kind }
+    }
+
+    /// Reads the fields left as SVCB parameters, `key="value"` (RFC 9460 §2.1; see [`Lexer::token`]).
+    pub(crate) fn quoted_pairs(&mut self) {
+        self.pairs = true;
+        // A token read ahead is read again, the new way.
+        if let Some((_, before)) = self.peeked.take() {
+            *self.lexer = before;
         }
     }
 
-    /// The next token, if any.
-    pub(crate) fn peek(&self) -> Option<&'e Token<'t>> {
-        self.tokens.first()
+    /// The next token, if any, left for the next read.
+    pub(crate) fn peek(&mut self) -> Result<Option<Token<'t>>, TextError> {
+        if self.peeked.is_none() {
+            let before = *self.lexer;
+            self.peeked = self.lexer.token(self.pairs)?.map(|token| (token, before));
+        }
+        Ok(self.peeked.map(|(token, _)| token))
     }
 
     /// The next token, or [`TextErrorKind::Missing`] naming `what`.
-    pub(crate) fn next(&mut self, what: &'static str) -> Result<&'e Token<'t>, TextError> {
-        let (first, rest) = self.tokens.split_first().ok_or(TextError {
-            line: self.end.0,
-            column: self.end.1,
-            kind: TextErrorKind::Missing(what),
-        })?;
-        self.tokens = rest;
-        Ok(first)
+    pub(crate) fn next(&mut self, what: &'static str) -> Result<Token<'t>, TextError> {
+        self.next_opt()?
+            .ok_or_else(|| self.end_error(TextErrorKind::Missing(what)))
     }
 
-    /// The next token, if any, consumed.
-    pub(crate) fn next_opt(&mut self) -> Option<&'e Token<'t>> {
-        let (first, rest) = self.tokens.split_first()?;
-        self.tokens = rest;
-        Some(first)
+    /// The next token, if any.
+    pub(crate) fn next_opt(&mut self) -> Result<Option<Token<'t>>, TextError> {
+        match self.peeked.take() {
+            Some((token, _)) => Ok(Some(token)),
+            None => self.lexer.token(self.pairs),
+        }
     }
 
     /// A domain name, relative to the origin unless it ends in a dot.
@@ -190,8 +199,8 @@ impl<'e, 't> Fields<'e, 't> {
     }
 
     /// Checks that no field is left.
-    pub(crate) fn finish(&self) -> Result<(), TextError> {
-        match self.tokens.first() {
+    pub(crate) fn finish(&mut self) -> Result<(), TextError> {
+        match self.next_opt()? {
             Some(token) => Err(token.error(TextErrorKind::Trailing)),
             None => Ok(()),
         }
@@ -226,7 +235,7 @@ impl Head {
             let word = str::from_utf8(token.raw).unwrap_or_default();
             if class.is_none()
                 && let Ok(c) = word.parse::<Class>()
-                && (c != Class::ANY || f.peek().is_some_and(|next| starts_head(next.raw)))
+                && (c != Class::ANY || f.peek()?.is_some_and(|next| starts_head(next.raw)))
             {
                 if !is_data_class(c) {
                     return Err(token.error(TextErrorKind::Invalid("class: a query or meta class")));
@@ -256,23 +265,22 @@ impl Head {
 /// class defaults to IN.
 pub(crate) fn one_record(text: &[u8]) -> Result<Record<'static>, TextError> {
     let mut lexer = Lexer::new(text);
-    let mut tokens = Vec::new();
-    let Some(blank) = lexer.entry(&mut tokens)? else {
+    let Some(blank) = lexer.entry()? else {
         return Err(TextError {
             line: 1,
             column: 1,
             kind: TextErrorKind::Missing("record"),
         });
     };
-    if let (true, Some(first)) = (blank, tokens.first()) {
-        return Err(first.error(TextErrorKind::NoOwner));
-    }
     let origin = Name::root();
-    let mut f = Fields::new(&tokens, Some(&origin));
+    let mut f = Fields::new(&mut lexer, Some(&origin));
+    if blank {
+        return Err(f.next("owner name")?.error(TextErrorKind::NoOwner));
+    }
     let owner = f.name("owner name")?;
-    let record = Defaults::default().record(owner, &mut f)?;
-    if lexer.entry(&mut tokens)?.is_some()
-        && let Some(first) = tokens.first()
+    let record = Defaults::default().record(owner, &mut f)?.record;
+    if lexer.entry()?.is_some()
+        && let Some(first) = lexer.token(false)?
     {
         return Err(first.error(TextErrorKind::Trailing));
     }

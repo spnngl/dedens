@@ -5,7 +5,9 @@
 //! `just fuzz-smoke`) replays the captured responses plus mutated variants through [`TARGETS`].
 
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
-use dedens_proto::{EdnsView, EncodeError, Flags, Message, MessageIndex, Name, Query, Record, Ttl};
+use dedens_proto::{
+    DecodedRecord, EdnsView, EncodeError, Flags, Message, MessageIndex, Name, Query, Record, Ttl,
+};
 
 #[cfg(test)]
 mod smoke;
@@ -30,7 +32,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
 pub fn parse_zone(data: &[u8]) {
     // A default TTL, so that files without one, like the example of RFC 1035 §5.3, still yield records.
     for entry in ZoneReader::new(data, Some(Name::root())).with_ttl(Ttl::ZERO) {
-        let Ok(ZoneEntry::Record(record)) = entry else {
+        let Ok(ZoneEntry::Record(DecodedRecord { record, .. })) = entry else {
             continue;
         };
         for text in [record.to_string(), record.generic().to_string()] {

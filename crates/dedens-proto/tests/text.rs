@@ -2,8 +2,10 @@
 
 mod common;
 
-use common::{decode_record, dns, record, record_wire};
-use dedens_proto::{Class, Name, RData, Record, RecordType, TextError, TextErrorKind, Ttl};
+use common::{data_class, data_type, decode_record, dns, record_wire, zone_record};
+use dedens_proto::{
+    Class, Name, NameError, RData, Record, RecordType, TextError, TextErrorKind, Ttl,
+};
 use proptest::prelude::*;
 
 fn parse(text: &str) -> Result<Record<'static>, TextError> {
@@ -138,10 +140,15 @@ fn names_read_escapes_and_keep_case() {
     for bad in ["a..b.", ".a.", r"a\256.", r"a\1.", r"a\"] {
         assert!(bad.parse::<Name<'_>>().is_err(), "{bad}");
     }
-    let long = format!("{}.", "a".repeat(64));
-    assert!(long.parse::<Name<'_>>().is_err());
-    let too_long = format!("{}.", vec!["a".repeat(63); 4].join("."));
-    assert!(too_long.parse::<Name<'_>>().is_err());
+    let kind = |text: String| text.parse::<Name<'_>>().map(|_| ()).map_err(|e| e.kind);
+    let label_too_long = Err(TextErrorKind::Name(NameError::LabelTooLong));
+    assert_eq!(kind(format!("{}.", "a".repeat(64))), label_too_long);
+    // Over the 255 bytes of a name too, but the label is what breaks first.
+    assert_eq!(kind(format!("{}.", "a".repeat(300))), label_too_long);
+    assert_eq!(
+        kind(format!("{}.", vec!["a".repeat(63); 4].join("."))),
+        Err(TextErrorKind::Name(NameError::NameTooLong))
+    );
 }
 
 #[test]
@@ -168,7 +175,12 @@ fn errors_say_where() {
     );
     assert_eq!(
         error("x. 60 TYPE731 ab"),
-        (1, 17, TextErrorKind::NeedsGeneric)
+        (1, 15, TextErrorKind::NeedsGeneric)
+    );
+    // After the last field, on the line where it ends.
+    assert_eq!(
+        error("x. 60 CAA 0 \"is\nsue\""),
+        (2, 5, TextErrorKind::Missing("CAA value"))
     );
     assert_eq!(error(" 60 A 192.0.2.1"), (1, 2, TextErrorKind::NoOwner));
     assert_eq!(
@@ -229,6 +241,9 @@ fn rdata_over_65535_bytes_is_refused() {
 fn quotes_start_tokens_and_never_names() {
     let rec = parse(r#"x. 60 TXT a"b c"d"#).unwrap();
     assert_eq!(rec.data.to_string(), r#""a\"b" "c\"d""#);
+    // Only SVCB parameters quote after `=` (RFC 9460 §2.1).
+    let rec = parse(r#"x. 60 TXT k="v w""#).unwrap();
+    assert_eq!(rec.data.to_string(), r#""k=\"v" "w\"""#);
     assert_eq!(
         error(r#""a b". 60 A 192.0.2.1"#),
         (
@@ -260,7 +275,8 @@ fn invalid_generic_rdata_of_a_known_type_stays_opaque() {
 }
 
 proptest! {
-    /// Whatever a record decoded from the wire holds, its text reads back the same (D9, RFC 3597 §5).
+    /// Whatever a record of a data type and class decoded from the wire holds, its text reads back the same (D9,
+    /// RFC 3597 §5). Zone files refuse the other types and classes (RFC 6895 §3.1-3.2).
     #[test]
     fn wire_records_read_back_from_text(
         rtype in prop_oneof![
@@ -272,11 +288,15 @@ proptest! {
             Just(RecordType::HTTPS),
             Just(RecordType::MX),
             Just(RecordType::SOA),
-            (256u16..0xF000).prop_map(RecordType),
+            data_type(),
         ],
+        class in data_class(),
         data in prop::collection::vec(any::<u8>(), 0..40),
     ) {
-        let Ok(decoded) = decode_record(&record_wire(rtype, &data)) else {
+        let mut wire = record_wire(rtype, &data);
+        // After the root owner and the type.
+        wire[3..5].copy_from_slice(&class.0.to_be_bytes());
+        let Ok(decoded) = decode_record(&wire) else {
             return Err(TestCaseError::reject("invalid RDATA of a type with names"));
         };
         let text = decoded.record.to_string();
@@ -285,7 +305,7 @@ proptest! {
     }
 
     #[test]
-    fn records_read_back_as_written(rec in record()) {
+    fn records_read_back_as_written(rec in zone_record()) {
         let text = rec.to_string();
         let read = parse(&text).map_err(|e| TestCaseError::fail(format!("{text}: {e}")))?;
         prop_assert_eq!(&read, &rec);
@@ -293,7 +313,7 @@ proptest! {
     }
 
     #[test]
-    fn generic_records_read_back_typed(rec in record()) {
+    fn generic_records_read_back_typed(rec in zone_record()) {
         let text = rec.generic().to_string();
         let read = parse(&text).map_err(|e| TestCaseError::fail(format!("{text}: {e}")))?;
         prop_assert_eq!(read, rec);

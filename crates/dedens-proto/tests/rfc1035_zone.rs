@@ -6,10 +6,12 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-use common::{dns, record};
+use common::{dns, zone_record};
 use dedens_proto::rdata::Soa;
 use dedens_proto::text::{Entry, ZoneReader};
-use dedens_proto::{Class, RData, Record, RecordType, TextError, TextErrorKind, Ttl};
+use dedens_proto::{
+    Class, DecodedRecord, RData, Record, RecordType, TextError, TextErrorKind, Ttl,
+};
 use proptest::prelude::*;
 
 /// Every record of `reader`, `$INCLUDE`s read from `tests/zones/` through `files`, which maps their names.
@@ -20,7 +22,7 @@ fn read(
     let mut records = Vec::new();
     while let Some(entry) = reader.next() {
         match entry? {
-            Entry::Record(r) => records.push(r),
+            Entry::Record(r) => records.push(r.record),
             Entry::Include { file, origin } => {
                 let (_, local) = files
                     .iter()
@@ -199,7 +201,7 @@ fn s5_1_include_is_handed_to_the_caller() {
         .collect();
     assert_eq!(child.len(), 1);
     assert_eq!(reader.origin(), Some(&dns("a.")));
-    let Some(Ok(Entry::Record(rec))) = reader.next() else {
+    let Some(Ok(Entry::Record(DecodedRecord { record: rec, .. }))) = reader.next() else {
         unreachable!("a record follows")
     };
     assert_eq!((rec.name, rec.ttl.get()), (dns("x.a."), 5));
@@ -210,7 +212,8 @@ fn included_files_keep_the_defaults() {
     let mut reader = ZoneReader::new(b"$TTL 7\na CH TXT x\n", Some(dns("p.")));
     reader.next();
     let child: Vec<_> = reader.include(b"b TXT y\n", Some(dns("q."))).collect();
-    let Some(Ok(Entry::Record(rec))) = child.into_iter().next() else {
+    let Some(Ok(Entry::Record(DecodedRecord { record: rec, .. }))) = child.into_iter().next()
+    else {
         unreachable!("one record")
     };
     assert_eq!((rec.ttl.get(), rec.class), (7, Class::CH));
@@ -256,20 +259,60 @@ fn types_without_text_need_the_generic_form() {
     assert_eq!(records[2].rtype(), RecordType::HINFO);
     assert_eq!(
         error("a 60 HINFO cpu os"),
-        (1, 18, TextErrorKind::NeedsGeneric)
+        (1, 12, TextErrorKind::NeedsGeneric)
+    );
+}
+
+/// D9: `\#` bytes invalid for their type are kept opaque, and the reader says why.
+#[test]
+fn invalid_generic_rdata_is_reported() {
+    let mut reader = ZoneReader::new(
+        b"a 60 A \\# 3 c00002\nb 60 A \\# 4 c0000201\n",
+        Some(dns("p.")),
+    );
+    let Some(Ok(Entry::Record(invalid))) = reader.next() else {
+        unreachable!("a record")
+    };
+    assert!(matches!(invalid.record.data, RData::Opaque(_)));
+    assert!(invalid.invalid_rdata.is_some());
+    let Some(Ok(Entry::Record(valid))) = reader.next() else {
+        unreachable!("a record")
+    };
+    assert!(matches!(valid.record.data, RData::A(_)));
+    assert_eq!(valid.invalid_rdata, None);
+}
+
+/// RFC 1035 §5.1: a line end outside quotes and parentheses ends the entry, even after a `="` or a `\`.
+#[test]
+fn entries_never_join() {
+    let records = zone("x 60 TXT a=\"b\ny 60 TXT \"c\"\n").unwrap();
+    assert_eq!(
+        lines(&records),
+        [
+            "x.example.\t60\tIN\tTXT\t\"a=\\\"b\"",
+            "y.example.\t60\tIN\tTXT\t\"c\"",
+        ]
+    );
+    assert_eq!(
+        error("x 60 TXT a\\\ny 60 A 192.0.2.1\n"),
+        (
+            1,
+            11,
+            TextErrorKind::Invalid("escape: a \\ that ends a line outside quotes")
+        )
     );
 }
 
 proptest! {
     #[test]
-    fn written_records_read_back_as_a_zone(records in prop::collection::vec(record(), 0..8)) {
+    fn written_records_read_back_as_a_zone(records in prop::collection::vec(zone_record(), 0..8)) {
         let text = records.iter().fold(String::new(), |mut text, r| {
             writeln!(text, "{r}").expect("writes to a String");
             text
         });
         let read: Result<Vec<_>, _> = ZoneReader::new(text.as_bytes(), None)
             .map(|e| match e {
-                Ok(Entry::Record(r)) => Ok(r),
+                Ok(Entry::Record(r)) => Ok(r.record),
                 Ok(_) => unreachable!("no directive written"),
                 Err(e) => Err(e),
             })
@@ -404,7 +447,7 @@ proptest! {
     fn reading_tokens_never_panics(tokens in prop::collection::vec(prop::sample::select(TOKENS), 0..60)) {
         let text = tokens.join(" ");
         for entry in ZoneReader::new(text.as_bytes(), Some(dns("example."))) {
-            let Ok(Entry::Record(r)) = entry else {
+            let Ok(Entry::Record(DecodedRecord { record: r, .. })) = entry else {
                 continue;
             };
             let again: Record<'_> = r.to_string().parse().map_err(|e| TestCaseError::fail(format!("{r}: {e}")))?;

@@ -464,6 +464,10 @@ impl Name<'_> {
                 }
                 _ => b,
             };
+            // Checked before the name length, so that a long label is reported as such.
+            if wire.len - label > MAX_LABEL_LEN {
+                return Err(TextErrorKind::Name(NameError::LabelTooLong));
+            }
             wire.push(byte)?;
         }
         if absolute {

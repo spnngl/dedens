@@ -4,14 +4,16 @@ use super::{Fields, Head, Lexer, TextError, TextErrorKind, Token};
 use crate::codes::Class;
 use crate::name::Name;
 use crate::rdata::RData;
-use crate::record::{Record, Ttl};
+use crate::record::{DecodedRecord, Record, Ttl};
 
 /// What a zone file holds, entry by entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Entry {
-    /// A resource record, its owner, TTL and class filled in from the defaults.
-    Record(Record<'static>),
+    /// A resource record, its owner, TTL and class filled in from the defaults, and why its RDATA, written
+    /// `\# length hex`, was kept opaque if it is invalid for its type (D9); the offset of that reason is in the
+    /// RDATA.
+    Record(DecodedRecord<'static>),
     /// A `$INCLUDE`: the caller reads `file` and passes its text to [`ZoneReader::include`] with `origin`.
     Include {
         /// The file name, as written once quotes and escapes are decoded.
@@ -38,7 +40,7 @@ impl Defaults {
         &mut self,
         owner: Name<'static>,
         f: &mut Fields<'_, '_>,
-    ) -> Result<Record<'static>, TextError> {
+    ) -> Result<DecodedRecord<'static>, TextError> {
         let head = Head::read(f)?;
         let (line, column) = head.at;
         let explicit = head.ttl;
@@ -48,11 +50,14 @@ impl Defaults {
             kind: TextErrorKind::NoTtl,
         })?;
         let class = head.class.or(self.last_class).unwrap_or(Class::IN);
-        let data = RData::from_text(head.rtype, f)?;
+        let (data, invalid_rdata) = RData::from_text(head.rtype, f)?;
         f.finish()?;
         self.last_ttl = explicit.or(self.last_ttl);
         self.last_class = head.class.or(self.last_class);
-        Ok(Record::new(owner, class, ttl, data))
+        Ok(DecodedRecord {
+            record: Record::new(owner, class, ttl, data),
+            invalid_rdata,
+        })
     }
 }
 
@@ -64,7 +69,6 @@ impl Defaults {
 #[derive(Debug, Clone)]
 pub struct ZoneReader<'t> {
     lexer: Lexer<'t>,
-    tokens: Vec<Token<'t>>,
     origin: Option<Name<'static>>,
     owner: Option<Name<'static>>,
     defaults: Defaults,
@@ -78,7 +82,6 @@ impl<'t> ZoneReader<'t> {
     pub fn new(text: &'t [u8], origin: Option<Name<'static>>) -> Self {
         Self {
             lexer: Lexer::new(text),
-            tokens: Vec::new(),
             origin,
             owner: None,
             defaults: Defaults::default(),
@@ -112,19 +115,15 @@ impl<'t> ZoneReader<'t> {
 
     fn entry(&mut self) -> Result<Option<Entry>, TextError> {
         loop {
-            let Some(blank) = self.lexer.entry(&mut self.tokens)? else {
+            let Some(blank) = self.lexer.entry()? else {
                 return Ok(None);
             };
-            let mut f = Fields::new(&self.tokens, self.origin.as_ref());
+            let mut f = Fields::new(&mut self.lexer, self.origin.as_ref());
             let owner = if blank {
-                self.owner.clone().ok_or_else(|| {
-                    let first = f.peek().map_or((1, 1), |t| (t.line, t.column));
-                    TextError {
-                        line: first.0,
-                        column: first.1,
-                        kind: TextErrorKind::NoOwner,
-                    }
-                })?
+                match self.owner.clone() {
+                    Some(owner) => owner,
+                    None => return Err(f.next("owner name")?.error(TextErrorKind::NoOwner)),
+                }
             } else {
                 let first = f.next("owner name")?;
                 if first.raw.first() == Some(&b'$') {
@@ -176,7 +175,7 @@ enum Directive {
 }
 
 /// Reads the directive named by `first`; relative names in it are completed with the current origin.
-fn directive(first: &Token<'_>, f: &mut Fields<'_, '_>) -> Result<Directive, TextError> {
+fn directive(first: Token<'_>, f: &mut Fields<'_, '_>) -> Result<Directive, TextError> {
     let is = |name: &[u8]| first.raw.eq_ignore_ascii_case(name);
     let directive = if is(b"$ORIGIN") {
         Directive::Origin(f.name("$ORIGIN name")?)
@@ -194,7 +193,7 @@ fn directive(first: &Token<'_>, f: &mut Fields<'_, '_>) -> Result<Directive, Tex
                 String::from_utf8(bytes)
                     .map_err(|_| token.error(TextErrorKind::Invalid("file name, not UTF-8")))
             })?;
-        let origin = match f.peek() {
+        let origin = match f.peek()? {
             Some(_) => Some(f.name("$INCLUDE origin")?),
             None => None,
         };

@@ -116,7 +116,7 @@ impl Txt<'static> {
             if let Some(byte) = wire.get_mut(len_at) {
                 *byte = len;
             }
-            token = f.next_opt();
+            token = f.next_opt()?;
         }
         Ok(Txt(Cow::Owned(wire)))
     }

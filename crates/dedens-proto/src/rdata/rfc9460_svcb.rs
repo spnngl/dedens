@@ -183,11 +183,14 @@ impl SvcParam {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SvcParamsError {
-    /// A key appears twice, as a parameter or in the `mandatory` list.
+    /// A parameter appears twice.
     #[error("service parameter {0} appears more than once")]
     Duplicate(SvcParamKey),
-    /// A list-valued parameter or `ech` has no element, or an ALPN identifier is empty. An `ECHConfigList` is at
-    /// least 4 bytes (`<4..2^16-1>` in the ECH specification); `domain` refuses an empty `ech=` too.
+    /// `mandatory` lists a key twice.
+    #[error("mandatory lists key {0} more than once")]
+    MandatoryTwice(SvcParamKey),
+    /// A list-valued parameter or `ech` has no element, or an ALPN identifier is empty; `domain` refuses an empty
+    /// `ech=` too.
     #[error("service parameter {0} has an empty value")]
     Empty(SvcParamKey),
     /// `mandatory` lists a key that is not in the parameters, or itself.
@@ -306,7 +309,9 @@ fn split_param(wire: &[u8]) -> Option<(SvcParamKey, &[u8], &[u8])> {
 
 /// Checks a parameter list in wire form against RFC 9460 (§2.2, §7, §8), without allocating.
 fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
-    use SvcParamsError::{BadMandatory, Duplicate, Empty, Malformed, NoDefaultAlpnWithoutAlpn};
+    use SvcParamsError::{
+        BadMandatory, Duplicate, Empty, Malformed, MandatoryTwice, NoDefaultAlpnWithoutAlpn,
+    };
     let mut rest = wire;
     let mut previous = None;
     let mut mandatory: &[[u8; 2]] = &[];
@@ -338,7 +343,7 @@ fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
                 let (keys, odd) = value.as_chunks::<2>();
                 if let Some(pair) = keys.windows(2).find(|p| p[0] >= p[1]) {
                     let error = if pair[0] == pair[1] {
-                        Duplicate(SvcParamKey(u16::from_be_bytes(pair[0])))
+                        MandatoryTwice(SvcParamKey(u16::from_be_bytes(pair[0])))
                     } else {
                         Malformed
                     };
@@ -476,7 +481,8 @@ impl Svcb<'static> {
         let target = f.name("SVCB target")?;
         let mut params = Vec::new();
         let mut tokens = Vec::new();
-        while let Some(token) = f.next_opt() {
+        f.quoted_pairs();
+        while let Some(token) = f.next_opt()? {
             params.push(SvcParam::from_text(token.raw).map_err(|kind| token.error(kind))?);
             tokens.push((token, params.last().map(SvcParam::key)));
         }
@@ -486,7 +492,9 @@ impl Svcb<'static> {
                 SvcParamsError::Duplicate(k)
                 | SvcParamsError::Empty(k)
                 | SvcParamsError::ReservedKey(k) => Some(k),
-                SvcParamsError::BadMandatory(_) => Some(SvcParamKey::MANDATORY),
+                SvcParamsError::BadMandatory(_) | SvcParamsError::MandatoryTwice(_) => {
+                    Some(SvcParamKey::MANDATORY)
+                }
                 SvcParamsError::NoDefaultAlpnWithoutAlpn => Some(SvcParamKey::NO_DEFAULT_ALPN),
                 _ => None,
             };
