@@ -84,6 +84,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
   none; `metrics` without a recorder, +8 instructions a hit; `recorder` (atomic counters, as an exporter's),
   +16 (`a`) to +30 (`txt_large`) instructions. Cycles differ within noise, single-threaded and on 8 threads
   (hot name and 10 000 names, ±30% between runs).
+- Each shard lock padded to 128 bytes (`#[repr(align(128))]`, no two shards on one cache line), `hit_spread`,
+  five alternating runs of 3000 samples each, medians: 4 threads 150-396 ns padded against 151-229 ns; 8 threads
+  182-542 against 172-281. No gain: a shard is already larger than a line, so neighbours share one line at its
+  edge, and threads meet on a shard's own lock far more often. Not kept.
 
 ## Server hit path (D23, D43)
 

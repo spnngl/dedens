@@ -11,7 +11,16 @@ Open questions, each with its proposed default. Once answered, record the outcom
 ## Later
 
 - Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED.
-  Default: a stage or core setting, loopback and private ranges allowed when unset.
+  Default: a stage or core setting, loopback and private ranges allowed when unset; networks in a
+  longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for blocking by answer address.
+- Steering each datagram to the socket of the CPU that received it: `SO_INCOMING_CPU` on each thread's socket
+  (the kernel's `SO_REUSEPORT` choice prefers it: `reuseport_select_sock_by_hash`) and threads pinned to their CPUs, or a
+  `SO_REUSEPORT_CBPF` program. Default: wait for a benchmark between two machines; on loopback the sender's
+  CPU handles the packet, so `just bench-dnsperf` cannot show it.
+- Counters shared by all threads (`metrics` atomics) once an exporter is installed: every thread writes the same
+  cache lines. Default: per-thread counters summed by the exporter, measured with it.
+- Changing a blocklist or hosts list while running, without a reload (HAProxy's `add map`, `del map`), through
+  a control socket. Default: with the metrics exporter's HTTP endpoint, or a socket of its own.
 - Coalescing identical upstream queries in flight (RFC 5452 §5): later ones wait on the first exchange.
   Default: a per-thread map by cache key, with dnsperf numbers.
 - Replies from a wildcard UDP listener leave from the address the query came to (`IP_PKTINFO`). Default: add
@@ -38,7 +47,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.
-- Blocklists downloaded from URLs and refreshed, with allow-exceptions. Default: with reload.
+- Blocklists downloaded from URLs and refreshed, with allow-exceptions. A refresh replaces only the list, as
+  HAProxy's `prepare map` and `commit` do, keeping the pipeline and its cache. Then a compact list (names in one
+  buffer with a table of offsets, or 64-bit hashes only, against a `HashSet` of boxed names), with a bench and
+  its memory on a real downloaded list.
 - A systemd-resolved replacement plugin for desktop Linux: the stub on 127.0.0.53, per-link servers and
   routing domains pushed over D-Bus `org.freedesktop.resolve1` by NetworkManager and systemd-networkd,
   `stub-resolv.conf`, `/etc/hosts`, the synthesized names (localhost, the hostname, `_gateway`). Default:
