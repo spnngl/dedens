@@ -1,6 +1,6 @@
 # Architecture
 
-dédéns: a DNS library, the dig-like CLI `dedens` and, later, the server `dedensd`. Each folder's `AGENTS.md`
+dédéns: a DNS library, the dig-like CLI `dedens` and the server `dedensd`. Each folder's `AGENTS.md`
 says what it holds.
 
 ## Crates
@@ -14,10 +14,11 @@ says what it holds.
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
 | `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
+| `apps/dedensd` | The server: threads and listeners around `dedens-server`, upstream through `dedens-net` | sockets |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
-Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both. Planned:
-`apps/dedensd` on `dedens-server`, `dedens-cache` and `dedens-net`, then `dedens-resolver`.
+Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both; `apps/dedensd`
+on `dedens-server` and `dedens-net`. Planned: `dedens-cache` in `dedensd`, then `dedens-resolver`.
 
 ## Data flow
 

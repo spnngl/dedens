@@ -11,6 +11,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
 
+- Limits: TCP connections per listener, queries in flight per connection and per thread (RFC 7766 §6.2.2),
+  so a client cannot hold every socket or task. Default: per-thread caps in the configuration step, refusing
+  new connections past them.
+- Upstream timeout and tries (D42 fixes 1 s and 2): configurable per forward stage? Default: yes, with the
+  configuration step.
+
 ## Later
 
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one

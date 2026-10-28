@@ -280,6 +280,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD
   and CD, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
   are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
+- D42 `dedensd` I/O around D41: one compio thread per core on Linux, each with its own UDP socket and TCP
+  listener on every `--listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
+  where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind together. Every
+  socket is bound before any thread starts, so a taken address fails the start. A reply the pipeline builds at
+  once goes out from the socket's task; a query for upstream gets a task that reads it again (a fraction of the
+  wait) and asks with the thread's `dedens_net::Client`, over the client's transport, 1 s per try, 2 tries per
+  server. TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
+  writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
+  written (§6.2.3). Listeners and upstreams from flags until the configuration (D24). Rejected: one socket shared
+  by all threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
 
 ## Observability
 

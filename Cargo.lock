@@ -642,6 +642,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedensd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "compio",
+ "dedens-net",
+ "dedens-proto",
+ "dedens-server",
+ "flume",
+ "socket2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "defmt"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

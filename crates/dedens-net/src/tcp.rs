@@ -353,7 +353,11 @@ async fn read(stream: TcpStream, state: Rc<RefCell<State>>) {
 }
 
 /// The next message: its two-byte length, then as many bytes (RFC 1035 §4.2.2).
-async fn read_message(stream: &mut impl AsyncRead) -> io::Result<Vec<u8>> {
+///
+/// # Errors
+///
+/// The stream's error, `UnexpectedEof` when it ends first.
+pub async fn read_message(stream: &mut impl AsyncRead) -> io::Result<Vec<u8>> {
     let len = usize::from(stream.read_u16().await?);
     // `read_exact` fills the capacity, which `with_capacity` makes exactly `len`.
     let BufResult(read, message) = stream.read_exact(Vec::with_capacity(len)).await;

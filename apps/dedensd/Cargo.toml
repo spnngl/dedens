@@ -1,0 +1,24 @@
+[package]
+name = "dedensd"
+description = "A DNS server: a forwarder for now."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+compio.workspace = true
+dedens-net = { workspace = true, features = ["tracing"] }
+dedens-proto.workspace = true
+dedens-server.workspace = true
+flume.workspace = true
+socket2.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
