@@ -56,7 +56,8 @@ impl From<EncodeError> for NotCached {
     }
 }
 
-/// A cached response: no OPT record, ID 0, question lowercased, every record with the same TTL.
+/// A cached response: no OPT record, ID 0, every record with the same TTL; serving writes the question in the
+/// case of the query.
 #[derive(Debug)]
 pub(crate) struct Response {
     shared: Arc<Shared>,
@@ -104,8 +105,6 @@ impl Response {
         // The caller adds its own OPT record to each response served.
         let mut wire = message.to_vec_without_edns()?;
         wire[..2].fill(0);
-        let name = HEADER_LEN..HEADER_LEN + key.name_len();
-        wire[name].make_ascii_lowercase();
         let ttl_offsets =
             message::ttl_offsets(&wire).expect("the encoder writes messages that decode");
         set_ttls(&mut wire, ttl, &ttl_offsets);

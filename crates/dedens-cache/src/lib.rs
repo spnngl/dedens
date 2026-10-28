@@ -1,7 +1,6 @@
 //! DNS response cache for `dedensd`: shared by threads, sharded, sans-IO.
 //!
-//! A response is checked and encoded once at insert (no OPT, ID 0, question lowercased, one TTL for all
-//! records) with the offsets of its TTL fields. A hit that fits the caller's buffer is copied there and its ID,
+//! A response is checked and encoded once at insert (no OPT, ID 0, one TTL for all records) with the offsets of its TTL fields. A hit that fits the caller's buffer is copied there and its ID,
 //! flags, question case and TTLs patched: no decode, no allocation. A hit too large for the buffer is decoded and
 //! encoded again without the records that do not fit, outside the shard's lock. Time comes in as seconds from the
 //! caller.

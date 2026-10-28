@@ -75,11 +75,6 @@ impl Key {
         let other = Self::new(question, false, false);
         self.len == other.len && self.bytes[..self.len - 1] == other.bytes[..other.len - 1]
     }
-
-    /// Length of the question name in wire form.
-    pub(crate) const fn name_len(&self) -> usize {
-        self.len - 5
-    }
 }
 
 /// Whether answers to `qtype` are cached: data types and ANY, not 0, OPT, the QTYPEs and meta types of 128 to 254
