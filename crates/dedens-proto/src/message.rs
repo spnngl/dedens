@@ -1,5 +1,7 @@
 //! A whole DNS message (RFC 1035 §4.1) with its EDNS OPT record lifted out (D8, RFC 6891).
 
+use std::collections::HashMap;
+
 use crate::codes::{Opcode, Rcode, RecordType};
 use crate::edns::{Edns, OptionCode};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
@@ -424,26 +426,25 @@ fn put_record<'r, 'a>(
 
 /// How many of the first `failed` records to keep, `failed` the first that did not fit, so that no `RRset` has
 /// records on both sides of the cut (RFC 2181 §9): the largest such count.
+///
+/// One hash per record, so that a response with thousands of records cannot make truncation quadratic.
 fn whole_rrsets(records: &[Record<'_>], failed: usize) -> usize {
-    let mut keep = 0;
-    // The last index of an `RRset` met so far.
-    let mut reach = 0;
-    for (i, record) in records.iter().enumerate().take(failed) {
-        let last = records
-            .iter()
-            .rposition(|r| same_rrset(record, r))
-            .unwrap_or(i);
-        reach = reach.max(last);
-        if reach <= i {
-            keep = i + 1;
+    // The index of the first record of each record's `RRset`: same owner, type and class (RFC 2181 §5).
+    let mut first_of = HashMap::with_capacity(records.len());
+    let firsts: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .map(|(i, r)| *first_of.entry((&r.name, r.rtype(), r.class)).or_insert(i))
+        .collect();
+    // A cut is whole when no record after it belongs to an `RRset` that starts before it.
+    let mut low = usize::MAX;
+    for (keep, &first) in firsts.iter().enumerate().rev() {
+        low = low.min(first);
+        if keep <= failed && low >= keep {
+            return keep;
         }
     }
-    keep
-}
-
-/// Whether two records belong to the same `RRset`: same owner, type and class (RFC 2181 §5).
-fn same_rrset(a: &Record<'_>, b: &Record<'_>) -> bool {
-    a.name == b.name && a.rtype() == b.rtype() && a.class == b.class
+    0
 }
 
 /// One entry of a message, met by [`walk`] in wire order.

@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use common::{dns, message, rec};
 use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Edns, Flags, Message, Question, RData, RecordType, Violation};
+use dedens_proto::{Edns, Flags, Message, Question, RData, Record, RecordType, Violation};
 use proptest::prelude::*;
 
 fn a(n: u8) -> RData<'static> {
@@ -64,6 +64,26 @@ fn s9_an_interleaved_rrset_is_dropped_whole() {
     ];
     let full = message.to_vec().expect("encodes").len();
     let (decoded, _) = truncated(&message, full - 1);
+    assert_eq!(decoded.additional, []);
+}
+
+/// Thousands of additional records, as a hostile upstream may send: whole `RRsets` are kept, in linear time.
+#[test]
+fn s9_thousands_of_additional_records() {
+    let names: Vec<String> = (0..2000).map(|i| format!("n{i}")).collect();
+    let mut message = response(1, 0);
+    message.additional = names.iter().map(|n| rec(n, a(1))).collect();
+    // Room for about half: each `RRset` has one record, so the records that fit stay.
+    let (decoded, tc) = truncated(&message, 16 * 1024);
+    assert!(!tc);
+    assert!(decoded.additional.len() > 800, "16 KiB of 20-byte records");
+    assert!(message.additional.starts_with(&decoded.additional));
+    // A second record for each `RRset` after the first ones: any cut splits one, so none stays.
+    message
+        .additional
+        .extend(names.iter().map(|n| rec(n, a(2))));
+    let (decoded, tc) = truncated(&message, 32 * 1024);
+    assert!(!tc);
     assert_eq!(decoded.additional, []);
 }
 
@@ -189,6 +209,13 @@ proptest! {
             prop_assert!(m.answer.starts_with(&d.answer));
             prop_assert!(m.authority.starts_with(&d.authority));
             prop_assert!(m.additional.starts_with(&d.additional));
+            // Every `RRset` kept in the additional section is whole.
+            let rrset = |of: &[Record<'_>], r: &Record<'_>| {
+                of.iter().filter(|o| o.name == r.name && o.rtype() == r.rtype() && o.class == r.class).count()
+            };
+            for r in &d.additional {
+                prop_assert_eq!(rrset(&d.additional, r), rrset(&m.additional, r));
+            }
             prop_assert_eq!(
                 encoded.truncated,
                 d.answer.len() < m.answer.len() || (d.answer.len() == m.answer.len() && d.authority.len() < m.authority.len()),

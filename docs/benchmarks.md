@@ -27,6 +27,9 @@ Nanoseconds, `a`/`mx`/`txt_large`.
 - Parse pass of phase 2, cycles for all three captures: `decode_reusing` 4323 → 3706 (`domain` 3517, with
   more instructions: 17325 vs 15615), `MessageIndex::read` (removed by D28) 3301 → 2896, view 5456 → 4618.
   Gains: a 24-byte `Name` (16-bit offset), records built in place, fixed fields read with one bounds check.
+- Truncation keeping whole additional `RRsets` (D10), `encode_truncated_dedens`: 3000 additional records of
+  distinct owners into 16 KiB. Looking up each kept record's `RRset` among all the records was quadratic: 3.97 ms;
+  one hash per record: 253 µs (same session).
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
   instructions, same cycles), `#[inline]` hints (no change).
 

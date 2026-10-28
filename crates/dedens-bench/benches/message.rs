@@ -6,10 +6,13 @@
 //! the input, encoding writes names that no longer point into it.
 
 use std::hint::black_box;
+use std::net::Ipv4Addr;
 
 use dedens_bench::{CASES, wire};
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Decoded, Message, Name, Query, Question, RecordType};
+use dedens_proto::{
+    Class, Decoded, Message, Name, Query, Question, RData, Record, RecordType, Ttl,
+};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -231,5 +234,25 @@ fn encode_domain_to_vec(bencher: Bencher<'_, '_>, case: &str) {
             builder.push(record).expect("record");
         }
         builder.finish()
+    });
+}
+
+/// Truncation that keeps whole additional `RRsets` (RFC 2181 §9), from 3000 records of distinct owners, as a
+/// hostile upstream may send, into 16 KiB: about 800 fit.
+#[divan::bench]
+fn encode_truncated_dedens(bencher: Bencher<'_, '_>) {
+    let ttl = Ttl::new(60).expect("in range");
+    let mut message = Message::query(1, Question::new(Name::root(), RecordType::A));
+    message.additional = (0..3000)
+        .map(|i| {
+            let owner = Name::from_labels([format!("n{i}").as_bytes()]).expect("valid name");
+            Record::new(owner, Class::IN, ttl, &RData::A(Ipv4Addr::LOCALHOST))
+        })
+        .collect();
+    let mut buf = vec![0; 16 * 1024];
+    bencher.bench_local(|| {
+        message
+            .encode_truncated(black_box(&mut buf))
+            .expect("encodes")
     });
 }
