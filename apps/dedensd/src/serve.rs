@@ -19,7 +19,7 @@ use compio::io::{AsyncWrite, AsyncWriteExt, BufReader};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use compio::runtime::spawn;
 use dedens_net::client::Client;
-use dedens_net::exchange::{self, Options};
+use dedens_net::exchange::Options;
 use dedens_net::tcp::{frame, read_message};
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
@@ -334,10 +334,7 @@ async fn answer(
 ) {
     let pipeline = &thread.pipeline;
     let mut options = Options::default();
-    options.transport = match transport {
-        Transport::Udp => exchange::Transport::Udp,
-        Transport::Tcp => exchange::Transport::Tcp,
-    };
+    options.transport = transport;
     (options.timeout, options.tries) = upstream.patience();
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;

@@ -1,7 +1,7 @@
 //! The 12-byte message header (RFC 1035 §4.1.1).
 
 use core::fmt;
-use core::ops::BitOr;
+use core::ops::{BitAnd, BitOr};
 
 use crate::codes::{Opcode, Rcode};
 use crate::error::{DecodeError, EncodeError};
@@ -67,8 +67,8 @@ impl Flags {
     /// Checking disabled (RFC 4035 §3.2.2).
     pub const CD: Self = Self(0x0010);
 
-    /// QR and AA to CD: the word without the opcode and rcode bits.
-    const MASK: u16 = 0x87F0;
+    /// Every flag, QR and AA to CD: the word without the opcode and rcode bits.
+    pub const ALL: Self = Self(0x87F0);
     const NAMES: [(Self, &str); 8] = [
         (Self::QR, "qr"),
         (Self::AA, "aa"),
@@ -83,7 +83,7 @@ impl Flags {
     /// Flags from the header's second 16-bit word, ignoring the opcode and rcode bits.
     #[must_use]
     pub const fn from_word(word: u16) -> Self {
-        Self(word & Self::MASK)
+        Self(word & Self::ALL.0)
     }
 
     /// The names of the set flags, in header order.
@@ -111,6 +111,15 @@ impl BitOr for Flags {
 
     fn bitor(self, rhs: Self) -> Self {
         self.with(rhs)
+    }
+}
+
+impl BitAnd for Flags {
+    type Output = Self;
+
+    /// The flags set in both.
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
     }
 }
 

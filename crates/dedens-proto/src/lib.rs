@@ -22,6 +22,7 @@ pub mod question;
 pub mod rdata;
 pub mod record;
 pub mod text;
+pub mod transport;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
@@ -35,3 +36,4 @@ pub use question::Question;
 pub use rdata::RData;
 pub use record::{DecodedRecord, Record, Ttl, WireRdata};
 pub use text::{TextError, TextErrorKind};
+pub use transport::Transport;

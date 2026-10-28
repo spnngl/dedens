@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use dedens_cache::{Cache, Key, StalePolicy};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType};
+use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport};
 
 use crate::cache::{self, Looked};
 use crate::forward::{self, Forward};
-use crate::reply::{Client, Transport};
+use crate::reply::Client;
 
 /// A stage of the pipeline (D23).
 #[derive(Debug)]

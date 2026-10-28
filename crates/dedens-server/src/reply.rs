@@ -4,21 +4,13 @@ use std::borrow::Cow;
 
 use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_proto::{Edns, EdnsFlags, EdnsView, Flags, Header, Message, Query, Question, Rcode};
+use dedens_proto::{
+    Edns, EdnsFlags, EdnsView, Flags, Header, Message, Query, Question, Rcode, Transport,
+};
 
 /// The UDP payload of a query without EDNS (RFC 1035 §4.2.1), and the least one with EDNS means (RFC 6891
 /// §6.2.3).
 const MIN_UDP_PAYLOAD: u16 = 512;
-
-/// The transport a query came over, which bounds its reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Transport {
-    /// UDP: the reply fits the client's EDNS payload, at most 1232 bytes (D10), or 512 without EDNS; TC says
-    /// records were left out (RFC 1035 §4.2.1, RFC 6891 §6.2.5).
-    Udp,
-    /// TCP: the whole reply, up to 65535 bytes (RFC 7766 §8).
-    Tcp,
-}
 
 /// The client of a query, as its reply needs it.
 #[derive(Debug, Clone)]
@@ -96,8 +88,7 @@ impl<'q> Client<'q> {
     /// response has it and the client asked with AD or DO.
     fn flags(&self, flags: Flags) -> Flags {
         let asked = self.header.flags;
-        let reply =
-            Flags::from_word(asked.bits() & (Flags::RD | Flags::CD).bits()) | Flags::QR | Flags::RA;
+        let reply = asked & (Flags::RD | Flags::CD) | Flags::QR | Flags::RA;
         if flags.contains(Flags::AD) && (self.dnssec() || asked.contains(Flags::AD)) {
             reply.with(Flags::AD)
         } else {
@@ -114,7 +105,7 @@ impl<'q> Client<'q> {
             if Flags::from_word(old).contains(Flags::TC) {
                 flags = flags.with(Flags::TC);
             }
-            let new = old & !Flags::from_word(u16::MAX).bits() | flags.bits();
+            let new = old & !Flags::ALL.bits() | flags.bits();
             word.copy_from_slice(&new.to_be_bytes());
         }
     }

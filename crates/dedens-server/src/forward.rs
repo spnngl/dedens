@@ -64,8 +64,7 @@ impl Forward {
 /// options. The client subnet stays here (D41), and cookies are between us and upstream (RFC 7873 §5.1).
 pub(crate) fn request(client: &Client<'_>, question: &Question<'_>) -> Message<'static> {
     let mut request = Message::query(0, question.clone().into_owned());
-    request.header.flags =
-        Flags::from_word(client.header.flags.bits() & (Flags::AD | Flags::CD).bits()) | Flags::RD;
+    request.header.flags = client.header.flags & (Flags::AD | Flags::CD) | Flags::RD;
     request.edns = Some(client.our_edns());
     request
 }

@@ -25,17 +25,9 @@ use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
+pub use dedens_proto::Transport;
 use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
 use dedens_proto::{EncodeError, Flags, Message, Name, Query, Question, Rcode, Violation};
-
-/// The transport a query goes over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Transport {
-    /// UDP: a new connected socket on port 0 for each query sent (D27).
-    Udp,
-    /// TCP, each message behind its two-byte length (RFC 1035 §4.2.2).
-    Tcp,
-}
 
 /// How an exchange behaves; the default is dig's (D27).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

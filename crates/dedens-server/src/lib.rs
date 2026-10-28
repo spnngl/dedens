@@ -31,6 +31,6 @@ mod forward;
 mod pipeline;
 mod reply;
 
+pub use dedens_proto::Transport;
 pub use forward::Forward;
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
-pub use reply::Transport;
