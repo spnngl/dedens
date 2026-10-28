@@ -29,6 +29,10 @@ use socket2::{Domain, Socket, Type};
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
+/// Tasks answering on each UDP socket: one receives while another answers or sends, so the socket always has a
+/// receive posted.
+const UDP_RECEIVES: usize = 4;
+
 /// Bytes a UDP socket may hold before the OS drops datagrams (`SO_RCVBUF`).
 const UDP_RECEIVE_BUFFER: usize = 4 << 20;
 
@@ -38,29 +42,23 @@ const TCP_BACKLOG: i32 = 1024;
 /// How long to wait before accepting again after `accept` failed, for instance out of file descriptors.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
-/// The sockets of one thread, bound but not yet on its runtime.
-#[derive(Debug)]
-pub(crate) struct Sockets {
-    udp: Vec<Socket>,
-    tcp: Vec<Socket>,
-}
+/// The sockets of one thread, bound but not yet on its runtime: a UDP socket and a TCP listener per address.
+pub(crate) type Sockets = Vec<(Socket, Socket)>;
 
 /// Binds a UDP socket and a TCP listener on each of `addrs`. On Linux they take `SO_REUSEPORT`, so each thread
 /// binds its own on the same addresses.
 pub(crate) fn bind(addrs: &[SocketAddr]) -> anyhow::Result<Sockets> {
-    let mut sockets = Sockets {
-        udp: Vec::new(),
-        tcp: Vec::new(),
-    };
-    for &addr in addrs {
-        let udp = socket(addr, Type::DGRAM).with_context(|| format!("cannot bind UDP {addr}"))?;
-        sockets.udp.push(udp);
-        let tcp = socket(addr, Type::STREAM)
-            .and_then(|tcp| tcp.listen(TCP_BACKLOG).map(|()| tcp))
-            .with_context(|| format!("cannot listen on TCP {addr}"))?;
-        sockets.tcp.push(tcp);
-    }
-    Ok(sockets)
+    addrs
+        .iter()
+        .map(|&addr| {
+            let udp =
+                socket(addr, Type::DGRAM).with_context(|| format!("cannot bind UDP {addr}"))?;
+            let tcp = socket(addr, Type::STREAM)
+                .and_then(|tcp| tcp.listen(TCP_BACKLOG).map(|()| tcp))
+                .with_context(|| format!("cannot listen on TCP {addr}"))?;
+            Ok((udp, tcp))
+        })
+        .collect()
 }
 
 /// A non-blocking socket of type `ty` bound to `addr`; an IPv6 one takes IPv6 alone, so `[::]` and `0.0.0.0` bind
@@ -148,23 +146,20 @@ pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Resu
         upstream: Slots::new(UPSTREAM_QUERIES),
         connections: Slots::new(TCP_CONNECTIONS),
     });
-    for socket in sockets.udp {
-        spawn(udp(UdpSocket::from_std(socket.into())?, Rc::clone(&thread))).detach();
-    }
-    for socket in sockets.tcp {
-        spawn(tcp(
-            TcpListener::from_std(socket.into())?,
-            Rc::clone(&thread),
-        ))
-        .detach();
+    for (udp_socket, tcp_listener) in sockets {
+        let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
+        for _ in 0..UDP_RECEIVES {
+            spawn(udp(Rc::clone(&socket), Rc::clone(&thread))).detach();
+        }
+        let listener = TcpListener::from_std(tcp_listener.into())?;
+        spawn(tcp(listener, Rc::clone(&thread))).detach();
     }
     // The tasks never end.
     std::future::pending().await
 }
 
-/// Answers the queries of one UDP socket.
-async fn udp(socket: UdpSocket, thread: Rc<Thread>) {
-    let socket = Rc::new(socket);
+/// Answers queries of one UDP socket, one after the other; [`UDP_RECEIVES`] of them share a socket.
+async fn udp(socket: Rc<UdpSocket>, thread: Rc<Thread>) {
     let mut query = Vec::with_capacity(MAX_MESSAGE_LEN);
     let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
     loop {

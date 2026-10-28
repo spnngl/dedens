@@ -90,6 +90,13 @@ removed `MessageView` read every record in 178/505/1093 ns.
   into a 1232-byte buffer, a/mx/txt_large: 204/143/163 ns and one 192-byte allocation a hit (the stale option
   pushed to size the reply, the upstream query built for nothing) → 97/97/118 ns, none (same session).
 
+## dedensd under dnsperf (D48)
+
+`just bench-dnsperf [base]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on one core
+answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
+
+- One UDP task a socket → four: 304k-334k → 381k-432k queries/s, average latency 1.5 → 1.2 ms.
+
 ## Zone files (D25)
 
 A generated 100 000-record zone: dedens 7.3-7.5 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record

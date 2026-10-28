@@ -91,6 +91,11 @@ bench-unbound:
     cargo run --quiet --release -p dedens-bench --example zone > "$out/zone.txt"
     "$out/bench" "$out/zone.txt"
 
+# dedensd under dnsperf on Linux (io_uring) in a container, the working tree against `base`: just bench-dnsperf HEAD~1
+bench-dnsperf base="HEAD":
+    docker run --rm --security-opt seccomp=unconfined -v "$(pwd):/src:ro" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
+        -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{base}}
+
 # Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
 cov:
     #!/usr/bin/env bash

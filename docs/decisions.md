@@ -338,6 +338,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   reply (a client that stops reading loses its connection). A query waiting upstream holds no reply buffer until
   a reply is made. Constants for now; configuration with need. Client allow and block lists come later
   (`docs/TODECIDE.md`).
+- D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
+  one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
+  core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
+  415k, 8 and 16 no better.
 
 ## Observability
 
