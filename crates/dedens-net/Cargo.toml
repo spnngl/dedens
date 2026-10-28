@@ -9,10 +9,13 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+compio.workspace = true
 dedens-proto.workspace = true
+flume.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+compio = { workspace = true, features = ["macros"] }
 proptest.workspace = true
 
 [lints]

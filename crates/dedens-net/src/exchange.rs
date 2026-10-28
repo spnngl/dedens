@@ -147,7 +147,7 @@ impl Exchange {
                 question.name = random_case(&question.name, bits);
             }
         }
-        let wire = query.to_vec()?;
+        let wire = encode(&mut query, options.transport)?;
         Ok(Self {
             server,
             transport: options.transport,
@@ -331,7 +331,7 @@ impl Exchange {
 
     /// Sends the changed query over `transport`.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
-        match self.query.to_vec() {
+        match encode(&mut self.query, transport) {
             Ok(wire) => {
                 self.wire = wire;
                 self.transport = transport;
@@ -352,6 +352,26 @@ impl Exchange {
 
 /// A response to drop for its cookie.
 struct Forged;
+
+/// `query` as sent over `transport`: over TCP, EDNS carries an empty edns-tcp-keepalive so the server may tell how
+/// long to keep the connection (RFC 7828 §3.2.1); over UDP, it must not.
+fn encode(query: &mut Message<'static>, transport: Transport) -> Result<Vec<u8>, EncodeError> {
+    let Some(edns) = query.edns.as_mut().filter(|edns| {
+        transport == Transport::Tcp
+            && !edns
+                .options
+                .iter()
+                .any(|option| matches!(option, EdnsOption::Keepalive(_)))
+    }) else {
+        return query.to_vec();
+    };
+    edns.options.push(EdnsOption::Keepalive(None));
+    let wire = query.to_vec();
+    if let Some(edns) = &mut query.edns {
+        edns.options.pop();
+    }
+    wire
+}
 
 /// The cookie `query` sends, if any.
 fn cookie_in(query: &Message<'_>) -> Option<Cookie> {

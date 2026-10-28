@@ -100,7 +100,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Cookies (RFC 7873 §5): client cookie from a per-process random secret and both addresses, server cookies
     kept per server for the process, BADCOOKIE retried once.
   - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, idle close,
-    edns-tcp-keepalive honoured (RFC 7828), a closed connection retried once on a new one.
+    edns-tcp-keepalive sent empty in TCP queries and its timeout honoured when shorter (RFC 7828), a closed
+    connection retried once on a new one. Queries are written whole by a task of the connection, so a query that
+    stops waiting never cuts a message short.
 - D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
   it, and owns no randomness or secret; `0x20` takes its random bits as an option, which also turns on the
   exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`

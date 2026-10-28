@@ -11,12 +11,21 @@ repository = "https://github.com/spnngl/dedens"
 publish = false
 
 [workspace.dependencies]
+# D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS.
+compio = { version = "0.19.2", default-features = false, features = [
+  "io-uring",
+  "net",
+  "polling",
+  "runtime",
+  "time",
+] }
 dedens-cache = { path = "crates/dedens-cache" }
 dedens-net = { path = "crates/dedens-net" }
 dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
 hickory-proto = { version = "0.26.3", default-features = false }
 insta = "1.49"
 metrics = "0.24.6"

@@ -11,12 +11,13 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     let now = t0();
     let query = query();
     let exchange = start(&query, Options::default(), now);
-    let udp_query = exchange.wire().to_vec();
     let mut truncated = response(&query, Rcode::NOERROR);
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     let exchange = expect_send(udp(exchange, &wire(&truncated), now));
     assert_eq!(exchange.transport(), Transport::Tcp);
-    assert_eq!(exchange.wire(), udp_query);
+    let mut over_tcp = common::sent(&exchange);
+    over_tcp.edns.as_mut().expect("EDNS").options.clear();
+    assert_eq!(over_tcp, query);
     assert_eq!(exchange.sends(), 2);
 
     // The UDP socket is gone: only TCP counts now.
