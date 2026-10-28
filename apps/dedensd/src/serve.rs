@@ -117,16 +117,22 @@ struct Thread {
     client: Client,
     upstream: Slots,
     connections: Slots,
-    /// Reply buffers for TCP, given back once their reply is queued; their bytes are left as they are, not cleared.
+    /// Reply buffers for TCP, given back once their reply is queued.
     spare: RefCell<Vec<Vec<u8>>>,
+    /// Whether a spare buffer is zeroed before reuse, so no byte of an earlier reply stays in it (D52).
+    zero_buffers: bool,
 }
 
 impl Thread {
-    /// A reply buffer of `size` bytes: a spare one for TCP's size, else a new one.
+    /// A reply buffer of `size` bytes: a spare one for TCP's size, zeroed unless the configuration says not to,
+    /// else a new one.
     fn buffer(&self, size: usize) -> Vec<u8> {
         if size == MAX_MESSAGE_LEN
-            && let Some(spare) = self.spare.borrow_mut().pop()
+            && let Some(mut spare) = self.spare.borrow_mut().pop()
         {
+            if self.zero_buffers {
+                spare.fill(0);
+            }
             return spare;
         }
         vec![0; size]
@@ -190,18 +196,24 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
     Runtime::builder().with_proactor(proactor).build()
 }
 
-/// Answers on `sockets` with `pipeline`, until the end of the process.
+/// Answers on `sockets` with `pipeline`, zeroing reused reply buffers when `zero_buffers`, until the end of the
+/// process.
 ///
 /// # Errors
 ///
 /// A socket the runtime cannot take.
-pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Result<()> {
+pub(crate) async fn serve(
+    sockets: Sockets,
+    pipeline: Arc<Pipeline>,
+    zero_buffers: bool,
+) -> io::Result<()> {
     let thread = Rc::new(Thread {
         pipeline,
         client: Client::new(),
         upstream: Slots::new(UPSTREAM_QUERIES),
         connections: Slots::new(TCP_CONNECTIONS),
         spare: RefCell::default(),
+        zero_buffers,
     });
     for (udp_socket, tcp_listener) in sockets {
         let socket = UdpSocket::from_std(udp_socket.into())?;

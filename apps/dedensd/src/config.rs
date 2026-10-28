@@ -3,6 +3,7 @@
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53"]
+//! zero_buffers: true
 //! pipeline: [cache, upstream]
 //! stages:
 //!   cache:
@@ -31,6 +32,8 @@ use serde::Deserialize;
 struct File {
     /// Addresses answered on, over UDP and TCP.
     listen: Vec<SocketAddr>,
+    /// Whether a reused reply buffer is zeroed first (D52); `true` unless set.
+    zero_buffers: Option<bool>,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -71,6 +74,7 @@ impl TryFrom<String> for Server {
 #[derive(Debug)]
 pub(crate) struct Config {
     pub(crate) listen: Vec<SocketAddr>,
+    pub(crate) zero_buffers: bool,
     pub(crate) pipeline: Pipeline,
 }
 
@@ -128,6 +132,7 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
     }
     Ok(Config {
         listen: file.listen,
+        zero_buffers: file.zero_buffers.unwrap_or(true),
         pipeline: Pipeline::new(built),
     })
 }
@@ -241,6 +246,13 @@ mod tests {
         let config = read(text, env).unwrap();
         assert_eq!(config.listen, ["127.0.0.1:5353".parse().unwrap()]);
         assert!(read(MINIMAL, env).is_ok());
+    }
+
+    #[test]
+    fn buffers_are_zeroed_unless_set_not_to() {
+        assert!(read(MINIMAL, env).unwrap().zero_buffers);
+        let text = format!("zero_buffers: false\n{MINIMAL}");
+        assert!(!read(&text, env).unwrap().zero_buffers);
     }
 
     #[test]

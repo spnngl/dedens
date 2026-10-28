@@ -306,7 +306,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a
   miss counted twice, and no way to tell a refresh from a reply).
 - D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D17's query
-  files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings under `type`:
+  files; `listen` addresses, `zero_buffers` (D52), `pipeline` (stage names in order), `stages` (name to settings under `type`:
   `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53). `${VAR}` is
   replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML. Errors:
   unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
@@ -367,9 +367,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k).
 - D52 A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
-  earlier one (up to 32, 2 MiB), its old bytes left, not cleared: the encoder writes before it reads. Forwarding
-  over TCP (`just bench-dnsperf HEAD forward-tcp`): 84k → 90k-92k queries/s. Rejected: an option to skip
-  clearing a new buffer (uninitialized memory behind `unsafe`, for the gain reuse gives safely).
+  earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
+  configuration: no byte of an earlier reply stays, should a bug ever send past the reply's length (the encoder
+  writes before it reads, so nothing leaks today). Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
+  84k zeroing new buffers → 90k-92k reusing them unzeroed; zeroing them again costs part of it (79k-88k against
+  87k-90k). Rejected: skipping the zeroing of new buffers (uninitialized memory behind `unsafe`).
 
 ## Observability
 
