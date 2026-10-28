@@ -20,6 +20,7 @@ mod lexer;
 mod zone;
 
 use core::fmt;
+use core::ops::RangeInclusive;
 use core::str::FromStr;
 
 pub(crate) use lexer::{Lexer, Token};
@@ -405,14 +406,37 @@ pub(crate) struct Quoted<'b>(pub(crate) &'b [u8]);
 impl fmt::Display for Quoted<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("\"")?;
-        for &b in self.0 {
-            match b {
-                b'"' | b'\\' => write!(f, "\\{}", char::from(b))?,
-                0x20..=0x7E => write!(f, "{}", char::from(b))?,
-                _ => write!(f, "\\{b:03}")?,
-            }
-        }
+        write_escaped(f, self.0, 0x20..=0x7E, b"\"\\")?;
         f.write_str("\"")
+    }
+}
+
+/// Writes `bytes` in presentation form (RFC 1035 §5.1): `special` bytes after a `\`, other bytes outside `plain`
+/// as `\DDD`, and the runs of plain bytes between them in one write each.
+pub(crate) fn write_escaped(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    plain: RangeInclusive<u8>,
+    special: &[u8],
+) -> fmt::Result {
+    let mut rest = bytes;
+    loop {
+        let run = rest
+            .iter()
+            .position(|b| special.contains(b) || !plain.contains(b))
+            .unwrap_or(rest.len());
+        let (run, escaped) = rest.split_at(run);
+        // Plain bytes are printable ASCII, so UTF-8.
+        f.write_str(str::from_utf8(run).unwrap_or_default())?;
+        let Some((&b, tail)) = escaped.split_first() else {
+            return Ok(());
+        };
+        if special.contains(&b) {
+            write!(f, "\\{}", char::from(b))?;
+        } else {
+            write!(f, "\\{b:03}")?;
+        }
+        rest = tail;
     }
 }
 

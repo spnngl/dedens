@@ -448,15 +448,7 @@ impl fmt::Display for Name<'_> {
             return f.write_str(".");
         }
         for label in self.labels() {
-            for &b in label {
-                match b {
-                    b'.' | b'\\' | b'"' | b'(' | b')' | b';' | b'@' | b'$' => {
-                        write!(f, "\\{}", char::from(b))?;
-                    }
-                    0x21..=0x7E => write!(f, "{}", char::from(b))?,
-                    _ => write!(f, "\\{b:03}")?,
-                }
-            }
+            text::write_escaped(f, label, 0x21..=0x7E, b".\\\"();@$")?;
             f.write_str(".")?;
         }
         Ok(())

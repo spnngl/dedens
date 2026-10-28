@@ -18,6 +18,7 @@ pub use rfc8914_ede::{ExtendedError, InfoCode};
 
 use crate::codes::{RecordType, code_type};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::header::flag_set;
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// The UDP payload size to advertise by default: 1232 bytes avoids IP fragmentation (DNS Flag Day 2020, D10).
@@ -48,31 +49,9 @@ impl EdnsFlags {
     pub const fn from_bits(bits: u16) -> Self {
         Self(bits)
     }
-
-    /// The wire value.
-    #[must_use]
-    pub const fn bits(self) -> u16 {
-        self.0
-    }
-
-    /// Whether every bit of `other` is set.
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// These flags with `other` set.
-    #[must_use]
-    pub const fn with(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    /// These flags with `other` cleared.
-    #[must_use]
-    pub const fn without(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
 }
+
+flag_set!(EdnsFlags);
 
 code_type! {
     /// EDNS option code (RFC 6891 §6.1.2, IANA registry).

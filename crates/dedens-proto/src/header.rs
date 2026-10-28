@@ -10,6 +10,39 @@ use crate::wire::{Reader, Writer};
 /// Length of the header on the wire.
 pub const HEADER_LEN: usize = 12;
 
+/// Adds `contains`, `with`, `without` and `bits` to a set of one-bit flags kept as their bits in a `u16`.
+macro_rules! flag_set {
+    ($name:ident) => {
+        impl $name {
+            /// Whether every flag of `other` is set.
+            #[must_use]
+            pub const fn contains(self, other: Self) -> bool {
+                self.0 & other.0 == other.0
+            }
+
+            /// These flags plus those of `other`.
+            #[must_use]
+            pub const fn with(self, other: Self) -> Self {
+                Self(self.0 | other.0)
+            }
+
+            /// These flags minus those of `other`.
+            #[must_use]
+            pub const fn without(self, other: Self) -> Self {
+                Self(self.0 & !other.0)
+            }
+
+            /// The flags at their bit positions on the wire.
+            #[must_use]
+            pub const fn bits(self) -> u16 {
+                self.0
+            }
+        }
+    };
+}
+
+pub(crate) use flag_set;
+
 /// The one-bit header flags: QR, AA, TC, RD, RA, the reserved Z bit, AD and CD (RFC 1035 §4.1.1, RFC 4035 §3).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Flags(u16);
@@ -46,30 +79,6 @@ impl Flags {
         (Self::CD, "cd"),
     ];
 
-    /// Whether every flag of `other` is set.
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// These flags plus those of `other`.
-    #[must_use]
-    pub const fn with(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    /// These flags minus those of `other`.
-    #[must_use]
-    pub const fn without(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    /// The flag bits of the header's second 16-bit word; opcode and rcode bits are not part of it.
-    #[must_use]
-    pub const fn bits(self) -> u16 {
-        self.0
-    }
-
     /// Flags from the header's second 16-bit word, ignoring the opcode and rcode bits.
     #[must_use]
     pub const fn from_word(word: u16) -> Self {
@@ -84,6 +93,8 @@ impl Flags {
             .map(|(_, name)| name)
     }
 }
+
+flag_set!(Flags);
 
 impl BitOr for Flags {
     type Output = Self;
