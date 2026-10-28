@@ -10,6 +10,7 @@ tests in tests/captured.rs decode them, and the fuzz smoke test uses them as see
 """
 
 import pathlib
+import secrets
 import socket
 import struct
 import sys
@@ -69,21 +70,44 @@ def encode_name(name: str) -> bytes:
     return out + b"\0"
 
 
+class BadReply(Exception):
+    """A reply that does not answer the query sent."""
+
+
+def question(case: Case) -> bytes:
+    return encode_name(case.qname) + struct.pack("!HH", case.qtype, 1)
+
+
 def build_query(case: Case) -> bytes:
     flags = 0x0100 if case.rd else 0  # RD
     additional = 0 if case.payload is None else 1
-    msg = struct.pack("!HHHHHH", 0x1234, flags, 1, 0, 0, additional)
-    msg += encode_name(case.qname) + struct.pack("!HH", case.qtype, 1)
+    msg = struct.pack("!HHHHHH", secrets.randbits(16), flags, 1, 0, 0, additional)
+    msg += question(case)
     if case.payload is not None:
         ttl = 0x8000 if case.dnssec else 0
         msg += b"\0" + struct.pack("!HHIH", 41, case.payload, ttl, len(case.options)) + case.options
     return msg
 
 
+def check_reply(case: Case, query: bytes, answer: bytes) -> None:
+    """The reply carries the query's ID, the QR bit and the one question sent (RFC 5452 §9.1)."""
+    q = question(case)
+    if len(answer) < 12 + len(q):
+        raise BadReply(f"reply of {len(answer)} bytes")
+    if answer[:2] != query[:2]:
+        raise BadReply("reply ID differs from the query's")
+    if not answer[2] & 0x80:
+        raise BadReply("QR bit clear")
+    if answer[4:6] != b"\0\1" or answer[12 : 12 + len(q)] != q:
+        raise BadReply("question differs from the query's")
+
+
 def udp(server: str, query: bytes) -> bytes:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(5)
-        s.sendto(query, (server, 53))
+        # Connected: the OS drops datagrams from any other address.
+        s.connect((server, 53))
+        s.send(query)
         return s.recv(65535)
 
 
@@ -99,7 +123,7 @@ def read_exactly(s: socket.socket, n: int) -> bytes:
     while len(data) < n:
         chunk = s.recv(n - len(data))
         if not chunk:
-            raise EOFError("connection closed")
+            raise ConnectionError("connection closed")
         data += chunk
     return data
 
@@ -107,9 +131,11 @@ def read_exactly(s: socket.socket, n: int) -> bytes:
 def capture(case: Case) -> bytes:
     query = build_query(case)
     answer = udp(case.server, query)
+    check_reply(case, query, answer)
     truncated = answer[2] & 0x02
     if truncated and not case.keep_truncated:
         answer = tcp(case.server, query)
+        check_reply(case, query, answer)
     return answer
 
 
@@ -126,7 +152,7 @@ def main() -> int:
             continue
         try:
             data = capture(case)
-        except OSError as e:
+        except (OSError, BadReply) as e:
             print(f"{case.name}: {e}", file=sys.stderr)
             failed += 1
             continue

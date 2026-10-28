@@ -193,11 +193,14 @@ int main(int argc, char **argv) {
     die("allocation");
 
   for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-    char path[256];
+    char path[4096];
     char *data;
     size_t len;
-    snprintf(path, sizeof(path), "%s/../dedens-proto/tests/testdata/%s.bin",
-             BENCH_DIR, cases[i]);
+    int n = snprintf(path, sizeof(path),
+                     "%s/../dedens-proto/tests/testdata/%s.bin", BENCH_DIR,
+                     cases[i]);
+    if (n < 0 || (size_t)n >= sizeof(path))
+      die("test data path longer than 4095 bytes: move the checkout");
     len = read_file(path, &data);
     sldns_buffer_clear(m.pkt);
     sldns_buffer_write(m.pkt, data, len);
