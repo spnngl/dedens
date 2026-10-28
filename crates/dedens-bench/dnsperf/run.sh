@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Queries per second of dedensd under dnsperf, on Linux (io_uring), the server on one core: the git ref $1
 # (default HEAD) against the working tree, two rounds each, in mode $2: udp (the default) or tcp, the cache
-# answering every query after the first, which goes to 1.1.1.1 (the network is needed for those); or forward, over
-# UDP without a cache, every query going upstream to a second dedensd (the working tree's, on its own core)
-# answering from its cache. Runs inside the container `just bench-dnsperf` starts, with the repository at /src
+# answering every query after the first, which goes to 1.1.1.1 (the network is needed for those); or forward or
+# forward-tcp, over UDP or TCP without a cache, every query going upstream over the same transport to a second
+# dedensd (the working tree's, on its own core) answering from its cache. Runs inside the container `just bench-dnsperf` starts, with the repository at /src
 # (read-only), a target directory at /target.
 set -euo pipefail
 base="${1:-HEAD}"
@@ -50,8 +50,9 @@ stages:
     servers: ['127.0.0.1:5400']
 EOF
 config=/perf.yaml transport="$mode"
-if [[ $mode == forward ]]; then
+if [[ $mode == forward* ]]; then
     config=/front.yaml transport=udp
+    [[ $mode == forward-tcp ]] && transport=tcp
     taskset -c 7 /tree.bin --config /back.yaml 2>/dev/null &
 fi
 printf 'example.com A\nexample.org A\nwww.example.com AAAA\niana.org MX\n' >/queries.txt

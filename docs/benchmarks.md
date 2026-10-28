@@ -112,6 +112,9 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   address asked once a socket, not once a query (`getsockname` was 2.4% of the profile): 124.7k → 129.3k-129.9k.
   Cooperative io_uring task work (D51; signal-like task work was 7.3% of the profile): 135.0k-135.4k →
   158.0k-158.2k, average latency 3.7 → 3.1 ms; UDP and TCP from the cache unchanged (506k-516k, 1.86M-1.93M).
+- Forwarding over TCP (`forward-tcp`), the same against itself: 84.5k-88.6k. A 65535-byte reply buffer zeroed
+  for each query → kept per thread and reused (D52): 83.9k → 90.1k-92.3k. The front `dedensd` is at 100% of its
+  core: 27% in kernel wakeups, 9% reading the clock.
 
 ## Zone files (D25)
 

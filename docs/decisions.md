@@ -366,6 +366,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Linux 5.19): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k).
+- D52 A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
+  earlier one (up to 32, 2 MiB), its old bytes left, not cleared: the encoder writes before it reads. Forwarding
+  over TCP (`just bench-dnsperf HEAD forward-tcp`): 84k → 90k-92k queries/s. Rejected: an option to skip
+  clearing a new buffer (uninitialized memory behind `unsafe`, for the gain reuse gives safely).
 
 ## Observability
 

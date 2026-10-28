@@ -4,7 +4,7 @@
 //! Each thread bounds its upstream queries and TCP connections, each connection its queries in flight and the time
 //! a reply takes to write (D47).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZero;
@@ -108,12 +108,37 @@ const TCP_PENDING: usize = 64;
 /// How long a reply may take to write: a client that stops reading loses its connection (RFC 7766 §10).
 const TCP_WRITE: Duration = Duration::from_secs(10);
 
+/// Reply buffers of 65535 bytes a thread keeps for TCP queries answered after upstream: 2 MiB.
+const TCP_SPARE_BUFFERS: usize = 32;
+
 /// What the tasks of one thread share.
 struct Thread {
     pipeline: Arc<Pipeline>,
     client: Client,
     upstream: Slots,
     connections: Slots,
+    /// Reply buffers for TCP, given back once their reply is queued; their bytes are left as they are, not cleared.
+    spare: RefCell<Vec<Vec<u8>>>,
+}
+
+impl Thread {
+    /// A reply buffer of `size` bytes: a spare one for TCP's size, else a new one.
+    fn buffer(&self, size: usize) -> Vec<u8> {
+        if size == MAX_MESSAGE_LEN
+            && let Some(spare) = self.spare.borrow_mut().pop()
+        {
+            return spare;
+        }
+        vec![0; size]
+    }
+
+    /// Keeps `buffer` for [`Thread::buffer`] when it has TCP's size and room is left.
+    fn give_back(&self, buffer: Vec<u8>) {
+        let mut spare = self.spare.borrow_mut();
+        if buffer.len() == MAX_MESSAGE_LEN && spare.len() < TCP_SPARE_BUFFERS {
+            spare.push(buffer);
+        }
+    }
 }
 
 /// A count of things in use, up to a limit; a [`Slot`] gives its place back when dropped.
@@ -176,6 +201,7 @@ pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Resu
         client: Client::new(),
         upstream: Slots::new(UPSTREAM_QUERIES),
         connections: Slots::new(TCP_CONNECTIONS),
+        spare: RefCell::default(),
     });
     for (udp_socket, tcp_listener) in sockets {
         let socket = UdpSocket::from_std(udp_socket.into())?;
@@ -368,7 +394,7 @@ async fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) -> bool {
 }
 
 /// Asks the upstream servers for `upstream` in turn, over `transport`, the client's, each with the forward stage's
-/// timeout and tries (D42), and hands `deliver` the replies to send, in a buffer of `size` bytes made only then:
+/// timeout and tries (D42), and hands `deliver` the replies to send, in a buffer of `size` bytes taken only then:
 /// expired data when the client response timer runs out first, resolution going on to refresh the cache (RFC 8767
 /// §5), then the response's unless that went out; none after a prefetch. `deliver` gives the buffer back.
 async fn answer(
@@ -397,14 +423,18 @@ async fn answer(
                     break 'ask response;
                 }
                 stale_at = None;
-                out.resize(size, 0);
+                if out.is_empty() {
+                    out = thread.buffer(size);
+                }
                 if let Some(len) = pipeline.stale(&upstream, now(), &mut out) {
                     out = deliver(out, len).await;
                 }
             }
             exchange.await
         };
-        out.resize(size, 0);
+        if out.is_empty() {
+            out = thread.buffer(size);
+        }
         let step = match &response {
             Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
             Err(error) if error.is_local() => {
@@ -418,10 +448,13 @@ async fn answer(
         };
         match step {
             Step::Reply(len) | Step::Refresh(len, _) => {
-                deliver(out, len).await;
+                thread.give_back(deliver(out, len).await);
                 return;
             }
-            Step::Drop => return,
+            Step::Drop => {
+                thread.give_back(out);
+                return;
+            }
             Step::Upstream(next) => upstream = next,
         }
     }
