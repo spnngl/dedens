@@ -292,6 +292,36 @@ fn words_and_reverse_addresses_make_the_questions() {
 }
 
 #[test]
+fn each_name_is_asked_the_types_after_it() {
+    let server = Responder::start(&[]);
+    let at = server.at();
+    let args = [
+        &at,
+        "TXT",
+        "a.example",
+        "b.example",
+        "MX",
+        "AAAA",
+        "+tries=1",
+        "+time=100ms",
+    ];
+    dedens().args(args).assert().code(9);
+    let mut asked: Vec<_> = queries(&server)
+        .iter()
+        .map(|(_, q)| (q.questions[0].name.to_string(), q.questions[0].qtype))
+        .collect();
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            ("a.example.".to_owned(), RecordType::TXT),
+            ("b.example.".to_owned(), RecordType::MX),
+            ("b.example.".to_owned(), RecordType::AAAA),
+        ]
+    );
+}
+
+#[test]
 fn search_tries_the_resolv_conf_domains() {
     let server = Responder::start(&["cname_chain"]);
     let conf = tempfile::NamedTempFile::new().expect("a file");

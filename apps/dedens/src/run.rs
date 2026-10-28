@@ -144,24 +144,31 @@ fn no_reply(error: &anyhow::Error) -> bool {
     )
 }
 
-/// The queries of the command line: each name, `-x` address included, asked each type.
+/// The queries of the command line: each name asked the types written after it, up to the next name, as dig
+/// reads them; a name without any the types written before the first name, else A. `-x` addresses ask PTR.
 fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
-    let (mut names, mut types, mut class) = (Vec::new(), Vec::new(), Class::IN);
+    // The types before the first name, then each name with the types after it.
+    let (mut leading, mut names, mut class) =
+        (Vec::new(), Vec::<(&str, Vec<RecordType>)>::new(), Class::IN);
     for word in &cli.words {
         match (word.parse(), word.parse()) {
-            (Ok(qtype), _) => types.push(qtype),
+            (Ok(qtype), _) => names
+                .last_mut()
+                .map_or(&mut leading, |(_, types)| types)
+                .push(qtype),
             (_, Ok(qclass)) => class = qclass,
-            _ => names.push(word.as_str()),
+            _ => names.push((word.as_str(), Vec::new())),
         }
     }
     if names.is_empty() && cli.reverse.is_empty() {
-        names.push(".");
-        if types.is_empty() {
-            types.push(RecordType::NS);
+        // dig without a name asks the root its servers.
+        names.push((".", Vec::new()));
+        if leading.is_empty() {
+            leading.push(RecordType::NS);
         }
     }
-    if types.is_empty() {
-        types.push(RecordType::A);
+    if leading.is_empty() {
+        leading.push(RecordType::A);
     }
     let conf = (cli.search || cli.server.is_none())
         .then(resolv_conf)
@@ -178,7 +185,8 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         expect: None,
     };
     let mut jobs = Vec::new();
-    for text in names {
+    for (text, types) in names {
+        let types = if types.is_empty() { &leading } else { &types };
         let (ascii, warnings) =
             idn::to_ascii(text).map_err(|e| anyhow!("{text}: not a domain name: {e}"))?;
         for warning in warnings {

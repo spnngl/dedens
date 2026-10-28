@@ -16,7 +16,7 @@ use dedens_scenario::{CookieOption, Options, Timeout};
 #[command(version, max_term_width = 100)]
 pub(crate) struct Cli {
     /// Names, types and classes, as dig reads them: a type or class mnemonic is one, anything else a name. Each
-    /// name is asked each type; by default A, or NS of the root without a name.
+    /// name is asked the types after it, else those before the first name, else A; no name asks NS of the root.
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
     /// The server: an address, with or without a port, or a host name. Default: the first `nameserver` of

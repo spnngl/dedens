@@ -179,7 +179,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   with labels mixing scripts flagged (IDN homographs).
 - D32 CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
   `+noopt` → `--opt=false`, `+opt=v` → `--opt=v`), then clap parses. One option set for both spellings, one help.
-  Several names and types per run go concurrently on one compio runtime. Output: compact by default (one line
+  Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
+  written after it, and one without any the types written before the first name, else A. Output: compact by default (one line
   per record, a footer in words), `--dig` for dig's layout, `+short`, `--json`; color with anstream/anstyle,
   `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
   RFC 5895) and `unicode-script` for mixed-script labels, both in `apps/dedens`: the library stays ASCII.
