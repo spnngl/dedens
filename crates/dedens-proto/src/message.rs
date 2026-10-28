@@ -296,7 +296,8 @@ impl<'a> Message<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
     pub fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodeError> {
-        self.encode_into(buf, false).map(|encoded| encoded.len)
+        self.encode_into(buf, false, self.edns.as_ref())
+            .map(|encoded| encoded.len)
     }
 
     /// Like [`Message::encode`], but when the records do not fit, writes the ones that do and drops the rest
@@ -311,16 +312,22 @@ impl<'a> Message<'a> {
     ///
     /// [`EncodeError::BufferFull`] when the header, the questions and the OPT record do not fit.
     pub fn encode_truncated(&self, buf: &mut [u8]) -> Result<Encoded, EncodeError> {
-        self.encode_into(buf, true)
+        self.encode_into(buf, true, self.edns.as_ref())
     }
 
-    fn encode_into(&self, buf: &mut [u8], may_truncate: bool) -> Result<Encoded, EncodeError> {
+    /// Writes the message with the OPT record of `edns`, in place of its own.
+    fn encode_into(
+        &self,
+        buf: &mut [u8],
+        may_truncate: bool,
+        edns: Option<&Edns<'_>>,
+    ) -> Result<Encoded, EncodeError> {
         let mut w = Writer::new(buf);
         self.header.encode(Counts::default(), &mut w)?;
         for q in &self.questions {
             q.encode(&mut w)?;
         }
-        if let Some(edns) = &self.edns {
+        if let Some(edns) = edns {
             w.hold_back(edns.wire_len())?;
         }
         let mut written = [0_usize; 3];
@@ -334,7 +341,7 @@ impl<'a> Message<'a> {
                 // The OPT record opens the additional section, so a decoder lifts it before any stray OPT
                 // record kept among the additional records (D9).
                 w.release_tail();
-                if let Some(edns) = &self.edns {
+                if let Some(edns) = edns {
                     edns.encode(&mut w)?;
                 }
                 opt_written = true;
@@ -368,12 +375,12 @@ impl<'a> Message<'a> {
         }
         if !opt_written {
             w.release_tail();
-            if let Some(edns) = &self.edns {
+            if let Some(edns) = edns {
                 edns.encode(&mut w)?;
             }
         }
         let [answers, authority, additional] = written;
-        let additional = additional + usize::from(self.edns.is_some());
+        let additional = additional + usize::from(edns.is_some());
         for (at, n) in [
             (4, self.questions.len()),
             (6, answers),
@@ -399,10 +406,25 @@ impl<'a> Message<'a> {
     ///
     /// [`EncodeError::BufferFull`] when it is longer than 65535 bytes.
     pub fn to_vec(&self) -> Result<Vec<u8>, EncodeError> {
+        self.to_vec_with(self.edns.as_ref())
+    }
+
+    /// Writes the message without its OPT record into a new vector, as a cache stores a response to add its own
+    /// OPT record to each copy it serves.
+    ///
+    /// # Errors
+    ///
+    /// As [`Message::to_vec`].
+    pub fn to_vec_without_edns(&self) -> Result<Vec<u8>, EncodeError> {
+        self.to_vec_with(None)
+    }
+
+    fn to_vec_with(&self, edns: Option<&Edns<'_>>) -> Result<Vec<u8>, EncodeError> {
+        let encode = |buf: &mut [u8]| self.encode_into(buf, false, edns).map(|e| e.len);
         // Most messages fit in 512 bytes; larger ones are encoded again into a buffer 4 times larger.
         let mut buf = vec![0; 512];
         loop {
-            match self.encode(&mut buf) {
+            match encode(&mut buf) {
                 Ok(len) => {
                     buf.truncate(len);
                     return Ok(buf);
@@ -477,14 +499,18 @@ pub(crate) enum Entry<'a> {
 ///
 /// [`DecodeError`] when the structure is broken. Unlike [`Message::decode`], it accepts invalid RDATA and EDNS
 /// options, which it does not read.
-pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<usize>, DecodeError> {
+pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<u16>, DecodeError> {
     let mut offsets = Vec::new();
     walk(msg, &mut Vec::new(), |entry, _| {
         if let Entry::Record(_, raw) = entry
             && raw.rtype != RecordType::OPT
         {
             // TTL and RDLENGTH: the 6 bytes before the RDATA.
-            offsets.push(raw.rdata.position() - 6);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "`walk` reads messages of at most 65535 bytes"
+            )]
+            offsets.push((raw.rdata.position() - 6) as u16);
         }
         Ok(())
     })?;

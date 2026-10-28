@@ -132,7 +132,7 @@ fn ttl_offsets_locate_every_record_ttl() {
     let mut wire = response.to_vec().expect("encodes");
     let offsets = message::ttl_offsets(&wire).expect("reads");
     assert_eq!(offsets.len(), 2, "the OPT record is not a record");
-    for at in offsets {
+    for at in offsets.into_iter().map(usize::from) {
         wire[at..at + 4].copy_from_slice(&7_u32.to_be_bytes());
     }
     let decoded = Message::decode(&wire).expect("decodes").message;

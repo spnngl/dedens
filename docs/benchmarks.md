@@ -75,6 +75,8 @@ removed `MessageView` read every record in 178/505/1093 ns.
 - Hit including `Query::read`: 84/159/185 ns.
 - Insert of the message the forwarder decoded (no second decode): 226/682/843 ns; it was 362/927/1426 ns
   decoding the bytes again.
+- Insert encoding without the OPT record instead of a copy of the message without it, wire bytes and TTL offsets
+  behind one `Arc`: 667/750/1322 → 625/667/854 ns (same session).
 - 8 threads, medians: one hot name 364 ns (one shard lock), 10 000 names 448 ns (each thread walks the names
   from its own start, buffers made outside the timing).
 - Counters (D30), `just bench` features of `dedens-bench`, 10 million hits under `/usr/bin/time -l`: feature off,

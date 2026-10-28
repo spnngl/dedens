@@ -57,12 +57,9 @@ impl From<EncodeError> for NotCached {
 }
 
 /// A cached response: no OPT record, ID 0, question lowercased, every record with the same TTL.
-///
-/// The bytes are shared, so a hit too large for the client is truncated outside the shard's lock.
 #[derive(Debug)]
 pub(crate) struct Response {
-    wire: Arc<[u8]>,
-    ttl_offsets: Arc<[u16]>,
+    shared: Arc<Shared>,
     /// Lifetime given at insert, in seconds.
     ttl: u32,
     /// When it stops being fresh.
@@ -104,15 +101,19 @@ impl Response {
             return Err(NotCached::ClientSubnet);
         }
         let ttl = lifetime(message, question, rcode, config)?;
-        let mut wire = without_opt(message)?;
+        // The caller adds its own OPT record to each response served.
+        let mut wire = message.to_vec_without_edns()?;
         wire[..2].fill(0);
         let name = HEADER_LEN..HEADER_LEN + key.name_len();
         wire[name].make_ascii_lowercase();
-        let ttl_offsets = ttl_offsets(&wire)?;
+        let ttl_offsets =
+            message::ttl_offsets(&wire).expect("the encoder writes messages that decode");
         set_ttls(&mut wire, ttl, &ttl_offsets);
         Ok(Self {
-            wire: wire.into(),
-            ttl_offsets,
+            shared: Arc::new(Shared {
+                wire: wire.into(),
+                ttl_offsets: ttl_offsets.into(),
+            }),
             ttl,
             expires: now.saturating_add(ttl),
             stale_until: now.saturating_add(ttl).saturating_add(config.max_stale),
@@ -121,7 +122,7 @@ impl Response {
 
     /// Bytes this response takes in a shard.
     pub(crate) fn cost(&self) -> usize {
-        self.wire.len() + 2 * self.ttl_offsets.len()
+        self.shared.wire.len() + 2 * self.shared.ttl_offsets.len()
     }
 
     /// Whether under `percent` of its lifetime is left at `now`.
@@ -138,25 +139,25 @@ impl Response {
     /// Copies the response into `out` patched for `query`, every record with TTL `ttl`; `None` when it does not
     /// fit.
     pub(crate) fn serve(&self, query: &Query<'_>, ttl: u32, out: &mut [u8]) -> Option<usize> {
-        let out = out.get_mut(..self.wire.len())?;
-        out.copy_from_slice(&self.wire);
-        patch(out, query, ttl, &self.ttl_offsets);
+        let Shared { wire, ttl_offsets } = &*self.shared;
+        let out = out.get_mut(..wire.len())?;
+        out.copy_from_slice(wire);
+        patch(out, query, ttl, ttl_offsets);
         Some(out.len())
     }
 
     /// The stored bytes, to truncate once the lock is released.
-    pub(crate) fn share(&self) -> Shared {
-        Shared {
-            wire: Arc::clone(&self.wire),
-            ttl_offsets: Arc::clone(&self.ttl_offsets),
-        }
+    pub(crate) fn share(&self) -> Arc<Shared> {
+        Arc::clone(&self.shared)
     }
 }
 
-/// A response shared out of its shard.
+/// The bytes of a response and the offsets of their TTL fields, shared so that a hit too large for the client is
+/// truncated outside the shard's lock.
+#[derive(Debug)]
 pub(crate) struct Shared {
-    wire: Arc<[u8]>,
-    ttl_offsets: Arc<[u16]>,
+    wire: Box<[u8]>,
+    ttl_offsets: Box<[u16]>,
 }
 
 impl Shared {
@@ -254,32 +255,6 @@ fn within(name: &Name<'_>, zone: &Name<'_>) -> bool {
             .skip(labels - depth)
             .zip(zone.labels())
             .all(|(a, b)| a.eq_ignore_ascii_case(b))
-}
-
-/// `message` encoded without its OPT record: the caller appends its own to each response served.
-fn without_opt(message: &Message<'_>) -> Result<Vec<u8>, EncodeError> {
-    if message.edns.is_none() {
-        return message.to_vec();
-    }
-    // The encoder writes the OPT record of `edns`: encode a copy without it.
-    Message {
-        header: message.header,
-        questions: message.questions.clone(),
-        answer: message.answer.clone(),
-        authority: message.authority.clone(),
-        additional: message.additional.clone(),
-        edns: None,
-    }
-    .to_vec()
-}
-
-/// Offsets of the TTL fields of every record of `wire`.
-fn ttl_offsets(wire: &[u8]) -> Result<Arc<[u16]>, NotCached> {
-    message::ttl_offsets(wire)
-        .expect("the encoder writes messages that decode")
-        .into_iter()
-        .map(|at| u16::try_from(at).map_err(|_| NotCached::TooLarge))
-        .collect()
 }
 
 /// Sets TTL `ttl` at every offset.
