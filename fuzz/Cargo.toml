@@ -13,6 +13,7 @@ cargo-fuzz = true
 # `crates/dedens-proto/tests/testdata/` as seeds (`just fuzz-smoke`).
 
 [dependencies]
+dedens-cache = { path = "../crates/dedens-cache" }
 dedens-proto = { path = "../crates/dedens-proto" }
 libfuzzer-sys = "0.4"
 
@@ -37,4 +38,36 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "cache_insert"
+path = "fuzz_targets/cache_insert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_name"
+path = "fuzz_targets/parse_name.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
+
+# The workspace's lint tables, copied: this crate is a workspace of its own.
+[lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+multiple_unsafe_ops_per_block = "warn"
+panic = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"

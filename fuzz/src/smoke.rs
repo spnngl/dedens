@@ -151,4 +151,22 @@ fn targets_and_shims_agree() {
         .collect();
     shims.sort();
     assert_eq!(listed, shims, "fuzz_targets/");
+    let mut bins = bin_names(&fs::read_to_string(root().join("Cargo.toml")).expect("Cargo.toml"));
+    bins.sort();
+    assert_eq!(listed, bins, "[[bin]] in Cargo.toml");
+}
+
+/// The `name` of every `[[bin]]` table of a manifest.
+fn bin_names(manifest: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_bin = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_bin = line == "[[bin]]";
+        } else if in_bin && let Some(value) = line.strip_prefix("name") {
+            let value = value.trim_start().trim_start_matches('=').trim();
+            names.push(value.trim_matches('"').to_owned());
+        }
+    }
+    names
 }
