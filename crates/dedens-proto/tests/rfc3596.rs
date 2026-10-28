@@ -12,7 +12,7 @@ use proptest::prelude::*;
 fn s2_2_aaaa_is_sixteen_octets() {
     let addr: Ipv6Addr = "2001:db8::1".parse().unwrap();
     let decoded = decode_record(&record_wire(RecordType::AAAA, &addr.octets())).unwrap();
-    assert_eq!(decoded.record.data, RData::Aaaa(addr));
+    assert_eq!(decoded.record.data(), RData::Aaaa(addr));
     assert_eq!(decoded.invalid_rdata, None);
 }
 
@@ -25,7 +25,7 @@ fn s2_2_other_lengths_are_kept_opaque() {
             Some(DecodeErrorKind::RdataLength),
             "{len}"
         );
-        assert!(matches!(decoded.record.data, RData::Opaque(_)));
+        assert!(matches!(decoded.record.data(), RData::Opaque(_)));
     }
 }
 
@@ -37,7 +37,7 @@ fn s2_1_the_type_is_28() {
 proptest! {
     #[test]
     fn round_trip(octets in any::<[u8; 16]>()) {
-        let rec = Record::new(Name::root(), Class::IN, Ttl::ZERO, RData::Aaaa(Ipv6Addr::from(octets)));
+        let rec = Record::new(Name::root(), Class::IN, Ttl::ZERO, &RData::Aaaa(Ipv6Addr::from(octets)));
         let wire = encode_with(|w| rec.encode(w));
         prop_assert_eq!(decode_record(&wire)?.record, rec);
     }

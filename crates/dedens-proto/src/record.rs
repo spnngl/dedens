@@ -1,10 +1,11 @@
-//! Resource records (RFC 1035 §3.2.1, §4.1.3) and their TTL (RFC 2181 §8).
+//! Resource records (RFC 1035 §3.2.1, §4.1.3), their TTL (RFC 2181 §8) and their RDATA as wire bytes (D28).
 
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::str::FromStr;
 
 use crate::codes::{Class, RecordType};
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
 use crate::rdata::{Opaque, RData};
 use crate::text::{self, TextError};
@@ -59,7 +60,171 @@ impl Ttl {
     }
 }
 
-/// A resource record: owner name, class, TTL and data; the type is the data's.
+/// The RDATA of a record as wire bytes with its type (D28), read as [`RData`] on demand by [`WireRdata::data`].
+///
+/// Decoded RDATA was checked against its type, and stays in the message it came from: names in it may point
+/// elsewhere in that message. Encoding copies the bytes, except for the types whose names may be compressed
+/// (RFC 3597 §4), which are read and written again. Equality and hashing go through [`RData`], so names inside
+/// RDATA compare ASCII case-insensitively (RFC 4343).
+#[derive(Clone)]
+pub struct WireRdata<'a>(Repr<'a>);
+
+#[derive(Clone)]
+enum Repr<'a> {
+    /// `msg[start..end]`, checked when decoded.
+    InMessage {
+        msg: &'a [u8],
+        start: u16,
+        end: u16,
+        rtype: RecordType,
+    },
+    /// Bytes without compression pointers.
+    Owned { bytes: Box<[u8]>, rtype: RecordType },
+}
+
+impl<'a> WireRdata<'a> {
+    /// The wire form of `data`.
+    #[must_use]
+    pub fn new(data: &RData<'_>) -> WireRdata<'static> {
+        WireRdata(Repr::Owned {
+            bytes: data.with_wire(|wire| Box::from(wire)),
+            rtype: data.rtype(),
+        })
+    }
+
+    /// Checks the RDATA of `rtype` delimited by `rdata` and keeps it in place; RDATA invalid for its type is kept,
+    /// with why (D9).
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] when the RDATA of a type that may hold compressed names is invalid.
+    pub(crate) fn decode(
+        rtype: RecordType,
+        rdata: Reader<'a>,
+    ) -> Result<(Self, Option<DecodeError>), DecodeError> {
+        let (data, invalid) = decode_rdata(rtype, rdata)?;
+        let msg = rdata.message();
+        let repr = match (u16::try_from(rdata.position()), u16::try_from(rdata.end())) {
+            (Ok(start), Ok(end)) => Repr::InMessage {
+                msg,
+                start,
+                end,
+                rtype,
+            },
+            // Only past the 65535 bytes of a DNS message, in a larger buffer: copied out.
+            _ => WireRdata::new(&data).0,
+        };
+        Ok((Self(repr), invalid))
+    }
+
+    /// The record type.
+    #[must_use]
+    pub const fn rtype(&self) -> RecordType {
+        match &self.0 {
+            Repr::InMessage { rtype, .. } | Repr::Owned { rtype, .. } => *rtype,
+        }
+    }
+
+    /// The RDATA read as its type; RDATA invalid for its type is [`RData::Opaque`] (D9).
+    #[must_use]
+    pub fn data(&self) -> RData<'_> {
+        let rtype = self.rtype();
+        let r = self.reader();
+        // Decoded RDATA was checked; bytes built from typed data hold no pointer. What still fails to read, such
+        // as bytes given as opaque for a type with names, stays opaque.
+        decode_rdata(rtype, r).map_or_else(
+            |_| {
+                let mut bytes = r;
+                RData::Opaque(Opaque::invalid(rtype, bytes.rest()))
+            },
+            |(data, _)| data,
+        )
+    }
+
+    /// The same RDATA, owning its bytes, with names uncompressed.
+    #[must_use]
+    pub fn into_owned(self) -> WireRdata<'static> {
+        match self.0 {
+            Repr::Owned { bytes, rtype } => WireRdata(Repr::Owned { bytes, rtype }),
+            Repr::InMessage { rtype, .. } if RData::may_hold_compressed_names(rtype) => {
+                WireRdata::new(&self.data())
+            }
+            Repr::InMessage {
+                msg,
+                start,
+                end,
+                rtype,
+            } => WireRdata(Repr::Owned {
+                bytes: Box::from(
+                    msg.get(usize::from(start)..usize::from(end))
+                        .unwrap_or_default(),
+                ),
+                rtype,
+            }),
+        }
+    }
+
+    /// A reader over the RDATA, inside its message when decoded.
+    fn reader(&self) -> Reader<'_> {
+        match &self.0 {
+            Repr::InMessage {
+                msg, start, end, ..
+            } => Reader::range(msg, usize::from(*start), usize::from(*end)),
+            Repr::Owned { bytes, .. } => Reader::new(bytes),
+        }
+    }
+
+    /// Writes the RDATA, without its length: a copy, unless names in it may be compressed, in the message read
+    /// (RFC 3597 §4) or the one written (the RFC 1035 types).
+    pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        let rtype = self.rtype();
+        let copy = match self.0 {
+            Repr::InMessage { .. } => !RData::may_hold_compressed_names(rtype),
+            Repr::Owned { .. } => !RData::compressed_on_write(rtype),
+        };
+        if copy {
+            w.put_bytes(self.reader().rest())
+        } else {
+            self.data().encode(w)
+        }
+    }
+}
+
+impl From<&RData<'_>> for WireRdata<'static> {
+    fn from(data: &RData<'_>) -> Self {
+        Self::new(data)
+    }
+}
+
+impl<'b> PartialEq<WireRdata<'b>> for WireRdata<'_> {
+    fn eq(&self, other: &WireRdata<'b>) -> bool {
+        self.data() == other.data()
+    }
+}
+
+impl Eq for WireRdata<'_> {}
+
+impl Hash for WireRdata<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.data().hash(state);
+    }
+}
+
+/// As the [`RData`] it reads as.
+impl fmt::Debug for WireRdata<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.data(), f)
+    }
+}
+
+/// As the [`RData`] it reads as.
+impl fmt::Display for WireRdata<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.data(), f)
+    }
+}
+
+/// A resource record: owner name, class, TTL and RDATA; the type is the RDATA's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Record<'a> {
     /// Owner name.
@@ -68,8 +233,8 @@ pub struct Record<'a> {
     pub class: Class,
     /// Time to live.
     pub ttl: Ttl,
-    /// The data, which carries the type.
-    pub data: RData<'a>,
+    /// The RDATA, which carries the type; [`Record::data`] reads it.
+    pub rdata: WireRdata<'a>,
 }
 
 /// The fixed fields of a record and its RDATA still unparsed, so the message decoder can take an OPT record
@@ -108,26 +273,32 @@ pub(crate) fn decode_rdata(
 pub struct DecodedRecord<'a> {
     /// The record.
     pub record: Record<'a>,
-    /// Why the RDATA could not be parsed; it is then [`RData::Opaque`] with the bytes as received.
+    /// Why the RDATA could not be parsed; it then reads as [`RData::Opaque`] with the bytes as received.
     pub invalid_rdata: Option<DecodeError>,
 }
 
 impl<'a> Record<'a> {
-    /// A record.
+    /// A record of typed data, stored as its wire form.
     #[must_use]
-    pub const fn new(name: Name<'a>, class: Class, ttl: Ttl, data: RData<'a>) -> Self {
+    pub fn new(name: Name<'a>, class: Class, ttl: Ttl, data: &RData<'_>) -> Self {
         Self {
             name,
             class,
             ttl,
-            data,
+            rdata: WireRdata::new(data),
         }
     }
 
     /// The record type.
     #[must_use]
     pub const fn rtype(&self) -> RecordType {
-        self.data.rtype()
+        self.rdata.rtype()
+    }
+
+    /// The RDATA read as its type; see [`WireRdata::data`].
+    #[must_use]
+    pub fn data(&self) -> RData<'_> {
+        self.rdata.data()
     }
 
     /// The same record, owning its bytes.
@@ -137,7 +308,7 @@ impl<'a> Record<'a> {
             name: self.name.into_owned(),
             class: self.class,
             ttl: self.ttl,
-            data: self.data.into_owned(),
+            rdata: self.rdata.into_owned(),
         }
     }
 
@@ -151,7 +322,7 @@ impl<'a> Record<'a> {
         let ttl = u32::from_be_bytes([l0, l1, l2, l3]);
         let len = usize::from(u16::from_be_bytes([d0, d1]));
         let rdata = r.sub(len).map_err(|mut e| {
-            e.kind = crate::error::DecodeErrorKind::RdataLength;
+            e.kind = DecodeErrorKind::RdataLength;
             e
         })?;
         Ok(RawRecord {
@@ -165,7 +336,7 @@ impl<'a> Record<'a> {
 
     /// Reads one record.
     ///
-    /// RDATA that is well delimited but invalid for its type is kept as [`Opaque`] bytes and reported in
+    /// RDATA that is well delimited but invalid for its type is kept, reads as [`Opaque`] bytes, and is reported in
     /// [`DecodedRecord::invalid_rdata`], except for the types that may hold compressed names
     /// ([`RData::may_hold_compressed_names`]): their bytes mean nothing outside the message, so that is an error (D9).
     ///
@@ -185,8 +356,13 @@ impl<'a> Record<'a> {
             ttl,
             rdata,
         } = raw;
-        let (data, invalid_rdata) = decode_rdata(rtype, rdata)?;
-        let record = Self::new(name, class, Ttl::of_record(rtype, ttl), data);
+        let (rdata, invalid_rdata) = WireRdata::decode(rtype, rdata)?;
+        let record = Self {
+            name,
+            class,
+            ttl: Ttl::of_record(rtype, ttl),
+            rdata,
+        };
         Ok(DecodedRecord {
             record,
             invalid_rdata,
@@ -204,7 +380,7 @@ impl<'a> Record<'a> {
         w.put_u16(self.class.0)?;
         w.put_u32(self.ttl.get())?;
         let at = w.reserve_u16()?;
-        self.data.encode(w)?;
+        self.rdata.encode(w)?;
         let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
         w.patch_u16(at, len);
         Ok(())
@@ -234,7 +410,7 @@ impl Record<'_> {
 impl fmt::Display for Record<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_head(f)?;
-        write!(f, "{}", self.data)
+        write!(f, "{}", self.rdata)
     }
 }
 
@@ -245,7 +421,7 @@ pub struct GenericRecord<'r>(&'r Record<'r>);
 impl fmt::Display for GenericRecord<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.write_head(f)?;
-        write!(f, "{}", self.0.data.generic())
+        write!(f, "{}", self.0.data().generic())
     }
 }
 

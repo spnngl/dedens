@@ -12,7 +12,7 @@ fn s4_unknown_types_keep_their_bytes() {
     let decoded = decode_record(&record_wire(RecordType(65280), &[0xDE, 0xAD])).unwrap();
     assert_eq!(decoded.invalid_rdata, None);
     assert_eq!(
-        decoded.record.data,
+        decoded.record.data(),
         RData::Opaque(Opaque::new(RecordType(65280), &[0xDE, 0xAD]).unwrap())
     );
 }
@@ -36,12 +36,12 @@ fn s4_names_of_rfc_1035_types_are_decompressed() {
     let minfo =
         decode_record(&owned_by_a(RecordType::MINFO, &[0xC0, 0, 1, b'b', 0xC0, 0])).unwrap();
     assert_eq!(minfo.invalid_rdata, None);
-    let RData::Opaque(o) = &minfo.record.data else {
+    let RData::Opaque(o) = &minfo.record.data() else {
         panic!("not opaque")
     };
     assert_eq!(o.data(), [1, b'a', 0, 1, b'b', 1, b'a', 0]);
     let mb = decode_record(&owned_by_a(RecordType::MB, &[0xC0, 0])).unwrap();
-    assert!(matches!(&mb.record.data, RData::Opaque(o) if o.data() == [1, b'a', 0]));
+    assert!(matches!(&mb.record.data(), RData::Opaque(o) if o.data() == [1, b'a', 0]));
 }
 
 #[test]
@@ -50,11 +50,11 @@ fn s4_names_of_older_types_with_names_are_decompressed_too() {
     let rdata = [&[0, 1, 0, 2, 1, b'u', 0, 0][..], &[0xC0, 0]].concat();
     let naptr = decode_record(&owned_by_a(RecordType::NAPTR, &rdata)).unwrap();
     assert!(
-        matches!(&naptr.record.data, RData::Opaque(o) if o.data() == [0, 1, 0, 2, 1, b'u', 0, 0, 1, b'a', 0])
+        matches!(&naptr.record.data(), RData::Opaque(o) if o.data() == [0, 1, 0, 2, 1, b'u', 0, 0, 1, b'a', 0])
     );
     // SRV prohibits compression (RFC 2782), but older servers compressed (RFC 2052).
     let srv = decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0, 2, 0, 3, 0xC0, 0])).unwrap();
-    assert!(matches!(&srv.record.data, RData::Srv(s) if s.target.to_string() == "a."));
+    assert!(matches!(&srv.record.data(), RData::Srv(s) if s.target.to_string() == "a."));
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn s4_rdlength_must_fit_in_the_message() {
 #[test]
 fn s4_known_types_with_a_bad_length_are_kept_opaque_unless_compressible() {
     let a = decode_record(&record_wire(RecordType::A, &[1, 2, 3])).unwrap();
-    assert!(a.invalid_rdata.is_some() && matches!(a.record.data, RData::Opaque(_)));
+    assert!(a.invalid_rdata.is_some() && matches!(a.record.data(), RData::Opaque(_)));
     // MX holds a compressible name: its RDATA cannot be kept as bytes (D9).
     assert!(decode_record(&record_wire(RecordType::MX, &[0, 1])).is_err());
 }
@@ -117,7 +117,7 @@ fn s5_generic_text_form() {
             .unwrap();
     assert_eq!((rec.class, rec.rtype()), (Class(32), RecordType(731)));
     assert_eq!(
-        rec.data,
+        rec.data(),
         RData::Opaque(Opaque::new(RecordType(731), &[0xab, 0xcd, 0xef, 1, 0x23, 0x45]).unwrap())
     );
     assert_eq!(
@@ -127,16 +127,16 @@ fn s5_generic_text_form() {
 
     let rec: dedens_proto::Record<'_> = r"b.example. 60 HS TYPE62347 \# 0".parse().unwrap();
     assert_eq!(
-        (rec.class, rec.data.to_string()),
+        (rec.class, rec.data().to_string()),
         (Class::HS, r"\# 0".to_owned())
     );
 
     // A known type written generically reads as its typed form, the same as its own text form.
     let generic: dedens_proto::Record<'_> = r"e.example. 60 IN A \# 4 0A000001".parse().unwrap();
-    assert_eq!(generic.data, RData::A([10, 0, 0, 1].into()));
+    assert_eq!(generic.data(), RData::A([10, 0, 0, 1].into()));
     let typed: dedens_proto::Record<'_> = "e.example. 60 CLASS1 TYPE1 10.0.0.2".parse().unwrap();
     assert_eq!(
-        (typed.class, typed.data),
+        (typed.class, typed.data()),
         (Class::IN, RData::A([10, 0, 0, 2].into()))
     );
     assert_eq!(

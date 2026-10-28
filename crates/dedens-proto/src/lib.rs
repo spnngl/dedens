@@ -22,7 +22,6 @@ pub mod question;
 pub mod rdata;
 pub mod record;
 pub mod text;
-pub mod view;
 pub mod wire;
 
 pub use codes::{Class, Opcode, Rcode, RecordType};
@@ -34,6 +33,5 @@ pub use name::{Name, NameError};
 pub use query::Query;
 pub use question::Question;
 pub use rdata::RData;
-pub use record::{DecodedRecord, Record, Ttl};
+pub use record::{DecodedRecord, Record, Ttl, WireRdata};
 pub use text::{TextError, TextErrorKind};
-pub use view::{MessageIndex, MessageView};

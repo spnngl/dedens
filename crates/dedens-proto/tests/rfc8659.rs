@@ -11,7 +11,7 @@ use proptest::prelude::*;
 fn s4_1_fields_are_flags_tag_and_value() {
     let wire = [&[0x80, 5][..], b"issue", b"ca.example"].concat();
     let decoded = decode_record(&record_wire(RecordType::CAA, &wire)).unwrap();
-    let RData::Caa(caa) = decoded.record.data else {
+    let RData::Caa(caa) = decoded.record.data() else {
         panic!("not CAA")
     };
     assert!(caa.is_critical());
@@ -25,7 +25,7 @@ fn s4_1_fields_are_flags_tag_and_value() {
 fn s4_1_1_only_the_critical_bit_is_defined_and_the_rest_is_kept() {
     let wire = [&[0x01, 3][..], b"foo"].concat();
     let decoded = decode_record(&record_wire(RecordType::CAA, &wire)).unwrap();
-    let RData::Caa(caa) = decoded.record.data else {
+    let RData::Caa(caa) = decoded.record.data() else {
         panic!("not CAA")
     };
     assert!(!caa.is_critical());
@@ -95,7 +95,7 @@ fn s4_1_1_presentation_format() {
         ),
     ] {
         let rec: dedens_proto::Record<'_> = text.parse().unwrap();
-        let RData::Caa(caa) = &rec.data else {
+        let RData::Caa(caa) = &rec.data() else {
             unreachable!("CAA text reads as CAA")
         };
         assert_eq!(
@@ -108,7 +108,7 @@ fn s4_1_1_presentation_format() {
         );
     }
     let rec: dedens_proto::Record<'_> = r#"x. 60 CAA 0 issue "ca1.example.net""#.parse().unwrap();
-    assert_eq!(rec.data.to_string(), r#"0 issue "ca1.example.net""#);
+    assert_eq!(rec.data().to_string(), r#"0 issue "ca1.example.net""#);
     for bad in [
         r#"x. 60 CAA 0 is-sue "v""#,
         r#"x. 60 CAA 256 issue "v""#,

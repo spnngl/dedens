@@ -55,7 +55,7 @@ impl Defaults {
         self.last_ttl = explicit.or(self.last_ttl);
         self.last_class = head.class.or(self.last_class);
         Ok(DecodedRecord {
-            record: Record::new(owner, class, ttl, data),
+            record: Record::new(owner, class, ttl, &data),
             invalid_rdata,
         })
     }

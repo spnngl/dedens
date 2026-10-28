@@ -189,7 +189,7 @@ pub(crate) fn zone_record() -> impl Strategy<Value = Record<'static>> {
 
 fn records(class: impl Strategy<Value = Class>) -> impl Strategy<Value = Record<'static>> {
     (name(), class, 0..=Ttl::MAX.get(), rdata()).prop_map(|(name, class, ttl, data)| {
-        Record::new(name, class, Ttl::new(ttl).expect("in range"), data)
+        Record::new(name, class, Ttl::new(ttl).expect("in range"), &data)
     })
 }
 
@@ -338,8 +338,17 @@ pub(crate) fn dns(text: &str) -> Name<'static> {
 }
 
 /// An IN record with TTL 60.
-pub(crate) fn rec<'a>(owner: &str, data: RData<'a>) -> Record<'a> {
-    Record::new(dns(owner), Class::IN, Ttl::new(60).expect("in range"), data)
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers build the data in the call"
+)]
+pub(crate) fn rec(owner: &str, data: RData<'_>) -> Record<'static> {
+    Record::new(
+        dns(owner),
+        Class::IN,
+        Ttl::new(60).expect("in range"),
+        &data,
+    )
 }
 
 /// One EDNS option on the wire: code, length, data.

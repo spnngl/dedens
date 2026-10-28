@@ -58,14 +58,24 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D19 Codes (type, class, opcode, rcode, EDNS option, SVCB key) are newtypes with named constants, not enums
   with an `Unknown` arm: every value has one representation and a new code is one constant. `Record` has no
   type field: its RDATA gives the type, so they cannot disagree.
-- D20 `MessageView`: a message read in place for the server's hot path (cache lookups, serving cached bytes
-  with lower TTLs). One pass checks exactly what `Message::decode` checks (fuzzed against it) and stores two
-  16-bit offsets per entry in a `MessageIndex` sized once for the most entries a 65535-byte message holds
-  (13104, 52 KB): never allocates, never trusts claimed counts. Gains: no allocation, O(1) access to any
-  record, TTL offsets for rewriting a copy.
+- D20 (superseded by D28) `MessageView`: a message read in place for the server's hot path (cache lookups,
+  serving cached bytes with lower TTLs). One pass checks exactly what `Message::decode` checks (fuzzed against
+  it) and stores two 16-bit offsets per entry in a `MessageIndex` sized once for the most entries a 65535-byte
+  message holds (13104, 52 KB): never allocates, never trusts claimed counts. Gains: no allocation, O(1)
+  access to any record, TTL offsets for rewriting a copy.
 - D21 `Query`: a query read in place, without the D20 table: header, first question, `EdnsView`, violations;
   checks what `Message::decode` checks (fuzzed against it). `Edns::append` writes an OPT after a message
   already in a buffer, so the server adds EDNS to cached bytes without re-encoding.
+- D28 `Record` keeps its RDATA as checked wire bytes with its type (`WireRdata`), borrowed from the message
+  (names in it may point elsewhere there) or owned (no pointers); `Record::data()` reads the typed `RData` on
+  demand. No hot path reads inside RDATA (the cache serves bytes, a forwarder checks then stores), so decode
+  checks every RDATA (D9) and builds nothing; encode copies the bytes, except for the types whose names may be
+  compressed (RFC 3597 §4), read and written again. Equality and hashing go through `RData`, so names in RDATA
+  compare without case (RFC 4343). Replaces D20: with decoding into reused vectors (`decode_reusing`), one
+  `Message` is as cheap as the view, and `message::ttl_offsets` gives the cache the TTL positions. Messages over
+  65535 bytes are refused. Gain: one message type instead of two, at the same measured speed
+  (`docs/benchmarks.md`); typed records were expected to explain the encode gap with Unbound and did not.
+  Rejected: expanding compressed names at decode (one allocation per such record).
 
 ## Transports
 

@@ -20,14 +20,14 @@ pub(crate) fn dns(text: &str) -> Name<'static> {
 }
 
 pub(crate) fn a(owner: &str, ttl: u32, last: u8) -> Record<'static> {
-    record(owner, ttl, RData::A(Ipv4Addr::new(192, 0, 2, last)))
+    record(owner, ttl, &RData::A(Ipv4Addr::new(192, 0, 2, last)))
 }
 
 pub(crate) fn soa(owner: &str, ttl: u32, minimum: u32) -> Record<'static> {
     record(
         owner,
         ttl,
-        RData::Soa(Soa {
+        &RData::Soa(Soa {
             mname: dns("ns.example"),
             rname: dns("hostmaster.example"),
             serial: 1,
@@ -39,7 +39,7 @@ pub(crate) fn soa(owner: &str, ttl: u32, minimum: u32) -> Record<'static> {
     )
 }
 
-pub(crate) fn record(owner: &str, ttl: u32, data: RData<'static>) -> Record<'static> {
+pub(crate) fn record(owner: &str, ttl: u32, data: &RData<'_>) -> Record<'static> {
     Record::new(
         dns(owner),
         Class::IN,

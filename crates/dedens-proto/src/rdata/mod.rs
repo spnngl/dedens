@@ -29,7 +29,7 @@ use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
 use crate::record::decode_rdata;
 use crate::text::{self, Fields, TextError, TextErrorKind, encoding};
-use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
+use crate::wire::{Reader, Writer};
 
 /// The most bytes an RDATA holds: RDLENGTH is 16 bits (RFC 1035 §3.2.1).
 pub(crate) const MAX_RDATA_LEN: usize = 65535;
@@ -123,6 +123,29 @@ impl<'a> RData<'a> {
                 | RecordType::MX
                 | RecordType::SRV
         ) || Opaque::holds_names(rtype)
+    }
+
+    /// Whether the encoder compresses the names in RDATA of `rtype`: only in the types of RFC 1035 (RFC 3597 §4).
+    pub(crate) const fn compressed_on_write(rtype: RecordType) -> bool {
+        matches!(
+            rtype,
+            RecordType::NS | RecordType::CNAME | RecordType::SOA | RecordType::PTR | RecordType::MX
+        )
+    }
+
+    /// Calls `f` with the uncompressed wire form of the RDATA.
+    pub(crate) fn with_wire<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        // Most RDATA fits on the stack; only larger RDATA pays for a 64 KiB buffer.
+        let mut small = [0; 512];
+        let mut w = Writer::uncompressed(&mut small);
+        if self.encode(&mut w).is_ok() {
+            return f(w.written());
+        }
+        let mut large = vec![0; MAX_RDATA_LEN];
+        let mut w = Writer::uncompressed(&mut large);
+        self.encode(&mut w)
+            .expect("typed RDATA fits 65535 bytes by construction");
+        f(w.written())
     }
 
     /// Decodes the RDATA of `rtype` from `r`, a reader limited to RDLENGTH bytes; all of them must be used.
@@ -292,15 +315,6 @@ pub struct Generic<'r>(&'r RData<'r>);
 
 impl fmt::Display for Generic<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Most RDATA fits on the stack; only larger RDATA pays for a 64 KiB buffer.
-        let mut small = [0; 512];
-        let mut w = Writer::uncompressed(&mut small);
-        if self.0.encode(&mut w).is_ok() {
-            return text::write_generic(f, w.written());
-        }
-        let mut large = vec![0; MAX_MESSAGE_LEN];
-        let mut w = Writer::uncompressed(&mut large);
-        self.0.encode(&mut w).map_err(|_| fmt::Error)?;
-        text::write_generic(f, w.written())
+        self.0.with_wire(|wire| text::write_generic(f, wire))
     }
 }

@@ -45,11 +45,11 @@ impl<'a> Query<'a> {
         message::walk(msg, &mut violations, |entry, violations| {
             match entry {
                 Entry::Header(read, _) => header = read,
-                Entry::Question(read, _) => {
+                Entry::Question(read) => {
                     // RFC 9619: more than one is a violation `walk` reports; the first is the one answered.
                     question.get_or_insert(read);
                 }
-                Entry::Opt(raw, _) => {
+                Entry::Opt(raw) => {
                     read_options(raw.rdata, |_, invalid| {
                         violations.extend(invalid.map(|o| Violation::InvalidOption {
                             code: o.code,
@@ -58,7 +58,7 @@ impl<'a> Query<'a> {
                     })?;
                     edns = Some(EdnsView::new(raw.class.0, raw.ttl, raw.rdata));
                 }
-                Entry::Record(section, raw, _) => {
+                Entry::Record(section, raw) => {
                     let index = &mut records[section.position()];
                     if let (_, Some(error)) = decode_rdata(raw.rtype, raw.rdata)? {
                         violations.push(Violation::InvalidRdata {

@@ -26,7 +26,7 @@ fn s11_any_octet_is_valid_in_a_label() {
     for half in [0u8..=127, 128..=255] {
         let octets: Vec<u8> = half.collect();
         let name = Name::from_labels(octets.chunks(63)).unwrap();
-        let rec = Record::new(name.clone(), Class::IN, Ttl::ZERO, RData::Ptr(name));
+        let rec = Record::new(name.clone(), Class::IN, Ttl::ZERO, &RData::Ptr(name));
         let wire = encode_with(|w| rec.encode(w));
         assert_eq!(decode_record(&wire).unwrap().record, rec);
     }

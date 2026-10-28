@@ -76,7 +76,7 @@ fn synthetic(name: &str) -> (Vec<u8>, Vec<u8>) {
         owner,
         Class::IN,
         Ttl::new(3600).expect("valid"),
-        RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+        &RData::A(Ipv4Addr::new(192, 0, 2, 1)),
     )];
     (query, response.to_vec().expect("fits"))
 }

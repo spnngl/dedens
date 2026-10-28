@@ -1,7 +1,7 @@
 # dedens-proto tests
 
 Conformance tests, one file per RFC (`rfc1035.rs`), each test prefixed by its section (`s4_1_4_...`); topic
-files (`message.rs`, `view.rs`, `query.rs`, `text.rs`) for what spans RFCs. Shared helpers and proptest
+files (`message.rs`, `wire_rdata.rs`, `query.rs`, `text.rs`) for what spans RFCs. Shared helpers and proptest
 strategies: `common/mod.rs`.
 
 - `testdata/`: real responses from `just capture` (`scripts/capture.py`), read by `captured.rs` and used as

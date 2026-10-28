@@ -25,8 +25,8 @@ Nanoseconds, `a`/`mx`/`txt_large`.
 - Re-encoding a borrowed message costs 13-33% more than an owned one (60/302/351 vs 53/227/305): a name with
   pointers is copied run by run on the stack unless it has one run.
 - Parse pass of phase 2, cycles for all three captures: `decode_reusing` 4323 → 3706 (`domain` 3517, with
-  more instructions: 17325 vs 15615), `MessageIndex::read` 3301 → 2896, view 5456 → 4618. Gains: a 24-byte
-  `Name` (16-bit offset), records built in place, fixed fields read with one bounds check.
+  more instructions: 17325 vs 15615), `MessageIndex::read` (removed by D28) 3301 → 2896, view 5456 → 4618.
+  Gains: a 24-byte `Name` (16-bit offset), records built in place, fixed fields read with one bounds check.
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
   instructions, same cycles), `#[inline]` hints (no change).
 
@@ -37,20 +37,33 @@ the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower tha
 
 | Measure | dedens | Unbound |
 |---|---|---|
-| Structure check, records located: `MessageIndex::read` and first question / `parse_packet` | 84/191/401 | 98/193/415 |
+| Structure check, records located: `decode_reusing` / `parse_packet` | 117/227/510 | 98/193/415 |
 | Owned decode: `decode_owned` / `reply_info_parse` | 188/460/975 | 143/376/594 |
 | Encode, reused buffer: `encode` / `reply_info_encode` with OPT | 64/333/362 | 44/312/109 |
 | Zone, 100 006 records | 7.7 ms | 94.9 ms |
 
-- `parse_packet` does not read RDATA; `MessageIndex::read` checks every RDATA and EDNS option.
-- `reply_info_parse` keeps RDATA as wire bytes, only decompressing names; dedens types every record. The
-  encoder then copies those bytes back, hence 109 ns for the TXT answer that dedens rebuilds from its strings.
+- `parse_packet` does not read RDATA; `decode_reusing` checks every RDATA and EDNS option.
+- `reply_info_parse` keeps RDATA as wire bytes, only decompressing names.
+- The TXT encode gap is not RDATA: once dedens copied RDATA bytes too (D28), it stayed at 359 ns. A profile
+  puts it in owner names: `put_name_compressed`, its table lookups and `Name::to_wire`, once per record.
+  Unbound writes an RRset's owner once and a pointer to it for each further record.
 - Zone: `sldns_fp2wire_rr_buf` reads a `FILE` token by token, as Unbound's auth-zone does.
 
-## In-place reading (D20, D21)
+## RDATA as bytes (D28)
 
-`MessageIndex::read` costs 65-80% of a full decode: parsing names and RDATA, not building records, is most of
-decoding. Check plus first question 136/322/702 ns, every record read 178/505/1093 ns.
+Before and after, same session, ns `a`/`mx`/`txt_large`: no measurable change, except `into_owned` on the TXT
+answer (954 → 1047).
+
+| Measure | typed records | bytes |
+|---|---|---|
+| `decode_reusing` | 125/260/573 | 125/260/568 |
+| `decode_owned` | 192/621/954 | 194/631/1047 |
+| `encode`, reused buffer | 65/406/354 | 66/409/364 |
+| `decode_typed_dedens`: decode, then `data()` on every record | | 146/341/729 |
+| `decode_domain` | | 99/218/492 |
+
+Checking RDATA (D9) is most of decoding and stays; reading it as its type again costs 15-30% more. The
+removed `MessageView` read every record in 178/505/1093 ns.
 
 ## Cache (D22)
 

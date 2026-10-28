@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Flags, Message, RData, Rcode, RecordType};
+use dedens_proto::{Flags, Message, RData, Rcode, Record, RecordType};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")
@@ -42,7 +42,12 @@ fn every_capture_decodes_and_round_trips() {
 fn a_response_has_an_answer_and_opt() {
     let message = capture("a");
     assert!(message.header.flags.contains(Flags::QR));
-    assert!(message.answer.iter().any(|r| matches!(r.data, RData::A(_))));
+    assert!(
+        message
+            .answer
+            .iter()
+            .any(|r| matches!(r.data(), RData::A(_)))
+    );
     assert!(message.edns.is_some());
 }
 
@@ -50,10 +55,15 @@ fn a_response_has_an_answer_and_opt() {
 fn a_cname_chain_ends_in_an_address() {
     let message = capture("cname_chain");
     assert!(matches!(
-        message.answer.first().map(|r| &r.data),
+        message.answer.first().map(Record::data),
         Some(RData::Cname(_))
     ));
-    assert!(message.answer.iter().any(|r| matches!(r.data, RData::A(_))));
+    assert!(
+        message
+            .answer
+            .iter()
+            .any(|r| matches!(r.data(), RData::A(_)))
+    );
 }
 
 #[test]
@@ -65,7 +75,7 @@ fn nxdomain_carries_the_zone_soa() {
         message
             .authority
             .iter()
-            .any(|r| matches!(r.data, RData::Soa(_)))
+            .any(|r| matches!(r.data(), RData::Soa(_)))
     );
 }
 
@@ -76,7 +86,7 @@ fn a_large_txt_answer_decodes() {
         message
             .answer
             .iter()
-            .any(|r| matches!(r.data, RData::Txt(_)))
+            .any(|r| matches!(r.data(), RData::Txt(_)))
     );
 }
 
@@ -86,19 +96,19 @@ fn https_and_caa_and_srv_have_typed_data() {
         capture("https")
             .answer
             .iter()
-            .any(|r| matches!(r.data, RData::Https(_)))
+            .any(|r| matches!(r.data(), RData::Https(_)))
     );
     assert!(
         capture("caa")
             .answer
             .iter()
-            .any(|r| matches!(r.data, RData::Caa(_)))
+            .any(|r| matches!(r.data(), RData::Caa(_)))
     );
     assert!(
         capture("srv")
             .answer
             .iter()
-            .any(|r| matches!(r.data, RData::Srv(_)))
+            .any(|r| matches!(r.data(), RData::Srv(_)))
     );
 }
 
@@ -108,7 +118,7 @@ fn any_gets_a_minimal_hinfo_answer_rfc8482() {
     assert_eq!(message.answer.len(), 1);
     // HINFO has no typed RDATA in D11: it stays opaque.
     assert_eq!(
-        message.answer.first().map(|r| r.data.rtype()),
+        message.answer.first().map(|r| r.data().rtype()),
         Some(RecordType(13))
     );
 }

@@ -3,8 +3,7 @@
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::name::MAX_NAME_LEN;
 use dedens_proto::{
-    DecodeError, EncodeError, Flags, Message, MessageIndex, Opcode, Query, RData, Rcode, Section,
-    Ttl,
+    DecodeError, EncodeError, Flags, Message, Opcode, Query, RData, Rcode, Ttl, message,
 };
 use thiserror::Error;
 
@@ -162,7 +161,7 @@ fn lifetime(message: &Message<'_>, rcode: Rcode, config: &Config) -> Result<u32,
         let soa = message
             .authority
             .iter()
-            .find_map(|r| match &r.data {
+            .find_map(|r| match r.data() {
                 RData::Soa(soa) => Some(r.ttl.get().min(soa.minimum)),
                 _ => None,
             })
@@ -179,12 +178,9 @@ fn lifetime(message: &Message<'_>, rcode: Rcode, config: &Config) -> Result<u32,
 
 /// Offsets of the TTL fields of every record of `wire`.
 fn ttl_offsets(wire: &[u8]) -> Result<Box<[u16]>, NotCached> {
-    let mut index = MessageIndex::new();
-    let view = index.read(wire)?;
-    [Section::Answer, Section::Authority, Section::Additional]
+    message::ttl_offsets(wire)?
         .into_iter()
-        .flat_map(|s| view.section(s))
-        .map(|r| u16::try_from(r.ttl_offset()).map_err(|_| NotCached::TooLarge))
+        .map(|at| u16::try_from(at).map_err(|_| NotCached::TooLarge))
         .collect()
 }
 

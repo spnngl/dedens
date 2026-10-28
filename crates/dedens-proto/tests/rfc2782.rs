@@ -20,7 +20,7 @@ fn srv_rdata(priority: u16, weight: u16, port: u16, target: &[u8]) -> Vec<u8> {
 fn srv_fields_are_priority_weight_port_target() {
     let wire = srv_rdata(1, 2, 5060, b"\x03sip\x07example\x03com\x00");
     let decoded = decode_record(&record_wire(RecordType::SRV, &wire)).unwrap();
-    let RData::Srv(srv) = decoded.record.data else {
+    let RData::Srv(srv) = decoded.record.data() else {
         panic!("not SRV")
     };
     assert_eq!((srv.priority, srv.weight, srv.port), (1, 2, 5060));
@@ -30,7 +30,7 @@ fn srv_fields_are_priority_weight_port_target() {
 #[test]
 fn the_root_target_means_no_service() {
     let decoded = decode_record(&record_wire(RecordType::SRV, &srv_rdata(0, 0, 0, &[0]))).unwrap();
-    let RData::Srv(srv) = decoded.record.data else {
+    let RData::Srv(srv) = decoded.record.data() else {
         panic!("not SRV")
     };
     assert!(srv.target.is_root());

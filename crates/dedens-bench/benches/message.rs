@@ -1,7 +1,7 @@
 //! D14: decode and encode of real responses, against hickory-proto and `domain`.
 //!
-//! Every library does the same work: decode the whole message into typed records, or encode typed records
-//! with name compression. `encode_dedens` writes into a buffer it reuses; every `*_to_vec` encodes into a
+//! Decoding checks every RDATA everywhere; dedens keeps it as bytes (D28), the others build typed records, which
+//! `decode_typed_dedens` adds. Encoding compresses names everywhere. `encode_dedens` writes into a buffer it reuses; every `*_to_vec` encodes into a
 //! fresh `Vec`, as the others always do. The `*_owned` variants measure `into_owned()`: decoding copies out of
 //! the input, encoding writes names that no longer point into it.
 
@@ -9,7 +9,7 @@ use std::hint::black_box;
 
 use dedens_bench::{CASES, wire};
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Decoded, Message, MessageIndex, Name, Query, Question, RecordType};
+use dedens_proto::{Decoded, Message, Name, Query, Question, RecordType};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -112,44 +112,19 @@ fn query_domain(bencher: Bencher<'_, '_>) {
     });
 }
 
-/// Read in place (D20) and parse every record: the same work as `decode_domain`.
+/// Decode, then read every record as its type: the work the other libraries do in their decode.
 #[divan::bench(args = CASES)]
-fn view_dedens(bencher: Bencher<'_, '_>, case: &str) {
+fn decode_typed_dedens(bencher: Bencher<'_, '_>, case: &str) {
     let wire = wire(case);
-    let mut index = MessageIndex::new();
+    let mut spare = Decoded::default();
     bencher.bench_local(|| {
-        let view = index.read(black_box(&wire)).expect("reads");
-        let mut records = 0;
-        for record in view
-            .answer()
-            .chain(view.authority())
-            .chain(view.additional())
-        {
-            black_box((record.name(), record.ttl(), record.data()));
-            records += 1;
+        let decoded = Message::decode_reusing(black_box(&wire), &mut spare).expect("decodes");
+        let message = &decoded.message;
+        let records = message.answer.iter().chain(&message.authority);
+        for record in records.chain(&message.additional) {
+            black_box(record.data());
         }
-        records
-    });
-}
-
-/// Check the message and read its question, as a cache lookup does.
-#[divan::bench(args = CASES)]
-fn question_dedens(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
-    let mut index = MessageIndex::new();
-    bencher.bench_local(|| {
-        let view = index.read(black_box(&wire)).expect("reads");
-        black_box(view.questions().next().expect("question"));
-    });
-}
-
-/// Read the question only: `domain` checks nothing past it.
-#[divan::bench(args = CASES)]
-fn question_domain(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
-    bencher.bench_local(|| {
-        let message = DomainMessage::from_octets(black_box(wire.as_slice())).expect("decodes");
-        message.first_question().expect("question")
+        spare = decoded.recycle();
     });
 }
 

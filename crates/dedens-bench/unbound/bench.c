@@ -6,7 +6,7 @@
  *
  * - parse:  parse_packet, Unbound's first pass: it checks the structure and
  * notes where each RRset's records lie in the packet, without decoding RDATA
- * (closest to MessageIndex::read).
+ * (dedens has no such pass: `decode_reusing` also checks every RDATA).
  * - decode: reply_info_parse, what Unbound does with an upstream answer: the
  * first pass, EDNS, then the RRsets copied out of the packet with names
  * decompressed (closest to an owned decode).

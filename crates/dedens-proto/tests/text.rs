@@ -240,10 +240,10 @@ fn rdata_over_65535_bytes_is_refused() {
 #[test]
 fn quotes_start_tokens_and_never_names() {
     let rec = parse(r#"x. 60 TXT a"b c"d"#).unwrap();
-    assert_eq!(rec.data.to_string(), r#""a\"b" "c\"d""#);
+    assert_eq!(rec.data().to_string(), r#""a\"b" "c\"d""#);
     // Only SVCB parameters quote after `=` (RFC 9460 §2.1).
     let rec = parse(r#"x. 60 TXT k="v w""#).unwrap();
-    assert_eq!(rec.data.to_string(), r#""k=\"v" "w\"""#);
+    assert_eq!(rec.data().to_string(), r#""k=\"v" "w\"""#);
     assert_eq!(
         error(r#""a b". 60 A 192.0.2.1"#),
         (
@@ -266,7 +266,7 @@ fn quotes_start_tokens_and_never_names() {
 #[test]
 fn invalid_generic_rdata_of_a_known_type_stays_opaque() {
     let rec = parse(r"x. 60 A \# 3 c00002").unwrap();
-    assert!(matches!(&rec.data, RData::Opaque(o) if o.rtype() == RecordType::A));
+    assert!(matches!(&rec.data(), RData::Opaque(o) if o.rtype() == RecordType::A));
     assert_eq!(rec.to_string(), "x.\t60\tIN\tA\t\\# 3 c00002");
     assert!(matches!(
         error(r"x. 60 NS \# 1 01").2,

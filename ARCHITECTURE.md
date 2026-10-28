@@ -25,7 +25,8 @@ Everything builds on `dedens-proto`; `dedens-cache` is its only user so far. Pla
 - Server hot path: bytes → `Query::read` (in place, no allocation) → `Cache::lookup` → hit: copy the stored
   bytes, patch ID, flags, question case and TTLs, `Edns::append` → send. Miss: the D23 stage pipeline, then
   `Cache::insert`.
-- Server-side reading of responses: `MessageIndex::read` → `MessageView` (in place, O(1) record access).
+- Server-side reading of responses: `Message::decode_reusing` (records keep RDATA as bytes, D28) →
+  `Cache::insert`, which finds TTLs with `message::ttl_offsets`.
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents

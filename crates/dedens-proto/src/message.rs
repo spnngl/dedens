@@ -2,10 +2,10 @@
 
 use crate::codes::{Opcode, Rcode, RecordType};
 use crate::edns::{Edns, OptionCode};
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::{Counts, Flags, HEADER_LEN, Header};
 use crate::question::Question;
-use crate::record::{RawRecord, Record, Ttl, decode_rdata};
+use crate::record::{DecodedRecord, RawRecord, Record};
 use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 
 /// Smallest wire size of a question (root name, type, class) and of a record (root name, fixed fields), used to
@@ -235,8 +235,9 @@ impl<'a> Message<'a> {
     /// # Errors
     ///
     /// [`DecodeError`] when the structure is broken: a section cut short, a bad name or pointer, a RDLENGTH that
-    /// overruns the message, broken EDNS option framing, or invalid RDATA of a type with compressible names.
-    /// Anything else that is wrong is a [`Violation`] in the result (D9).
+    /// overruns the message, broken EDNS option framing, or invalid RDATA of a type with compressible names; and
+    /// [`DecodeErrorKind::Invalid`] for a message longer than 65535 bytes. Anything else that is wrong is a
+    /// [`Violation`] in the result (D9).
     pub fn decode(msg: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
         let mut out = Decoded::default();
         decode_into(msg, &mut out)?;
@@ -417,18 +418,31 @@ pub(crate) enum Entry<'a> {
     /// The header, met first.
     Header(Header, Counts),
     /// A question.
-    Question(Question<'a>, Span),
+    Question(Question<'a>),
     /// A record of `Section`.
-    Record(Section, RawRecord<'a>, Span),
+    Record(Section, RawRecord<'a>),
     /// The OPT record lifted out as EDNS (D8); a misplaced or extra one is a [`Entry::Record`].
-    Opt(RawRecord<'a>, Span),
+    Opt(RawRecord<'a>),
 }
 
-/// Where an entry sits in the message: the start of its name, and of the fields after it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Span {
-    pub(crate) name: usize,
-    pub(crate) fixed: usize,
+/// Offsets of the TTL fields of the records of `msg` in wire order, without the OPT record lifted out as EDNS
+/// (D8), to rewrite TTLs in a copy of the bytes, as a cache serving them does.
+///
+/// Reads the structure only: names, fixed fields and RDLENGTH, not the RDATA.
+///
+/// # Errors
+///
+/// [`DecodeError`] when the structure is broken, as for [`Message::decode`].
+pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<usize>, DecodeError> {
+    let mut offsets = Vec::new();
+    walk(msg, &mut Vec::new(), |entry, _| {
+        if let Entry::Record(_, raw) = entry {
+            // TTL and RDLENGTH: the 6 bytes before the RDATA.
+            offsets.push(raw.rdata.position() - 6);
+        }
+        Ok(())
+    })?;
+    Ok(offsets)
 }
 
 /// Reads the structure of `msg`, handing each entry to `sink` in wire order, and pushes the violations it finds:
@@ -439,14 +453,17 @@ pub(crate) fn walk<'a>(
     violations: &mut Vec<Violation>,
     mut sink: impl FnMut(Entry<'a>, &mut Vec<Violation>) -> Result<(), DecodeError>,
 ) -> Result<(), DecodeError> {
+    if msg.len() > MAX_MESSAGE_LEN {
+        return Err(DecodeError {
+            offset: MAX_MESSAGE_LEN,
+            kind: DecodeErrorKind::Invalid("message longer than 65535 bytes"),
+        });
+    }
     let mut r = Reader::new(msg);
     let (header, counts) = Header::decode(&mut r)?;
     sink(Entry::Header(header, counts), violations)?;
     for _ in 0..counts.questions {
-        let name = r.position();
-        let question = Question::decode(&mut r)?;
-        let fixed = r.position() - 4;
-        sink(Entry::Question(question, Span { name, fixed }), violations)?;
+        sink(Entry::Question(Question::decode(&mut r)?), violations)?;
     }
     if counts.questions > 1 {
         violations.push(Violation::MultipleQuestions);
@@ -459,13 +476,7 @@ pub(crate) fn walk<'a>(
         (Section::Additional, counts.additional),
     ] {
         for _ in 0..count {
-            let name = r.position();
             let raw = Record::read_raw(&mut r)?;
-            // Type, class, TTL and RDLENGTH: 10 bytes before the RDATA.
-            let span = Span {
-                name,
-                fixed: raw.rdata.position() - 10,
-            };
             if raw.rtype == RecordType::OPT {
                 let reject = if section != Section::Additional {
                     Some(Violation::OptOutsideAdditional)
@@ -480,11 +491,11 @@ pub(crate) fn walk<'a>(
                     violations.push(violation);
                 } else {
                     opt_seen = true;
-                    sink(Entry::Opt(raw, span), violations)?;
+                    sink(Entry::Opt(raw), violations)?;
                     continue;
                 }
             }
-            sink(Entry::Record(section, raw, span), violations)?;
+            sink(Entry::Record(section, raw), violations)?;
         }
     }
 
@@ -515,8 +526,8 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
                 authority.reserve(bounded(counts.authority, remaining, MIN_RECORD_LEN));
                 additional.reserve(bounded(counts.additional, remaining, MIN_RECORD_LEN));
             }
-            Entry::Question(question, _) => questions.push(question),
-            Entry::Opt(raw, _) => {
+            Entry::Question(question) => questions.push(question),
+            Entry::Opt(raw) => {
                 let (parsed, invalid) = Edns::from_opt(raw.class.0, raw.ttl, raw.rdata)?;
                 violations.extend(invalid.into_iter().map(|o| Violation::InvalidOption {
                     code: o.code,
@@ -524,22 +535,24 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
                 }));
                 *edns = Some(parsed);
             }
-            Entry::Record(section, raw, _) => {
+            Entry::Record(section, raw) => {
                 let records = match section {
                     Section::Answer => &mut *answer,
                     Section::Authority => &mut *authority,
                     Section::Additional => &mut *additional,
                 };
-                let (data, invalid) = decode_rdata(raw.rtype, raw.rdata)?;
-                if let Some(error) = invalid {
+                let DecodedRecord {
+                    record,
+                    invalid_rdata,
+                } = Record::from_raw(raw)?;
+                if let Some(error) = invalid_rdata {
                     violations.push(Violation::InvalidRdata {
                         section,
                         index: records.len(),
                         error,
                     });
                 }
-                let ttl = Ttl::of_record(raw.rtype, raw.ttl);
-                records.push(Record::new(raw.name, raw.class, ttl, data));
+                records.push(record);
             }
         }
         Ok(())

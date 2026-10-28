@@ -206,7 +206,7 @@ proptest! {
 fn decoded(rtype: RecordType, rdata: &[u8]) -> RData<'static> {
     let d = decode_record(&record_wire(rtype, rdata)).expect("decodes");
     assert_eq!(d.invalid_rdata, None);
-    d.record.data
+    d.record.data().into_owned()
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn s4_1_4_names_in_rdata_follow_pointers_into_the_message() {
     let mut r = reader(&msg);
     r.bytes(12 + 9).unwrap();
     let d = dedens_proto::Record::decode(&mut r).unwrap();
-    assert_eq!(d.record.data, RData::Cname(name_of(&[b"example"])));
+    assert_eq!(d.record.data(), RData::Cname(name_of(&[b"example"])));
     assert!(r.is_empty());
 }
 

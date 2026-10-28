@@ -15,17 +15,17 @@ const FOO_EXAMPLE_ORG: &[u8] = b"\x03foo\x07example\x03org\x00";
 fn svcb(rdata: &[u8]) -> Svcb<'static> {
     let decoded = decode_record(&record_wire(RecordType::SVCB, rdata)).expect("decodes");
     assert_eq!(decoded.invalid_rdata, None);
-    let RData::Svcb(svcb) = decoded.record.data else {
+    let RData::Svcb(svcb) = decoded.record.data() else {
         unreachable!("a SVCB record decodes to SVCB data")
     };
-    svcb
+    svcb.into_owned()
 }
 
 /// The RDATA is kept opaque and flagged: SVCB has no compressible names (D9).
 fn rejected(rdata: &[u8]) {
     let decoded = decode_record(&record_wire(RecordType::SVCB, rdata)).expect("delimited");
     assert!(decoded.invalid_rdata.is_some(), "accepted {rdata:02x?}");
-    assert!(matches!(decoded.record.data, RData::Opaque(_)));
+    assert!(matches!(decoded.record.data(), RData::Opaque(_)));
 }
 
 fn rdata(parts: &[&[u8]]) -> Vec<u8> {
@@ -144,7 +144,7 @@ fn d2_mandatory_alpn_and_ipv4hint() {
         ]
     );
     let encoded = encode_with(|w| {
-        Record::new(Name::root(), Class::IN, Ttl::ZERO, RData::Svcb(s.clone())).encode(w)
+        Record::new(Name::root(), Class::IN, Ttl::ZERO, &RData::Svcb(s.clone())).encode(w)
     });
     assert_eq!(encoded, record_wire(RecordType::SVCB, &wire));
 }
@@ -177,7 +177,7 @@ fn s9_https_has_the_svcb_format() {
         &[0, 1, 0, 3, 2, b'h', b'2', 0, 2, 0, 0],
     ]);
     let decoded = decode_record(&record_wire(RecordType::HTTPS, &wire)).unwrap();
-    let RData::Https(s) = decoded.record.data else {
+    let RData::Https(s) = decoded.record.data() else {
         panic!("not HTTPS")
     };
     assert_eq!(
@@ -199,7 +199,7 @@ fn s7_1_1_no_default_alpn_needs_alpn() {
     let wire = rdata(&[&[0, 1], FOO_EXAMPLE_COM, &[0, 2, 0, 0]]);
     let decoded = decode_record(&record_wire(RecordType::HTTPS, &wire)).unwrap();
     assert!(decoded.invalid_rdata.is_some());
-    assert!(matches!(decoded.record.data, RData::Opaque(_)));
+    assert!(matches!(decoded.record.data(), RData::Opaque(_)));
 }
 
 #[test]
@@ -372,7 +372,7 @@ fn from_text(rdata: &str) -> Result<Record<'static>, dedens_proto::TextError> {
 
 /// RDATA of a record, encoded alone: after the root owner and the 10 fixed bytes.
 fn rdata_wire(rec: &Record<'_>) -> Vec<u8> {
-    let alone = Record::new(Name::root(), Class::IN, Ttl::ZERO, rec.data.clone());
+    let alone = Record::new(Name::root(), Class::IN, Ttl::ZERO, &rec.data());
     encode_with(|w| alone.encode(w))[11..].to_vec()
 }
 
@@ -522,7 +522,7 @@ fn appendix_d3_failures_in_presentation_format() {
 #[test]
 fn appendix_a_value_escapes() {
     let rec = from_text(r#"SVCB 1 . dohpath="/q{?dns}" key9="a\"b" ech=AQID"#).unwrap();
-    let RData::Svcb(s) = &rec.data else {
+    let RData::Svcb(s) = &rec.data() else {
         unreachable!("SVCB text reads as SVCB")
     };
     assert_eq!(
@@ -537,7 +537,7 @@ fn appendix_a_value_escapes() {
         ]
     );
     assert_eq!(
-        rec.data.to_string(),
+        rec.data().to_string(),
         r#"1 . ech=AQID dohpath="/q{?dns}" key9="a\"b""#
     );
     assert!(from_text("SVCB 1 . ech=AQI").is_err());

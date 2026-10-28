@@ -89,7 +89,7 @@ fn s5_3_master_file_example() {
             "STOOGES.ISI.EDU.\t3600\tIN\tMG\tCURLEY.ISI.EDU.",
         ]
     );
-    let RData::Soa(Soa { rname, .. }) = &records[0].data else {
+    let RData::Soa(Soa { rname, .. }) = &records[0].data() else {
         unreachable!("the first record is the SOA")
     };
     // "Action.domains@E.ISI.EDU": the escaped dot stays in the first label.
@@ -273,12 +273,12 @@ fn invalid_generic_rdata_is_reported() {
     let Some(Ok(Entry::Record(invalid))) = reader.next() else {
         unreachable!("a record")
     };
-    assert!(matches!(invalid.record.data, RData::Opaque(_)));
+    assert!(matches!(invalid.record.data(), RData::Opaque(_)));
     assert!(invalid.invalid_rdata.is_some());
     let Some(Ok(Entry::Record(valid))) = reader.next() else {
         unreachable!("a record")
     };
-    assert!(matches!(valid.record.data, RData::A(_)));
+    assert!(matches!(valid.record.data(), RData::A(_)));
     assert_eq!(valid.invalid_rdata, None);
 }
 

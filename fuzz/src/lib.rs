@@ -6,7 +6,7 @@
 
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::{
-    DecodedRecord, EdnsView, EncodeError, Flags, Message, MessageIndex, Name, Query, Record, Ttl,
+    DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record, Ttl, message,
 };
 
 #[cfg(test)]
@@ -18,7 +18,6 @@ pub type Entry = fn(&[u8]);
 /// Every target by name; `fuzz_targets/<name>.rs` and this list stay in step (checked by the smoke test).
 pub const TARGETS: &[(&str, Entry)] = &[
     ("decode_message", decode_message),
-    ("read_view", read_view),
     ("read_query", read_query),
     ("parse_zone", parse_zone),
 ];
@@ -76,29 +75,12 @@ pub fn read_query(data: &[u8]) {
     );
 }
 
-/// A DNS message off the wire, read in place: it reads what [`Message::decode`] reads, or fails as it does, and
-/// every accessor works on what it accepts.
-///
-/// # Panics
-///
-/// On a disagreement, or a bug in the reader.
-pub fn read_view(data: &[u8]) {
-    let mut index = MessageIndex::new();
-    let viewed = index.read(data).map(|view| view.to_decoded());
-    let decoded = Message::decode(data);
-    // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
-    assert_eq!(
-        format!("{viewed:?}"),
-        format!("{decoded:?}"),
-        "view and decoder agree"
-    );
-}
-
 /// A DNS message off the wire.
 ///
-/// Whatever decodes must encode (unless pointers expanded it past 65535 bytes) and decode again to the same
-/// message, names byte for byte. Without violations, the encoding is conforming, and truncating it at any size
-/// keeps a conforming prefix of it.
+/// Whatever decodes reads the same once owned, has a TTL offset per record, and must encode (unless pointers
+/// expanded it past 65535 bytes) and decode again to the same message, names byte for byte; `Debug` reads every
+/// RDATA as its type (D28). Without violations, the encoding is conforming, and truncating it at any size keeps a
+/// conforming prefix of it.
 ///
 /// # Panics
 ///
@@ -107,18 +89,30 @@ pub fn decode_message(data: &[u8]) {
     let Ok(decoded) = Message::decode(data) else {
         return;
     };
+    // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
+    let shown = format!("{:?}", decoded.message);
+    assert_eq!(
+        format!("{:?}", decoded.message.clone().into_owned()),
+        shown,
+        "an owned copy reads the same"
+    );
+    let records = [
+        &decoded.message.answer,
+        &decoded.message.authority,
+        &decoded.message.additional,
+    ];
+    assert_eq!(
+        message::ttl_offsets(data).map(|offsets| offsets.len()),
+        Ok(records.iter().map(|r| r.len()).sum()),
+        "one TTL offset per record"
+    );
     let wire = match decoded.message.to_vec() {
         Ok(wire) => wire,
         Err(EncodeError::BufferFull) => return,
         Err(e) => panic!("a decoded message must encode: {e}"),
     };
     let again = Message::decode(&wire).expect("what the encoder wrote decodes");
-    // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
-    assert_eq!(
-        format!("{:?}", again.message),
-        format!("{:?}", decoded.message),
-        "round trip"
-    );
+    assert_eq!(format!("{:?}", again.message), shown, "round trip");
     if !decoded.violations.is_empty() {
         return;
     }
