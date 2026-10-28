@@ -101,6 +101,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     kept per server for the process, BADCOOKIE retried once.
   - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, idle close,
     edns-tcp-keepalive honoured (RFC 7828), a closed connection retried once on a new one.
+- D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
+  it, and owns no randomness or secret; `0x20` takes its random bits as an option, which also turns on the
+  exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
+  and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries; the TC,
+  EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
+  alone may leave the question out; once a server has sent a cookie, a response without one is dropped, even
+  without OPT (RFC 7873 §5.3 MUST), at the price of timeouts if that server loses cookie support mid-process.
 
 ## Presentation format
 

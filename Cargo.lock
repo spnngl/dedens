@@ -239,6 +239,11 @@ dependencies = [
 [[package]]
 name = "dedens-net"
 version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "dedens-proto"
