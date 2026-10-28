@@ -1,14 +1,16 @@
 //! The cache hit path: look up, copy and patch into the caller's buffer.
 //!
 //! `hit` serves real responses on one thread; `hit_hot` has every thread ask one name (one shard lock), and
-//! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response.
+//! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response
+//! already decoded, as a forwarder has it.
 
+use std::cell::Cell;
+use std::hash::{BuildHasher, RandomState};
 use std::hint::black_box;
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dedens_bench::{CASES, wire};
-use dedens_cache::{Cache, Config, Key, Lookup, StalePolicy};
+use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
 use divan::Bencher;
 
@@ -21,6 +23,14 @@ const THREADS: &[usize] = &[1, 4, 8];
 /// Names in `hit_spread`.
 const SPREAD: usize = 10_000;
 
+thread_local! {
+    /// The next name a thread of `hit_spread` asks: each thread walks the names from its own random start, sharing
+    /// no counter with the others.
+    static NEXT: Cell<usize> = Cell::new(
+        usize::try_from(RandomState::new().hash_one(0) % 10_000).unwrap_or_default(),
+    );
+}
+
 fn cache() -> Cache {
     Cache::new(Config::default()).expect("the default config is valid")
 }
@@ -32,13 +42,17 @@ fn query_for(response: &[u8]) -> Vec<u8> {
     Message::query(7, question).to_vec().expect("a query fits")
 }
 
-fn key(query: &[u8]) -> Key {
-    Key::of(&Query::read(query).expect("a valid query")).expect("a question")
+/// Stores `response` at time 0, the answer to `query`.
+fn insert_at_0(cache: &Cache, query: &[u8], response: &[u8]) -> bool {
+    let query = Query::read(query).expect("a valid query");
+    let decoded = Message::decode(response).expect("decodes");
+    cache.insert(&query, &decoded, 0).is_ok()
 }
 
+/// Looks `query` up at time 0, when it was stored: every record has TTL 1 or more, so it is fresh.
 fn hit_once(cache: &Cache, query: &[u8], out: &mut [u8]) -> usize {
     let query = Query::read(black_box(query)).expect("a valid query");
-    match cache.lookup(&query, 10, StalePolicy::Never, out) {
+    match cache.lookup(&query, 0, StalePolicy::Never, out) {
         Lookup::Hit(hit) => hit.len,
         other => unreachable!("expected a hit, got {other:?}"),
     }
@@ -49,7 +63,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let response = wire(case);
     let query = query_for(&response);
     let cache = cache();
-    if cache.insert(&key(&query), &response, 0).is_err() {
+    if !insert_at_0(&cache, &query, &response) {
         // Not cacheable (TC, NXDOMAIN without SOA...): nothing to time.
         return;
     }
@@ -60,10 +74,11 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench(args = CASES)]
 fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let response = wire(case);
+    let decoded = Message::decode(&response).expect("decodes");
     let query = query_for(&response);
-    let key = key(&query);
+    let query = Query::read(&query).expect("a valid query");
     let cache = cache();
-    bencher.bench_local(|| cache.insert(&key, black_box(&response), 0).is_ok());
+    bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0).is_ok());
 }
 
 fn synthetic(name: &str) -> (Vec<u8>, Vec<u8>) {
@@ -81,12 +96,19 @@ fn synthetic(name: &str) -> (Vec<u8>, Vec<u8>) {
     (query, response.to_vec().expect("fits"))
 }
 
+/// A buffer for one response, made outside the timed loop.
+fn out() -> Vec<u8> {
+    vec![0; 512]
+}
+
 #[divan::bench(threads = THREADS)]
 fn hit_hot(bencher: Bencher<'_, '_>) {
     let cache = cache();
     let (query, response) = synthetic("www.example.com");
-    cache.insert(&key(&query), &response, 0).expect("cacheable");
-    bencher.bench(|| hit_once(&cache, &query, &mut [0; 512]));
+    assert!(insert_at_0(&cache, &query, &response), "cacheable");
+    bencher
+        .with_inputs(out)
+        .bench_refs(|out| hit_once(&cache, &query, out));
 }
 
 #[divan::bench(threads = THREADS)]
@@ -95,13 +117,18 @@ fn hit_spread(bencher: Bencher<'_, '_>) {
     let queries: Vec<Vec<u8>> = (0..SPREAD)
         .map(|i| {
             let (query, response) = synthetic(&format!("host{i}.example.com"));
-            cache.insert(&key(&query), &response, 0).expect("cacheable");
+            assert!(insert_at_0(&cache, &query, &response), "cacheable");
             query
         })
         .collect();
-    let next = AtomicUsize::new(0);
-    bencher.bench(|| {
-        let i = next.fetch_add(7919, Ordering::Relaxed) % SPREAD;
-        hit_once(&cache, &queries[i], &mut [0; 512])
-    });
+    let next = || {
+        NEXT.with(|next| {
+            let i = next.get();
+            next.set((i + 7919) % SPREAD);
+            i
+        })
+    };
+    bencher
+        .with_inputs(|| (next(), out()))
+        .bench_refs(|(i, out)| hit_once(&cache, &queries[*i], out));
 }

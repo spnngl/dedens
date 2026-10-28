@@ -2,9 +2,9 @@
 
 mod common;
 
-use common::{T0, a, key_of, lookup, query, response, small_cache, soa, ttls};
+use common::{T0, a, insert, lookup, query, record, response, small_cache, soa, ttls};
 use dedens_cache::{Lookup, NotCached, StalePolicy};
-use dedens_proto::{Flags, Message, Rcode, RecordType};
+use dedens_proto::{Flags, Message, RData, Rcode, RecordType};
 
 const NEVER: StalePolicy = StalePolicy::Never;
 
@@ -19,7 +19,7 @@ fn positive_answer_lives_as_long_as_its_shortest_ttl() {
         vec![a("www.example", 300, 1), a("www.example", 100, 2)],
         vec![],
     );
-    cache.insert(&key_of(&q), &r, T0).unwrap();
+    insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0 + 40, NEVER);
     assert_eq!(ttls(&served.unwrap()), [60, 60]);
     assert_eq!(lookup(&cache, &q, T0 + 100, NEVER).0, Lookup::Miss);
@@ -37,7 +37,7 @@ fn nxdomain_lives_as_long_as_the_soa_allows() {
         vec![],
         vec![soa("example", 3600, 60)],
     );
-    cache.insert(&key_of(&q), &r, T0).unwrap();
+    insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0 + 10, NEVER);
     let served = served.unwrap();
     assert_eq!(served.rcode(), Rcode::NXDOMAIN);
@@ -57,7 +57,7 @@ fn nodata_is_cached_like_nxdomain() {
         vec![],
         vec![soa("example", 120, 900)],
     );
-    cache.insert(&key_of(&q), &r, T0).unwrap();
+    insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0, NEVER);
     assert_eq!(ttls(&served.unwrap()), [120]);
 }
@@ -74,7 +74,7 @@ fn negative_answer_without_soa_is_not_cached() {
         vec![],
         vec![],
     );
-    assert_eq!(cache.insert(&key_of(&q), &r, T0), Err(NotCached::NoSoa));
+    assert_eq!(insert(&cache, &q, &r, T0), Err(NotCached::NoSoa));
 }
 
 /// §5: negative TTLs capped, 1 to 3 hours recommended.
@@ -89,7 +89,7 @@ fn negative_ttl_is_capped() {
         vec![],
         vec![soa("example", 86_400, 86_400)],
     );
-    cache.insert(&key_of(&q), &r, T0).unwrap();
+    insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0, NEVER);
     assert_eq!(ttls(&served.unwrap()), [cache.config().max_negative_ttl]);
 }
@@ -105,7 +105,7 @@ fn positive_ttl_is_capped() {
         vec![a("www.example", 0x7FFF_FFFF, 1)],
         vec![],
     );
-    cache.insert(&key_of(&q), &r, T0).unwrap();
+    insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0, NEVER);
     assert_eq!(ttls(&served.unwrap()), [7 * 86_400]);
 }
@@ -122,14 +122,13 @@ fn ttl_zero_is_not_cached() {
         vec![a("www.example", 0, 1)],
         vec![],
     );
-    assert_eq!(cache.insert(&key_of(&q), &r, T0), Err(NotCached::ZeroTtl));
+    assert_eq!(insert(&cache, &q, &r, T0), Err(NotCached::ZeroTtl));
 }
 
 #[test]
 fn failures_and_unusable_responses_are_refused() {
     let cache = small_cache();
     let q = query(1, "www.example", RecordType::A);
-    let key = key_of(&q);
     let answer = || vec![a("www.example", 60, 1)];
 
     let servfail = response(
@@ -140,7 +139,7 @@ fn failures_and_unusable_responses_are_refused() {
         vec![],
     );
     assert_eq!(
-        cache.insert(&key, &servfail, T0),
+        insert(&cache, &q, &servfail, T0),
         Err(NotCached::Rcode(Rcode::SERVFAIL))
     );
 
@@ -152,7 +151,7 @@ fn failures_and_unusable_responses_are_refused() {
         vec![],
     );
     assert_eq!(
-        cache.insert(&key, &other, T0),
+        insert(&cache, &q, &other, T0),
         Err(NotCached::OtherQuestion)
     );
 
@@ -164,7 +163,7 @@ fn failures_and_unusable_responses_are_refused() {
         vec![],
     );
     assert_eq!(
-        cache.insert(&key, &other_type, T0),
+        insert(&cache, &q, &other_type, T0),
         Err(NotCached::OtherQuestion)
     );
 
@@ -178,14 +177,76 @@ fn failures_and_unusable_responses_are_refused() {
     let mut truncated = Message::decode(&fine).unwrap().message;
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     assert_eq!(
-        cache.insert(&key, &truncated.to_vec().unwrap(), T0),
+        insert(&cache, &q, &truncated.to_vec().unwrap(), T0),
         Err(NotCached::Truncated)
     );
 
-    assert_eq!(cache.insert(&key, &q, T0), Err(NotCached::NotResponse));
-    assert!(matches!(
-        cache.insert(&key, &[0; 5], T0),
-        Err(NotCached::Malformed(_))
-    ));
+    assert_eq!(insert(&cache, &q, &q, T0), Err(NotCached::NotResponse));
     assert!(cache.is_empty());
+}
+
+fn cname(owner: &str, ttl: u32, target: &str) -> dedens_proto::Record<'static> {
+    record(owner, ttl, &RData::Cname(common::dns(target)))
+}
+
+/// §2.2 NODATA after a CNAME chain: the chain and the denial live as long as the SOA allows, not the chain's TTL.
+#[test]
+fn nodata_after_a_cname_is_negative() {
+    let cache = small_cache();
+    let q = query(1, "www.example", RecordType::AAAA);
+    let r = response(
+        "www.example",
+        RecordType::AAAA,
+        Rcode::NOERROR,
+        vec![cname("www.example", 3600, "host.example")],
+        vec![soa("example", 3600, 60)],
+    );
+    insert(&cache, &q, &r, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    let served = served.unwrap();
+    assert_eq!(served.answer.len(), 1);
+    assert_eq!(ttls(&served), [60, 60]);
+    assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Miss);
+}
+
+/// §2.1: NXDOMAIN at the end of a chain is denied by the zone of the chain's last name.
+#[test]
+fn nxdomain_after_a_cname_into_another_zone() {
+    let cache = small_cache();
+    let q = query(1, "www.example", RecordType::A);
+    let r = response(
+        "www.example",
+        RecordType::A,
+        Rcode::NXDOMAIN,
+        vec![cname("www.example", 3600, "gone.other.test")],
+        vec![soa("other.test", 3600, 30)],
+    );
+    insert(&cache, &q, &r, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    assert_eq!(ttls(&served.unwrap()), [30, 30]);
+}
+
+/// §2.1, §2.2: an SOA neither at nor above the denied name is not of the zone that denies it.
+#[test]
+fn an_soa_of_another_zone_does_not_deny() {
+    let cache = small_cache();
+    let q = query(1, "nope.example", RecordType::A);
+    for zone in ["other.test", "sub.nope.example", "xample"] {
+        let r = response(
+            "nope.example",
+            RecordType::A,
+            Rcode::NXDOMAIN,
+            vec![],
+            vec![soa(zone, 3600, 60)],
+        );
+        assert_eq!(insert(&cache, &q, &r, T0), Err(NotCached::NoSoa), "{zone}");
+    }
+    let r = response(
+        "nope.example",
+        RecordType::A,
+        Rcode::NXDOMAIN,
+        vec![],
+        vec![soa("EXAMPLE", 3600, 60)],
+    );
+    insert(&cache, &q, &r, T0).unwrap();
 }

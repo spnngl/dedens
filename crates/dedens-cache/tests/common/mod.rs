@@ -4,7 +4,7 @@
 
 use std::net::Ipv4Addr;
 
-use dedens_cache::{Cache, Config, Key, Lookup, StalePolicy};
+use dedens_cache::{Cache, Config, Key, Lookup, NotCached, StalePolicy};
 use dedens_proto::rdata::Soa;
 use dedens_proto::{
     Class, Edns, EdnsFlags, Flags, Message, Name, Query, Question, RData, Rcode, Record,
@@ -95,6 +95,20 @@ pub(crate) fn response(
 
 pub(crate) fn key_of(query: &[u8]) -> Key {
     Key::of(&Query::read(query).expect("a valid query")).expect("a question")
+}
+
+/// Stores `response`, the answer to `query`, as a forwarder does once it has decoded it.
+pub(crate) fn insert(
+    cache: &Cache,
+    query: &[u8],
+    response: &[u8],
+    now: u32,
+) -> Result<(), NotCached> {
+    cache.insert(
+        &Query::read(query).expect("a valid query"),
+        &Message::decode(response).expect("a response that decodes"),
+        now,
+    )
 }
 
 pub(crate) fn small_cache() -> Cache {

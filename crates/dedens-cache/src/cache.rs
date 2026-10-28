@@ -3,7 +3,9 @@
 use std::hash::{BuildHasher, RandomState};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use dedens_proto::{Message, Query};
+use dedens_proto::header::HEADER_LEN;
+use dedens_proto::name::MAX_NAME_LEN;
+use dedens_proto::{Decoded, Query};
 
 use crate::config::{Config, ConfigError};
 use crate::key::Key;
@@ -88,9 +90,17 @@ impl Cache {
         &self.config
     }
 
+    /// Shortest `out` [`Cache::lookup`] takes: a header and the longest question, what a truncated response
+    /// keeps at least (RFC 2181 §9). A shorter buffer may turn a hit into [`Lookup::Miss`]; debug builds panic.
+    pub const MIN_OUT: usize = HEADER_LEN + MAX_NAME_LEN + 4;
+
     /// Looks the first question of `query` up at time `now` (seconds, any monotonic origin) and writes the
     /// response into `out`, patched for the query: its ID, RD and CD bits, question case, TTLs counted down.
-    /// `out` is as long as the response may be, less the OPT record the caller appends.
+    /// `out` is as long as the response may be, less the OPT record the caller appends, and at least
+    /// [`Cache::MIN_OUT`].
+    ///
+    /// A hit that fits `out` is copied and patched under the shard's lock, without decoding or allocating. One too
+    /// large is decoded and encoded again without the records that do not fit, after the lock is released.
     #[must_use]
     pub fn lookup(
         &self,
@@ -99,17 +109,24 @@ impl Cache {
         stale: StalePolicy,
         out: &mut [u8],
     ) -> Lookup {
+        debug_assert!(
+            out.len() >= Self::MIN_OUT,
+            "lookup takes at least Cache::MIN_OUT bytes"
+        );
         let Some(key) = Key::of(query) else {
             return Lookup::Miss;
         };
         let (hash, shard) = self.shard(&key);
-        let (freshness, full) = {
+        let (freshness, ttl, large) = {
             let mut shard = lock(shard);
             let Some(entry) = shard.get(hash, key.as_bytes()) else {
                 return Lookup::Miss;
             };
-            let held = now < entry.hold_until;
-            let nothing = if held { Lookup::Failed } else { Lookup::Miss };
+            let nothing = if self.held(entry.hold_until, now) {
+                Lookup::Failed
+            } else {
+                Lookup::Miss
+            };
             let Some(response) = &entry.response else {
                 return nothing;
             };
@@ -117,11 +134,11 @@ impl Cache {
                 let prefetch =
                     !entry.prefetched && response.ending(now, self.config.prefetch_percent);
                 entry.prefetched |= prefetch;
-                (response.expires - now, Freshness::Fresh { prefetch })
+                (response.left(now), Freshness::Fresh { prefetch })
             } else if now < response.stale_until
                 && match stale {
                     StalePolicy::Never => false,
-                    StalePolicy::IfFailing => held,
+                    StalePolicy::IfFailing => nothing == Lookup::Failed,
                     StalePolicy::Always => true,
                 }
             {
@@ -129,38 +146,48 @@ impl Cache {
             } else {
                 return nothing;
             };
-            if let Some(len) = response.serve(query, ttl, out) {
+            let served = response.serve(query, ttl, out);
+            let large = served.is_none().then(|| response.share());
+            entry.hit();
+            if let Some(len) = served {
                 return Lookup::Hit(Hit {
                     len,
                     freshness,
                     truncated: false,
                 });
             }
-            (freshness, response.serve_full(query, ttl))
+            (freshness, ttl, large)
         };
         // Too large for the client: the slow path, outside the lock.
-        let Ok(decoded) = Message::decode(&full) else {
-            return Lookup::Miss;
-        };
-        match decoded.message.encode_truncated(out) {
-            Ok(encoded) => Lookup::Hit(Hit {
+        match large.and_then(|large| large.serve_truncated(query, ttl, out)) {
+            Some(encoded) => Lookup::Hit(Hit {
                 len: encoded.len,
                 freshness,
                 truncated: true,
             }),
-            Err(_) => Lookup::Miss,
+            None => Lookup::Miss,
         }
     }
 
-    /// Stores `response`, received at `now` for the question of `key`, under the RFC 2308 rules; ends any failure
-    /// hold of the key.
+    /// Stores `response`, received at `now` in answer to `query`, under the RFC 2308 rules; ends any failure hold
+    /// of the query's key.
+    ///
+    /// `query` is the client's: the response is stored under its question and its DO and CD bits ([`Key::of`]).
+    /// The caller asked upstream with those bits, so that a response with signatures, or unchecked, only goes to
+    /// clients that asked for it.
     ///
     /// # Errors
     ///
     /// [`NotCached`] says why the response is not stored.
-    pub fn insert(&self, key: &Key, response: &[u8], now: u32) -> Result<(), NotCached> {
-        let response = Response::build(key, response, now, &self.config)?;
-        let (hash, shard) = self.shard(key);
+    pub fn insert(
+        &self,
+        query: &Query<'_>,
+        response: &Decoded<'_>,
+        now: u32,
+    ) -> Result<(), NotCached> {
+        let key = Key::of(query).ok_or(NotCached::Query)?;
+        let response = Response::build(&key, response, now, &self.config)?;
+        let (hash, shard) = self.shard(&key);
         let mut shard = lock(shard);
         if !shard.fits(key.as_bytes().len(), &response) {
             return Err(NotCached::TooLarge);
@@ -177,6 +204,10 @@ impl Cache {
     /// Records that resolving `key` failed at `now`, and returns the seconds it is held (RFC 9520 §3.2): the
     /// first hold doubled on each failure in a row up to the longest, and the RFC 8767 recheck time at least
     /// when stale data answers meanwhile.
+    ///
+    /// A failure reported while the key is held, by a resolution started before the hold, is not counted: the
+    /// seconds left of the hold are returned. Failures stop being in a row once more than the longest hold has
+    /// passed since the last hold ended.
     #[expect(
         clippy::must_use_candidate,
         reason = "the hold is for logs; recording the failure is the point"
@@ -186,6 +217,13 @@ impl Cache {
         let (hash, shard) = self.shard(key);
         let mut hold = 0;
         lock(shard).update(hash, key.as_bytes(), |entry| {
+            if self.held(entry.hold_until, now) {
+                hold = entry.hold_until - now;
+                return;
+            }
+            if now.saturating_sub(entry.hold_until) > config.failure_max {
+                entry.failures = 0;
+            }
             entry.failures = entry.failures.saturating_add(1);
             let doubling = 1_u32.checked_shl(entry.failures - 1).unwrap_or(u32::MAX);
             hold = config
@@ -198,6 +236,12 @@ impl Cache {
             entry.hold_until = now.saturating_add(hold);
         });
         hold
+    }
+
+    /// Whether a hold until `hold_until` is on at `now`. A hold more than `failure_max` ahead, after the clock went
+    /// back, is over: no hold lasts longer (RFC 9520 §3.2).
+    const fn held(&self, hold_until: u32, now: u32) -> bool {
+        now < hold_until && hold_until - now <= self.config.failure_max
     }
 
     /// Number of entries, responses and failure records.

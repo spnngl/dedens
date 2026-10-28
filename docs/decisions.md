@@ -133,11 +133,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D22 Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
-  popular ones). Whole responses only; an RRset cache comes with the recursive resolver. Key: lowercased
-  question, type, class, DO, CD. Checked (RFC 2308, no TC, no violations) and encoded once at insert (no OPT,
-  ID 0, one TTL, TTL offsets kept); a hit copies and patches ID, flags, question case and TTLs. Serve-stale
-  (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC 9520: 5 s doubling to 300 s, 30 s with stale
-  data); the caller decides when stale data may answer.
+  popular ones; a ghost queue of evicted hashes sends a key asked again to main). Whole responses only; an
+  RRset cache comes with the recursive resolver. Key: lowercased question, type, class, DO, CD, of standard
+  queries only (QR clear, opcode QUERY), not meta types (RFC 6895 §3.1; ANY is cached). `insert` takes the
+  client's query and the response the forwarder decoded, never decoding again; the caller asks upstream with
+  the query's DO and CD. Checked (RFC 2308, no TC, no violations, no client subnet scope above 0, RFC 7871
+  §7.3.1) and encoded once (no OPT, ID 0, one TTL, TTL offsets kept). Negative (NXDOMAIN, or no answer of the
+  type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the chain's TTLs
+  within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD only when
+  asked), question case and TTLs, never above the stored TTL; one too large for the buffer is encoded again
+  truncated, outside the lock. Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
+  9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count,
+  a quiet spell over 300 s starts over); the caller decides when stale data may answer.
 
 ## CLI
 

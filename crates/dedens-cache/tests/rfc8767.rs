@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{T0, a, key_of, lookup, query, response, small_cache, ttls};
+use common::{T0, a, insert, key_of, lookup, query, response, small_cache, ttls};
 use dedens_cache::{Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::{Rcode, RecordType};
 
@@ -16,9 +16,7 @@ fn cached() -> (dedens_cache::Cache, Vec<u8>) {
         vec![a("www.example", 60, 1)],
         vec![],
     );
-    cache
-        .insert(&key_of(&q), &r, T0)
-        .expect("a cacheable answer");
+    insert(&cache, &q, &r, T0).expect("a cacheable answer");
     (cache, q)
 }
 

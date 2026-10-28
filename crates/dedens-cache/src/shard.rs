@@ -5,13 +5,17 @@
 //! coming back soon sends them straight to main. Main is a FIFO with a two-bit hit counter reinserting hit
 //! entries. One-hit wonders, most of DNS traffic's long tail, leave fast without flushing popular names.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
 
+use crate::key::MAX_KEY_LEN;
 use crate::response::Response;
 
 /// Bytes counted for an entry besides its key and response: slab slot, index slot, queue slot.
 const ENTRY_OVERHEAD: usize = 128;
+
+/// The least budget of a shard: one failure record of the longest key, so a failure always fits.
+pub(crate) const MIN_BUDGET: usize = ENTRY_OVERHEAD + MAX_KEY_LEN;
 
 /// Highest hit count kept, so an entry popular once leaves main after a few rounds without hits.
 const MAX_FREQ: u8 = 3;
@@ -78,6 +82,57 @@ impl Entry {
     fn cost(&self) -> usize {
         ENTRY_OVERHEAD + self.key.len() + self.response.as_ref().map_or(0, Response::cost)
     }
+
+    /// Counts a hit, which keeps the entry through eviction rounds.
+    pub(crate) fn hit(&mut self) {
+        self.freq = (self.freq + 1).min(MAX_FREQ);
+    }
+}
+
+/// Hashes of entries evicted from small without a hit, oldest first (S3-FIFO's ghost queue): a key met again while
+/// remembered goes straight to main.
+#[derive(Debug, Default)]
+struct Ghosts {
+    /// Each hash remembered, with the stamp of its newest place in `order`.
+    stamps: HashMap<u64, u64, Prehash>,
+    /// Hashes and stamps, oldest first. A place whose stamp is not the hash's in `stamps` is stale: the hash was
+    /// met again, or remembered again later.
+    order: VecDeque<(u64, u64)>,
+    next: u64,
+}
+
+impl Ghosts {
+    /// Forgets `hash`, returning whether it was remembered.
+    fn take(&mut self, hash: u64) -> bool {
+        self.stamps.remove(&hash).is_some()
+    }
+
+    /// Remembers `hash` as the newest, forgetting the oldest beyond `most`.
+    fn remember(&mut self, hash: u64, most: usize) {
+        let stamp = self.next;
+        self.next += 1;
+        self.stamps.insert(hash, stamp);
+        self.order.push_back((hash, stamp));
+        while self.stamps.len() > most {
+            let Some((old, stamp)) = self.order.pop_front() else {
+                break;
+            };
+            if self.stamps.get(&old) == Some(&stamp) {
+                self.stamps.remove(&old);
+            }
+        }
+        // Stale places outnumbering live ones are dropped at once, so `order` stays within twice the hashes.
+        if self.order.len() > 2 * self.stamps.len() {
+            let stamps = &self.stamps;
+            self.order
+                .retain(|(hash, stamp)| stamps.get(hash) == Some(stamp));
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.stamps.len()
+    }
 }
 
 /// A shard; [`crate::Cache`] holds each behind its own lock.
@@ -88,8 +143,7 @@ pub(crate) struct Shard {
     free: Vec<u32>,
     small: VecDeque<u32>,
     main: VecDeque<u32>,
-    ghost: VecDeque<u64>,
-    ghosts: HashSet<u64, Prehash>,
+    ghosts: Ghosts,
     small_bytes: usize,
     main_bytes: usize,
     budget: usize,
@@ -103,8 +157,7 @@ impl Shard {
             free: Vec::new(),
             small: VecDeque::new(),
             main: VecDeque::new(),
-            ghost: VecDeque::new(),
-            ghosts: HashSet::default(),
+            ghosts: Ghosts::default(),
             small_bytes: 0,
             main_bytes: 0,
             budget,
@@ -112,7 +165,7 @@ impl Shard {
     }
 
     /// Whether an entry with this key length and response fits the budget alone.
-    pub(crate) const fn fits(&self, key_len: usize, response: &Response) -> bool {
+    pub(crate) fn fits(&self, key_len: usize, response: &Response) -> bool {
         ENTRY_OVERHEAD + key_len + response.cost() <= self.budget
     }
 
@@ -126,15 +179,11 @@ impl Shard {
         self.index.len()
     }
 
-    /// The entry of `key`, counting a hit.
+    /// The entry of `key`; [`Entry::hit`] counts a hit.
     pub(crate) fn get(&mut self, hash: u64, key: &[u8]) -> Option<&mut Entry> {
         let slot = *self.index.get(&hash)?;
         let entry = self.slab[slot as usize].as_mut()?;
-        if *entry.key != *key {
-            return None;
-        }
-        entry.freq = (entry.freq + 1).min(MAX_FREQ);
-        Some(entry)
+        (*entry.key == *key).then_some(entry)
     }
 
     /// Changes the entry of `key`, creating it if needed, then evicts down to the budget. An entry of another key
@@ -153,7 +202,7 @@ impl Shard {
             *self.bytes(queue) = *self.bytes(queue) - before + after;
             slot
         } else {
-            let queue = if self.ghosts.remove(&hash) {
+            let queue = if self.ghosts.take(hash) {
                 Queue::Main
             } else {
                 Queue::Small
@@ -228,7 +277,8 @@ impl Shard {
                 let hash = entry.hash;
                 self.remove(slot);
                 if from_small {
-                    self.remember(hash);
+                    // As many ghosts as entries.
+                    self.ghosts.remember(hash, self.index.len().max(1));
                 }
             }
         }
@@ -242,16 +292,66 @@ impl Shard {
         self.index.remove(&entry.hash);
         self.free.push(slot);
     }
+}
 
-    /// Remembers an evicted hash, as many as there are entries.
-    fn remember(&mut self, hash: u64) {
-        if self.ghosts.insert(hash) {
-            self.ghost.push_back(hash);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hash met again, then remembered again, survives the trimming of its first, stale place.
+    #[test]
+    fn a_ghost_remembered_again_is_kept() {
+        let mut ghosts = Ghosts::default();
+        ghosts.remember(1, 2);
+        assert!(ghosts.take(1));
+        ghosts.remember(2, 2);
+        ghosts.remember(1, 2);
+        ghosts.remember(3, 2);
+        assert_eq!(ghosts.len(), 2);
+        assert!(ghosts.take(1));
+        assert!(!ghosts.take(2));
+        assert!(ghosts.take(3));
+    }
+
+    /// Hashes met again leave no place behind for long: the queue stays within twice the hashes remembered.
+    #[test]
+    fn stale_ghost_places_are_dropped() {
+        let mut ghosts = Ghosts::default();
+        for hash in 0..1_000 {
+            ghosts.remember(hash, 10);
+            ghosts.remember(hash + 10_000, 10);
+            assert!(ghosts.take(hash));
+            assert!(ghosts.order.len() <= 2 * ghosts.len() + 1);
         }
-        while self.ghost.len() > self.index.len().max(1) {
-            if let Some(old) = self.ghost.pop_front() {
-                self.ghosts.remove(&old);
-            }
+        assert!(ghosts.len() <= 10);
+    }
+
+    /// Entries of the longest key and no response: the failure records of `Cache::fail`.
+    fn failure(shard: &mut Shard, hash: u64) {
+        shard.update(hash, &[0; MAX_KEY_LEN], |_| {});
+    }
+
+    #[test]
+    fn the_least_budget_holds_a_failure() {
+        let mut shard = Shard::new(MIN_BUDGET);
+        for hash in 0..10 {
+            failure(&mut shard, hash);
+            assert!(shard.used() <= MIN_BUDGET);
+            assert_eq!(shard.len(), 1);
         }
+    }
+
+    /// A key evicted from small without a hit and asked again goes to main.
+    #[test]
+    fn a_ghost_goes_to_main() {
+        let mut shard = Shard::new(10 * MIN_BUDGET);
+        for hash in 0..20 {
+            failure(&mut shard, hash);
+        }
+        assert_eq!(shard.ghosts.len(), 10);
+        failure(&mut shard, 0);
+        let slot = shard.index[&0];
+        let entry = shard.slab[slot as usize].as_ref().unwrap();
+        assert_eq!(entry.queue, Queue::Main);
     }
 }

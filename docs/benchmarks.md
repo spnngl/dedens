@@ -68,9 +68,11 @@ removed `MessageView` read every record in 178/505/1093 ns.
 
 ## Cache (D22)
 
-- Hit including `Query::read`: 147/149/170 ns.
-- Insert: 0.9/1.5/2.5 µs.
-- 8 threads: one hot name 312 ns (one shard lock), 10 000 names 333 ns.
+- Hit including `Query::read`: 84/159/185 ns.
+- Insert of the message the forwarder decoded (no second decode): 226/682/843 ns; it was 362/927/1426 ns
+  decoding the bytes again.
+- 8 threads, medians: one hot name 364 ns (one shard lock), 10 000 names 448 ns (each thread walks the names
+  from its own start, buffers made outside the timing).
 
 ## Zone files (D25)
 
