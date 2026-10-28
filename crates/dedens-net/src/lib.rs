@@ -11,6 +11,22 @@
     clippy::print_stderr
 )]
 
+/// A `tracing` debug event with the `tracing` feature; without it, nothing, its arguments not even compiled (D30).
+macro_rules! debug {
+    ($($event:tt)*) => {
+        #[cfg(feature = "tracing")]
+        tracing::debug!($($event)*);
+    };
+}
+
+/// A `tracing` trace event, as [`debug!`].
+macro_rules! trace {
+    ($($event:tt)*) => {
+        #[cfg(feature = "tracing")]
+        tracing::trace!($($event)*);
+    };
+}
+
 pub mod client;
 pub mod exchange;
 pub mod resolv_conf;

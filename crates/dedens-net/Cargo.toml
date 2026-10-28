@@ -14,6 +14,11 @@ dedens-proto.workspace = true
 flume.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+
+[features]
+# D30: debug events on dropped messages, retries and fallbacks, trace events per message; none without it.
+tracing = ["dep:tracing"]
 
 [dev-dependencies]
 compio = { workspace = true, features = ["macros"] }

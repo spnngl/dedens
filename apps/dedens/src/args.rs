@@ -52,6 +52,9 @@ pub(crate) struct Cli {
     /// Try a name under the search list of /etc/resolv.conf until one is not NXDOMAIN, as dig.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) search: bool,
+    /// Print what the exchanges do on stderr: `-v` dropped messages, retries and fallbacks, `-vv` every message too.
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub(crate) verbose: u8,
     #[command(flatten)]
     pub(crate) options: Options,
     #[command(flatten)]

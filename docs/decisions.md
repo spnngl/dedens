@@ -276,5 +276,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `dedens-proto` has none: its functions are pure and return errors, violations and truncation as values, which
   the server counts where it calls them. The cache counts lookups by outcome, prefetches, inserts and evictions
   (names in `crates/dedens-cache/src/metrics.rs`); spans belong to net, server and CLI, not to hot paths of proto
-  or cache. `dedensd` exports Prometheus; the CLI prints `tracing-subscriber` text under `-v`; OpenTelemetry
-  later. Cost in `docs/benchmarks.md`.
+  or cache. `dedensd` exports Prometheus; the CLI prints `tracing-subscriber` text on stderr, `-v` for debug
+  (dropped messages, retries, fallbacks, `+trace` referrals, a span per hop) and `-vv` for trace (every message
+  sent and received), without `env-filter` and its regexes; its `dedens: …` errors stay plain output.
+  OpenTelemetry later. Cost in `docs/benchmarks.md`.

@@ -720,3 +720,22 @@ fn trace_fails_on_a_response_that_leads_nowhere() {
         .clone();
     assert_eq!(String::from_utf8_lossy(&out).matches("NOERROR").count(), 1);
 }
+
+#[test]
+fn verbose_prints_the_exchange_on_stderr() {
+    let server = Responder::start(&["truncated", "txt_large"]);
+    let args = [&server.at(), "google.com", "TXT", "+noedns", "+short"];
+    dedens().args(args).assert().success().stderr("");
+    dedens()
+        .args(args)
+        .arg("-v")
+        .assert()
+        .success()
+        .stderr(contains("truncated: asking again over TCP").and(contains("sending").not()));
+    dedens()
+        .args(args)
+        .arg("-vv")
+        .assert()
+        .success()
+        .stderr(contains("sending").and(contains("received")));
+}

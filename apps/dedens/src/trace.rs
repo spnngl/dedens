@@ -9,6 +9,7 @@ use dedens_net::client::Client;
 use dedens_proto::text::{Entry, ZoneReader};
 use dedens_proto::{Flags, Message, Name, Question, RData, Rcode, Record, RecordType};
 use dedens_scenario::{Id, Options, Report};
+use tracing::Instrument;
 
 /// IANA's root hints, <https://www.internic.net/domain/named.root>; `just root-hints` refreshes them.
 const ROOT_HINTS: &str = include_str!("named.root");
@@ -172,6 +173,7 @@ impl Tracer<'_> {
             else {
                 return Ok(wire);
             };
+            tracing::debug!(zone = %cut, servers = names.len(), glue = glue.len(), "referral");
             servers = match glue {
                 glue if glue.is_empty() => self.look_up(&names, &cut, depth).await?,
                 glue => glue,
@@ -211,7 +213,10 @@ impl Tracer<'_> {
                 }
                 anyhow::Ok((step(&decoded.message, question, zone)?, response.wire))
             };
-            match outcome.await {
+            match outcome
+                .instrument(tracing::debug_span!("hop", %zone, %server))
+                .await
+            {
                 Ok((step, wire)) => return Ok((wire, step)),
                 Err(error) => last = error.context(format!("{server}")),
             }
@@ -233,6 +238,7 @@ impl Tracer<'_> {
         let mut last = anyhow!("all inside {zone}, without glue");
         for name in names.iter().filter(|name| !name.is_within(zone)) {
             for qtype in [RecordType::A, RecordType::AAAA] {
+                tracing::debug!(%name, %qtype, "looking up a name server without glue");
                 let question = Question::new(name.clone(), qtype);
                 let wire = match Box::pin(self.walk(&question, depth + 1, None)).await {
                     Ok(wire) => wire,

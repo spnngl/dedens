@@ -224,17 +224,22 @@ impl Exchange {
         bytes: &[u8],
         now: Instant,
     ) -> Progress {
+        trace!(server = %self.server, %from, ?transport, len = bytes.len(), "received");
         if transport != self.transport || (transport == Transport::Udp && from != self.server) {
+            debug!(server = %self.server, %from, ?transport, "dropped: from another address or over another transport");
             return Progress::Wait(self);
         }
         let Ok(decoded) = Message::decode(bytes) else {
+            debug!(server = %self.server, "dropped: unreadable");
             return Progress::Wait(self);
         };
         let response = &decoded.message;
         if !self.answers(response) {
+            debug!(server = %self.server, id = response.header.id, "dropped: not the response (QR, ID, opcode or question)");
             return Progress::Wait(self);
         }
         let Ok(cookie) = self.cookie_of(response) else {
+            debug!(server = %self.server, "dropped: without the client cookie sent, or the server cookie");
             return Progress::Wait(self);
         };
         let rcode = response.rcode();
@@ -242,6 +247,7 @@ impl Exchange {
             && response.header.flags.contains(Flags::TC)
             && self.transport == Transport::Udp
         {
+            debug!(server = %self.server, "truncated: asking again over TCP");
             return self.send_changed(Transport::Tcp, now);
         }
         if self.options.edns_fallback
@@ -250,6 +256,7 @@ impl Exchange {
             && response.edns.is_none()
             && (rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP)
         {
+            debug!(server = %self.server, %rcode, "no EDNS in the response: asking again without EDNS");
             self.edns_dropped = true;
             self.query.edns = None;
             let transport = self.transport;
@@ -267,6 +274,7 @@ impl Exchange {
             } else {
                 self.transport
             };
+            debug!(server = %self.server, ?transport, "BADCOOKIE: asking again with the server cookie");
             return self.send_changed(transport, now);
         }
         Progress::Done(Ok(Response {
@@ -288,8 +296,10 @@ impl Exchange {
         }
         self.timeouts += 1;
         if self.timeouts >= self.options.tries.get() {
+            debug!(server = %self.server, sends = self.sends, "timed out: no try left");
             return Progress::Done(Err(Failure::TimedOut { sends: self.sends }));
         }
+        debug!(server = %self.server, sends = self.sends, "timed out: asking again");
         self.sent(now);
         Progress::Send(self)
     }

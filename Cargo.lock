@@ -572,6 +572,8 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "tempfile",
+ "tracing",
+ "tracing-subscriber",
  "unicode-script",
 ]
 
@@ -608,6 +610,7 @@ dependencies = [
  "getrandom 0.4.3",
  "proptest",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

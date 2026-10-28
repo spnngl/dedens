@@ -156,6 +156,7 @@ impl Client {
         udp: Option<&mut UdpChannel>,
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
+        trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
         match exchange.transport() {
             Transport::Udp => {
                 let channel =
