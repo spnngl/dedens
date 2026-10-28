@@ -1,7 +1,8 @@
 # dédéns
 
-DNS library, dig-like CLI and, later, server. Write the ASCII `dedens` wherever "é" is not allowed.
-[`ARCHITECTURE.md`](ARCHITECTURE.md) maps the crates and documents; each folder's `AGENTS.md` says what it holds.
+DNS library, the dig-like CLI `dedens` and the server `dedensd`. Write the ASCII `dedens` wherever "é" is not
+allowed. [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the crates and documents; each folder's `AGENTS.md` says what
+it holds.
 
 Read `docs/decisions.md` before any task. Record a new or changed decision there in the same change as the code,
 under a new number; mark a replaced one superseded. Open questions go to `docs/TODECIDE.md`.
@@ -16,6 +17,7 @@ present; anything worth keeping goes to `docs/`.
   `CLAUDE.md` symlink beside it.
 - Work from the RFC text in `docs/rfc/archive/rfcNNNN.txt` and cite RFC and section in the docs of each item
   implementing one. When an RFC section lands, update its row in `docs/rfc/coverage.md` in the same change.
+  Tests of RFC behaviour go one file per RFC, `tests/rfcNNNN.rs`.
 - Test data is real: captured responses and RFC example zones, never invented bytes. A parser of outside data
   gets a fuzz target. A performance claim gets a bench, recorded in `docs/benchmarks.md`.
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the

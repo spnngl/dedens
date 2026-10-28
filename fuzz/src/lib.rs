@@ -4,6 +4,7 @@
 //! `cargo-fuzz` (nightly) reaches them through the shims in `fuzz_targets/`; `cargo test --lib` (stable,
 //! `just fuzz-smoke`) replays the captured responses plus mutated variants through [`TARGETS`].
 
+#![forbid(unsafe_code)]
 #![expect(
     clippy::panic,
     reason = "a fuzz target, and the smoke test replaying it, report a bug by panicking"

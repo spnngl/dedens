@@ -47,7 +47,7 @@ metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
 proptest = "1.12"
-# D17: query files and the JSON and YAML output (D37).
+# D36: query files and the JSON and YAML output (D37).
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "2.0.0", default-features = false, features = [
   "deserialize",

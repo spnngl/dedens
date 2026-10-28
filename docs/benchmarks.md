@@ -51,7 +51,8 @@ the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower tha
 - The TXT encode gap is not RDATA: once dedens copied RDATA bytes too (D28), it stayed at 359 ns. A profile
   puts it in owner names: `put_name_compressed`, its table lookups and `Name::to_wire`, once per record.
   Unbound writes an RRset's owner once and a pointer to it for each further record; dedens now does too (D10):
-  `encode_dedens` 65/396/367 → 55/351/170, `encode_dedens_owned` 56/325/307 → 49/278/158 (same session, three runs).
+  `encode_dedens` 65/396/367 → 55/351/170, `encode_dedens_owned` 56/325/307 → 49/278/158 (same session, three
+  runs).
 - Zone: `sldns_fp2wire_rr_buf` reads a `FILE` token by token, as Unbound's auth-zone does.
 
 ## RDATA as bytes (D28)
@@ -95,10 +96,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
   1.09, 1.71-1.82 → 1.77-1.82 µs (fastest of 3000 samples, same session); 6 allocations kept, 5 of them the
   empty cache's first insert, which a fresh pipeline per sample counts.
 
-## dedensd under dnsperf (D48)
+## dedensd under dnsperf (D48-D53)
 
-`just bench-dnsperf [base]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on one core
-answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
+`just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on
+one core answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
 
 - One UDP task a socket → four: 304k-334k → 381k-432k queries/s, average latency 1.5 → 1.2 ms.
 - TCP (`tcp`), one write a reply → queued replies written together: 176k-191k → 1.79M-1.83M queries/s,
@@ -112,11 +113,12 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   address asked once a socket, not once a query (`getsockname` was 2.4% of the profile): 124.7k → 129.3k-129.9k.
   Cooperative io_uring task work (D51; signal-like task work was 7.3% of the profile): 135.0k-135.4k →
   158.0k-158.2k, average latency 3.7 → 3.1 ms; UDP and TCP from the cache unchanged (506k-516k, 1.86M-1.93M).
+  `SQPOLL` instead: cache hits over UDP 475k → 230k, forwarding 155k → 82k.
 - Forwarding over TCP (`forward-tcp`), the same against itself: 84.5k-88.6k. A 65535-byte reply buffer zeroed
   for each query → kept per thread and reused (D52): 83.9k → 90.1k-92.3k unzeroed; zeroed on reuse, the default:
-  79.4k-87.6k against 87.1k-90.0k unzeroed in the same run. Upstream queries queued meanwhile written together,
-  up to 65535 bytes, as replies to clients are: 86.4k-88.3k → 273.5k-278.3k, average latency 5.7 → 1.8 ms. The front `dedensd` is at 100% of its
-  core: 27% in kernel wakeups, 9% reading the clock.
+  79.4k-87.6k against 87.1k-90.0k unzeroed in the same run. Upstream queries queued meanwhile written together
+  (D53), up to 65535 bytes, as replies to clients are: 86.4k-88.3k → 273.5k-278.3k, average latency 5.7 → 1.8 ms.
+  The front `dedensd` is at 100% of its core: 27% in kernel wakeups, 9% reading the clock.
 
 ## Zone files (D25)
 

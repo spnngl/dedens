@@ -1,6 +1,8 @@
 //! Inputs shared by the benches of `dedens-proto` against other DNS libraries (D14): the Rust ones in
 //! `benches/`, the Go `miekg/dns` (the codec of `CoreDNS`) in `go/`, Unbound's C codec in `unbound/`.
 
+#![forbid(unsafe_code)]
+
 /// Captured responses, smallest to largest: one A record; MX records with their A glue; a TXT answer of
 /// 1.2 kB.
 pub const CASES: [&str; 3] = ["a", "mx", "txt_large"];

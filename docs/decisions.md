@@ -5,8 +5,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Scope
 
-- D1 Crates per [`ARCHITECTURE.md`](../ARCHITECTURE.md); later `dedens-resolver`, `dedens-server` and
-  `apps/dedensd`, all on the same crates. CLI and server are separate binaries.
+- D1 Crates per [`ARCHITECTURE.md`](../ARCHITECTURE.md), all on `dedens-proto`. CLI and server are separate
+  binaries.
 - D2 Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
   DoQ). A stub resolver and CLI first; forwarder, recursive and authoritative servers follow.
 - D3 Own wire format, for full control of RFC behaviour and speed. hickory-dns and NLnet Labs' `domain` are
@@ -42,12 +42,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   always hold their invariants; except in types whose names may be compressed (RFC 3597 §4), where it is an
   error, since their pointers mean nothing outside the message.
 - D10 Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered buffers), plus a
-  `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), never into the header, through a fixed open-addressing
-  table matched byte for byte (case kept, no allocation); a record with the owner of the previous one points
-  to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the first record that does not
-  fit; TC only when answer or authority lost records; a cut additional RRset goes whole, since without TC a
-  partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC 6891 §7). Header
-  fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day 2020).
+  `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), never into the header, through a fixed
+  open-addressing table matched byte for byte (case kept, no allocation); a record with the owner of the previous
+  one points to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the first
+  record that does not fit; TC only when answer or authority lost records; a cut additional RRset goes whole, since
+  without TC a partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC 6891
+  §7). Header fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day
+  2020).
 - D11 Typed RDATA: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT; others opaque until
   added. The other types with compressible names (RFC 3597 §4: MD MF MB MG MR MINFO, RP AFSDB RT SIG PX NXT
   NAPTR) are parsed by a field layout and kept opaque with their names expanded, so opaque data never holds a
@@ -88,10 +89,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
-- D27 Client behaviour:
-  - UDP: queries muxed on a fixed pool of connected sockets per server (D50), and a random ID from `getrandom`,
-    drawn 256 bytes at a time: a call costs 846 ns on macOS, 14 ns on Linux (vDSO).
-    Superseded: a new socket per query (about 32 bits to guess, RFC 5452 §9.2, at three system calls a query).
+- D27 (amended by D50, D53) Client behaviour:
+  - UDP: a pool of sockets per server (D50); a random ID from `getrandom`, drawn 256 bytes at a time: a call costs
+    846 ns on macOS, 14 ns on Linux (vDSO).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
     on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case
     randomization of the question is an option, off by default as in Unbound.
@@ -107,7 +107,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     waiting stays taken until its response comes. Idle close; edns-tcp-keepalive sent empty in TCP queries only
     and its timeout honoured when shorter, 0 taking no new query (RFC 7828); a closed
     connection retried once on a new one. Queries are written whole by a task of the connection, so a query that
-    stops waiting never cuts a message short.
+    stops waiting never cuts a message short; those queued meanwhile go in one write (D53).
 - D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
   it, and owns no randomness or secret; `0x20` takes its random bits as an option, which also turns on the
   exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
@@ -137,8 +137,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D14 Bar: no slower than hickory-proto; target: faster than `domain`. Baselines run in the same benches:
   hickory-proto, `domain` and Go's `miekg/dns` (the codec of CoreDNS), in `crates/dedens-bench` as regular
   dependencies so `cargo deny` checks them; Unbound's C codec, built from a pinned release by
-  `just bench-unbound`. CoreDNS and Unbound as servers: dnsperf, later. `unsafe` only where a profile
-  shows bounds checks matter. A server decodes with `Message::decode_reusing`: no allocation once warm.
+  `just bench-unbound`. `unsafe` only where a profile shows bounds checks matter. `Message::decode_reusing`
+  decodes without allocating once warm; the server decodes each upstream response once with `Message::decode`
+  (D46).
 - D15 `unsafe` is a hot-path tool: the bench first, then Miri and RAPx. Every crate root has
   `#![forbid(unsafe_code)]`, which nothing below can override; a crate opting in replaces it with the
   workspace's `deny` (`Cargo.toml`) and allows `unsafe_code` on the one module of the measured hot path.
@@ -154,34 +155,31 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries only (QR clear, opcode QUERY), not meta types (RFC 6895 §3.1; ANY is cached). `insert` takes the
   client's query and the response the forwarder decoded, never decoding again; the caller asks upstream with
   the query's DO and CD. Checked (RFC 2308, no TC, no violations, no client subnet scope above 0, RFC 7871
-  §7.3.1) and encoded once without OPT, its TTL offsets after it in the same allocation. Negative (NXDOMAIN, or no answer of the
-  type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the chain's TTLs
-  within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD only when
-  asked), question case and TTLs, never above the stored TTL; one too large for the buffer is encoded again
-  truncated, outside the lock. Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
-  9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count,
-  a quiet spell over 300 s starts over); the caller decides when stale data may answer.
+  §7.3.1) and encoded once without OPT, its TTL offsets after it in the same allocation. Negative (NXDOMAIN, or no
+  answer of the type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the
+  chain's TTLs within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD
+  only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is encoded
+  again truncated, outside the lock. Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
+  9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
+  quiet spell over 300 s starts over); the caller decides when stale data may answer.
 
 ## CLI
 
-- D17 (superseded by D36) Query files (`dedens-scenario`), so the server's tests reuse them: one serde model
-  (queries, options, optional expectations; a failed one makes `dedens` exit non-zero) from JSON (serde_json) or
-  YAML (serde-saphyr), by extension or `--format`, `-` for stdin. Rejected: serde_yaml (archived 2024-03),
-  serde-yaml-ng (no commit in a year).
+- D17 (superseded by D36) Query files in JSON or YAML, picked by extension or `--format`.
 - D36 Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
   optional expectations; a failed one makes `dedens` exit non-zero) read as YAML 1.2 by serde-saphyr, `-` for
   stdin. JSON is YAML 1.2, so JSON files read too, at the price of YAML-worded errors; no input format flag, no
-  second reader. `dedens` drops dig's layout (`--dig`): JSON and YAML serve scripts, the human output people, and dig
-  itself a side-by-side comparison. Rejected: serde_yaml (archived 2024-03), serde-yaml-ng (no commit in a
+  second reader. `dedens` drops dig's layout (`--dig`): JSON and YAML serve scripts, the human output people, and
+  dig itself a side-by-side comparison. Rejected: serde_yaml (archived 2024-03), serde-yaml-ng (no commit in a
   year).
 - D18 `dedens`, dig but better: dig argv (`@server name type class +opts`) and long flags; query files;
-  output for humans by default, JSON or YAML for scripts (D37), `+short`, color; several names, types or servers per run, concurrent, side by side;
-  timing, transport, sizes, EDNS, cookies and EDE in words; `+trace`; `--repeat N` with latency percentiles;
-  `--save-wire` (the source of captured test data); default server from `/etc/resolv.conf`. `-x ADDR` asks PTR
-  for the `in-addr.arpa` or `ip6.arpa` name of an address (RFC 1035 §3.5, RFC 3152). The `resolv.conf`
-  search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a debugging tool asks for
-  the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and shown as such,
-  with labels mixing scripts flagged (IDN homographs).
+  output for humans by default, JSON or YAML for scripts (D37), `+short`, color; several names, types or servers
+  per run, concurrent, side by side; timing, transport, sizes, EDNS, cookies and EDE in words; `+trace`;
+  `--repeat N` with latency percentiles; `--save-wire` (the source of captured test data); default server from
+  `/etc/resolv.conf`. `-x ADDR` asks PTR for the `in-addr.arpa` or `ip6.arpa` name of an address (RFC 1035 §3.5,
+  RFC 3152). The `resolv.conf` search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a
+  debugging tool asks for the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and
+  shown as such, with labels mixing scripts flagged (IDN homographs).
 - D32 CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
   `+noopt` → `--opt=false` for an on/off flag only, `+opt=v` → `--opt=v`, `opt` any unique prefix as in dig;
   `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
@@ -191,12 +189,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `@servers`: D38. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
   Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
   written after it, and one without any the types written before the first name, else A. Output formats: D37;
-  color with anstream/anstyle, `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
-  RFC 5895) and `unicode-script` for mixed-script labels (Han with kana, Hangul or Bopomofo, and Latin, being one
-  writing, UTS 39 §5.2), both in `apps/dedens`: the library stays ASCII.
-  `resolv.conf` read by our own parser (`nameserver`, `search`, `domain`, `ndots`), `DEDENS_RESOLV_CONF`
-  overriding its path for tests; no Windows yet. `+search` tries the next candidate on NXDOMAIN. A class word
-  applies to every query of the run. `-f FILE --only ID` runs some queries of a file.
+  color with anstream/anstyle, `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46
+  nontransitional, near RFC 5895) and `unicode-script` for mixed-script labels (Han with kana, Hangul or Bopomofo,
+  and Latin, being one writing, UTS 39 §5.2), both in `apps/dedens`: the library stays ASCII. `resolv.conf` read by
+  our own parser (`nameserver`, `search`, `domain`, `ndots`), `DEDENS_RESOLV_CONF` overriding its path for tests;
+  no Windows yet. `+search` tries the next candidate on NXDOMAIN. A class word applies to every query of the run.
+  `-f FILE --only ID` runs some queries of a file.
 - D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
   9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
   which leaves the other results.
@@ -204,18 +202,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `--save-wire` file name, so no `/`, `\`, `.` or `..`, unique in the file; default `name_type`, `root_type`
   for the root), `name`, `type`, its own `server`/`options`, and `expect`: `rcode`, `flags` that must be set,
   and `answer`/`authority`/`additional` as presentation lines compared as lists in any order, a line written
-  twice expecting two records, the TTL compared only when written. `--save-wire DIR` writes the response to `DIR/<id>.bin`. Options
-  are dig's `+` options by name (`tcp`, `ignore`, `recurse`, `cdflag`, `adflag`, `edns`, `bufsize`, `dnssec`,
-  `nsid`, `cookie`, `time`, `tries`), each one left out inherited (command line, query, file, dig's default);
-  `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and `+nocookie` need
-  `dedens-net` exchange options `tcp_fallback` and `cookies`.
-- D35 (superseded by D37) `--json` prints one object per query and line (JSON lines, so a run streams): server, transport, RTT,
-  sizes, header, question, sections, EDNS; each record `{name, ttl, class, type, data}` with `data` its
-  presentation text. Server, transport, RTT (`rtt_us`), sends and query size sit in an `exchange` object, absent
-  for a response read from a file; EDNS options are typed (`nsid`, `cookie`, `ede`, else `other` with the data
-  in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
-  expectations in `failures`. The types live in `dedens-scenario`, serialized only until the server's tests
-  need to read them back.
+  twice expecting two records, the TTL compared only when written. `--save-wire DIR` writes the response to
+  `DIR/<id>.bin`. Options are dig's `+` options by name (`tcp`, `ignore`, `recurse`, `cdflag`, `adflag`, `edns`,
+  `bufsize`, `dnssec`, `nsid`, `cookie`, `time`, `tries`), each one left out inherited (command line, query, file,
+  dig's default); `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and
+  `+nocookie` need `dedens-net` exchange options `tcp_fallback` and `cookies`.
+- D35 (superseded by D37) `--json` as JSON lines, every field present however empty.
 - D37 `dedens --format human|short|json|yaml` (`+short`, `--json`, `--yaml` its shorthands, one at most), each
   response printed as it is ready. `human`, the default, is for reading: a status line (question, rcode in color
   and in words unless NOERROR, RTT, server without port 53, transport), then each non-empty section under its
@@ -260,58 +252,58 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   query has one response. Declarative matchers compiled at load; scripting costs microseconds against a
   150 ns cache hit. Built-in stages are enum variants behind Cargo features; custom binaries register extra
   stage types (trait objects) on the server library. Stages before the cache are synchronous, without
-  allocation or copy of the query.
-- D24 (narrowed by D44) Configuration: a directory of TOML, YAML or JSON files, one serde model (as D17), merged; components
-  named, typed by a `type` key. Errors, not warnings: unknown field, duplicate name, unused component.
-  `${VAR}`, `${VAR:-default}` (`$$` escapes), `SECRET[backend.key]`. `dedensd validate` builds the pipeline
-  without binding; JSON Schema from the types (schemars); config tests run D17 query files. Reload (SIGHUP,
-  file watch) builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one;
-  cache and upstream connections survive.
-- D41 Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's bytes and transport and
-  returns a step: a reply in the caller's buffer, nothing, or a request for an upstream server whose response
-  goes back through `Pipeline::receive` (amended by D43); `apps/dedensd` does the I/O. Before the stages the core answers what
-  none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it cannot read (the
-  header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than QUERY; BADVERS
-  to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the client's ID,
-  opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with AD or DO
-  (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one. Over UDP it fits the client's
-  payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes whole. The forward stage
-  asks its servers in order, the next on no response, one undecodable or breaking a rule, TC, or SERVFAIL,
-  REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD
-  set, AD and CD copied (D46), our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
-  are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
-- D42 `dedensd` I/O around D41: one compio thread per core on Linux, each with its own UDP socket and TCP
-  listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
-  where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind together. Every
-  socket is bound before any thread starts, so a taken address fails the start. A reply the pipeline builds at
-  once goes out from the socket's task; a query for upstream gets a task owning its `Upstream` and asks with the
-  thread's `dedens_net::Client`, over the client's transport, with the forward stage's timeout and tries
-  (D45). TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
+  allocation or copy of the query. (Not yet: features, router stage, custom stage types.)
+- D24 (narrowed by D44) Configuration: a directory of TOML, YAML or JSON files, one serde model (as D36), merged;
+  components named, typed by a `type` key. Errors, not warnings: unknown field, duplicate name, unused component.
+  `${VAR}`, `${VAR:-default}` (`$$` escapes), `SECRET[backend.key]`. `dedensd validate` builds the pipeline without
+  binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
+  builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
+  connections survive.
+- D41 (amended by D43, D46) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+  bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
+  server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
+  core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
+  cannot read (the header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than
+  QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the
+  client's ID, opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with
+  AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one. Over UDP it fits the
+  client's payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes whole. The forward
+  stage asks its servers in order, the next on no response, one undecodable or breaking a rule, TC, or SERVFAIL,
+  REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
+  AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
+  cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
+- D42 (amended by D45, D47-D49, D52) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
+  own UDP socket and TCP listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one
+  thread elsewhere, where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind
+  together. Every socket is bound before any thread starts, so a taken address fails the start. A reply the
+  pipeline builds at once goes out from the socket's task; a query for upstream gets a task owning its `Upstream`
+  and asks with the thread's `dedens_net::Client`, over the client's transport, with the forward stage's timeout
+  and tries (D45). TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
-  written (§6.2.3). Listeners and upstreams from flags until the configuration (D24). Rejected: one socket shared
-  by all threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
-- D43 Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`, seconds the caller passes
-  (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit is the stored bytes
-  patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our OPT when the
-  query had one; room for the OPT with an EDE option is kept before the lookup, since freshness is known only
-  after. A miss runs the later stages, and the forward stage's usable response is stored under the client's
-  query (its DO and CD bits), then answers as a hit, not encoded again (`miss` bench, mx: 1.5 → 1.1 µs);
-  unstored responses (D22) are still the reply, encoded. After the last
-  server fails, the failure is held (RFC 9520 §3.2); during a hold the reply is SERVFAIL, upstream unasked.
-  Expired data answers while failing (`StalePolicy::IfFailing`), and on the client timer (D45): after the last
-  server fails, and during the hold, with TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its
-  TTL is `Step::Refresh`: the reply now, then the same upstream query whose response is only stored, ending in
+  written (§6.2.3). Listeners and upstreams from the configuration (D44). Rejected: one socket shared by all
+  threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
+- D43 (amended by D45, D46) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
+  seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
+  is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
+  OPT when the query had one; room for the OPT with an EDE option is kept before the lookup, since freshness is
+  known only after. A miss runs the later stages, and the forward stage's usable response is stored under the
+  client's query (its DO and CD bits), then answers as a hit, not encoded again (`miss` bench, mx: 1.5 → 1.1 µs);
+  unstored responses (D22) are still the reply, encoded. After the last server fails, the failure is held (RFC 9520
+  §3.2); during a hold the reply is SERVFAIL, upstream unasked. Expired data answers while failing
+  (`StalePolicy::IfFailing`), and on the client timer (D45): after the last server fails, and during the hold, with
+  TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its TTL is
+  `Step::Refresh`: the reply now, then the same upstream query whose response is only stored, ending in
   `Step::Drop`; a failed refresh is not held. `Upstream` owns what it needs (a copy of the query's bytes, read
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
-  takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a
-  miss counted twice, and no way to tell a refresh from a reply).
-- D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D17's query
-  files; `listen` addresses, `zero_buffers` (D52), `pipeline` (stage names in order), `stages` (name to settings under `type`:
-  `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53). `${VAR}` is
-  replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML. Errors:
-  unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
-  after a forward stage (which answers every query). `dedensd validate` reads the file and builds the
-  pipeline without binding. Later, with need: a directory merged, `SECRET[..]`, JSON Schema, reload.
+  takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
+  counted twice, and no way to tell a refresh from a reply).
+- D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+  files; `listen` addresses, `zero_buffers` (D52), `pipeline` (stage names in order), `stages` (name to settings
+  under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53).
+  `${VAR}` is replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML.
+  Errors: unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
+  after a forward stage (which answers every query). `dedensd validate` reads the file and builds the pipeline
+  without binding. Later, with need: a directory merged, `SECRET[..]`, JSON Schema, reload.
 - D45 Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
   waits `timeout_ms` per query (default 3000, slow authoritative chains take over 1 s) and sends each server
   `tries` queries (default 2), carried on `Upstream` (`Upstream::patience`). A cache stage's
@@ -365,13 +357,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D51 The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
   Linux 5.19): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
-  `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k).
+  `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
+  forwarding 155k → 82k).
 - D52 A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
   earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
   configuration: no byte of an earlier reply stays, should a bug ever send past the reply's length (the encoder
   writes before it reads, so nothing leaks today). Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
   84k zeroing new buffers → 90k-92k reusing them unzeroed; zeroing them again costs part of it (79k-88k against
   87k-90k). Rejected: skipping the zeroing of new buffers (uninitialized memory behind `unsafe`).
+- D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
+  as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
+  (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
 
 ## Observability
 
@@ -381,7 +377,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `dedens-proto` has none: its functions are pure and return errors, violations and truncation as values, which
   the server counts where it calls them. The cache counts lookups by outcome, prefetches, inserts and evictions
   (names in `crates/dedens-cache/src/metrics.rs`); spans belong to net, server and CLI, not to hot paths of proto
-  or cache. `dedensd` exports Prometheus; the CLI prints `tracing-subscriber` text on stderr, `-v` for debug
-  (dropped messages, retries, fallbacks, `+trace` referrals, a span per hop) and `-vv` for trace (every message
-  sent and received), without `env-filter` and its regexes; its `dedens: …` errors stay plain output.
-  OpenTelemetry later. Cost in `docs/benchmarks.md`.
+  or cache. `dedensd` will export Prometheus (not yet: it builds the cache without `metrics`); the CLI prints
+  `tracing-subscriber` text on stderr, `-v` for debug (dropped messages, retries, fallbacks, `+trace` referrals, a
+  span per hop) and `-vv` for trace (every message sent and received), without `env-filter` and its regexes; its
+  `dedens: …` errors stay plain output. OpenTelemetry later. Cost in `docs/benchmarks.md`.

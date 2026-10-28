@@ -3,7 +3,7 @@
 Open questions, each with its proposed default. Once answered, record the outcome in
 [`decisions.md`](decisions.md) under a new number and delete it here.
 
-## Server forwarder (phase 7)
+## Server forwarder
 
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
@@ -21,11 +21,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - An AF_XDP UDP listener (eBPF steering datagrams into our memory, past the kernel's network stack, as Knot DNS
   does): we would build IP and UDP headers ourselves; it needs root and per-NIC setup, does no TCP, and cannot
   be measured on loopback. Default: a later optional listener mode, benchmarked between two machines.
-  (`SQPOLL` was tried instead: 475k → 230k cache hits over UDP, 155k → 82k forwarding.)
-
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one
-  name: 364 ns a hit, against about 100 ns on one thread). Measure under the server's thread-per-core load
-  first, then pick: read-mostly hot entries, per-core copies, or a lock-free read path.
+  name: 364 ns a hit, against about 100 ns on one thread). Default: measure under the server's thread-per-core
+  load first, then pick: read-mostly hot entries, per-core copies, or a lock-free read path.
 - An encoder that also returns the TTL offsets it wrote, so `Cache::insert` skips its own pass over the
   response bytes. Default: add it when that pass shows in a profile of the server.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
@@ -34,8 +32,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
   DNSSEC, DoT/DoH/DoQ, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
   (RFC 9567) with the server.
-- Server reload: what needs a restart (listeners, thread count); decided when the server starts.
+- Server reload: what needs a restart (listeners, thread count). Default: decide with reload, which D44 defers.
 - Dynamic stage loading (D23): WASM or gRPC, as one stage type after a cache miss, or never. Against: Vector
   dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.
 - A small typed rule language for matchers (D23), beyond declarative matchers.
 - crates.io publishing, a container image, dnsperf benchmarks against Unbound and CoreDNS.
+- A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config.rs`), which needs the reader in a
+  library crate. Default: move it to `dedens-server` when reload comes.
