@@ -6,8 +6,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use compio::BufResult;
@@ -20,7 +20,7 @@ use dedens_net::exchange::{self, Options};
 use dedens_net::tcp::{frame, read_message};
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_server::{Pipeline, Step, Transport};
+use dedens_server::{Pipeline, Step, Transport, Upstream};
 use socket2::{Domain, Socket, Type};
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
@@ -125,28 +125,32 @@ async fn udp(socket: UdpSocket, pipeline: Arc<Pipeline>, client: Rc<Client>) {
                 continue;
             }
         };
-        match pipeline.query(&query, Transport::Udp, &mut out) {
-            Step::Reply(len) => out = send(&socket, out, len, peer).await,
-            Step::Drop => {}
-            // Owned for the task to outlive this buffer; the pipeline reads it again, a fraction of the wait.
-            Step::Upstream(_) => {
-                let (query, socket, pipeline, client) = (
-                    query.clone(),
-                    Rc::clone(&socket),
-                    Arc::clone(&pipeline),
-                    Rc::clone(&client),
-                );
-                spawn(async move {
-                    let out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
-                    if let Some((out, len)) =
-                        answer(&pipeline, &client, &query, Transport::Udp, out).await
-                    {
-                        send(&socket, out, len, peer).await;
-                    }
-                })
-                .detach();
+        let upstream = match pipeline.query(&query, Transport::Udp, now(), &mut out) {
+            Step::Reply(len) => {
+                out = send(&socket, out, len, peer).await;
+                continue;
             }
-        }
+            Step::Drop => continue,
+            Step::Upstream(upstream) => upstream,
+            Step::Refresh(len, upstream) => {
+                out = send(&socket, out, len, peer).await;
+                upstream
+            }
+        };
+        let (socket, pipeline, client) = (
+            Rc::clone(&socket),
+            Arc::clone(&pipeline),
+            Rc::clone(&client),
+        );
+        spawn(async move {
+            let out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
+            if let Some((out, len)) =
+                answer(&pipeline, &client, upstream, Transport::Udp, out).await
+            {
+                send(&socket, out, len, peer).await;
+            }
+        })
+        .detach();
     }
 }
 
@@ -199,23 +203,29 @@ async fn connection(stream: TcpStream, pipeline: Arc<Pipeline>, client: Rc<Clien
     let mut reader = BufReader::new(reader);
     let mut out = vec![0; MAX_MESSAGE_LEN];
     while let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, read_message(&mut reader)).await {
-        match pipeline.query(&query, Transport::Tcp, &mut out) {
-            Step::Reply(len) => reply(&replies, &out[..len]),
-            Step::Drop => {}
-            Step::Upstream(_) => {
-                let (replies, pipeline, client) =
-                    (replies.clone(), Arc::clone(&pipeline), Rc::clone(&client));
-                spawn(async move {
-                    let out = vec![0; MAX_MESSAGE_LEN];
-                    if let Some((out, len)) =
-                        answer(&pipeline, &client, &query, Transport::Tcp, out).await
-                    {
-                        reply(&replies, &out[..len]);
-                    }
-                })
-                .detach();
+        let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
+            Step::Reply(len) => {
+                reply(&replies, &out[..len]);
+                continue;
             }
-        }
+            Step::Drop => continue,
+            Step::Upstream(upstream) => upstream,
+            Step::Refresh(len, upstream) => {
+                reply(&replies, &out[..len]);
+                upstream
+            }
+        };
+        let (replies, pipeline, client) =
+            (replies.clone(), Arc::clone(&pipeline), Rc::clone(&client));
+        spawn(async move {
+            let out = vec![0; MAX_MESSAGE_LEN];
+            if let Some((out, len)) =
+                answer(&pipeline, &client, upstream, Transport::Tcp, out).await
+            {
+                reply(&replies, &out[..len]);
+            }
+        })
+        .detach();
     }
     drop(replies);
     let _ = writing.await;
@@ -229,16 +239,15 @@ fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) {
     }
 }
 
-/// Answers `query` through the pipeline, asking the upstream servers it names in turn; returns `out` and the
-/// length of the reply in it, or `None` when the query gets none.
+/// Asks the upstream servers for `upstream` in turn, over `transport`, the client's (D42); returns `out` and the
+/// length of the reply in it, or `None` when there is none to send, as after a refresh.
 async fn answer(
     pipeline: &Pipeline,
     client: &Client,
-    query: &[u8],
+    mut upstream: Box<Upstream>,
     transport: Transport,
     mut out: Vec<u8>,
 ) -> Option<(Vec<u8>, usize)> {
-    // The upstream transport is the client's (D42).
     let mut options = Options::default();
     options.transport = match transport {
         Transport::Udp => exchange::Transport::Udp,
@@ -246,23 +255,26 @@ async fn answer(
     };
     options.tries = UPSTREAM_TRIES;
     options.timeout = UPSTREAM_TIMEOUT;
-    let mut step = pipeline.query(query, transport, &mut out);
     loop {
-        match step {
-            Step::Reply(len) => return Some((out, len)),
+        let server = upstream.server();
+        let response = client.exchange(upstream.request(), server, &options).await;
+        if let Err(error) = &response {
+            tracing::debug!(%error, %server, "upstream");
+        }
+        let wire = response
+            .as_ref()
+            .ok()
+            .map(|response| response.wire.as_slice());
+        match pipeline.receive(upstream, wire, now(), &mut out) {
+            Step::Reply(len) | Step::Refresh(len, _) => return Some((out, len)),
             Step::Drop => return None,
-            Step::Upstream(upstream) => {
-                let server = upstream.server();
-                let response = client.exchange(upstream.request(), server, &options).await;
-                if let Err(error) = &response {
-                    tracing::debug!(%error, %server, "upstream");
-                }
-                let wire = response
-                    .as_ref()
-                    .ok()
-                    .map(|response| response.wire.as_slice());
-                step = upstream.receive(wire, &mut out);
-            }
+            Step::Upstream(next) => upstream = next,
         }
     }
+}
+
+/// Seconds since the first call, the clock of the cache (D43).
+fn now() -> u32 {
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+    u32::try_from(START.elapsed().as_secs()).unwrap_or(u32::MAX)
 }

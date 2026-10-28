@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 
+use dedens_cache::{Cache, Config};
 use dedens_proto::{Flags, Message, Name, Rcode};
 use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
 
@@ -21,6 +22,14 @@ pub(crate) fn forwarder() -> Pipeline {
     Pipeline::new(vec![Stage::Forward(
         Forward::new(&servers()).expect("servers"),
     )])
+}
+
+/// A pipeline with a cache of the default settings, then forwarding to [`servers`].
+pub(crate) fn caching() -> Pipeline {
+    Pipeline::new(vec![
+        Stage::Cache(Cache::new(Config::default()).expect("the default settings")),
+        Stage::Forward(Forward::new(&servers()).expect("servers")),
+    ])
 }
 
 pub(crate) fn dns(text: &str) -> Name<'static> {
@@ -89,19 +98,38 @@ pub(crate) fn run(
     transport: Transport,
     responses: &[Option<&[u8]>],
 ) -> Run {
+    run_at(pipeline, query, transport, 0, responses)
+}
+
+/// [`run`] at `now`. A reply sent before a refresh is the reply; the refresh must end without one.
+pub(crate) fn run_at(
+    pipeline: &Pipeline,
+    query: &[u8],
+    transport: Transport,
+    now: u32,
+    responses: &[Option<&[u8]>],
+) -> Run {
     let mut out = vec![0; 65535];
     let mut responses = responses.iter().copied();
     let mut asked = Vec::new();
     let mut requests = Vec::new();
-    let mut step = pipeline.query(query, transport, &mut out);
+    let mut sent = None;
+    let mut step = pipeline.query(query, transport, now, &mut out);
     let reply = loop {
         match step {
-            Step::Reply(len) => break Some(out[..len].to_vec()),
-            Step::Drop => break None,
+            Step::Reply(len) => {
+                assert_eq!(sent, None, "a refresh replies");
+                break Some(out[..len].to_vec());
+            }
+            Step::Drop => break sent,
+            Step::Refresh(len, upstream) => {
+                sent = Some(out[..len].to_vec());
+                step = Step::Upstream(upstream);
+            }
             Step::Upstream(upstream) => {
                 asked.push(upstream.server());
-                requests.push(upstream.request().clone().into_owned());
-                step = upstream.receive(responses.next().flatten(), &mut out);
+                requests.push(upstream.request().clone());
+                step = pipeline.receive(upstream, responses.next().flatten(), now, &mut out);
             }
         }
     };

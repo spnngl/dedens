@@ -1,6 +1,6 @@
 [package]
 name = "dedensd"
-description = "A DNS server: a forwarder for now."
+description = "A DNS server: a caching forwarder for now."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ publish.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 compio.workspace = true
+dedens-cache.workspace = true
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-proto.workspace = true
 dedens-server.workspace = true

@@ -269,7 +269,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   cache and upstream connections survive.
 - D41 Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's bytes and transport and
   returns a step: a reply in the caller's buffer, nothing, or a request for an upstream server whose response
-  goes back through `Upstream::receive`; `apps/dedensd` does the I/O. Before the stages the core answers what
+  goes back through `Pipeline::receive` (amended by D43); `apps/dedensd` does the I/O. Before the stages the core answers what
   none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it cannot read (the
   header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than QUERY; BADVERS
   to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the client's ID,
@@ -284,12 +284,27 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   listener on every `--listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
   where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind together. Every
   socket is bound before any thread starts, so a taken address fails the start. A reply the pipeline builds at
-  once goes out from the socket's task; a query for upstream gets a task that reads it again (a fraction of the
-  wait) and asks with the thread's `dedens_net::Client`, over the client's transport, 1 s per try, 2 tries per
+  once goes out from the socket's task; a query for upstream gets a task owning its `Upstream` and asks with the
+  thread's `dedens_net::Client`, over the client's transport, 1 s per try, 2 tries per
   server. TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from flags until the configuration (D24). Rejected: one socket shared
   by all threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
+- D43 Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`, seconds the caller passes
+  (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit is the stored bytes
+  patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our OPT when the
+  query had one; room for the OPT with an EDE option is kept before the lookup, since freshness is known only
+  after. A miss runs the later stages, and the forward stage's usable response is stored under the client's
+  query (its DO and CD bits) before the reply; unstored responses (D22) are still the reply. After the last
+  server fails, the failure is held (RFC 9520 §3.2); during a hold the reply is SERVFAIL, upstream unasked.
+  Expired data answers only while failing (`StalePolicy::IfFailing`): after the last server fails, and during
+  the hold, with TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its
+  TTL is `Step::Refresh`: the reply now, then the same upstream query whose response is only stored, ending in
+  `Step::Drop`; a failed refresh is not held. `Upstream` owns what it needs (a copy of the query's bytes, read
+  again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
+  takes it back. Rejected: serving stale data before resolution ends, on a client timer (RFC 8767 §5's 1.8 s;
+  later, with configuration); reading the query again in `dedensd`'s upstream task (a second cache lookup, a
+  miss counted twice, and no way to tell a refresh from a reply).
 
 ## Observability
 

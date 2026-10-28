@@ -258,20 +258,22 @@ pub fn cache_insert(data: &[u8]) {
     );
 }
 
-/// Arbitrary bytes as a client's query, and as the upstream response to a query for their question: whatever
-/// the server sends back is a conforming reply under the query's ID, within the client's UDP payload.
+/// Arbitrary bytes as a client's query, and as the upstream response to a query for their question, then that query
+/// again, from the cache: whatever the server sends back is a conforming reply under the query's ID, within the
+/// client's UDP payload.
 ///
 /// # Panics
 ///
 /// On a reply that breaks this.
 pub fn serve_query(data: &[u8]) {
     let server = SocketAddr::from(([192, 0, 2, 1], 53));
-    let pipeline = Pipeline::new(vec![Stage::Forward(
-        Forward::new(&[server]).expect("one server"),
-    )]);
     let mut out = vec![0; MAX_MESSAGE_LEN];
     for transport in [Transport::Udp, Transport::Tcp] {
-        if let Step::Reply(len) = pipeline.query(data, transport, &mut out) {
+        let pipeline = Pipeline::new(vec![
+            Stage::Cache(Cache::new(Config::default()).expect("the default settings")),
+            Stage::Forward(Forward::new(&[server]).expect("one server")),
+        ]);
+        if let Step::Reply(len) = pipeline.query(data, transport, 0, &mut out) {
             let id = Header::peek(data).expect("a reply goes to a header").id;
             check_reply(&out[..len], id, transport);
         }
@@ -285,13 +287,17 @@ pub fn serve_query(data: &[u8]) {
         let query = Message::query(id, question.clone())
             .to_vec()
             .expect("a query fits");
-        let Step::Upstream(upstream) = pipeline.query(&query, transport, &mut out) else {
+        let Step::Upstream(upstream) = pipeline.query(&query, transport, 0, &mut out) else {
             continue;
         };
-        let Step::Reply(len) = upstream.receive(Some(data), &mut out) else {
+        let Step::Reply(len) = pipeline.receive(upstream, Some(data), 0, &mut out) else {
             panic!("the only server's response is answered");
         };
         check_reply(&out[..len], id, transport);
+        // Asked again, from the cache when it stored the response.
+        if let Step::Reply(len) = pipeline.query(&query, transport, 1, &mut out) {
+            check_reply(&out[..len], id, transport);
+        }
     }
 }
 

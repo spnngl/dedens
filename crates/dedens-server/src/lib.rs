@@ -8,10 +8,10 @@
 //! let pipeline = Pipeline::new(vec![Stage::Forward(Forward::new(&[upstream]).expect("one server"))]);
 //! let query = Message::query(7, Question::new(Name::root(), RecordType::NS)).to_vec()?;
 //! let mut out = [0; 65535];
-//! let Step::Upstream(ask) = pipeline.query(&query, Transport::Udp, &mut out) else { unreachable!() };
+//! let Step::Upstream(ask) = pipeline.query(&query, Transport::Udp, 0, &mut out) else { unreachable!() };
 //! assert_eq!(ask.server(), upstream);
 //! // Nothing came back from the only server.
-//! let Step::Reply(len) = ask.receive(None, &mut out) else { unreachable!() };
+//! let Step::Reply(len) = pipeline.receive(ask, None, 0, &mut out) else { unreachable!() };
 //! let reply = Message::decode(&out[..len])?.message;
 //! assert_eq!((reply.header.id, reply.rcode()), (7, Rcode::SERVFAIL));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -26,6 +26,7 @@
     clippy::print_stderr
 )]
 
+mod cache;
 mod forward;
 mod pipeline;
 mod reply;

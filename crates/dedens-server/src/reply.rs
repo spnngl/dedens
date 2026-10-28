@@ -62,15 +62,8 @@ impl<'q> Client<'q> {
         rcode: Rcode,
         out: &mut [u8],
     ) -> Option<usize> {
-        let asked = self.header.flags;
-        let dnssec = self.dnssec();
-        let mut flags =
-            Flags::from_word(asked.bits() & (Flags::RD | Flags::CD).bits()) | Flags::QR | Flags::RA;
-        if message.header.flags.contains(Flags::AD) && (dnssec || asked.contains(Flags::AD)) {
-            flags = flags.with(Flags::AD);
-        }
         message.header = Header {
-            flags,
+            flags: self.flags(message.header.flags),
             ..self.header
         };
         message.questions.clear();
@@ -84,6 +77,33 @@ impl<'q> Client<'q> {
             .encode_truncated(&mut out[..limit])
             .ok()
             .map(|encoded| encoded.len)
+    }
+
+    /// The flags of a reply carrying a response with `flags`: QR and RA, the client's RD and CD, and AD when the
+    /// response has it and the client asked with AD or DO.
+    fn flags(&self, flags: Flags) -> Flags {
+        let asked = self.header.flags;
+        let reply =
+            Flags::from_word(asked.bits() & (Flags::RD | Flags::CD).bits()) | Flags::QR | Flags::RA;
+        if flags.contains(Flags::AD) && (self.dnssec() || asked.contains(Flags::AD)) {
+            reply.with(Flags::AD)
+        } else {
+            reply
+        }
+    }
+
+    /// Sets the header flags of `reply`, a response encoded for this client, as [`Client::reply`] sets them; TC
+    /// stays as it is.
+    pub(crate) fn patch_flags(&self, reply: &mut [u8]) {
+        if let Some(word) = reply.get_mut(2..4) {
+            let old = u16::from_be_bytes([word[0], word[1]]);
+            let mut flags = self.flags(Flags::from_word(old));
+            if Flags::from_word(old).contains(Flags::TC) {
+                flags = flags.with(Flags::TC);
+            }
+            let new = old & !Flags::from_word(u16::MAX).bits() | flags.bits();
+            word.copy_from_slice(&new.to_be_bytes());
+        }
     }
 
     /// Whether the client asked for DNSSEC records (RFC 3225 §3).
@@ -106,7 +126,7 @@ impl<'q> Client<'q> {
     }
 
     /// The longest reply.
-    fn limit(&self) -> usize {
+    pub(crate) fn limit(&self) -> usize {
         match self.transport {
             Transport::Tcp => MAX_MESSAGE_LEN,
             Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {

@@ -363,6 +363,7 @@ dependencies = [
 name = "dedens-server"
 version = "0.1.0"
 dependencies = [
+ "dedens-cache",
  "dedens-proto",
 ]
 

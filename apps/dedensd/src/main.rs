@@ -1,6 +1,7 @@
-//! `dedensd`: a DNS server, a forwarder for now (D41, D42).
+//! `dedensd`: a DNS server, a caching forwarder for now (D41, D42, D43).
 //!
-//! Listens on each `--listen` address over UDP and TCP and forwards to the `--upstream` servers in order. On Linux,
+//! Listens on each `--listen` address over UDP and TCP, answers from its cache, and forwards the rest to the
+//! `--upstream` servers in order. On Linux,
 //! one thread per core, each with its own sockets on the same addresses (`SO_REUSEPORT`) and the kernel spreading
 //! queries across them; elsewhere, one thread.
 
@@ -15,6 +16,7 @@ use std::thread;
 
 use anyhow::Context;
 use clap::Parser;
+use dedens_cache::{Cache, Config};
 use dedens_server::{Forward, Pipeline, Stage};
 
 /// A DNS server: forwards queries to upstream servers.
@@ -36,7 +38,11 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     diagnostics(args.verbose);
     let forward = Forward::new(&args.upstreams).context("no upstream server")?;
-    let pipeline = Arc::new(Pipeline::new(vec![Stage::Forward(forward)]));
+    let cache = Cache::new(Config::default()).context("cannot set the cache up")?;
+    let pipeline = Arc::new(Pipeline::new(vec![
+        Stage::Cache(cache),
+        Stage::Forward(forward),
+    ]));
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..threads())
         .map(|_| serve::bind(&args.listen))

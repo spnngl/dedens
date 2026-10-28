@@ -9,36 +9,29 @@ use crate::reply::Client;
 /// Asks upstream servers the client's question, in order, until one answers usably.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forward {
-    first: SocketAddr,
-    rest: Box<[SocketAddr]>,
+    /// Never empty.
+    servers: Box<[SocketAddr]>,
 }
 
 impl Forward {
     /// Forwards to `servers`, tried in order; `None` without any.
     #[must_use]
     pub fn new(servers: &[SocketAddr]) -> Option<Self> {
-        let (&first, rest) = servers.split_first()?;
-        Some(Self {
-            first,
-            rest: rest.into(),
+        (!servers.is_empty()).then(|| Self {
+            servers: servers.into(),
         })
     }
 
-    /// The server asked first.
-    pub(crate) const fn first(&self) -> SocketAddr {
-        self.first
-    }
-
-    /// The servers asked after it, in order.
-    pub(crate) fn rest(&self) -> &[SocketAddr] {
-        &self.rest
+    /// The servers, in the order they are asked; the first always exists.
+    pub(crate) fn servers(&self) -> &[SocketAddr] {
+        &self.servers
     }
 }
 
 /// The query asked upstream for the client's: its question, RD and CD bits, and our EDNS with its DO bit, none
 /// of its options. The client subnet stays here (D41), and cookies are between us and upstream (RFC 7873 §5.1).
-pub(crate) fn request<'q>(client: &Client<'q>, question: Question<'q>) -> Message<'q> {
-    let mut request = Message::query(0, question);
+pub(crate) fn request(client: &Client<'_>, question: &Question<'_>) -> Message<'static> {
+    let mut request = Message::query(0, question.clone().into_owned());
     request.header.flags =
         Flags::from_word(client.header.flags.bits() & (Flags::RD | Flags::CD).bits());
     request.edns = Some(client.our_edns());

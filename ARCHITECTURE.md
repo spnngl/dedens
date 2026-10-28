@@ -17,8 +17,8 @@ says what it holds.
 | `apps/dedensd` | The server: threads and listeners around `dedens-server`, upstream through `dedens-net` | sockets |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
-Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both; `apps/dedensd`
-on `dedens-server` and `dedens-net`. Planned: `dedens-cache` in `dedensd`, then `dedens-resolver`.
+Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both; `dedens-server`
+on `dedens-cache`; `apps/dedensd` on `dedens-server` and `dedens-net`. Planned: `dedens-resolver`.
 
 ## Data flow
 
