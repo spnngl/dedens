@@ -18,7 +18,8 @@ use dedens_scenario::{Expect, Id, Latency, Options, QueryFile, Report};
 
 use crate::args::{self, Cli};
 use crate::idn;
-use crate::output::{self, Format};
+use crate::output::{self, Format, Printing};
+use crate::trace::{self, Trail};
 
 /// The queries in flight at most: each holds a socket.
 const IN_FLIGHT: usize = 64;
@@ -30,10 +31,18 @@ struct Job {
     names: Vec<Name<'static>>,
     qtype: RecordType,
     qclass: Class,
-    /// The servers to ask, side by side; never empty.
-    servers: Vec<SocketAddr>,
+    route: Route,
     options: Options,
     expect: Option<Expect>,
+}
+
+/// Where a query goes.
+#[derive(Clone)]
+enum Route {
+    /// To each of these servers, side by side; never empty.
+    Servers(Vec<SocketAddr>),
+    /// From the root servers down the referrals (`+trace`).
+    Trace,
 }
 
 /// Runs `cli`; an error is one of the run as a whole, before any query or while printing.
@@ -58,20 +67,21 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
     let mut out = anstream::AutoStream::new(io::stdout().lock(), color);
+    let roots = roots()?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new());
         // One task per job and server, the servers of a job one after the other: a group.
         let mut tasks = jobs.into_iter().enumerate().flat_map(|(group, job)| {
             let job = Rc::new(job);
-            let servers = job.servers.clone();
-            servers.into_iter().map(move |server| {
-                let id = match job.servers.len() {
-                    1 => job.id.clone(),
-                    _ => job.id.at(server),
-                };
-                (group, id, Rc::clone(&job), server)
-            })
+            let servers = match &job.route {
+                Route::Servers(servers) => servers.iter().copied().map(Some).collect(),
+                Route::Trace => vec![None],
+            };
+            let several = servers.len() > 1;
+            servers
+                .into_iter()
+                .map(move |server| (group, several, Rc::clone(&job), server))
         });
         let mut running = VecDeque::new();
         let (mut code, mut printed) = (0, false);
@@ -79,11 +89,32 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         let (mut group_now, mut answers) = (None, Vec::new());
         loop {
             let room = IN_FLIGHT - running.len();
-            running.extend(tasks.by_ref().take(room).map(|(group, id, job, server)| {
-                let (client, task_id, times) = (Rc::clone(&client), id.clone(), cli.repeat);
-                let task = async move { repeat(&client, &job, server, task_id, times).await };
-                (group, id, compio::runtime::spawn(task))
-            }));
+            running.extend(
+                tasks
+                    .by_ref()
+                    .take(room)
+                    .map(|(group, several, job, server)| {
+                        let id = match server {
+                            Some(server) if several => job.id.at(server),
+                            _ => job.id.clone(),
+                        };
+                        let task = query(
+                            Rc::clone(&client),
+                            job,
+                            server,
+                            id.clone(),
+                            cli.repeat,
+                            roots.clone(),
+                        );
+                        (
+                            group,
+                            several,
+                            server.is_none(),
+                            id,
+                            compio::runtime::spawn(task),
+                        )
+                    }),
+            );
             let next = running.pop_front();
             if next.as_ref().map(|(group, ..)| *group) != group_now {
                 if format == Format::Human {
@@ -92,61 +123,99 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 answers.clear();
                 group_now = next.as_ref().map(|(group, ..)| *group);
             }
-            let Some((_, id, handle)) = next else {
+            let Some((_, several, traced, id, handle)) = next else {
                 break;
             };
-            let outcome = handle
+            let trail = handle
                 .await
-                .map_err(|e| anyhow::Error::from(io::Error::from(e)))
-                .and_then(|outcome| outcome);
-            if let Ok((report, _)) = &outcome
-                && let Some(exchange) = &report.exchange
-            {
-                answers.push((exchange.server, output::Answers::of(report)));
+                .unwrap_or_else(|e| (Vec::new(), Some(io::Error::from(e).into())));
+            if several {
+                answers.extend(trail.0.iter().filter_map(|(report, _)| {
+                    let server = report.exchange.as_ref()?.server;
+                    Some((server, output::Answers::of(report)))
+                }));
             }
-            code = code.max(show(cli, format, &mut out, &id, outcome, &mut printed)?);
+            let printing = Printing {
+                format,
+                brief: traced,
+            };
+            code = code.max(show(cli, printing, &mut out, &id, trail, &mut printed)?);
         }
         io::Result::Ok(code)
     })?;
     Ok(ExitCode::from(code))
 }
 
-/// Prints the outcome of query `id` and saves its response; returns the exit code it calls for. `printed` tells
-/// whether a report came before, which the human format sets apart.
+/// Prints the responses of query `id` and saves them, then the error that ended it; returns the exit code they
+/// call for. `printed` tells whether a report came before, which the human format sets apart.
 fn show(
     cli: &Cli,
-    format: Format,
+    printing: Printing,
     out: &mut impl Write,
     id: &Id,
-    outcome: anyhow::Result<(Report, Vec<u8>)>,
+    (reports, error): Trail,
     printed: &mut bool,
 ) -> io::Result<u8> {
-    let (report, wire) = match outcome {
-        Ok(answered) => answered,
-        Err(error) => {
-            eprintln!("dedens: {id}: {error:#}");
-            return Ok(if no_reply(&error) { 9 } else { 10 });
+    let mut code = 0;
+    for (report, wire) in reports {
+        if std::mem::replace(printed, true) && printing.format == Format::Human {
+            writeln!(out)?;
         }
-    };
-    if std::mem::replace(printed, true) && format == Format::Human {
-        writeln!(out)?;
+        output::print(out, printing, &report)?;
+        out.flush()?;
+        if printing.format == Format::Short {
+            for line in report.violations.iter().chain(&report.failures) {
+                eprintln!("dedens: {}: {line}", report.id);
+            }
+        }
+        code = code.max(u8::from(!report.failures.is_empty()));
+        if let Some(dir) = &cli.save_wire {
+            let path = dir.join(format!("{}.bin", report.id));
+            if let Err(error) = std::fs::write(&path, wire) {
+                eprintln!("dedens: cannot write {}: {error}", path.display());
+                code = 10;
+            }
+        }
     }
-    output::print(out, format, &report)?;
-    out.flush()?;
-    if format == Format::Short {
-        for line in report.violations.iter().chain(&report.failures) {
-            eprintln!("dedens: {id}: {line}");
-        }
-    }
-    let mut code = u8::from(!report.failures.is_empty());
-    if let Some(dir) = &cli.save_wire {
-        let path = dir.join(format!("{id}.bin"));
-        if let Err(error) = std::fs::write(&path, wire) {
-            eprintln!("dedens: cannot write {}: {error}", path.display());
-            code = 10;
-        }
+    if let Some(error) = error {
+        eprintln!("dedens: {id}: {error:#}");
+        code = code.max(if no_reply(&error) { 9 } else { 10 });
     }
     Ok(code)
+}
+
+/// The root servers of `+trace` from `DEDENS_ROOTS`, addresses with ports separated by commas (for tests); else
+/// the root hints.
+fn roots() -> anyhow::Result<Option<Vec<SocketAddr>>> {
+    let Some(text) = std::env::var_os("DEDENS_ROOTS") else {
+        return Ok(None);
+    };
+    let text = text.to_string_lossy();
+    let roots = text.split(',').map(str::parse).collect::<Result<_, _>>();
+    Ok(Some(roots.with_context(|| format!("DEDENS_ROOTS={text}"))?))
+}
+
+/// Asks `job` of `server` `times` in a row (see [`repeat`]), or traces it from `roots` without a server.
+async fn query(
+    client: Rc<Client>,
+    job: Rc<Job>,
+    server: Option<SocketAddr>,
+    id: Id,
+    times: u16,
+    roots: Option<Vec<SocketAddr>>,
+) -> Trail {
+    let Some(server) = server else {
+        let question = Question {
+            name: job.names[0].clone(),
+            qtype: job.qtype,
+            qclass: job.qclass,
+        };
+        return trace::trace(&client, job.options, question, &id, roots).await;
+    };
+    match repeat(&client, &job, server, id, times).await {
+        Ok(answered) => (vec![answered], None),
+        Err(error) => (Vec::new(), Some(error)),
+    }
 }
 
 /// Asks `job` of `server` `times` in a row; the last response, with the latency of all when more than one, else
@@ -228,19 +297,22 @@ fn no_reply(error: &anyhow::Error) -> bool {
 /// The queries of the command line: its words (see [`args::lookups`]), then the `-x` addresses asked PTR.
 fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     let (lookups, qclass) = args::lookups(&cli.words, !cli.reverse.is_empty());
-    let conf = (cli.search || cli.servers().is_empty())
+    let conf = (cli.search || (cli.servers().is_empty() && !cli.trace))
         .then(resolv_conf)
         .transpose()?;
-    let servers = match servers(cli, conf.as_ref())? {
-        servers if servers.is_empty() => vec![server(None, conf.as_ref(), cli.port)?],
-        servers => servers,
+    let route = match servers(cli, conf.as_ref())? {
+        _ if cli.trace => Route::Trace,
+        servers if servers.is_empty() => {
+            Route::Servers(vec![server(None, conf.as_ref(), cli.port)?])
+        }
+        servers => Route::Servers(servers),
     };
     let job = |names: Vec<Name<'static>>, qtype| Job {
         id: Id::of(&names[0], qtype),
         names,
         qtype,
         qclass,
-        servers: servers.clone(),
+        route: route.clone(),
         options: cli.options,
         expect: None,
     };
@@ -299,10 +371,10 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             options.check().with_context(|| format!("{id}"))?;
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
-                servers: match &servers {
+                route: Route::Servers(match &servers {
                     servers if servers.is_empty() => vec![server(named, conf.as_ref(), cli.port)?],
                     servers => servers.clone(),
-                },
+                }),
                 id,
                 names: vec![query.name],
                 qtype: query.qtype,

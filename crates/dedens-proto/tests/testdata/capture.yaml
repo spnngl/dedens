@@ -34,6 +34,17 @@ queries:
     name: example.com
     type: A
     options: {nsid: true}
+  # Referrals as `+trace` follows them, from the root then from .com.
+  - id: referral_root
+    name: example.com
+    type: A
+    server: a.root-servers.net
+    options: {recurse: false}
+  - id: referral_com
+    name: example.com
+    type: A
+    server: a.gtld-servers.net
+    options: {recurse: false}
   # A fixed client cookie, so the query repeats.
   - id: cookie
     name: isc.org

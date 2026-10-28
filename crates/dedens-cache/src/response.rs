@@ -214,7 +214,7 @@ fn lifetime(
         let soa = message
             .authority
             .iter()
-            .filter(|r| within(&end, &r.name))
+            .filter(|r| end.is_within(&r.name))
             .find_map(|r| match r.data() {
                 RData::Soa(soa) => Some(r.ttl.get().min(soa.minimum)),
                 _ => None,
@@ -243,17 +243,6 @@ fn chain_end<'m>(qname: &Name<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
         }
     }
     name
-}
-
-/// Whether `name` is `zone` or below it, whatever the case (RFC 4343).
-fn within(name: &Name<'_>, zone: &Name<'_>) -> bool {
-    let (labels, depth) = (name.label_count(), zone.label_count());
-    labels >= depth
-        && name
-            .labels()
-            .skip(labels - depth)
-            .zip(zone.labels())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 /// Sets TTL `ttl` at every offset.

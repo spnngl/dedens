@@ -163,6 +163,18 @@ impl<'a> Name<'a> {
         self.labels().count()
     }
 
+    /// Whether this name is `zone` or below it, whatever the case (RFC 4343).
+    #[must_use]
+    pub fn is_within(&self, zone: &Name<'_>) -> bool {
+        let (labels, depth) = (self.label_count(), zone.label_count());
+        labels >= depth
+            && self
+                .labels()
+                .skip(labels - depth)
+                .zip(zone.labels())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    }
+
     /// The same name, owning its bytes.
     #[must_use]
     pub fn into_owned(self) -> Name<'static> {
@@ -640,6 +652,23 @@ mod tests {
 
     fn name(labels: &[&[u8]]) -> Name<'static> {
         Name::from_labels(labels.iter().copied()).unwrap()
+    }
+
+    #[test]
+    fn a_name_is_within_itself_and_its_ancestors_whatever_the_case() {
+        let parse = |text: &str| text.parse::<Name<'static>>().unwrap();
+        let www = parse("www.Example.com.");
+        for zone in ["www.example.COM.", "example.com.", "com.", "."] {
+            assert!(www.is_within(&parse(zone)), "{zone}");
+        }
+        for zone in [
+            "ww.example.com.",
+            "xample.com.",
+            "org.",
+            "a.www.example.com.",
+        ] {
+            assert!(!www.is_within(&parse(zone)), "{zone}");
+        }
     }
 
     #[test]

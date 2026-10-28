@@ -272,6 +272,9 @@ fn usage_errors_exit_2() {
         &["--format=xml"],
         &["+t"],
         &["-t", "example.com"],
+        &["+trace", "@127.0.0.1", "example.com"],
+        &["+trace", "+repeat=2", "example.com"],
+        &["+trace", "+search", "example.com"],
     ] {
         dedens().args(args).assert().code(2);
     }
@@ -473,6 +476,37 @@ fn repeat_asks_again_and_gives_the_spread() {
     assert!(latency["min_us"].as_u64() <= latency["max_us"].as_u64());
     let once = run(&[&server.at(), "example.com", "--json"], 0);
     assert!(!once.contains("latency"), "{once}");
+}
+
+#[test]
+fn trace_starts_from_the_roots_without_recursion() {
+    let root = Responder::start(&["a"]);
+    let out = dedens()
+        .args(["+trace", "example.com", "--color=never"])
+        .env("DEDENS_ROOTS", root.addr.to_string())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("UTF-8");
+    assert!(out.contains("example.com. A  NOERROR"), "{out}");
+    let asked = queries(&root);
+    assert_eq!(asked.len(), 1);
+    assert!(!asked[0].1.header.flags.contains(Flags::RD));
+}
+
+#[test]
+fn trace_exits_9_when_no_root_replies() {
+    let (first, second) = (Responder::start(&[]), Responder::start(&[]));
+    dedens()
+        .args(["+trace", "example.com", "+tries=1", "+time=100ms"])
+        .env("DEDENS_ROOTS", format!("{},{}", first.addr, second.addr))
+        .assert()
+        .code(9)
+        .stdout("")
+        .stderr(contains("example.com_A"));
+    assert_eq!((first.queries().len(), second.queries().len()), (1, 1));
 }
 
 #[test]

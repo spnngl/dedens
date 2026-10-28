@@ -9,6 +9,7 @@ mod args;
 mod idn;
 mod output;
 mod run;
+mod trace;
 
 use std::process::ExitCode;
 

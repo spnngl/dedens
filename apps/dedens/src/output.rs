@@ -26,10 +26,18 @@ const QUIET: Style = Style::new().dimmed();
 const GOOD: Style = AnsiColor::Green.on_default().bold();
 const BAD: Style = AnsiColor::Red.on_default().bold();
 
-/// Prints `report` in `format`.
-pub(crate) fn print(out: &mut impl Write, format: Format, report: &Report) -> io::Result<()> {
-    match format {
-        Format::Human => human(out, report),
+/// How to print a response.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Printing {
+    pub(crate) format: Format,
+    /// One hop of `+trace`: the human format leaves out the additional records, the glue, and counts them.
+    pub(crate) brief: bool,
+}
+
+/// Prints `report` as `printing` says.
+pub(crate) fn print(out: &mut impl Write, printing: Printing, report: &Report) -> io::Result<()> {
+    match printing.format {
+        Format::Human => human(out, report, printing.brief),
         Format::Short => report
             .answer
             .iter()
@@ -45,15 +53,19 @@ pub(crate) fn print(out: &mut impl Write, format: Format, report: &Report) -> io
     }
 }
 
-fn human(out: &mut impl Write, report: &Report) -> io::Result<()> {
+fn human(out: &mut impl Write, report: &Report, brief: bool) -> io::Result<()> {
     status(out, report)?;
+    let none = Vec::new();
     let sections = [
         ("answer", &report.answer),
         ("authority", &report.authority),
-        ("additional", &report.additional),
+        ("additional", if brief { &none } else { &report.additional }),
     ];
     if report.answer.is_empty() && report.header.rcode == "NOERROR" {
-        writeln!(out, "{QUIET}no records{QUIET:#}")?;
+        match report.authority.iter().find(|r| r.rtype == "NS") {
+            Some(cut) => writeln!(out, "{QUIET}referral to{QUIET:#} {}", cut.name)?,
+            None => writeln!(out, "{QUIET}no records{QUIET:#}")?,
+        }
     }
     let records = || sections.iter().flat_map(|(_, records)| records.iter());
     let width = |field: fn(&RecordReport) -> usize| records().map(field).max().unwrap_or(0);
@@ -80,6 +92,13 @@ fn human(out: &mut impl Write, report: &Report) -> io::Result<()> {
             )?;
             previous = Some(r);
         }
+    }
+    if brief && !report.additional.is_empty() {
+        writeln!(
+            out,
+            "{QUIET}{} additional records{QUIET:#}",
+            report.additional.len()
+        )?;
     }
     footer(out, report)?;
     if let Some(latency) = &report.latency {

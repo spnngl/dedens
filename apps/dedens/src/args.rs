@@ -46,6 +46,9 @@ pub(crate) struct Cli {
     /// Ask each query this many times in a row, then print its last response and the spread of round trips.
     #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
     pub(crate) repeat: u16,
+    /// Follow each query from the root servers down the referrals, printing every response, as dig.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", conflicts_with_all = ["server", "file", "repeat", "search"])]
+    pub(crate) trace: bool,
     /// Try a name under the search list of /etc/resolv.conf until one is not NXDOMAIN, as dig.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) search: bool,

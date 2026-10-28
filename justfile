@@ -165,3 +165,7 @@ rfc-archive:
     mkdir -p docs/rfc/archive
     grep -oE "datatracker\.ietf\.org/doc/html/rfc[0-9]+" docs/rfc/list.md | grep -oE "[0-9]+$" | sort -un \
         | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/rfc{}.txt https://www.rfc-editor.org/rfc/rfc{}.txt
+
+# Refresh IANA's root hints, bundled for `dedens +trace`.
+root-hints:
+    curl -fsSL --retry 3 -o apps/dedens/src/named.root https://www.internic.net/domain/named.root

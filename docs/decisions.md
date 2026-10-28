@@ -240,6 +240,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   when N > 1: `sent`, `errors` (left out when 0) and `min`/`p50`/`p90`/`p99`/`max` in microseconds, nearest
   rank over the answered round trips; the human format shows them in milliseconds on one line. Exit code 0 when
   any answer came, else the last error's.
+- D40 `+trace`: each query asked from the root servers (IANA's `named.root`, bundled, IPv4 first; `just
+  root-hints` refreshes it) without RD, down the NS referrals of the authority section (RFC 1034 §4.3.2), one
+  report per hop, until an answer, an error rcode, an authoritative response or a referral that comes no closer
+  (an error). Glue is taken as given, without bailiwick checks, as dig; name servers without glue are looked up
+  the same way, at most 4 deep. Three addresses of a server set tried per hop. No DNSSEC validation, no CNAME
+  following. Conflicts with `@server`, `-f`, `--repeat` and `--search`. The human format shows a hop's referral
+  and counts its additional records instead of listing them. `DEDENS_ROOTS` replaces the roots for tests.
 
 ## Server
 
