@@ -126,12 +126,13 @@ fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     let server = Server::start_with(upstream.addr, "    stale_answer_after_ms: 200\n");
     let first = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!(errors(&first), []);
-    // Past the TTL, upstream answers a second late: expired data answers once the 200 ms timer runs out.
+    // Past the TTL, upstream answers 500 ms late, within the 1 s timeout: expired data answers once the 200 ms
+    // timer runs out.
     thread::sleep(Duration::from_millis(3200));
     let asked = Instant::now();
     let stale = ask_udp(server.addr, &query_for(&response, 2));
     assert!(
-        asked.elapsed() < Duration::from_millis(900),
+        asked.elapsed() < Duration::from_millis(450),
         "{:?}",
         asked.elapsed()
     );
