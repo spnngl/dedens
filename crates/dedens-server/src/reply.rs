@@ -1,0 +1,117 @@
+//! What a reply takes from the query it answers: ID, opcode, flags, question, EDNS, and its size limit.
+
+use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
+use dedens_proto::wire::MAX_MESSAGE_LEN;
+use dedens_proto::{Edns, EdnsFlags, EdnsView, Flags, Header, Message, Query, Question, Rcode};
+
+/// The UDP payload of a query without EDNS (RFC 1035 §4.2.1), and the least one with EDNS means (RFC 6891
+/// §6.2.3).
+const MIN_UDP_PAYLOAD: u16 = 512;
+
+/// The transport a query came over, which bounds its reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// UDP: the reply fits the client's EDNS payload, at most 1232 bytes (D10), or 512 without EDNS; TC says
+    /// records were left out (RFC 1035 §4.2.1, RFC 6891 §6.2.5).
+    Udp,
+    /// TCP: the whole reply, up to 65535 bytes (RFC 7766 §8).
+    Tcp,
+}
+
+/// The client of a query, as its reply needs it.
+#[derive(Debug, Clone)]
+pub(crate) struct Client<'q> {
+    pub(crate) header: Header,
+    pub(crate) question: Option<Question<'q>>,
+    pub(crate) edns: Option<EdnsView<'q>>,
+    pub(crate) transport: Transport,
+}
+
+impl<'q> Client<'q> {
+    /// The client of `query`.
+    pub(crate) fn of(query: &Query<'q>, transport: Transport) -> Self {
+        Self {
+            header: query.header(),
+            question: query.question().cloned(),
+            edns: query.edns().cloned(),
+            transport,
+        }
+    }
+
+    /// The client of a query read no further than its header: the reply has no question and no OPT record
+    /// (RFC 6891 §7).
+    pub(crate) const fn unread(header: Header, transport: Transport) -> Self {
+        Self {
+            header,
+            question: None,
+            edns: None,
+            transport,
+        }
+    }
+
+    /// Writes `message` into `out` as the reply, with `rcode`, and returns its length; `None` when `out` cannot
+    /// hold the header, the question and the OPT record.
+    ///
+    /// The reply has the client's ID, opcode and question, in its case (RFC 4343 §4); QR and RA set, RD and CD
+    /// copied (RFC 1035 §4.1.1, RFC 4035 §3.2.2), AD kept only when the query had AD or DO (RFC 6840 §5.8), AA
+    /// cleared: the server is not the authority. It has an OPT record, ours, when the query had one (RFC 6891 §7),
+    /// with DO copied (RFC 3225 §3); otherwise an extended `rcode` becomes SERVFAIL.
+    pub(crate) fn reply(
+        &self,
+        mut message: Message<'q>,
+        rcode: Rcode,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let asked = self.header.flags;
+        let dnssec = self.dnssec();
+        let mut flags =
+            Flags::from_word(asked.bits() & (Flags::RD | Flags::CD).bits()) | Flags::QR | Flags::RA;
+        if message.header.flags.contains(Flags::AD) && (dnssec || asked.contains(Flags::AD)) {
+            flags = flags.with(Flags::AD);
+        }
+        message.header = Header {
+            flags,
+            ..self.header
+        };
+        message.questions.clear();
+        message.questions.extend(self.question.clone());
+        message.edns = self.edns.as_ref().map(|_| self.our_edns());
+        if message.set_rcode(rcode).is_err() {
+            message.header.rcode = Rcode::SERVFAIL;
+        }
+        let limit = self.limit().min(out.len());
+        message
+            .encode_truncated(&mut out[..limit])
+            .ok()
+            .map(|encoded| encoded.len)
+    }
+
+    /// Whether the client asked for DNSSEC records (RFC 3225 §3).
+    fn dnssec(&self) -> bool {
+        self.edns
+            .as_ref()
+            .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO))
+    }
+
+    /// Our EDNS for this client: the default payload (D10), version 0, no option, and its DO bit (RFC 3225 §3).
+    pub(crate) fn our_edns(&self) -> Edns<'static> {
+        Edns {
+            flags: if self.dnssec() {
+                EdnsFlags::DO
+            } else {
+                EdnsFlags::default()
+            },
+            ..Edns::default()
+        }
+    }
+
+    /// The longest reply.
+    fn limit(&self) -> usize {
+        match self.transport {
+            Transport::Tcp => MAX_MESSAGE_LEN,
+            Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
+                edns.udp_payload.clamp(MIN_UDP_PAYLOAD, DEFAULT_UDP_PAYLOAD)
+            })),
+        }
+    }
+}

@@ -10,16 +10,19 @@
 )]
 
 use core::ops::RangeInclusive;
+use std::net::SocketAddr;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
+use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Question,
-    Record, RecordType, Ttl, message,
+    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Header, Message, Name, Query,
+    Question, Record, RecordType, Ttl, message,
 };
 use dedens_scenario::QueryFile;
+use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -37,6 +40,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("read_query", read_query),
     ("parse_zone", parse_zone),
     ("cache_insert", cache_insert),
+    ("serve_query", serve_query),
     ("parse_name", parse_name),
     ("differential_hickory", differential_hickory),
     ("parse_query_file", parse_query_file),
@@ -252,6 +256,56 @@ pub fn cache_insert(data: &[u8]) {
         std::slice::from_ref(question),
         "a hit answers the question asked"
     );
+}
+
+/// Arbitrary bytes as a client's query, and as the upstream response to a query for their question: whatever
+/// the server sends back is a conforming reply under the query's ID, within the client's UDP payload.
+///
+/// # Panics
+///
+/// On a reply that breaks this.
+pub fn serve_query(data: &[u8]) {
+    let server = SocketAddr::from(([192, 0, 2, 1], 53));
+    let pipeline = Pipeline::new(vec![Stage::Forward(
+        Forward::new(&[server]).expect("one server"),
+    )]);
+    let mut out = vec![0; MAX_MESSAGE_LEN];
+    for transport in [Transport::Udp, Transport::Tcp] {
+        if let Step::Reply(len) = pipeline.query(data, transport, &mut out) {
+            let id = Header::peek(data).expect("a reply goes to a header").id;
+            check_reply(&out[..len], id, transport);
+        }
+        let Ok(decoded) = Message::decode(data) else {
+            continue;
+        };
+        let Some(question) = decoded.message.questions.first() else {
+            continue;
+        };
+        let id = !decoded.message.header.id;
+        let query = Message::query(id, question.clone())
+            .to_vec()
+            .expect("a query fits");
+        let Step::Upstream(upstream) = pipeline.query(&query, transport, &mut out) else {
+            continue;
+        };
+        let Step::Reply(len) = upstream.receive(Some(data), &mut out) else {
+            panic!("the only server's response is answered");
+        };
+        check_reply(&out[..len], id, transport);
+    }
+}
+
+/// Checks a reply of `serve_query`.
+fn check_reply(reply: &[u8], id: u16, transport: Transport) {
+    let decoded = Message::decode(reply).expect("a reply decodes");
+    assert_eq!(decoded.violations, [], "a reply is conforming");
+    assert_eq!(
+        decoded.message.header.id, id,
+        "a reply carries the query's ID"
+    );
+    if transport == Transport::Udp {
+        assert!(reply.len() <= 1232, "a UDP reply fits the largest payload");
+    }
 }
 
 /// A domain name in presentation format: what reads displays as text that reads back to the same name, byte for

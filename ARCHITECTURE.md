@@ -9,6 +9,7 @@ says what it holds.
 |---|---|---|
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
+| `crates/dedens-server` | Server core: the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-net` | UDP and TCP transports on compio over a sans-IO exchange; `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
@@ -16,7 +17,7 @@ says what it holds.
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
 Everything builds on `dedens-proto`; `dedens-scenario` also on `dedens-net`; `apps/dedens` on both. Planned:
-`dedens-resolver`, `dedens-server` and `apps/dedensd` on all of them.
+`apps/dedensd` on `dedens-server`, `dedens-cache` and `dedens-net`, then `dedens-resolver`.
 
 ## Data flow
 

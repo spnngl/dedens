@@ -325,6 +325,7 @@ dependencies = [
  "dedens-net",
  "dedens-proto",
  "dedens-scenario",
+ "dedens-server",
  "hickory-proto",
  "libfuzzer-sys",
 ]
@@ -356,6 +357,13 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "thiserror",
+]
+
+[[package]]
+name = "dedens-server"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
 ]
 
 [[package]]

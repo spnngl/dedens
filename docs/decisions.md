@@ -267,6 +267,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   without binding; JSON Schema from the types (schemars); config tests run D17 query files. Reload (SIGHUP,
   file watch) builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one;
   cache and upstream connections survive.
+- D41 Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's bytes and transport and
+  returns a step: a reply in the caller's buffer, nothing, or a request for an upstream server whose response
+  goes back through `Upstream::receive`; `apps/dedensd` does the I/O. Before the stages the core answers what
+  none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it cannot read (the
+  header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than QUERY; BADVERS
+  to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the client's ID,
+  opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with AD or DO
+  (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one. Over UDP it fits the client's
+  payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes whole. The forward stage
+  asks its servers in order, the next on no response, one undecodable or breaking a rule, TC, or SERVFAIL,
+  REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD
+  and CD, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
+  are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
 
 ## Observability
 

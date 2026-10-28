@@ -149,6 +149,15 @@ pub struct Header {
 }
 
 impl Header {
+    /// The header of `msg`, read even when the rest of it is broken, so a server can answer FORMERR (RFC 1035
+    /// §4.1.1); `None` when `msg` is shorter than a header.
+    #[must_use]
+    pub fn peek(msg: &[u8]) -> Option<Self> {
+        Self::decode(&mut Reader::new(msg))
+            .ok()
+            .map(|(header, _)| header)
+    }
+
     /// Reads a header and its counts.
     ///
     /// # Errors

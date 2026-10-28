@@ -635,6 +635,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-server"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+]
+
+[[package]]
 name = "defmt"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

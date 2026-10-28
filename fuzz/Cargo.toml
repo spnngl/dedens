@@ -17,6 +17,7 @@ dedens-cache = { path = "../crates/dedens-cache" }
 dedens-net = { path = "../crates/dedens-net" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
+dedens-server = { path = "../crates/dedens-server" }
 # The second implementation of `differential_hickory`; the same version as the workspace's (D14).
 hickory-proto = { version = "0.26.3", default-features = false, features = [
   "std",
@@ -47,6 +48,13 @@ bench = false
 [[bin]]
 name = "cache_insert"
 path = "fuzz_targets/cache_insert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serve_query"
+path = "fuzz_targets/serve_query.rs"
 test = false
 doc = false
 bench = false
