@@ -274,12 +274,17 @@ impl Pipeline {
             .and_then(|wire| Message::decode(wire).ok())
             .filter(forward::usable)
         {
-            if let Some(cache) = cache {
-                // Some responses are not stored (RFC 2308, D22): the reply goes out all the same.
-                let _ = cache.insert(&query, &decoded, now);
-            }
+            // A stored response answers as a hit does, without encoding it again. Some are not stored (RFC 2308,
+            // D22): the reply goes out all the same.
+            let stored = cache.filter(|cache| cache.insert(&query, &decoded, now).is_ok());
             if purpose != Purpose::Reply {
                 return Step::Drop;
+            }
+            if let Some(cache) = stored
+                && let Looked::Reply { len, .. } =
+                    cache::look(cache, &query, &client, now, StalePolicy::Never, out)
+            {
+                return Step::Reply(len);
             }
             let rcode = decoded.message.rcode();
             return reply(&client, decoded.message, rcode, out);

@@ -97,7 +97,9 @@ fn opaque_refuses_typed_and_name_bytes() {
 fn ttl_offsets_skip_a_stray_opt_record() {
     let mut wire = vec![0, 0, 0x80, 0, 0, 0, 0, 1, 0, 0, 0, 0];
     wire.extend([0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0]);
-    assert_eq!(message::ttl_offsets(&wire).expect("readable"), []);
+    let mut offsets = Vec::new();
+    message::ttl_offsets(&wire, |at| offsets.push(at)).expect("readable");
+    assert_eq!(offsets, []);
 }
 
 #[test]
@@ -108,7 +110,8 @@ fn ttl_offsets_locate_every_record_ttl() {
         RData::A(Ipv4Addr::new(192, 0, 2, 1)),
     ));
     let mut wire = response.to_vec().expect("encodes");
-    let offsets = message::ttl_offsets(&wire).expect("reads");
+    let mut offsets = Vec::new();
+    message::ttl_offsets(&wire, |at| offsets.push(at)).expect("reads");
     assert_eq!(offsets.len(), 2, "the OPT record is not a record");
     for at in offsets.into_iter().map(usize::from) {
         wire[at..at + 4].copy_from_slice(&7_u32.to_be_bytes());

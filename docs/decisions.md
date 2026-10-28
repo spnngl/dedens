@@ -153,7 +153,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries only (QR clear, opcode QUERY), not meta types (RFC 6895 §3.1; ANY is cached). `insert` takes the
   client's query and the response the forwarder decoded, never decoding again; the caller asks upstream with
   the query's DO and CD. Checked (RFC 2308, no TC, no violations, no client subnet scope above 0, RFC 7871
-  §7.3.1) and encoded once (no OPT, ID 0, one TTL, TTL offsets kept). Negative (NXDOMAIN, or no answer of the
+  §7.3.1) and encoded once without OPT, its TTL offsets after it in the same allocation. Negative (NXDOMAIN, or no answer of the
   type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the chain's TTLs
   within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD only when
   asked), question case and TTLs, never above the stored TTL; one too large for the buffer is encoded again
@@ -294,7 +294,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our OPT when the
   query had one; room for the OPT with an EDE option is kept before the lookup, since freshness is known only
   after. A miss runs the later stages, and the forward stage's usable response is stored under the client's
-  query (its DO and CD bits) before the reply; unstored responses (D22) are still the reply. After the last
+  query (its DO and CD bits), then answers as a hit, not encoded again (`miss` bench, mx: 1.5 → 1.1 µs);
+  unstored responses (D22) are still the reply, encoded. After the last
   server fails, the failure is held (RFC 9520 §3.2); during a hold the reply is SERVFAIL, upstream unasked.
   Expired data answers while failing (`StalePolicy::IfFailing`), and on the client timer (D45): after the last
   server fails, and during the hold, with TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its

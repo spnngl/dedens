@@ -90,7 +90,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
   into a 1232-byte buffer, a/mx/txt_large: 204/143/163 ns and one 192-byte allocation a hit (the stale option
   pushed to size the reply, the upstream query built for nothing) → 97/97/118 ns, none (same session).
 - `miss`: the query sent upstream, then the response stored and answered: 0.8/1.7/2.0 µs and 15 allocations
-  (8 kept by the cache entry, 7 temporary), sockets aside.
+  (8 kept by the cache entry, 7 temporary), sockets aside. The entry in one allocation (wire and TTL offsets)
+  and the reply served from it as a hit, not encoded again: a/mx/txt_large 0.67-0.74 → 0.59-0.63, 1.53 →
+  1.09, 1.71-1.82 → 1.77-1.82 µs (fastest of 3000 samples, same session); 6 allocations kept, 5 of them the
+  empty cache's first insert, which a fresh pipeline per sample counts.
 
 ## dedensd under dnsperf (D48)
 

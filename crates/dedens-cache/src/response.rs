@@ -56,11 +56,11 @@ impl From<EncodeError> for NotCached {
     }
 }
 
-/// A cached response: no OPT record, ID 0, every record with the same TTL; serving writes the question in the
-/// case of the query.
+/// A cached response, without OPT record; serving writes the ID, flags and question case of the query, and one
+/// TTL in every record.
 #[derive(Debug)]
 pub(crate) struct Response {
-    shared: Arc<Shared>,
+    shared: Shared,
     /// Lifetime given at insert, in seconds.
     ttl: u32,
     /// When it stops being fresh.
@@ -103,16 +103,18 @@ impl Response {
         }
         let ttl = lifetime(message, question, rcode, config)?;
         // The caller adds its own OPT record to each response served.
-        let mut wire = message.to_vec_without_edns()?;
-        wire[..2].fill(0);
-        let ttl_offsets =
-            message::ttl_offsets(&wire).expect("the encoder writes messages that decode");
-        set_ttls(&mut wire, ttl, &ttl_offsets);
+        let wire = message.to_vec_without_edns()?;
+        let len = u16::try_from(wire.len()).expect("a message is at most 65535 bytes");
+        // The TTL offsets follow the message, big-endian, in the same allocation.
+        let records = message.answer.len() + message.authority.len() + message.additional.len();
+        let mut offsets = Vec::with_capacity(2 * records);
+        message::ttl_offsets(&wire, |at| offsets.extend(at.to_be_bytes()))
+            .expect("the encoder writes messages that decode");
         Ok(Self {
-            shared: Arc::new(Shared {
-                wire: wire.into(),
-                ttl_offsets: ttl_offsets.into(),
-            }),
+            shared: Shared {
+                bytes: wire.iter().chain(&offsets).copied().collect(),
+                wire: len,
+            },
             ttl,
             expires: now.saturating_add(ttl),
             stale_until: now.saturating_add(ttl).saturating_add(config.max_stale),
@@ -121,7 +123,7 @@ impl Response {
 
     /// Bytes this response takes in a shard.
     pub(crate) fn cost(&self) -> usize {
-        self.shared.wire.len() + 2 * self.shared.ttl_offsets.len()
+        self.shared.bytes.len()
     }
 
     /// Whether under `percent` of its lifetime is left at `now`.
@@ -138,28 +140,39 @@ impl Response {
     /// Copies the response into `out` patched for `query`, every record with TTL `ttl`; `None` when it does not
     /// fit.
     pub(crate) fn serve(&self, query: &Query<'_>, ttl: u32, out: &mut [u8]) -> Option<usize> {
-        let Shared { wire, ttl_offsets } = &*self.shared;
+        let wire = self.shared.wire();
         let out = out.get_mut(..wire.len())?;
         out.copy_from_slice(wire);
-        patch(out, query, ttl, ttl_offsets);
+        self.shared.patch(out, query, ttl);
         Some(out.len())
     }
 
     /// The stored bytes, to truncate once the lock is released.
-    pub(crate) fn share(&self) -> Arc<Shared> {
-        Arc::clone(&self.shared)
+    pub(crate) fn share(&self) -> Shared {
+        self.shared.clone()
     }
 }
 
-/// The bytes of a response and the offsets of their TTL fields, shared so that a hit too large for the client is
-/// truncated outside the shard's lock.
-#[derive(Debug)]
+/// The bytes of a response then the offsets of their TTL fields, in one allocation shared so that a hit too large
+/// for the client is truncated outside the shard's lock.
+#[derive(Debug, Clone)]
 pub(crate) struct Shared {
-    wire: Box<[u8]>,
-    ttl_offsets: Box<[u16]>,
+    bytes: Arc<[u8]>,
+    /// Length of the response: the offsets follow, two bytes each.
+    wire: u16,
 }
 
 impl Shared {
+    fn wire(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.wire)]
+    }
+
+    /// Sets the ID, flags and question case of `query`, and TTL `ttl`, in `out`, a copy of the response.
+    fn patch(&self, out: &mut [u8], query: &Query<'_>, ttl: u32) {
+        patch(out, query);
+        set_ttls(out, ttl, offsets_in(&self.bytes[usize::from(self.wire)..]));
+    }
+
     /// The response patched as [`Response::serve`] does, then encoded again into `out` without the records that
     /// do not fit (RFC 2181 §9). Allocates: the slow path of a response larger than the client takes.
     pub(crate) fn serve_truncated(
@@ -168,8 +181,8 @@ impl Shared {
         ttl: u32,
         out: &mut [u8],
     ) -> Option<message::Encoded> {
-        let mut full = self.wire.to_vec();
-        patch(&mut full, query, ttl, &self.ttl_offsets);
+        let mut full = self.wire().to_vec();
+        self.patch(&mut full, query, ttl);
         let decoded = Message::decode(&full).ok()?;
         decoded.message.encode_truncated(out).ok()
     }
@@ -245,17 +258,25 @@ fn chain_end<'m>(qname: &Name<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
     name
 }
 
+/// The offsets in `bytes`, two big-endian bytes each.
+fn offsets_in(bytes: &[u8]) -> impl Iterator<Item = usize> {
+    bytes
+        .as_chunks()
+        .0
+        .iter()
+        .map(|&at| usize::from(u16::from_be_bytes(at)))
+}
+
 /// Sets TTL `ttl` at every offset.
-fn set_ttls(out: &mut [u8], ttl: u32, ttl_offsets: &[u16]) {
+fn set_ttls(out: &mut [u8], ttl: u32, ttl_offsets: impl Iterator<Item = usize>) {
     let ttl = ttl.to_be_bytes();
-    for &at in ttl_offsets {
-        let at = usize::from(at);
+    for at in ttl_offsets {
         out[at..at + 4].copy_from_slice(&ttl);
     }
 }
 
-/// Sets the ID, flags and question case of `query`, and TTL `ttl` at every offset.
-fn patch(out: &mut [u8], query: &Query<'_>, ttl: u32, ttl_offsets: &[u16]) {
+/// Sets the ID, flags and question case of `query`.
+fn patch(out: &mut [u8], query: &Query<'_>) {
     let asked = query.header().flags;
     out[..2].copy_from_slice(&query.header().id.to_be_bytes());
     let word = u16::from_be_bytes([out[2], out[3]]);
@@ -285,5 +306,4 @@ fn patch(out: &mut [u8], query: &Query<'_>, ttl: u32, ttl_offsets: &[u16]) {
             stored.copy_from_slice(name);
         }
     }
-    set_ttls(out, ttl, ttl_offsets);
 }

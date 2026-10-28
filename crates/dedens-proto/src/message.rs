@@ -511,8 +511,8 @@ pub(crate) enum Entry<'a> {
     Opt(RawRecord<'a>),
 }
 
-/// Offsets of the TTL fields of the records of `msg` in wire order, without the OPT record lifted out as EDNS
-/// (D8), to rewrite TTLs in a copy of the bytes, as a cache serving them does.
+/// Hands `each` the offsets of the TTL fields of the records of `msg` in wire order, without the OPT record lifted
+/// out as EDNS (D8), to rewrite TTLs in a copy of the bytes, as a cache serving them does.
 ///
 /// Reads the structure only: names, fixed fields and RDLENGTH, not the RDATA. A stray OPT record has no offset:
 /// its TTL field holds the extended RCODE, version and flags (RFC 6891 §6.1.3).
@@ -521,8 +521,7 @@ pub(crate) enum Entry<'a> {
 ///
 /// [`DecodeError`] when the structure is broken. Unlike [`Message::decode`], it accepts invalid RDATA and EDNS
 /// options, which it does not read.
-pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<u16>, DecodeError> {
-    let mut offsets = Vec::new();
+pub fn ttl_offsets(msg: &[u8], mut each: impl FnMut(u16)) -> Result<(), DecodeError> {
     walk(msg, &mut Vec::new(), |entry, _| {
         if let Entry::Record(_, raw) = entry
             && raw.rtype != RecordType::OPT
@@ -532,11 +531,10 @@ pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<u16>, DecodeError> {
                 clippy::cast_possible_truncation,
                 reason = "`walk` reads messages of at most 65535 bytes"
             )]
-            offsets.push((raw.rdata.position() - 6) as u16);
+            each((raw.rdata.position() - 6) as u16);
         }
         Ok(())
-    })?;
-    Ok(offsets)
+    })
 }
 
 /// Reads the structure of `msg`, handing each entry to `sink` in wire order, and pushes the violations it finds:

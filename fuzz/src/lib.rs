@@ -478,7 +478,10 @@ pub fn decode_message(data: &[u8]) {
         &decoded.message.additional,
     ];
     assert_eq!(
-        message::ttl_offsets(data).map(|offsets| offsets.len()),
+        {
+            let mut offsets = 0;
+            message::ttl_offsets(data, |_| offsets += 1).map(|()| offsets)
+        },
         Ok(records
             .iter()
             .flat_map(|r| r.iter())
