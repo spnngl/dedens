@@ -18,6 +18,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   when a multihomed deployment needs it.
 - Scrubbing upstream answers of records outside the question's CNAME chain and bailiwick. Default: with the
   recursive resolver.
+- An AF_XDP UDP listener (eBPF steering datagrams into our memory, past the kernel's network stack, as Knot DNS
+  does): we would build IP and UDP headers ourselves; it needs root and per-NIC setup, does no TCP, and cannot
+  be measured on loopback. Default: a later optional listener mode, benchmarked between two machines.
+  (`SQPOLL` was tried instead: 475k → 230k cache hits over UDP, 155k → 82k forwarding.)
 
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one
   name: 364 ns a hit, against about 100 ns on one thread). Measure under the server's thread-per-core load
