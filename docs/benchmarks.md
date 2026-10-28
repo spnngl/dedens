@@ -95,6 +95,9 @@ removed `MessageView` read every record in 178/505/1093 ns.
   and the reply served from it as a hit, not encoded again: a/mx/txt_large 0.67-0.74 → 0.59-0.63, 1.53 →
   1.09, 1.71-1.82 → 1.77-1.82 µs (fastest of 3000 samples, same session); 6 allocations kept, 5 of them the
   empty cache's first insert, which a fresh pipeline per sample counts.
+- `plugin` (D54): a plugin stage answering two A records it holds, into a 1232-byte buffer: the reply built
+  as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
+  question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
 
 ## dedensd under dnsperf (D48-D53)
 

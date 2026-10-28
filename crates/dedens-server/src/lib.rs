@@ -29,8 +29,10 @@
 mod cache;
 mod forward;
 mod pipeline;
+mod plugin;
 mod reply;
 
 pub use dedens_proto::Transport;
 pub use forward::Forward;
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
+pub use plugin::{Answer, Plugin, Records};

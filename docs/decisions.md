@@ -246,13 +246,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Server
 
-- D23 Pipeline: each listener runs an ordered chain of stages; a stage answers, passes the query on, or passes
+- D23 (amended by D54) Pipeline: each listener runs an ordered chain of stages; a stage answers, passes the query on, or passes
   it on and sees the response back. Order from the config, not the build (CoreDNS's fixed `plugin.cfg` order
   confuses users). Branching is a router stage (zone, client CIDR, listener, qtype, view), no general graph: a
   query has one response. Declarative matchers compiled at load; scripting costs microseconds against a
   150 ns cache hit. Built-in stages are enum variants behind Cargo features; custom binaries register extra
   stage types (trait objects) on the server library. Stages before the cache are synchronous, without
-  allocation or copy of the query. (Not yet: features, router stage, custom stage types.)
+  allocation or copy of the query. (Not yet: features, router stage; custom stage types are D54 plugins.)
 - D24 (narrowed by D44) Configuration: a directory of TOML, YAML or JSON files, one serde model (as D36), merged;
   components named, typed by a `type` key. Errors, not warnings: unknown field, duplicate name, unused component.
   `${VAR}`, `${VAR:-default}` (`$$` escapes), `SECRET[backend.key]`. `dedensd validate` builds the pipeline without
@@ -368,6 +368,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
   as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
   (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
+- D54 Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+  `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
+  Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
+  stages, tied to the upstream steps. An answer is a response code, records already in wire form
+  (`dedens_server::Records`, written once after a question for their name, so their compression pointers hold
+  in any reply to that name), AA, and an extended error: the reply copies the records after the client's
+  question, allocating nothing; records that do not fit are left out with TC (RFC 2181 §9). AA when the plugin
+  holds the name's data as local knowledge (RFC 1035 §4.1.1, RFC 9499 §6), clear when it applies a policy.
+  Plugins answer queries without RD too: their data is local. Rejected: a stage enum per plugin in the core
+  (each plugin would grow `dedens-server`); plugins writing the reply themselves (each would redo D41's flags,
+  OPT and sizing).
 
 ## Observability
 

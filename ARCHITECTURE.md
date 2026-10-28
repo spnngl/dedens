@@ -14,7 +14,7 @@
 | `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net` | sockets |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
-Planned: `dedens-resolver`.
+Planned: `dedens-resolver`; `dedens-plugins`, the D54 plugins (hosts, blocklist).
 
 ## Data flow
 

@@ -11,6 +11,7 @@ use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType, Tra
 
 use crate::cache::{self, Looked};
 use crate::forward::{self, Forward};
+use crate::plugin::Plugin;
 use crate::reply::Client;
 
 /// A stage of the pipeline (D23).
@@ -21,6 +22,8 @@ pub enum Stage {
     Cache(Cache),
     /// Asks upstream servers: the last stage a query reaches.
     Forward(Forward),
+    /// Answers from what it holds, or passes the query on (D54).
+    Plugin(Box<dyn Plugin>),
 }
 
 /// The stages a listener runs on each query, in order (D23); a query no stage answers is refused.
@@ -158,6 +161,13 @@ impl Pipeline {
                     Looked::Failed | Looked::Miss => cache = Some(index),
                     Looked::Expired => (cache, expired) = (Some(index), true),
                 },
+                Stage::Plugin(plugin) => {
+                    if let Some(answer) = plugin.answer(query) {
+                        return client
+                            .answer(query.wire(), &answer, out)
+                            .map_or(Step::Drop, Step::Reply);
+                    }
+                }
                 Stage::Forward(_) if !recursion => {
                     return client
                         .reply(
@@ -200,7 +210,7 @@ impl Pipeline {
                 .skip(from)
                 .find_map(|(index, stage)| match stage {
                     Stage::Forward(forward) => Some((index, forward)),
-                    Stage::Cache(_) => None,
+                    Stage::Cache(_) | Stage::Plugin(_) => None,
                 })?;
         Some(Box::new(Upstream {
             query: query.wire().into(),

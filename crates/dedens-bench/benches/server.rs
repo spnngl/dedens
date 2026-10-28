@@ -1,14 +1,15 @@
 //! The server's paths (D23, D43), as `dedensd` runs them for each datagram: a hit, `Pipeline::query` reading a
 //! query and answering it from the cache stage, and a miss, the query sent upstream and its response stored and
-//! answered. The allocation counts show the hit path allocates nothing.
+//! answered; and a plugin answering with records it holds (D54). The allocation counts show the hit and plugin
+//! paths allocate nothing.
 
 use std::hint::black_box;
 use std::net::SocketAddr;
 
 use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Config};
-use dedens_proto::{Edns, Message};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_proto::{Class, Edns, Message, Query, Question, RData, Record, RecordType, Ttl};
+use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step, Transport};
 use divan::Bencher;
 
 #[global_allocator]
@@ -72,6 +73,48 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let response = wire(case);
     let query = query_for(&response);
     let pipeline = caching(&query, &response);
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        assert!(matches!(step, Step::Reply(_)));
+    });
+}
+
+/// Answers every query with the records of the captured response's answer section, as a hosts plugin would.
+#[derive(Debug)]
+struct Fixed(Records);
+
+impl Plugin for Fixed {
+    fn answer(&self, _: &Query<'_>) -> Option<Answer<'_>> {
+        Some(Answer {
+            rcode: dedens_proto::Rcode::NOERROR,
+            records: Some(&self.0),
+            authoritative: true,
+            error: None,
+        })
+    }
+}
+
+/// A query answered by a plugin: read, then its records copied after the question.
+#[divan::bench]
+fn plugin(bencher: Bencher<'_, '_>) {
+    let name: dedens_proto::Name<'static> = "host.example.".parse().expect("a name");
+    let records: Vec<_> = (1..=2)
+        .map(|i| {
+            Record::new(
+                name.clone(),
+                Class::IN,
+                Ttl::from_wire(3600),
+                &RData::A([192, 0, 2, i].into()),
+            )
+        })
+        .collect();
+    let pipeline = Pipeline::new(vec![Stage::Plugin(Box::new(Fixed(
+        Records::new(&name, &records).expect("the records fit"),
+    )))]);
+    let mut query = Message::query(7, Question::new(name, RecordType::A));
+    query.edns = Some(Edns::default());
+    let query = query.to_vec().expect("a query fits");
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
         let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
