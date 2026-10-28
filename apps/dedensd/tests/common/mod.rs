@@ -3,14 +3,14 @@
 
 #![allow(dead_code, reason = "each test file uses part of these")]
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Name, RecordType, Ttl};
@@ -167,22 +167,34 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// Starts `dedensd` on a free port, configured by [`config`], and waits until it accepts connections.
+    /// Starts `dedensd` on a free port, configured by [`config`], and waits until it logs that it serves: its
+    /// sockets are bound then. A connection accepted earlier could be another server's, on a port both were handed
+    /// (with `SO_REUSEPORT` on Linux, both even bind it). So servers start one at a time, and one that cannot bind,
+    /// its port taken meanwhile by another socket, exits and is started again on another port.
     pub(crate) fn start(upstream: SocketAddr, cache: &str) -> Self {
-        let addr = free_port();
-        let child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
-            .arg("--config")
-            .arg(config(&addr.to_string(), &upstream.to_string(), cache))
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("dedensd starts");
-        let server = Self { child, addr };
-        let start = Instant::now();
-        while TcpStream::connect(addr).is_err() {
-            assert!(start.elapsed() < Duration::from_secs(10), "dedensd listens");
-            thread::sleep(Duration::from_millis(20));
+        static STARTING: Mutex<()> = Mutex::new(());
+        let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut tries = 0;
+        loop {
+            let addr = free_port();
+            let mut child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
+                .arg("--config")
+                .arg(config(&addr.to_string(), &upstream.to_string(), cache))
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("dedensd starts");
+            let stderr = child.stderr.take().expect("its piped stderr");
+            let mut lines = BufReader::new(stderr).lines().map_while(Result::ok);
+            // Ends at the end of stderr, when the server exits.
+            if lines.any(|line| line.contains("serving")) {
+                // Read on, so a full pipe never blocks the server.
+                thread::spawn(move || lines.for_each(drop));
+                return Self { child, addr };
+            }
+            let _ = child.wait();
+            tries += 1;
+            assert!(tries < 10, "dedensd binds a free port");
         }
-        server
     }
 }
 
