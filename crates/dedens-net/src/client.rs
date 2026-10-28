@@ -99,16 +99,27 @@ impl Client {
         let mut udp = None;
         let response = loop {
             match self.step(exchange, &mut udp).await? {
-                Progress::Send(next) | Progress::Wait(next) => exchange = next,
+                Progress::Send(next) => {
+                    self.keep_cookie(pair, next.cookie());
+                    exchange = next;
+                }
+                Progress::Wait(next) => exchange = next,
                 Progress::Done(done) => break done?,
             }
         };
-        if let (Some(pair), Some(returned)) = (pair, response.cookie)
+        self.keep_cookie(pair, response.cookie);
+        Ok(response)
+    }
+
+    /// Keeps the server cookie of `cookie`, if it has one, for the next query of `pair` (RFC 7873 §5.3): a cookie
+    /// with the client cookie alone leaves the known one.
+    fn keep_cookie(&self, pair: Option<(IpAddr, SocketAddr)>, cookie: Option<Cookie>) {
+        if let (Some(pair), Some(cookie)) = (pair, cookie)
+            && cookie.server().is_some()
             && let Some(cookies) = self.cookies.borrow_mut().get_mut(&pair)
         {
-            cookies.returned = Some(returned);
+            cookies.returned = Some(cookie);
         }
-        Ok(response)
     }
 
     /// Sends the query of `exchange` and waits for what comes back: a message, or the deadline.

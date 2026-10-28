@@ -4,7 +4,8 @@
 mod common;
 
 use common::{
-    expect_response, expect_send, query, query_with_cookie, response, sent, start, t0, udp, wire,
+    expect_response, expect_send, expect_wait, query, query_with_cookie, response, sent, start, t0,
+    udp, wire,
 };
 use dedens_net::exchange::Options;
 use dedens_proto::{Message, Rcode};
@@ -26,8 +27,13 @@ fn formerr_or_notimp_without_opt_drops_edns_once() {
         let plain = sent(&exchange);
         assert_eq!(plain.edns, None);
         assert_eq!(plain.questions, query.questions);
-        assert_eq!(plain.header, query.header);
+        // The changed query goes with the next ID: a late response to the first cannot end the exchange.
+        let mut header = query.header;
+        header.id = query.header.id.wrapping_add(1);
+        assert_eq!(plain.header, header);
         assert_eq!(exchange.sends(), 2);
+        let late = without_edns(&query, rcode);
+        let exchange = expect_wait(udp(exchange, &late, now));
 
         // Once only: the same answer to the plain query is the response.
         let answer = without_edns(&plain, rcode);

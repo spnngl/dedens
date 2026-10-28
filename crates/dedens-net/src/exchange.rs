@@ -130,7 +130,8 @@ pub struct Exchange {
 
 impl Exchange {
     /// Starts an exchange: send [`Exchange::wire`] now. The ID, and the cookie when the query has EDNS, are the
-    /// caller's, as are the random bits of [`Options::random_case`].
+    /// caller's, as are the random bits of [`Options::random_case`]; a query changed by a fallback goes with the
+    /// next ID.
     ///
     /// # Errors
     ///
@@ -147,11 +148,12 @@ impl Exchange {
                 question.name = random_case(&question.name, bits);
             }
         }
-        let wire = encode(&mut query, options.transport)?;
+        set_keepalive(&mut query, options.transport);
+        let wire = query.to_vec()?;
         Ok(Self {
             server,
             transport: options.transport,
-            deadline: now + options.timeout,
+            deadline: after(now, options.timeout),
             options,
             query,
             wire,
@@ -191,6 +193,13 @@ impl Exchange {
     #[must_use]
     pub const fn sends(&self) -> u16 {
         self.sends
+    }
+
+    /// The cookie the query sends: the caller's, or the fresh one of a BADCOOKIE response, worth keeping even if
+    /// the exchange then fails (RFC 7873 §5.3).
+    #[must_use]
+    pub fn cookie(&self) -> Option<Cookie> {
+        cookie_in(&self.query)
     }
 
     /// Takes a message received at `now` over `transport` from `from`.
@@ -329,9 +338,12 @@ impl Exchange {
         }
     }
 
-    /// Sends the changed query over `transport`.
+    /// Sends the changed query over `transport`, with the next ID so that a late response to the query before
+    /// cannot end the exchange: it would not answer the changed query.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
-        match encode(&mut self.query, transport) {
+        self.query.header.id = self.query.header.id.wrapping_add(1);
+        set_keepalive(&mut self.query, transport);
+        match self.query.to_vec() {
             Ok(wire) => {
                 self.wire = wire;
                 self.transport = transport;
@@ -346,31 +358,29 @@ impl Exchange {
     fn sent(&mut self, now: Instant) {
         self.sends = self.sends.saturating_add(1);
         self.sent_at = now;
-        self.deadline = now + self.options.timeout;
+        self.deadline = after(now, self.options.timeout);
     }
 }
 
 /// A response to drop for its cookie.
 struct Forged;
 
-/// `query` as sent over `transport`: over TCP, EDNS carries an empty edns-tcp-keepalive so the server may tell how
-/// long to keep the connection (RFC 7828 §3.2.1); over UDP, it must not.
-fn encode(query: &mut Message<'static>, transport: Transport) -> Result<Vec<u8>, EncodeError> {
-    let Some(edns) = query.edns.as_mut().filter(|edns| {
-        transport == Transport::Tcp
-            && !edns
-                .options
-                .iter()
-                .any(|option| matches!(option, EdnsOption::Keepalive(_)))
-    }) else {
-        return query.to_vec();
-    };
-    edns.options.push(EdnsOption::Keepalive(None));
-    let wire = query.to_vec();
+/// `wait` after `at`, a wait too long for an [`Instant`] cut to a century: a deadline that never comes.
+pub(crate) fn after(at: Instant, wait: Duration) -> Instant {
+    const CENTURY: Duration = Duration::from_hours(100 * 365 * 24);
+    at + wait.min(CENTURY)
+}
+
+/// Makes the edns-tcp-keepalive of `query` the one for `transport`: over TCP, an empty one so the server may tell
+/// how long to keep the connection; over UDP, none (RFC 7828 §3.2.1). One the caller put in is dropped.
+fn set_keepalive(query: &mut Message<'_>, transport: Transport) {
     if let Some(edns) = &mut query.edns {
-        edns.options.pop();
+        edns.options
+            .retain(|option| !matches!(option, EdnsOption::Keepalive(_)));
+        if transport == Transport::Tcp {
+            edns.options.push(EdnsOption::Keepalive(None));
+        }
     }
-    wire
 }
 
 /// The cookie `query` sends, if any.

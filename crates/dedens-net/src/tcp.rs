@@ -1,5 +1,6 @@
 //! DNS over TCP (RFC 7766): each message behind its two-byte length (RFC 1035 §4.2.2), one connection per server,
-//! queries pipelined and their responses matched by ID in any order (RFC 7766 §6.2.1).
+//! queries pipelined under IDs unique on the connection and their responses matched by ID in any order (RFC 7766
+//! §6.2.1).
 //!
 //! A connection is one task, which connects then runs three: a writer that writes each queued query whole, so a
 //! query that stops waiting never leaves the stream out of step; a reader that splits the stream into messages
@@ -10,7 +11,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -24,6 +24,8 @@ use dedens_proto::Message;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 
+use crate::exchange::after;
+
 /// Why a TCP exchange failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -34,9 +36,6 @@ pub enum TcpError {
     /// The connection closed before the response, twice: on the first connection and on a new one.
     #[error("connection closed before the response")]
     Closed,
-    /// Another query with the same ID waits on the connection.
-    #[error("another query with ID {0} is waiting")]
-    IdInUse(u16),
     /// The query is shorter than a header or longer than 65535 bytes.
     #[error("a query of {0} bytes cannot be framed")]
     BadLength(usize),
@@ -104,7 +103,7 @@ pub struct TcpPool {
 }
 
 impl TcpPool {
-    /// No connection yet; each closes after `idle` without a query waiting.
+    /// No connection yet; each closes after `idle` without a query waiting, and gives up connecting after `idle`.
     #[must_use]
     pub fn new(idle: Duration) -> Self {
         Self {
@@ -113,31 +112,37 @@ impl TcpPool {
         }
     }
 
-    /// Sends `wire` to `server` and returns the message received with its ID, waiting until `deadline`.
+    /// Sends `wire` to `server` and returns the response, waiting until `deadline`.
     ///
-    /// Opens a connection when there is none or the last one closed; a connection that closes before the response
-    /// is replaced once and the query sent again (D27).
+    /// The query goes under an ID no other query on the connection has, its own when free, and the response comes
+    /// back with the ID of `wire` (RFC 7766 §6.2.1). The ID of a query that stopped waiting stays taken until its
+    /// response comes or the connection closes. Opens a connection when there is none or the last one takes no
+    /// more queries; a connection that closes before the response is replaced once and the query sent again (D27).
     ///
     /// # Errors
     ///
-    /// [`TcpError`]: no connection, closed twice, an ID already waiting, a query that cannot be framed, or the
-    /// deadline.
+    /// [`TcpError`]: no connection, closed twice, a query that cannot be framed, or the deadline.
     pub async fn exchange(
         &self,
         server: SocketAddr,
         wire: &[u8],
         deadline: Instant,
     ) -> Result<Vec<u8>, TcpError> {
-        let (Some(framed), Some(id)) = (frame(wire), id_of(wire)) else {
+        let Some(id) = id_of(wire) else {
             return Err(TcpError::BadLength(wire.len()));
         };
         let attempt = async {
             for _ in 0..2 {
-                let waiting = self.connection(server).send(id, framed.clone())?;
-                if let Ok(response) = waiting.response.recv_async().await {
+                // Held while the query waits: a connection replaced in the pool lives until its queries are answered.
+                let connection = self.connection(server);
+                let response = connection.send(wire)?;
+                if let Ok(mut response) = response.recv_async().await {
+                    if let Some(head) = response.first_chunk_mut() {
+                        *head = id.to_be_bytes();
+                    }
                     return Ok(response);
                 }
-                if let Some(error) = waiting.state.borrow_mut().connect_error.take() {
+                if let Some(error) = connection.state.borrow_mut().connect_error.take() {
                     return Err(TcpError::Connect(error));
                 }
             }
@@ -148,11 +153,11 @@ impl TcpPool {
             .unwrap_or(Err(TcpError::TimedOut))
     }
 
-    /// The open connection to `server`, or a new one.
+    /// The connection to `server` taking queries, or a new one.
     fn connection(&self, server: SocketAddr) -> Connection {
         let mut connections = self.connections.borrow_mut();
         if let Some(open) = connections.get(&server)
-            && !open.state.borrow().closed
+            && open.state.borrow().takes_queries()
         {
             return open.clone();
         }
@@ -176,55 +181,44 @@ fn id_of(wire: &[u8]) -> Option<u16> {
 #[derive(Debug, Clone)]
 struct Connection {
     state: Rc<RefCell<State>>,
-    /// Framed messages for the writer.
-    outgoing: flume::Sender<Vec<u8>>,
     _task: Rc<JoinHandle<()>>,
 }
 
 /// What the tasks and the queries share.
 #[derive(Debug)]
 struct State {
-    /// The queries waiting, by ID, each with its ticket.
-    waiting: HashMap<u16, (u64, flume::Sender<Vec<u8>>)>,
-    /// The ticket of the next query.
-    tickets: u64,
-    closed: bool,
+    /// The queries sent and not answered, by the ID they went with. The sender of a query that stopped waiting is
+    /// disconnected, and stays so that its ID is not reused before the response comes (RFC 7766 §6.2.1).
+    waiting: HashMap<u16, flume::Sender<Vec<u8>>>,
+    /// Framed messages for the writer, until the connection closes: dropping it ends the writer.
+    outgoing: Option<flume::Sender<Vec<u8>>>,
     /// Why the connection could not be opened, for the first query to see it.
     connect_error: Option<io::Error>,
     /// The last query sent or response received.
     last: Instant,
+    /// The idle timeout; zero once the server asked for no more queries (RFC 7828 §3.2.2).
     idle: Duration,
     /// Wakes the idle timer when `idle` shrinks.
     nudge: flume::Sender<()>,
 }
 
 impl State {
-    /// Closes: no new query, and the queries waiting see their channel close.
-    fn close(&mut self) {
-        self.closed = true;
-        self.waiting.clear();
+    /// Whether a new query may go on the connection.
+    fn takes_queries(&self) -> bool {
+        self.outgoing.is_some() && !self.idle.is_zero()
     }
-}
 
-/// A query waiting for its response; dropping it gives up the ID.
-struct Waiting {
-    id: u16,
-    ticket: u64,
-    state: Rc<RefCell<State>>,
-    response: flume::Receiver<Vec<u8>>,
-}
+    /// Whether a query waits for its response; one that stopped waiting does not count.
+    fn busy(&self) -> bool {
+        self.waiting
+            .values()
+            .any(|sender| !sender.is_disconnected())
+    }
 
-impl Drop for Waiting {
-    fn drop(&mut self) {
-        // Once the response came, another query may have taken the ID: remove the entry only if it is ours.
-        let mut state = self.state.borrow_mut();
-        if state
-            .waiting
-            .get(&self.id)
-            .is_some_and(|(ticket, _)| *ticket == self.ticket)
-        {
-            state.waiting.remove(&self.id);
-        }
+    /// Closes: no new query, the writer ends, and the queries waiting see their channel close.
+    fn close(&mut self) {
+        self.outgoing = None;
+        self.waiting.clear();
     }
 }
 
@@ -232,48 +226,47 @@ impl Connection {
     /// Starts connecting to `server`; queries queue meanwhile.
     fn open(server: SocketAddr, idle: Duration) -> Self {
         let (nudge, nudged) = flume::bounded(1);
+        let (outgoing, queue) = flume::unbounded();
         let state = Rc::new(RefCell::new(State {
             waiting: HashMap::new(),
-            tickets: 0,
-            closed: false,
+            outgoing: Some(outgoing),
             connect_error: None,
             last: Instant::now(),
             idle,
             nudge,
         }));
-        let (outgoing, queue) = flume::unbounded();
         let task = compio::runtime::spawn(run(server, Rc::clone(&state), queue, nudged));
         Self {
             state,
-            outgoing,
             _task: Rc::new(task),
         }
     }
 
-    /// Queues `framed`, a query with `id`, and returns the wait for its response.
-    fn send(&self, id: u16, framed: Vec<u8>) -> Result<Waiting, TcpError> {
+    /// Queues `wire` under an ID free on the connection, and returns the wait for its response.
+    fn send(&self, wire: &[u8]) -> Result<flume::Receiver<Vec<u8>>, TcpError> {
         let mut state = self.state.borrow_mut();
-        if state.closed {
+        let state = &mut *state;
+        let (Some(mut framed), Some(id)) = (frame(wire), id_of(wire)) else {
+            return Err(TcpError::BadLength(wire.len()));
+        };
+        let Some(outgoing) = state.outgoing.as_ref().filter(|_| !state.idle.is_zero()) else {
             return Err(TcpError::Closed);
-        }
+        };
+        let Some(id) = (0..=u16::MAX)
+            .map(|step| id.wrapping_add(step))
+            .find(|id| !state.waiting.contains_key(id))
+        else {
+            // All 65536 IDs wait for a response: as after a zero keepalive, the next query opens a connection.
+            state.idle = Duration::ZERO;
+            return Err(TcpError::Closed);
+        };
+        framed[2..4].copy_from_slice(&id.to_be_bytes());
+        // The task holds the receiver until the connection closes.
+        outgoing.send(framed).map_err(|_| TcpError::Closed)?;
         let (sender, response) = flume::bounded(1);
-        let ticket = state.tickets;
-        match state.waiting.entry(id) {
-            Entry::Occupied(_) => return Err(TcpError::IdInUse(id)),
-            Entry::Vacant(slot) => slot.insert((ticket, sender)),
-        };
-        state.tickets += 1;
+        state.waiting.insert(id, sender);
         state.last = Instant::now();
-        drop(state);
-        let waiting = Waiting {
-            id,
-            ticket,
-            state: Rc::clone(&self.state),
-            response,
-        };
-        // The task holds the receiver for as long as the connection lives.
-        self.outgoing.send(framed).map_err(|_| TcpError::Closed)?;
-        Ok(waiting)
+        Ok(response)
     }
 }
 
@@ -284,7 +277,12 @@ async fn run(
     queue: flume::Receiver<Vec<u8>>,
     nudged: flume::Receiver<()>,
 ) {
-    let stream = match TcpStream::connect(server).await {
+    let idle = state.borrow().idle;
+    let connected =
+        compio::time::timeout_at(after(Instant::now(), idle), TcpStream::connect(server))
+            .await
+            .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()));
+    let stream = match connected {
         Ok(stream) => Rc::new(stream),
         Err(error) => {
             let mut state = state.borrow_mut();
@@ -308,7 +306,7 @@ async fn run(
     state.borrow_mut().close();
 }
 
-/// Writes each queued message whole, until a write fails or the connection drops.
+/// Writes each queued message whole, until a write fails or the connection closes.
 async fn write(stream: &TcpStream, queue: &flume::Receiver<Vec<u8>>) {
     let mut stream = stream;
     while let Ok(framed) = queue.recv_async().await {
@@ -325,6 +323,8 @@ async fn read(stream: Rc<TcpStream>, state: Rc<RefCell<State>>) {
     let mut buf = Vec::with_capacity(MAX_MESSAGE_LEN + 2);
     let mut stream = &*stream;
     loop {
+        // A read fills the buffer from its start: what it does not overwrite is stale.
+        buf.clear();
         let BufResult(read, back) = stream.read(buf).await;
         buf = back;
         if !matches!(read, Ok(n) if n > 0) {
@@ -342,7 +342,7 @@ async fn read(stream: Rc<TcpStream>, state: Rc<RefCell<State>>) {
                 let _ = state.nudge.try_send(());
             }
             if let Some(id) = id_of(message)
-                && let Some((_, waiting)) = state.waiting.remove(&id)
+                && let Some(waiting) = state.waiting.remove(&id)
             {
                 // The query may have stopped waiting; then the response goes nowhere.
                 let _ = waiting.try_send(message.to_vec());
@@ -379,17 +379,18 @@ async fn close_when_idle(
     loop {
         let wake = {
             let mut state = state.borrow_mut();
-            if state.closed {
+            if state.outgoing.is_none() {
                 return;
             }
             let now = Instant::now();
-            if !state.waiting.is_empty() {
-                now + state.idle.max(RECHECK)
-            } else if now >= state.last + state.idle {
+            let idle_end = after(state.last, state.idle);
+            if state.busy() {
+                after(now, state.idle.max(RECHECK))
+            } else if now >= idle_end {
                 state.close();
                 break;
             } else {
-                state.last + state.idle
+                idle_end
             }
         };
         // Wakes at the deadline, or sooner when the server shortened the timeout.

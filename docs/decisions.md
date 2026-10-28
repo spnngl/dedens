@@ -96,12 +96,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case
     randomization of the question is an option, off by default as in Unbound.
   - dig's defaults: 3 tries, 5 s each. TC over UDP is retried over TCP. EDNS is dropped once on FORMERR or
-    NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off.
+    NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off. A query
+    changed by a fallback goes with the next ID, so a late response to the query before cannot end the exchange.
   - Cookies (RFC 7873 §5): the client cookie drawn from `getrandom` once per pair of source and server
     addresses, a memoized random function of both as §4.1 asks, without a hash to pick; server cookies kept
-    per server for the life of the client, BADCOOKIE retried once.
-  - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, idle close,
-    edns-tcp-keepalive sent empty in TCP queries and its timeout honoured when shorter (RFC 7828), a closed
+    per server for the life of the client, including the fresh one of a BADCOOKIE; BADCOOKIE retried with it
+    over UDP, then over TCP (§5.3).
+  - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, each under an
+    ID free on the connection (§6.2.1), the caller's put back in the response; the ID of a query that stopped
+    waiting stays taken until its response comes. Idle close; edns-tcp-keepalive sent empty in TCP queries only
+    and its timeout honoured when shorter, 0 taking no new query (RFC 7828); a closed
     connection retried once on a new one. Queries are written whole by a task of the connection, so a query that
     stops waiting never cuts a message short.
 - D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in

@@ -44,6 +44,18 @@ fn three_tries_then_the_exchange_fails() {
 }
 
 #[test]
+fn a_timeout_too_long_for_a_clock_waits_a_century() {
+    let now = t0();
+    let mut options = Options::default();
+    options.timeout = std::time::Duration::MAX;
+    let exchange = start(&query(), options, now);
+    assert!(exchange.deadline() > now + secs(3_000_000_000));
+    let deadline = exchange.deadline();
+    let exchange = expect_send(exchange.time_out(deadline));
+    assert!(exchange.deadline() > deadline);
+}
+
+#[test]
 fn tries_and_timeout_are_options() {
     let now = t0();
     let mut options = Options::default();

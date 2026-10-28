@@ -15,13 +15,15 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     let exchange = expect_send(udp(exchange, &wire(&truncated), now));
     assert_eq!(exchange.transport(), Transport::Tcp);
+    // The query again, with the next ID and the TCP options (tests/rfc7828.rs).
     let mut over_tcp = common::sent(&exchange);
     over_tcp.edns.as_mut().expect("EDNS").options.clear();
+    over_tcp.header.id = over_tcp.header.id.wrapping_sub(1);
     assert_eq!(over_tcp, query);
     assert_eq!(exchange.sends(), 2);
 
     // The UDP socket is gone: only TCP counts now.
-    let full = wire(&response(&query, Rcode::NOERROR));
+    let full = wire(&response(&common::sent(&exchange), Rcode::NOERROR));
     let exchange = common::expect_wait(udp(exchange, &full, now));
     let got = expect_response(exchange.receive(server(), Transport::Tcp, &full, now));
     assert_eq!(got.transport, Transport::Tcp);

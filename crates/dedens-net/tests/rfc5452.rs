@@ -116,7 +116,7 @@ fn random_case_sets_the_case_and_requires_it_back() {
     let now = t0();
     let query = query();
     let mut options = Options::default();
-    // One bit a letter, from the lowest bit of each byte: 1 upper, 0 lower.
+    // One bit a letter, eight letters a byte, lowest bit first: 1 upper, 0 lower.
     let mut bits = [0xFF; 32];
     bits[0] = 0b1010_0101;
     options.random_case = Some(bits);

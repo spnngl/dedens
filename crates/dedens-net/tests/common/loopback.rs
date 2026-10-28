@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use compio::BufResult;
-use compio::io::{AsyncRead, AsyncWriteExt};
+use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use dedens_net::tcp::{Frames, frame};
 use dedens_proto::edns::EdnsOption;
@@ -43,6 +43,7 @@ pub(crate) async fn udp_server(delay: Duration) -> SocketAddr {
     compio::runtime::spawn(async move {
         let mut buf = Vec::with_capacity(65535);
         loop {
+            buf.clear();
             let BufResult(received, back) = socket.recv_from(buf).await;
             buf = back;
             let Ok((_, from)) = received else { return };
@@ -101,6 +102,11 @@ impl Peer {
         let BufResult(written, _) = self.stream.write_all(bytes).await;
         written.expect("the client reads");
     }
+
+    /// Closes the server's side: the client reads the end.
+    pub(crate) async fn shutdown(&mut self) {
+        self.stream.shutdown().await.expect("a shutdown");
+    }
 }
 
 /// A UDP server answering each query with `respond`, or not at all when it gives `None`.
@@ -108,10 +114,48 @@ pub(crate) async fn udp_responder(
     respond: impl Fn(&[u8]) -> Option<Vec<u8>> + 'static,
 ) -> SocketAddr {
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+    serve_udp(socket, respond)
+}
+
+/// UDP and TCP servers on one port: `udp` answers as for [`udp_responder`], `tcp` each query of each connection.
+pub(crate) async fn responders(
+    udp: impl Fn(&[u8]) -> Option<Vec<u8>> + 'static,
+    tcp: fn(&[u8]) -> Vec<u8>,
+) -> SocketAddr {
+    // The port free for UDP may be taken for TCP: then try another.
+    let (socket, listener) = loop {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+        let addr = socket.local_addr().expect("an address");
+        if let Ok(listener) = TcpListener::bind(addr).await {
+            break (socket, listener);
+        }
+    };
+    compio::runtime::spawn(async move {
+        loop {
+            let mut peer = Peer::accept(&listener).await;
+            compio::runtime::spawn(async move {
+                while let Some(query) = peer.read().await {
+                    peer.write(&[tcp(&query)]).await;
+                }
+            })
+            .detach();
+        }
+    })
+    .detach();
+    serve_udp(socket, udp)
+}
+
+/// Answers each query `socket` receives with `respond`, or not at all when it gives `None`; returns its address.
+fn serve_udp(
+    socket: UdpSocket,
+    respond: impl Fn(&[u8]) -> Option<Vec<u8>> + 'static,
+) -> SocketAddr {
     let addr = socket.local_addr().expect("an address");
     compio::runtime::spawn(async move {
         let mut buf = Vec::with_capacity(65535);
         loop {
+            // A receive fills the buffer from its start: what it does not overwrite is stale.
+            buf.clear();
             let BufResult(received, back) = socket.recv_from(buf).await;
             buf = back;
             let Ok((_, from)) = received else { return };
@@ -122,21 +166,4 @@ pub(crate) async fn udp_responder(
     })
     .detach();
     addr
-}
-
-/// A TCP server on `addr` answering each query of each connection with `respond`.
-pub(crate) async fn tcp_responder(addr: SocketAddr, respond: fn(&[u8]) -> Vec<u8>) {
-    let listener = TcpListener::bind(addr).await.expect("a TCP listener");
-    compio::runtime::spawn(async move {
-        loop {
-            let mut peer = Peer::accept(&listener).await;
-            compio::runtime::spawn(async move {
-                while let Some(query) = peer.read().await {
-                    peer.write(&[respond(&query)]).await;
-                }
-            })
-            .detach();
-        }
-    })
-    .detach();
 }

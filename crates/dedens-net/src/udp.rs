@@ -79,7 +79,9 @@ impl UdpChannel {
     ///
     /// The receive fails, for instance with [`io::ErrorKind::ConnectionRefused`] after an ICMP port unreachable.
     pub async fn recv(&mut self, deadline: Instant) -> io::Result<Option<&[u8]>> {
-        let buf = std::mem::take(&mut self.buf);
+        let mut buf = std::mem::take(&mut self.buf);
+        // A receive fills the buffer from its start: what it does not overwrite is stale.
+        buf.clear();
         let Ok(BufResult(received, buf)) =
             compio::time::timeout_at(deadline, self.socket.recv(buf)).await
         else {
