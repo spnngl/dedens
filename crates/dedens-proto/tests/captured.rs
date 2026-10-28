@@ -172,8 +172,8 @@ fn referrals_are_told_from_other_responses() {
     let zone = |name: &str| capture(name).referral().map(ToString::to_string);
     assert_eq!(zone("referral_root").as_deref(), Some("com."));
     assert_eq!(zone("referral_com").as_deref(), Some("example.com."));
-    // An answer, NXDOMAIN (with a SOA), an HINFO answer and SERVFAIL are not.
-    for name in ["a", "nxdomain_soa", "any_rfc8482", "ede"] {
+    // An answer, NXDOMAIN and NODATA (with a SOA), an HINFO answer and SERVFAIL are not.
+    for name in ["a", "nxdomain_soa", "nodata", "any_rfc8482", "ede"] {
         assert_eq!(zone(name), None, "{name}");
     }
 }

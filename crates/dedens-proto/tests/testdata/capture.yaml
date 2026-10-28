@@ -51,3 +51,8 @@ queries:
     type: SOA
     server: ns1.isc.org
     options: {recurse: false, cookie: '0102030405060708'}
+  # NODATA (RFC 2308 §2.2) from a resolver: no answer, a SOA in the authority section, no AA.
+  - id: nodata
+    name: example.com
+    type: SRV
+    server: 1.1.1.1

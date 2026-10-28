@@ -35,6 +35,15 @@ impl Responder {
     /// Serves the captured responses named, `"a"` for `a.bin`: a query whose name (in any case) and type are
     /// those of one gets it, the truncated one over UDP when there are two; any other query gets no answer.
     pub(crate) fn start(names: &[&str]) -> Self {
+        Self::serve(names, false)
+    }
+
+    /// As [`Responder::start`], but every second UDP query gets no answer.
+    pub(crate) fn flaky(names: &[&str]) -> Self {
+        Self::serve(names, true)
+    }
+
+    fn serve(names: &[&str], flaky: bool) -> Self {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/dedens-proto/tests/testdata");
         let canned: Arc<Vec<Canned>> = Arc::new(
@@ -67,11 +76,11 @@ impl Responder {
             let mut buf = vec![0; 65535];
             while let Ok((len, from)) = udp.recv_from(&mut buf) {
                 let query = buf[..len].to_vec();
-                queries
-                    .lock()
-                    .expect("unpoisoned")
-                    .push((Transport::Udp, query.clone()));
-                if let Some(response) = answer(&answers, &query, Transport::Udp) {
+                let mut log = queries.lock().expect("unpoisoned");
+                log.push((Transport::Udp, query.clone()));
+                let dropped = flaky && log.len() % 2 == 0;
+                drop(log);
+                if !dropped && let Some(response) = answer(&answers, &query, Transport::Udp) {
                     udp.send_to(&response, from).expect("sent");
                 }
             }

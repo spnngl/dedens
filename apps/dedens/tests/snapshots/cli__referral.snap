@@ -1,0 +1,23 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, server.addr.port())"
+---
+example.com. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
+referral to example.com.
+authority
+  example.com.                2d  NS    hera.ns.cloudflare.com.
+                                  NS    elliott.ns.cloudflare.com.
+additional
+  hera.ns.cloudflare.com.     2d  A     108.162.192.162
+                                  A     172.64.32.162
+                                  A     173.245.58.162
+                                  AAAA  2606:4700:50::adf5:3aa2
+                                  AAAA  2803:f800:50::6ca2:c0a2
+                                  AAAA  2a06:98c1:50::ac40:20a2
+  elliott.ns.cloudflare.com.  2d  A     108.162.195.228
+                                  A     162.159.44.228
+                                  A     172.64.35.228
+                                  AAAA  2606:4700:58::a29f:2ce4
+                                  AAAA  2803:f800:50::6ca2:c3e4
+                                  AAAA  2a06:98c1:50::ac40:23e4
+EDNS 4096 bytes · 52/359 bytes

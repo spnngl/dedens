@@ -371,4 +371,38 @@ mod tests {
             assert_eq!(duration(secs), text);
         }
     }
+
+    #[test]
+    fn round_trips_are_milliseconds_to_a_tenth() {
+        for (us, text) in [
+            (0, "0.0"),
+            (99, "0.0"),
+            (25_749, "25.7"),
+            (1_000_000, "1000.0"),
+        ] {
+            assert_eq!(millis(us), text);
+        }
+    }
+
+    #[test]
+    fn rcodes_other_than_noerror_are_spelled_out() {
+        let rcodes = [
+            "FORMERR",
+            "SERVFAIL",
+            "NXDOMAIN",
+            "NOTIMP",
+            "YXDOMAIN",
+            "YXRRSET",
+            "NXRRSET",
+            "NOTAUTH",
+            "NOTZONE",
+            "BADVERS",
+            "BADCOOKIE",
+        ];
+        for rcode in rcodes {
+            assert!(meaning(rcode).is_some(), "{rcode}");
+        }
+        // REFUSED says it well enough.
+        assert_eq!(meaning("NOERROR").or(meaning("REFUSED")), None);
+    }
 }

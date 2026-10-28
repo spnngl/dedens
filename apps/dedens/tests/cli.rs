@@ -618,9 +618,8 @@ fn negated_flags_conflict_with_nothing() {
 fn a_referral_is_shown_as_one() {
     let server = Responder::start(&["referral_com"]);
     let out = run(&[&server.at(), "example.com", "+norec", "--color=never"], 0);
-    assert!(out.contains("referral to example.com."), "{out}");
-    // Outside +trace, its glue is listed.
-    assert!(out.contains("additional"), "{out}");
+    // Outside +trace, its glue is listed, each owner with its TTL.
+    insta::assert_snapshot!("referral", redact(&out, server.addr.port()));
 }
 
 #[test]
@@ -738,4 +737,117 @@ fn verbose_prints_the_exchange_on_stderr() {
         .assert()
         .success()
         .stderr(contains("sending").and(contains("received")));
+    let out = run(
+        &[
+            &server.at(),
+            "google.com",
+            "TXT",
+            "+noedns",
+            "--color=never",
+        ],
+        0,
+    );
+    assert!(out.contains("over TCP after 2 queries"), "{out}");
+}
+
+#[test]
+fn a_disagreement_follows_its_own_query() {
+    let (validating, not) = (
+        Responder::start(&["ede", "a"]),
+        Responder::start(&["ede_cd", "a"]),
+    );
+    let out = run(
+        &[
+            &validating.at(),
+            &not.at(),
+            "dnssec-failed.org",
+            "example.com",
+            "--color=never",
+        ],
+        0,
+    );
+    let disagree = out.find("servers disagree").expect("a disagreement");
+    assert!(
+        disagree < out.find("example.com. A").expect("the second query"),
+        "{out}"
+    );
+    assert_eq!(out.matches("servers disagree").count(), 1, "{out}");
+}
+
+#[test]
+fn a_closed_port_exits_9() {
+    let port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .and_then(|socket| socket.local_addr())
+        .expect("a free port")
+        .port();
+    dedens()
+        .args([
+            &format!("@127.0.0.1:{port}"),
+            "example.com",
+            "+tries=1",
+            "+time=2s",
+        ])
+        .assert()
+        .code(9);
+}
+
+#[test]
+fn reverse_lookups_ask_only_ptr() {
+    let server = Responder::start(&[]);
+    dedens()
+        .args([&server.at(), "-x", "192.0.2.1", "+tries=1", "+time=100ms"])
+        .assert()
+        .code(9);
+    let asked = queries(&server);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].1.questions[0].qtype, dedens_proto::RecordType::PTR);
+}
+
+#[test]
+fn flags_without_a_value_leave_the_next_word() {
+    let server = Responder::start(&["a"]);
+    let out = run(
+        &[&server.at(), "example.com", "--json", "-v", "+tries=1"],
+        0,
+    );
+    serde_json::from_str::<serde_json::Value>(&out).expect("one JSON object");
+}
+
+#[test]
+fn noerror_is_good_news() {
+    let server = Responder::start(&["a", "nxdomain_soa"]);
+    let good = anstyle::AnsiColor::Green
+        .on_default()
+        .bold()
+        .render()
+        .to_string();
+    let bad = anstyle::AnsiColor::Red
+        .on_default()
+        .bold()
+        .render()
+        .to_string();
+    let out = run(&[&server.at(), "example.com", "--color=always"], 0);
+    assert!(out.contains(&format!("{good}NOERROR")), "{out:?}");
+    let out = run(&[&server.at(), "nonexistent.invalid", "--color=always"], 0);
+    assert!(out.contains(&format!("{bad}NXDOMAIN")), "{out:?}");
+}
+
+#[test]
+fn repeat_counts_the_unanswered_and_keeps_the_answer() {
+    let server = Responder::flaky(&["a"]);
+    let args = [
+        &server.at(),
+        "example.com",
+        "+repeat=4",
+        "+tries=1",
+        "+time=100ms",
+    ];
+    let out = run(&[&args[..], &["--color=never"]].concat(), 0);
+    assert!(
+        out.contains("\n4 queries: min ") && out.contains(" · 2 unanswered\n"),
+        "{out}"
+    );
+    let out = run(&[&args[..], &["--json"]].concat(), 0);
+    let report: serde_json::Value = serde_json::from_str(&out).expect("one JSON object");
+    assert_eq!(report["latency"]["errors"].as_u64(), Some(2));
 }

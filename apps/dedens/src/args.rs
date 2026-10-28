@@ -323,6 +323,8 @@ mod tests {
             (&["+save-wire=dir"], &["--save-wire=dir"]),
             (&["--only", "@x", "+nsid"], &["--only", "@x", "--nsid"]),
             (&["-f", "+x"], &["-f", "+x"]),
+            (&["--file", "+x"], &["--file", "+x"]),
+            (&["--tcp", "+short"], &["--tcp", "--short"]),
             (&["--", "+x", "@y"], &["--", "+x", "@y"]),
             (&["-t", "MX", "-cCH"], &["MX", "CH"]),
             (&["-q", "example.com", "-q", "MX"], &["example.com", "MX."]),

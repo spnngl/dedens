@@ -321,6 +321,25 @@ mod tests {
     }
 
     #[test]
+    fn glue_is_only_taken_from_inside_the_zone() {
+        // A com. server adding a name server in net. and its address: an address the com. servers cannot vouch
+        // for (RFC 2181 §5.4.1).
+        let mut message = captured("referral_com");
+        let record = |text: &str| text.parse::<Record<'static>>().expect("a record");
+        message
+            .authority
+            .push(record("example.com. 172800 IN NS ns.example.net."));
+        message
+            .additional
+            .push(record("ns.example.net. 172800 IN A 192.0.2.1"));
+        let Ok(Step::Referral { names, glue, .. }) = step(&message, &example(), &name("com."))
+        else {
+            panic!("a referral from com.");
+        };
+        assert_eq!((names.len(), glue.len()), (3, 12));
+    }
+
+    #[test]
     fn a_referral_must_come_closer() {
         let message = captured("referral_root");
         // From the servers of com., a referral to com. goes nowhere.
@@ -332,7 +351,7 @@ mod tests {
 
     #[test]
     fn answers_nxdomain_and_authority_end_the_trace() {
-        for capture in ["a", "nxdomain_soa", "any_rfc8482"] {
+        for capture in ["a", "nxdomain_soa", "nodata", "any_rfc8482"] {
             assert_eq!(
                 step(&captured(capture), &example(), &Name::root()).ok(),
                 Some(Step::Done),
