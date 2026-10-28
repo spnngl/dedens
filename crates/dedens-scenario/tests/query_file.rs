@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use dedens_proto::{Message, Name, RecordType};
-use dedens_scenario::{CookieOption, QueryFile, Timeout};
+use dedens_scenario::{CookieOption, Id, Latency, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.
 const A: &[u8] = include_bytes!("../../dedens-proto/tests/testdata/a.bin");
@@ -157,4 +157,32 @@ fn an_expected_record_without_a_ttl_reports_what_is_wrong() {
     .expect_err("an invalid address")
     .to_string();
     assert!(!error.contains("no TTL"), "{error}");
+}
+
+#[test]
+fn ids_name_the_server_without_the_dns_port() {
+    let id = Id::of(&"example.com.".parse().expect("a name"), RecordType::A);
+    let at = |server: &str| {
+        id.at(server.parse().expect("an address"))
+            .as_str()
+            .to_owned()
+    };
+    assert_eq!(at("192.0.2.1:53"), "example.com_A@192.0.2.1");
+    assert_eq!(at("[2001:db8::1]:53"), "example.com_A@2001:db8::1");
+    assert_eq!(at("[2001:db8::1]:5353"), "example.com_A@[2001:db8::1]:5353");
+}
+
+#[test]
+fn latency_needs_an_answer() {
+    assert_eq!(Latency::of(3, &mut []), None);
+    let latency = Latency::of(3, &mut [30, 10]).expect("answered");
+    assert_eq!(
+        (
+            latency.errors,
+            latency.min_us,
+            latency.p50_us,
+            latency.max_us
+        ),
+        (1, 10, 10, 30)
+    );
 }

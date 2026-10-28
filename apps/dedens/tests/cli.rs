@@ -583,3 +583,140 @@ fn a_failed_save_leaves_the_other_results() {
     assert_eq!(String::from_utf8_lossy(&out).lines().count(), 5 + 2);
     assert!(dir.path().join("gmail.com_MX.bin").is_file());
 }
+
+#[test]
+fn yaml_output_reads_as_the_json_output() {
+    let server = Responder::start(&["a", "nxdomain_soa"]);
+    for name in ["example.com", "nonexistent.invalid"] {
+        let json: serde_json::Value =
+            serde_json::from_str(&run(&[&server.at(), name, "--json"], 0)).expect("a JSON object");
+        let yaml: serde_json::Value =
+            serde_saphyr::from_str(&run(&[&server.at(), name, "--yaml"], 0))
+                .expect("a YAML document");
+        // The run's own numbers aside.
+        let fixed = |mut report: serde_json::Value| {
+            report["exchange"]["rtt_us"] = serde_json::Value::Null;
+            report["header"]["id"] = serde_json::Value::Null;
+            report
+        };
+        assert_eq!(fixed(yaml), fixed(json), "{name}");
+    }
+}
+
+#[test]
+fn negated_flags_conflict_with_nothing() {
+    let server = Responder::start(&["a"]);
+    run(&["+notrace", &server.at(), "example.com", "+short"], 0);
+    run(&[&server.at(), "example.com", "+nojson", "--yaml"], 0);
+    run(
+        &[&server.at(), "example.com", "+noshort", "+noyaml", "--json"],
+        0,
+    );
+}
+
+#[test]
+fn a_referral_is_shown_as_one() {
+    let server = Responder::start(&["referral_com"]);
+    let out = run(&[&server.at(), "example.com", "+norec", "--color=never"], 0);
+    assert!(out.contains("referral to example.com."), "{out}");
+    // Outside +trace, its glue is listed.
+    assert!(out.contains("additional"), "{out}");
+}
+
+#[test]
+fn a_silent_server_among_several_is_no_disagreement() {
+    let (a, silent) = (Responder::start(&["a"]), Responder::start(&[]));
+    dedens()
+        .args([
+            &a.at(),
+            &silent.at(),
+            "example.com",
+            "+tries=1",
+            "+time=100ms",
+        ])
+        .assert()
+        .code(9)
+        .stdout(contains("answer").and(contains("disagree").not()));
+}
+
+#[test]
+fn a_server_given_twice_is_asked_once() {
+    let server = Responder::start(&["a"]);
+    run(&[&server.at(), &server.at(), "example.com", "+short"], 0);
+    assert_eq!(server.queries().len(), 1);
+}
+
+#[test]
+fn save_wire_names_each_server() {
+    let (a, nsid) = (Responder::start(&["a"]), Responder::start(&["nsid"]));
+    let dir = tempfile::tempdir().expect("a directory");
+    dedens()
+        .args([&a.at(), &nsid.at(), "example.com", "+short", "--save-wire"])
+        .arg(dir.path())
+        .assert()
+        .success();
+    for server in [&a, &nsid] {
+        let path = dir
+            .path()
+            .join(format!("example.com_A@{}.bin", server.addr));
+        assert!(path.exists(), "{}", path.display());
+    }
+}
+
+#[test]
+fn repeat_against_a_silent_server_exits_9() {
+    let server = Responder::start(&[]);
+    dedens()
+        .args([
+            &server.at(),
+            "example.com",
+            "+repeat=3",
+            "+tries=1",
+            "+time=100ms",
+        ])
+        .assert()
+        .code(9)
+        .stdout("");
+    assert_eq!(server.queries().len(), 3);
+}
+
+/// A `+trace` run with `roots` as the root servers.
+fn trace(roots: &[&Responder], args: &[&str]) -> assert_cmd::assert::Assert {
+    let roots: Vec<String> = roots.iter().map(|root| root.addr.to_string()).collect();
+    dedens()
+        .args(["+trace", "--color=never"])
+        .args(args)
+        .env("DEDENS_ROOTS", roots.join(","))
+        .assert()
+}
+
+#[test]
+fn trace_ends_on_nxdomain() {
+    let root = Responder::start(&["nxdomain_soa"]);
+    trace(&[&root], &["nonexistent.invalid"])
+        .success()
+        .stdout(contains("NXDOMAIN"));
+    assert_eq!(root.queries().len(), 1);
+}
+
+#[test]
+fn trace_moves_past_a_broken_server() {
+    let (failing, answering) = (Responder::start(&["ede"]), Responder::start(&["ede_cd"]));
+    trace(&[&failing, &answering], &["dnssec-failed.org"])
+        .success()
+        .stdout(contains("SERVFAIL").and(contains("NOERROR")));
+    assert_eq!((failing.queries().len(), answering.queries().len()), (1, 1));
+}
+
+#[test]
+fn trace_fails_on_a_response_that_leads_nowhere() {
+    // NOERROR without answer, AA, referral or SOA: lame.
+    let root = Responder::start(&["truncated"]);
+    let out = trace(&[&root], &["google.com", "TXT", "+ignore"])
+        .code(10)
+        .stderr(contains("neither an answer nor a referral"))
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8_lossy(&out).matches("NOERROR").count(), 1);
+}
