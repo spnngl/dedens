@@ -5,7 +5,7 @@
 
 use std::hint::black_box;
 
-use dedens_bench::zone;
+use dedens_bench::{ZONE_HOSTS, zone};
 use dedens_proto::text::{Entry, ZoneReader};
 use divan::Bencher;
 use domain::zonefile::inplace::Zonefile;
@@ -14,16 +14,13 @@ use hickory_proto::serialize::txt::Parser;
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
-/// Hosts in the zone: about three records each, so about 100 000 records.
-const HOSTS: u32 = 33_334;
-
 fn main() {
     divan::main();
 }
 
 #[divan::bench]
 fn read_dedens(bencher: Bencher<'_, '_>) {
-    let text = zone(HOSTS);
+    let text = zone(ZONE_HOSTS);
     bencher.bench_local(|| {
         let mut records = 0_usize;
         for entry in ZoneReader::new(black_box(text.as_bytes()), None) {
@@ -38,7 +35,7 @@ fn read_dedens(bencher: Bencher<'_, '_>) {
 
 #[divan::bench]
 fn read_domain(bencher: Bencher<'_, '_>) {
-    let text = zone(HOSTS);
+    let text = zone(ZONE_HOSTS);
     bencher.bench_local(|| {
         let mut zonefile = Zonefile::with_capacity(text.len());
         zonefile.extend_from_slice(black_box(text.as_bytes()));
@@ -53,7 +50,7 @@ fn read_domain(bencher: Bencher<'_, '_>) {
 
 #[divan::bench]
 fn parse_hickory(bencher: Bencher<'_, '_>) {
-    let text = zone(HOSTS);
+    let text = zone(ZONE_HOSTS);
     bencher.bench_local(|| {
         Parser::new(black_box(text.as_str()), None, None)
             .parse()

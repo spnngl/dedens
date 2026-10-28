@@ -106,7 +106,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 - D14 Bar: no slower than hickory-proto; target: faster than `domain`. Baselines run in the same benches:
   hickory-proto, `domain` and Go's `miekg/dns` (the codec of CoreDNS), in `crates/dedens-bench` as regular
-  dependencies so `cargo deny` checks them. CoreDNS as a server: dnsperf, later. `unsafe` only where a profile
+  dependencies so `cargo deny` checks them; Unbound's C codec, built from a pinned release by
+  `just bench-unbound`. CoreDNS and Unbound as servers: dnsperf, later. `unsafe` only where a profile
   shows bounds checks matter. A server decodes with `Message::decode_reusing`: no allocation once warm.
 - D15 `unsafe` is a hot-path tool: the bench first, then Miri and RAPx.
 - D16 Checks beyond the gate, each added with its trigger: Miri with the first `unsafe`, loom with the first

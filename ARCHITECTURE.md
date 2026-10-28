@@ -11,7 +11,7 @@ says what it holds.
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-net` | UDP and TCP transports on compio (phase 4, empty) | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations (empty) | none |
-| `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns` | none |
+| `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
 | `apps/dedens` | CLI (empty) | via `dedens-net` |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 

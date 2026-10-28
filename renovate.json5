@@ -11,5 +11,14 @@
             "datasourceTemplate": "github-releases",
             "depNameTemplate": "rust-lang/rust",
         },
+        {
+            "customType": "regex",
+            "description": "Versions in the justfile, annotated with a `# renovate:` comment on the line above.",
+            "managerFilePatterns": ["/(^|/)justfile$/"],
+            "matchStrings": [
+                "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s*\\n[a-z_]+ := \"(?<currentValue>[^\"]+)\"",
+            ],
+            "extractVersionTemplate": "{{#if extractVersion}}{{{extractVersion}}}{{else}}^v?(?<version>.*)${{/if}}",
+        },
     ],
 }

@@ -5,6 +5,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # rust-toolchain.toml.
 nightly := "nightly-2026-10-26"
 rapx_version := "0.7.64"
+# renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
+unbound_version := "1.26.2"
 
 # List recipes.
 default:
@@ -56,10 +58,32 @@ deny:
     cargo deny check
 
 # Benchmarks against other DNS libraries (D14): Rust ones with divan, then Go's miekg/dns, the codec of
-# CoreDNS, when Go is installed.
+# CoreDNS, when Go is installed. Unbound: `just bench-unbound`.
 bench:
     cargo bench --workspace
     if command -v go >/dev/null; then cd crates/dedens-bench/go && go test -run '^$' -bench . -benchmem; fi
+
+# Unbound's C codec on the inputs of `just bench` (D14). Builds the pinned release once in target/unbound: needs
+# a C compiler, make, bison, flex and the OpenSSL and expat headers.
+bench-unbound:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(pwd)/target/unbound"
+    src="$out/release-{{unbound_version}}"
+    if [ ! -f "$src/.libs/libunbound.a" ]; then
+        rm -rf "$src"
+        git clone --quiet --depth 1 --branch "release-{{unbound_version}}" https://github.com/NLnetLabs/unbound.git "$src"
+        flags=(--disable-flto)
+        if command -v brew >/dev/null; then flags+=("--with-ssl=$(brew --prefix openssl@3)"); fi
+        if [ "$(uname)" = Darwin ]; then flags+=("--with-libexpat=$(xcrun --show-sdk-path)/usr"); fi
+        (cd "$src" && ./configure "${flags[@]}" >/dev/null && make -j"$(getconf _NPROCESSORS_ONLN)" libunbound.la >/dev/null)
+    fi
+    # The libraries libunbound links, without libtool's -R run paths.
+    libs=$(sed -n "s/^dependency_libs='\(.*\)'$/\1/p" "$src/libunbound.la" | sed 's/-R[^ ]*//g')
+    cc -O2 -I"$src" -DBENCH_DIR="\"$(pwd)/crates/dedens-bench\"" crates/dedens-bench/unbound/bench.c \
+        "$src/.libs/libunbound.a" $libs -o "$out/bench"
+    cargo run --quiet --release -p dedens-bench --example zone > "$out/zone.txt"
+    "$out/bench" "$out/zone.txt"
 
 # Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
 cov:

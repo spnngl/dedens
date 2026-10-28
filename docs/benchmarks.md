@@ -30,6 +30,23 @@ Nanoseconds, `a`/`mx`/`txt_large`.
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
   instructions, same cycles), `#[inline]` hints (no change).
 
+## Unbound (D14)
+
+Unbound 1.26.2, `just bench-unbound` (`-O2`, median of 101 samples), next to `cargo bench -p dedens-bench` in
+the same session. Nanoseconds, `a`/`mx`/`txt_large`; this session ran slower than the table above.
+
+| Measure | dedens | Unbound |
+|---|---|---|
+| Structure check, records located: `MessageIndex::read` and first question / `parse_packet` | 84/191/401 | 98/193/415 |
+| Owned decode: `decode_owned` / `reply_info_parse` | 188/460/975 | 143/376/594 |
+| Encode, reused buffer: `encode` / `reply_info_encode` with OPT | 64/333/362 | 44/312/109 |
+| Zone, 100 006 records | 7.7 ms | 94.9 ms |
+
+- `parse_packet` does not read RDATA; `MessageIndex::read` checks every RDATA and EDNS option.
+- `reply_info_parse` keeps RDATA as wire bytes, only decompressing names; dedens types every record. The
+  encoder then copies those bytes back, hence 109 ns for the TXT answer that dedens rebuilds from its strings.
+- Zone: `sldns_fp2wire_rr_buf` reads a `FILE` token by token, as Unbound's auth-zone does.
+
 ## In-place reading (D20, D21)
 
 `MessageIndex::read` costs 65-80% of a full decode: parsing names and RDATA, not building records, is most of

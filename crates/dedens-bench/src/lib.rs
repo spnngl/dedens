@@ -1,5 +1,5 @@
 //! Inputs shared by the benches of `dedens-proto` against other DNS libraries (D14): the Rust ones in
-//! `benches/`, the Go `miekg/dns` (the codec of `CoreDNS`) in `go/`.
+//! `benches/`, the Go `miekg/dns` (the codec of `CoreDNS`) in `go/`, Unbound's C codec in `unbound/`.
 
 /// Captured responses, smallest to largest: one A record; MX records with their A glue; a TXT answer of
 /// 1.2 kB.
@@ -23,9 +23,13 @@ pub fn wire(case: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("captured response {path}: {e}"))
 }
 
+/// Hosts in the benched zone: about three records each, so about 100 000 records.
+pub const ZONE_HOSTS: u32 = 33_334;
+
 /// A zone file of `hosts` hosts under `example.`, about three records each: what a large authoritative zone or a
 /// local data file looks like. It has a SOA first, `$TTL`, relative names, owners left out and a mix of A, AAAA,
-/// MX, TXT, CNAME and SRV. TTLs are plain seconds: `domain` does not read units such as `1h`.
+/// MX, TXT, CNAME and SRV. TTLs are plain seconds, as `domain` does not read units such as `1h`, and come before
+/// the class, as Unbound does not read the other order RFC 1035 §5.1 allows.
 #[must_use]
 pub fn zone(hosts: u32) -> String {
     let mut text = String::from(concat!(
@@ -49,7 +53,7 @@ pub fn zone(hosts: u32) -> String {
                 "www.h{i} CNAME h{}\n_sip._tcp.h{i} SRV 10 60 5060 h{i}\n  TXT text\\032with\\\"escapes\\\"\n",
                 i - 1
             ),
-            _ => format!("h{i} IN 600 AAAA 2001:db8:1::{i:x}\n  A 10.3.{a}.{b}\n  MX 20 mx.h{i}\n"),
+            _ => format!("h{i} 600 IN AAAA 2001:db8:1::{i:x}\n  A 10.3.{a}.{b}\n  MX 20 mx.h{i}\n"),
         };
         text.push_str(&line);
     }
