@@ -28,7 +28,7 @@ mod options;
 mod report;
 
 pub use expect::{Expect, Expected};
-pub use file::{Id, InvalidId, Query, QueryFile};
+pub use file::{Id, InvalidId, Query, QueryFile, server_text};
 pub use options::{CookieOption, InvalidOption, Options, Timeout};
 pub use report::{
     EdnsReport, ExchangeReport, HeaderReport, Latency, OptionReport, QuestionReport, RecordReport,

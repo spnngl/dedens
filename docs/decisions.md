@@ -237,16 +237,20 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   leave the comparison to their reader. A server that does not answer is left out of it.
 - D39 `--repeat N` (`+repeat=N`): each query is asked of each server N times in a row, not concurrently, so
   the round trips are the server's and not our queue's. The last response is printed, with a `latency` object
-  when N > 1: `sent`, `errors` (left out when 0) and `min`/`p50`/`p90`/`p99`/`max` in microseconds, nearest
+  when N > 1: `sent`, `errors` (left out when 0) and `min_us`/`p50_us`/`p90_us`/`p99_us`/`max_us`, nearest
   rank over the answered round trips; the human format shows them in milliseconds on one line. Exit code 0 when
   any answer came, else the last error's.
-- D40 `+trace`: each query asked from the root servers (IANA's `named.root`, bundled, IPv4 first; `just
-  root-hints` refreshes it) without RD, down the NS referrals of the authority section (RFC 1034 §4.3.2), one
-  report per hop, until an answer, an error rcode, an authoritative response or a referral that comes no closer
-  (an error). Glue is taken as given, without bailiwick checks, as dig; name servers without glue are looked up
-  the same way, at most 4 deep. Three addresses of a server set tried per hop. No DNSSEC validation, no CNAME
-  following. Conflicts with `@server`, `-f`, `--repeat` and `--search`. The human format shows a hop's referral
-  and counts its additional records instead of listing them. `DEDENS_ROOTS` replaces the roots for tests.
+- D40 `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
+  refreshes it) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
+  the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per hop, until an answer, NXDOMAIN,
+  NODATA or an authoritative response. A referral that comes no closer, an error rcode or a lame response sends
+  the hop to the next address (RFC 1034 §5.3.3), three at most, IPv4 and IPv6 in turn so either route works.
+  Glue is an address record of a name server inside the answering server's zone (RFC 2181 §5.4.1), unlike dig;
+  name servers without glue are looked up the same way, A then AAAA, at most 4 deep, those inside the referred
+  zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
+  validation, no CNAME following. Refused with `@server`, `-f`, `--repeat` and `--search`. The human format
+  counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS` replaces the roots
+  for tests.
 
 ## Server
 

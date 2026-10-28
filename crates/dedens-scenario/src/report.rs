@@ -140,6 +140,9 @@ impl Latency {
     /// answered.
     #[must_use]
     pub fn of(sent: u16, rtts_us: &mut [u64]) -> Option<Self> {
+        if rtts_us.is_empty() {
+            return None;
+        }
         rtts_us.sort_unstable();
         let rank = |percent: usize| {
             let rank = (rtts_us.len() * percent).div_ceil(100).max(1);
@@ -149,11 +152,11 @@ impl Latency {
         Some(Self {
             sent,
             errors: sent.checked_sub(answered)?,
-            min_us: *rtts_us.first()?,
+            min_us: rtts_us[0],
             p50_us: rank(50),
             p90_us: rank(90),
             p99_us: rank(99),
-            max_us: *rtts_us.last()?,
+            max_us: rank(100),
         })
     }
 }

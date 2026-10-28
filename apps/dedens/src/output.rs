@@ -6,7 +6,8 @@ use std::io::{self, Write};
 use std::net::SocketAddr;
 
 use anstyle::{AnsiColor, Style};
-use dedens_scenario::{EdnsReport, OptionReport, RecordReport, Report, Transport};
+use dedens_proto::{Message, Name};
+use dedens_scenario::{EdnsReport, OptionReport, RecordReport, Report, Transport, server_text};
 
 /// How responses are printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -30,14 +31,23 @@ const BAD: Style = AnsiColor::Red.on_default().bold();
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Printing {
     pub(crate) format: Format,
-    /// One hop of `+trace`: the human format leaves out the additional records, the glue, and counts them.
-    pub(crate) brief: bool,
+    /// A hop of `+trace`: the human format counts the additional records of a referral, its glue, instead of
+    /// listing them.
+    pub(crate) trace: bool,
 }
 
-/// Prints `report` as `printing` says.
-pub(crate) fn print(out: &mut impl Write, printing: Printing, report: &Report) -> io::Result<()> {
+/// Prints `report`, of response `wire`, as `printing` says.
+pub(crate) fn print(
+    out: &mut impl Write,
+    printing: Printing,
+    report: &Report,
+    wire: &[u8],
+) -> io::Result<()> {
     match printing.format {
-        Format::Human => human(out, report, printing.brief),
+        Format::Human => {
+            let decoded = Message::decode(wire).map_err(io::Error::other)?;
+            human(out, report, decoded.message.referral(), printing.trace)
+        }
         Format::Short => report
             .answer
             .iter()
@@ -53,8 +63,14 @@ pub(crate) fn print(out: &mut impl Write, printing: Printing, report: &Report) -
     }
 }
 
-fn human(out: &mut impl Write, report: &Report, brief: bool) -> io::Result<()> {
+fn human(
+    out: &mut impl Write,
+    report: &Report,
+    referral: Option<&Name<'_>>,
+    trace: bool,
+) -> io::Result<()> {
     status(out, report)?;
+    let brief = trace && referral.is_some();
     let none = Vec::new();
     let sections = [
         ("answer", &report.answer),
@@ -62,8 +78,8 @@ fn human(out: &mut impl Write, report: &Report, brief: bool) -> io::Result<()> {
         ("additional", if brief { &none } else { &report.additional }),
     ];
     if report.answer.is_empty() && report.header.rcode == "NOERROR" {
-        match report.authority.iter().find(|r| r.rtype == "NS") {
-            Some(cut) => writeln!(out, "{QUIET}referral to{QUIET:#} {}", cut.name)?,
+        match referral {
+            Some(zone) => writeln!(out, "{QUIET}referral to{QUIET:#} {zone}")?,
             None => writeln!(out, "{QUIET}no records{QUIET:#}")?,
         }
     }
@@ -146,7 +162,7 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
             Transport::Tcp => "TCP",
         };
         write!(out, "  {} ms from ", millis(exchange.rtt_us))?;
-        write!(out, "{} over {transport}", server(exchange.server))?;
+        write!(out, "{} over {transport}", server_text(exchange.server))?;
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
         }
@@ -240,13 +256,16 @@ impl Answers {
             .answer
             .iter()
             .map(|r| {
-                format!(
-                    "{} {} {} {}",
-                    r.name.to_ascii_lowercase(),
-                    r.class,
-                    r.rtype,
-                    r.data
-                )
+                // Names compare whatever their case (RFC 4343): the owner, and the data of the types holding only
+                // names and numbers.
+                let data = match r.rtype.as_str() {
+                    "NS" | "CNAME" | "DNAME" | "PTR" | "MX" | "SRV" | "SOA" => {
+                        r.data.to_ascii_lowercase()
+                    }
+                    _ => r.data.clone(),
+                };
+                let name = r.name.to_ascii_lowercase();
+                format!("{name} {} {} {data}", r.class, r.rtype)
             })
             .collect();
         records.sort_unstable();
@@ -265,8 +284,8 @@ pub(crate) fn disagreement(
     let mut alike: Vec<(&Answers, Vec<String>)> = Vec::new();
     for (address, answer) in answers {
         match alike.iter_mut().find(|(other, _)| *other == answer) {
-            Some((_, servers)) => servers.push(server(*address)),
-            None => alike.push((answer, vec![server(*address)])),
+            Some((_, servers)) => servers.push(server_text(*address)),
+            None => alike.push((answer, vec![server_text(*address)])),
         }
     }
     if alike.len() < 2 {
@@ -282,14 +301,6 @@ pub(crate) fn disagreement(
 /// `us` microseconds in milliseconds, to a tenth: `25.7`.
 fn millis(us: u64) -> String {
     format!("{}.{}", us / 1000, us % 1000 / 100)
-}
-
-/// `address` without the DNS port, which goes without saying.
-fn server(address: SocketAddr) -> String {
-    match address.port() {
-        53 => address.ip().to_string(),
-        _ => address.to_string(),
-    }
 }
 
 /// The type of `r`, after its class unless IN.

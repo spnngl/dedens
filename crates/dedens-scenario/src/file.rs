@@ -89,10 +89,7 @@ impl Id {
     /// 53.
     #[must_use]
     pub fn at(&self, server: SocketAddr) -> Self {
-        match server.port() {
-            53 => Self(format!("{}@{}", self.0, server.ip())),
-            _ => Self(format!("{}@{server}", self.0)),
-        }
+        Self(format!("{}@{}", self.0, server_text(server)))
     }
 
     /// The id as text.
@@ -145,5 +142,15 @@ fn unique_ids<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Q
             "two queries with id {id}"
         ))),
         None => Ok(queries),
+    }
+}
+
+/// `server` as people write it: without the DNS port, which goes without saying, `[2001:db8::1]:5353` with
+/// another.
+#[must_use]
+pub fn server_text(server: SocketAddr) -> String {
+    match server.port() {
+        53 => server.ip().to_string(),
+        _ => server.to_string(),
     }
 }

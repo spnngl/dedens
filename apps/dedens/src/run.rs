@@ -39,10 +39,17 @@ struct Job {
 /// Where a query goes.
 #[derive(Clone)]
 enum Route {
-    /// To each of these servers, side by side; never empty.
+    /// To each of these servers, side by side; never empty, without duplicates.
     Servers(Vec<SocketAddr>),
-    /// From the root servers down the referrals (`+trace`).
-    Trace,
+    /// From these root servers down the referrals (`+trace`).
+    Trace(Rc<[SocketAddr]>),
+}
+
+impl Route {
+    /// Whether the query goes to several servers, whose answers are compared.
+    fn several(&self) -> bool {
+        matches!(self, Self::Servers(servers) if servers.len() > 1)
+    }
 }
 
 /// Runs `cli`; an error is one of the run as a whole, before any query or while printing.
@@ -67,7 +74,6 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
     let mut out = anstream::AutoStream::new(io::stdout().lock(), color);
-    let roots = roots()?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new());
@@ -75,13 +81,12 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         let mut tasks = jobs.into_iter().enumerate().flat_map(|(group, job)| {
             let job = Rc::new(job);
             let servers = match &job.route {
-                Route::Servers(servers) => servers.iter().copied().map(Some).collect(),
-                Route::Trace => vec![None],
+                Route::Servers(servers) => servers.iter().copied().map(Target::Server).collect(),
+                Route::Trace(roots) => vec![Target::Trace(Rc::clone(roots))],
             };
-            let several = servers.len() > 1;
             servers
                 .into_iter()
-                .map(move |server| (group, several, Rc::clone(&job), server))
+                .map(move |target| (group, Rc::clone(&job), target))
         });
         let mut running = VecDeque::new();
         let (mut code, mut printed) = (0, false);
@@ -89,47 +94,33 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         let (mut group_now, mut answers) = (None, Vec::new());
         loop {
             let room = IN_FLIGHT - running.len();
-            running.extend(
-                tasks
-                    .by_ref()
-                    .take(room)
-                    .map(|(group, several, job, server)| {
-                        let id = match server {
-                            Some(server) if several => job.id.at(server),
-                            _ => job.id.clone(),
-                        };
-                        let task = query(
-                            Rc::clone(&client),
-                            job,
-                            server,
-                            id.clone(),
-                            cli.repeat,
-                            roots.clone(),
-                        );
-                        (
-                            group,
-                            several,
-                            server.is_none(),
-                            id,
-                            compio::runtime::spawn(task),
-                        )
-                    }),
-            );
+            running.extend(tasks.by_ref().take(room).map(|(group, job, target)| {
+                let id = match target {
+                    Target::Server(server) if job.route.several() => job.id.at(server),
+                    _ => job.id.clone(),
+                };
+                let task = query(
+                    Rc::clone(&client),
+                    Rc::clone(&job),
+                    target,
+                    id.clone(),
+                    cli.repeat,
+                );
+                (group, job, id, compio::runtime::spawn(task))
+            }));
             let next = running.pop_front();
             if next.as_ref().map(|(group, ..)| *group) != group_now {
-                if format == Format::Human {
-                    output::disagreement(&mut out, &answers)?;
-                }
+                output::disagreement(&mut out, &answers)?;
                 answers.clear();
                 group_now = next.as_ref().map(|(group, ..)| *group);
             }
-            let Some((_, several, traced, id, handle)) = next else {
+            let Some((_, job, id, handle)) = next else {
                 break;
             };
             let trail = handle
                 .await
                 .unwrap_or_else(|e| (Vec::new(), Some(io::Error::from(e).into())));
-            if several {
+            if job.route.several() && format == Format::Human {
                 answers.extend(trail.0.iter().filter_map(|(report, _)| {
                     let server = report.exchange.as_ref()?.server;
                     Some((server, output::Answers::of(report)))
@@ -137,7 +128,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             let printing = Printing {
                 format,
-                brief: traced,
+                trace: matches!(job.route, Route::Trace(_)),
             };
             code = code.max(show(cli, printing, &mut out, &id, trail, &mut printed)?);
         }
@@ -161,7 +152,7 @@ fn show(
         if std::mem::replace(printed, true) && printing.format == Format::Human {
             writeln!(out)?;
         }
-        output::print(out, printing, &report)?;
+        output::print(out, printing, &report, &wire)?;
         out.flush()?;
         if printing.format == Format::Short {
             for line in report.violations.iter().chain(&report.failures) {
@@ -186,31 +177,34 @@ fn show(
 
 /// The root servers of `+trace` from `DEDENS_ROOTS`, addresses with ports separated by commas (for tests); else
 /// the root hints.
-fn roots() -> anyhow::Result<Option<Vec<SocketAddr>>> {
+fn roots() -> anyhow::Result<Rc<[SocketAddr]>> {
     let Some(text) = std::env::var_os("DEDENS_ROOTS") else {
-        return Ok(None);
+        return Ok(trace::root_hints().into());
     };
     let text = text.to_string_lossy();
     let roots = text.split(',').map(str::parse).collect::<Result<_, _>>();
-    Ok(Some(roots.with_context(|| format!("DEDENS_ROOTS={text}"))?))
+    roots.with_context(|| format!("DEDENS_ROOTS={text}"))
 }
 
-/// Asks `job` of `server` `times` in a row (see [`repeat`]), or traces it from `roots` without a server.
-async fn query(
-    client: Rc<Client>,
-    job: Rc<Job>,
-    server: Option<SocketAddr>,
-    id: Id,
-    times: u16,
-    roots: Option<Vec<SocketAddr>>,
-) -> Trail {
-    let Some(server) = server else {
-        let question = Question {
-            name: job.names[0].clone(),
-            qtype: job.qtype,
-            qclass: job.qclass,
-        };
-        return trace::trace(&client, job.options, question, &id, roots).await;
+/// Where one task sends a query.
+enum Target {
+    Server(SocketAddr),
+    /// The root servers of `+trace`.
+    Trace(Rc<[SocketAddr]>),
+}
+
+/// Asks `job` of a server `times` in a row (see [`repeat`]), or traces it from the roots.
+async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: u16) -> Trail {
+    let server = match target {
+        Target::Server(server) => server,
+        Target::Trace(roots) => {
+            let question = Question {
+                name: job.names[0].clone(),
+                qtype: job.qtype,
+                qclass: job.qclass,
+            };
+            return trace::trace(&client, job.options, question, &id, &roots).await;
+        }
     };
     match repeat(&client, &job, server, id, times).await {
         Ok(answered) => (vec![answered], None),
@@ -239,10 +233,13 @@ async fn repeat(
             Err(_) => {}
         }
     }
-    if times > 1
-        && let Ok((report, _)) = &mut last
-    {
-        report.latency = Latency::of(times, &mut rtts);
+    if let Ok((report, wire)) = &mut last {
+        if times > 1 {
+            report.latency = Latency::of(times, &mut rtts);
+        }
+        if let Some(expect) = &job.expect {
+            report.failures = expect.check(&Message::decode(wire)?.message);
+        }
     }
     last
 }
@@ -266,10 +263,7 @@ async fn ask(
             .await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
-            let mut report = Report::exchanged(id, server, &response, &decoded);
-            if let Some(expect) = &job.expect {
-                report.failures = expect.check(&decoded.message);
-            }
+            let report = Report::exchanged(id, server, &response, &decoded);
             return Ok((report, response.wire));
         }
     }
@@ -301,7 +295,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         .then(resolv_conf)
         .transpose()?;
     let route = match servers(cli, conf.as_ref())? {
-        _ if cli.trace => Route::Trace,
+        _ if cli.trace => Route::Trace(roots()?),
         servers if servers.is_empty() => {
             Route::Servers(vec![server(None, conf.as_ref(), cli.port)?])
         }
@@ -395,12 +389,16 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
     Ok(ResolvConf::parse(&text))
 }
 
-/// The addresses of the servers of the command line, in order.
+/// The addresses of the servers of the command line, in order, each once.
 fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<SocketAddr>> {
-    cli.servers()
-        .iter()
-        .map(|named| server(Some(named), conf, cli.port))
-        .collect()
+    let mut servers = Vec::new();
+    for named in cli.servers() {
+        let address = server(Some(named), conf, cli.port)?;
+        if !servers.contains(&address) {
+            servers.push(address);
+        }
+    }
+    Ok(servers)
 }
 
 /// The address of `named`, else of the first name server of `conf`: an address, IPv6 possibly in brackets or

@@ -47,7 +47,7 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
     pub(crate) repeat: u16,
     /// Follow each query from the root servers down the referrals, printing every response, as dig.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", conflicts_with_all = ["server", "file", "repeat", "search"])]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) trace: bool,
     /// Try a name under the search list of /etc/resolv.conf until one is not NXDOMAIN, as dig.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
@@ -60,19 +60,18 @@ pub(crate) struct Cli {
 
 /// The output.
 #[derive(Debug, Args)]
-#[group(id = "formats", multiple = false)]
 pub(crate) struct Output {
     /// The output format.
-    #[arg(long, value_enum, group = "formats")]
+    #[arg(long, value_enum)]
     format: Option<Format>,
     /// `--format short`.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     short: bool,
     /// `--format json`.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     json: bool,
     /// `--format yaml`.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     yaml: bool,
     /// Colors: `NO_COLOR` turns them off for `auto`.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
@@ -100,6 +99,32 @@ impl Cli {
         let args =
             long_flags(&command, args).unwrap_or_else(|e| usage(ErrorKind::UnknownArgument, e));
         let cli = Self::parse_from(args);
+        // Checked here, on the values: clap would refuse `+notrace` or `+nojson` with them, given as `--trace=false`.
+        if cli.trace
+            && (!cli.server.is_empty() || cli.file.is_some() || cli.repeat > 1 || cli.search)
+        {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "+trace goes with no @server, -f, +repeat or +search".to_owned(),
+            );
+        }
+        let output = &cli.output;
+        if [
+            output.format.is_some(),
+            output.short,
+            output.json,
+            output.yaml,
+        ]
+        .into_iter()
+        .filter(|&set| set)
+        .count()
+            > 1
+        {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "one of --format, --short, --json and --yaml at most".to_owned(),
+            );
+        }
         if let Err(error) = cli.options.check() {
             usage(ErrorKind::ArgumentConflict, error.to_string());
         }
