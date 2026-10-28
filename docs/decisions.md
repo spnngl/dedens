@@ -97,8 +97,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     randomization of the question is an option, off by default as in Unbound.
   - dig's defaults: 3 tries, 5 s each. TC over UDP is retried over TCP. EDNS is dropped once on FORMERR or
     NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off.
-  - Cookies (RFC 7873 §5): client cookie from a per-process random secret and both addresses, server cookies
-    kept per server for the process, BADCOOKIE retried once.
+  - Cookies (RFC 7873 §5): the client cookie drawn from `getrandom` once per pair of source and server
+    addresses, a memoized random function of both as §4.1 asks, without a hash to pick; server cookies kept
+    per server for the life of the client, BADCOOKIE retried once.
   - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, idle close,
     edns-tcp-keepalive sent empty in TCP queries and its timeout honoured when shorter (RFC 7828), a closed
     connection retried once on a new one. Queries are written whole by a task of the connection, so a query that

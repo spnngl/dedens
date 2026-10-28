@@ -11,6 +11,7 @@
     clippy::print_stderr
 )]
 
+pub mod client;
 pub mod exchange;
 pub mod tcp;
 pub mod udp;

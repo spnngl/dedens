@@ -12,6 +12,7 @@ publish.workspace = true
 compio.workspace = true
 dedens-proto.workspace = true
 flume.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -467,6 +467,7 @@ dependencies = [
  "compio",
  "dedens-proto",
  "flume",
+ "getrandom 0.4.3",
  "proptest",
  "thiserror",
 ]

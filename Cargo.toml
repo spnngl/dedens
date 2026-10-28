@@ -26,6 +26,8 @@ dedens-scenario = { path = "crates/dedens-scenario" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
+# D27: query IDs and client cookies.
+getrandom = "0.4.3"
 hickory-proto = { version = "0.26.3", default-features = false }
 insta = "1.49"
 metrics = "0.24.6"

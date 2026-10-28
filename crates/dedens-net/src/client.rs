@@ -1,0 +1,212 @@
+//! The client: the sans-IO [`Exchange`] run over the UDP and TCP transports (D26, D27).
+//!
+//! [`Client::exchange`] gives each query a random ID and, when it has EDNS and no cookie of the caller's, a cookie
+//! (RFC 7873 §4.1, §5.1): the client cookie is drawn at random for each pair of source and server addresses, so it
+//! changes with either, and the server cookie is the last one that server sent, kept for the life of the client.
+//! A client lives on one thread, as compio tasks do.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::{Duration, Instant};
+
+use dedens_proto::edns::{Cookie, EdnsOption};
+use dedens_proto::{EncodeError, Message};
+
+use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport};
+use crate::tcp::{TcpError, TcpPool};
+use crate::udp::UdpChannel;
+
+/// How long a TCP connection stays open without a query waiting, unless the server asks for less (RFC 7766
+/// §6.2.3, RFC 7828 §3.2.2).
+const TCP_IDLE: Duration = Duration::from_secs(10);
+
+/// Why [`Client::exchange`] got no response.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ClientError {
+    /// No randomness for the ID or the client cookie.
+    #[error("no randomness: {0}")]
+    Random(getrandom::Error),
+    /// The query cannot be encoded.
+    #[error("cannot encode the query: {0}")]
+    Encode(#[from] EncodeError),
+    /// The UDP socket failed, for instance on an ICMP port unreachable.
+    #[error("UDP: {0}")]
+    Udp(#[source] io::Error),
+    /// The TCP connection failed.
+    #[error("TCP: {0}")]
+    Tcp(#[from] TcpError),
+    /// The exchange ended without a response.
+    #[error(transparent)]
+    Exchange(#[from] Failure),
+}
+
+/// Sends queries and returns their responses, keeping TCP connections and cookies per server.
+#[derive(Debug)]
+pub struct Client {
+    tcp: TcpPool,
+    /// By source and server address: the client cookie and the last cookie the server sent.
+    cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
+}
+
+/// The cookies of one source and server pair.
+#[derive(Debug)]
+struct Cookies {
+    client: [u8; 8],
+    /// The last cookie returned, its client cookie checked by the exchange.
+    returned: Option<Cookie>,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Client {
+    /// No connection and no cookie yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tcp: TcpPool::new(TCP_IDLE),
+            cookies: RefCell::default(),
+        }
+    }
+
+    /// Sends `query` to `server` and returns the response, with the retries and fallbacks of `options` (D27).
+    ///
+    /// The query goes with a random ID, and a cookie when it has EDNS and none of its own.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError`]: no randomness, a query that cannot be encoded, a socket or connection failure, or no
+    /// response after all the tries.
+    pub async fn exchange(
+        &self,
+        query: &Message<'_>,
+        server: SocketAddr,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let mut query = query.clone();
+        let mut id = [0; 2];
+        getrandom::fill(&mut id).map_err(ClientError::Random)?;
+        query.header.id = u16::from_be_bytes(id);
+        let pair = self.add_cookie(&mut query, server)?;
+        let mut exchange = Exchange::start(&query, server, options.clone(), Instant::now())?;
+        let mut udp = None;
+        let response = loop {
+            match self.step(exchange, &mut udp).await? {
+                Progress::Send(next) | Progress::Wait(next) => exchange = next,
+                Progress::Done(done) => break done?,
+            }
+        };
+        if let (Some(pair), Some(returned)) = (pair, response.cookie)
+            && let Some(cookies) = self.cookies.borrow_mut().get_mut(&pair)
+        {
+            cookies.returned = Some(returned);
+        }
+        Ok(response)
+    }
+
+    /// Sends the query of `exchange` and waits for what comes back: a message, or the deadline.
+    async fn step(
+        &self,
+        exchange: Exchange,
+        udp: &mut Option<UdpChannel>,
+    ) -> Result<Progress, ClientError> {
+        let server = exchange.server();
+        match exchange.transport() {
+            Transport::Udp => {
+                // One socket for the whole exchange, so a late response to an earlier try still counts (D27).
+                let channel = match udp {
+                    Some(channel) => channel,
+                    None => udp.insert(
+                        UdpChannel::connect(server)
+                            .await
+                            .map_err(ClientError::Udp)?,
+                    ),
+                };
+                channel
+                    .send(exchange.wire())
+                    .await
+                    .map_err(ClientError::Udp)?;
+                let mut exchange = exchange;
+                loop {
+                    let deadline = exchange.deadline();
+                    let Some(bytes) = channel.recv(deadline).await.map_err(ClientError::Udp)?
+                    else {
+                        return Ok(exchange.time_out(Instant::now().max(deadline)));
+                    };
+                    match exchange.receive(server, Transport::Udp, bytes, Instant::now()) {
+                        Progress::Wait(next) => exchange = next,
+                        progress => return Ok(progress),
+                    }
+                }
+            }
+            Transport::Tcp => {
+                let deadline = exchange.deadline();
+                match self.tcp.exchange(server, exchange.wire(), deadline).await {
+                    Ok(bytes) => Ok(
+                        match exchange.receive(server, Transport::Tcp, &bytes, Instant::now()) {
+                            // Nothing else comes with that ID: the wait is over.
+                            Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
+                            progress => progress,
+                        },
+                    ),
+                    Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        }
+    }
+
+    /// Adds a cookie to a query with EDNS and none of its own, and returns the pair of addresses it belongs to.
+    fn add_cookie(
+        &self,
+        query: &mut Message<'_>,
+        server: SocketAddr,
+    ) -> Result<Option<(IpAddr, SocketAddr)>, ClientError> {
+        let Some(edns) = &mut query.edns else {
+            return Ok(None);
+        };
+        if edns
+            .options
+            .iter()
+            .any(|option| matches!(option, EdnsOption::Cookie(_)))
+        {
+            return Ok(None);
+        }
+        let pair = (source_ip(server).map_err(ClientError::Udp)?, server);
+        let mut all = self.cookies.borrow_mut();
+        let cookies = match all.entry(pair) {
+            Entry::Occupied(known) => known.into_mut(),
+            Entry::Vacant(slot) => {
+                let mut client = [0; 8];
+                getrandom::fill(&mut client).map_err(ClientError::Random)?;
+                slot.insert(Cookies {
+                    client,
+                    returned: None,
+                })
+            }
+        };
+        let cookie = cookies.returned.unwrap_or_else(|| {
+            Cookie::new(cookies.client, None).expect("a client cookie alone is valid")
+        });
+        edns.options.push(EdnsOption::Cookie(cookie));
+        Ok(Some(pair))
+    }
+}
+
+/// The address the OS would send from to reach `server`: a UDP socket connected, nothing sent.
+fn source_ip(server: SocketAddr) -> io::Result<IpAddr> {
+    let any = match server {
+        SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    let probe = std::net::UdpSocket::bind((any, 0))?;
+    probe.connect(server)?;
+    Ok(probe.local_addr()?.ip())
+}
