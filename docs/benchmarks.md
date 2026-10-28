@@ -110,6 +110,8 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   → 126.5k-127.7k queries/s, no loss, average latency 4.0 → 3.9 ms. The front `dedensd` is the limit, at 99% of
   its core against 31% for the upstream one, most of it in the kernel (loopback sends, wakeups). Its local
   address asked once a socket, not once a query (`getsockname` was 2.4% of the profile): 124.7k → 129.3k-129.9k.
+  Cooperative io_uring task work (D51; signal-like task work was 7.3% of the profile): 135.0k-135.4k →
+  158.0k-158.2k, average latency 3.7 → 3.1 ms; UDP and TCP from the cache unchanged (506k-516k, 1.86M-1.93M).
 
 ## Zone files (D25)
 

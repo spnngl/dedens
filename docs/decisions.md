@@ -362,6 +362,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   advertised. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
+- D51 The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
+  Linux 5.19): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
+  (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
+  `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k).
 
 ## Observability
 

@@ -158,7 +158,10 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
     let mut proactor = ProactorBuilder::new();
     proactor
         .buffer_pool_size(UDP_BUFFERS)
-        .buffer_pool_buffer_len(UDP_BUFFER_LEN);
+        .buffer_pool_buffer_len(UDP_BUFFER_LEN)
+        // Completion work runs when the thread enters the kernel, not as a signal interrupting it (D51).
+        .coop_taskrun(true)
+        .taskrun_flag(true);
     Runtime::builder().with_proactor(proactor).build()
 }
 
