@@ -346,6 +346,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries). Copying each reply for the writer costs nothing measurable there (copying it twice did not move the
   numbers), so replies keep their copy and the writer task, which reads on while writing and keeps the replies
   of concurrent queries whole.
+- D49 UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
+  io_uring multishot receive per socket fills them, and the socket's four tasks (D48) take turns at its stream
+  of datagrams behind a lock, each giving its buffer back before its reply waits to be sent. About 400k →
+  480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
+  cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
+  asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
 
 ## Observability
 

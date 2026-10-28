@@ -17,6 +17,7 @@ dedens-net = { workspace = true, features = ["tracing"] }
 dedens-proto.workspace = true
 dedens-server.workspace = true
 flume.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
 socket2.workspace = true

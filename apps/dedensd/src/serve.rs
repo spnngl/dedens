@@ -7,6 +7,7 @@
 use std::cell::Cell;
 use std::io;
 use std::net::SocketAddr;
+use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
@@ -15,23 +16,37 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use compio::BufResult;
 use compio::buf::{IntoInner, IoBuf};
+use compio::driver::ProactorBuilder;
+use compio::driver::op::RecvFromMultiResult;
 use compio::io::{AsyncWrite, AsyncWriteExt, BufReader};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
-use compio::runtime::spawn;
+use compio::runtime::{Runtime, spawn};
 use dedens_net::client::Client;
 use dedens_net::exchange::Options;
 use dedens_net::tcp::{frame, read_message};
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_server::{Pipeline, Step, Transport, Upstream};
+use futures_util::future::join_all;
+use futures_util::lock::Mutex;
+use futures_util::{Stream, StreamExt};
 use socket2::{Domain, Socket, Type};
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
-/// Tasks answering on each UDP socket: one receives while another answers or sends, so the socket always has a
-/// receive posted.
+/// Tasks answering on each UDP socket, taking turns at its datagrams: one waits for the next while the others
+/// answer or send.
 const UDP_RECEIVES: usize = 4;
+
+/// Datagrams a thread holds received and not yet answered, in buffers made once: on Linux, `io_uring` fills them
+/// without a receive asked for each datagram, and leaves the rest in the socket while all are taken. A power of
+/// two.
+const UDP_BUFFERS: NonZero<u16> = NonZero::new(256).expect("256 is not zero");
+
+/// The bytes of each buffer, `io_uring`'s header and the sender's address included: a query longer than about 3.9
+/// KiB is cut short, so read as broken.
+const UDP_BUFFER_LEN: usize = 4096;
 
 /// Bytes a UDP socket may hold before the OS drops datagrams (`SO_RCVBUF`).
 const UDP_RECEIVE_BUFFER: usize = 4 << 20;
@@ -134,6 +149,19 @@ impl Drop for Slot {
     }
 }
 
+/// The runtime of a serving thread, with [`UDP_BUFFERS`] buffers of [`UDP_BUFFER_LEN`] bytes for UDP queries.
+///
+/// # Errors
+///
+/// A runtime the OS refuses.
+pub(crate) fn runtime() -> io::Result<Runtime> {
+    let mut proactor = ProactorBuilder::new();
+    proactor
+        .buffer_pool_size(UDP_BUFFERS)
+        .buffer_pool_buffer_len(UDP_BUFFER_LEN);
+    Runtime::builder().with_proactor(proactor).build()
+}
+
 /// Answers on `sockets` with `pipeline`, until the end of the process.
 ///
 /// # Errors
@@ -147,10 +175,8 @@ pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Resu
         connections: Slots::new(TCP_CONNECTIONS),
     });
     for (udp_socket, tcp_listener) in sockets {
-        let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
-        for _ in 0..UDP_RECEIVES {
-            spawn(udp(Rc::clone(&socket), Rc::clone(&thread))).detach();
-        }
+        let socket = UdpSocket::from_std(udp_socket.into())?;
+        spawn(udp(socket, Rc::clone(&thread))).detach();
         let listener = TcpListener::from_std(tcp_listener.into())?;
         spawn(tcp(listener, Rc::clone(&thread))).detach();
     }
@@ -158,33 +184,50 @@ pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Resu
     std::future::pending().await
 }
 
-/// Answers queries of one UDP socket, one after the other; [`UDP_RECEIVES`] of them share a socket.
-async fn udp(socket: Rc<UdpSocket>, thread: Rc<Thread>) {
-    let mut query = Vec::with_capacity(MAX_MESSAGE_LEN);
+/// Answers the queries of one UDP socket with [`UDP_RECEIVES`] tasks, from one stream of datagrams.
+async fn udp(socket: UdpSocket, thread: Rc<Thread>) {
+    let socket = Rc::new(socket);
+    let datagrams = pin!(socket.recv_from_multi());
+    let datagrams = Mutex::new(datagrams);
+    let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&socket, &datagrams, &thread));
+    join_all(tasks).await;
+}
+
+/// Answers queries from `datagrams`, one after the other; the lock passes the stream to the next task once a
+/// datagram is taken.
+async fn udp_queries(
+    socket: &Rc<UdpSocket>,
+    datagrams: &Mutex<impl Stream<Item = io::Result<RecvFromMultiResult>> + Unpin>,
+    thread: &Rc<Thread>,
+) {
     let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
     loop {
-        query.clear();
-        let BufResult(received, buffer) = socket.recv_from(query).await;
-        query = buffer;
-        let peer = match received {
-            Ok((_, peer)) => peer,
-            Err(error) => {
+        // An empty datagram ends a stream for a moment: the next poll receives again.
+        let datagram = match datagrams.lock().await.next().await {
+            Some(Ok(datagram)) => datagram,
+            Some(Err(error)) => {
                 tracing::debug!(%error, "UDP receive");
                 continue;
             }
+            None => continue,
         };
-        let upstream = match thread
+        let Some(peer) = datagram.addr().and_then(|addr| addr.as_socket()) else {
+            continue;
+        };
+        let step = thread
             .pipeline
-            .query(&query, Transport::Udp, now(), &mut out)
-        {
+            .query(datagram.data(), Transport::Udp, now(), &mut out);
+        // The buffer goes back to the pool before the reply waits to be sent.
+        drop(datagram);
+        let upstream = match step {
             Step::Reply(len) => {
-                out = send(&socket, out, len, peer).await;
+                out = send(socket, out, len, peer).await;
                 continue;
             }
             Step::Drop => continue,
             Step::Upstream(upstream) => upstream,
             Step::Refresh(len, upstream) => {
-                out = send(&socket, out, len, peer).await;
+                out = send(socket, out, len, peer).await;
                 upstream
             }
         };
@@ -192,7 +235,7 @@ async fn udp(socket: Rc<UdpSocket>, thread: Rc<Thread>) {
             tracing::debug!(%peer, "too many upstream queries: dropped");
             continue;
         };
-        let (socket, thread) = (Rc::clone(&socket), Rc::clone(&thread));
+        let (socket, thread) = (Rc::clone(socket), Rc::clone(thread));
         spawn(async move {
             let deliver = async |out, len| send(&socket, out, len, peer).await;
             let size = usize::from(DEFAULT_UDP_PAYLOAD);

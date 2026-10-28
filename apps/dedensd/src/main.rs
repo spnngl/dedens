@@ -70,7 +70,7 @@ fn main() -> anyhow::Result<()> {
         let (pipeline, ended) = (Arc::clone(&pipeline), ended.clone());
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
-                compio::runtime::Runtime::new()
+                serve::runtime()
                     .and_then(|runtime| runtime.block_on(serve::serve(sockets, pipeline)))
             }));
             let _ =
