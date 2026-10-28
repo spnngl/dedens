@@ -215,6 +215,21 @@ fn a_failure_after_a_stale_answer_is_held_without_another_reply() {
 }
 
 #[test]
+fn a_failure_of_ours_is_servfail_without_a_hold() {
+    let pipeline = caching();
+    let response = captured("a");
+    let query = query_for(&response);
+    let upstream = upstream_of(&pipeline, &query, 0);
+    let mut out = vec![0; 65535];
+    let Step::Reply(len) = pipeline.abandon(&upstream, &mut out) else {
+        unreachable!("a reply");
+    };
+    assert_eq!(decode(&out[..len]).rcode(), Rcode::SERVFAIL);
+    let (reply, asked) = ask(&pipeline, &query, 0, &[Some(&response)]);
+    assert_eq!((reply.rcode(), asked), (Rcode::NOERROR, 1));
+}
+
+#[test]
 fn without_expired_data_the_client_waits_for_resolution() {
     let pipeline = caching();
     let response = captured("a");

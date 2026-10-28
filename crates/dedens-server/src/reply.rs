@@ -1,6 +1,8 @@
 //! What a reply takes from the query it answers: ID, opcode, flags, question, EDNS, and its size limit.
 
-use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
+use std::borrow::Cow;
+
+use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{Edns, EdnsFlags, EdnsView, Flags, Header, Message, Query, Question, Rcode};
 
@@ -55,11 +57,13 @@ impl<'q> Client<'q> {
     /// The reply has the client's ID, opcode and question, in its case (RFC 4343 §4); QR and RA set, RD and CD
     /// copied (RFC 1035 §4.1.1, RFC 4035 §3.2.2), AD kept only when the query had AD or DO (RFC 6840 §5.8), AA
     /// cleared: the server is not the authority. It has an OPT record, ours, when the query had one (RFC 6891 §7),
-    /// with DO copied (RFC 3225 §3); otherwise an extended `rcode` becomes SERVFAIL.
+    /// with DO copied (RFC 3225 §3) and the extended `error` if any (RFC 8914); otherwise an extended `rcode`
+    /// becomes SERVFAIL.
     pub(crate) fn reply(
         &self,
         mut message: Message<'q>,
         rcode: Rcode,
+        error: Option<InfoCode>,
         out: &mut [u8],
     ) -> Option<usize> {
         message.header = Header {
@@ -68,7 +72,16 @@ impl<'q> Client<'q> {
         };
         message.questions.clear();
         message.questions.extend(self.question.clone());
-        message.edns = self.edns.as_ref().map(|_| self.our_edns());
+        message.edns = self.edns.as_ref().map(|_| {
+            let mut edns = self.our_edns();
+            edns.options.extend(error.map(|code| {
+                EdnsOption::Ede(ExtendedError {
+                    code,
+                    text: Cow::Borrowed(""),
+                })
+            }));
+            edns
+        });
         if message.set_rcode(rcode).is_err() {
             message.header.rcode = Rcode::SERVFAIL;
         }

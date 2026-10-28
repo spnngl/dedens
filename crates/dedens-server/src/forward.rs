@@ -59,12 +59,13 @@ impl Forward {
     }
 }
 
-/// The query asked upstream for the client's: its question, RD and CD bits, and our EDNS with its DO bit, none
-/// of its options. The client subnet stays here (D41), and cookies are between us and upstream (RFC 7873 §5.1).
+/// The query asked upstream for the client's: its question, RD set (only queries asking for recursion get here,
+/// and refreshes), the client's AD and CD bits (RFC 6840 §5.7-5.9), and our EDNS with its DO bit, none of its
+/// options. The client subnet stays here (D41), and cookies are between us and upstream (RFC 7873 §5.1).
 pub(crate) fn request(client: &Client<'_>, question: &Question<'_>) -> Message<'static> {
     let mut request = Message::query(0, question.clone().into_owned());
     request.header.flags =
-        Flags::from_word(client.header.flags.bits() & (Flags::RD | Flags::CD).bits());
+        Flags::from_word(client.header.flags.bits() & (Flags::AD | Flags::CD).bits()) | Flags::RD;
     request.edns = Some(client.our_edns());
     request
 }

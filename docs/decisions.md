@@ -278,7 +278,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes whole. The forward stage
   asks its servers in order, the next on no response, one undecodable or breaking a rule, TC, or SERVFAIL,
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD
-  and CD, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
+  set, AD and CD copied (D46), our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
   are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
 - D42 `dedensd` I/O around D41: one compio thread per core on Linux, each with its own UDP socket and TCP
   listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
@@ -321,6 +321,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   with no second reply. A refresh of a fresh entry (D43) has no timer. Rejected: a stale answer without
   resolution going on (the next query would wait again); a second task per query for the timer (the exchange
   future is polled with a deadline, then awaited).
+- D46 Review fixes to D41-D45. A query without RD gets fresh cached data only (RFC 1034 §4.3.1: no recursion;
+  RFC 8767 §5: no expired data), else REFUSED with EDE 20 (Not Authoritative, RFC 8914 §4.21); it never goes
+  upstream, so it cannot start a hold every client shares. Upstream queries set RD (a refresh started by such a
+  query too) and copy the client's AD (RFC 6840 §5.7), so AD can come back. `dedensd` turns the EDNS fallback
+  off: a response without OPT would be stored for clients with DO (RFC 3225). A failure of ours
+  (`ClientError::is_local`: no randomness, no socket, any socket error but the network or server refusing,
+  resetting or unreachable) is `Pipeline::abandon`: SERVFAIL, no next server, no hold. The configuration refuses
+  a second cache stage (it would never be filled). A panicking serving thread ends `dedensd` with an error.
 
 ## Observability
 

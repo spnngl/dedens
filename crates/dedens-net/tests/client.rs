@@ -3,6 +3,7 @@
 mod common;
 
 use std::cell::RefCell;
+use std::io;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use common::cookie_of;
 use common::loopback::{answer, id, responders, udp_responder};
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Failure, Options, Transport};
+use dedens_net::tcp::TcpError;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{Message, Rcode};
 
@@ -179,4 +181,15 @@ async fn the_fresh_cookie_of_a_badcookie_is_kept_when_the_exchange_fails() {
     // The first query of the second exchange, after the BADCOOKIE retry.
     let next = cookie_of(&queries.borrow()[2]).expect("a cookie");
     assert_eq!(next.server(), Some(FRESH));
+}
+
+#[test]
+fn failures_of_ours_are_local_and_the_networks_are_not() {
+    let io = |kind| io::Error::from(kind);
+    assert!(ClientError::Udp(io(io::ErrorKind::OutOfMemory)).is_local());
+    assert!(ClientError::Tcp(TcpError::Connect(io(io::ErrorKind::AddrNotAvailable))).is_local());
+    assert!(!ClientError::Udp(io(io::ErrorKind::ConnectionRefused)).is_local());
+    assert!(!ClientError::Tcp(TcpError::Connect(io(io::ErrorKind::HostUnreachable))).is_local());
+    assert!(!ClientError::Tcp(TcpError::TimedOut).is_local());
+    assert!(!ClientError::Exchange(Failure::TimedOut { sends: 2 }).is_local());
 }

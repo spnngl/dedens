@@ -80,7 +80,7 @@ pub(crate) struct Config {
 ///
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
-/// query on; settings a stage refuses.
+/// query on; a second cache stage, which would never be filled; settings a stage refuses.
 pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
     let text = interpolate(text, env)?;
     let file: File = serde_saphyr::from_str(&text)?;
@@ -102,6 +102,9 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
         listed.insert(name);
         built.push(match stage {
             StageFile::Cache(config) => {
+                if built.iter().any(|stage| matches!(stage, Stage::Cache(_))) {
+                    bail!("stage `{name}` is a second cache stage, which upstream answers would never fill");
+                }
                 Stage::Cache(Cache::new(config).with_context(|| format!("stage `{name}`"))?)
             }
             StageFile::Forward {
@@ -260,6 +263,10 @@ mod tests {
             (
                 "listen: ['127.0.0.1:53']\npipeline: [c, c]\nstages:\n  c:\n    type: cache\n",
                 "stage `c` is listed twice in `pipeline`",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c, d]\nstages:\n  c:\n    type: cache\n  d:\n    type: cache\n",
+                "stage `d` is a second cache stage, which upstream answers would never fill",
             ),
             (
                 "listen: ['127.0.0.1:53']\npipeline: [up, c]\nstages:\n  c:\n    type: cache\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",

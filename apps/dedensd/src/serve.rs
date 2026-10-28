@@ -250,6 +250,8 @@ async fn answer(
         Transport::Tcp => exchange::Transport::Tcp,
     };
     (options.timeout, options.tries) = upstream.patience();
+    // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
+    options.edns_fallback = false;
     let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
     loop {
         let server = upstream.server();
@@ -267,14 +269,18 @@ async fn answer(
             }
             exchange.await
         };
-        if let Err(error) = &response {
-            tracing::debug!(%error, %server, "upstream");
-        }
-        let wire = response
-            .as_ref()
-            .ok()
-            .map(|response| response.wire.as_slice());
-        match pipeline.receive(upstream, wire, now(), &mut out) {
+        let step = match &response {
+            Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
+            Err(error) if error.is_local() => {
+                tracing::warn!(%error, %server, "upstream query not sent");
+                pipeline.abandon(&upstream, &mut out)
+            }
+            Err(error) => {
+                tracing::debug!(%error, %server, "upstream");
+                pipeline.receive(upstream, None, now(), &mut out)
+            }
+        };
+        match step {
             Step::Reply(len) | Step::Refresh(len, _) => {
                 deliver(out, len).await;
                 return;

@@ -1,5 +1,5 @@
-//! RFC 6840 in the server core: AD only for clients that asked for it (§5.8); CD copied upstream and back
-//! (RFC 4035 §3.2.2).
+//! RFC 6840 in the server core: AD asked upstream as the client asked (§5.7) and kept only for clients that
+//! asked for it (§5.8); CD copied upstream and back (RFC 4035 §3.2.2).
 
 mod common;
 
@@ -31,6 +31,7 @@ fn ad_stays_only_for_queries_with_ad_or_do() {
             Transport::Udp,
             &[Some(&response)],
         );
+        assert_eq!(done.requests[0].header.flags, Flags::RD | ad);
         let wire = done.reply.expect("a reply");
         assert_eq!(
             decode(&wire).header.flags.contains(Flags::AD),

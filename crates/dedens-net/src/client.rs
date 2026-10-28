@@ -48,6 +48,30 @@ pub enum ClientError {
     Exchange(#[from] Failure),
 }
 
+impl ClientError {
+    /// Whether the failure is ours, not the server's or the network's: no randomness, a query that cannot be
+    /// encoded, or a socket error other than the server or network refusing, resetting or unreachable, such as no
+    /// file descriptor left.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        let io = match self {
+            Self::Random(_) | Self::Encode(_) | Self::Exchange(Failure::Encode(_)) => return true,
+            Self::Udp(error) | Self::Tcp(TcpError::Connect(error)) => error,
+            Self::Tcp(_) | Self::Exchange(Failure::TimedOut { .. }) => return false,
+        };
+        !matches!(
+            io.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::NetworkDown
+                | io::ErrorKind::TimedOut
+        )
+    }
+}
+
 /// Sends queries and returns their responses, keeping TCP connections and cookies per server.
 #[derive(Debug)]
 pub struct Client {

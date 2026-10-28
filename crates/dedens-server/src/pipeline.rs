@@ -6,6 +6,7 @@ use std::num::NonZeroU8;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Key, StalePolicy};
+use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType};
 
 use crate::cache::{self, Looked};
@@ -128,7 +129,9 @@ impl Pipeline {
         reply(&client, Message::default(), rcode, out)
     }
 
-    /// Runs the stages on a query that passed the core's checks.
+    /// Runs the stages on a query that passed the core's checks. Without RD, only fresh cached data answers: no
+    /// stale data (RFC 8767 §5), no upstream query (RFC 1034 §4.3.1), REFUSED with EDE 20 (Not Authoritative,
+    /// RFC 8914 §4.21) otherwise.
     fn run(
         &self,
         wire: &[u8],
@@ -137,26 +140,41 @@ impl Pipeline {
         now: u32,
         out: &mut [u8],
     ) -> Step {
+        let recursion = client.header.flags.contains(Flags::RD);
+        let stale = if recursion {
+            StalePolicy::IfFailing
+        } else {
+            StalePolicy::Never
+        };
         let mut cache = None;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
-                Stage::Cache(stored) => {
-                    match cache::look(stored, query, client, now, StalePolicy::IfFailing, out) {
-                        Looked::Reply { len, refresh } => {
-                            return match self.upstream(index, wire, query, client, Some(index)) {
-                                Some(mut upstream) if refresh => {
-                                    upstream.purpose = Cell::new(Purpose::Prefetch);
-                                    upstream.stale_after = None;
-                                    Step::Refresh(len, upstream)
-                                }
-                                _ => Step::Reply(len),
-                            };
+                Stage::Cache(stored) => match cache::look(stored, query, client, now, stale, out) {
+                    Looked::Reply { len, refresh } => {
+                        if refresh
+                            && let Some(mut upstream) =
+                                self.upstream(index, wire, query, client, Some(index))
+                        {
+                            upstream.purpose = Cell::new(Purpose::Prefetch);
+                            upstream.stale_after = None;
+                            return Step::Refresh(len, upstream);
                         }
-                        Looked::Failed => {
-                            return reply(client, Message::default(), Rcode::SERVFAIL, out);
-                        }
-                        Looked::Miss => cache = Some(index),
+                        return Step::Reply(len);
                     }
+                    Looked::Failed if recursion => {
+                        return reply(client, Message::default(), Rcode::SERVFAIL, out);
+                    }
+                    Looked::Failed | Looked::Miss => cache = Some(index),
+                },
+                Stage::Forward(_) if !recursion => {
+                    return client
+                        .reply(
+                            Message::default(),
+                            Rcode::REFUSED,
+                            Some(InfoCode::NOT_AUTHORITATIVE),
+                            out,
+                        )
+                        .map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
                     return self
@@ -303,6 +321,22 @@ impl Pipeline {
             Purpose::Prefetch | Purpose::Stale => Step::Drop,
         }
     }
+
+    /// Gives `upstream` up after a failure of ours, such as no socket left, not of the server: no other server is
+    /// asked, no failure held (RFC 9520 §3.2 is about upstream failures); the reply is SERVFAIL, written into `out`
+    /// as [`Pipeline::query`] writes, unless the client was answered already ([`Step::Drop`]).
+    ///
+    /// `upstream` comes from this pipeline.
+    pub fn abandon(&self, upstream: &Upstream, out: &mut [u8]) -> Step {
+        if upstream.purpose.get() != Purpose::Reply {
+            return Step::Drop;
+        }
+        let Ok(query) = Query::read(&upstream.query) else {
+            return Step::Drop;
+        };
+        let client = Client::of(&query, upstream.transport);
+        reply(&client, Message::default(), Rcode::SERVFAIL, out)
+    }
 }
 
 impl Upstream {
@@ -336,6 +370,6 @@ impl Upstream {
 /// The reply to `client`: `message` with `rcode`.
 fn reply<'a>(client: &Client<'a>, message: Message<'a>, rcode: Rcode, out: &mut [u8]) -> Step {
     client
-        .reply(message, rcode, out)
+        .reply(message, rcode, None, out)
         .map_or(Step::Drop, Step::Reply)
 }

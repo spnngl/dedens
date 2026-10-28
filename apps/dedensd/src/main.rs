@@ -10,6 +10,7 @@ mod config;
 mod serve;
 
 use std::io::{self, IsTerminal, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -68,16 +69,17 @@ fn main() -> anyhow::Result<()> {
     for sockets in sockets {
         let (pipeline, ended) = (Arc::clone(&pipeline), ended.clone());
         thread::spawn(move || {
-            let served = compio::runtime::Runtime::new()
-                .and_then(|runtime| runtime.block_on(serve::serve(sockets, pipeline)));
-            let _ = ended.send(served);
+            let served = panic::catch_unwind(AssertUnwindSafe(|| {
+                compio::runtime::Runtime::new()
+                    .and_then(|runtime| runtime.block_on(serve::serve(sockets, pipeline)))
+            }));
+            let _ =
+                ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
         });
     }
-    // Threads serve until one fails to start.
-    match end.recv() {
-        Ok(served) => served.context("cannot serve"),
-        Err(mpsc::RecvError) => Ok(()),
-    }
+    drop(ended);
+    // Threads serve until one fails to start or panics; each sends before ending.
+    end.recv()?.context("cannot serve")
 }
 
 /// The serving threads: one per core on Linux, where `SO_REUSEPORT` spreads queries across their sockets; one
