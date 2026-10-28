@@ -44,7 +44,8 @@ impl ClientSubnet {
         if source_prefix > max || scope_prefix > max {
             return Err(InvalidClientSubnet);
         }
-        let clean = octets(address).iter().enumerate().all(|(i, &b)| {
+        let (bytes, len) = octets(address);
+        let clean = bytes.iter().take(len).enumerate().all(|(i, &b)| {
             let first_bit = u8::try_from(i * 8).unwrap_or(u8::MAX);
             let kept = source_prefix.saturating_sub(first_bit).min(8);
             b & !high_bits(kept) == 0
@@ -106,7 +107,7 @@ impl ClientSubnet {
         w.put_u16(family)?;
         w.put_u8(self.source_prefix)?;
         w.put_u8(self.scope_prefix)?;
-        let octets = octets(self.address);
+        let (octets, _) = octets(self.address);
         let len = usize::from(self.source_prefix).div_ceil(8);
         w.put_bytes(octets.get(..len).unwrap_or_default())
     }
@@ -117,10 +118,11 @@ fn high_bits(n: u8) -> u8 {
     0xFF_u8.checked_shl(u32::from(8 - n)).unwrap_or(0)
 }
 
-fn octets(address: IpAddr) -> Vec<u8> {
+/// The bytes of `address`: an IPv4 address in the first 4 of 16.
+fn octets(address: IpAddr) -> ([u8; 16], usize) {
     match address {
-        IpAddr::V4(a) => a.octets().to_vec(),
-        IpAddr::V6(a) => a.octets().to_vec(),
+        IpAddr::V4(a) => (padded(&a.octets()).unwrap_or_default(), 4),
+        IpAddr::V6(a) => (a.octets(), 16),
     }
 }
 

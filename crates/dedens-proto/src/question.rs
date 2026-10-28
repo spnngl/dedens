@@ -54,10 +54,12 @@ impl<'a> Question<'a> {
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it does not fit.
+    /// [`EncodeError::BufferFull`] when it does not fit; the writer is then left as it was.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        w.put_name_compressed(&self.name)?;
-        w.put_u16(self.qtype.0)?;
-        w.put_u16(self.qclass.0)
+        w.all_or_nothing(|w| {
+            w.put_name_compressed(&self.name)?;
+            w.put_u16(self.qtype.0)?;
+            w.put_u16(self.qclass.0)
+        })
     }
 }

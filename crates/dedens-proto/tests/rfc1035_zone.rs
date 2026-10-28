@@ -258,9 +258,31 @@ fn types_without_text_need_the_generic_form() {
     );
     assert_eq!(records[2].rtype(), RecordType::HINFO);
     assert_eq!(
-        error("a 60 HINFO cpu os"),
-        (1, 12, TextErrorKind::NeedsGeneric)
+        error("a 60 NXT b 0102"),
+        (1, 10, TextErrorKind::NeedsGeneric)
     );
+}
+
+/// Character-strings in types without a typed form: HINFO (RFC 1035 \u00a73.3.2), NAPTR (RFC 3403 \u00a74.1), both as
+/// written by BIND and read back.
+#[test]
+fn character_strings_of_hinfo_and_naptr_read_back() {
+    let text = "a 60 HINFO \"Intel i9\" Linux\n\
+                b 60 NAPTR 100 10 \"S\" \"SIP+D2U\" \"\" _sip._udp\n";
+    let records = zone(text).unwrap();
+    let written = lines(&records);
+    assert_eq!(
+        written,
+        [
+            "a.example.\t60\tIN\tHINFO\t\"Intel i9\" \"Linux\"",
+            "b.example.\t60\tIN\tNAPTR\t100 10 \"S\" \"SIP+D2U\" \"\" _sip._udp.example.",
+        ]
+    );
+    assert_eq!(zone(&written.join("\n")).unwrap(), records);
+    assert!(matches!(
+        error(&format!("a 60 HINFO {} os", "x".repeat(256))).2,
+        TextErrorKind::Invalid(_)
+    ));
 }
 
 /// D9: `\#` bytes invalid for their type are kept opaque, and the reader says why.

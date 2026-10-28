@@ -381,10 +381,19 @@ fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
     if no_default_alpn && !alpn {
         return Err(NoDefaultAlpnWithoutAlpn);
     }
+    // Both lists are strictly increasing by now: one merge walk, linear in the RDATA.
+    let mut keys = core::iter::from_fn({
+        let mut rest = wire;
+        move || {
+            let (key, _, tail) = split_param(rest)?;
+            rest = tail;
+            Some(key)
+        }
+    });
     for &key in mandatory {
         let key = SvcParamKey(u16::from_be_bytes(key));
-        let present = || Params(wire).any(|p| p.key() == key);
-        if key == SvcParamKey::MANDATORY || !present() {
+        let present = keys.by_ref().find(|&k| k >= key) == Some(key);
+        if key == SvcParamKey::MANDATORY || !present {
             return Err(BadMandatory(key));
         }
     }
@@ -525,16 +534,20 @@ impl fmt::Display for Svcb<'_> {
 
 impl SvcParam {
     /// Reads `key` or `key=value`, the value a character-string then, for lists, comma-separated items
-    /// (RFC 9460 §2.1, appendix A). A missing value is empty.
+    /// (RFC 9460 §2.1, appendix A). A missing value is empty. A key written `keyNNNNN` takes its value in wire
+    /// form, whatever the key (RFC 9460 §2.1: `key1=\002h2` is `alpn=h2`).
     fn from_text(raw: &[u8]) -> Result<Self, TextErrorKind> {
-        let (key, value) = match raw.iter().position(|&b| b == b'=') {
+        let (name, value) = match raw.iter().position(|&b| b == b'=') {
             Some(at) => (raw.get(..at), raw.get(at + 1..)),
             None => (Some(raw), None),
         };
-        let key = key
-            .and_then(SvcParamKey::from_text)
-            .ok_or(TextErrorKind::Invalid("SVCB parameter key"))?;
+        let name = name.unwrap_or_default();
+        let key =
+            SvcParamKey::from_text(name).ok_or(TextErrorKind::Invalid("SVCB parameter key"))?;
         let value = value.map(text::unescape).transpose()?.unwrap_or_default();
+        if name.starts_with(b"key") {
+            return Self::from_wire_value(key, &value);
+        }
         Ok(match key {
             SvcParamKey::MANDATORY => {
                 Self::Mandatory(items(&value, "mandatory key", SvcParamKey::from_text)?)
@@ -565,6 +578,20 @@ impl SvcParam {
                 value: value.into(),
             },
         })
+    }
+}
+
+impl SvcParam {
+    /// The parameter of `key` whose wire value is `value`, which must read back to the same bytes.
+    fn from_wire_value(key: SvcParamKey, value: &[u8]) -> Result<Self, TextErrorKind> {
+        let invalid = TextErrorKind::Invalid("SVCB parameter value in wire form");
+        let param = Self::parse(key, value).ok_or(invalid)?;
+        let mut wire = Vec::with_capacity(value.len());
+        param.encode_value(&mut wire).map_err(|_| invalid)?;
+        if wire != value {
+            return Err(invalid);
+        }
+        Ok(param)
     }
 }
 

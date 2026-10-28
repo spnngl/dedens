@@ -277,8 +277,14 @@ pub(crate) fn one_record(text: &[u8]) -> Result<Record<'static>, TextError> {
     if blank {
         return Err(f.next("owner name")?.error(TextErrorKind::NoOwner));
     }
+    let start = f.peek()?;
     let owner = f.name("owner name")?;
-    let record = Defaults::default().record(owner, &mut f)?.record;
+    let decoded = Defaults::default().record(owner, &mut f)?;
+    // `\#` bytes its type refuses: a zone reader reports them with the record (D25), a lone record cannot.
+    if let (Some(error), Some(start)) = (decoded.invalid_rdata, start) {
+        return Err(start.error(TextErrorKind::Rdata(error.kind)));
+    }
+    let record = decoded.record;
     if lexer.entry()?.is_some()
         && let Some(first) = lexer.token(false)?
     {

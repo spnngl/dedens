@@ -65,6 +65,8 @@ code_type! {
     TOO_EARLY = 26, "Too Early";
     /// Unsupported NSEC3 iterations value (RFC 9276 §3.2).
     UNSUPPORTED_NSEC3_ITERATIONS = 27, "Unsupported NSEC3 Iterations Value";
+    /// Invalid query type: a query for a type a resolver refuses, such as NXNAME (RFC 9824 §3.5, §9).
+    INVALID_QUERY_TYPE = 30, "Invalid Query Type";
 }
 
 /// Why a query failed or what was done to its answer, with optional human-readable text (RFC 8914 §2).

@@ -112,6 +112,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   parameters only (RFC 9460 §2.1), as BIND; a `\` ending a line outside quotes is an error (it joins entries).
   `\#` RDATA its type refuses stays opaque with the reason (`DecodedRecord`), as on the wire (D9). RFC 1035
   §5.2 zone checks belong to the zone-loading layer.
+- D29 A quoted part ends on its line: an unescaped newline inside quotes is an error, as in BIND (`isc_lex`
+  without `ISC_LEXOPT_QSTRINGMULTILINE`, how it reads zone files); `\` before the newline keeps it in the
+  text. RFC 1035 §5.1 leaves it open; a missing `"` would otherwise swallow the entries after it silently.
 
 ## Performance and safety
 

@@ -3,8 +3,10 @@
 mod common;
 
 use common::{data_class, data_type, decode_record, dns, record_wire, zone_record};
+use dedens_proto::text::{Entry, ZoneReader};
 use dedens_proto::{
-    Class, Name, NameError, RData, Record, RecordType, TextError, TextErrorKind, Ttl,
+    Class, DecodeErrorKind, DecodedRecord, Name, NameError, RData, Record, RecordType, TextError,
+    TextErrorKind, Ttl,
 };
 use proptest::prelude::*;
 
@@ -179,7 +181,7 @@ fn errors_say_where() {
     );
     // After the last field, on the line where it ends.
     assert_eq!(
-        error("x. 60 CAA 0 \"is\nsue\""),
+        error("x. 60 CAA 0 \"is\\\nsue\""),
         (2, 5, TextErrorKind::Missing("CAA value"))
     );
     assert_eq!(error(" 60 A 192.0.2.1"), (1, 2, TextErrorKind::NoOwner));
@@ -262,12 +264,28 @@ fn quotes_start_tokens_and_never_names() {
     );
 }
 
-/// D9: RDATA invalid for its type is kept opaque, read from text as from the wire.
+/// One record of a zone, kept with why its RDATA is opaque, if it is.
+fn zone_entry(text: &str) -> Result<DecodedRecord<'static>, TextError> {
+    match ZoneReader::new(text.as_bytes(), None).next() {
+        Some(Ok(Entry::Record(decoded))) => Ok(decoded),
+        Some(Err(e)) => Err(e),
+        other => unreachable!("not one record: {other:?}"),
+    }
+}
+
+/// D9: RDATA invalid for its type is kept opaque by a zone reader, with the reason, read from text as from the
+/// wire; a lone record has nowhere to put the reason and refuses it.
 #[test]
 fn invalid_generic_rdata_of_a_known_type_stays_opaque() {
-    let rec = parse(r"x. 60 A \# 3 c00002").unwrap();
+    let decoded = zone_entry(r"x. 60 A \# 3 c00002").unwrap();
+    assert!(decoded.invalid_rdata.is_some());
+    let rec = decoded.record;
     assert!(matches!(&rec.data(), RData::Opaque(o) if o.rtype() == RecordType::A));
     assert_eq!(rec.to_string(), "x.\t60\tIN\tA\t\\# 3 c00002");
+    assert_eq!(
+        error(r"x. 60 A \# 3 c00002"),
+        (1, 1, TextErrorKind::Rdata(DecodeErrorKind::RdataLength))
+    );
     assert!(matches!(
         error(r"x. 60 NS \# 1 01").2,
         TextErrorKind::Rdata(_)
@@ -300,8 +318,10 @@ proptest! {
             return Err(TestCaseError::reject("invalid RDATA of a type with names"));
         };
         let text = decoded.record.to_string();
-        let read = parse(&text).map_err(|e| TestCaseError::fail(format!("{text}: {e}")))?;
-        prop_assert_eq!(read, decoded.record);
+        let read = zone_entry(&text).map_err(|e| TestCaseError::fail(format!("{text}: {e}")))?;
+        // The offsets of the reasons differ: in the message, and in the RDATA.
+        prop_assert_eq!(read.invalid_rdata.map(|e| e.kind), decoded.invalid_rdata.map(|e| e.kind));
+        prop_assert_eq!(read.record, decoded.record);
     }
 
     #[test]

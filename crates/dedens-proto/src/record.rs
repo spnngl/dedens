@@ -373,7 +373,7 @@ impl<'a> Record<'a> {
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it does not fit.
+    /// [`EncodeError::BufferFull`] when it does not fit; the writer is then left as it was.
     pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         self.encode_after(w, None).map(drop)
     }
@@ -385,15 +385,17 @@ impl<'a> Record<'a> {
         w: &mut Writer<'_>,
         owner: Option<u16>,
     ) -> Result<Option<u16>, EncodeError> {
-        let owner = w.put_owner(&self.name, owner)?;
-        w.put_u16(self.rtype().0)?;
-        w.put_u16(self.class.0)?;
-        w.put_u32(self.ttl.get())?;
-        let at = w.reserve_u16()?;
-        self.rdata.encode(w)?;
-        let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
-        w.patch_u16(at, len);
-        Ok(owner)
+        w.all_or_nothing(|w| {
+            let owner = w.put_owner(&self.name, owner)?;
+            w.put_u16(self.rtype().0)?;
+            w.put_u16(self.class.0)?;
+            w.put_u32(self.ttl.get())?;
+            let at = w.reserve_u16()?;
+            self.rdata.encode(w)?;
+            let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
+            w.patch_u16(at, len);
+            Ok(owner)
+        })
     }
 }
 
@@ -436,7 +438,8 @@ impl fmt::Display for GenericRecord<'_> {
 }
 
 /// Reads one record in presentation form: owner, TTL, optional class (IN by default), type and RDATA, TTL and
-/// class in either order (RFC 1035 §5.1). Names not ending in a dot are absolute; `@` is the root.
+/// class in either order (RFC 1035 §5.1). Names not ending in a dot are absolute; `@` is the root. `\#` RDATA
+/// that its type refuses is an error, where [`ZoneReader`](crate::text::ZoneReader) keeps it opaque with the reason.
 impl FromStr for Record<'static> {
     type Err = TextError;
 

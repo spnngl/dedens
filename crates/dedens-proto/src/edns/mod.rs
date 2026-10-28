@@ -107,7 +107,9 @@ pub enum EdnsOption<'a> {
     Padding(u16),
     /// Extended DNS Error (RFC 8914).
     Ede(ExtendedError<'a>),
-    /// An option without a typed variant, or whose content is invalid for its code (D9).
+    /// An option without a typed variant, or whose content is invalid for its code (D9). Built by hand with data
+    /// valid for a typed code, it is written the same but does not compare equal to the typed variant read back:
+    /// use the typed variant.
     Unknown {
         /// The option code.
         code: OptionCode,
@@ -294,11 +296,6 @@ impl<'a> Edns<'a> {
                 .sum::<usize>()
     }
 
-    /// Writes the OPT record: root owner, type OPT, CLASS and TTL from the fields (RFC 6891 §6.1.2).
-    ///
-    /// # Errors
-    ///
-    /// [`EncodeError::BufferFull`] when it does not fit.
     /// Writes the OPT record after the message in `buf[..len]` and counts it in the header's ARCOUNT, returning
     /// the new length: how a server adds its EDNS to a response copied from a cache.
     ///
@@ -336,6 +333,11 @@ impl<'a> Edns<'a> {
         Ok(len + written)
     }
 
+    /// Writes the OPT record: root owner, type OPT, CLASS and TTL from the fields (RFC 6891 §6.1.2).
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when it does not fit.
     pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         let [flags_hi, flags_lo] = self.flags.0.to_be_bytes();
         w.put_u8(0)?;

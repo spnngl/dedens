@@ -548,7 +548,7 @@ fn appendix_a_value_escapes() {
 /// §2.1: keys are lowercase names or `key` and a number without leading zeros.
 #[test]
 fn keys_are_written_one_way() {
-    assert!(from_text("SVCB 1 . alpn=h2 key0=alpn").is_ok());
+    assert!(from_text(r"SVCB 1 . alpn=h2 key0=\000\001").is_ok());
     assert!(from_text("SVCB 1 . key65=x").is_ok());
     for bad in [
         "ALPN=h2",
@@ -557,6 +557,57 @@ fn keys_are_written_one_way() {
         "key=x",
         "key065536=x",
         "key65536=x",
+    ] {
+        assert!(from_text(&format!("SVCB 1 . {bad}")).is_err(), "{bad}");
+    }
+}
+
+/// §8: checking that every key `mandatory` lists is present takes one pass, so a record listing thousands of keys
+/// costs a decoder no more than its size (it took a quadratic number of parses before).
+#[test]
+fn s8_a_long_mandatory_list_is_checked_in_one_pass() {
+    let keys = 8..10_008_u16;
+    let mut wire = vec![0, 1, 0, 0, 0];
+    wire.extend(u16::try_from(keys.len() * 2).expect("fits").to_be_bytes());
+    wire.extend(keys.clone().flat_map(u16::to_be_bytes));
+    wire.extend(
+        keys.clone()
+            .flat_map(|k| [k.to_be_bytes(), [0, 0]])
+            .flatten(),
+    );
+    let decoded = decode_record(&record_wire(RecordType::SVCB, &wire)).expect("valid");
+    assert_eq!(decoded.invalid_rdata, None);
+    // Without the last parameter, the last listed key is missing.
+    wire.truncate(wire.len() - 4);
+    let decoded = decode_record(&record_wire(RecordType::SVCB, &wire)).expect("delimited");
+    assert!(decoded.invalid_rdata.is_some());
+}
+
+/// §2.1: a key written `keyNNNNN` takes its value in wire form, even a key with a name (§7.1.1: `key1=\002h2`).
+#[test]
+fn generic_keys_take_wire_values() {
+    for (generic, named) in [
+        (r"key1=\002h2", "alpn=h2"),
+        (r"key0=\000\003 key3=\000\053", "mandatory=port port=53"),
+        (
+            "key1=\"\\002h2\\005h3-19\" key2",
+            "alpn=h2,h3-19 no-default-alpn",
+        ),
+        (r"key4=\192\000\002\001", "ipv4hint=192.0.2.1"),
+        ("key7=/q{?dns}", "dohpath=/q{?dns}"),
+    ] {
+        let generic = from_text(&format!("SVCB 1 . {generic}")).expect(generic);
+        assert_eq!(
+            generic,
+            from_text(&format!("SVCB 1 . {named}")).expect(named)
+        );
+    }
+    // Wire values that do not read back the same: odd bytes, a short port, an ALPN length past the end.
+    for bad in [
+        r"key0=\000\003\000",
+        r"key3=\000",
+        r"key1=\003h2",
+        r"key4=\192\000\002",
     ] {
         assert!(from_text(&format!("SVCB 1 . {bad}")).is_err(), "{bad}");
     }

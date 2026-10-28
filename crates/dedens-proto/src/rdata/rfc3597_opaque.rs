@@ -3,11 +3,11 @@
 use core::fmt;
 use std::borrow::Cow;
 
-use super::MAX_RDATA_LEN;
+use super::{MAX_RDATA_LEN, RData};
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::{MAX_NAME_LEN, Name};
-use crate::text::{self, Fields, TextError};
+use crate::text::{self, Fields, Quoted, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 /// RDATA of a type this crate does not interpret, or whose content is invalid for its type (D9).
@@ -20,8 +20,9 @@ pub struct Opaque<'a> {
     data: Cow<'a, [u8]>,
 }
 
-/// The fields in order for the types made of names and 16-bit numbers only (MD MF MB MG MR MINFO of RFC 1035,
-/// RP AFSDB RT of RFC 1183, PX of RFC 2163); the generic form of RFC 3597 §5, `\# length hex`, for the others.
+/// The fields in order for the types made of names, 16-bit numbers and character-strings (MD MF MB MG MR MINFO
+/// HINFO of RFC 1035, RP AFSDB RT of RFC 1183, PX of RFC 2163, NAPTR of RFC 3403); the generic form of RFC 3597
+/// §5, `\# length hex`, for the others and for bytes that do not read as these fields.
 impl fmt::Display for Opaque<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.text_fields() {
@@ -33,6 +34,7 @@ impl fmt::Display for Opaque<'_> {
                     match item {
                         TextItem::Name(name) => write!(f, "{name}")?,
                         TextItem::Number(n) => write!(f, "{n}")?,
+                        TextItem::Text(s) => write!(f, "{}", Quoted(s))?,
                     }
                 }
                 Ok(())
@@ -46,6 +48,7 @@ impl fmt::Display for Opaque<'_> {
 enum TextItem<'a> {
     Name(Name<'a>),
     Number(u16),
+    Text(&'a [u8]),
 }
 
 impl Opaque<'_> {
@@ -57,6 +60,11 @@ impl Opaque<'_> {
             .iter()
             .map(|field| match field {
                 Field::Name => Name::decode_uncompressed(&mut r).ok().map(TextItem::Name),
+                Field::CharacterString => r
+                    .u8()
+                    .and_then(|len| r.bytes(usize::from(len)))
+                    .ok()
+                    .map(TextItem::Text),
                 _ => r.u16().ok().map(TextItem::Number),
             })
             .collect::<Option<Vec<_>>>()?;
@@ -65,7 +73,8 @@ impl Opaque<'_> {
 }
 
 impl Opaque<'static> {
-    /// Reads the fields of a type made of names and 16-bit numbers only, or `None` for the other types.
+    /// Reads the fields of a type made of names, 16-bit numbers and character-strings, or `None` for the other
+    /// types.
     pub(super) fn from_text(
         rtype: RecordType,
         f: &mut Fields<'_, '_>,
@@ -77,6 +86,7 @@ impl Opaque<'static> {
                 Field::Name => f.name("domain name").map(|name| {
                     data.extend_from_slice(name.to_wire(&mut [0; MAX_NAME_LEN]));
                 }),
+                Field::CharacterString => character_string(f, &mut data),
                 _ => f
                     .number::<u16>("16-bit number")
                     .map(|n| data.extend_from_slice(&n.to_be_bytes())),
@@ -92,13 +102,34 @@ impl Opaque<'static> {
     }
 }
 
-/// The layout of `rtype` when it is made of names and 16-bit numbers only.
+/// The layout of `rtype` when it is made of names, 16-bit numbers and character-strings.
 fn text_layout(rtype: RecordType) -> Option<&'static [Field]> {
+    if rtype == RecordType::HINFO {
+        // CPU and OS (RFC 1035 §3.3.2); no name, so not in `layout`.
+        return Some(&[Field::CharacterString, Field::CharacterString]);
+    }
     layout(rtype).filter(|fields| {
-        fields
-            .iter()
-            .all(|field| matches!(field, Field::Name | Field::Bytes(2)))
+        fields.iter().all(|field| {
+            matches!(
+                field,
+                Field::Name | Field::Bytes(2) | Field::CharacterString
+            )
+        })
     })
+}
+
+/// Reads a character-string, quoted or not, into `data` behind its length byte (RFC 1035 §3.3, §5.1).
+fn character_string(f: &mut Fields<'_, '_>, data: &mut Vec<u8>) -> Result<(), TextError> {
+    let at = data.len();
+    data.push(0);
+    let token = f.next("character-string")?;
+    text::unescape_into(token.raw, data).map_err(|kind| token.error(kind))?;
+    let len = u8::try_from(data.len() - at - 1)
+        .map_err(|_| token.error(TextErrorKind::Invalid("character-string over 255 bytes")))?;
+    if let Some(slot) = data.get_mut(at) {
+        *slot = len;
+    }
+    Ok(())
 }
 
 /// One field of the RDATA of a type that holds names but has no typed form here.
@@ -115,16 +146,26 @@ impl<'a> Opaque<'a> {
     ///
     /// # Errors
     ///
-    /// [`DecodeError`] when `data` is over 65535 bytes, or `rtype` holds names (see
-    /// [`RData::may_hold_compressed_names`]) and `data` does not parse as its fields with uncompressed names.
+    /// [`DecodeError`] when `data` is over 65535 bytes; when `rtype` has a typed [`RData`] form that `data` reads
+    /// as, so that one value has one form; or when `rtype` holds names (see [`RData::may_hold_compressed_names`])
+    /// and `data` does not parse as its fields with uncompressed names.
     ///
+    /// [`RData`]: super::RData
     /// [`RData::may_hold_compressed_names`]: super::RData::may_hold_compressed_names
     pub fn new(rtype: RecordType, data: &'a [u8]) -> Result<Self, DecodeError> {
+        let error = |kind| DecodeError { offset: 0, kind };
         if data.len() > MAX_RDATA_LEN {
-            return Err(DecodeError {
-                offset: 0,
-                kind: DecodeErrorKind::RdataLength,
-            });
+            return Err(error(DecodeErrorKind::RdataLength));
+        }
+        match RData::decode(rtype, &mut Reader::new(data)) {
+            // No typed form; the types with a field layout are checked below.
+            Ok(RData::Opaque(_)) => {}
+            Ok(_) => return Err(error(DecodeErrorKind::Invalid("RDATA with a typed form"))),
+            Err(e) if RData::may_hold_compressed_names(rtype) && !Self::holds_names(rtype) => {
+                return Err(e);
+            }
+            // Invalid for a typed type without names: kept as bytes (D9).
+            Err(_) => {}
         }
         let mut r = Reader::new(data);
         let opaque = Self::decode_with(rtype, &mut r, Name::decode_uncompressed)?;
@@ -178,6 +219,10 @@ impl<'a> Opaque<'a> {
             // Pointers mean nothing outside the message: copy the fields with the names uncompressed.
             let mut data = Vec::with_capacity(r.position() - start.position());
             read_fields(fields, &mut start, name, Some(&mut data))?;
+            // Expanded names can outgrow an RDATA when the message sits in a larger buffer.
+            if data.len() > MAX_RDATA_LEN {
+                return Err(r.error(DecodeErrorKind::RdataLength));
+            }
             Cow::Owned(data)
         } else {
             Cow::Borrowed(start.bytes(r.position() - start.position())?)
@@ -210,8 +255,10 @@ const fn layout(rtype: RecordType) -> Option<&'static [Field]> {
         RecordType::MINFO | RecordType::RP => &[Name, Name],
         RecordType::AFSDB | RecordType::RT => &[Bytes(2), Name],
         RecordType::PX => &[Bytes(2), Name, Name],
+        // Order, preference, flags, services, regexp, replacement (RFC 3403 §4.1).
         RecordType::NAPTR => &[
-            Bytes(4),
+            Bytes(2),
+            Bytes(2),
             CharacterString,
             CharacterString,
             CharacterString,

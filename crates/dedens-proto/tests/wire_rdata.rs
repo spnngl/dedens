@@ -64,14 +64,61 @@ fn invalid_rdata_reads_as_opaque_and_is_written_as_received() {
 
 #[test]
 fn opaque_bytes_unreadable_as_their_type_stay_opaque() {
-    let bad = Opaque::new(RecordType::NS, &[0xFF]).expect("NS has no opaque layout");
+    let bad =
+        Opaque::new(RecordType::A, &[1, 2, 3]).expect("invalid A RDATA is kept as bytes (D9)");
     let record = Record::new(
         dns("example.com"),
         Class::IN,
         Ttl::ZERO,
         &RData::Opaque(bad),
     );
-    assert!(matches!(record.data(), RData::Opaque(o) if o.data() == [0xFF]));
+    assert!(matches!(record.data(), RData::Opaque(o) if o.data() == [1, 2, 3]));
+}
+
+/// One value has one form: bytes that read as a typed type are refused, and so are bytes for a type with names
+/// that do not read as it, which could hold a pointer written out as is (RFC 3597 §4).
+#[test]
+fn opaque_refuses_typed_and_name_bytes() {
+    assert!(Opaque::new(RecordType::A, &[192, 0, 2, 1]).is_err());
+    assert!(Opaque::new(RecordType::TXT, &[1, b'a']).is_err());
+    for (rtype, data) in [
+        (RecordType::NS, &[0xC0, 0x0C][..]),
+        (RecordType::NS, &[3, b'a']),
+        (RecordType::NS, &[0xFF]),
+        (RecordType::SRV, &[0, 1, 0, 2, 0, 3, 0xC0, 0x0C]),
+    ] {
+        assert!(Opaque::new(rtype, data).is_err(), "{rtype} {data:?}");
+    }
+}
+
+/// The TTL field of a stray OPT record holds the extended RCODE, version and DO bit (RFC 6891 §6.1.3): a cache
+/// rewriting TTLs must leave it alone.
+#[test]
+fn ttl_offsets_skip_a_stray_opt_record() {
+    let mut wire = vec![0, 0, 0x80, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+    wire.extend([0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0]);
+    assert_eq!(message::ttl_offsets(&wire).expect("readable"), []);
+}
+
+/// A record or question that does not fit leaves the writer as it was, compression table included.
+#[test]
+fn failed_encoding_writes_nothing() {
+    let record = rec("abcdefgh.example", RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    let question = Question::new(dns("abcdefgh.example"), RecordType::A);
+    let mut buf = [0; 30];
+    let mut w = dedens_proto::wire::Writer::new(&mut buf);
+    w.put_u8(7).expect("room");
+    assert!(record.encode(&mut w).is_err());
+    assert_eq!(w.len(), 1);
+    question.encode(&mut w).expect("fits: 18 + 4 bytes");
+    assert_eq!(w.len(), 23);
+    assert!(
+        question.encode(&mut w).is_ok(),
+        "a pointer to the first one"
+    );
+    assert_eq!(w.len(), 29);
+    assert!(question.encode(&mut w).is_err());
+    assert_eq!(w.len(), 29);
 }
 
 #[test]

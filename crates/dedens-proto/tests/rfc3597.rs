@@ -64,6 +64,29 @@ fn s4_invalid_rdata_with_names_is_an_error() {
     assert!(decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0xC0, 0])).is_err());
 }
 
+/// Names expanded from pointers can make RDATA outgrow 65535 bytes when the message sits in a larger buffer, as a
+/// zone transfer stream may: an error, not a panic.
+#[test]
+fn s4_rdata_expanded_past_65535_bytes_is_an_error() {
+    // A 255-byte name at offset 0: three labels of 63 bytes, one of 61, the root.
+    let mut buf = Vec::new();
+    for len in [63, 63, 63, 61] {
+        buf.push(len);
+        buf.extend(std::iter::repeat_n(b'a', usize::from(len)));
+    }
+    buf.push(0);
+    let start = buf.len();
+    // Root owner, SIG, IN, TTL 0, RDLENGTH 65535: 18 fixed bytes, the signer a pointer to the long name, the rest.
+    buf.extend([0, 0, 24, 0, 1, 0, 0, 0, 0, 0xFF, 0xFF]);
+    buf.extend([0; 18]);
+    buf.extend([0xC0, 0]);
+    buf.resize(start + 11 + 65535, 0);
+    let mut r = dedens_proto::wire::Reader::new(&buf);
+    r.bytes(start).expect("the name");
+    let err = dedens_proto::Record::decode(&mut r).expect_err("too long once expanded");
+    assert_eq!(err.kind, DecodeErrorKind::RdataLength);
+}
+
 #[test]
 fn s4_opaque_rdata_never_holds_pointers() {
     assert!(Opaque::new(RecordType::RP, &[0xC0, 0, 0]).is_err());

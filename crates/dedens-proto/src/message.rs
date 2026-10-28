@@ -294,8 +294,8 @@ impl<'a> Message<'a> {
     ///
     /// Dropping starts at the first record that does not fit; the OPT record is always kept (RFC 6891 §7). TC is
     /// set only if the answer or authority section lost records; when only additional data does not fit, TC stays
-    /// clear and the whole `RRset` of the first record that does not fit is dropped, so no partial `RRset` is left
-    /// (RFC 2181 §9). An `RRset` is a run of consecutive records with the same owner, type and class.
+    /// clear and only whole `RRsets` stay, even when the records of one are not next to each other, so no partial
+    /// `RRset` is taken for the whole one (RFC 2181 §9).
     ///
     /// # Errors
     ///
@@ -329,31 +329,26 @@ impl<'a> Message<'a> {
                 }
                 opt_written = true;
             }
-            // Start of the run of records of the RRset being written: offset, count, and its first record.
-            let mut rrset = (w.len(), 0, None::<&Record<'_>>);
-            for record in records {
-                // Only truncation needs to know where the RRset started.
-                if may_truncate && !rrset.2.is_some_and(|first| same_rrset(first, record)) {
-                    rrset = (w.len(), *count, Some(record));
-                }
-                let before = w.len();
-                let owner = previous
-                    .filter(|(p, _)| p.name.same_wire(&record.name))
-                    .map(|(_, at)| at);
-                match record.encode_after(&mut w, owner) {
-                    Ok(at) => {
+            // Where the section starts, to write it again with fewer records.
+            let start = (w.len(), previous);
+            for (i, record) in records.iter().enumerate() {
+                match put_record(&mut w, record, previous) {
+                    Ok(next) => {
                         *count += 1;
-                        previous = at.map(|at| (record, at));
+                        previous = next;
                     }
                     Err(EncodeError::BufferFull) if may_truncate => {
-                        if section < 2 {
-                            // TC tells the client the answer is partial: a partial RRset may stay (RFC 2181 §9).
-                            w.truncate(before);
-                            tc = true;
-                        } else {
-                            // Without TC, a partial RRset would be taken for the whole one: drop all of it.
-                            w.truncate(rrset.0);
-                            *count = rrset.1;
+                        // TC tells the client the answer is partial: a partial RRset may stay (RFC 2181 §9).
+                        tc = section < 2;
+                        if !tc {
+                            // Without TC, a partial RRset would be taken for the whole one: keep only whole
+                            // RRsets, writing the section again, the same bytes up to where it stops.
+                            w.truncate(start.0);
+                            previous = start.1;
+                            *count = whole_rrsets(records, i);
+                            for record in records.iter().take(*count) {
+                                previous = put_record(&mut w, record, previous)?;
+                            }
                         }
                         break 'sections;
                     }
@@ -411,14 +406,44 @@ impl<'a> Message<'a> {
     }
 }
 
+/// The record written before, and where a pointer to its owner may point.
+type Previous<'r, 'a> = Option<(&'r Record<'a>, u16)>;
+
+/// Writes `record`, its owner a pointer to the owner of `previous` when they are the same; returns what to give
+/// the next record.
+fn put_record<'r, 'a>(
+    w: &mut Writer<'_>,
+    record: &'r Record<'a>,
+    previous: Previous<'r, 'a>,
+) -> Result<Previous<'r, 'a>, EncodeError> {
+    let owner = previous
+        .filter(|(p, _)| p.name.same_wire(&record.name))
+        .map(|(_, at)| at);
+    Ok(record.encode_after(w, owner)?.map(|at| (record, at)))
+}
+
+/// How many of the first `failed` records to keep, `failed` the first that did not fit, so that no `RRset` has
+/// records on both sides of the cut (RFC 2181 §9): the largest such count.
+fn whole_rrsets(records: &[Record<'_>], failed: usize) -> usize {
+    let mut keep = 0;
+    // The last index of an `RRset` met so far.
+    let mut reach = 0;
+    for (i, record) in records.iter().enumerate().take(failed) {
+        let last = records
+            .iter()
+            .rposition(|r| same_rrset(record, r))
+            .unwrap_or(i);
+        reach = reach.max(last);
+        if reach <= i {
+            keep = i + 1;
+        }
+    }
+    keep
+}
+
 /// Whether two records belong to the same `RRset`: same owner, type and class (RFC 2181 §5).
 fn same_rrset(a: &Record<'_>, b: &Record<'_>) -> bool {
     a.name == b.name && a.rtype() == b.rtype() && a.class == b.class
-}
-
-/// `claimed` entries, capped by how many of at least `min_len` bytes fit in `remaining`.
-fn bounded(claimed: u16, remaining: usize, min_len: usize) -> usize {
-    usize::from(claimed).min(remaining / min_len)
 }
 
 /// One entry of a message, met by [`walk`] in wire order.
@@ -436,15 +461,19 @@ pub(crate) enum Entry<'a> {
 /// Offsets of the TTL fields of the records of `msg` in wire order, without the OPT record lifted out as EDNS
 /// (D8), to rewrite TTLs in a copy of the bytes, as a cache serving them does.
 ///
-/// Reads the structure only: names, fixed fields and RDLENGTH, not the RDATA.
+/// Reads the structure only: names, fixed fields and RDLENGTH, not the RDATA. A stray OPT record has no offset:
+/// its TTL field holds the extended RCODE, version and flags (RFC 6891 §6.1.3).
 ///
 /// # Errors
 ///
-/// [`DecodeError`] when the structure is broken, as for [`Message::decode`].
+/// [`DecodeError`] when the structure is broken. Unlike [`Message::decode`], it accepts invalid RDATA and EDNS
+/// options, which it does not read.
 pub fn ttl_offsets(msg: &[u8]) -> Result<Vec<usize>, DecodeError> {
     let mut offsets = Vec::new();
     walk(msg, &mut Vec::new(), |entry, _| {
-        if let Entry::Record(_, raw) = entry {
+        if let Entry::Record(_, raw) = entry
+            && raw.rtype != RecordType::OPT
+        {
             // TTL and RDLENGTH: the 6 bytes before the RDATA.
             offsets.push(raw.rdata.position() - 6);
         }
@@ -527,12 +556,18 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
         match entry {
             Entry::Header(read, counts) => {
                 *header = read;
-                // Capped by what the input can hold rather than by the counts it claims.
-                let remaining = msg.len() - HEADER_LEN;
-                questions.reserve(bounded(counts.questions, remaining, MIN_QUESTION_LEN));
-                answer.reserve(bounded(counts.answers, remaining, MIN_RECORD_LEN));
-                authority.reserve(bounded(counts.authority, remaining, MIN_RECORD_LEN));
-                additional.reserve(bounded(counts.additional, remaining, MIN_RECORD_LEN));
+                // Capped by what the input can hold rather than by the counts it claims, one budget shared by
+                // all sections, so a hostile header cannot claim the input several times over.
+                let mut remaining = msg.len() - HEADER_LEN;
+                let mut take = |claimed: u16, min_len: usize| {
+                    let n = usize::from(claimed).min(remaining / min_len);
+                    remaining -= n * min_len;
+                    n
+                };
+                questions.reserve(take(counts.questions, MIN_QUESTION_LEN));
+                answer.reserve(take(counts.answers, MIN_RECORD_LEN));
+                authority.reserve(take(counts.authority, MIN_RECORD_LEN));
+                additional.reserve(take(counts.additional, MIN_RECORD_LEN));
             }
             Entry::Question(question) => questions.push(question),
             Entry::Opt(raw) => {

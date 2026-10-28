@@ -531,6 +531,16 @@ impl<'a> Writer<'a> {
         self.len = self.len.min(len);
         self.names.truncate(self.len);
     }
+
+    /// Runs `write`, rolling back what it wrote if it fails, so that a public encoder never leaves a partial
+    /// entry behind.
+    pub(crate) fn all_or_nothing<T>(
+        &mut self,
+        write: impl FnOnce(&mut Self) -> Result<T, EncodeError>,
+    ) -> Result<T, EncodeError> {
+        let start = self.len;
+        write(self).inspect_err(|_| self.truncate(start))
+    }
 }
 
 #[cfg(test)]

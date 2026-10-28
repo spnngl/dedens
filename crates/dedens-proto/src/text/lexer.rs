@@ -216,14 +216,16 @@ impl<'t> Lexer<'t> {
         }
     }
 
-    /// Reads up to and past the `"` closing a quoted part; `line` and `column` are where its token starts.
+    /// Reads up to and past the `"` closing a quoted part; `line` and `column` are where its token starts. A
+    /// quoted part ends on its line unless the newline is escaped (D29), so a missing `"` cannot swallow the
+    /// entries after it.
     fn quoted(&mut self, line: usize, column: usize) -> Result<(), TextError> {
         while let Some(&b) = self.text.get(self.pos) {
             self.pos += 1;
             match b {
                 b'"' => return Ok(()),
                 b'\\' => self.escaped(),
-                b'\n' => self.newline(),
+                b'\n' => break,
                 _ => {}
             }
         }
@@ -291,10 +293,10 @@ mod tests {
 
     #[test]
     fn quotes_and_escapes_stay_in_the_token() {
-        let text = "t TXT \"a b;(\nc\" x\\ y\r\n";
+        let text = "t TXT \"a b;(\\\nc\" x\\ y\r\n";
         assert_eq!(
             entries(text, false).unwrap(),
-            [(false, words(&["t", "TXT", "\"a b;(\nc\"", "x\\ y"]))]
+            [(false, words(&["t", "TXT", "\"a b;(\\\nc\"", "x\\ y"]))]
         );
     }
 
@@ -333,7 +335,7 @@ mod tests {
 
     #[test]
     fn positions_count_lines_and_columns_from_one() {
-        let mut lexer = Lexer::new(b"\n  a \"x\ny\" b\nc");
+        let mut lexer = Lexer::new(b"\n  a \"x\\\ny\" b\nc");
         let mut at = Vec::new();
         lexer.entry().unwrap();
         while let Some(t) = lexer.token(false).unwrap() {
@@ -348,7 +350,7 @@ mod tests {
     /// A missing field is reported after the last token, on the line where it ends.
     #[test]
     fn the_end_of_a_token_over_two_lines_is_on_the_second() {
-        let mut lexer = Lexer::new(b"a \"x\nyz\"");
+        let mut lexer = Lexer::new(b"a \"x\\\nyz\"");
         lexer.entry().unwrap();
         while lexer.token(false).unwrap().is_some() {}
         assert_eq!(lexer.end(), (2, 4));
@@ -360,6 +362,11 @@ mod tests {
             ("a ( b\n c", (1, 3, TextErrorKind::UnbalancedParenthesis)),
             ("a )", (1, 3, TextErrorKind::UnbalancedParenthesis)),
             ("a \"b\n", (1, 3, TextErrorKind::UnterminatedQuote)),
+            // D29: the quote ends on its line; it would otherwise take the next entry.
+            (
+                "a \"b\nc TXT \"d\"",
+                (1, 3, TextErrorKind::UnterminatedQuote),
+            ),
             (
                 "a ( b ( c ) )",
                 (1, 7, TextErrorKind::Invalid("nested parenthesis")),

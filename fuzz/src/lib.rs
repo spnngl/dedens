@@ -6,7 +6,8 @@
 
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::{
-    DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record, Ttl, message,
+    DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record, RecordType, Ttl,
+    message,
 };
 
 #[cfg(test)]
@@ -31,13 +32,25 @@ pub const TARGETS: &[(&str, Entry)] = &[
 pub fn parse_zone(data: &[u8]) {
     // A default TTL, so that files without one, like the example of RFC 1035 §5.3, still yield records.
     for entry in ZoneReader::new(data, Some(Name::root())).with_ttl(Ttl::ZERO) {
-        let Ok(ZoneEntry::Record(DecodedRecord { record, .. })) = entry else {
+        let Ok(ZoneEntry::Record(DecodedRecord {
+            record,
+            invalid_rdata,
+        })) = entry
+        else {
             continue;
         };
         for text in [record.to_string(), record.generic().to_string()] {
-            let again: Record<'_> = text
-                .parse()
-                .unwrap_or_else(|e| panic!("`{text}` reads back: {e}"));
+            let again = if invalid_rdata.is_some() {
+                // RDATA its type refuses: a lone record is refused, a zone keeps it opaque (D9, D25).
+                assert!(text.parse::<Record<'_>>().is_err(), "`{text}` is refused");
+                match ZoneReader::new(text.as_bytes(), None).next() {
+                    Some(Ok(ZoneEntry::Record(decoded))) => decoded.record,
+                    other => panic!("`{text}` reads back in a zone: {other:?}"),
+                }
+            } else {
+                text.parse()
+                    .unwrap_or_else(|e| panic!("`{text}` reads back: {e}"))
+            };
             // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
             assert_eq!(format!("{again:?}"), format!("{record:?}"), "`{text}`");
         }
@@ -103,8 +116,12 @@ pub fn decode_message(data: &[u8]) {
     ];
     assert_eq!(
         message::ttl_offsets(data).map(|offsets| offsets.len()),
-        Ok(records.iter().map(|r| r.len()).sum()),
-        "one TTL offset per record"
+        Ok(records
+            .iter()
+            .flat_map(|r| r.iter())
+            .filter(|r| r.rtype() != RecordType::OPT)
+            .count()),
+        "one TTL offset per record but a stray OPT record"
     );
     let wire = match decoded.message.to_vec() {
         Ok(wire) => wire,

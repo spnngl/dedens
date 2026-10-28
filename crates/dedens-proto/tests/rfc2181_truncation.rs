@@ -37,6 +37,36 @@ fn truncated(message: &Message<'_>, size: usize) -> (Message<'static>, bool) {
     (decoded.message.into_owned(), encoded.truncated)
 }
 
+/// The records of an `RRset` need not be next to each other: none of them may stay when one is dropped.
+#[test]
+fn s9_an_interleaved_rrset_is_dropped_whole() {
+    let mut message = response(0, 0);
+    message.additional = vec![
+        rec("x", a(1)),
+        rec("y", a(2)),
+        rec("x", a(3)),
+        rec("z", a(4)),
+    ];
+    let full = message.to_vec().expect("encodes").len();
+    // Room for all but the last record: z is dropped, x and y are whole.
+    let (decoded, _) = truncated(&message, full - 1);
+    assert_eq!(decoded.additional, message.additional[..3]);
+    // Room for x and y only: the second x does not fit, so the first goes too, and y after it.
+    let (decoded, tc) = truncated(&message, full - 16 - 18);
+    assert!(!tc);
+    assert_eq!(decoded.additional, []);
+    // An RRset written before the cut and continued after it is dropped too.
+    message.additional = vec![
+        rec("x", a(1)),
+        rec("y", a(2)),
+        rec("y", a(3)),
+        rec("x", a(4)),
+    ];
+    let full = message.to_vec().expect("encodes").len();
+    let (decoded, _) = truncated(&message, full - 1);
+    assert_eq!(decoded.additional, []);
+}
+
 #[test]
 fn s9_a_message_that_fits_is_whole() {
     let message = response(3, 0);

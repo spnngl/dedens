@@ -135,17 +135,25 @@ impl<'a> RData<'a> {
 
     /// Calls `f` with the uncompressed wire form of the RDATA.
     pub(crate) fn with_wire<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
-        // Most RDATA fits on the stack; only larger RDATA pays for a 64 KiB buffer.
+        // Most RDATA fits on the stack; larger RDATA is written again into a heap buffer 8 times larger each time,
+        // so it costs a few times its size, not 64 KiB.
         let mut small = [0; 512];
         let mut w = Writer::uncompressed(&mut small);
         if self.encode(&mut w).is_ok() {
             return f(w.written());
         }
-        let mut large = vec![0; MAX_RDATA_LEN];
-        let mut w = Writer::uncompressed(&mut large);
-        self.encode(&mut w)
-            .expect("typed RDATA fits 65535 bytes by construction");
-        f(w.written())
+        let mut large = vec![0; 4096];
+        loop {
+            let mut w = Writer::uncompressed(&mut large);
+            if self.encode(&mut w).is_ok() {
+                return f(w.written());
+            }
+            assert!(
+                large.len() < MAX_RDATA_LEN,
+                "typed RDATA fits 65535 bytes by construction"
+            );
+            large.resize((large.len() * 8).min(MAX_RDATA_LEN), 0);
+        }
     }
 
     /// Decodes the RDATA of `rtype` from `r`, a reader limited to RDLENGTH bytes; all of them must be used.
