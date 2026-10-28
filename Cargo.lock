@@ -653,6 +653,7 @@ dependencies = [
  "dedens-cache",
  "dedens-net",
  "dedens-proto",
+ "dedens-scenario",
  "dedens-server",
  "flume",
  "serde",

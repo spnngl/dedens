@@ -1,0 +1,74 @@
+# Queries to `dedensd` forwarding to a loopback upstream that answers the captures of
+# crates/dedens-proto/tests/testdata; read by tests/end_to_end.rs, which ignores `server`.
+options: {adflag: false, cookie: false}
+queries:
+  - name: example.com
+    type: A
+    expect:
+      rcode: NOERROR
+      flags: [qr, rd, ra]
+      answer:
+        - example.com. A 104.20.23.154
+        - example.com. A 172.66.147.243
+  - name: gmail.com
+    type: MX
+    expect:
+      answer:
+        - gmail.com. MX 5 gmail-smtp-in.l.google.com.
+        - gmail.com. MX 10 alt1.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 20 alt2.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 30 alt3.gmail-smtp-in.l.google.com.
+        - gmail.com. MX 40 alt4.gmail-smtp-in.l.google.com.
+  - name: www.github.com
+    type: A
+    expect:
+      answer:
+        - www.github.com. CNAME github.com.
+        - github.com. A 140.82.121.4
+  - name: nonexistent.invalid
+    type: A
+    expect:
+      rcode: NXDOMAIN
+      answer: []
+      authority:
+        - . SOA a.root-servers.net. nstld.verisign-grs.com. 2026102701 1800 900 604800 86400
+  # Without EDNS a UDP reply holds 512 bytes (RFC 1035 §4.2.1): the 1187-byte answer is truncated.
+  - id: google.com_TXT_udp
+    name: google.com
+    type: TXT
+    options: {edns: false}
+    expect: {rcode: NOERROR, flags: [qr, tc]}
+  # Over TCP, whole (RFC 7766 §5), and from the cache.
+  - id: google.com_TXT_tcp
+    name: google.com
+    type: TXT
+    options: {tcp: true}
+    expect:
+      rcode: NOERROR
+      flags: [qr, ra]
+      answer:
+        - google.com. TXT "_r4rd1pvwyrpi7sw4a3hzmw8e51yh9td"
+        - google.com. TXT "google-site-verification=4ibFUgB-wXLQ_S7vsXVomSTVamuOXBiVAzpR5IZ87D0"
+        - google.com. TXT "onetrust-domain-verification=6d685f1d41a94696ad7ef771f68993e0"
+        - google.com. TXT "cisco-ci-domain-verification=47c38bc8c4b74b7233e9053220c1bbe76bcc1cd33c7acf7acd36cd6a5332004b"
+        - google.com. TXT "Z29vZ2xl"
+        - google.com. TXT "docusign=1b0a6754-49b1-4db5-8540-d2c12664b289"
+        - google.com. TXT "google-site-verification=TV9-DBe4R80X4v0M4U_bd_J9cpOJM0nikft0jAgjmsQ"
+        - google.com. TXT "work-accounts-domain-verification=Tcj6JjIMZOw2KsSEw2Nt2rLae89tN6"
+        - google.com. TXT "onetrust-domain-verification=0d477fe608074e6f9c12bca7826035cc"
+        - google.com. TXT "docusign=05958488-4752-4ef2-95eb-aa7ba8a3bd0e"
+        - google.com. TXT "globalsign-smime-dv=CDYX+XFHUw2wml6/Gb8+59BsH31KzUr6c1l2BPvqKX8="
+        - google.com. TXT "google-site-verification=wD8N7i1JTNTkezJ49swvWW48f8_9xveREV4oB-0Hf5o"
+        - google.com. TXT "v=spf1 include:_spf.google.com ~all"
+        - google.com. TXT "arcules-domain-verification=2R4t5G7nI6tRCo61lpxxbLksPYstxhGmtV75cpr8x9K"
+        - google.com. TXT "MS=E4A68B9AB2BB9670BCE15412F62916164C0B20BB"
+        - google.com. TXT "facebook-domain-verification=22rm551cu4k0ab0bxsw536tlds4h95"
+        - google.com. TXT "apple-domain-verification=30afIBcvSuDV2PLX"
+  # Asked again: from the cache, under this query's ID and name case (RFC 4343 §4.1).
+  - id: example.com_A_again
+    name: EXAMPLE.com
+    type: A
+    expect:
+      answer:
+        - example.com. A 104.20.23.154
+        - example.com. A 172.66.147.243

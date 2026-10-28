@@ -1,6 +1,11 @@
 [files]
 # Fetched as published: `just rfc-archive`, `just root-hints`.
-extend-exclude = ["docs/rfc/archive/", "apps/dedens/src/named.root"]
+# Records of captured responses, as published.
+extend-exclude = [
+  "docs/rfc/archive/",
+  "apps/dedens/src/named.root",
+  "apps/dedensd/tests/end_to_end.yaml",
+]
 [default]
 # RFC 4648 §10 base64 test vector
 extend-ignore-re = ['\("fo", "Zm8="\)']
