@@ -4,7 +4,7 @@ mod common;
 
 use common::{decode_record, encode_with, record, record_wire};
 use dedens_proto::rdata::Opaque;
-use dedens_proto::{Class, DecodeErrorKind, RData, RecordType};
+use dedens_proto::{Class, DecodeError, DecodeErrorKind, DecodedRecord, RData, RecordType};
 use proptest::prelude::*;
 
 #[test]
@@ -23,53 +23,59 @@ fn s4_empty_rdata_is_valid() {
     assert_eq!(decoded.invalid_rdata, None);
 }
 
-/// A record owned by `a.` whose RDATA is `rdata`; a pointer to offset 0 in it means `a.`.
-fn owned_by_a(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
-    let mut wire = vec![1, b'a'];
+/// Decodes a record owned by `a.` whose RDATA is `rdata`, after a header; a pointer to offset 12 means `a.`.
+fn owned_by_a(rtype: RecordType, rdata: &[u8]) -> Result<DecodedRecord<'static>, DecodeError> {
+    let mut wire = vec![0; 12];
+    wire.extend_from_slice(&[1, b'a']);
     wire.extend_from_slice(&record_wire(rtype, rdata));
-    wire
+    let mut r = dedens_proto::wire::Reader::new(&wire);
+    r.bytes(12).expect("the header");
+    let decoded = dedens_proto::Record::decode(&mut r)?;
+    Ok(DecodedRecord {
+        record: decoded.record.into_owned(),
+        invalid_rdata: decoded.invalid_rdata,
+    })
 }
 
 #[test]
 fn s4_names_of_rfc_1035_types_are_decompressed() {
     // MINFO: two names; MB: one.
-    let minfo =
-        decode_record(&owned_by_a(RecordType::MINFO, &[0xC0, 0, 1, b'b', 0xC0, 0])).unwrap();
+    let minfo = owned_by_a(RecordType::MINFO, &[0xC0, 12, 1, b'b', 0xC0, 12]).unwrap();
     assert_eq!(minfo.invalid_rdata, None);
     let RData::Opaque(o) = &minfo.record.data() else {
         panic!("not opaque")
     };
     assert_eq!(o.data(), [1, b'a', 0, 1, b'b', 1, b'a', 0]);
-    let mb = decode_record(&owned_by_a(RecordType::MB, &[0xC0, 0])).unwrap();
+    let mb = owned_by_a(RecordType::MB, &[0xC0, 12]).unwrap();
     assert!(matches!(&mb.record.data(), RData::Opaque(o) if o.data() == [1, b'a', 0]));
 }
 
 #[test]
 fn s4_names_of_older_types_with_names_are_decompressed_too() {
     // NAPTR: order, preference, flags, services, regexp, replacement.
-    let rdata = [&[0, 1, 0, 2, 1, b'u', 0, 0][..], &[0xC0, 0]].concat();
-    let naptr = decode_record(&owned_by_a(RecordType::NAPTR, &rdata)).unwrap();
+    let rdata = [&[0, 1, 0, 2, 1, b'u', 0, 0][..], &[0xC0, 12]].concat();
+    let naptr = owned_by_a(RecordType::NAPTR, &rdata).unwrap();
     assert!(
         matches!(&naptr.record.data(), RData::Opaque(o) if o.data() == [0, 1, 0, 2, 1, b'u', 0, 0, 1, b'a', 0])
     );
     // SRV prohibits compression (RFC 2782), but older servers compressed (RFC 2052).
-    let srv = decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0, 2, 0, 3, 0xC0, 0])).unwrap();
+    let srv = owned_by_a(RecordType::SRV, &[0, 1, 0, 2, 0, 3, 0xC0, 12]).unwrap();
     assert!(matches!(&srv.record.data(), RData::Srv(s) if s.target.to_string() == "a."));
 }
 
 #[test]
 fn s4_invalid_rdata_with_names_is_an_error() {
     // Bytes holding a pointer mean nothing outside their message (D9).
-    assert!(decode_record(&owned_by_a(RecordType::RP, &[0xC0, 0])).is_err());
-    assert!(decode_record(&owned_by_a(RecordType::SRV, &[0, 1, 0xC0, 0])).is_err());
+    assert!(owned_by_a(RecordType::RP, &[0xC0, 12]).is_err());
+    assert!(owned_by_a(RecordType::SRV, &[0, 1, 0xC0, 12]).is_err());
 }
 
 /// Names expanded from pointers can make RDATA outgrow 65535 bytes when the message sits in a larger buffer, as a
 /// zone transfer stream may: an error, not a panic.
 #[test]
 fn s4_rdata_expanded_past_65535_bytes_is_an_error() {
-    // A 255-byte name at offset 0: three labels of 63 bytes, one of 61, the root.
-    let mut buf = Vec::new();
+    // After a header, a 255-byte name at offset 12: three labels of 63 bytes, one of 61, the root.
+    let mut buf = vec![0; 12];
     for len in [63, 63, 63, 61] {
         buf.push(len);
         buf.extend(std::iter::repeat_n(b'a', usize::from(len)));
@@ -79,7 +85,7 @@ fn s4_rdata_expanded_past_65535_bytes_is_an_error() {
     // Root owner, SIG, IN, TTL 0, RDLENGTH 65535: 18 fixed bytes, the signer a pointer to the long name, the rest.
     buf.extend([0, 0, 24, 0, 1, 0, 0, 0, 0, 0xFF, 0xFF]);
     buf.extend([0; 18]);
-    buf.extend([0xC0, 0]);
+    buf.extend([0xC0, 12]);
     buf.resize(start + 11 + 65535, 0);
     let mut r = dedens_proto::wire::Reader::new(&buf);
     r.bytes(start).expect("the name");

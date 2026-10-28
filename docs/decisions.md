@@ -33,7 +33,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the owned types (every RDATA type twice); a lazy message (errors at every access).
 - D8 `Message`: header, questions, answer, authority, additional, and EDNS lifted out of additional, so no
   caller searches for the OPT record.
-- D9 Decoder: a compression pointer points strictly before the current label (no loops), at most 127 per name
+- D9 Decoder: a compression pointer points strictly before the current label (no loops), past the header, to
+  labels ending before the bytes that point to them (a prior name, RFC 1035 §4.1.4), at most 127 per name
   (no long chains); unknown types are opaque (RFC 3597); every input decodes or errors (fuzzed). Broken structure
   is an error. A readable message breaking a rule (several OPT, OPT outside additional or not at the root,
   QDCOUNT > 1 per RFC 9619, trailing bytes) decodes with violations: the CLI shows them, the server answers
@@ -41,7 +42,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   always hold their invariants; except in types whose names may be compressed (RFC 3597 §4), where it is an
   error, since their pointers mean nothing outside the message.
 - D10 Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered buffers), plus a
-  `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), through a fixed open-addressing
+  `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), never into the header, through a fixed open-addressing
   table matched byte for byte (case kept, no allocation); a record with the owner of the previous one points
   to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the first record that does not
   fit; TC only when answer or authority lost records; a cut additional RRset goes whole, since without TC a

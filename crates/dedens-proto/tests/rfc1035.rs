@@ -56,10 +56,10 @@ fn s4_1_4_pointers_use_the_low_14_bits() {
 
 #[test]
 fn s4_1_4_a_name_may_be_only_a_pointer_or_labels_then_a_pointer() {
-    // "a" + pointer(0 = "b" root) and a bare pointer.
-    let msg = [1, b'b', 0, 1, b'a', 0xC0, 0, 0xC0, 0];
+    // After the header, "b" root at 12, then "a" + pointer to 12 and a bare pointer.
+    let msg = [&[0; 12][..], &[1, b'b', 0, 1, b'a', 0xC0, 12, 0xC0, 12]].concat();
     let mut r = reader(&msg);
-    r.bytes(3).unwrap();
+    r.bytes(15).unwrap();
     assert_eq!(Name::decode(&mut r).unwrap(), name_of(&[b"a", b"b"]));
     assert_eq!(Name::decode(&mut r).unwrap(), name_of(&[b"b"]));
     assert!(r.is_empty());
@@ -68,9 +68,10 @@ fn s4_1_4_a_name_may_be_only_a_pointer_or_labels_then_a_pointer() {
 /// A buffer larger than a DNS message: a compressed name past offset 65535 still decodes.
 #[test]
 fn s4_1_4_a_compressed_name_past_65535_bytes_decodes() {
-    let mut buf = vec![1, b'b', 0];
+    let mut buf = vec![0; 12];
+    buf.extend_from_slice(&[1, b'b', 0]);
     buf.resize(70_000, 0);
-    buf.extend_from_slice(&[1, b'a', 0xC0, 0]);
+    buf.extend_from_slice(&[1, b'a', 0xC0, 12]);
     let mut r = reader(&buf);
     r.bytes(70_000).unwrap();
     let name = Name::decode(&mut r).unwrap();
@@ -81,10 +82,12 @@ fn s4_1_4_a_compressed_name_past_65535_bytes_decodes() {
 
 #[test]
 fn s4_1_4_long_pointer_chains_are_rejected() {
-    // The root at 0, then pointers each to the one before: a chain of `hops` pointers ends at the root.
+    // After the header, the root at 12, then pointers each to the one before: a chain of `hops` pointers ends
+    // at the root.
     let chain = |hops: u16| {
-        let mut msg = vec![0, 0xC0, 0];
-        for target in (1..hops).map(|i| 1 + 2 * (i - 1)) {
+        let mut msg = vec![0; 12];
+        msg.extend_from_slice(&[0, 0xC0, 12]);
+        for target in (1..hops).map(|i| 13 + 2 * (i - 1)) {
             msg.extend_from_slice(&(0xC000 | target).to_be_bytes());
         }
         let start = msg.len() - 2;

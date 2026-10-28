@@ -5,6 +5,7 @@ use core::hash::{Hash, Hasher};
 use core::str::FromStr;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::header::HEADER_LEN;
 use crate::text::{self, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
@@ -206,16 +207,25 @@ impl<'a> Name<'a> {
         let mut len = 0;
         let mut hops = 0;
         let at = |offset, kind| DecodeError { offset, kind };
+        // Past `limit`: the end of the input, or, after a pointer, of the prior name it points to.
+        let past = |resume: Option<usize>, pos| {
+            let kind = if resume.is_some() {
+                DecodeErrorKind::BadPointer
+            } else {
+                DecodeErrorKind::UnexpectedEnd
+            };
+            at(pos, kind)
+        };
         loop {
             let first = match msg.get(pos) {
                 Some(&b) if pos < limit => b,
-                _ => return Err(at(pos, DecodeErrorKind::UnexpectedEnd)),
+                _ => return Err(past(resume, pos)),
             };
             match first & 0xC0 {
                 0x00 => {
                     let end = pos + 1 + usize::from(first);
                     if end > limit {
-                        return Err(at(pos, DecodeErrorKind::UnexpectedEnd));
+                        return Err(past(resume, pos));
                     }
                     if first != 0 && len + usize::from(first) + 2 > MAX_NAME_LEN {
                         return Err(at(pos, DecodeErrorKind::NameTooLong));
@@ -235,19 +245,22 @@ impl<'a> Name<'a> {
                 0xC0 => {
                     let second = match msg.get(pos + 1) {
                         Some(&b) if pos + 1 < limit => b,
-                        _ => return Err(at(pos, DecodeErrorKind::UnexpectedEnd)),
+                        _ => return Err(past(resume, pos)),
                     };
                     let target = usize::from(u16::from_be_bytes([first & 0x3F, second]));
                     // Backward pointers rule out loops, the hop count rules out long chains of them: a name
-                    // has at most 127 labels, each worth at most one pointer.
+                    // has at most 127 labels, each worth at most one pointer. Offsets count from the start of
+                    // the message, so a name is never in its 12-byte header.
                     hops += 1;
-                    if target >= bound || hops > MAX_POINTERS {
+                    if target < HEADER_LEN || target >= bound || hops > MAX_POINTERS {
                         return Err(at(pos, DecodeErrorKind::BadPointer));
                     }
                     resume.get_or_insert(pos + 2);
+                    // The name pointed to was written before this one, so it ends where this one starts: it
+                    // cannot run into the bytes that point to it.
+                    limit = bound;
                     bound = target;
                     pos = target;
-                    limit = msg.len();
                 }
                 _ => return Err(at(pos, DecodeErrorKind::ReservedLabelType)),
             }
@@ -655,22 +668,26 @@ mod tests {
 
     #[test]
     fn decode_follows_a_pointer_and_resumes_after_it() {
-        // 0: "a" root; 3: "b" + pointer to 0.
-        let msg = [1, b'a', 0, 1, b'b', 0xC0, 0, 7];
+        // 12: "a" root; 15: "b" + pointer to 12.
+        let msg = [&[0; 12][..], &[1, b'a', 0, 1, b'b', 0xC0, 12, 7]].concat();
         let mut r = Reader::new(&msg);
-        r.bytes(3).unwrap();
+        r.bytes(15).unwrap();
         assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"b", b"a"]));
-        assert_eq!(r.position(), 7);
+        assert_eq!(r.position(), 19);
     }
 
     #[test]
     fn a_decoded_name_borrows_and_matches_its_owned_copy() {
         use std::hash::BuildHasher;
 
-        // 0: "a" root; 3: "B" + pointer to 0; 7: "b" "a" root, uncompressed.
-        let msg = [1, b'a', 0, 1, b'B', 0xC0, 0, 1, b'b', 1, b'a', 0];
+        // 12: "a" root; 15: "B" + pointer to 12; 19: "b" "a" root, uncompressed.
+        let msg = [
+            &[0; 12][..],
+            &[1, b'a', 0, 1, b'B', 0xC0, 12, 1, b'b', 1, b'a', 0],
+        ]
+        .concat();
         let mut r = Reader::new(&msg);
-        r.bytes(3).unwrap();
+        r.bytes(15).unwrap();
         let packed = Name::decode(&mut r).unwrap();
         let flat = Name::decode(&mut r).unwrap();
         assert!(packed.is_packed() && !flat.is_packed());
@@ -691,12 +708,29 @@ mod tests {
 
     #[test]
     fn decode_rejects_pointers_that_do_not_go_back() {
-        // A pointer to itself, to later bytes, and to a label that points back at it.
-        for msg in [&[0xC0, 0][..], &[0xC0, 2, 0], &[1, b'a', 0xC0, 0]] {
-            let mut r = Reader::new(msg);
+        // A pointer to itself, to later bytes, to a label that points back at it, and into the header.
+        for name in [
+            &[0xC0, 12][..],
+            &[0xC0, 14, 0],
+            &[1, b'a', 0xC0, 12],
+            &[0xC0, 1],
+        ] {
+            let msg = [&[0; 12][..], name].concat();
+            let mut r = Reader::new(&msg);
+            r.bytes(12).unwrap();
             let err = Name::decode(&mut r).unwrap_err();
             assert_eq!(err.kind, DecodeErrorKind::BadPointer, "{msg:?}");
         }
+    }
+
+    #[test]
+    fn decode_rejects_a_prior_name_running_over_its_pointer() {
+        // 12: a 3-byte label holding the name at 13, a pointer back to 12, then "x" and the root.
+        let msg = [&[0; 12][..], &[3, 0xC0, 12, b'x', 0]].concat();
+        let mut r = Reader::new(&msg);
+        r.bytes(13).unwrap();
+        let err = Name::decode(&mut r).unwrap_err();
+        assert_eq!(err.kind, DecodeErrorKind::BadPointer);
     }
 
     #[test]

@@ -105,20 +105,21 @@ fn ttl_offsets_skip_a_stray_opt_record() {
 fn failed_encoding_writes_nothing() {
     let record = rec("abcdefgh.example", RData::A(Ipv4Addr::new(192, 0, 2, 1)));
     let question = Question::new(dns("abcdefgh.example"), RecordType::A);
-    let mut buf = [0; 30];
+    let mut buf = [0; 41];
     let mut w = dedens_proto::wire::Writer::new(&mut buf);
-    w.put_u8(7).expect("room");
+    // A header: names are never in it, so never pointed to.
+    w.put_bytes(&[7; 12]).expect("room");
     assert!(record.encode(&mut w).is_err());
-    assert_eq!(w.len(), 1);
+    assert_eq!(w.len(), 12);
     question.encode(&mut w).expect("fits: 18 + 4 bytes");
-    assert_eq!(w.len(), 23);
+    assert_eq!(w.len(), 34);
     assert!(
         question.encode(&mut w).is_ok(),
         "a pointer to the first one"
     );
-    assert_eq!(w.len(), 29);
+    assert_eq!(w.len(), 40);
     assert!(question.encode(&mut w).is_err());
-    assert_eq!(w.len(), 29);
+    assert_eq!(w.len(), 40);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Byte cursors: [`Reader`] decodes, [`Writer`] encodes, neither allocates.
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
+use crate::header::HEADER_LEN;
 use crate::name::{MAX_NAME_LEN, Name};
 
 /// Largest DNS message: the 16-bit length prefix of TCP (RFC 1035 §4.2.2) bounds it.
@@ -204,13 +205,13 @@ impl NameTable {
         (home..TABLE_SLOTS).chain(0..home)
     }
 
-    /// Remembers that the name `suffix` starts at `offset`; ignored when it cannot be pointed to or the table is
-    /// full.
+    /// Remembers that the name `suffix` starts at `offset`; ignored when it cannot be pointed to (inside the header
+    /// or past 14 bits, RFC 1035 §4.1.4) or the table is full.
     fn add(&mut self, offset: usize, suffix: &[u8]) {
         let Ok(stored) = u16::try_from(offset + 1) else {
             return;
         };
-        if offset >= POINTER_LIMIT || self.len >= TABLE_CAPACITY {
+        if !(HEADER_LEN..POINTER_LIMIT).contains(&offset) || self.len >= TABLE_CAPACITY {
             return;
         }
         let empty = Self::probe(suffix).find(|&i| self.slots.get(i) == Some(&0));
@@ -504,7 +505,9 @@ impl<'a> Writer<'a> {
         Ok(match pointer {
             Some(target) if inline == 0 => Some(target),
             _ if inline == 0 => None,
-            _ => u16::try_from(first).ok().filter(|_| first < POINTER_LIMIT),
+            _ => u16::try_from(first)
+                .ok()
+                .filter(|_| (HEADER_LEN..POINTER_LIMIT).contains(&first)),
         })
     }
 

@@ -23,8 +23,9 @@ pub enum DecodeErrorKind {
     /// A name is longer than 255 bytes in wire form (RFC 1035 §2.3.4).
     #[error("name longer than 255 bytes")]
     NameTooLong,
-    /// A compression pointer does not point strictly before the name being read (RFC 1035 §4.1.4).
-    #[error("compression pointer does not point backwards")]
+    /// A compression pointer does not point to a whole name before the one being read: forward, into the header,
+    /// or to labels running into the bytes that point to them (RFC 1035 §4.1.4).
+    #[error("compression pointer does not point to a prior name")]
     BadPointer,
     /// A label type reserved by RFC 6891 §5 (`0b01` or `0b10` in the two high bits).
     #[error("reserved label type")]
