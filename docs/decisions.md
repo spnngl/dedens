@@ -261,7 +261,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   150 ns cache hit. Built-in stages are enum variants behind Cargo features; custom binaries register extra
   stage types (trait objects) on the server library. Stages before the cache are synchronous, without
   allocation or copy of the query.
-- D24 Configuration: a directory of TOML, YAML or JSON files, one serde model (as D17), merged; components
+- D24 (narrowed by D44) Configuration: a directory of TOML, YAML or JSON files, one serde model (as D17), merged; components
   named, typed by a `type` key. Errors, not warnings: unknown field, duplicate name, unused component.
   `${VAR}`, `${VAR:-default}` (`$$` escapes), `SECRET[backend.key]`. `dedensd validate` builds the pipeline
   without binding; JSON Schema from the types (schemars); config tests run D17 query files. Reload (SIGHUP,
@@ -281,7 +281,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   and CD, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy), cookies
   are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
 - D42 `dedensd` I/O around D41: one compio thread per core on Linux, each with its own UDP socket and TCP
-  listener on every `--listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
+  listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one thread elsewhere,
   where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind together. Every
   socket is bound before any thread starts, so a taken address fails the start. A reply the pipeline builds at
   once goes out from the socket's task; a query for upstream gets a task owning its `Upstream` and asks with the
@@ -305,6 +305,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   takes it back. Rejected: serving stale data before resolution ends, on a client timer (RFC 8767 §5's 1.8 s;
   later, with configuration); reading the query again in `dedensd`'s upstream task (a second cache lookup, a
   miss counted twice, and no way to tell a refresh from a reply).
+- D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D17's query
+  files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings under `type`:
+  `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53). `${VAR}` is
+  replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML. Errors:
+  unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
+  after a forward stage (which answers every query). `dedensd validate` reads the file and builds the
+  pipeline without binding. Later, with need: a directory merged, `SECRET[..]`, JSON Schema, reload.
 
 ## Observability
 

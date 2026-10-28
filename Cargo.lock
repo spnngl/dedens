@@ -597,6 +597,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "proptest",
+ "serde",
  "thiserror",
 ]
 
@@ -654,6 +655,8 @@ dependencies = [
  "dedens-proto",
  "dedens-server",
  "flume",
+ "serde",
+ "serde-saphyr",
  "socket2",
  "tracing",
  "tracing-subscriber",

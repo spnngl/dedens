@@ -11,10 +11,13 @@ publish.workspace = true
 [features]
 # Counters through the `metrics` facade (D30).
 metrics = ["dep:metrics"]
+# `Config` read from configuration files (D24).
+serde = ["dep:serde"]
 
 [dependencies]
 dedens-proto.workspace = true
 metrics = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]

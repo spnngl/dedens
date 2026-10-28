@@ -1,53 +1,69 @@
-//! `dedensd`: a DNS server, a caching forwarder for now (D41, D42, D43).
+//! `dedensd`: a DNS server, a caching forwarder for now (D41-D44).
 //!
-//! Listens on each `--listen` address over UDP and TCP, answers from its cache, and forwards the rest to the
-//! `--upstream` servers in order. On Linux,
-//! one thread per core, each with its own sockets on the same addresses (`SO_REUSEPORT`) and the kernel spreading
-//! queries across them; elsewhere, one thread.
+//! Listens on each address of its configuration file over UDP and TCP, and runs each query through the stages it
+//! lists. On Linux, one thread per core, each with its own sockets on the same addresses (`SO_REUSEPORT`) and the
+//! kernel spreading queries across them; elsewhere, one thread.
 
 #![forbid(unsafe_code)]
 
+mod config;
 mod serve;
 
-use std::io::{self, IsTerminal};
-use std::net::{IpAddr, SocketAddr};
+use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
 
 use anyhow::Context;
-use clap::Parser;
-use dedens_cache::{Cache, Config};
-use dedens_server::{Forward, Pipeline, Stage};
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser, Subcommand};
 
-/// A DNS server: forwards queries to upstream servers.
+/// A DNS server: answers from its cache and forwards the rest to upstream servers.
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
-    /// Address to answer on, over UDP and TCP; repeat for several.
-    #[arg(long, required = true, value_name = "IP:PORT")]
-    listen: Vec<SocketAddr>,
-    /// Server to forward to, asked in the order given; port 53 unless one is given.
-    #[arg(long = "upstream", required = true, value_name = "IP[:PORT]", value_parser = upstream)]
-    upstreams: Vec<SocketAddr>,
+    /// The configuration file, YAML (D24).
+    #[arg(long, short, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
     /// Debug events with -v, trace events with -vv.
-    #[arg(short, long, action = clap::ArgAction::Count)]
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Reads the configuration and builds the pipeline, without binding any socket.
+    Validate,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     diagnostics(args.verbose);
-    let forward = Forward::new(&args.upstreams).context("no upstream server")?;
-    let cache = Cache::new(Config::default()).context("cannot set the cache up")?;
-    let pipeline = Arc::new(Pipeline::new(vec![
-        Stage::Cache(cache),
-        Stage::Forward(forward),
-    ]));
+    // Global, for `dedensd validate --config FILE`, so clap cannot require it.
+    let Some(file) = args.config else {
+        Args::command()
+            .error(
+                ErrorKind::MissingRequiredArgument,
+                "--config <FILE> is required",
+            )
+            .exit()
+    };
+    let path = file.display();
+    let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {path}"))?;
+    let config = config::read(&text, |name| std::env::var(name).ok())
+        .with_context(|| format!("in {path}"))?;
+    if let Some(Command::Validate) = args.command {
+        writeln!(io::stdout(), "{path}: valid")?;
+        return Ok(());
+    }
+    let pipeline = Arc::new(config.pipeline);
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..threads())
-        .map(|_| serve::bind(&args.listen))
+        .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    tracing::info!(listen = ?args.listen, upstreams = ?args.upstreams, threads = sockets.len(), "serving");
+    tracing::info!(config = %path, listen = ?config.listen, threads = sockets.len(), "serving");
     let (ended, end) = mpsc::channel();
     for sockets in sockets {
         let (pipeline, ended) = (Arc::clone(&pipeline), ended.clone());
@@ -62,13 +78,6 @@ fn main() -> anyhow::Result<()> {
         Ok(served) => served.context("cannot serve"),
         Err(mpsc::RecvError) => Ok(()),
     }
-}
-
-/// An upstream server: an address with its port, or an IP address on port 53.
-fn upstream(text: &str) -> Result<SocketAddr, String> {
-    text.parse()
-        .or_else(|_| text.parse().map(|ip: IpAddr| SocketAddr::new(ip, 53)))
-        .map_err(|_| format!("`{text}` is neither IP:PORT nor IP"))
 }
 
 /// The serving threads: one per core on Linux, where `SO_REUSEPORT` spreads queries across their sockets; one

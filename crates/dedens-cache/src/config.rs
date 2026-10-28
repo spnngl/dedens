@@ -11,8 +11,14 @@ const MAX_FAILURE_SECS: u32 = 300;
 /// bits and its tags from the top 7.
 pub(crate) const MAX_SHARDS: usize = 1 << 16;
 
-/// Cache settings; [`Config::default`] follows the RFCs' recommendations.
+/// Cache settings; [`Config::default`] follows the RFCs' recommendations. With the `serde` feature, read with
+/// these field names, each defaulting to its value in [`Config::default`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize),
+    serde(default, deny_unknown_fields)
+)]
 pub struct Config {
     /// Memory budget for entries, in bytes, split evenly between shards; each share holds at least the largest
     /// failure record.

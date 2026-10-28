@@ -1,10 +1,12 @@
 //! `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured
-//! bytes, several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, and a start
-//! that fails on a taken address.
+//! bytes, several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start
+//! that fails on a taken address, and `validate` reading a configuration file without binding.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -89,16 +91,28 @@ impl Drop for Server {
     }
 }
 
+/// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream`; removed with the
+/// test process's temporary files, each test writing its own.
+fn config(listen: &str, upstream: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "dedensd-{}-{}.yaml",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let text = format!(
+        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['{upstream}']\n"
+    );
+    std::fs::write(&path, text).expect("a configuration file");
+    path
+}
+
 /// Starts `dedensd` on a free port, forwarding to `upstream`, and waits until it accepts connections.
 fn start(upstream: SocketAddr) -> Server {
     let addr = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
-        .args([
-            "--listen",
-            &addr.to_string(),
-            "--upstream",
-            &upstream.to_string(),
-        ])
+        .arg("--config")
+        .arg(config(&addr.to_string(), &upstream.to_string()))
         .stderr(Stdio::null())
         .spawn()
         .expect("dedensd starts");
@@ -198,13 +212,42 @@ fn a_taken_address_fails_the_start() {
     let taken = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
     let addr = taken.local_addr().expect("its address").to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_dedensd"))
-        .args(["--listen", &addr, "--upstream", "127.0.0.1"])
+        .arg("--config")
+        .arg(config(&addr, "127.0.0.1"))
         .output()
         .expect("dedensd runs");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(&format!("cannot bind UDP {addr}")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn validate_reads_the_configuration_without_binding() {
+    let taken = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+    let path = config(
+        &taken.local_addr().expect("its address").to_string(),
+        "${UPSTREAM}",
+    );
+    let validate = |upstream: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dedensd"));
+        command.arg("validate").arg("--config").arg(&path);
+        match upstream {
+            Some(upstream) => command.env("UPSTREAM", upstream),
+            None => command.env_remove("UPSTREAM"),
+        };
+        command.output().expect("dedensd runs")
+    };
+    let output = validate(Some("127.0.0.1"));
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stdout).ends_with(": valid\n"));
+    let output = validate(None);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("variable `UPSTREAM` is not set"),
         "{stderr}"
     );
 }
