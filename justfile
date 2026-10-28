@@ -18,9 +18,7 @@ toolchains:
     rustup toolchain install {{nightly}} --profile minimal --component rustfmt
 
 # The gate of every change: format, spelling, lint, docs, tests.
-check:
-    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --all --check
-    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --manifest-path fuzz/Cargo.toml --check
+check: (rustfmt "--check")
     taplo fmt --check
     typos
     cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -30,10 +28,17 @@ check:
     cargo test --manifest-path fuzz/Cargo.toml --lib
 
 # Format Rust (pinned nightly rustfmt) and TOML.
-fmt:
-    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --all
-    RUSTFMT="$(rustup which --toolchain {{nightly}} rustfmt)" cargo fmt --manifest-path fuzz/Cargo.toml
+fmt: rustfmt
     taplo fmt
+
+# `cargo fmt` of the workspace and fuzz/ with the pinned nightly's rustfmt.
+[private]
+rustfmt *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustfmt="$(rustup which --toolchain {{nightly}} rustfmt)"
+    RUSTFMT="$rustfmt" cargo fmt --all {{args}}
+    RUSTFMT="$rustfmt" cargo fmt --manifest-path fuzz/Cargo.toml {{args}}
 
 # Every feature combination of every crate builds (cargo-hack).
 hack:
@@ -56,6 +61,7 @@ minimal-versions:
 # Advisories, licenses, duplicate crates and sources (cargo-deny, deny.toml).
 deny:
     cargo deny check
+    cargo deny --manifest-path fuzz/Cargo.toml check
 
 # Benchmarks against other DNS libraries (D14): Rust ones with divan, then Go's miekg/dns, the codec of
 # CoreDNS, when Go is installed. Unbound: `just bench-unbound`.
@@ -90,7 +96,8 @@ cov:
     #!/usr/bin/env bash
     set -euo pipefail
     # The pinned stable's own cargo and rustc first: the llvm-tools component belongs to that toolchain.
-    export PATH="$(dirname "$(rustup which rustc)"):$PATH"
+    rustc="$(rustup which rustc)"
+    export PATH="$(dirname "$rustc"):$PATH"
     cargo llvm-cov --workspace --all-features --summary-only
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
@@ -100,7 +107,8 @@ fuzz target="decode_message" seconds="300":
     set -euo pipefail
     # The pinned nightly's own cargo and rustc first: cargo-fuzz needs `-Z` flags, and rustup proxies would pick
     # the stable of rust-toolchain.toml.
-    export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    export PATH="$(dirname "$rustc"):$PATH"
     cd fuzz
     # The first corpus directory is the one libFuzzer writes to; the captured responses and zone files only seed it.
     mkdir -p "corpus/{{target}}"
@@ -113,7 +121,8 @@ fuzz target="decode_message" seconds="300":
 fuzz-all seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
-    export PATH="$(dirname "$(rustup which --toolchain {{nightly}} rustc)"):$PATH"
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    export PATH="$(dirname "$rustc"):$PATH"
     cd fuzz
     for target in $(cargo fuzz list); do
         mkdir -p "corpus/$target"
@@ -140,13 +149,14 @@ rapx-install:
         export Z3_SYS_Z3_HEADER="$z3/include/z3.h" LIBRARY_PATH="$z3/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
     fi
     rustup toolchain install {{nightly}} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
-    RUSTC="$(rustup which --toolchain {{nightly}} rustc)" \
-        rustup run {{nightly}} cargo install rapx --version {{rapx_version}} --locked
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    RUSTC="$rustc" rustup run {{nightly}} cargo install rapx --version {{rapx_version}} --locked
 
 # RAPx static analysis, outside the gate: use-after-free, double free and leaks by default; `just rapx opt` for
 # optimization hints. Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
 rapx *args="check -f -m":
-    CARGO_TARGET_DIR=target/rapx RUSTC="$(rustup which --toolchain {{nightly}} rustc)" rustup run {{nightly}} cargo rapx {{args}}
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"; \
+        CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{nightly}} cargo rapx {{args}}
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:

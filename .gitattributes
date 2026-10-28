@@ -94,10 +94,10 @@
 *.toml     text diff=toml
 Cargo.lock text
 
-# Byte-exact test data: DNS messages captured off the wire, fuzz corpora, snapshots.
-**/testdata/** -text
-fuzz/seeds/**  -text
-*.snap         text eol=lf
+# Byte-exact test data: captured DNS messages, zone files the tests and fuzz targets read, snapshots.
+**/testdata/**                     binary
+crates/dedens-proto/tests/zones/** -text
+*.snap                             text eol=lf
 
 # Verbatim RFC copies (`just rfc-archive`): collapsed in diffs.
 docs/rfc/archive/** -diff

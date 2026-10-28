@@ -1,45 +1,29 @@
 name: fuzz
 
+# Pinned nightly with real libFuzzer, scheduled and manual. Pull requests run the stable smoke tests in
+# ci.yml (`just check`).
 on:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "fuzz/**"
-      - "crates/**"
-      - "justfile"
-      - ".github/workflows/fuzz.yml"
+
+# One run at a time: the next waits, so each starts from the corpus the last one saved.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 # Each job grants only what it needs.
 permissions: {}
 
 jobs:
-  # Stable: the captured responses plus truncated and bit-flipped variants through every target.
-  smoke:
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with:
-          # renovate: datasource=github-releases depName=casey/just
-          just-version: "1.59.0"
-      - run: just toolchains
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: fuzz
-      - run: just fuzz-smoke
-
-  # Pinned nightly with real libFuzzer: scheduled and manual runs only.
   fuzz:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # renovate: datasource=crate depName=cargo-fuzz
+      CARGO_FUZZ_VERSION: "0.13.2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -54,7 +38,13 @@ jobs:
           workspaces: fuzz
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@${{ env.CARGO_FUZZ_VERSION }}
+      # Each run grows the corpus of the last one: a key per run, restored from the newest.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
       - name: Run every target for 60 seconds from the captured responses
         run: just fuzz-all 60
       - name: Keep the crashing inputs

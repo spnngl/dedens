@@ -10,6 +10,11 @@ on:
     paths:
       - .github/workflows/rapx.yml
 
+# A new push to a pull request cancels its running analysis; other runs finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions: {}
 
 env:
@@ -18,6 +23,8 @@ env:
 jobs:
   rapx:
     runs-on: ubuntu-26.04
+    # Building RAPx from source, uncached, takes most of it.
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -35,7 +42,9 @@ jobs:
           # renovate: datasource=github-releases depName=casey/just
           just-version: "1.59.0"
       - run: just rapx-install
+      # `shell: bash` adds pipefail: a failed analysis stays red through `tee`.
       - name: Use-after-free, double free, leaks
+        shell: bash
         run: |
           {
             echo '## RAPx check'
@@ -44,6 +53,7 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Optimization hints
+        shell: bash
         run: |
           {
             echo '## RAPx opt'

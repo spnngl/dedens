@@ -1,4 +1,4 @@
-# cargo-deny (D12): `just deny`.
+# cargo-deny (D14): `just deny`, on the workspace and on fuzz/.
 
 [graph]
 all-features = true
@@ -10,6 +10,8 @@ yanked = "deny"
 
 [licenses]
 allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Zlib"]
+# LLVM's libFuzzer, vendored by the fuzz harness only, never shipped.
+exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]
 
 [bans]
 multiple-versions = "warn"

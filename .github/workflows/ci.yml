@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
 
+# A new push to a pull request cancels its running checks; each commit on main gets its own run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Each job grants only what it needs.
 permissions: {}
 
@@ -13,15 +18,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # `just check` on every supported platform: macos-latest is Apple Silicon (kqueue), Ubuntu runs io_uring.
+  # `just check` on every supported platform: macos-26 is Apple Silicon (kqueue), Ubuntu runs io_uring.
   check:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-26.04]
+        os: [macos-26, ubuntu-26.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      # renovate: datasource=crate depName=taplo-cli
+      TAPLO_VERSION: "0.10.0"
+      # renovate: datasource=crate depName=typos-cli
+      TYPOS_VERSION: "1.51.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -32,10 +43,15 @@ jobs:
           just-version: "1.59.0"
       # The pinned stable and nightly, before rust-cache: its key includes the rustc version.
       - run: just toolchains
+      # `just check` also builds fuzz/, a workspace of its own.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
-          tool: taplo,typos
+          tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }}
       - run: just check
 
   # Build matrix and dependency checks: platform-independent, Linux only.
@@ -45,8 +61,14 @@ jobs:
       matrix:
         recipe: [hack, msrv, minimal-versions, deny]
     runs-on: ubuntu-26.04
+    timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      # renovate: datasource=crate depName=cargo-hack
+      CARGO_HACK_VERSION: "0.6.45"
+      # renovate: datasource=crate depName=cargo-deny
+      CARGO_DENY_VERSION: "0.20.2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -62,7 +84,7 @@ jobs:
           key: ${{ matrix.recipe }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
-          tool: cargo-hack,cargo-deny
+          tool: cargo-hack@${{ env.CARGO_HACK_VERSION }},cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - env:
           RECIPE: ${{ matrix.recipe }}
         run: just "$RECIPE"
@@ -70,8 +92,12 @@ jobs:
   # Coverage of the tests, shown in the job summary: informational, not part of the gate.
   coverage:
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # renovate: datasource=crate depName=cargo-llvm-cov
+      CARGO_LLVM_COV_VERSION: "0.9.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -84,7 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
       - name: Summarize coverage
         run: |
           {
@@ -99,6 +125,7 @@ jobs:
     if: always()
     needs: [check, deps]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     steps:
       - name: Every check passed

@@ -1,5 +1,5 @@
 # Every commit of a pull request follows Conventional Commits (AGENTS.md,
-# "Commits").
+# "Rules").
 name: conventional-commits
 
 on:
