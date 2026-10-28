@@ -11,11 +11,16 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
 
-- Limits: TCP connections per listener, queries in flight per connection and per thread (RFC 7766 §6.2.2),
-  so a client cannot hold every socket or task. Default: per-thread caps in the configuration step, refusing
-  new connections past them.
-
 ## Later
+
+- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED.
+  Default: a stage or core setting, loopback and private ranges allowed when unset.
+- Coalescing identical upstream queries in flight (RFC 5452 §5): later ones wait on the first exchange.
+  Default: a per-thread map by cache key, with dnsperf numbers.
+- Replies from a wildcard UDP listener leave from the address the query came to (`IP_PKTINFO`). Default: add
+  when a multihomed deployment needs it.
+- Scrubbing upstream answers of records outside the question's CNAME chain and bailiwick. Default: with the
+  recursive resolver.
 
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one
   name: 364 ns a hit, against about 100 ns on one thread). Measure under the server's thread-per-core load

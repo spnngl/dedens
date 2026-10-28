@@ -1,7 +1,10 @@
 //! The sockets of one thread and the tasks answering on them (D42): a task per UDP socket and per TCP listener,
 //! one per TCP connection, and one per query that waits for an upstream server. Replies the pipeline builds at
 //! once go out from the socket's own task; the rest are asked upstream with the thread's `dedens_net` client.
+//! Each thread bounds its upstream queries and TCP connections, each connection its queries in flight and the time
+//! a reply takes to write (D47).
 
+use std::cell::Cell;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::pin;
@@ -74,39 +77,87 @@ fn socket(addr: SocketAddr, ty: Type) -> io::Result<Socket> {
     Ok(socket)
 }
 
+/// Upstream queries in flight per thread: past them, a UDP query is dropped and a TCP connection closed.
+const UPSTREAM_QUERIES: usize = 1024;
+
+/// TCP connections per thread: past them, a new one is closed at once (RFC 7766 §10).
+const TCP_CONNECTIONS: usize = 256;
+
+/// Queries in flight per TCP connection, waiting for upstream or for the writer: past them, reading waits.
+const TCP_PENDING: usize = 64;
+
+/// How long a reply may take to write: a client that stops reading loses its connection (RFC 7766 §10).
+const TCP_WRITE: Duration = Duration::from_secs(10);
+
+/// What the tasks of one thread share.
+struct Thread {
+    pipeline: Arc<Pipeline>,
+    client: Client,
+    upstream: Slots,
+    connections: Slots,
+}
+
+/// A count of things in use, up to a limit; a [`Slot`] gives its place back when dropped.
+struct Slots {
+    used: Rc<Cell<usize>>,
+    max: usize,
+}
+
+impl Slots {
+    fn new(max: usize) -> Self {
+        Self {
+            used: Rc::default(),
+            max,
+        }
+    }
+
+    /// A slot, `None` when all are taken.
+    fn take(&self) -> Option<Slot> {
+        let used = self.used.get();
+        (used < self.max).then(|| {
+            self.used.set(used + 1);
+            Slot(Rc::clone(&self.used))
+        })
+    }
+}
+
+/// A place taken in [`Slots`].
+struct Slot(Rc<Cell<usize>>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
 /// Answers on `sockets` with `pipeline`, until the end of the process.
 ///
 /// # Errors
 ///
 /// A socket the runtime cannot take.
 pub(crate) async fn serve(sockets: Sockets, pipeline: Arc<Pipeline>) -> io::Result<()> {
-    let client = Rc::new(Client::new());
-    let mut tasks = Vec::new();
+    let thread = Rc::new(Thread {
+        pipeline,
+        client: Client::new(),
+        upstream: Slots::new(UPSTREAM_QUERIES),
+        connections: Slots::new(TCP_CONNECTIONS),
+    });
     for socket in sockets.udp {
-        let socket = UdpSocket::from_std(socket.into())?;
-        tasks.push(spawn(udp(
-            socket,
-            Arc::clone(&pipeline),
-            Rc::clone(&client),
-        )));
+        spawn(udp(UdpSocket::from_std(socket.into())?, Rc::clone(&thread))).detach();
     }
     for socket in sockets.tcp {
-        let listener = TcpListener::from_std(socket.into())?;
-        tasks.push(spawn(tcp(
-            listener,
-            Arc::clone(&pipeline),
-            Rc::clone(&client),
-        )));
+        spawn(tcp(
+            TcpListener::from_std(socket.into())?,
+            Rc::clone(&thread),
+        ))
+        .detach();
     }
-    // None of them ends.
-    for task in tasks {
-        let _ = task.await;
-    }
-    Ok(())
+    // The tasks never end.
+    std::future::pending().await
 }
 
 /// Answers the queries of one UDP socket.
-async fn udp(socket: UdpSocket, pipeline: Arc<Pipeline>, client: Rc<Client>) {
+async fn udp(socket: UdpSocket, thread: Rc<Thread>) {
     let socket = Rc::new(socket);
     let mut query = Vec::with_capacity(MAX_MESSAGE_LEN);
     let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
@@ -121,7 +172,10 @@ async fn udp(socket: UdpSocket, pipeline: Arc<Pipeline>, client: Rc<Client>) {
                 continue;
             }
         };
-        let upstream = match pipeline.query(&query, Transport::Udp, now(), &mut out) {
+        let upstream = match thread
+            .pipeline
+            .query(&query, Transport::Udp, now(), &mut out)
+        {
             Step::Reply(len) => {
                 out = send(&socket, out, len, peer).await;
                 continue;
@@ -133,15 +187,16 @@ async fn udp(socket: UdpSocket, pipeline: Arc<Pipeline>, client: Rc<Client>) {
                 upstream
             }
         };
-        let (socket, pipeline, client) = (
-            Rc::clone(&socket),
-            Arc::clone(&pipeline),
-            Rc::clone(&client),
-        );
+        let Some(slot) = thread.upstream.take() else {
+            tracing::debug!(%peer, "too many upstream queries: dropped");
+            continue;
+        };
+        let (socket, thread) = (Rc::clone(&socket), Rc::clone(&thread));
         spawn(async move {
-            let out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
             let deliver = async |out, len| send(&socket, out, len, peer).await;
-            answer(&pipeline, &client, upstream, Transport::Udp, out, deliver).await;
+            let size = usize::from(DEFAULT_UDP_PAYLOAD);
+            answer(&thread, upstream, Transport::Udp, size, deliver).await;
+            drop(slot);
         })
         .detach();
     }
@@ -156,16 +211,20 @@ async fn send(socket: &UdpSocket, out: Vec<u8>, len: usize, peer: SocketAddr) ->
     out.into_inner()
 }
 
-/// Accepts the connections of one TCP listener.
-async fn tcp(listener: TcpListener, pipeline: Arc<Pipeline>, client: Rc<Client>) {
+/// Accepts the connections of one TCP listener, up to [`TCP_CONNECTIONS`] at once.
+async fn tcp(listener: TcpListener, thread: Rc<Thread>) {
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
-                spawn(connection(
-                    stream,
-                    Arc::clone(&pipeline),
-                    Rc::clone(&client),
-                ))
+            Ok((stream, peer)) => {
+                let Some(slot) = thread.connections.take() else {
+                    tracing::debug!(%peer, "too many TCP connections: closed");
+                    continue;
+                };
+                let thread = Rc::clone(&thread);
+                spawn(async move {
+                    connection(stream, &thread).await;
+                    drop(slot);
+                })
                 .detach();
             }
             Err(error) => {
@@ -177,46 +236,65 @@ async fn tcp(listener: TcpListener, pipeline: Arc<Pipeline>, client: Rc<Client>)
 }
 
 /// Answers the queries of one TCP connection (RFC 7766): read one after the other, each answered as soon as it can
-/// be, so replies may come in another order (§6.2.1.1). Reading stops after [`TCP_IDLE`] without a query or at the
-/// first error; the connection closes once the replies still waiting are written (§6.2.3).
-async fn connection(stream: TcpStream, pipeline: Arc<Pipeline>, client: Rc<Client>) {
+/// be, so replies may come in another order (§6.2.1.1). Reading waits while [`TCP_PENDING`] queries are in flight,
+/// and stops after [`TCP_IDLE`] without a query, at the first error, once the writer gave up, or when the thread
+/// has no room for another upstream query; the connection closes once the replies still waiting are written
+/// (§6.2.3).
+async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
     // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
     let _ = stream.set_nodelay(true);
     let (reader, mut writer) = stream.into_split();
-    let (replies, queue) = flume::unbounded::<Vec<u8>>();
-    // Ends when the reader and every pending query have dropped their senders.
+    let (replies, queue) = flume::bounded::<Vec<u8>>(TCP_PENDING);
+    // Ends when the reader and every pending query have dropped their senders, or a write fails or times out.
     let writing = spawn(async move {
         while let Ok(framed) = queue.recv_async().await {
-            if writer.write_all(framed).await.0.is_err() {
-                break;
+            match compio::time::timeout(TCP_WRITE, writer.write_all(framed)).await {
+                Ok(BufResult(Ok(()), _)) => {}
+                _ => return,
             }
         }
         let _ = writer.shutdown().await;
     });
+    // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
+    let (pending, done) = flume::bounded::<()>(TCP_PENDING);
     let mut reader = BufReader::new(reader);
     let mut out = vec![0; MAX_MESSAGE_LEN];
     while let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, read_message(&mut reader)).await {
-        let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
+        let upstream = match thread
+            .pipeline
+            .query(&query, Transport::Tcp, now(), &mut out)
+        {
             Step::Reply(len) => {
-                reply(&replies, &out[..len]);
-                continue;
+                if reply(&replies, &out[..len]).await {
+                    continue;
+                }
+                break;
             }
             Step::Drop => continue,
             Step::Upstream(upstream) => upstream,
             Step::Refresh(len, upstream) => {
-                reply(&replies, &out[..len]);
+                if !reply(&replies, &out[..len]).await {
+                    break;
+                }
                 upstream
             }
         };
-        let (replies, pipeline, client) =
-            (replies.clone(), Arc::clone(&pipeline), Rc::clone(&client));
+        if pending.send_async(()).await.is_err() {
+            break;
+        }
+        let Some(slot) = thread.upstream.take() else {
+            tracing::debug!("too many upstream queries: TCP connection closed");
+            break;
+        };
+        let (replies, done, thread) = (replies.clone(), done.clone(), Rc::clone(thread));
         spawn(async move {
-            let out = vec![0; MAX_MESSAGE_LEN];
             let deliver = async |out: Vec<u8>, len| {
-                reply(&replies, &out[..len]);
+                reply(&replies, &out[..len]).await;
                 out
             };
-            answer(&pipeline, &client, upstream, Transport::Tcp, out, deliver).await;
+            answer(&thread, upstream, Transport::Tcp, MAX_MESSAGE_LEN, deliver).await;
+            drop(slot);
+            let _ = done.try_recv();
         })
         .detach();
     }
@@ -224,26 +302,27 @@ async fn connection(stream: TcpStream, pipeline: Arc<Pipeline>, client: Rc<Clien
     let _ = writing.await;
 }
 
-/// Queues `wire` behind its length for the connection's writer.
-fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) {
-    // A reply fits 65535 bytes, and the writer only stops after the last sender.
-    if let Some(framed) = frame(wire) {
-        let _ = replies.send(framed);
+/// Queues `wire` behind its length for the connection's writer, waiting for room; `false` once the writer gave up.
+async fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) -> bool {
+    // A reply fits 65535 bytes.
+    match frame(wire) {
+        Some(framed) => replies.send_async(framed).await.is_ok(),
+        None => true,
     }
 }
 
 /// Asks the upstream servers for `upstream` in turn, over `transport`, the client's, each with the forward stage's
-/// timeout and tries (D42), and hands `deliver` the replies in `out` to send: expired data when the client
-/// response timer runs out first, resolution going on to refresh the cache (RFC 8767 §5), then the response's
-/// unless that went out; none after a prefetch. `deliver` gives `out` back.
+/// timeout and tries (D42), and hands `deliver` the replies to send, in a buffer of `size` bytes made only then:
+/// expired data when the client response timer runs out first, resolution going on to refresh the cache (RFC 8767
+/// §5), then the response's unless that went out; none after a prefetch. `deliver` gives the buffer back.
 async fn answer(
-    pipeline: &Pipeline,
-    client: &Client,
+    thread: &Thread,
     mut upstream: Box<Upstream>,
     transport: Transport,
-    mut out: Vec<u8>,
+    size: usize,
     mut deliver: impl AsyncFnMut(Vec<u8>, usize) -> Vec<u8>,
 ) {
+    let pipeline = &thread.pipeline;
     let mut options = Options::default();
     options.transport = match transport {
         Transport::Udp => exchange::Transport::Udp,
@@ -253,22 +332,26 @@ async fn answer(
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;
     let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
+    // Pending queries wait seconds: the buffer is made when a reply is.
+    let mut out = Vec::new();
     loop {
         let server = upstream.server();
         let response = 'ask: {
-            let mut exchange = pin!(client.exchange(upstream.request(), server, &options));
+            let mut exchange = pin!(thread.client.exchange(upstream.request(), server, &options));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
                 if let Ok(response) = compio::time::timeout_at(at, exchange.as_mut()).await {
                     break 'ask response;
                 }
                 stale_at = None;
+                out.resize(size, 0);
                 if let Some(len) = pipeline.stale(&upstream, now(), &mut out) {
                     out = deliver(out, len).await;
                 }
             }
             exchange.await
         };
+        out.resize(size, 0);
         let step = match &response {
             Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
             Err(error) if error.is_local() => {
@@ -295,4 +378,19 @@ async fn answer(
 fn now() -> u32 {
     static START: LazyLock<Instant> = LazyLock::new(Instant::now);
     u32::try_from(START.elapsed().as_secs()).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slots;
+
+    #[test]
+    fn slots_are_given_back_when_dropped() {
+        let slots = Slots::new(2);
+        let (a, b) = (slots.take(), slots.take());
+        assert!(a.is_some() && b.is_some());
+        assert!(slots.take().is_none());
+        drop(a);
+        assert!(slots.take().is_some());
+    }
 }
