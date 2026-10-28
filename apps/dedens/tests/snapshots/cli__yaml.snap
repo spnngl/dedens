@@ -1,0 +1,67 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, server.addr.port())"
+---
+---
+id: example.com_A
+exchange:
+  server: 127.0.0.1:PORT
+  transport: udp
+  rtt_us: N
+  sends: 1
+  query_size: 52
+size: 72
+header:
+  id: N
+  opcode: QUERY
+  rcode: NOERROR
+  flags:
+  - qr
+  - rd
+  - ra
+question:
+- name: example.com.
+  class: IN
+  type: A
+answer:
+- name: example.com.
+  ttl: 29
+  class: IN
+  type: A
+  data: "104.20.23.154"
+- name: example.com.
+  ttl: 29
+  class: IN
+  type: A
+  data: "172.66.147.243"
+edns:
+  payload: 1232
+---
+id: nonexistent.invalid_A
+exchange:
+  server: 127.0.0.1:PORT
+  transport: udp
+  rtt_us: N
+  sends: 1
+  query_size: 60
+size: 123
+header:
+  id: N
+  opcode: QUERY
+  rcode: NXDOMAIN
+  flags:
+  - qr
+  - rd
+  - ra
+question:
+- name: nonexistent.invalid.
+  class: IN
+  type: A
+authority:
+- name: '.'
+  ttl: 86400
+  class: IN
+  type: SOA
+  data: a.root-servers.net. nstld.verisign-grs.com. 2026102701 1800 900 604800 86400
+edns:
+  payload: 1232

@@ -1,5 +1,5 @@
 //! Query files: queries, their options and expected results, read from YAML 1.2, and so from JSON too (D34, D36),
-//! and the report of each response that `dedens --json` prints (D35).
+//! and the report of each response that `dedens --json` and `--yaml` print (D37).
 //!
 //! Shared by the `dedens` CLI and the server's tests. The `clap` feature makes [`Options`] command-line flags.
 //!

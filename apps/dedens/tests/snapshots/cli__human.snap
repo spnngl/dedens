@@ -1,0 +1,21 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, server.addr.port())"
+---
+dnssec-failed.org. A  SERVFAIL (server failure)  N ms from 127.0.0.1:PORT over UDP
+EDNS 1232 bytes · DNSSEC OK · 46/103 bytes
+EDE 9 DNSKEY Missing: no SEP matching the DS found for dnssec-failed.org.
+
+nonexistent.invalid. A  NXDOMAIN (no such name)  N ms from 127.0.0.1:PORT over UDP
+authority
+  .  1d  SOA  a.root-servers.net. nstld.verisign-grs.com. 2026102701 1800 900 604800 86400
+EDNS 1232 bytes · 48/123 bytes
+
+gmail.com. MX  NOERROR  N ms from 127.0.0.1:PORT over UDP
+answer
+  gmail.com.  6m37s  MX  40 alt4.gmail-smtp-in.l.google.com.
+                     MX  20 alt2.gmail-smtp-in.l.google.com.
+                     MX  5 gmail-smtp-in.l.google.com.
+                     MX  10 alt1.gmail-smtp-in.l.google.com.
+                     MX  30 alt3.gmail-smtp-in.l.google.com.
+EDNS 1232 bytes · 38/161 bytes

@@ -36,8 +36,18 @@ fn run(args: &[&str], code: i32) -> String {
 
 /// `text` with the run's own numbers replaced by `N`: RTT, message ID, the server's port.
 fn redact(text: &str, port: u16) -> String {
-    let mut text = text.replace(&format!(":{port}"), ":PORT");
-    for prefix in [" in ", "\"rtt_us\":", "\"id\":"] {
+    let mut text: String = text
+        .replace(&format!(":{port}"), ":PORT")
+        .split_inclusive('\n')
+        .map(|line| match line.split_once(" ms from ") {
+            Some((head, tail)) => {
+                let rtt = head.rfind(' ').map_or(0, |at| at + 1);
+                format!("{}N ms from {tail}", &head[..rtt])
+            }
+            None => line.to_owned(),
+        })
+        .collect();
+    for prefix in ["\"rtt_us\":", "\"id\":", "rtt_us: ", "id: "] {
         let mut out = String::new();
         let mut rest = text.as_str();
         while let Some(at) = rest.find(prefix) {
@@ -73,18 +83,20 @@ fn queries(responder: &Responder) -> Vec<(Transport, Message<'static>)> {
 }
 
 #[test]
-fn compact_output_lists_each_query_in_argument_order() {
-    let server = Responder::start(&["ede", "nxdomain_soa"]);
+fn human_output_lists_each_query_in_argument_order() {
+    let server = Responder::start(&["ede", "nxdomain_soa", "mx"]);
     let out = run(
         &[
             &server.at(),
             "dnssec-failed.org",
             "nonexistent.invalid",
+            "gmail.com",
+            "MX",
             "+nocookie",
         ],
         0,
     );
-    insta::assert_snapshot!("compact", redact(&out, server.addr.port()));
+    insta::assert_snapshot!("human", redact(&out, server.addr.port()));
 }
 
 #[test]
@@ -116,6 +128,29 @@ fn json_output_is_one_object_per_line() {
     for line in out.lines() {
         serde_json::from_str::<serde_json::Value>(line).expect("a JSON object");
     }
+}
+
+#[test]
+fn yaml_output_is_one_document_per_response() {
+    let server = Responder::start(&["a", "nxdomain_soa"]);
+    let out = run(
+        &[&server.at(), "example.com", "nonexistent.invalid", "--yaml"],
+        0,
+    );
+    insta::assert_snapshot!("yaml", redact(&out, server.addr.port()));
+    let same = run(
+        &[
+            &server.at(),
+            "example.com",
+            "nonexistent.invalid",
+            "--format=yaml",
+        ],
+        0,
+    );
+    assert_eq!(
+        redact(&same, server.addr.port()),
+        redact(&out, server.addr.port())
+    );
 }
 
 #[test]
@@ -232,6 +267,9 @@ fn usage_errors_exit_2() {
         &["@"],
         &["-f", "queries.yaml", "example.com"],
         &["+nosave-wire"],
+        &["--json", "--yaml"],
+        &["+short", "--format=human"],
+        &["--format=xml"],
         &["+t"],
         &["-t", "example.com"],
     ] {

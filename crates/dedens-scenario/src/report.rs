@@ -1,5 +1,5 @@
-//! The report of a response (D35): what `dedens --json` prints, one object per query, and what the server's tests
-//! read back.
+//! The report of a response (D37): what `dedens --json` and `--yaml` print, one object per query, and what the
+//! server's tests read back. Empty lists and strings are left out: an absent field is empty.
 
 use std::net::SocketAddr;
 
@@ -24,12 +24,16 @@ pub struct Report {
     /// The header, the rcode extended by EDNS (RFC 6891 §6.1.3).
     pub header: HeaderReport,
     /// The question section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub question: Vec<QuestionReport>,
     /// The answer section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub answer: Vec<RecordReport>,
     /// The authority section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub authority: Vec<RecordReport>,
     /// The additional section, without the OPT record.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub additional: Vec<RecordReport>,
     /// The OPT record (RFC 6891 §6).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +131,7 @@ pub struct HeaderReport {
     /// The rcode mnemonic, such as `NOERROR`, extended by EDNS.
     pub rcode: String,
     /// The names of the set flags, in header order: `qr`, `aa`, `tc`, `rd`, `ra`, `z`, `ad`, `cd`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
 }
 
@@ -185,11 +190,14 @@ impl RecordReport {
 pub struct EdnsReport {
     /// The largest UDP payload the sender takes, in bytes.
     pub payload: u16,
-    /// The EDNS version.
+    /// The EDNS version, left out when 0.
+    #[serde(skip_serializing_if = "is_zero")]
     pub version: u8,
     /// `do` when DNSSEC records are wanted (RFC 3225 §3), then any other bit set, in hex.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
     /// The options, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionReport>,
 }
 
@@ -238,7 +246,8 @@ pub enum OptionReport {
         /// Its purpose in the IANA registry, when registered.
         #[serde(skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
-        /// The EXTRA-TEXT, possibly empty, its control characters escaped as in Rust.
+        /// The EXTRA-TEXT, its control characters escaped as in Rust.
+        #[serde(skip_serializing_if = "String::is_empty")]
         text: String,
     },
     /// Any other option: its name and data in words.
@@ -304,6 +313,15 @@ fn printable(text: &str) -> String {
         }
         out
     })
+}
+
+/// Whether `version` is 0, the EDNS version left out of a report.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes fields by reference"
+)]
+const fn is_zero(version: &u8) -> bool {
+    *version == 0
 }
 
 #[cfg(test)]

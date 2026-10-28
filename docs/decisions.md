@@ -170,13 +170,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   serde-yaml-ng (no commit in a year).
 - D36 Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
   optional expectations; a failed one makes `dedens` exit non-zero) read as YAML 1.2 by serde-saphyr, `-` for
-  stdin. JSON is YAML 1.2, so JSON files read too, at the price of YAML-worded errors; no `--format`, no second
-  reader. `dedens` drops dig's layout (`--dig`): `--json` serves scripts, the compact output people, and dig
+  stdin. JSON is YAML 1.2, so JSON files read too, at the price of YAML-worded errors; no input format flag, no
+  second reader. `dedens` drops dig's layout (`--dig`): JSON and YAML serve scripts, the human output people, and dig
   itself a side-by-side comparison. Rejected: serde_yaml (archived 2024-03), serde-yaml-ng (no commit in a
   year).
 - D18 `dedens`, dig but better: dig argv (`@server name type class +opts`) and long flags; query files;
-  compact output by default (doggo-like), `--json` with a stable schema (the server's tests read it), `+short`,
-  color; several names, types or servers per run, concurrent, side by side;
+  output for humans by default, JSON or YAML for scripts (D37), `+short`, color; several names, types or servers per run, concurrent, side by side;
   timing, transport, sizes, EDNS, cookies and EDE in words; `+trace`; `--repeat N` with latency percentiles;
   `--save-wire` (the source of captured test data); default server from `/etc/resolv.conf`. `-x ADDR` asks PTR
   for the `in-addr.arpa` or `ip6.arpa` name of an address (RFC 1035 §3.5, RFC 3152). The `resolv.conf`
@@ -191,9 +190,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `nsid`, `cookie`) with `+noedns` is a usage error; several `@servers` and AXFR/IXFR are refused until
   supported. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
   Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
-  written after it, and one without any the types written before the first name, else A. Output: compact by default
-  (one line per record, a footer in words), `+short`, `--json` (over `+short`); color with anstream/anstyle,
-  `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
+  written after it, and one without any the types written before the first name, else A. Output formats: D37;
+  color with anstream/anstyle, `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
   RFC 5895) and `unicode-script` for mixed-script labels (Han with kana, Hangul or Bopomofo, and Latin, being one
   writing, UTS 39 §5.2), both in `apps/dedens`: the library stays ASCII.
   `resolv.conf` read by our own parser (`nameserver`, `search`, `domain`, `ndots`), `DEDENS_RESOLV_CONF`
@@ -211,13 +209,27 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `nsid`, `cookie`, `time`, `tries`), each one left out inherited (command line, query, file, dig's default);
   `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and `+nocookie` need
   `dedens-net` exchange options `tcp_fallback` and `cookies`.
-- D35 `--json` prints one object per query and line (JSON lines, so a run streams): server, transport, RTT,
+- D35 (superseded by D37) `--json` prints one object per query and line (JSON lines, so a run streams): server, transport, RTT,
   sizes, header, question, sections, EDNS; each record `{name, ttl, class, type, data}` with `data` its
   presentation text. Server, transport, RTT (`rtt_us`), sends and query size sit in an `exchange` object, absent
   for a response read from a file; EDNS options are typed (`nsid`, `cookie`, `ede`, else `other` with the data
   in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
   expectations in `failures`. The types live in `dedens-scenario`, serialized only until the server's tests
   need to read them back.
+- D37 `dedens --format human|short|json|yaml` (`+short`, `--json`, `--yaml` its shorthands, one at most), each
+  response printed as it is ready. `human`, the default, is for reading: a status line (question, rcode in color
+  and in words unless NOERROR, RTT, server without port 53, transport), then each non-empty section under its
+  name, a record's owner shown once per run of the same owner and its TTL as a duration (`45m41s`); `no records`
+  for an empty NOERROR answer; one quiet line of the flags worth a word (authoritative, truncated, recursion
+  unavailable, DNSSEC-validated, checking disabled), EDNS and the sizes; EDE, violations and failures in red, one
+  per line. `json` (one object per line) and `yaml` (one `---` document each) are for programs and stay short:
+  the `dedens-scenario` report, TTLs in seconds, RTT in microseconds, an empty list or string and EDNS version 0
+  left out, an absent field meaning empty. Server, transport, RTT (`rtt_us`), sends and query size sit in an
+  `exchange` object, absent for a response read from a file; each record is `{name, ttl, class, type, data}`
+  with `data` its presentation text; EDNS options are typed (`nsid`, `cookie`, `ede`, else `other` with the data
+  in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
+  expectations in `failures`. Serialized only, until the server's tests need to read it back. Replaces D35,
+  whose objects held every field however empty.
 
 ## Server
 

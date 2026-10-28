@@ -18,7 +18,7 @@ use dedens_scenario::{Expect, Id, Options, QueryFile, Report};
 
 use crate::args::{self, Cli};
 use crate::idn;
-use crate::output::{self, Layout};
+use crate::output::{self, Format};
 
 /// The queries in flight at most: each holds a socket.
 const IN_FLIGHT: usize = 64;
@@ -50,11 +50,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     if let Some(dir) = &cli.save_wire {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    let layout = match &cli.output {
-        o if o.json => Layout::Json,
-        o if o.short => Layout::Short,
-        _ => Layout::Compact,
-    };
+    let format = cli.output.format();
     let color = match cli.output.color {
         clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
         clap::ColorChoice::Always => anstream::ColorChoice::Always,
@@ -84,7 +80,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 .await
                 .map_err(|e| anyhow::Error::from(io::Error::from(e)))
                 .and_then(|outcome| outcome);
-            code = code.max(show(cli, layout, &mut out, &id, outcome, &mut printed)?);
+            code = code.max(show(cli, format, &mut out, &id, outcome, &mut printed)?);
         }
         io::Result::Ok(code)
     })?;
@@ -92,10 +88,10 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
 }
 
 /// Prints the outcome of query `id` and saves its response; returns the exit code it calls for. `printed` tells
-/// whether a report came before, which the compact layout sets apart.
+/// whether a report came before, which the human format sets apart.
 fn show(
     cli: &Cli,
-    layout: Layout,
+    format: Format,
     out: &mut impl Write,
     id: &Id,
     outcome: anyhow::Result<(Report, Vec<u8>)>,
@@ -108,12 +104,12 @@ fn show(
             return Ok(if no_reply(&error) { 9 } else { 10 });
         }
     };
-    if std::mem::replace(printed, true) && layout == Layout::Compact {
+    if std::mem::replace(printed, true) && format == Format::Human {
         writeln!(out)?;
     }
-    output::print(out, layout, &report)?;
+    output::print(out, format, &report)?;
     out.flush()?;
-    if layout == Layout::Short {
+    if format == Format::Short {
         for line in report.violations.iter().chain(&report.failures) {
             eprintln!("dedens: {id}: {line}");
         }

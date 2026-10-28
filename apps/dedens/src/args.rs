@@ -10,6 +10,8 @@ use clap::{Arg, Args, CommandFactory, Parser};
 use dedens_proto::{Class, RecordType};
 use dedens_scenario::{Id, Options};
 
+use crate::output::Format;
+
 /// A dig-like DNS client.
 ///
 /// dig's syntax works too: `@server` is `--server server`, `+opt` is `--opt`, `+noopt` is `--opt=false` and
@@ -52,16 +54,35 @@ pub(crate) struct Cli {
 
 /// The output.
 #[derive(Debug, Args)]
+#[group(id = "formats", multiple = false)]
 pub(crate) struct Output {
-    /// Only the data of the answer records.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
-    pub(crate) short: bool,
-    /// One JSON object per query and line, over `--short`.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
-    pub(crate) json: bool,
+    /// The output format.
+    #[arg(long, value_enum, group = "formats")]
+    format: Option<Format>,
+    /// `--format short`.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    short: bool,
+    /// `--format json`.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    json: bool,
+    /// `--format yaml`.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", group = "formats")]
+    yaml: bool,
     /// Colors: `NO_COLOR` turns them off for `auto`.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
     pub(crate) color: clap::ColorChoice,
+}
+
+impl Output {
+    /// The format asked for, by `--format` or one of its shorthands.
+    pub(crate) fn format(&self) -> Format {
+        match self {
+            Self { short: true, .. } => Format::Short,
+            Self { json: true, .. } => Format::Json,
+            Self { yaml: true, .. } => Format::Yaml,
+            Self { format, .. } => format.unwrap_or(Format::Human),
+        }
+    }
 }
 
 impl Cli {
