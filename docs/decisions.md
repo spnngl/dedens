@@ -89,7 +89,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
 - D27 Client behaviour:
-  - UDP: queries muxed on a fixed pool of connected sockets per server (D50), and a random ID from `getrandom`.
+  - UDP: queries muxed on a fixed pool of connected sockets per server (D50), and a random ID from `getrandom`,
+    drawn 256 bytes at a time: a call costs 846 ns on macOS, 14 ns on Linux (vDSO).
     Superseded: a new socket per query (about 32 bits to guess, RFC 5452 §9.2, at three system calls a query).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
     on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case

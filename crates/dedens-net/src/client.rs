@@ -82,6 +82,32 @@ pub struct Client {
     tcp: TcpPool,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
+    random: RefCell<Random>,
+}
+
+/// Random bytes from `getrandom`, drawn [`RANDOM_BATCH`] at a time and each used once: one system call per 64
+/// exchanges instead of one each.
+#[derive(Debug)]
+struct Random {
+    bytes: [u8; RANDOM_BATCH],
+    used: usize,
+}
+
+/// Random bytes drawn at once.
+const RANDOM_BATCH: usize = 256;
+
+impl Random {
+    /// The next `N` bytes.
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], ClientError> {
+        if self.used + N > RANDOM_BATCH {
+            getrandom::fill(&mut self.bytes).map_err(ClientError::Random)?;
+            self.used = 0;
+        }
+        let mut taken = [0; N];
+        taken.copy_from_slice(&self.bytes[self.used..self.used + N]);
+        self.used += N;
+        Ok(taken)
+    }
 }
 
 /// The cookies of one source and server pair.
@@ -106,6 +132,10 @@ impl Client {
             udp: UdpPool::new(UDP_SOCKETS),
             tcp: TcpPool::new(TCP_IDLE),
             cookies: RefCell::default(),
+            random: RefCell::new(Random {
+                bytes: [0; RANDOM_BATCH],
+                used: RANDOM_BATCH,
+            }),
         }
     }
 
@@ -126,8 +156,7 @@ impl Client {
     ) -> Result<Response, ClientError> {
         let mut query = query.clone();
         // The ID, then the UDP socket of the pool.
-        let mut random = [0; 4];
-        getrandom::fill(&mut random).map_err(ClientError::Random)?;
+        let random = self.random.borrow_mut().take::<4>()?;
         query.header.id = u16::from_be_bytes([random[0], random[1]]);
         let pick = usize::from(u16::from_be_bytes([random[2], random[3]]));
         // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
@@ -251,19 +280,35 @@ impl Client {
         let mut all = self.cookies.borrow_mut();
         let cookies = match all.entry(pair) {
             Entry::Occupied(known) => known.into_mut(),
-            Entry::Vacant(slot) => {
-                let mut client = [0; 8];
-                getrandom::fill(&mut client).map_err(ClientError::Random)?;
-                slot.insert(Cookies {
-                    client,
-                    returned: None,
-                })
-            }
+            Entry::Vacant(slot) => slot.insert(Cookies {
+                client: self.random.borrow_mut().take()?,
+                returned: None,
+            }),
         };
         let cookie = cookies.returned.unwrap_or_else(|| {
             Cookie::new(cookies.client, None).expect("a client cookie alone is valid")
         });
         edns.options.push(EdnsOption::Cookie(cookie));
         Ok(Some(pair))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RANDOM_BATCH, Random};
+
+    /// Takes across a refill come whole, and fresh bytes are not the zeros the batch starts with.
+    #[test]
+    fn takes_refill_the_batch_when_short() {
+        let mut random = Random {
+            bytes: [0; RANDOM_BATCH],
+            used: RANDOM_BATCH - 4,
+        };
+        assert_eq!(random.take::<4>().ok(), Some([0; 4]));
+        let fresh: Vec<_> = (0..4)
+            .map(|_| random.take::<8>().expect("randomness"))
+            .collect();
+        assert_eq!(random.used, 32);
+        assert!(fresh.iter().any(|bytes| *bytes != [0; 8]));
     }
 }
