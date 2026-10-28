@@ -387,7 +387,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     Blocked (RFC 8914 §4.16), AA clear. Of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1`, `::1` count,
     without names of one label or starting with `localhost`: such files open with their host's own entries
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
-    Downloading lists and allow-exceptions later.
+    Formats, duplicates and the allowlist in D56.
 - D55 `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed, holding it in
@@ -400,6 +400,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   default action between two waits, so a second SIGHUP during a reload would end the process; `arc-swap`,
   whose guards may not be held across an await and whose `Arc` clones share a count between threads. Later:
   watching the file, and upstreams pushed while running (D-Bus, for a systemd-resolved replacement).
+- D56 Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
+  blocks the name and its subdomains, as any entry here does. A plain line holds one name. An `allow` list
+  (entries, file) lets a name through when it or a parent is listed, whichever parent is blocked, as numa and
+  Blocky do; looked up only for blocked names. Names listed twice count once, and a blocked name under a blocked
+  parent is dropped after reading (2% of a 2.2M-name set of published lists), both counted in the log. Lines
+  from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
+  not, and the text is refused when it has none or fewer than half read, as an error page served with status
+  200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
 
 ## Observability
 

@@ -1,0 +1,36 @@
+# Title: HaGeZi's Multi PRO - extended protection (recommended)
+# Description: Big broom edition. Cleans up the internet and protects your privacy. Blocks ads, trackers, metrics, telemetry, phishing, malware, scams, fakes, cryptojacking, and other junk.
+# Note: Restrictions here are rare. Works best if you've got an admin nearby who can unblock something if needed. This is my personal go-to recommendation for solid ad blocking with good privacy without much hassle.
+# Homepage: https://github.com/hagezi/dns-blocklists
+# License: https://github.com/hagezi/dns-blocklists/blob/main/LICENSE
+# Issues: https://github.com/hagezi/dns-blocklists/issues
+# Disclaimer: https://github.com/hagezi/dns-blocklists/blob/main/README.md#disclaimer
+# Expires: 8 hours
+# Last modified: 28 Oct 2026 18:40 UTC
+# Version: 2026.1028.1840.57
+# Syntax: Domains Wildcard (without subdomains)
+# Number of entries: 211042
+#
+*.telemetry.001-studio.com
+*.fd01ce9a02.0012e30263.com
+*.ad.001zb.com
+*.00254ap.00254ab6322fb418ceb2495152f81bcc5259a917.com
+*.cdn.007moms.com
+*.my.007moms.com
+*.bd100.010lm.com
+*.0db65504c2.012dadaa06.com
+*.sst.013.nl
+*.017f7ap.017f7aa0a7d095b13114a019d282599ffb8a4a95.com
+*.tracking.01alarme.fr
+*.securite.01net.com
+*.umami.01o.de
+*.ads.021.rs
+*.714975f2b4.024e3caef2.com
+*.img.0279.net
+*.o.027eat.com
+*.f220e81bc1.02a30fd4b8.com
+*.d55b071143.03c4e4cc73.com
+*.03e7fbp.03e7fb2bb603196d16d1922f57ffb94bb98c2d50.com
+*.analytics.adjust.com
+*.adform.net
+*.admost.com

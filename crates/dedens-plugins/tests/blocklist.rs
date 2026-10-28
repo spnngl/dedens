@@ -1,19 +1,35 @@
-//! The blocklist plugin (D54) on published lists: the heads of `StevenBlack/hosts` (`testdata/stevenblack.hosts`)
-//! and of the Multi LIGHT domains of `hagezi/dns-blocklists` (`testdata/hagezi-light.txt`). Blocked
+//! The blocklist plugin (D54, D56) on published lists: the heads of `StevenBlack/hosts`
+//! (`testdata/stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists`
+//! (`testdata/hagezi-light.txt`), of its Multi PRO in the wildcard format (`testdata/hagezi-pro-wildcard.txt`) and
+//! of its referral allowlist (`testdata/hagezi-referral-allow.txt`), each with a few lines of further down. Blocked
 //! answers carry the Extended DNS Error Blocked (RFC 8914 §4.16).
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use dedens_plugins::{Action, Blocklist, LineErrorKind};
+use dedens_plugins::{Action, Blocklist, LineErrorKind, List, ListError, Lists, Origin, Read};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Class, Flags, Message, Name, Question, RData, Rcode, RecordType, Ttl};
 use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
 
 const STEVENBLACK: &str = include_str!("testdata/stevenblack.hosts");
 const HAGEZI: &str = include_str!("testdata/hagezi-light.txt");
+const WILDCARD: &str = include_str!("testdata/hagezi-pro-wildcard.txt");
+const REFERRAL: &str = include_str!("testdata/hagezi-referral-allow.txt");
+
+fn lists(text: &str) -> Lists {
+    let mut lists = Lists::new();
+    lists
+        .read(List::Block, Origin::Local, text)
+        .expect("the list reads");
+    lists
+}
 
 fn pipeline(text: &str, action: Action) -> Pipeline {
-    let blocklist = Blocklist::new(text, action, Ttl::from_wire(60)).expect("the list reads");
+    with_lists(lists(text), action)
+}
+
+fn with_lists(lists: Lists, action: Action) -> Pipeline {
+    let blocklist = Blocklist::new(lists, action, Ttl::from_wire(60));
     let upstream = SocketAddr::from(([192, 0, 2, 53], 53));
     Pipeline::new(vec![
         Stage::Plugin(Box::new(blocklist)),
@@ -136,8 +152,105 @@ fn other_classes_go_on() {
 #[test]
 fn fields_that_are_not_names_are_errors() {
     let text = format!("ads.example\n0.0.0.0 {}.example", "a".repeat(64));
-    let error =
-        Blocklist::new(&text, Action::Nxdomain, Ttl::ZERO).expect_err("a label of 64 bytes");
+    let mut lists = Lists::new();
+    let Err(ListError::Line(error)) = lists.read(List::Block, Origin::Local, &text) else {
+        unreachable!("a label of 64 bytes")
+    };
     assert_eq!(error.line, 2);
     assert!(matches!(error.kind, LineErrorKind::Name(..)), "{error}");
+    assert_eq!(lists.names(List::Block), 0);
+}
+
+/// `*.name` in the lists made for Blocky blocks the name and its subdomains, as its documentation says.
+#[test]
+fn wildcards_block_the_name_and_its_subdomains() {
+    let pipeline = pipeline(WILDCARD, Action::Nxdomain);
+    for name in ["adform.net.", "a1.adform.net.", "telemetry.001-studio.com."] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+    assert!(!blocked(&pipeline, "001-studio.com."));
+}
+
+/// An allowed name lets itself and its subdomains through, whichever parent the blocklist lists.
+#[test]
+fn allowed_names_are_not_blocked() {
+    let mut lists = lists(WILDCARD);
+    lists
+        .read(List::Allow, Origin::Local, REFERRAL)
+        .expect("the allowlist reads");
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    for name in [
+        "a1.adform.net.",
+        "x.track.adform.net.",
+        "analytics.adjust.com.",
+        "go.admost.com.",
+    ] {
+        assert!(!blocked(&pipeline, name), "{name}");
+    }
+    for name in ["adform.net.", "b.adform.net.", "admost.com."] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+}
+
+/// Names listed twice are counted once; a name listed with a parent is dropped, the parent blocking it.
+#[test]
+fn duplicates_and_names_under_a_listed_parent() {
+    let mut lists = lists(STEVENBLACK);
+    let again = lists
+        .read(List::Block, Origin::Local, STEVENBLACK)
+        .expect("the list reads");
+    assert_eq!((again.names, again.skipped), (0, 0));
+    assert!(again.duplicates > 0);
+    let mut lists = Lists::new();
+    let read = lists
+        .read(
+            List::Block,
+            Origin::Local,
+            "ad-assets.futurecdn.net\na.b.ad-assets.futurecdn.net\nb.ad-assets.futurecdn.net\n*.b.ad-assets.futurecdn.net",
+        )
+        .expect("the names read");
+    assert_eq!((read.names, read.duplicates), (3, 1));
+    assert_eq!(lists.prune(), 2);
+    assert_eq!(lists.names(List::Block), 1);
+    assert!(blocked(
+        &with_lists(lists, Action::Nxdomain),
+        "a.b.ad-assets.futurecdn.net."
+    ));
+}
+
+/// A downloaded list skips the lines that are not names, and is refused when most are, as is an error page.
+#[test]
+fn downloaded_lists_skip_lines_that_are_not_names() {
+    let mut lists = Lists::new();
+    let bad = format!("{HAGEZI}{}.example\n", "a".repeat(64));
+    let read = lists
+        .read(List::Block, Origin::Downloaded, &bad)
+        .expect("most lines read");
+    assert_eq!(read.skipped, 1);
+    assert!(read.names > 0);
+    let names = lists.names(List::Block);
+    // The body of a missing file on raw.githubusercontent.com.
+    for (text, lines, read) in [("404: Not Found", 1, 0), ("", 0, 0)] {
+        assert_eq!(
+            lists.read(List::Block, Origin::Downloaded, text),
+            Err(ListError::NotAList { lines, read }),
+            "{text}"
+        );
+    }
+    assert_eq!(lists.names(List::Block), names);
+    assert_eq!(
+        lists.read(List::Allow, Origin::Downloaded, REFERRAL),
+        Ok(Read {
+            names: lists_of(REFERRAL),
+            duplicates: 0,
+            skipped: 0
+        })
+    );
+}
+
+/// The names of `text`, one a line, comments left out.
+fn lists_of(text: &str) -> usize {
+    text.lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .count()
 }

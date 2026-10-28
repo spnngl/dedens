@@ -28,6 +28,9 @@ pub enum LineErrorKind {
     /// A field that is not a domain name.
     #[error("`{0}` is not a domain name: {1}")]
     Name(String, TextErrorKind),
+    /// A field after the one name a line holds.
+    #[error("`{0}` after the name")]
+    Extra(String),
     /// A name with more records than a message carries.
     #[error("`{0}` has more records than a message carries")]
     TooMany(String),

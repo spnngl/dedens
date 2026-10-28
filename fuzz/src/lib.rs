@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_net::resolv_conf::ResolvConf;
-use dedens_plugins::{Action, Blocklist, Hosts};
+use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
@@ -539,8 +539,8 @@ fn truncate(message: &Message<'_>, size: usize) {
     assert_eq!(kept + encoded.dropped, total);
 }
 
-/// Arbitrary text as a hosts file and as a blocklist: when both read, queries for its words get replies that
-/// decode, whatever the plugins answer.
+/// Arbitrary text as a hosts file, as a downloaded blocklist, and its odd lines as an allowlist: when the hosts
+/// file and the blocklist read, queries for its words get replies that decode, whatever the plugins answer.
 ///
 /// # Panics
 ///
@@ -549,14 +549,24 @@ pub fn parse_lists(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    let (Ok(hosts), Ok(blocklist)) = (
+    let mut lists = Lists::new();
+    let (Ok(hosts), Ok(_)) = (
         Hosts::new(text, Ttl::ZERO, false),
-        Blocklist::new(text, Action::Null, Ttl::ZERO),
+        lists.read(List::Block, Origin::Downloaded, text),
     ) else {
         return;
     };
+    let allowed: String = text
+        .lines()
+        .skip(1)
+        .step_by(2)
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    // Refused or not, the blocklist answers as before.
+    let _ = lists.read(List::Allow, Origin::Downloaded, &allowed);
+    lists.prune();
     let pipeline = Pipeline::new(vec![
-        Stage::Plugin(Box::new(blocklist)),
+        Stage::Plugin(Box::new(Blocklist::new(lists, Action::Null, Ttl::ZERO))),
         Stage::Plugin(Box::new(hosts)),
     ]);
     let mut out = vec![0; MAX_MESSAGE_LEN];

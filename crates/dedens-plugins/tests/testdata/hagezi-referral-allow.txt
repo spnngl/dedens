@@ -1,0 +1,32 @@
+# Title: HaGeZi's Allowlist Referral
+# Description: This list unblocks affiliate & tracking referral links that appear in mails, search results etc.
+# Homepage: https://github.com/hagezi/dns-blocklists
+# License: https://github.com/hagezi/dns-blocklists/blob/main/LICENSE
+# Issues: https://github.com/hagezi/dns-blocklists/issues
+# Disclaimer: https://github.com/hagezi/dns-blocklists/blob/main/README.md#disclaimer
+# Expires: 8 hours
+# Last modified: 28 Oct 2026 08:25 UTC
+# Version: 2026.1028.0825.52
+# Syntax: Domains (without subdomains)
+# Number of entries: 1687
+#
+l.1mp.ru
+links.2ns.fi
+t.6sc.co
+bestbuy.7tiv.net
+redirect.stripe1.prod.experiment.routing.cloudfront.aws.a2z.com
+redirect.stripe2.prod.experiment.routing.cloudfront.aws.a2z.com
+redirect.prod.experiment.routing.cloudfront.aws.a2z.com
+px.a8.net
+trk.mg.aadvantageeshopping.com
+t.adcell.com
+track.addtocart.today
+a1.adform.net
+track.adform.net
+track-eu.adform.net
+app.eu.adjust.com
+app.tr.adjust.com
+app.us.adjust.com
+analytics.adjust.cn
+analytics.adjust.com
+go.admost.com

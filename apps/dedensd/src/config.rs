@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail, ensure};
 use dedens_cache::Cache;
-use dedens_plugins::{Action, Blocklist, Hosts, LineError};
+use dedens_plugins::{Action, Blocklist, Hosts, LineError, List, ListError, Lists, Origin, Read};
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage};
 use serde::Deserialize;
@@ -75,16 +75,28 @@ enum StageFile {
         #[serde(default)]
         fallthrough: bool,
     },
-    /// Names blocked with their subdomains (D54): `entries`, one name or a line in the format of `/etc/hosts`
-    /// each, then those of `file`, read at start and on reload; answered as `action` says, `nxdomain` unless set, the
-    /// addresses of `null` with `ttl` seconds, 3600 unless set.
+    /// Names blocked with their subdomains (D54, D56): `entries`, one name, `*.name` or a line in the format of
+    /// `/etc/hosts` each, then those of `file`, read at start and on reload, unless they or a parent are in `allow`;
+    /// answered as `action` says, `nxdomain` unless set, the addresses of `null` with `ttl` seconds, 3600 unless
+    /// set.
     Blocklist {
         #[serde(default)]
         entries: Vec<String>,
         file: Option<PathBuf>,
+        #[serde(default)]
+        allow: Sources,
         action: Option<Action>,
         ttl: Option<u32>,
     },
+}
+
+/// Names of a list, as written: `entries`, then those of `file`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sources {
+    #[serde(default)]
+    entries: Vec<String>,
+    file: Option<PathBuf>,
 }
 
 /// An upstream server: `IP:PORT`, or an IP address on port 53.
@@ -188,15 +200,14 @@ pub(crate) fn read(
             StageFile::Blocklist {
                 entries,
                 file,
+                allow,
                 action,
                 ttl,
             } => {
+                let block = Sources { entries, file };
+                let lists = lists(name, &block, &allow).with_context(|| format!("stage `{name}`"))?;
                 let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
-                let blocklist = plugin(&entries, file.as_deref(), |text| {
-                    Blocklist::new(text, action.unwrap_or_default(), ttl)
-                })
-                .with_context(|| format!("stage `{name}`"))?;
-                Stage::Plugin(Box::new(blocklist))
+                Stage::Plugin(Box::new(Blocklist::new(lists, action.unwrap_or_default(), ttl)))
             }
         });
     }
@@ -239,6 +250,48 @@ fn plugin<P>(
             _ => anyhow!("entry {}: {}", error.line, error.kind),
         }
     })
+}
+
+/// The lists of the blocklist stage `stage`, `block` and `allow` read, then the blocked names under a blocked parent
+/// dropped; logs the counts.
+fn lists(stage: &str, block: &Sources, allow: &Sources) -> anyhow::Result<Lists> {
+    let mut lists = Lists::new();
+    let mut duplicates = 0;
+    for (list, sources) in [(List::Block, block), (List::Allow, allow)] {
+        let mut read = |text: &str, path: Option<&Path>| {
+            let Read {
+                duplicates: dups, ..
+            } = lists
+                .read(list, Origin::Local, text)
+                .map_err(|error| match (error, path) {
+                    (ListError::Line(error), Some(path)) => {
+                        anyhow!("`{}` line {}: {}", path.display(), error.line, error.kind)
+                    }
+                    (ListError::Line(error), None) => {
+                        anyhow!("entry {}: {}", error.line, error.kind)
+                    }
+                    (error, _) => anyhow!(error),
+                })?;
+            duplicates += dups;
+            anyhow::Ok(())
+        };
+        read(&sources.entries.join("\n"), None)?;
+        if let Some(path) = &sources.file {
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("reading `{}`", path.display()))?;
+            read(&text, Some(path))?;
+        }
+    }
+    let covered = lists.prune();
+    tracing::info!(
+        stage,
+        blocked = lists.names(List::Block),
+        allowed = lists.names(List::Allow),
+        duplicates,
+        covered,
+        "blocklist read"
+    );
+    Ok(lists)
 }
 
 /// `text` with each `${VAR}` replaced by the variable's value, `${VAR:-default}` by `default` when it is unset or
@@ -489,6 +542,11 @@ mod tests {
             );
         }
         assert!(error(&text("    action: drop\n")).contains("drop"));
+        let allow = "    allow:\n      entries: [ok.ads.example, '*.fine.example', 'bad..name']\n";
+        assert!(error(&text(allow)).contains("entry 3"), "{allow}");
+        let allow = allow.replace(", 'bad..name'", "");
+        assert!(read(&text(&allow), env, &Pipeline::default()).is_ok());
+        assert!(error(&text("    allow:\n      urls: []\n")).contains("urls"));
     }
 
     #[test]
