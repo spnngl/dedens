@@ -15,6 +15,10 @@ cargo-fuzz = true
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-proto = { path = "../crates/dedens-proto" }
+# The second implementation of `differential_hickory`; the same version as the workspace's (D14).
+hickory-proto = { version = "0.26.3", default-features = false, features = [
+  "std",
+] }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -48,6 +52,13 @@ bench = false
 [[bin]]
 name = "parse_name"
 path = "fuzz_targets/parse_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "differential_hickory"
+path = "fuzz_targets/differential_hickory.rs"
 test = false
 doc = false
 bench = false

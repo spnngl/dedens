@@ -9,12 +9,19 @@
     reason = "a fuzz target, and the smoke test replaying it, report a bug by panicking"
 )]
 
+use core::ops::RangeInclusive;
+
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
+use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::{
-    DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record, RecordType, Ttl,
-    message,
+    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Record,
+    RecordType, Ttl, message,
 };
+use hickory_proto::op::{Message as HickoryMessage, OpCode};
+use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
+use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
+use hickory_proto::serialize::binary::DecodeError as HickoryDecodeError;
 
 #[cfg(test)]
 mod smoke;
@@ -29,7 +36,174 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_zone", parse_zone),
     ("cache_insert", cache_insert),
     ("parse_name", parse_name),
+    ("differential_hickory", differential_hickory),
 ];
+
+/// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
+/// writes reads back in the other as the message it read. Our own round trips cannot catch a misreading of an
+/// RFC that the reader and the writer share; a second implementation can.
+///
+/// # Panics
+///
+/// On a disagreement.
+pub fn differential_hickory(data: &[u8]) {
+    let ours = Message::decode(data);
+    let theirs = HickoryMessage::from_vec(data);
+    let (ours, theirs) = match (ours, theirs) {
+        // A message breaking a rule we report but read (D9) is outside what the two can agree on.
+        (Ok(decoded), _) if !decoded.violations.is_empty() => return,
+        (Ok(decoded), Ok(theirs)) => (decoded.message, theirs),
+        (Err(_), Err(_)) => return,
+        (Ok(decoded), Err(error)) if hickory_refuses(&decoded.message, &error) => return,
+        (Err(_), Ok(theirs)) if names_unchecked(&theirs) => return,
+        // RFC 2136 §2.5 allows empty RDATA of any type in UPDATE; dedens reads UPDATE with the authoritative
+        // phase (docs/TODECIDE.md).
+        (Err(_), Ok(theirs)) if theirs.metadata.op_code == OpCode::Update => return,
+        // dedens refuses a pointer into the header and one to labels running into the bytes that point to them
+        // (RFC 1035 §4.1.4: a pointer goes to a prior name); hickory-proto checks neither.
+        (Err(error), Ok(_)) if error.kind == DecodeErrorKind::BadPointer => return,
+        // hickory-proto drops EDNS options whose framing is broken; dedens refuses the message (D9).
+        (Err(error), Ok(_)) if opt_rdata(data).is_some_and(|r| r.contains(&error.offset)) => return,
+        (ours, theirs) => panic!("dedens {ours:?}\nhickory {theirs:?}"),
+    };
+    // hickory-proto keeps names of those types compressed, pointing into the message it read: dedens expands
+    // them, and hickory-proto writes the pointers back unchanged where the offsets they point to have moved.
+    if names_unchecked(&theirs) {
+        return;
+    }
+    let theirs = as_dedens_reads(theirs);
+    if let Ok(wire) = ours.to_vec() {
+        let read = HickoryMessage::from_vec(&wire).map(as_dedens_reads);
+        assert_eq!(
+            read.as_ref().ok(),
+            Some(&theirs),
+            "hickory reads what dedens writes: {read:?}"
+        );
+    }
+    if let Ok(wire) = theirs.to_vec() {
+        let ours = as_hickory_keeps(ours);
+        let read = Message::decode(&wire);
+        let read = read.as_ref().map(|d| (&d.message, d.violations.as_slice()));
+        assert_eq!(
+            read,
+            Ok((&ours, [].as_slice())),
+            "dedens reads what hickory writes"
+        );
+    }
+}
+
+/// Whether hickory-proto refuses `ours` where the RFCs let it through, so the disagreement is no dedens bug.
+fn hickory_refuses(ours: &Message<'_>, error: &HickoryDecodeError) -> bool {
+    let mut records = ours
+        .answer
+        .iter()
+        .chain(&ours.authority)
+        .chain(&ours.additional);
+    match error {
+        // Empty RDATA outside UPDATE: RFC 1035 and RFC 3597 §4 allow RDLENGTH 0 for a type without fields.
+        HickoryDecodeError::InvalidEmptyRecord => true,
+        // hickory-proto reads type 0, reserved (RFC 6895 §3.1), as always empty, and reads the fields of types
+        // dedens keeps as bytes without reading them (D11), such as HINFO, and wants ALPN IDs in UTF-8 where
+        // RFC 9460 §7.1.1 allows any bytes.
+        _ => records.any(|r| {
+            r.rtype() == RecordType(0) || matches!(r.data(), RData::Opaque(_)) || non_utf8_alpn(r)
+        }),
+    }
+}
+
+/// Whether `record` is an SVCB or HTTPS record with an ALPN ID that is not UTF-8.
+fn non_utf8_alpn(record: &Record<'_>) -> bool {
+    let (RData::Svcb(svcb) | RData::Https(svcb)) = record.data() else {
+        return false;
+    };
+    svcb.params().iter().any(|param| {
+        matches!(param, SvcParam::Alpn(ids) if ids.iter().any(|id| str::from_utf8(id).is_err()))
+    })
+}
+
+/// Where the RDATA of the OPT record lies in `data`, a message hickory-proto read.
+fn opt_rdata(data: &[u8]) -> Option<RangeInclusive<usize>> {
+    let u16_at = |at: usize| {
+        Some(usize::from(u16::from_be_bytes([
+            *data.get(at)?,
+            *data.get(at + 1)?,
+        ])))
+    };
+    let skip_name = |mut at: usize| loop {
+        match *data.get(at)? {
+            0 => return Some(at + 1),
+            len if len >= 0xC0 => return Some(at + 2),
+            len => at += 1 + usize::from(len),
+        }
+    };
+    let mut at = 12;
+    for _ in 0..u16_at(4)? {
+        at = skip_name(at)? + 4;
+    }
+    for _ in 0..u16_at(6)? + u16_at(8)? + u16_at(10)? {
+        let fixed = skip_name(at)?;
+        let start = fixed + 10;
+        let end = start + u16_at(fixed + 8)?;
+        if u16_at(fixed)? == usize::from(RecordType::OPT.0) {
+            return Some(start..=end);
+        }
+        at = end;
+    }
+    None
+}
+
+/// `ours` without what hickory-proto does not keep and dedens keeps, to write a message as it was read.
+fn as_hickory_keeps(mut ours: Message<'_>) -> Message<'_> {
+    // The reserved header bit.
+    ours.header.flags = ours.header.flags.without(Flags::Z);
+    // A UDP payload under 512, which means 512 (RFC 6891 §6.2.5).
+    if let Some(edns) = &mut ours.edns {
+        edns.udp_payload = edns.udp_payload.max(512);
+    }
+    ours
+}
+
+/// Whether hickory-proto and dedens part ways on names in some RDATA: hickory-proto keeps as bytes a record of a
+/// type whose RDATA holds names (RFC 3597 §4), which dedens reads and refuses when broken (D9), or reads names in
+/// ANAME, a draft parked on 65305 in the private-use range (RFC 6895 §3.1), whose RDATA dedens keeps as bytes.
+fn names_unchecked(message: &HickoryMessage) -> bool {
+    message
+        .answers
+        .iter()
+        .chain(&message.authorities)
+        .chain(&message.additionals)
+        .any(|record| {
+            let rtype = record.record_type();
+            rtype == HickoryRecordType::ANAME
+                || matches!(record.data, HickoryRData::Unknown { .. })
+                    && RData::may_hold_compressed_names(RecordType(u16::from(rtype)))
+        })
+}
+
+/// `message` as dedens reads it: TTLs whose top bit is set as zero (RFC 2181 §8), padding as zeros, since dedens
+/// keeps only its length (RFC 7830 §3 lets the sender pick the bytes).
+fn as_dedens_reads(mut message: HickoryMessage) -> HickoryMessage {
+    if let Some(edns) = &mut message.edns {
+        for (code, option) in &mut edns.options_mut().options {
+            if *code == EdnsCode::Padding
+                && let EdnsOption::Unknown(_, data) = option
+            {
+                data.fill(0);
+            }
+        }
+    }
+    for record in message
+        .answers
+        .iter_mut()
+        .chain(&mut message.authorities)
+        .chain(&mut message.additionals)
+    {
+        if record.ttl > 0x7FFF_FFFF {
+            record.ttl = 0;
+        }
+    }
+    message
+}
 
 /// A response off the wire, stored in the cache as the answer to a query for its question, then served again into
 /// a buffer whose size comes from the response's ID (at least [`Cache::MIN_OUT`]): the hit must decode without
