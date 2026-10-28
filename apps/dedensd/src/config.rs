@@ -11,10 +11,14 @@
 //!   upstream:
 //!     type: forward
 //!     servers: ["9.9.9.9", "149.112.112.112:53"]
+//!     timeout_ms: 3000
+//!     tries: 2
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
+use std::num::{NonZeroU8, NonZeroU32};
+use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
 use dedens_cache::Cache;
@@ -39,8 +43,12 @@ struct File {
 enum StageFile {
     /// Settings of `dedens_cache::Config`, each defaulting to the RFCs' recommendation.
     Cache(dedens_cache::Config),
-    /// Upstream servers, asked in order.
-    Forward { servers: Vec<Server> },
+    /// Upstream servers, asked in order, each `tries` times waiting `timeout_ms` for a response.
+    Forward {
+        servers: Vec<Server>,
+        timeout_ms: Option<NonZeroU32>,
+        tries: Option<NonZeroU8>,
+    },
 }
 
 /// An upstream server: `IP:PORT`, or an IP address on port 53.
@@ -96,12 +104,21 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
             StageFile::Cache(config) => {
                 Stage::Cache(Cache::new(config).with_context(|| format!("stage `{name}`"))?)
             }
-            StageFile::Forward { servers } => {
+            StageFile::Forward {
+                servers,
+                timeout_ms,
+                tries,
+            } => {
                 let servers: Vec<_> = servers.into_iter().map(|server| server.0).collect();
-                Stage::Forward(
-                    Forward::new(&servers)
-                        .with_context(|| format!("stage `{name}` has no server"))?,
-                )
+                let mut forward = Forward::new(&servers)
+                    .with_context(|| format!("stage `{name}` has no server"))?;
+                if let Some(ms) = timeout_ms {
+                    forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
+                }
+                if let Some(tries) = tries {
+                    forward = forward.with_tries(tries);
+                }
+                Stage::Forward(forward)
             }
         });
     }
@@ -219,7 +236,7 @@ mod tests {
 
     #[test]
     fn a_caching_forwarder_reads() {
-        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n";
+        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
         let config = read(text, env).unwrap();
         assert_eq!(config.listen, ["127.0.0.1:5353".parse().unwrap()]);
         assert!(read(MINIMAL, env).is_ok());
@@ -274,6 +291,8 @@ mod tests {
             (format!("{MINIMAL}  up:\n    type: cache\n"), "up"),
             ("listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    size: 1\n".to_owned(), "size"),
             (MINIMAL.replace("192.0.2.1", "example.com"), "example.com"),
+            (format!("{MINIMAL}    tries: 0\n"), "nonzero"),
+            (format!("{MINIMAL}    timeout_ms: 0\n"), "nonzero"),
         ] {
             let message = error(&text);
             assert!(message.contains(needle), "{needle}: {message}");

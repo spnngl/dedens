@@ -14,11 +14,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Limits: TCP connections per listener, queries in flight per connection and per thread (RFC 7766 §6.2.2),
   so a client cannot hold every socket or task. Default: per-thread caps in the configuration step, refusing
   new connections past them.
-- Upstream timeout and tries (D42 fixes 1 s and 2): configurable per forward stage? Default: yes, with the
-  configuration step.
-- Stale data before resolution ends (RFC 8767 §5 client response timer, 1.8 s; D43 serves it only after
-  failures): needs a timer racing the upstream task in `dedensd`. Default: add with the configuration step,
-  off by default.
 
 ## Later
 

@@ -1,8 +1,11 @@
 //! The pipeline: the stages in order (D23), and the replies the core gives before any stage (D41).
 
+use std::cell::Cell;
 use std::net::SocketAddr;
+use std::num::NonZeroU8;
+use std::time::Duration;
 
-use dedens_cache::{Cache, Key};
+use dedens_cache::{Cache, Key, StalePolicy};
 use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType};
 
 use crate::cache::{self, Looked};
@@ -40,6 +43,18 @@ pub enum Step {
     Refresh(usize, Box<Upstream>),
 }
 
+/// What an upstream query is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// The client's reply.
+    Reply,
+    /// Refreshing a fresh entry before it expires; the client had its reply, and a failure is not held.
+    Prefetch,
+    /// Refreshing an expired entry that answered the client when its timer ran out (RFC 8767 §5); a failure is
+    /// held.
+    Stale,
+}
+
 /// A query waiting for an upstream server's response; it owns what it needs, so that it outlives the buffers of
 /// the query.
 #[derive(Debug)]
@@ -53,8 +68,13 @@ pub struct Upstream {
     forward: usize,
     next: usize,
     cache: Option<usize>,
-    /// Only refresh the cache: no reply.
-    refresh: bool,
+    /// The forward stage's.
+    timeout: Duration,
+    tries: NonZeroU8,
+    /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
+    stale_after: Option<Duration>,
+    /// A cell: [`Pipeline::stale`] answers while the caller still sends [`Upstream::request`].
+    purpose: Cell<Purpose>,
 }
 
 impl Pipeline {
@@ -120,21 +140,24 @@ impl Pipeline {
         let mut cache = None;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
-                Stage::Cache(stored) => match cache::look(stored, query, client, now, out) {
-                    Looked::Reply { len, refresh } => {
-                        return match self.upstream(index, wire, query, client, Some(index)) {
-                            Some(mut upstream) if refresh => {
-                                upstream.refresh = true;
-                                Step::Refresh(len, upstream)
-                            }
-                            _ => Step::Reply(len),
-                        };
+                Stage::Cache(stored) => {
+                    match cache::look(stored, query, client, now, StalePolicy::IfFailing, out) {
+                        Looked::Reply { len, refresh } => {
+                            return match self.upstream(index, wire, query, client, Some(index)) {
+                                Some(mut upstream) if refresh => {
+                                    upstream.purpose = Cell::new(Purpose::Prefetch);
+                                    upstream.stale_after = None;
+                                    Step::Refresh(len, upstream)
+                                }
+                                _ => Step::Reply(len),
+                            };
+                        }
+                        Looked::Failed => {
+                            return reply(client, Message::default(), Rcode::SERVFAIL, out);
+                        }
+                        Looked::Miss => cache = Some(index),
                     }
-                    Looked::Failed => {
-                        return reply(client, Message::default(), Rcode::SERVFAIL, out);
-                    }
-                    Looked::Miss => cache = Some(index),
-                },
+                }
                 Stage::Forward(_) => {
                     return self
                         .upstream(index, wire, query, client, cache)
@@ -154,33 +177,74 @@ impl Pipeline {
         client: &Client<'_>,
         cache: Option<usize>,
     ) -> Option<Box<Upstream>> {
-        let (forward, servers) =
+        let (index, forward) =
             self.stages
                 .iter()
                 .enumerate()
                 .skip(from)
                 .find_map(|(index, stage)| match stage {
-                    Stage::Forward(forward) => Some((index, forward.servers())),
+                    Stage::Forward(forward) => Some((index, forward)),
                     Stage::Cache(_) => None,
                 })?;
+        let (timeout, tries) = forward.patience();
+        let stale_after = cache
+            .and_then(|index| self.cache(index))
+            .map(|cache| cache.config().stale_answer_after_ms)
+            .filter(|&ms| ms > 0)
+            .map(|ms| Duration::from_millis(u64::from(ms)));
         Some(Box::new(Upstream {
             query: wire.into(),
             transport: client.transport,
             request: forward::request(client, query.question()?),
-            server: *servers.first()?,
-            forward,
+            server: *forward.servers().first()?,
+            forward: index,
             next: 1,
             cache,
-            refresh: false,
+            timeout,
+            tries,
+            stale_after,
+            purpose: Cell::new(Purpose::Reply),
         }))
+    }
+
+    /// The cache stage at `index`.
+    fn cache(&self, index: usize) -> Option<&Cache> {
+        match self.stages.get(index) {
+            Some(Stage::Cache(cache)) => Some(cache),
+            _ => None,
+        }
+    }
+
+    /// Answers the client of `upstream` with expired data once [`Upstream::stale_after`] ran out, at `now`, while
+    /// the upstream query goes on (RFC 8767 §5): the reply is written into `out` as [`Pipeline::query`] writes,
+    /// its records' TTL the cache's `stale_answer_ttl`, with EDE 3 (Stale Answer) or 19 (Stale NXDOMAIN Answer)
+    /// when the client sent an OPT record. The response to `upstream` then only refreshes the cache, its failure
+    /// held: [`Pipeline::receive`] ends in [`Step::Drop`]. `None` when the cache keeps nothing for the query, or the
+    /// client was answered already.
+    ///
+    /// `upstream` comes from this pipeline.
+    pub fn stale(&self, upstream: &Upstream, now: u32, out: &mut [u8]) -> Option<usize> {
+        if upstream.purpose.get() != Purpose::Reply {
+            return None;
+        }
+        let cache = self.cache(upstream.cache?)?;
+        let query = Query::read(&upstream.query).ok()?;
+        let client = Client::of(&query, upstream.transport);
+        let Looked::Reply { len, .. } =
+            cache::look(cache, &query, &client, now, StalePolicy::Always, out)
+        else {
+            return None;
+        };
+        upstream.purpose.set(Purpose::Stale);
+        Some(len)
     }
 
     /// Takes the server's `response` to `upstream`, received at `now` and matched to the request by the transport
     /// (`dedens_net` checks its ID and question), or `None` when none came. A usable one is stored in the cache
     /// stage before, if any, and is the reply, written into `out` as [`Pipeline::query`] writes; otherwise the
     /// next server is asked. After the last, the failure is held in the cache, and the reply is the expired data it
-    /// keeps, or SERVFAIL (D41, D43). Returns [`Step::Reply`], [`Step::Drop`] or [`Step::Upstream`]; a refresh
-    /// ends in [`Step::Drop`].
+    /// keeps, or SERVFAIL (D41, D43). Returns [`Step::Reply`], [`Step::Drop`] or [`Step::Upstream`]; a refresh,
+    /// or a query whose client [`Pipeline::stale`] answered, ends in [`Step::Drop`].
     ///
     /// `upstream` comes from this pipeline.
     pub fn receive(
@@ -195,12 +259,8 @@ impl Pipeline {
             return Step::Drop;
         };
         let client = Client::of(&query, upstream.transport);
-        let cache = upstream
-            .cache
-            .and_then(|index| match self.stages.get(index) {
-                Some(Stage::Cache(cache)) => Some(cache),
-                _ => None,
-            });
+        let cache = upstream.cache.and_then(|index| self.cache(index));
+        let purpose = upstream.purpose.get();
         if let Some(decoded) = response
             .and_then(|wire| Message::decode(wire).ok())
             .filter(forward::usable)
@@ -209,7 +269,7 @@ impl Pipeline {
                 // Some responses are not stored (RFC 2308, D22): the reply goes out all the same.
                 let _ = cache.insert(&query, &decoded, now);
             }
-            if upstream.refresh {
+            if purpose != Purpose::Reply {
                 return Step::Drop;
             }
             let rcode = decoded.message.rcode();
@@ -224,18 +284,24 @@ impl Pipeline {
             upstream.next += 1;
             return Step::Upstream(upstream);
         }
-        if upstream.refresh {
+        if purpose == Purpose::Prefetch {
             return Step::Drop;
         }
         if let Some(cache) = cache
             && let Some(key) = Key::of(&query)
         {
             cache.fail(&key, now);
-            if let Looked::Reply { len, .. } = cache::look(cache, &query, &client, now, out) {
+            if purpose == Purpose::Reply
+                && let Looked::Reply { len, .. } =
+                    cache::look(cache, &query, &client, now, StalePolicy::IfFailing, out)
+            {
                 return Step::Reply(len);
             }
         }
-        reply(&client, Message::default(), Rcode::SERVFAIL, out)
+        match purpose {
+            Purpose::Reply => reply(&client, Message::default(), Rcode::SERVFAIL, out),
+            Purpose::Prefetch | Purpose::Stale => Step::Drop,
+        }
     }
 }
 
@@ -250,6 +316,20 @@ impl Upstream {
     #[must_use]
     pub const fn server(&self) -> SocketAddr {
         self.server
+    }
+
+    /// How long to wait for each response, and how many queries to send, before handing `None` to
+    /// [`Pipeline::receive`]: the forward stage's.
+    #[must_use]
+    pub const fn patience(&self) -> (Duration, NonZeroU8) {
+        (self.timeout, self.tries)
+    }
+
+    /// How long after the client's query to call [`Pipeline::stale`], resolution going on: the client response
+    /// timer of the cache stage before (RFC 8767 §5), `None` without one or when the client has its reply.
+    #[must_use]
+    pub const fn stale_after(&self) -> Option<Duration> {
+        self.stale_after
     }
 }
 

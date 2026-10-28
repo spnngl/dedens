@@ -285,8 +285,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind together. Every
   socket is bound before any thread starts, so a taken address fails the start. A reply the pipeline builds at
   once goes out from the socket's task; a query for upstream gets a task owning its `Upstream` and asks with the
-  thread's `dedens_net::Client`, over the client's transport, 1 s per try, 2 tries per
-  server. TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
+  thread's `dedens_net::Client`, over the client's transport, with the forward stage's timeout and tries
+  (D45). TCP (RFC 7766): queries read in turn, each answered when ready, replies in any order through one
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from flags until the configuration (D24). Rejected: one socket shared
   by all threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
@@ -297,13 +297,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   after. A miss runs the later stages, and the forward stage's usable response is stored under the client's
   query (its DO and CD bits) before the reply; unstored responses (D22) are still the reply. After the last
   server fails, the failure is held (RFC 9520 §3.2); during a hold the reply is SERVFAIL, upstream unasked.
-  Expired data answers only while failing (`StalePolicy::IfFailing`): after the last server fails, and during
-  the hold, with TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its
+  Expired data answers while failing (`StalePolicy::IfFailing`), and on the client timer (D45): after the last
+  server fails, and during the hold, with TTL 30 and EDE 3, or 19 for NXDOMAIN (RFC 8767, RFC 8914 §4.4). A fresh hit under 10% of its
   TTL is `Step::Refresh`: the reply now, then the same upstream query whose response is only stored, ending in
   `Step::Drop`; a failed refresh is not held. `Upstream` owns what it needs (a copy of the query's bytes, read
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
-  takes it back. Rejected: serving stale data before resolution ends, on a client timer (RFC 8767 §5's 1.8 s;
-  later, with configuration); reading the query again in `dedensd`'s upstream task (a second cache lookup, a
+  takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a
   miss counted twice, and no way to tell a refresh from a reply).
 - D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D17's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings under `type`:
@@ -312,6 +311,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
   after a forward stage (which answers every query). `dedensd validate` reads the file and builds the
   pipeline without binding. Later, with need: a directory merged, `SECRET[..]`, JSON Schema, reload.
+- D45 Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
+  waits `timeout_ms` per query (default 3000, slow authoritative chains take over 1 s) and sends each server
+  `tries` queries (default 2), carried on `Upstream` (`Upstream::patience`). A cache stage's
+  `stale_answer_after_ms` (default 1800, the RFC's suggestion; 0 waits for resolution) is the client response
+  timer: `dedensd` races it against the upstream exchange, and when it ends first calls `Pipeline::stale`,
+  which answers with expired data (`StalePolicy::Always`, TTL 30, EDE 3 or 19) if the cache keeps any. The
+  exchange goes on: its response only refreshes the entry, so the next query has it fresh; its failure is held,
+  with no second reply. A refresh of a fresh entry (D43) has no timer. Rejected: a stale answer without
+  resolution going on (the next query would wait again); a second task per query for the timer (the exchange
+  future is polled with a deadline, then awaited).
 
 ## Observability
 

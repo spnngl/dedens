@@ -1,18 +1,22 @@
 //! `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured
 //! bytes, several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start
-//! that fails on a taken address, and `validate` reading a configuration file without binding.
+//! that fails on a taken address, `validate` reading a configuration file without binding, and expired data
+//! answering a client kept waiting while resolution goes on (RFC 8767 §5).
 
 mod common;
 
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use common::{
     Responder, Server, ask_tcp, ask_udp, captured, config, decode, framed, query_for, read_framed,
     silent,
 };
-use dedens_proto::{Opcode, Rcode};
+use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::{Message, Opcode, Rcode};
 
 #[test]
 fn queries_over_udp_and_tcp_are_forwarded() {
@@ -102,4 +106,41 @@ fn validate_reads_the_configuration_without_binding() {
         stderr.contains("variable `UPSTREAM` is not set"),
         "{stderr}"
     );
+}
+
+/// The extended error codes of `reply`.
+fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
+    let options = reply.edns.iter().flat_map(|edns| &edns.options);
+    options
+        .filter_map(|option| match option {
+            EdnsOption::Ede(error) => Some(error.code),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
+    let response = captured("a");
+    let upstream = Responder::slow("a", 3, Duration::from_millis(1000));
+    let server = Server::start_with(upstream.addr, "    stale_answer_after_ms: 200\n");
+    let first = ask_udp(server.addr, &query_for(&response, 1));
+    assert_eq!(errors(&first), []);
+    // Past the TTL, upstream answers a second late: expired data answers once the 200 ms timer runs out.
+    thread::sleep(Duration::from_millis(3200));
+    let asked = Instant::now();
+    let stale = ask_udp(server.addr, &query_for(&response, 2));
+    assert!(
+        asked.elapsed() < Duration::from_millis(900),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!((stale.header.id, stale.rcode()), (2, Rcode::NOERROR));
+    assert_eq!(errors(&stale), [InfoCode::STALE_ANSWER]);
+    assert!(stale.answer.iter().all(|record| record.ttl.get() == 30));
+    // Resolution went on and refreshed the entry.
+    thread::sleep(Duration::from_millis(1300));
+    let fresh = ask_udp(server.addr, &query_for(&response, 3));
+    assert_eq!((upstream.queries(), errors(&fresh)), (2, vec![]));
+    assert!(fresh.answer.iter().all(|record| record.ttl.get() <= 3));
 }

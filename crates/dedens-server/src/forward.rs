@@ -1,6 +1,8 @@
 //! The forward stage: the client's question asked of upstream servers in turn (D41).
 
 use std::net::SocketAddr;
+use std::num::NonZeroU8;
+use std::time::Duration;
 
 use dedens_proto::{Decoded, Flags, Message, Question, Rcode};
 
@@ -11,15 +13,44 @@ use crate::reply::Client;
 pub struct Forward {
     /// Never empty.
     servers: Box<[SocketAddr]>,
+    timeout: Duration,
+    tries: NonZeroU8,
 }
 
 impl Forward {
-    /// Forwards to `servers`, tried in order; `None` without any.
+    /// How long each query to a server waits for its response, by default.
+    pub const TIMEOUT: Duration = Duration::from_secs(3);
+    /// How many queries a server is sent before the next is asked, by default.
+    pub const TRIES: NonZeroU8 = NonZeroU8::new(2).expect("two is not zero");
+
+    /// Forwards to `servers`, tried in order, each [`Forward::TRIES`] times waiting [`Forward::TIMEOUT`]; `None`
+    /// without any.
     #[must_use]
     pub fn new(servers: &[SocketAddr]) -> Option<Self> {
         (!servers.is_empty()).then(|| Self {
             servers: servers.into(),
+            timeout: Self::TIMEOUT,
+            tries: Self::TRIES,
         })
+    }
+
+    /// Waits `timeout` for each response.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Sends each server `tries` queries.
+    #[must_use]
+    pub const fn with_tries(mut self, tries: NonZeroU8) -> Self {
+        self.tries = tries;
+        self
+    }
+
+    /// How long each query waits, and how many each server is sent.
+    pub(crate) const fn patience(&self) -> (Duration, NonZeroU8) {
+        (self.timeout, self.tries)
     }
 
     /// The servers, in the order they are asked; the first always exists.

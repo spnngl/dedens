@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dedens_proto::{Message, Name, RecordType};
+use dedens_proto::{Message, Name, RecordType, Ttl};
 
 /// A captured response of `dedens-proto`'s test data.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
@@ -54,18 +54,32 @@ pub(crate) struct Responder {
 impl Responder {
     /// Answers with the captures named `cases`.
     pub(crate) fn start(cases: &[&str]) -> Self {
-        let captures: Arc<[_]> = cases
-            .iter()
-            .map(|case| {
-                let wire = captured(case);
-                (question(&wire).expect("a captured question"), wire)
-            })
+        let captures = cases.iter().map(|case| captured(case)).collect();
+        Self::answering(captures, Duration::ZERO)
+    }
+
+    /// Answers with the capture named `case`, its records' TTL `ttl`, every query after the first `delay` late.
+    pub(crate) fn slow(case: &str, ttl: u32, delay: Duration) -> Self {
+        let mut message = decode(&captured(case));
+        let ttl = Ttl::new(ttl).expect("a TTL");
+        for record in &mut message.answer {
+            record.ttl = ttl;
+        }
+        Self::answering(vec![message.to_vec().expect("it fits")], delay)
+    }
+
+    fn answering(responses: Vec<Vec<u8>>, delay: Duration) -> Self {
+        let captures: Arc<[_]> = responses
+            .into_iter()
+            .map(|wire| (question(&wire).expect("a captured question"), wire))
             .collect();
         let queries = Arc::new(AtomicUsize::new(0));
         let reply = {
             let queries = Arc::clone(&queries);
             move |query: &[u8]| {
-                queries.fetch_add(1, Ordering::Relaxed);
+                if queries.fetch_add(1, Ordering::Relaxed) > 0 {
+                    thread::sleep(delay);
+                }
                 let asked = question(query)?;
                 let (_, wire) = captures.iter().find(|(question, _)| *question == asked)?;
                 let mut answer = wire.clone();
@@ -124,6 +138,11 @@ fn free_port() -> SocketAddr {
 /// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream`, in the temporary
 /// directory; each call writes its own.
 pub(crate) fn config(listen: &str, upstream: &str) -> PathBuf {
+    config_with(listen, upstream, "")
+}
+
+/// [`config`] with `cache`, lines of settings for the cache stage.
+fn config_with(listen: &str, upstream: &str, cache: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "dedensd-{}-{}.yaml",
@@ -131,7 +150,7 @@ pub(crate) fn config(listen: &str, upstream: &str) -> PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let text = format!(
-        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['{upstream}']\n"
+        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n"
     );
     std::fs::write(&path, text).expect("a configuration file");
     path
@@ -153,10 +172,15 @@ impl Drop for Server {
 impl Server {
     /// Starts `dedensd` on a free port, forwarding to `upstream`, and waits until it accepts connections.
     pub(crate) fn start(upstream: SocketAddr) -> Self {
+        Self::start_with(upstream, "")
+    }
+
+    /// [`Server::start`] with `cache`, lines of settings for the cache stage, as `"    key: value\n"`.
+    pub(crate) fn start_with(upstream: SocketAddr, cache: &str) -> Self {
         let addr = free_port();
         let child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
             .arg("--config")
-            .arg(config(&addr.to_string(), &upstream.to_string()))
+            .arg(config_with(&addr.to_string(), &upstream.to_string(), cache))
             .stderr(Stdio::null())
             .spawn()
             .expect("dedensd starts");

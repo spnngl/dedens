@@ -4,7 +4,7 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::num::NonZeroU8;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -28,10 +28,6 @@ const TCP_IDLE: Duration = Duration::from_secs(10);
 
 /// Connections waiting to be accepted, per TCP listener.
 const TCP_BACKLOG: i32 = 1024;
-
-/// How long to wait for each upstream query, and how many to send, before asking the next server (D42).
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(1);
-const UPSTREAM_TRIES: NonZeroU8 = NonZeroU8::new(2).expect("two is not zero");
 
 /// How long to wait before accepting again after `accept` failed, for instance out of file descriptors.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
@@ -144,11 +140,8 @@ async fn udp(socket: UdpSocket, pipeline: Arc<Pipeline>, client: Rc<Client>) {
         );
         spawn(async move {
             let out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
-            if let Some((out, len)) =
-                answer(&pipeline, &client, upstream, Transport::Udp, out).await
-            {
-                send(&socket, out, len, peer).await;
-            }
+            let deliver = async |out, len| send(&socket, out, len, peer).await;
+            answer(&pipeline, &client, upstream, Transport::Udp, out, deliver).await;
         })
         .detach();
     }
@@ -219,11 +212,11 @@ async fn connection(stream: TcpStream, pipeline: Arc<Pipeline>, client: Rc<Clien
             (replies.clone(), Arc::clone(&pipeline), Rc::clone(&client));
         spawn(async move {
             let out = vec![0; MAX_MESSAGE_LEN];
-            if let Some((out, len)) =
-                answer(&pipeline, &client, upstream, Transport::Tcp, out).await
-            {
+            let deliver = async |out: Vec<u8>, len| {
                 reply(&replies, &out[..len]);
-            }
+                out
+            };
+            answer(&pipeline, &client, upstream, Transport::Tcp, out, deliver).await;
         })
         .detach();
     }
@@ -239,25 +232,41 @@ fn reply(replies: &flume::Sender<Vec<u8>>, wire: &[u8]) {
     }
 }
 
-/// Asks the upstream servers for `upstream` in turn, over `transport`, the client's (D42); returns `out` and the
-/// length of the reply in it, or `None` when there is none to send, as after a refresh.
+/// Asks the upstream servers for `upstream` in turn, over `transport`, the client's, each with the forward stage's
+/// timeout and tries (D42), and hands `deliver` the replies in `out` to send: expired data when the client
+/// response timer runs out first, resolution going on to refresh the cache (RFC 8767 §5), then the response's
+/// unless that went out; none after a prefetch. `deliver` gives `out` back.
 async fn answer(
     pipeline: &Pipeline,
     client: &Client,
     mut upstream: Box<Upstream>,
     transport: Transport,
     mut out: Vec<u8>,
-) -> Option<(Vec<u8>, usize)> {
+    mut deliver: impl AsyncFnMut(Vec<u8>, usize) -> Vec<u8>,
+) {
     let mut options = Options::default();
     options.transport = match transport {
         Transport::Udp => exchange::Transport::Udp,
         Transport::Tcp => exchange::Transport::Tcp,
     };
-    options.tries = UPSTREAM_TRIES;
-    options.timeout = UPSTREAM_TIMEOUT;
+    (options.timeout, options.tries) = upstream.patience();
+    let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
     loop {
         let server = upstream.server();
-        let response = client.exchange(upstream.request(), server, &options).await;
+        let response = 'ask: {
+            let mut exchange = pin!(client.exchange(upstream.request(), server, &options));
+            if let Some(at) = stale_at {
+                // A reborrow: the exchange goes on after the timer.
+                if let Ok(response) = compio::time::timeout_at(at, exchange.as_mut()).await {
+                    break 'ask response;
+                }
+                stale_at = None;
+                if let Some(len) = pipeline.stale(&upstream, now(), &mut out) {
+                    out = deliver(out, len).await;
+                }
+            }
+            exchange.await
+        };
         if let Err(error) = &response {
             tracing::debug!(%error, %server, "upstream");
         }
@@ -266,8 +275,11 @@ async fn answer(
             .ok()
             .map(|response| response.wire.as_slice());
         match pipeline.receive(upstream, wire, now(), &mut out) {
-            Step::Reply(len) | Step::Refresh(len, _) => return Some((out, len)),
-            Step::Drop => return None,
+            Step::Reply(len) | Step::Refresh(len, _) => {
+                deliver(out, len).await;
+                return;
+            }
+            Step::Drop => return,
             Step::Upstream(next) => upstream = next,
         }
     }

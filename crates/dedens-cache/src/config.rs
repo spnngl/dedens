@@ -42,6 +42,10 @@ pub struct Config {
     pub stale_recheck: u32,
     /// Percent of its TTL left under which an entry still in use is flagged for prefetch.
     pub prefetch_percent: u8,
+    /// Milliseconds a client waits for resolution before expired data answers it, resolution going on to refresh
+    /// the entry (RFC 8767 §5 client response timer: 1.8 seconds); 0 waits for resolution to end. The cache's
+    /// user runs the timer and looks up with [`StalePolicy::Always`](crate::StalePolicy::Always) once it ends.
+    pub stale_answer_after_ms: u32,
 }
 
 impl Default for Config {
@@ -57,6 +61,7 @@ impl Default for Config {
             failure_max: MAX_FAILURE_SECS,
             stale_recheck: 30,
             prefetch_percent: 10,
+            stale_answer_after_ms: 1_800,
         }
     }
 }

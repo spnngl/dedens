@@ -23,12 +23,14 @@ pub(crate) enum Looked {
 /// for the query, flags set as [`Client::reply`] sets them, and our OPT record when the client sent one, with EDE 3
 /// (Stale Answer) or 19 (Stale NXDOMAIN Answer) on expired data (RFC 8767 §4, RFC 8914 §4.4).
 ///
-/// Expired data answers only while resolving the query fails (RFC 8767 §5).
+/// Expired data answers as `stale` lets it: while resolving the query fails, or once the client's timer ran out
+/// (RFC 8767 §5).
 pub(crate) fn look(
     cache: &Cache,
     query: &Query<'_>,
     client: &Client<'_>,
     now: u32,
+    stale: StalePolicy,
     out: &mut [u8],
 ) -> Looked {
     let limit = client.limit().min(out.len());
@@ -46,7 +48,7 @@ pub(crate) fn look(
     if room < Cache::MIN_OUT {
         return Looked::Miss;
     }
-    let hit = match cache.lookup(query, now, StalePolicy::IfFailing, &mut out[..room]) {
+    let hit = match cache.lookup(query, now, stale, &mut out[..room]) {
         Lookup::Hit(hit) => hit,
         Lookup::Failed => return Looked::Failed,
         Lookup::Miss => return Looked::Miss,
