@@ -18,7 +18,7 @@ use dedens_proto::{EncodeError, Message};
 
 use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport, after};
 use crate::tcp::{TcpError, TcpPool};
-use crate::udp::UdpChannel;
+use crate::udp::{UdpPool, UdpQuery};
 
 /// How long a TCP connection stays open without a query waiting, unless the server asks for less (RFC 7766
 /// §6.2.3, RFC 7828 §3.2.2).
@@ -26,6 +26,9 @@ const TCP_IDLE: Duration = Duration::from_secs(10);
 
 /// The UDP payload size of a query without EDNS, and the least one with it means (RFC 6891 §6.2.3).
 const MIN_UDP_PAYLOAD: u16 = 512;
+
+/// UDP sockets per server, each muxing queries by ID (D50).
+const UDP_SOCKETS: usize = 256;
 
 /// Why [`Client::exchange`] got no response.
 #[derive(Debug, thiserror::Error)]
@@ -75,6 +78,7 @@ impl ClientError {
 /// Sends queries and returns their responses, keeping TCP connections and cookies per server.
 #[derive(Debug)]
 pub struct Client {
+    udp: UdpPool,
     tcp: TcpPool,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
@@ -99,6 +103,7 @@ impl Client {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            udp: UdpPool::new(UDP_SOCKETS),
             tcp: TcpPool::new(TCP_IDLE),
             cookies: RefCell::default(),
         }
@@ -120,9 +125,11 @@ impl Client {
         options: &Options,
     ) -> Result<Response, ClientError> {
         let mut query = query.clone();
-        let mut id = [0; 2];
-        getrandom::fill(&mut id).map_err(ClientError::Random)?;
-        query.header.id = u16::from_be_bytes(id);
+        // The ID, then the UDP socket of the pool.
+        let mut random = [0; 4];
+        getrandom::fill(&mut random).map_err(ClientError::Random)?;
+        query.header.id = u16::from_be_bytes([random[0], random[1]]);
+        let pick = usize::from(u16::from_be_bytes([random[2], random[3]]));
         // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
         // so a late response to an earlier try still counts (D27).
         let mut udp = None;
@@ -132,10 +139,12 @@ impl Client {
                 let size = query.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
                     edns.udp_payload.max(MIN_UDP_PAYLOAD)
                 });
-                let channel = UdpChannel::connect(server, usize::from(size))
+                let waiting = self
+                    .udp
+                    .query(server, pick, query.header.id, usize::from(size))
                     .await
                     .map_err(ClientError::Udp)?;
-                udp.insert(channel).local_addr().map_err(ClientError::Udp)?
+                udp.insert(waiting).local_addr().map_err(ClientError::Udp)?
             }
             Transport::Tcp => {
                 let deadline = after(Instant::now(), options.timeout);
@@ -177,14 +186,18 @@ impl Client {
     async fn step(
         &self,
         exchange: Exchange,
-        udp: Option<&mut UdpChannel>,
+        udp: Option<&mut UdpQuery>,
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
         trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
         match exchange.transport() {
             Transport::Udp => {
                 let channel =
-                    udp.expect("an exchange over UDP started over UDP, which opened the socket");
+                    udp.expect("an exchange over UDP started over UDP, which took a socket");
+                // A fallback sends the query with the next ID (D27).
+                if let Some(&[high, low]) = exchange.wire().get(..2) {
+                    channel.expect(u16::from_be_bytes([high, low]));
+                }
                 channel
                     .send(exchange.wire())
                     .await
@@ -196,7 +209,7 @@ impl Client {
                     else {
                         return Ok(exchange.time_out(Instant::now().max(deadline)));
                     };
-                    match exchange.receive(server, Transport::Udp, bytes, Instant::now()) {
+                    match exchange.receive(server, Transport::Udp, &bytes, Instant::now()) {
                         Progress::Wait(next) => exchange = next,
                         progress => return Ok(progress),
                     }

@@ -89,9 +89,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
 - D27 Client behaviour:
-  - UDP: a new connected socket on port 0 per query, the OS picking a random port, and a random ID from
-    `getrandom`: about 32 bits an off-path attacker must guess (RFC 5452 §9.2). Muxing queries on a fixed socket
-    leaves 16 (the ID field cannot grow), so it waits for the forwarder (`TODECIDE.md`).
+  - UDP: queries muxed on a fixed pool of connected sockets per server (D50), and a random ID from `getrandom`.
+    Superseded: a new socket per query (about 32 bits to guess, RFC 5452 §9.2, at three system calls a query).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
     on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case
     randomization of the question is an option, off by default as in Unbound.
@@ -352,6 +351,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
   cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
   asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
+- D50 Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
+  on first use on port 0 and connected, then kept: a query takes one at random and waits for datagrams with its
+  ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
+  socket: 16 + 8 bits (RFC 5452 §9.2), against about 32 with a socket per query; cookies (RFC 7873) and `0x20`
+  stay the way to win more. Matching stays D27's: a datagram goes to each query waiting for its ID, and the
+  exchange drops those of another question. A socket's datagrams are cut to the largest size its queries
+  advertised. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
+  the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
+  against a kept port yet); muxing by question too (the exchange checks it).
 
 ## Observability
 

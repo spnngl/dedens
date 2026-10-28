@@ -102,6 +102,9 @@ answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
   average latency 2.7 → 0.22 ms. Copying each reply twice instead of once: no change (176k-188k).
 - UDP, a receive asked per datagram → one multishot receive into a pool of 256 4-KiB buffers (D49): 402k-428k
   → 478k-480k queries/s, average latency 1.2 → 1.0 ms. 16 tasks a socket instead of 4: 475k-516k, within noise.
+- Forwarding (`forward`): `dedensd` without a cache, every query sent over UDP to a second `dedensd` on its own
+  core answering from its cache. A socket per upstream query → a pool of 256 muxed sockets (D50): 124.6k-124.9k
+  → 126.5k-127.7k queries/s, no loss, average latency 4.0 → 3.9 ms.
 
 ## Zone files (D25)
 

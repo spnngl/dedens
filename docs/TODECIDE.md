@@ -5,9 +5,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Server forwarder (phase 7)
 
-- Upstream UDP: a pool of N sockets on random ports, renewed often, queries muxed by ID and question, with
-  cookies and `0x20` to win back the entropy a fixed port loses (D27)? Default: decide with dnsperf numbers
-  against one socket per query.
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
 
