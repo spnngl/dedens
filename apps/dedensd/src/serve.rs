@@ -246,11 +246,20 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
     let _ = stream.set_nodelay(true);
     let (reader, mut writer) = stream.into_split();
     let (replies, queue) = flume::bounded::<Vec<u8>>(TCP_PENDING);
-    // Ends when the reader and every pending query have dropped their senders, or a write fails or times out.
+    // Ends when the reader and every pending query have dropped their senders, or a write fails or times out. The
+    // replies queued meanwhile go out together, up to a message's size: one write for many.
     let writing = spawn(async move {
+        let mut batch = Vec::new();
         while let Ok(framed) = queue.recv_async().await {
-            match compio::time::timeout(TCP_WRITE, writer.write_all(framed)).await {
-                Ok(BufResult(Ok(()), _)) => {}
+            batch.clear();
+            batch.extend_from_slice(&framed);
+            while batch.len() < MAX_MESSAGE_LEN
+                && let Ok(framed) = queue.try_recv()
+            {
+                batch.extend_from_slice(&framed);
+            }
+            match compio::time::timeout(TCP_WRITE, writer.write_all(batch)).await {
+                Ok(BufResult(Ok(()), written)) => batch = written,
                 _ => return,
             }
         }

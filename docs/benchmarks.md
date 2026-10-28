@@ -96,6 +96,8 @@ removed `MessageView` read every record in 178/505/1093 ns.
 answering four names from its cache, dnsperf on six, 10 s a run, two rounds.
 
 - One UDP task a socket → four: 304k-334k → 381k-432k queries/s, average latency 1.5 → 1.2 ms.
+- TCP (`tcp`), one write a reply → queued replies written together: 176k-191k → 1.79M-1.83M queries/s,
+  average latency 2.7 → 0.22 ms. Copying each reply twice instead of once: no change (176k-188k).
 
 ## Zone files (D25)
 

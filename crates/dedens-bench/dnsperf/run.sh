@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Queries per second of dedensd under dnsperf, on Linux (io_uring), the server on one core: the git ref $1
-# (default HEAD) against the working tree, two rounds each. Runs inside the container `just bench-dnsperf` starts,
+# (default HEAD) against the working tree, two rounds each, over the transport $2 (udp, the default, or tcp). Runs inside the container `just bench-dnsperf` starts,
 # with the repository at /src (read-only), a target directory at /target. The cache answers every query after the
 # first, which goes to 1.1.1.1: the network is needed for those.
 set -euo pipefail
 base="${1:-HEAD}"
+mode="${2:-udp}"
 apt-get update -qq >/dev/null
 apt-get install -y -qq dnsperf dnsutils git >/dev/null 2>&1
 git config --global --add safe.directory /src
@@ -36,7 +37,7 @@ for round in 1 2; do
         sleep 1
         dig +short @127.0.0.1 -p 5399 example.com A iana.org MX example.org A www.example.com AAAA >/dev/null
         printf '%s, round %s:' "$bin" "$round"
-        taskset -c 1-6 dnsperf -s 127.0.0.1 -p 5399 -d /queries.txt -l 10 -c 8 -T 4 -q 500 |
+        taskset -c 1-6 dnsperf -m "$mode" -s 127.0.0.1 -p 5399 -d /queries.txt -l 10 -c 8 -T 4 -q 500 |
             grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
         echo
         kill "$pid"

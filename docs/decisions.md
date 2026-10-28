@@ -341,7 +341,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
-  415k, 8 and 16 no better.
+  415k, 8 and 16 no better. A TCP connection's writer writes the replies queued meanwhile together, up to 65535
+  bytes: one write a reply held TCP to about 185k queries/s, batches reach about 1.8M (dnsperf pipelines 500
+  queries). Copying each reply for the writer costs nothing measurable there (copying it twice did not move the
+  numbers), so replies keep their copy and the writer task, which reads on while writing and keeps the replies
+  of concurrent queries whole.
 
 ## Observability
 
