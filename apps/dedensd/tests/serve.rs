@@ -122,7 +122,7 @@ fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
 #[test]
 fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     let response = captured("a");
-    let upstream = Responder::slow("a", 3, Duration::from_millis(1000));
+    let upstream = Responder::slow("a", 3, Duration::from_millis(500));
     let server = Server::start_with(upstream.addr, "    stale_answer_after_ms: 200\n");
     let first = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!(errors(&first), []);
@@ -139,7 +139,7 @@ fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     assert_eq!(errors(&stale), [InfoCode::STALE_ANSWER]);
     assert!(stale.answer.iter().all(|record| record.ttl.get() == 30));
     // Resolution went on and refreshed the entry.
-    thread::sleep(Duration::from_millis(1300));
+    thread::sleep(Duration::from_millis(800));
     let fresh = ask_udp(server.addr, &query_for(&response, 3));
     assert_eq!((upstream.queries(), errors(&fresh)), (2, vec![]));
     assert!(fresh.answer.iter().all(|record| record.ttl.get() <= 3));

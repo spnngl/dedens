@@ -135,8 +135,8 @@ fn free_port() -> SocketAddr {
     }
 }
 
-/// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream`, in the temporary
-/// directory; each call writes its own.
+/// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream` with a 1 s timeout,
+/// in the temporary directory; each call writes its own.
 pub(crate) fn config(listen: &str, upstream: &str) -> PathBuf {
     config_with(listen, upstream, "")
 }
@@ -150,7 +150,7 @@ fn config_with(listen: &str, upstream: &str, cache: &str) -> PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let text = format!(
-        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n"
+        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 1000\n"
     );
     std::fs::write(&path, text).expect("a configuration file");
     path
