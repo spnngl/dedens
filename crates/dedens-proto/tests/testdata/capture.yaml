@@ -1,0 +1,37 @@
+# Real responses from public servers, saved as <id>.bin by `just capture [ids...]`. Each query goes over UDP;
+# a truncated response is asked again over TCP unless `ignore` keeps it. Never edit the .bin files by hand.
+server: 1.1.1.1
+options: {recurse: true, ad: false, cookie: false, bufsize: 1232}
+queries:
+  - {id: a, name: example.com, type: A}
+  - {id: aaaa, name: cloudflare.com, type: AAAA}
+  - {id: ns, name: example.com, type: NS}
+  - {id: soa, name: example.com, type: SOA}
+  - {id: mx, name: gmail.com, type: MX}
+  - {id: txt_large, name: google.com, type: TXT, server: 8.8.8.8}
+  - {id: srv, name: _sip._tls.microsoft.com, type: SRV, server: 8.8.8.8}
+  - {id: caa, name: google.com, type: CAA, server: 8.8.8.8}
+  - {id: https, name: cloudflare.com, type: HTTPS}
+  - {id: cname_chain, name: www.github.com, type: A}
+  - {id: nxdomain_soa, name: nonexistent.invalid, type: A}
+  # Authoritative: answers ANY as RFC 8482 asks.
+  - {id: any_rfc8482, name: cloudflare.com, type: ANY, server: ns3.cloudflare.com}
+  - id: truncated
+    name: google.com
+    type: TXT
+    server: 8.8.8.8
+    options: {edns: false, ignore: true}
+  - id: ede
+    name: dnssec-failed.org
+    type: A
+    options: {dnssec: true}
+  - id: nsid
+    name: example.com
+    type: A
+    options: {nsid: true}
+  # A fixed client cookie, so the query repeats.
+  - id: cookie
+    name: isc.org
+    type: SOA
+    server: ns1.isc.org
+    options: {recurse: false, cookie: '0102030405060708'}

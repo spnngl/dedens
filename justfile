@@ -135,9 +135,11 @@ fuzz-all seconds="60":
 fuzz-smoke:
     cargo test --manifest-path fuzz/Cargo.toml --lib
 
-# Capture fresh responses from public resolvers into crates/dedens-proto/tests/testdata/.
-capture *cases:
-    python3 scripts/capture.py {{cases}}
+# Capture fresh responses from public servers into crates/dedens-proto/tests/testdata/: the queries of its
+# capture.yaml, or those with the ids given.
+capture *ids:
+    cargo run -p dedens -- -f crates/dedens-proto/tests/testdata/capture.yaml \
+        --save-wire crates/dedens-proto/tests/testdata {{ prepend("--only=", ids) }}
 
 # Install the pinned RAPx and the nightly's rustc internals. Needs Z3: `brew install z3` or
 # `apt-get install libz3-dev`.

@@ -121,7 +121,7 @@ fn run(target: &str, entry: Entry, label: &str, input: &[u8]) {
 #[test]
 fn every_target_survives_seeds_and_mutations() {
     let seeds = seeds();
-    assert!(!seeds.is_empty(), "no seeds, run scripts/capture.py");
+    assert!(!seeds.is_empty(), "no seeds, run just capture");
     for (target, entry) in TARGETS {
         for (name, seed) in &seeds {
             for (label, input) in variants(name, seed) {

@@ -1,4 +1,4 @@
-//! Responses captured from public resolvers by `scripts/capture.py`: they decode without a violation and
+//! Responses captured from public servers by `just capture` (`testdata/capture.yaml`): they decode without a violation and
 //! re-encode to an equal message.
 
 use std::fs;
@@ -23,6 +23,9 @@ fn every_capture_decodes_and_round_trips() {
     let mut count = 0;
     for entry in fs::read_dir(dir()).expect("testdata directory") {
         let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "bin") {
+            continue;
+        }
         let name = path
             .file_stem()
             .expect("stem")
