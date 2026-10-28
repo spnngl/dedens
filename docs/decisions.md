@@ -67,6 +67,28 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   checks what `Message::decode` checks (fuzzed against it). `Edns::append` writes an OPT after a message
   already in a buffer, so the server adds EDNS to cached bytes without re-encoding.
 
+## Transports
+
+- D26 `dedens-net` splits like `dedens-proto`: a sans-IO client core (retries, response matching, TC fallback,
+  EDNS fallback, cookies) fed bytes and time, so tests drive drops, delays and forged replies exactly without a
+  server; a thin compio layer moves the bytes, tested over loopback only. Public at both levels: `Client` for
+  the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
+  forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
+  wrong ID or a drop). compio 0.19.2 until 0.20 is released.
+- D27 Client behaviour:
+  - UDP: a new connected socket on port 0 per query, the OS picking a random port, and a random ID from
+    `getrandom`: about 32 bits an off-path attacker must guess (RFC 5452 §9.2). Muxing queries on a fixed socket
+    leaves 16 (the ID field cannot grow), so it waits for the forwarder (`TODECIDE.md`).
+  - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
+    on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case
+    randomization of the question is an option, off by default as in Unbound.
+  - dig's defaults: 3 tries, 5 s each. TC over UDP is retried over TCP. EDNS is dropped once on FORMERR or
+    NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off.
+  - Cookies (RFC 7873 §5): client cookie from a per-process random secret and both addresses, server cookies
+    kept per server for the process, BADCOOKIE retried once.
+  - TCP (RFC 7766): one connection per server, queries pipelined and matched by ID in any order, idle close,
+    edns-tcp-keepalive honoured (RFC 7828), a closed connection retried once on a new one.
+
 ## Presentation format
 
 - D25 Zone text (`dedens-proto::text`, RFC 1035 §5, RFC 2308 §4, RFC 3597 §5): own lexer, base64 and hex.
