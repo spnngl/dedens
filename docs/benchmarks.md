@@ -127,4 +127,6 @@ sets). A lazy lexer cost 17% until a byte table skipped plain token text. Taking
 once checked, instead of encoding it twice more, does not show: the generated zone has no such record.
 Reading numbers and code mnemonics from the token bytes, instead of checking them as UTF-8 for `FromStr`:
 9.6 → 9.05 ms in the same session (6%); `from_utf8` went from 9.5% to 5.5% of the profile, the rest being
-IP addresses, whose byte parser (`parse_ascii`) is not stable yet.
+IP addresses, whose byte parser (`parse_ascii`) is not stable yet. Scanning token text 8 bytes at a time in a
+`u64` (bit tricks, no `unsafe`) instead of the byte table was 9% slower (9.05 → 9.9 ms): most tokens are
+shorter than 8 bytes, so the word test only adds work before the byte loop.

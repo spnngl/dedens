@@ -26,6 +26,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   load first, then pick: read-mostly hot entries, per-core copies, or a lock-free read path.
 - An encoder that also returns the TTL offsets it wrote, so `Cache::insert` skips its own pass over the
   response bytes. Default: add it when that pass shows in a profile of the server.
+- SIMD base64 and hex for DNSSEC keys and signatures in zone text (`text/encoding.rs` decodes a byte at a time
+  through a table): `core::arch` per CPU, since `std::simd` is nightly-only. Default: when DNSSEC lands, bench
+  the `base64-simd` crate and our table against a signed zone; `unsafe` only if it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
 - Order after the server forwarder: kubernetes stage, recursive resolver (with an RRset cache, priming per
