@@ -285,15 +285,24 @@ pub struct Writer<'a> {
     len: usize,
     /// Writes stop here, short of `buf.len()` while a tail is held back.
     limit: usize,
-    names: NameTable,
-    /// Whether [`Writer::put_name_compressed`] compresses; off for RDATA written on its own.
-    compress: bool,
+    /// The names to point to; `None` for RDATA written on its own, whose names are never compressed.
+    names: Option<NameTable>,
 }
 
 impl<'a> Writer<'a> {
     /// A writer at the start of `buf`.
     #[must_use]
     pub fn new(buf: &'a mut [u8]) -> Self {
+        Self::with_names(buf, Some(NameTable::new()))
+    }
+
+    /// A writer that never compresses names, for RDATA outside a message (RFC 3597 §5) and an OPT record after
+    /// one: it has no name table to clear.
+    pub(crate) fn uncompressed(buf: &'a mut [u8]) -> Self {
+        Self::with_names(buf, None)
+    }
+
+    fn with_names(buf: &'a mut [u8], names: Option<NameTable>) -> Self {
         let cap = buf.len().min(MAX_MESSAGE_LEN);
         let (buf, _) = buf.split_at_mut(cap);
         let limit = buf.len();
@@ -301,16 +310,7 @@ impl<'a> Writer<'a> {
             buf,
             len: 0,
             limit,
-            names: NameTable::new(),
-            compress: true,
-        }
-    }
-
-    /// A writer that never compresses names, for RDATA outside a message (RFC 3597 §5).
-    pub(crate) fn uncompressed(buf: &'a mut [u8]) -> Self {
-        Self {
-            compress: false,
-            ..Self::new(buf)
+            names,
         }
     }
 
@@ -452,7 +452,7 @@ impl<'a> Writer<'a> {
         previous: Option<u16>,
     ) -> Result<Option<u16>, EncodeError> {
         match previous {
-            Some(target) if self.compress => {
+            Some(target) if self.names.is_some() => {
                 self.put_u16(0xC000 | target)?;
                 Ok(Some(target))
             }
@@ -472,15 +472,15 @@ impl<'a> Writer<'a> {
             buf = [0; MAX_NAME_LEN];
             name.to_wire(&mut buf)
         };
-        if !self.compress {
+        let Some(names) = &self.names else {
             return self.put_bytes(wire).map(|()| None);
-        }
+        };
         // `inline` is how many bytes of `wire` are labels to write; the rest is a name already written.
         let mut inline = 0;
         let mut pointer = None;
         while let Some(&label_len) = wire.get(inline).filter(|&&l| l != 0) {
             let suffix = wire.get(inline..).unwrap_or_default();
-            if let Some(target) = self.names.find(self.written(), suffix) {
+            if let Some(target) = names.find(self.written(), suffix) {
                 pointer = Some(target);
                 break;
             }
@@ -496,11 +496,12 @@ impl<'a> Writer<'a> {
             Some(target) => self.put_u16(0xC000 | target)?,
             None => self.put_u8(0)?,
         }
-        let mut at = 0;
-        while let Some(&label_len) = wire.get(at).filter(|&&l| l != 0).filter(|_| at < inline) {
-            self.names
-                .add(first + at, wire.get(at..).unwrap_or_default());
-            at += 1 + usize::from(label_len);
+        if let Some(names) = &mut self.names {
+            let mut at = 0;
+            while let Some(&label_len) = wire.get(at).filter(|&&l| l != 0).filter(|_| at < inline) {
+                names.add(first + at, wire.get(at..).unwrap_or_default());
+                at += 1 + usize::from(label_len);
+            }
         }
         Ok(match pointer {
             Some(target) if inline == 0 => Some(target),
@@ -532,7 +533,9 @@ impl<'a> Writer<'a> {
     /// Drops everything written after `len`, to roll back a partial record.
     pub(crate) fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
-        self.names.truncate(self.len);
+        if let Some(names) = &mut self.names {
+            names.truncate(self.len);
+        }
     }
 
     /// Runs `write`, rolling back what it wrote if it fails, so that a public encoder never leaves a partial

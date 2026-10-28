@@ -50,12 +50,17 @@ impl Defaults {
             kind: TextErrorKind::NoTtl,
         })?;
         let class = head.class.or(self.last_class).unwrap_or(Class::IN);
-        let (data, invalid_rdata) = RData::from_text(head.rtype, f)?;
+        let (rdata, invalid_rdata) = RData::from_text(head.rtype, f)?;
         f.finish()?;
         self.last_ttl = explicit.or(self.last_ttl);
         self.last_class = head.class.or(self.last_class);
         Ok(DecodedRecord {
-            record: Record::new(owner, class, ttl, &data),
+            record: Record {
+                name: owner,
+                class,
+                ttl,
+                rdata,
+            },
             invalid_rdata,
         })
     }

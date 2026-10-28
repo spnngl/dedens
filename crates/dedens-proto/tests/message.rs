@@ -4,9 +4,10 @@ mod common;
 
 use std::net::Ipv4Addr;
 
+use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, DecodeErrorKind, Decoded, Message, Name, Question, RecordType, Violation,
+    Class, DecodeErrorKind, Decoded, Edns, Message, Name, Question, RecordType, Violation,
 };
 use proptest::prelude::*;
 
@@ -102,26 +103,56 @@ fn invalid_rdata_is_flagged_with_its_place() {
     ));
 }
 
+/// `recycle` keeps every allocation: it relies on the standard library collecting in place, which this checks.
+/// The EDNS options, kept privately, are checked in `message.rs`.
 #[test]
 fn decoding_into_a_spare_reuses_its_vectors() {
+    let a = |i| common::rec(".", RData::A(Ipv4Addr::new(192, 0, 2, i)));
     let message = Message {
-        questions: vec![question(RecordType::A)],
-        answer: (0..4)
-            .map(|i| common::rec(".", RData::A(Ipv4Addr::new(192, 0, 2, i))))
-            .collect(),
+        // Two questions: one violation.
+        questions: vec![question(RecordType::A), question(RecordType::AAAA)],
+        answer: (0..4).map(a).collect(),
+        authority: vec![a(4)],
+        additional: vec![a(5)],
+        edns: Some(Edns {
+            options: vec![EdnsOption::Padding(1), EdnsOption::Keepalive(None)],
+            ..Edns::default()
+        }),
         ..Message::default()
     };
     let wire = message.to_vec().unwrap();
     let mut spare = Decoded::default();
+    let pointers = |d: &Decoded<'_>| {
+        let m = &d.message;
+        [
+            m.questions.as_ptr().cast::<u8>(),
+            m.answer.as_ptr().cast(),
+            m.authority.as_ptr().cast(),
+            m.additional.as_ptr().cast(),
+            d.violations.as_ptr().cast(),
+        ]
+    };
+    let capacities = |d: &Decoded<'_>| {
+        let m = &d.message;
+        [
+            m.questions.capacity(),
+            m.answer.capacity(),
+            m.authority.capacity(),
+            m.additional.capacity(),
+            d.violations.capacity(),
+        ]
+    };
 
     let first = Message::decode_reusing(&wire, &mut spare).unwrap();
     assert_eq!(first, Message::decode(&wire).unwrap());
-    let answers = first.message.answer.as_ptr().cast::<u8>();
+    let allocations = pointers(&first);
     spare = first.recycle();
-    assert_eq!(spare.message.answer, []);
+    assert_eq!(spare.message, Message::default());
+    let kept = capacities(&spare).into_iter().zip([2, 4, 1, 1, 1]);
+    assert!(kept.into_iter().all(|(capacity, len)| capacity >= len));
     let second = Message::decode_reusing(&wire, &mut spare).unwrap();
     assert_eq!(second.message, message);
-    assert_eq!(second.message.answer.as_ptr().cast::<u8>(), answers);
+    assert_eq!(pointers(&second), allocations);
 
     spare = second.recycle();
     assert!(Message::decode_reusing(&wire[..wire.len() - 1], &mut spare).is_err());

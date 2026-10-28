@@ -27,7 +27,7 @@ pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError,
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
-use crate::record::decode_rdata;
+use crate::record::{WireRdata, decode_rdata};
 use crate::text::{self, Fields, TextError, TextErrorKind, encoding};
 use crate::wire::{Reader, Writer};
 
@@ -216,12 +216,12 @@ impl<'a> RData<'a> {
 
 impl RData<'static> {
     /// Reads the RDATA of `rtype` from the rest of an entry: its own text form, or `\# length hex` for any type
-    /// (RFC 3597 §5), which a known type decodes into its typed form. With the RDATA, why `\#` bytes invalid for
+    /// (RFC 3597 §5), checked as its type, into its wire form. With the RDATA, why `\#` bytes invalid for
     /// their type were kept opaque (D9).
     pub(crate) fn from_text(
         rtype: RecordType,
         f: &mut Fields<'_, '_>,
-    ) -> Result<(Self, Option<DecodeError>), TextError> {
+    ) -> Result<(WireRdata<'static>, Option<DecodeError>), TextError> {
         if f.peek()?.is_some_and(|t| t.raw == br"\#") {
             return Self::from_generic(rtype, f);
         }
@@ -248,13 +248,14 @@ impl RData<'static> {
                 }
             }
         };
-        Ok((data, None))
+        Ok((WireRdata::new(&data), None))
     }
 
+    /// The generic bytes are the wire form, once checked.
     fn from_generic(
         rtype: RecordType,
         f: &mut Fields<'_, '_>,
-    ) -> Result<(Self, Option<DecodeError>), TextError> {
+    ) -> Result<(WireRdata<'static>, Option<DecodeError>), TextError> {
         let marker = f.next("\\#")?;
         let declared: usize = f.number("RDATA length")?;
         if declared > MAX_RDATA_LEN {
@@ -286,7 +287,7 @@ impl RData<'static> {
                 )));
             }
         }
-        Ok((decoded.into_owned(), why))
+        Ok((WireRdata::from_checked(rtype, data.into()), why))
     }
 }
 

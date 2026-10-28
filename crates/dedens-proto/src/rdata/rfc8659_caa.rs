@@ -110,14 +110,17 @@ impl Caa<'static> {
         let flags = f.number("CAA flags")?;
         let tag = f.next("CAA tag")?;
         let value = f.text("CAA value")?;
-        Caa::new(flags, tag.raw, &value)
-            .map(Caa::into_owned)
-            .map_err(|e| {
-                tag.error(TextErrorKind::Invalid(match e {
-                    CaaError::InvalidTag => "CAA tag: 1 to 15 letters or digits, unquoted",
-                    CaaError::TooLong => "CAA value: RDATA over 65535 bytes",
-                }))
-            })
+        Caa::new(flags, tag.raw, &value).map_err(|e| {
+            tag.error(TextErrorKind::Invalid(match e {
+                CaaError::InvalidTag => "CAA tag: 1 to 15 letters or digits, unquoted",
+                CaaError::TooLong => "CAA value: RDATA over 65535 bytes",
+            }))
+        })?;
+        Ok(Caa {
+            flags,
+            tag: Cow::Owned(tag.raw.to_vec()),
+            value: Cow::Owned(value),
+        })
     }
 }
 

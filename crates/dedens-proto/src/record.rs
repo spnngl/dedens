@@ -92,6 +92,11 @@ impl<'a> WireRdata<'a> {
         })
     }
 
+    /// RDATA of `rtype` already checked, without compression pointers.
+    pub(crate) const fn from_checked(rtype: RecordType, bytes: Box<[u8]>) -> WireRdata<'static> {
+        WireRdata(Repr::Owned { bytes, rtype })
+    }
+
     /// Checks the RDATA of `rtype` delimited by `rdata` and keeps it in place; RDATA invalid for its type is kept,
     /// with why (D9).
     ///

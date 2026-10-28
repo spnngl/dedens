@@ -31,7 +31,8 @@ Nanoseconds, `a`/`mx`/`txt_large`.
   distinct owners into 16 KiB. Looking up each kept record's `RRset` among all the records was quadratic: 3.97 ms;
   one hash per record: 253 µs (same session).
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
-  instructions, same cycles), `#[inline]` hints (no change).
+  instructions, same cycles), `#[inline]` hints (no change); `to_vec` going from 512 bytes straight to 65535
+  instead of growing 4 times: zeroing and freeing 64 KiB made `txt_large` 496 → 869-1745 ns.
 
 ## Unbound (D14)
 
@@ -84,4 +85,5 @@ removed `MessageView` read every record in 178/505/1093 ns.
 ## Zone files (D25)
 
 A generated 100 000-record zone: dedens 7.3-7.5 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record
-sets). A lazy lexer cost 17% until a byte table skipped plain token text.
+sets). A lazy lexer cost 17% until a byte table skipped plain token text. Taking `\#` hex as the wire RDATA
+once checked, instead of encoding it twice more, does not show: the generated zone has no such record.

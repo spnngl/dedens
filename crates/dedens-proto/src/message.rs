@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::codes::{Opcode, Rcode, RecordType};
-use crate::edns::{Edns, OptionCode};
+use crate::edns::{Edns, EdnsOption, OptionCode};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::{Counts, Flags, HEADER_LEN, Header};
 use crate::question::Question;
@@ -118,6 +118,8 @@ pub struct Decoded<'a> {
     pub message: Message<'a>,
     /// The rules it breaks, in the order found; empty for a conforming message.
     pub violations: Vec<Violation>,
+    /// Empty, with the allocation of the EDNS options of a message decoded before, for the next one.
+    spare_options: Vec<EdnsOption<'a>>,
 }
 
 impl Decoded<'_> {
@@ -127,6 +129,7 @@ impl Decoded<'_> {
         Decoded {
             message: self.message.into_owned(),
             violations: self.violations,
+            spare_options: Vec::new(),
         }
     }
 
@@ -139,6 +142,7 @@ impl Decoded<'_> {
             answer,
             authority,
             additional,
+            edns,
             ..
         } = self.message;
         Decoded {
@@ -150,6 +154,7 @@ impl Decoded<'_> {
                 ..Message::default()
             },
             violations: recycle(self.violations),
+            spare_options: recycle(edns.map_or(self.spare_options, |edns| edns.options)),
         }
     }
 
@@ -160,7 +165,10 @@ impl Decoded<'_> {
         message.answer.clear();
         message.authority.clear();
         message.additional.clear();
-        message.edns = None;
+        if let Some(edns) = message.edns.take() {
+            self.spare_options = edns.options;
+        }
+        self.spare_options.clear();
         self.violations.clear();
     }
 }
@@ -545,15 +553,20 @@ pub(crate) fn walk<'a>(
 
 /// Reads a message into the empty vectors of `out`.
 fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeError> {
-    let Message {
-        header,
-        questions,
-        answer,
-        authority,
-        additional,
-        edns,
-    } = &mut out.message;
-    walk(msg, &mut out.violations, |entry, violations| {
+    let Decoded {
+        message:
+            Message {
+                header,
+                questions,
+                answer,
+                authority,
+                additional,
+                edns,
+            },
+        violations,
+        spare_options,
+    } = out;
+    walk(msg, violations, |entry, violations| {
         match entry {
             Entry::Header(read, counts) => {
                 *header = read;
@@ -572,12 +585,19 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
             }
             Entry::Question(question) => questions.push(question),
             Entry::Opt(raw) => {
-                let (parsed, invalid) = Edns::from_opt(raw.class.0, raw.ttl, raw.rdata)?;
-                violations.extend(invalid.into_iter().map(|o| Violation::InvalidOption {
-                    code: o.code,
-                    error: o.error,
-                }));
-                *edns = Some(parsed);
+                let options = core::mem::take(spare_options);
+                *edns = Some(Edns::from_opt(
+                    raw.class.0,
+                    raw.ttl,
+                    raw.rdata,
+                    options,
+                    |o| {
+                        violations.push(Violation::InvalidOption {
+                            code: o.code,
+                            error: o.error,
+                        });
+                    },
+                )?);
             }
             Entry::Record(section, raw) => {
                 let records = match section {
@@ -601,4 +621,40 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The EDNS options keep their allocation from one decode to the next.
+    #[test]
+    fn decoding_into_a_spare_reuses_the_edns_options() {
+        let message = Message {
+            edns: Some(Edns {
+                options: vec![EdnsOption::Padding(1), EdnsOption::Keepalive(None)],
+                ..Edns::default()
+            }),
+            ..Message::default()
+        };
+        let wire = message.to_vec().unwrap();
+        let options = |d: &Decoded<'_>| {
+            d.message
+                .edns
+                .as_ref()
+                .unwrap()
+                .options
+                .as_ptr()
+                .cast::<u8>()
+        };
+
+        let first = Message::decode_reusing(&wire, &mut Decoded::default()).unwrap();
+        let allocation = options(&first);
+        let mut spare = first.recycle();
+        assert_eq!(spare.spare_options, []);
+        assert!(spare.spare_options.capacity() >= 2);
+        let second = Message::decode_reusing(&wire, &mut spare).unwrap();
+        assert_eq!(second.message, message);
+        assert_eq!(options(&second), allocation);
+    }
 }

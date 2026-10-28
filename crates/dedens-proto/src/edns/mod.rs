@@ -303,8 +303,8 @@ impl<'a> Edns<'a> {
         }
     }
 
-    /// Builds the value from an OPT record's CLASS, TTL and RDATA; an option with invalid content is kept
-    /// unknown and listed in the second element.
+    /// Builds the value from an OPT record's CLASS, TTL and RDATA, its options in `options`, an empty vector
+    /// whose allocation is reused; an option with invalid content is kept unknown and handed to `invalid`.
     ///
     /// # Errors
     ///
@@ -313,22 +313,14 @@ impl<'a> Edns<'a> {
         class: u16,
         ttl: u32,
         rdata: Reader<'a>,
-    ) -> Result<(Self, Vec<InvalidOption>), DecodeError> {
-        let mut options = Vec::new();
-        let mut invalid = Vec::new();
+        mut options: Vec<EdnsOption<'a>>,
+        mut invalid: impl FnMut(InvalidOption),
+    ) -> Result<Self, DecodeError> {
         read_options(rdata, |option, error| {
             options.push(option);
-            invalid.extend(error);
+            error.into_iter().for_each(&mut invalid);
         })?;
-        let view = EdnsView::new(class, ttl, rdata);
-        let edns = Self {
-            udp_payload: view.udp_payload,
-            ext_rcode: view.ext_rcode,
-            version: view.version,
-            flags: view.flags,
-            options,
-        };
-        Ok((edns, invalid))
+        Ok(EdnsView::new(class, ttl, rdata).with_options(options))
     }
 
     /// The length of the OPT record on the wire, which truncation keeps room for (RFC 6891 §7).
@@ -372,7 +364,7 @@ impl<'a> Edns<'a> {
             .checked_add(1)
             .ok_or(EncodeError::BufferFull)?;
         let limit = MAX_MESSAGE_LEN.saturating_sub(len).min(tail.len());
-        let mut w = Writer::new(&mut tail[..limit]);
+        let mut w = Writer::uncompressed(&mut tail[..limit]);
         self.encode(&mut w)?;
         let written = w.len();
         arcount.copy_from_slice(&count.to_be_bytes());
@@ -494,12 +486,17 @@ impl<'a> EdnsView<'a> {
     /// The same EDNS data with its options parsed into a vector.
     #[must_use]
     pub fn to_edns(&self) -> Edns<'a> {
+        self.with_options(self.options().collect())
+    }
+
+    /// The same EDNS data with `options`.
+    const fn with_options(&self, options: Vec<EdnsOption<'a>>) -> Edns<'a> {
         Edns {
             udp_payload: self.udp_payload,
             ext_rcode: self.ext_rcode,
             version: self.version,
             flags: self.flags,
-            options: self.options().collect(),
+            options,
         }
     }
 }

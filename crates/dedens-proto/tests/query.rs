@@ -24,6 +24,7 @@ fn summary(decoded: Decoded<'_>) -> Summary<'_> {
     let Decoded {
         message,
         violations,
+        ..
     } = decoded;
     (
         message.header,
