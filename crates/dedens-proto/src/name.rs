@@ -183,7 +183,7 @@ impl<'a> Name<'a> {
     ///
     /// [`DecodeError`] when the name runs past the reader, is longer than 255 bytes, has a pointer that does not
     /// point backwards, or a reserved label type.
-    pub fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
+    pub(crate) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Self::decode_with(r, true)
     }
 
@@ -192,7 +192,7 @@ impl<'a> Name<'a> {
     /// # Errors
     ///
     /// [`DecodeError`] as [`Name::decode`], and for any compression pointer.
-    pub fn decode_uncompressed(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
+    pub(crate) fn decode_uncompressed(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Self::decode_with(r, false)
     }
 
@@ -285,7 +285,7 @@ impl<'a> Name<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
-    pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+    pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.put_bytes(self.to_wire(&mut [0; MAX_NAME_LEN]))
     }
 }
@@ -729,7 +729,9 @@ mod tests {
     fn decode_rejects_reserved_label_types_and_truncation() {
         for (msg, kind) in [
             (&[0x40, 0][..], DecodeErrorKind::ReservedLabelType),
+            (&[0x7F, 0], DecodeErrorKind::ReservedLabelType),
             (&[0x80, 0], DecodeErrorKind::ReservedLabelType),
+            (&[0xBF, 0], DecodeErrorKind::ReservedLabelType),
             (&[3, b'a', b'b'], DecodeErrorKind::UnexpectedEnd),
             (&[1, b'a'], DecodeErrorKind::UnexpectedEnd),
             (&[0xC0], DecodeErrorKind::UnexpectedEnd),
@@ -758,6 +760,113 @@ mod tests {
             Name::decode(&mut r).unwrap_err().kind,
             DecodeErrorKind::NameTooLong
         );
+    }
+
+    /// RFC 1035 §4.1.4 figure: F.ISI.ARPA at 20, FOO.F.ISI.ARPA at 40, ARPA at 64, the root at 92.
+    #[test]
+    fn s4_1_4_figure_decodes_at_each_offset() {
+        let mut msg = vec![0; 20];
+        msg.extend_from_slice(&[1, b'F', 3, b'I', b'S', b'I', 4, b'A', b'R', b'P', b'A', 0]);
+        msg.resize(40, 0);
+        msg.extend_from_slice(&[3, b'F', b'O', b'O', 0xC0, 20]);
+        msg.resize(64, 0);
+        msg.extend_from_slice(&[0xC0, 26]);
+        msg.resize(93, 0);
+        let at = |offset: usize| {
+            let mut r = Reader::new(&msg);
+            r.bytes(offset).unwrap();
+            let decoded = Name::decode(&mut r).unwrap();
+            (decoded, r.position())
+        };
+        assert_eq!(at(20), (name(&[b"F", b"ISI", b"ARPA"]), 32));
+        assert_eq!(at(40), (name(&[b"FOO", b"F", b"ISI", b"ARPA"]), 46));
+        assert_eq!(at(64), (name(&[b"ARPA"]), 66));
+        assert_eq!(at(92), (Name::root(), 93));
+    }
+
+    #[test]
+    fn s4_1_4_pointers_use_the_low_14_bits() {
+        // The name sits at 0x0102 (258): the pointer is 0xC1 0x02.
+        let mut msg = vec![0; 0x0102];
+        msg.extend_from_slice(&[1, b'a', 0]);
+        msg.extend_from_slice(&[0xC1, 0x02]);
+        let mut r = Reader::new(&msg);
+        r.bytes(0x0105).unwrap();
+        assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"a"]));
+    }
+
+    #[test]
+    fn s4_1_4_a_name_may_be_only_a_pointer_or_labels_then_a_pointer() {
+        // After the header, "b" root at 12, then "a" + pointer to 12 and a bare pointer.
+        let msg = [&[0; 12][..], &[1, b'b', 0, 1, b'a', 0xC0, 12, 0xC0, 12]].concat();
+        let mut r = Reader::new(&msg);
+        r.bytes(15).unwrap();
+        assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"a", b"b"]));
+        assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"b"]));
+        assert!(r.is_empty());
+    }
+
+    /// A buffer larger than a DNS message: a compressed name past offset 65535 still decodes.
+    #[test]
+    fn s4_1_4_a_compressed_name_past_65535_bytes_decodes() {
+        let mut buf = vec![0; 12];
+        buf.extend_from_slice(&[1, b'b', 0]);
+        buf.resize(70_000, 0);
+        buf.extend_from_slice(&[1, b'a', 0xC0, 12]);
+        let mut r = Reader::new(&buf);
+        r.bytes(70_000).unwrap();
+        let decoded = Name::decode(&mut r).unwrap();
+        assert!(r.is_empty());
+        assert_eq!(decoded, name(&[b"a", b"b"]));
+        assert_eq!(decoded.to_string(), "a.b.");
+    }
+
+    #[test]
+    fn s4_1_4_long_pointer_chains_are_rejected() {
+        // After the header, the root at 12, then pointers each to the one before: a chain of `hops` pointers
+        // ends at the root.
+        let chain = |hops: u16| {
+            let mut msg = vec![0; 12];
+            msg.extend_from_slice(&[0, 0xC0, 12]);
+            for target in (1..hops).map(|i| 13 + 2 * (i - 1)) {
+                msg.extend_from_slice(&(0xC000 | target).to_be_bytes());
+            }
+            let start = msg.len() - 2;
+            let mut r = Reader::new(&msg);
+            r.bytes(start).unwrap();
+            Name::decode(&mut r).map(Name::into_owned)
+        };
+        assert_eq!(chain(127).unwrap(), Name::root());
+        assert_eq!(chain(128).unwrap_err().kind, DecodeErrorKind::BadPointer);
+    }
+
+    /// RFC 1035 §2.3.4.
+    #[test]
+    fn s2_3_4_label_and_name_limits_on_the_wire() {
+        assert_eq!(MAX_LABEL_LEN, 63);
+        assert_eq!(MAX_NAME_LEN, 255);
+        // A 63-byte label decodes; a length byte of 64 is a reserved label type (0b01......).
+        let mut wire = vec![63];
+        wire.extend_from_slice(&[b'x'; 63]);
+        wire.push(0);
+        assert!(Name::decode(&mut Reader::new(&wire)).is_ok());
+        wire[0] = 64;
+        assert!(Name::decode(&mut Reader::new(&wire)).is_err());
+        // 255 bytes of wire form decode; 256 do not.
+        let labels = |last: u8| {
+            let mut wire = Vec::new();
+            for _ in 0..3 {
+                wire.push(63);
+                wire.extend_from_slice(&[b'x'; 63]);
+            }
+            wire.push(last);
+            wire.extend_from_slice(&vec![b'x'; usize::from(last)]);
+            wire.push(0);
+            wire
+        };
+        assert!(Name::decode(&mut Reader::new(&labels(61))).is_ok());
+        let err = Name::decode(&mut Reader::new(&labels(62))).unwrap_err();
+        assert_eq!(err.kind, DecodeErrorKind::NameTooLong);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Byte cursors: [`Reader`] decodes, [`Writer`] encodes, neither allocates.
+//! The message size limit, and the crate's byte cursors: `Reader` decodes, `Writer` encodes, neither allocates.
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::HEADER_LEN;
@@ -12,7 +12,7 @@ pub const MAX_MESSAGE_LEN: usize = 65535;
 /// A reader made by [`Reader::sub`] is limited to a field (RDATA) but still sees the whole message, so a
 /// compression pointer inside the field can point before it (RFC 1035 §4.1.4).
 #[derive(Debug, Clone, Copy)]
-pub struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     msg: &'a [u8],
     pos: usize,
     end: usize,
@@ -21,7 +21,7 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     /// A reader at the start of `msg`.
     #[must_use]
-    pub const fn new(msg: &'a [u8]) -> Self {
+    pub(crate) const fn new(msg: &'a [u8]) -> Self {
         Self {
             msg,
             pos: 0,
@@ -36,37 +36,37 @@ impl<'a> Reader<'a> {
 
     /// The whole message, for following compression pointers.
     #[must_use]
-    pub const fn message(&self) -> &'a [u8] {
+    pub(crate) const fn message(&self) -> &'a [u8] {
         self.msg
     }
 
     /// Offset of the next byte to read.
     #[must_use]
-    pub const fn position(&self) -> usize {
+    pub(crate) const fn position(&self) -> usize {
         self.pos
     }
 
     /// Offset one past the last byte this reader may read.
     #[must_use]
-    pub const fn end(&self) -> usize {
+    pub(crate) const fn end(&self) -> usize {
         self.end
     }
 
     /// Bytes left in this reader.
     #[must_use]
-    pub const fn remaining(&self) -> usize {
+    pub(crate) const fn remaining(&self) -> usize {
         self.end - self.pos
     }
 
     /// Whether every byte was read.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.pos == self.end
     }
 
     /// An error of `kind` at the current offset.
     #[must_use]
-    pub const fn error(&self, kind: DecodeErrorKind) -> DecodeError {
+    pub(crate) const fn error(&self, kind: DecodeErrorKind) -> DecodeError {
         DecodeError {
             offset: self.pos,
             kind,
@@ -83,7 +83,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than `n` bytes are left.
-    pub fn bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         let end = self.pos.checked_add(n).filter(|&end| end <= self.end);
         let slice = end.and_then(|end| self.msg.get(self.pos..end));
         let Some(slice) = slice else {
@@ -98,7 +98,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than `N` bytes are left.
-    pub fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         let mut out = [0; N];
         out.copy_from_slice(self.bytes(N)?);
         Ok(out)
@@ -109,7 +109,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] at the end of the reader.
-    pub fn u8(&mut self) -> Result<u8, DecodeError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, DecodeError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
 
@@ -118,7 +118,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than 2 bytes are left.
-    pub fn u16(&mut self) -> Result<u16, DecodeError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, DecodeError> {
         Ok(u16::from_be_bytes(self.array()?))
     }
 
@@ -127,12 +127,12 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than 4 bytes are left.
-    pub fn u32(&mut self) -> Result<u32, DecodeError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, DecodeError> {
         Ok(u32::from_be_bytes(self.array()?))
     }
 
     /// Reads everything left.
-    pub fn rest(&mut self) -> &'a [u8] {
+    pub(crate) fn rest(&mut self) -> &'a [u8] {
         let slice = self.msg.get(self.pos..self.end).unwrap_or_default();
         self.pos = self.end;
         slice
@@ -143,7 +143,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// [`DecodeErrorKind::UnexpectedEnd`] when fewer than `len` bytes are left.
-    pub fn sub(&mut self, len: usize) -> Result<Self, DecodeError> {
+    pub(crate) fn sub(&mut self, len: usize) -> Result<Self, DecodeError> {
         let start = self.pos;
         self.bytes(len)?;
         Ok(Self {
@@ -280,7 +280,7 @@ fn name_matches(written: &[u8], mut offset: usize, mut suffix: &[u8]) -> bool {
 
 /// A cursor writing into a caller-provided buffer, at most [`MAX_MESSAGE_LEN`] bytes of it.
 #[derive(Debug)]
-pub struct Writer<'a> {
+pub(crate) struct Writer<'a> {
     buf: &'a mut [u8],
     len: usize,
     /// Writes stop here, short of `buf.len()` while a tail is held back.
@@ -292,7 +292,7 @@ pub struct Writer<'a> {
 impl<'a> Writer<'a> {
     /// A writer at the start of `buf`.
     #[must_use]
-    pub fn new(buf: &'a mut [u8]) -> Self {
+    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
         Self::with_names(buf, Some(NameTable::new()))
     }
 
@@ -316,25 +316,19 @@ impl<'a> Writer<'a> {
 
     /// Bytes written so far.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len
-    }
-
-    /// Whether nothing was written.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     /// Bytes still available.
     #[must_use]
-    pub const fn remaining(&self) -> usize {
+    pub(crate) const fn remaining(&self) -> usize {
         self.limit - self.len
     }
 
     /// What was written.
     #[must_use]
-    pub fn written(&self) -> &[u8] {
+    pub(crate) fn written(&self) -> &[u8] {
         self.buf.get(..self.len).unwrap_or_default()
     }
 
@@ -343,7 +337,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when they do not fit; nothing is written then.
-    pub fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
+    pub(crate) fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
         let end = self.len + bytes.len();
         let dst = self
             .buf
@@ -360,7 +354,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when they do not fit; nothing is written then.
-    pub fn put_zeros(&mut self, n: usize) -> Result<(), EncodeError> {
+    pub(crate) fn put_zeros(&mut self, n: usize) -> Result<(), EncodeError> {
         let end = self.len + n;
         let dst = self
             .buf
@@ -377,7 +371,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
-    pub fn put_u8(&mut self, v: u8) -> Result<(), EncodeError> {
+    pub(crate) fn put_u8(&mut self, v: u8) -> Result<(), EncodeError> {
         self.put_bytes(&[v])
     }
 
@@ -386,7 +380,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
-    pub fn put_u16(&mut self, v: u16) -> Result<(), EncodeError> {
+    pub(crate) fn put_u16(&mut self, v: u16) -> Result<(), EncodeError> {
         self.put_bytes(&v.to_be_bytes())
     }
 
@@ -395,7 +389,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit.
-    pub fn put_u32(&mut self, v: u32) -> Result<(), EncodeError> {
+    pub(crate) fn put_u32(&mut self, v: u32) -> Result<(), EncodeError> {
         self.put_bytes(&v.to_be_bytes())
     }
 
@@ -435,7 +429,7 @@ impl<'a> Writer<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; nothing is written then.
-    pub fn put_name_compressed(&mut self, name: &Name<'_>) -> Result<(), EncodeError> {
+    pub(crate) fn put_name_compressed(&mut self, name: &Name<'_>) -> Result<(), EncodeError> {
         self.put_name_found(name).map(drop)
     }
 
@@ -594,5 +588,35 @@ mod tests {
         w.put_u16(7).unwrap();
         w.patch_u16(at, 0x0102);
         assert_eq!(w.written(), &[1, 2, 0, 7]);
+    }
+
+    /// A record or question that does not fit leaves the writer as it was, compression table included.
+    #[test]
+    fn failed_encoding_writes_nothing() {
+        use crate::{Class, Question, RData, Record, RecordType, Ttl};
+
+        let owner: Name<'static> = "abcdefgh.example".parse().unwrap();
+        let record = Record::new(
+            owner.clone(),
+            Class::IN,
+            Ttl::ZERO,
+            &RData::A([192, 0, 2, 1].into()),
+        );
+        let question = Question::new(owner, RecordType::A);
+        let mut buf = [0; 41];
+        let mut w = Writer::new(&mut buf);
+        // A header: names are never in it, so never pointed to.
+        w.put_bytes(&[7; 12]).unwrap();
+        assert!(record.encode_after(&mut w, None).is_err());
+        assert_eq!(w.len(), 12);
+        question.encode(&mut w).expect("fits: 18 + 4 bytes");
+        assert_eq!(w.len(), 34);
+        assert!(
+            question.encode(&mut w).is_ok(),
+            "a pointer to the first one"
+        );
+        assert_eq!(w.len(), 40);
+        assert!(question.encode(&mut w).is_err());
+        assert_eq!(w.len(), 40);
     }
 }

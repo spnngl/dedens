@@ -32,7 +32,7 @@ impl<'a> Question<'a> {
     /// # Errors
     ///
     /// [`DecodeError`] when the name or the two 16-bit fields are cut short or broken.
-    pub fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
+    pub(crate) fn decode(r: &mut Reader<'a>) -> Result<Self, DecodeError> {
         Ok(Self {
             name: Name::decode(r)?,
             qtype: RecordType(r.u16()?),
@@ -55,7 +55,7 @@ impl<'a> Question<'a> {
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; the writer is then left as it was.
-    pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+    pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.all_or_nothing(|w| {
             w.put_name_compressed(&self.name)?;
             w.put_u16(self.qtype.0)?;

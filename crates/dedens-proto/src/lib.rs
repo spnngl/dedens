@@ -27,7 +27,7 @@ pub mod wire;
 pub use codes::{Class, Opcode, Rcode, RecordType};
 pub use edns::{Edns, EdnsFlags, EdnsView};
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
-pub use header::{Counts, Flags, Header};
+pub use header::{Flags, Header};
 pub use message::{Decoded, Encoded, Message, Section, Violation};
 pub use name::{Name, NameError};
 pub use query::Query;

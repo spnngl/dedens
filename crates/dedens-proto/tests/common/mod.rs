@@ -9,10 +9,9 @@ use dedens_proto::edns::{
     UnknownOption,
 };
 use dedens_proto::rdata::{Caa, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt};
-use dedens_proto::wire::{Reader, Writer};
 use dedens_proto::{
-    Class, Counts, DecodeError, Decoded, DecodedRecord, Flags, Header, Message, Name, Opcode,
-    Question, RData, Rcode, Record, RecordType, Ttl,
+    Class, DecodeError, Decoded, DecodedRecord, Flags, Header, Message, Name, Opcode, Question,
+    RData, Rcode, Record, RecordType, Ttl, Violation,
 };
 use proptest::prelude::*;
 
@@ -33,15 +32,6 @@ pub(crate) fn header() -> impl Strategy<Value = Header> {
         flags,
         opcode: Opcode(opcode),
         rcode: Rcode(rcode),
-    })
-}
-
-pub(crate) fn counts() -> impl Strategy<Value = Counts> {
-    any::<[u16; 4]>().prop_map(|[questions, answers, authority, additional]| Counts {
-        questions,
-        answers,
-        authority,
-        additional,
     })
 }
 
@@ -287,14 +277,18 @@ pub(crate) fn name_of(labels: &[&[u8]]) -> Name<'static> {
     Name::from_labels(labels.iter().copied()).expect("labels are within the limits")
 }
 
-/// Encodes with `f` into a buffer of the maximum size and returns the bytes.
-pub(crate) fn encode_with<E: std::fmt::Debug>(
-    f: impl FnOnce(&mut Writer<'_>) -> Result<(), E>,
-) -> Vec<u8> {
-    let mut buf = vec![0; dedens_proto::wire::MAX_MESSAGE_LEN];
-    let mut w = Writer::new(&mut buf);
-    f(&mut w).expect("fits in 65535 bytes");
-    w.written().to_vec()
+/// The header of a message with one answer and nothing else.
+const ONE_ANSWER: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+
+/// `rec` as the one answer of a message, without the header: [`decode_record`] reads it back.
+pub(crate) fn encode_record(rec: &Record<'_>) -> Vec<u8> {
+    let message = Message {
+        answer: vec![rec.clone()],
+        ..Message::default()
+    };
+    let wire = message.to_vec().expect("fits in 65535 bytes");
+    assert_eq!(wire[..12], ONE_ANSWER);
+    wire[12..].to_vec()
 }
 
 /// A record at the root, class IN, TTL 0, of `rtype` holding `rdata` as is.
@@ -311,12 +305,26 @@ pub(crate) fn record_wire(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
     wire
 }
 
-/// Decodes the whole of `wire` as one record.
+/// Decodes `wire` as the one answer of a message, after a header at offset 0.
 pub(crate) fn decode_record(wire: &[u8]) -> Result<DecodedRecord<'static>, DecodeError> {
-    let decoded = Record::decode(&mut Reader::new(wire))?;
+    decode_answer(&[&ONE_ANSWER[..], wire].concat())
+}
+
+/// The one answer of the message `wire`, and why its RDATA is invalid if it is.
+pub(crate) fn decode_answer(wire: &[u8]) -> Result<DecodedRecord<'static>, DecodeError> {
+    let Decoded {
+        message,
+        violations,
+        ..
+    } = Message::decode(wire)?;
+    let invalid_rdata = violations.into_iter().find_map(|v| match v {
+        Violation::InvalidRdata { error, .. } => Some(error),
+        _ => None,
+    });
+    let [record] = <[Record<'_>; 1]>::try_from(message.answer).expect("one answer");
     Ok(DecodedRecord {
-        record: decoded.record.into_owned(),
-        invalid_rdata: decoded.invalid_rdata,
+        record: record.into_owned(),
+        invalid_rdata,
     })
 }
 
@@ -366,9 +374,4 @@ pub(crate) fn decode_options(options: &[u8]) -> Decoded<'static> {
     Message::decode(&opt_message(options))
         .expect("well-framed message")
         .into_owned()
-}
-
-/// A reader over the whole of `bytes`.
-pub(crate) fn reader(bytes: &[u8]) -> Reader<'_> {
-    Reader::new(bytes)
 }

@@ -4,7 +4,7 @@ mod common;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use common::{decode_record, encode_with, name_of, record, record_wire};
+use common::{decode_record, encode_record, name_of, record, record_wire};
 use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
 use dedens_proto::{Class, Name, RData, Record, RecordType, Ttl};
 use proptest::prelude::*;
@@ -143,9 +143,12 @@ fn d2_mandatory_alpn_and_ipv4hint() {
             SvcParam::Ipv4Hint(vec![Ipv4Addr::new(192, 0, 2, 1)]),
         ]
     );
-    let encoded = encode_with(|w| {
-        Record::new(Name::root(), Class::IN, Ttl::ZERO, &RData::Svcb(s.clone())).encode(w)
-    });
+    let encoded = encode_record(&Record::new(
+        Name::root(),
+        Class::IN,
+        Ttl::ZERO,
+        &RData::Svcb(s.clone()),
+    ));
     assert_eq!(encoded, record_wire(RecordType::SVCB, &wire));
 }
 
@@ -358,7 +361,7 @@ proptest! {
     #[test]
     fn svcb_and_https_round_trip(rec in record()) {
         // Every generated record, SVCB and HTTPS included, survives encode then decode.
-        let wire = encode_with(|w| rec.encode(w));
+        let wire = encode_record(&rec);
         let decoded = decode_record(&wire)?;
         prop_assert_eq!(decoded.invalid_rdata, None);
         prop_assert_eq!(decoded.record, rec);
@@ -373,7 +376,7 @@ fn from_text(rdata: &str) -> Result<Record<'static>, dedens_proto::TextError> {
 /// RDATA of a record, encoded alone: after the root owner and the 10 fixed bytes.
 fn rdata_wire(rec: &Record<'_>) -> Vec<u8> {
     let alone = Record::new(Name::root(), Class::IN, Ttl::ZERO, &rec.data());
-    encode_with(|w| alone.encode(w))[11..].to_vec()
+    encode_record(&alone)[11..].to_vec()
 }
 
 #[test]

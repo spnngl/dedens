@@ -4,7 +4,7 @@ mod common;
 
 use std::net::Ipv6Addr;
 
-use common::{decode_record, encode_with, record_wire};
+use common::{decode_record, encode_record, record_wire};
 use dedens_proto::{Class, DecodeErrorKind, Name, RData, Record, RecordType, Ttl};
 use proptest::prelude::*;
 
@@ -38,7 +38,7 @@ proptest! {
     #[test]
     fn round_trip(octets in any::<[u8; 16]>()) {
         let rec = Record::new(Name::root(), Class::IN, Ttl::ZERO, &RData::Aaaa(Ipv6Addr::from(octets)));
-        let wire = encode_with(|w| rec.encode(w));
+        let wire = encode_record(&rec);
         prop_assert_eq!(decode_record(&wire)?.record, rec);
     }
 }

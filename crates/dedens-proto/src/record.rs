@@ -339,7 +339,7 @@ impl<'a> Record<'a> {
         })
     }
 
-    /// Reads one record.
+    /// The record read by [`Record::read_raw`].
     ///
     /// RDATA that is well delimited but invalid for its type is kept, reads as [`Opaque`] bytes, and is reported in
     /// [`DecodedRecord::invalid_rdata`], except for the types that may hold compressed names
@@ -347,12 +347,7 @@ impl<'a> Record<'a> {
     ///
     /// # Errors
     ///
-    /// [`DecodeError`] when the name or the fixed fields are cut short, RDLENGTH overruns the message, or the RDATA
-    /// of a type with compressible names is invalid.
-    pub fn decode(r: &mut Reader<'a>) -> Result<DecodedRecord<'a>, DecodeError> {
-        Self::from_raw(Self::read_raw(r)?)
-    }
-
+    /// [`DecodeError`] when the RDATA of a type with compressible names is invalid.
     pub(crate) fn from_raw(raw: RawRecord<'a>) -> Result<DecodedRecord<'a>, DecodeError> {
         let RawRecord {
             name,
@@ -374,17 +369,13 @@ impl<'a> Record<'a> {
         })
     }
 
-    /// Writes the record, compressing its owner and the RDATA names of the RFC 1035 types (RFC 3597 §4).
+    /// Writes the record, compressing its owner and the RDATA names of the RFC 1035 types (RFC 3597 §4), its owner
+    /// a pointer to `owner` if given ([`Writer::put_owner`]); returns the offset to give the next record when it
+    /// has the same owner.
     ///
     /// # Errors
     ///
     /// [`EncodeError::BufferFull`] when it does not fit; the writer is then left as it was.
-    pub fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
-        self.encode_after(w, None).map(drop)
-    }
-
-    /// [`Record::encode`], its owner a pointer to `owner` if given ([`Writer::put_owner`]); returns the offset
-    /// to give the next record when it has the same owner.
     pub(crate) fn encode_after(
         &self,
         w: &mut Writer<'_>,
@@ -450,5 +441,36 @@ impl FromStr for Record<'static> {
 
     fn from_str(s: &str) -> Result<Self, TextError> {
         text::one_record(s.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Names expanded from pointers can make RDATA outgrow 65535 bytes when the message sits in a larger buffer,
+    /// as a zone transfer stream may: an error, not a panic (RFC 3597 §4).
+    #[test]
+    fn rdata_expanded_past_65535_bytes_is_an_error() {
+        // After a header, a 255-byte name at offset 12: three labels of 63 bytes, one of 61, the root.
+        let mut buf = vec![0; 12];
+        for len in [63, 63, 63, 61] {
+            buf.push(len);
+            buf.extend(std::iter::repeat_n(b'a', usize::from(len)));
+        }
+        buf.push(0);
+        let start = buf.len();
+        // Root owner, SIG, IN, TTL 0, RDLENGTH 65535: 18 fixed bytes, the signer a pointer to the long name, the
+        // rest.
+        buf.extend([0, 0, 24, 0, 1, 0, 0, 0, 0, 0xFF, 0xFF]);
+        buf.extend([0; 18]);
+        buf.extend([0xC0, 12]);
+        buf.resize(start + 11 + 65535, 0);
+        let mut r = Reader::new(&buf);
+        r.bytes(start).expect("the name");
+        let err = Record::read_raw(&mut r)
+            .and_then(Record::from_raw)
+            .expect_err("too long once expanded");
+        assert_eq!(err.kind, DecodeErrorKind::RdataLength);
     }
 }

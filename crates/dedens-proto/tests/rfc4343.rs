@@ -4,9 +4,9 @@ mod common;
 
 use std::collections::HashSet;
 
-use common::{name, name_of, reader};
-use dedens_proto::Name;
+use common::{name, name_of};
 use dedens_proto::name::MAX_NAME_LEN;
+use dedens_proto::{Message, Name};
 use proptest::prelude::*;
 
 #[test]
@@ -32,9 +32,13 @@ fn s3_label_boundaries_are_not_letters() {
 
 #[test]
 fn s3_case_is_preserved_through_decoding() {
-    let wire = [3, b'W', b'w', b'W', 0];
-    let decoded = Name::decode(&mut reader(&wire)).unwrap();
-    assert_eq!(decoded.to_wire(&mut [0; MAX_NAME_LEN]), wire);
+    // A question for WwW.: the header with QDCOUNT 1, the name, type A, class IN.
+    let wire = [
+        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 3, b'W', b'w', b'W', 0, 0, 1, 0, 1,
+    ];
+    let message = Message::decode(&wire).unwrap().message;
+    let decoded = &message.questions[0].name;
+    assert_eq!(decoded.to_wire(&mut [0; MAX_NAME_LEN]), &wire[12..17]);
     assert_eq!(decoded.to_string(), "WwW.");
 }
 
@@ -47,8 +51,7 @@ fn equal_names_hash_alike() {
 proptest! {
     #[test]
     fn case_never_changes_identity(name in name()) {
-        let flipped: Vec<u8> = name.to_wire(&mut [0; MAX_NAME_LEN]).iter().map(u8::to_ascii_uppercase).collect();
-        let flipped = Name::decode(&mut reader(&flipped))?;
+        let flipped = Name::from_labels(name.labels().map(<[u8]>::to_ascii_uppercase).collect::<Vec<_>>().iter().map(Vec::as_slice))?;
         prop_assert_eq!(&flipped, &name);
         prop_assert_eq!(HashSet::from([flipped, name]).len(), 1);
     }

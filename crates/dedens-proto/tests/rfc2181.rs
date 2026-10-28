@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{decode_record, encode_with, record_wire};
+use common::{decode_record, encode_record, record_wire};
 use dedens_proto::{Class, Name, RData, Record, RecordType, Ttl};
 use proptest::prelude::*;
 
@@ -27,7 +27,7 @@ fn s11_any_octet_is_valid_in_a_label() {
         let octets: Vec<u8> = half.collect();
         let name = Name::from_labels(octets.chunks(63)).unwrap();
         let rec = Record::new(name.clone(), Class::IN, Ttl::ZERO, &RData::Ptr(name));
-        let wire = encode_with(|w| rec.encode(w));
+        let wire = encode_record(&rec);
         assert_eq!(decode_record(&wire).unwrap().record, rec);
     }
 }

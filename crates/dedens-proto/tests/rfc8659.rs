@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{decode_record, encode_with, record, record_wire};
+use common::{decode_record, encode_record, record, record_wire};
 use dedens_proto::rdata::Caa;
 use dedens_proto::{DecodeErrorKind, RData, RecordType};
 use proptest::prelude::*;
@@ -55,7 +55,7 @@ fn s4_1_1_a_tag_longer_than_the_rdata_is_kept_opaque() {
 proptest! {
     #[test]
     fn round_trip(rec in record()) {
-        let wire = encode_with(|w| rec.encode(w));
+        let wire = encode_record(&rec);
         prop_assert_eq!(decode_record(&wire)?.record, rec);
     }
 }

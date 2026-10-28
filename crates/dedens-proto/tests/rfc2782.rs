@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{decode_record, encode_with, name_of, record, record_wire};
+use common::{decode_record, encode_record, name_of, record, record_wire};
 use dedens_proto::{RData, RecordType};
 use proptest::prelude::*;
 
@@ -45,7 +45,7 @@ fn invalid_rdata_is_an_error() {
 proptest! {
     #[test]
     fn round_trip(rec in record()) {
-        let wire = encode_with(|w| rec.encode(w));
+        let wire = encode_record(&rec);
         prop_assert_eq!(decode_record(&wire)?.record, rec);
     }
 }

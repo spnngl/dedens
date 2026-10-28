@@ -113,7 +113,7 @@ impl fmt::Debug for Flags {
 /// The section counts of a header, which `Message` never stores: they are the lengths
 /// of its sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Counts {
+pub(crate) struct Counts {
     /// Entries in the question section.
     pub questions: u16,
     /// Records in the answer section.
@@ -144,7 +144,7 @@ impl Header {
     /// # Errors
     ///
     /// [`DecodeError`] when fewer than 12 bytes are left.
-    pub fn decode(r: &mut Reader<'_>) -> Result<(Self, Counts), DecodeError> {
+    pub(crate) fn decode(r: &mut Reader<'_>) -> Result<(Self, Counts), DecodeError> {
         let id = r.u16()?;
         let [hi, lo] = r.u16()?.to_be_bytes();
         let header = Self {
@@ -168,7 +168,7 @@ impl Header {
     ///
     /// [`EncodeError::OpcodeOutOfRange`] or [`EncodeError::RcodeOutOfRange`] when the opcode or the rcode does
     /// not fit in its four bits; [`EncodeError::BufferFull`] when the header does not fit.
-    pub fn encode(&self, counts: Counts, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+    pub(crate) fn encode(self, counts: Counts, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         let opcode = Some(self.opcode.0)
             .filter(|&op| op <= 0x0F)
             .ok_or(EncodeError::OpcodeOutOfRange)?;
