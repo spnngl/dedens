@@ -22,7 +22,7 @@ use dedens_proto::{Message, Opcode, Rcode};
 fn queries_over_udp_and_tcp_are_forwarded() {
     let response = captured("a");
     let upstream = decode(&response);
-    let server = Server::start(Responder::start(&["a"]).addr);
+    let server = Server::start(Responder::start(&["a"]).addr, "");
     let reply = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
     assert_eq!(reply.answer, upstream.answer);
@@ -34,7 +34,7 @@ fn queries_over_udp_and_tcp_are_forwarded() {
 #[test]
 fn a_tcp_connection_answers_several_queries() {
     let response = captured("a");
-    let server = Server::start(Responder::start(&["a"]).addr);
+    let server = Server::start(Responder::start(&["a"]).addr, "");
     // The opcode is bits 1 to 4 of the third byte (RFC 1035 §4.1.1).
     let mut notify = query_for(&response, 3);
     notify[2] = notify[2] & 0x87 | Opcode::NOTIFY.0 << 3;
@@ -58,7 +58,7 @@ fn a_tcp_connection_answers_several_queries() {
 #[test]
 fn a_silent_upstream_gets_servfail() {
     let (_socket, upstream) = silent();
-    let server = Server::start(upstream);
+    let server = Server::start(upstream, "");
     let reply = ask_udp(server.addr, &query_for(&captured("a"), 1));
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::SERVFAIL));
 }
@@ -69,7 +69,7 @@ fn a_taken_address_fails_the_start() {
     let addr = taken.local_addr().expect("its address").to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_dedensd"))
         .arg("--config")
-        .arg(config(&addr, "127.0.0.1"))
+        .arg(config(&addr, "127.0.0.1", ""))
         .output()
         .expect("dedensd runs");
     assert_eq!(output.status.code(), Some(1));
@@ -86,6 +86,7 @@ fn validate_reads_the_configuration_without_binding() {
     let path = config(
         &taken.local_addr().expect("its address").to_string(),
         "${UPSTREAM}",
+        "",
     );
     let validate = |upstream: Option<&str>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_dedensd"));
@@ -123,7 +124,7 @@ fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
 fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     let response = captured("a");
     let upstream = Responder::slow("a", 3, Duration::from_millis(500));
-    let server = Server::start_with(upstream.addr, "    stale_answer_after_ms: 200\n");
+    let server = Server::start(upstream.addr, "    stale_answer_after_ms: 200\n");
     let first = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!(errors(&first), []);
     // Past the TTL, upstream answers 500 ms late, within the 1 s timeout: expired data answers once the 200 ms

@@ -12,7 +12,7 @@ use dedens_scenario::QueryFile;
 fn replies_meet_the_query_file() {
     let file = QueryFile::parse(include_str!("end_to_end.yaml")).expect("a query file");
     let upstream = Responder::start(&["a", "mx", "cname_chain", "nxdomain_soa", "txt_large"]);
-    let server = Server::start(upstream.addr);
+    let server = Server::start(upstream.addr, "");
     let mut failures = Vec::new();
     for (id, query) in (1..).zip(&file.queries) {
         let options = query.options.or(file.options);

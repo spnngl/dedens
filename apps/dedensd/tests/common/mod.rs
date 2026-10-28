@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use dedens_net::tcp::frame;
 use dedens_proto::{Message, Name, RecordType, Ttl};
 
 /// A captured response of `dedens-proto`'s test data.
@@ -135,14 +136,10 @@ fn free_port() -> SocketAddr {
     }
 }
 
-/// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream` with a 1 s timeout,
-/// in the temporary directory; each call writes its own.
-pub(crate) fn config(listen: &str, upstream: &str) -> PathBuf {
-    config_with(listen, upstream, "")
-}
-
-/// [`config`] with `cache`, lines of settings for the cache stage.
-fn config_with(listen: &str, upstream: &str, cache: &str) -> PathBuf {
+/// A configuration file of a caching forwarder answering on `listen`, forwarding to `upstream` with one try of
+/// 1 s, `cache` lines of settings for the cache stage, as `"    key: value\n"`; in the temporary directory, each
+/// call writes its own.
+pub(crate) fn config(listen: &str, upstream: &str, cache: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "dedensd-{}-{}.yaml",
@@ -150,7 +147,7 @@ fn config_with(listen: &str, upstream: &str, cache: &str) -> PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let text = format!(
-        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 1000\n"
+        "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 1000\n    tries: 1\n"
     );
     std::fs::write(&path, text).expect("a configuration file");
     path
@@ -170,17 +167,12 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// Starts `dedensd` on a free port, forwarding to `upstream`, and waits until it accepts connections.
-    pub(crate) fn start(upstream: SocketAddr) -> Self {
-        Self::start_with(upstream, "")
-    }
-
-    /// [`Server::start`] with `cache`, lines of settings for the cache stage, as `"    key: value\n"`.
-    pub(crate) fn start_with(upstream: SocketAddr, cache: &str) -> Self {
+    /// Starts `dedensd` on a free port, configured by [`config`], and waits until it accepts connections.
+    pub(crate) fn start(upstream: SocketAddr, cache: &str) -> Self {
         let addr = free_port();
         let child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
             .arg("--config")
-            .arg(config_with(&addr.to_string(), &upstream.to_string(), cache))
+            .arg(config(&addr.to_string(), &upstream.to_string(), cache))
             .stderr(Stdio::null())
             .spawn()
             .expect("dedensd starts");
@@ -225,8 +217,7 @@ pub(crate) fn decode(wire: &[u8]) -> Message<'static> {
 
 /// `wire` behind its two-byte length (RFC 1035 §4.2.2).
 pub(crate) fn framed(wire: &[u8]) -> Vec<u8> {
-    let len = u16::try_from(wire.len()).expect("a message fits");
-    [&len.to_be_bytes()[..], wire].concat()
+    frame(wire).expect("a message fits")
 }
 
 /// The next message of a TCP stream, `None` at its end.
