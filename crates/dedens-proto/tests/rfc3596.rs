@@ -1,8 +1,8 @@
-//! RFC 3596: AAAA records (§2).
+//! RFC 3596: AAAA records (§2), `ip6.arpa` reverse names (§2.5).
 
 mod common;
 
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use common::{decode_record, encode_record, record_wire};
 use dedens_proto::{Class, DecodeErrorKind, Name, RData, Record, RecordType, Ttl};
@@ -27,6 +27,21 @@ fn s2_2_other_lengths_are_kept_opaque() {
         );
         assert!(matches!(decoded.record.data(), RData::Opaque(_)));
     }
+}
+
+/// The example of §2.5.
+#[test]
+fn s2_5_ip6_arpa_is_nibbles_low_order_first() {
+    let addr: IpAddr = "4321:0:1:2:3:4:567:89ab".parse().unwrap();
+    let expected: Name<'_> =
+        "b.a.9.8.7.6.5.0.4.0.0.0.3.0.0.0.2.0.0.0.1.0.0.0.0.0.0.0.1.2.3.4.IP6.ARPA."
+            .parse()
+            .unwrap();
+    assert_eq!(Name::reverse(addr), expected);
+    assert_eq!(
+        Name::reverse(addr).to_string(),
+        "b.a.9.8.7.6.5.0.4.0.0.0.3.0.0.0.2.0.0.0.1.0.0.0.0.0.0.0.1.2.3.4.ip6.arpa."
+    );
 }
 
 #[test]

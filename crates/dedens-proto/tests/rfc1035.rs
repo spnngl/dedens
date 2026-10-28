@@ -3,13 +3,13 @@
 
 mod common;
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use common::{decode_answer, decode_record, encode_record, name_of, record, record_wire};
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::rdata::{Mx, Soa, Txt, TxtError};
 use dedens_proto::{
-    Class, DecodeErrorKind, Header, Message, Opcode, Question, RData, Rcode, RecordType,
+    Class, DecodeErrorKind, Header, Message, Name, Opcode, Question, RData, Rcode, RecordType,
 };
 use proptest::prelude::*;
 
@@ -22,6 +22,15 @@ fn s5_1_special_characters_are_escaped() {
 /// A header with QDCOUNT 1, then `question`.
 fn one_question(question: &[u8]) -> Vec<u8> {
     [&[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0][..], question].concat()
+}
+
+/// The example of §3.5: 10.2.0.52 is `52.0.2.10.IN-ADDR.ARPA`.
+#[test]
+fn s3_5_in_addr_arpa_reverses_the_octets() {
+    let addr = IpAddr::V4(Ipv4Addr::new(10, 2, 0, 52));
+    let expected: Name<'_> = "52.0.2.10.IN-ADDR.ARPA.".parse().unwrap();
+    assert_eq!(Name::reverse(addr), expected);
+    assert_eq!(Name::reverse(addr).to_string(), "52.0.2.10.in-addr.arpa.");
 }
 
 #[test]
@@ -179,5 +188,11 @@ proptest! {
         let d = decode_record(&wire)?;
         prop_assert_eq!(d.invalid_rdata, None);
         prop_assert_eq!(d.record, rec);
+    }
+
+    #[test]
+    fn s3_5_every_octet_is_a_decimal_label([a, b, c, d] in any::<[u8; 4]>()) {
+        let name = Name::reverse(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+        prop_assert_eq!(name.to_string(), format!("{d}.{c}.{b}.{a}.in-addr.arpa."));
     }
 }

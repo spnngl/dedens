@@ -2,6 +2,7 @@
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::net::IpAddr;
 use core::str::FromStr;
 
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
@@ -170,6 +171,43 @@ impl<'a> Name<'a> {
             _ if self.is_root() => Name::root(),
             _ => Name(Repr::Owned(Box::from(self.to_wire(&mut [0; MAX_NAME_LEN])))),
         }
+    }
+
+    /// The name a reverse lookup of `addr` asks for, in lowercase: the four octets of an IPv4 address in decimal,
+    /// last first, under `in-addr.arpa` (RFC 1035 §3.5); the 32 nibbles of an IPv6 address in hexadecimal,
+    /// low-order first, under `ip6.arpa` (RFC 3596 §2.5, RFC 3152).
+    #[must_use]
+    pub fn reverse(addr: IpAddr) -> Name<'static> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        // The IPv6 form: 32 one-nibble labels, `ip6`, `arpa` and the root.
+        let mut wire = Vec::with_capacity(32 * 2 + 4 + 5 + 1);
+        match addr {
+            IpAddr::V4(v4) => {
+                for &octet in v4.octets().iter().rev() {
+                    let digits = [
+                        b'0' + octet / 100,
+                        b'0' + octet / 10 % 10,
+                        b'0' + octet % 10,
+                    ];
+                    let len: u8 = match octet {
+                        0..=9 => 1,
+                        10..=99 => 2,
+                        _ => 3,
+                    };
+                    wire.push(len);
+                    wire.extend_from_slice(&digits[3 - usize::from(len)..]);
+                }
+                wire.extend_from_slice(b"\x07in-addr\x04arpa\x00");
+            }
+            IpAddr::V6(v6) => {
+                for &octet in v6.octets().iter().rev() {
+                    let [low, high] = [octet & 0xF, octet >> 4].map(|n| HEX[usize::from(n)]);
+                    wire.extend_from_slice(&[1, low, 1, high]);
+                }
+                wire.extend_from_slice(b"\x03ip6\x04arpa\x00");
+            }
+        }
+        Name(Repr::Owned(wire.into_boxed_slice()))
     }
 
     /// Reads a name at the reader's position, following compression pointers (RFC 1035 §4.1.4); the name borrows
