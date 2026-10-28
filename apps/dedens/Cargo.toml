@@ -16,7 +16,7 @@ clap.workspace = true
 compio.workspace = true
 dedens-net.workspace = true
 dedens-proto.workspace = true
-dedens-scenario.workspace = true
+dedens-scenario = { workspace = true, features = ["clap"] }
 idna.workspace = true
 serde_json.workspace = true
 unicode-script.workspace = true

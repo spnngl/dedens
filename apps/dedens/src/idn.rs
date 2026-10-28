@@ -1,5 +1,6 @@
 //! Unicode names (D18, D32): converted to A-labels by UTS 46 nontransitional processing, which IDNA2008 lookup
-//! (RFC 5891 §5) takes after the mapping of RFC 5895; a label mixing scripts is flagged (IDN homographs).
+//! (RFC 5891 §5) takes after the mapping of RFC 5895; a label mixing scripts is flagged (IDN homographs), Chinese,
+//! Japanese and Korean writing aside.
 
 use unicode_script::{Script, ScriptExtension, UnicodeScript};
 
@@ -10,27 +11,47 @@ pub(crate) fn to_ascii(text: &str) -> Result<(String, Vec<String>), idna::Errors
         return Ok((text.to_owned(), Vec::new()));
     }
     let ascii = idna::domain_to_ascii(text)?;
-    let warnings = text.split('.').filter_map(mixed_scripts).collect();
+    // The label separators of UTS 46 §2.3: full stop, ideographic, fullwidth and halfwidth ideographic.
+    let warnings = text
+        .split(['.', '\u{3002}', '\u{FF0E}', '\u{FF61}'])
+        .filter_map(mixed_scripts)
+        .collect();
     Ok((ascii, warnings))
 }
 
-/// A warning naming the scripts of `label` when no one script writes all its characters (UTS 39 §5.1).
+/// The scripts written together, each set with Latin: Japanese, Korean and Chinese with Bopomofo (UTS 39 §5.2,
+/// highly restrictive).
+const TOGETHER: [&[Script]; 3] = [
+    &[
+        Script::Latin,
+        Script::Han,
+        Script::Hiragana,
+        Script::Katakana,
+    ],
+    &[Script::Latin, Script::Han, Script::Hangul],
+    &[Script::Latin, Script::Han, Script::Bopomofo],
+];
+
+/// A warning naming the scripts of `label` when no one script writes all its characters (UTS 39 §5.1), nor one
+/// set of [`TOGETHER`].
 fn mixed_scripts(label: &str) -> Option<String> {
     if !ScriptExtension::for_str(label).is_empty() {
         return None;
     }
-    let mut scripts: Vec<&str> = Vec::new();
+    let mut scripts: Vec<Script> = Vec::new();
     for script in label.chars().map(|c| c.script()) {
-        if !matches!(script, Script::Common | Script::Inherited)
-            && !scripts.contains(&script.full_name())
-        {
-            scripts.push(script.full_name());
+        if !matches!(script, Script::Common | Script::Inherited) && !scripts.contains(&script) {
+            scripts.push(script);
         }
     }
-    Some(format!(
-        "label {label} mixes scripts: {}",
-        scripts.join(", ")
-    ))
+    if TOGETHER
+        .iter()
+        .any(|set| scripts.iter().all(|s| set.contains(s)))
+    {
+        return None;
+    }
+    let names: Vec<&str> = scripts.iter().map(|s| s.full_name()).collect();
+    Some(format!("label {label} mixes scripts: {}", names.join(", ")))
 }
 
 #[cfg(test)]
@@ -58,5 +79,32 @@ mod tests {
             warnings,
             ["label p\u{430}ypal mixes scripts: Latin, Cyrillic"]
         );
+    }
+
+    #[test]
+    fn japanese_korean_and_chinese_are_one_writing_each() {
+        for name in [
+            "日本語のドメイン.jp",
+            "한국어中文.kr",
+            "ㄅ中文.tw",
+            "ドメインabc.jp",
+        ] {
+            assert_eq!(
+                to_ascii(name).expect("valid").1,
+                Vec::<String>::new(),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            to_ascii("한국어ひらがな.kr").expect("valid").1,
+            ["label 한국어ひらがな mixes scripts: Hangul, Hiragana"]
+        );
+    }
+
+    #[test]
+    fn ideographic_full_stops_separate_labels() {
+        let (ascii, warnings) = to_ascii("p\u{430}y\u{3002}例え.jp").expect("valid");
+        assert_eq!(ascii.split('.').count(), 3, "{ascii}");
+        assert_eq!(warnings, ["label p\u{430}y mixes scripts: Latin, Cyrillic"]);
     }
 }

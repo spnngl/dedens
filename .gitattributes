@@ -96,6 +96,7 @@ Cargo.lock text
 
 # Byte-exact test data: captured DNS messages, zone files the tests and fuzz targets read, snapshots.
 **/testdata/**                     binary
+**/testdata/*.yaml                 -binary text eol=lf diff merge
 crates/dedens-proto/tests/zones/** -text
 *.snap                             text eol=lf
 

@@ -1,17 +1,20 @@
-//! The command line (D32): dig's tokens turned into long flags, then clap.
+//! The command line (D32): dig's tokens turned into long flags, then clap; the words turned into questions.
 
 use std::ffi::OsString;
 use std::net::IpAddr;
-use std::num::NonZeroU8;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, ValueEnum};
-use dedens_scenario::{CookieOption, Options, Timeout};
+use clap::builder::NonEmptyStringValueParser;
+use clap::error::ErrorKind;
+use clap::{Arg, Args, CommandFactory, Parser};
+use dedens_proto::{Class, RecordType};
+use dedens_scenario::{Id, Options};
 
 /// A dig-like DNS client.
 ///
 /// dig's syntax works too: `@server` is `--server server`, `+opt` is `--opt`, `+noopt` is `--opt=false` and
-/// `+opt=value` is `--opt=value`.
+/// `+opt=value` is `--opt=value`, `opt` any unique prefix of a long flag; `-t TYPE`, `-c CLASS` and `-q NAME`
+/// are words.
 #[derive(Debug, Parser)]
 #[command(version, max_term_width = 100)]
 pub(crate) struct Cli {
@@ -21,20 +24,20 @@ pub(crate) struct Cli {
     pub(crate) words: Vec<String>,
     /// The server: an address, with or without a port, or a host name. Default: the first `nameserver` of
     /// /etc/resolv.conf.
-    #[arg(long, value_name = "SERVER")]
-    pub(crate) server: Option<String>,
+    #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
+    server: Vec<String>,
+    /// The port of a server given without one.
+    #[arg(short, long, value_name = "PORT", default_value_t = 53)]
+    pub(crate) port: u16,
     /// Ask PTR for the reverse name of an address (RFC 1035 §3.5, RFC 3596 §2.5).
     #[arg(short = 'x', value_name = "ADDR")]
     pub(crate) reverse: Vec<IpAddr>,
-    /// Run the queries of a query file, `-` for stdin, and check their expectations.
-    #[arg(short = 'f', long, value_name = "FILE")]
+    /// Run the queries of a query file, YAML or JSON, `-` for stdin, and check their expectations.
+    #[arg(short = 'f', long, value_name = "FILE", conflicts_with_all = ["words", "reverse", "search"])]
     pub(crate) file: Option<PathBuf>,
-    /// The format of the query file. Default: by its extension, else YAML.
-    #[arg(long, value_enum, requires = "file")]
-    pub(crate) format: Option<FileFormat>,
     /// Run only the queries of the file with this id.
     #[arg(long, value_name = "ID", requires = "file")]
-    pub(crate) only: Vec<String>,
+    pub(crate) only: Vec<Id>,
     /// Write each response to `DIR/<id>.bin`, as received.
     #[arg(long, value_name = "DIR")]
     pub(crate) save_wire: Option<PathBuf>,
@@ -42,7 +45,7 @@ pub(crate) struct Cli {
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) search: bool,
     #[command(flatten)]
-    pub(crate) options: QueryOptions,
+    pub(crate) options: Options,
     #[command(flatten)]
     pub(crate) output: Output,
 }
@@ -53,135 +56,300 @@ pub(crate) struct Output {
     /// Only the data of the answer records.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) short: bool,
-    /// dig's layout.
-    #[arg(long, conflicts_with = "short")]
-    pub(crate) dig: bool,
-    /// One JSON object per query and line.
-    #[arg(long, conflicts_with_all = ["short", "dig"])]
+    /// One JSON object per query and line, over `--short`.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) json: bool,
     /// Colors: `NO_COLOR` turns them off for `auto`.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
     pub(crate) color: clap::ColorChoice,
 }
 
-/// The format of a query file.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum FileFormat {
-    /// JSON.
-    Json,
-    /// YAML.
-    Yaml,
-}
-
-/// The query options, over those of a query file (D34).
-#[derive(Debug, Args)]
-pub(crate) struct QueryOptions {
-    /// TCP from the start. Default: UDP, then TCP on a truncated response.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    tcp: Option<bool>,
-    /// Keep a truncated UDP response instead of asking again over TCP.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    ignore: Option<bool>,
-    /// Recursion desired (RD). Default: on.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    recurse: Option<bool>,
-    /// Checking disabled (CD).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    cd: Option<bool>,
-    /// Authentic data wanted (AD). Default: on.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    ad: Option<bool>,
-    /// EDNS. Default: on.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    edns: Option<bool>,
-    /// The UDP payload size advertised with EDNS. Default: 1232.
-    #[arg(long, value_name = "BYTES")]
-    bufsize: Option<u16>,
-    /// DNSSEC records wanted (DO).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    dnssec: Option<bool>,
-    /// Ask the server's identifier (NSID).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    nsid: Option<bool>,
-    /// The cookie: true, false, or a client cookie in hex (16 digits), then optionally a server cookie. Default: on.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_name = "COOKIE")]
-    cookie: Option<CookieOption>,
-    /// How long to wait for each response: seconds, or `500ms`. Default: 5.
-    #[arg(long, value_name = "TIME")]
-    time: Option<Timeout>,
-    /// Queries sent before giving up. Default: 3.
-    #[arg(long, value_name = "N")]
-    tries: Option<NonZeroU8>,
-}
-
-impl From<&QueryOptions> for Options {
-    fn from(o: &QueryOptions) -> Self {
-        Self {
-            tcp: o.tcp,
-            ignore: o.ignore,
-            recurse: o.recurse,
-            cd: o.cd,
-            ad: o.ad,
-            edns: o.edns,
-            bufsize: o.bufsize,
-            dnssec: o.dnssec,
-            nsid: o.nsid,
-            cookie: o.cookie,
-            timeout: o.time,
-            tries: o.tries,
-        }
-    }
-}
-
 impl Cli {
     /// Parses the command line, dig's tokens included; exits with code 2 on a usage error.
     pub(crate) fn parse_dig(args: impl IntoIterator<Item = OsString>) -> Self {
-        Self::parse_from(args.into_iter().flat_map(long_flags))
+        let usage = |kind, message: String| Self::command().error(kind, message).exit();
+        let mut command = Self::command();
+        command.build();
+        let args =
+            long_flags(&command, args).unwrap_or_else(|e| usage(ErrorKind::UnknownArgument, e));
+        let cli = Self::parse_from(args);
+        if let Err(error) = cli.options.check() {
+            usage(ErrorKind::ArgumentConflict, error.to_string());
+        }
+        if cli.server.len() > 1 {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "several servers: not supported yet".to_owned(),
+            );
+        }
+        cli
+    }
+
+    /// The server given, if any.
+    pub(crate) fn server(&self) -> Option<&str> {
+        self.server.first().map(String::as_str)
     }
 }
 
-/// dig's tokens as long flags: `@srv` → `--server srv`, `+opt` → `--opt`, `+noopt` → `--opt=false`,
-/// `+opt=v` → `--opt=v`. Any other argument, and one that is not UTF-8, stays.
-fn long_flags(arg: OsString) -> Vec<OsString> {
-    let Some(text) = arg.to_str() else {
-        return vec![arg];
-    };
-    if let Some(server) = text.strip_prefix('@') {
-        return vec!["--server".into(), server.into()];
+/// The names of `words` with the types to ask each, and the class: each name the types after it, else those
+/// before the first name, else A. Without a name, and without `-x` (`reverse`), the root is asked NS, as in dig.
+pub(crate) fn lookups(words: &[String], reverse: bool) -> (Vec<(&str, Vec<RecordType>)>, Class) {
+    let (mut leading, mut names, mut class) = (Vec::new(), Vec::<(&str, Vec<_>)>::new(), Class::IN);
+    for word in words {
+        match (word.parse(), word.parse()) {
+            (Ok(qtype), _) => names
+                .last_mut()
+                .map_or(&mut leading, |(_, types)| types)
+                .push(qtype),
+            (_, Ok(qclass)) => class = qclass,
+            _ => names.push((word.as_str(), Vec::new())),
+        }
     }
-    let Some(option) = text.strip_prefix('+') else {
-        return vec![arg];
+    if names.is_empty() && !reverse {
+        names.push((".", Vec::new()));
+        if leading.is_empty() {
+            leading.push(RecordType::NS);
+        }
+    }
+    if leading.is_empty() {
+        leading.push(RecordType::A);
+    }
+    for (_, types) in &mut names {
+        if types.is_empty() {
+            types.clone_from(&leading);
+        }
+    }
+    (names, class)
+}
+
+/// The arguments with dig's tokens as long flags and words. `@srv` → `--server srv`; `+opt` → `--opt`, `+noopt`
+/// → `--opt=false` for an on/off flag, `+opt=v` → `--opt=v`, `opt` a unique prefix; `-t TYPE`, `-c CLASS` and
+/// `-q NAME` → the word, a name that reads as a mnemonic made absolute. The value of a flag that takes one, any
+/// argument after `--`, and one that is not UTF-8 stay as they are.
+fn long_flags(
+    command: &clap::Command,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Vec<OsString>, String> {
+    let mut args = args.into_iter();
+    let mut out: Vec<OsString> = args.next().into_iter().collect();
+    while let Some(arg) = args.next() {
+        let Some(text) = arg.to_str() else {
+            out.push(arg);
+            continue;
+        };
+        if text == "--" {
+            out.push(arg);
+            out.extend(args);
+            break;
+        }
+        if let Some(server) = text.strip_prefix('@') {
+            out.extend(["--server".into(), server.into()]);
+        } else if let Some(option) = text.strip_prefix('+') {
+            out.push(plus(command, option)?.into());
+        } else if let Some(rest) = text.strip_prefix('-')
+            && let Some(letter @ ('t' | 'c' | 'q')) = rest.chars().next()
+        {
+            let value = match &rest[1..] {
+                "" => args
+                    .next()
+                    .and_then(|v| v.into_string().ok())
+                    .ok_or(format!("{text}: a value is needed"))?,
+                attached => attached.to_owned(),
+            };
+            out.push(word(letter, value)?.into());
+        } else {
+            let takes_value = flag(command, text)
+                .and_then(Arg::get_num_args)
+                .is_some_and(|n| n.min_values() > 0);
+            out.push(arg);
+            if takes_value {
+                out.extend(args.next());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The long flag of `+option`, which is `name`, `noname` or `name=value`.
+fn plus(command: &clap::Command, option: &str) -> Result<String, String> {
+    let (name, value) = match option.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (option, None),
     };
-    let flag = match option.strip_prefix("no") {
-        Some(name) if !option.contains('=') && !name.is_empty() => format!("--{name}=false"),
-        _ => format!("--{option}"),
+    let negated = name
+        .strip_prefix("no")
+        .filter(|_| value.is_none())
+        .and_then(|rest| long(command, rest).ok());
+    let (arg, value) = match negated {
+        Some(arg) if on_off(arg) => (arg, Some("false")),
+        Some(arg) => return Err(format!("+{name}: --{} is not on/off", long_name(arg))),
+        None => (long(command, name)?, value),
     };
-    vec![flag.into()]
+    Ok(match value {
+        Some(value) => format!("--{}={value}", long_name(arg)),
+        None => format!("--{}", long_name(arg)),
+    })
+}
+
+/// The flag whose long name is `prefix`, else the only one starting with it.
+fn long<'c>(command: &'c clap::Command, prefix: &str) -> Result<&'c Arg, String> {
+    let named = || command.get_arguments().filter(|a| a.get_long().is_some());
+    if let Some(exact) = named().find(|a| a.get_long() == Some(prefix)) {
+        return Ok(exact);
+    }
+    let mut matching = named().filter(|a| !prefix.is_empty() && long_name(a).starts_with(prefix));
+    match (matching.next(), matching.next()) {
+        (Some(arg), None) => Ok(arg),
+        (None, _) => Err(format!("+{prefix}: unknown option")),
+        (Some(first), Some(second)) => Err(format!(
+            "+{prefix}: ambiguous, --{} or --{}…",
+            long_name(first),
+            long_name(second)
+        )),
+    }
+}
+
+fn long_name(arg: &Arg) -> &str {
+    arg.get_long().unwrap_or_default()
+}
+
+/// Whether `arg` is an on/off flag: one whose value may be left out, for `true`.
+fn on_off(arg: &Arg) -> bool {
+    arg.get_num_args()
+        .is_some_and(|n| n.min_values() == 0 && n.max_values() == 1)
+}
+
+/// The flag `text` is, `--name` or `-n`, without a value attached.
+fn flag<'c>(command: &'c clap::Command, text: &str) -> Option<&'c Arg> {
+    if let Some(name) = text.strip_prefix("--") {
+        return command.get_arguments().find(|a| a.get_long() == Some(name));
+    }
+    let mut letters = text.strip_prefix('-')?.chars();
+    let (Some(letter), None) = (letters.next(), letters.next()) else {
+        return None;
+    };
+    command
+        .get_arguments()
+        .find(|a| a.get_short() == Some(letter))
+}
+
+/// The word of `-t`, `-c` or `-q` (`letter`) and its `value`.
+fn word(letter: char, value: String) -> Result<String, String> {
+    let qtype = value.parse::<RecordType>().is_ok();
+    let qclass = value.parse::<Class>().is_ok();
+    match letter {
+        't' if !qtype => Err(format!("-t {value}: not a type")),
+        'c' if !qclass => Err(format!("-c {value}: not a class")),
+        'q' if qtype || qclass => Ok(value + "."),
+        _ => Ok(value),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn rewrite(args: &[&str]) -> Result<Vec<String>, String> {
+        let mut command = Cli::command();
+        command.build();
+        let args = ["dedens"].iter().chain(args).map(OsString::from);
+        let out = long_flags(&command, args)?;
+        Ok(out[1..]
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect())
+    }
+
     #[test]
     fn dig_tokens_become_long_flags() {
-        for (token, flags) in [
-            ("@1.1.1.1", &["--server", "1.1.1.1"][..]),
-            ("+tcp", &["--tcp"]),
-            ("+notcp", &["--tcp=false"]),
-            ("+bufsize=512", &["--bufsize=512"]),
-            ("+nsid", &["--nsid"]),
-            ("example.com", &["example.com"]),
-            ("-x", &["-x"]),
+        for (args, flags) in [
+            (&["@1.1.1.1"][..], &["--server", "1.1.1.1"][..]),
+            (&["+tcp"], &["--tcp"]),
+            (&["+notcp"], &["--tcp=false"]),
+            (&["+norec"], &["--recurse=false"]),
+            (&["+nocd"], &["--cdflag=false"]),
+            (&["+sh"], &["--short"]),
+            (&["+nojson"], &["--json=false"]),
+            (&["+bufsize=512"], &["--bufsize=512"]),
+            (&["+save-wire=dir"], &["--save-wire=dir"]),
+            (&["--only", "@x", "+nsid"], &["--only", "@x", "--nsid"]),
+            (&["-f", "+x"], &["-f", "+x"]),
+            (&["--", "+x", "@y"], &["--", "+x", "@y"]),
+            (&["-t", "MX", "-cCH"], &["MX", "CH"]),
+            (&["-q", "example.com", "-q", "MX"], &["example.com", "MX."]),
+            (
+                &["-p", "5353", "-x", "192.0.2.1"],
+                &["-p", "5353", "-x", "192.0.2.1"],
+            ),
+            (&["example.com"], &["example.com"]),
         ] {
-            let flags: Vec<OsString> = flags.iter().map(OsString::from).collect();
-            assert_eq!(long_flags(token.into()), flags, "{token}");
+            assert_eq!(
+                rewrite(args),
+                Ok(flags.iter().map(ToString::to_string).collect()),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_ambiguous_and_valued_negations_are_refused() {
+        for args in [
+            &["+bogus"][..],
+            &["+t"],
+            &["+"],
+            &["+nosave-wire"],
+            &["+noserver"],
+            &["-t", "example.com"],
+            &["-c", "MX"],
+            &["-t"],
+        ] {
+            assert!(rewrite(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn words_become_lookups() {
+        use RecordType as T;
+        type Case = (
+            &'static [&'static str],
+            bool,
+            &'static [(&'static str, &'static [T])],
+            Class,
+        );
+        let cases: [Case; 6] = [
+            (&[], false, &[(".", &[T::NS])], Class::IN),
+            (&["MX"], false, &[(".", &[T::MX])], Class::IN),
+            (&[], true, &[], Class::IN),
+            (
+                &["example.com"],
+                false,
+                &[("example.com", &[T::A])],
+                Class::IN,
+            ),
+            (
+                &["TXT", "a.example", "b.example", "MX", "AAAA"],
+                false,
+                &[("a.example", &[T::TXT]), ("b.example", &[T::MX, T::AAAA])],
+                Class::IN,
+            ),
+            (
+                &["CH", "TXT", "version.bind"],
+                true,
+                &[("version.bind", &[T::TXT])],
+                Class::CH,
+            ),
+        ];
+        for (words, reverse, names, class) in cases {
+            let words: Vec<String> = words.iter().map(ToString::to_string).collect();
+            let (got, got_class) = lookups(&words, reverse);
+            let expected: Vec<(&str, Vec<T>)> =
+                names.iter().map(|(n, t)| (*n, t.to_vec())).collect();
+            assert_eq!((got, got_class), (expected, class), "{words:?}");
         }
     }
 
     #[test]
     fn clap_definition_is_valid() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
     }
 }

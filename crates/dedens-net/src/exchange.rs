@@ -116,7 +116,7 @@ pub enum Failure {
         sends: u16,
     },
     /// A query changed by a fallback could not be encoded.
-    #[error("cannot encode the query: {0}")]
+    #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
 }
 

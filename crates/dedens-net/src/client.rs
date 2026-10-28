@@ -35,13 +35,13 @@ pub enum ClientError {
     #[error("no randomness: {0}")]
     Random(getrandom::Error),
     /// The query cannot be encoded.
-    #[error("cannot encode the query: {0}")]
+    #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
     /// The UDP socket failed, for instance on an ICMP port unreachable.
-    #[error("UDP: {0}")]
+    #[error("UDP")]
     Udp(#[source] io::Error),
     /// The TCP connection failed.
-    #[error("TCP: {0}")]
+    #[error("TCP")]
     Tcp(#[from] TcpError),
     /// The exchange ended without a response.
     #[error(transparent)]

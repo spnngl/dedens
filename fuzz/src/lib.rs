@@ -19,7 +19,7 @@ use dedens_proto::{
     DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Message, Name, Query, Question,
     Record, RecordType, Ttl, message,
 };
-use dedens_scenario::{Format, QueryFile};
+use dedens_scenario::QueryFile;
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -314,7 +314,7 @@ pub fn parse_zone(data: &[u8]) {
     }
 }
 
-/// A query file (D34), as JSON and as YAML: what reads builds its queries and exchange options.
+/// A query file (D34): what reads builds its queries and exchange options.
 ///
 /// # Panics
 ///
@@ -323,18 +323,17 @@ pub fn parse_query_file(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    for format in [Format::Json, Format::Yaml] {
-        let Ok(file) = QueryFile::parse(text, format) else {
-            continue;
-        };
-        for query in &file.queries {
-            let options = query.options.or(file.options);
-            let _ = options.exchange();
-            let message = options.query(Question::new(query.name.clone(), query.qtype));
-            message
-                .to_vec()
-                .unwrap_or_else(|e| panic!("{} encodes: {e}", query.id()));
-        }
+    let Ok(file) = QueryFile::parse(text) else {
+        return;
+    };
+    for query in &file.queries {
+        let options = query.options.or(file.options);
+        let _ = options.check();
+        let _ = options.exchange();
+        let message = options.query(Question::new(query.name.clone(), query.qtype));
+        message
+            .to_vec()
+            .unwrap_or_else(|e| panic!("{} encodes: {e}", query.id()));
     }
 }
 

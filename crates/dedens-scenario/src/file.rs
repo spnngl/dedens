@@ -1,10 +1,10 @@
-//! The query file (D17, D34): a server and options for all, then the queries, each with its own.
+//! The query file (D34, D36): a server and options for all, then the queries, each with its own.
 
-use std::path::Path;
+use std::fmt;
 use std::str::FromStr;
 
 use dedens_proto::{Name, RecordType};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Expect, Options};
 
@@ -17,8 +17,21 @@ pub struct QueryFile {
     /// The options of every query, under its own.
     #[serde(default)]
     pub options: Options,
-    /// The queries, in order.
+    /// The queries, in order, their [ids](Query::id) unique.
+    #[serde(deserialize_with = "unique_ids")]
     pub queries: Vec<Query>,
+}
+
+impl QueryFile {
+    /// Reads a query file, YAML 1.2, which JSON is too.
+    ///
+    /// # Errors
+    ///
+    /// When the text is not a query file: invalid syntax, a missing or unknown field, a value that does not read,
+    /// or two queries with the same id.
+    pub fn parse(text: &str) -> Result<Self, serde_saphyr::Error> {
+        serde_saphyr::from_str(text)
+    }
 }
 
 /// One query of a [`QueryFile`].
@@ -26,7 +39,7 @@ pub struct QueryFile {
 #[serde(deny_unknown_fields)]
 pub struct Query {
     /// Its name in reports and the `--save-wire` file name; see [`Query::id`].
-    pub id: Option<String>,
+    pub id: Option<Id>,
     /// The name asked; absolute, with or without its final dot.
     #[serde(deserialize_with = "crate::parsed")]
     pub name: Name<'static>,
@@ -43,85 +56,83 @@ pub struct Query {
 }
 
 impl Query {
-    /// Its `id`, else [`default_id`].
+    /// Its `id`, else [`Id::of`] its name and type.
     #[must_use]
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> Id {
         self.id
             .clone()
-            .unwrap_or_else(|| default_id(&self.name, self.qtype))
+            .unwrap_or_else(|| Id::of(&self.name, self.qtype))
     }
 }
 
-/// The name without its final dot (`.` for the root) and the type, joined by `_`: `example.com_A`.
-#[must_use]
-pub fn default_id(name: &Name<'_>, qtype: RecordType) -> String {
-    let name = name.to_string();
-    let name = name
-        .strip_suffix('.')
-        .filter(|n| !n.is_empty())
-        .unwrap_or(&name);
-    format!("{name}_{qtype}")
-}
+/// The name of a query in reports, and of its `--save-wire` file: a file name, so not empty, not `.` or `..`,
+/// and without `/`, `\` or NUL.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Id(String);
 
-/// The format of a query file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// JSON (RFC 8259).
-    Json,
-    /// YAML 1.2.
-    Yaml,
-}
-
-impl Format {
-    /// The format of a file by its extension: `.json`, `.yaml` or `.yml`.
+impl Id {
+    /// The name asked without its final dot (`root` for the root) and the type, joined by `_`, each `/` or `\` of
+    /// the name a `_`: `example.com_A`.
     #[must_use]
-    pub fn of(path: &Path) -> Option<Self> {
-        match path.extension()?.to_str()? {
-            "json" => Some(Self::Json),
-            "yaml" | "yml" => Some(Self::Yaml),
-            _ => None,
-        }
+    pub fn of(name: &Name<'_>, qtype: RecordType) -> Self {
+        let name = name.to_string().replace(['/', '\\'], "_");
+        let name = match name.strip_suffix('.') {
+            Some("") | None => "root",
+            Some(name) => name,
+        };
+        Self(format!("{name}_{qtype}"))
+    }
+
+    /// The id as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-impl FromStr for Format {
-    type Err = ParseError;
-
-    fn from_str(text: &str) -> Result<Self, ParseError> {
-        match text {
-            "json" => Ok(Self::Json),
-            "yaml" => Ok(Self::Yaml),
-            _ => Err(ParseError::Format),
-        }
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
-/// Why a query file does not read.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum ParseError {
-    /// Not a format of [`Format`].
-    #[error("the format is json or yaml")]
-    Format,
-    /// Invalid JSON, or not a query file.
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-    /// Invalid YAML, or not a query file.
-    #[error(transparent)]
-    Yaml(#[from] serde_saphyr::Error),
+/// Text that is not an [`Id`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("an id is a file name: not empty, not . or .., without / \\ or NUL")]
+pub struct InvalidId;
+
+impl TryFrom<String> for Id {
+    type Error = InvalidId;
+
+    fn try_from(text: String) -> Result<Self, InvalidId> {
+        if matches!(text.as_str(), "" | "." | "..") || text.contains(['/', '\\', '\0']) {
+            return Err(InvalidId);
+        }
+        Ok(Self(text))
+    }
 }
 
-impl QueryFile {
-    /// Reads a query file.
-    ///
-    /// # Errors
-    ///
-    /// [`ParseError`] when the text is not a query file in `format`: invalid syntax, a missing or unknown
-    /// field, or a value that does not read.
-    pub fn parse(text: &str, format: Format) -> Result<Self, ParseError> {
-        Ok(match format {
-            Format::Json => serde_json::from_str(text)?,
-            Format::Yaml => serde_saphyr::from_str(text)?,
-        })
+impl FromStr for Id {
+    type Err = InvalidId;
+
+    fn from_str(text: &str) -> Result<Self, InvalidId> {
+        text.to_owned().try_into()
+    }
+}
+
+/// Reads the queries, refusing two with the same id.
+fn unique_ids<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Query>, D::Error> {
+    let queries = Vec::<Query>::deserialize(deserializer)?;
+    let mut ids = std::collections::HashSet::new();
+    match queries
+        .iter()
+        .map(Query::id)
+        .find(|id| !ids.insert(id.clone()))
+    {
+        Some(id) => Err(serde::de::Error::custom(format!(
+            "two queries with id {id}"
+        ))),
+        None => Ok(queries),
     }
 }

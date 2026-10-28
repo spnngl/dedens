@@ -1,7 +1,7 @@
 //! What a response must hold (D34): rcode, flags, and the records of each section.
 
-use dedens_proto::text::{Entry, TextError, TextErrorKind, ZoneReader};
-use dedens_proto::{Flags, Message, Name, Rcode, Record, Ttl};
+use dedens_proto::text::{TextError, TextErrorKind};
+use dedens_proto::{Flags, Message, Rcode, Record};
 use serde::Deserialize;
 
 /// The expectations of a query; each one left out is not checked.
@@ -14,11 +14,11 @@ pub struct Expect {
     /// Header flags that must be set, by their names in dig: `qr`, `aa`, `tc`, `rd`, `ra`, `ad`, `cd`.
     #[serde(default, deserialize_with = "flag_names")]
     pub flags: Flags,
-    /// The answer section, as a set.
+    /// The answer section, in any order.
     pub answer: Option<Vec<Expected>>,
-    /// The authority section, as a set.
+    /// The authority section, in any order.
     pub authority: Option<Vec<Expected>>,
-    /// The additional section without the OPT record, as a set.
+    /// The additional section without the OPT record, in any order.
     pub additional: Option<Vec<Expected>>,
 }
 
@@ -43,17 +43,17 @@ impl Expect {
             let Some(expected) = expected else {
                 continue;
             };
-            for missing in expected
-                .iter()
-                .filter(|e| !records.iter().any(|r| e.matches(r)))
-            {
-                failures.push(format!("{section}: missing {}", missing.line));
+            // Each record meets one expected at most, so a record expected twice must come twice.
+            let mut met = vec![false; records.len()];
+            for e in expected {
+                let found = (0..records.len()).find(|&i| !met[i] && e.matches(&records[i]));
+                match found {
+                    Some(i) => met[i] = true,
+                    None => failures.push(format!("{section}: missing {}", e.line)),
+                }
             }
-            for extra in records
-                .iter()
-                .filter(|r| !expected.iter().any(|e| e.matches(r)))
-            {
-                failures.push(format!("{section}: unexpected {extra}"));
+            for (record, _) in records.iter().zip(&met).filter(|(_, met)| !**met) {
+                failures.push(format!("{section}: unexpected {record}"));
             }
         }
         failures
@@ -88,16 +88,10 @@ impl TryFrom<String> for Expected {
     fn try_from(line: String) -> Result<Self, TextError> {
         let (record, ttl) = match line.parse::<Record<'static>>() {
             Ok(record) => (record, true),
+            // Read again with a TTL after the owner, which the comparison then ignores.
             Err(error) if error.kind == TextErrorKind::NoTtl => {
-                let mut reader =
-                    ZoneReader::new(line.as_bytes(), Some(Name::root())).with_ttl(Ttl::ZERO);
-                match reader.next() {
-                    Some(Ok(Entry::Record(decoded))) if decoded.invalid_rdata.is_none() => {
-                        (decoded.record, false)
-                    }
-                    Some(Err(error)) => return Err(error),
-                    _ => return Err(error),
-                }
+                let (owner, rest) = line.trim_start().split_once([' ', '\t']).ok_or(error)?;
+                (format!("{owner} 0 {rest}").parse()?, false)
             }
             Err(error) => return Err(error),
         };
@@ -107,21 +101,10 @@ impl TryFrom<String> for Expected {
 
 /// Reads a list of flag names into one set.
 fn flag_names<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Flags, D::Error> {
-    const NAMES: [(&str, Flags); 7] = [
-        ("qr", Flags::QR),
-        ("aa", Flags::AA),
-        ("tc", Flags::TC),
-        ("rd", Flags::RD),
-        ("ra", Flags::RA),
-        ("ad", Flags::AD),
-        ("cd", Flags::CD),
-    ];
     let names = Vec::<String>::deserialize(deserializer)?;
     names.iter().try_fold(Flags::NONE, |flags, name| {
-        let (_, flag) = NAMES
-            .iter()
-            .find(|(known, _)| name.eq_ignore_ascii_case(known))
+        let flag = Flags::from_name(name)
             .ok_or_else(|| serde::de::Error::custom(format!("unknown flag {name}")))?;
-        Ok(flags.with(*flag))
+        Ok(flags.with(flag))
     })
 }

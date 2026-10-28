@@ -1,8 +1,9 @@
-//! A run: the queries of the command line or of a query file, asked concurrently on one compio runtime, their
-//! responses printed in the order of the queries (D32), and the exit code (D33).
+//! Running the queries of the command line or of a query file: at most [`IN_FLIGHT`] at a time, each result
+//! printed in order as soon as it is ready.
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -11,17 +12,20 @@ use anyhow::{Context, anyhow, bail};
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::Failure;
 use dedens_net::resolv_conf::ResolvConf;
+use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
-use dedens_scenario::{Expect, Format, Options, QueryFile, Report, default_id};
+use dedens_scenario::{Expect, Id, Options, QueryFile, Report};
 
-use crate::args::{Cli, FileFormat};
+use crate::args::{self, Cli};
 use crate::idn;
 use crate::output::{self, Layout};
 
+/// The queries in flight at most: each holds a socket.
+const IN_FLIGHT: usize = 64;
+
 /// One query to ask.
 struct Job {
-    /// The file's id; else the name asked and the type.
-    id: Option<String>,
+    id: Id,
     /// The names to try in order, the next one after an NXDOMAIN (`+search`); never empty.
     names: Vec<Name<'static>>,
     qtype: RecordType,
@@ -31,45 +35,23 @@ struct Job {
     expect: Option<Expect>,
 }
 
-impl Job {
-    fn id(&self, name: &Name<'_>) -> String {
-        self.id
-            .clone()
-            .unwrap_or_else(|| default_id(name, self.qtype))
-    }
-}
-
-/// Runs `cli`; an error is one of the run as a whole, before any query.
+/// Runs `cli`; an error is one of the run as a whole, before any query or while printing.
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     let jobs = match &cli.file {
         Some(path) => file_jobs(cli, path)?,
         None => command_line_jobs(cli)?,
     };
+    if let Some(job) = jobs
+        .iter()
+        .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
+    {
+        bail!("{}: zone transfers are not supported yet", job.id);
+    }
     if let Some(dir) = &cli.save_wire {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
-    let done = runtime.block_on(async {
-        let client = Rc::new(Client::new());
-        let handles: Vec<_> = jobs
-            .into_iter()
-            .map(|job| {
-                let client = Rc::clone(&client);
-                compio::runtime::spawn(async move {
-                    let outcome = ask(&client, &job).await;
-                    (job, outcome)
-                })
-            })
-            .collect();
-        let mut done = Vec::with_capacity(handles.len());
-        for handle in handles {
-            done.push(handle.await.map_err(io::Error::from)?);
-        }
-        io::Result::Ok(done)
-    })?;
     let layout = match &cli.output {
         o if o.json => Layout::Json,
-        o if o.dig => Layout::Dig,
         o if o.short => Layout::Short,
         _ => Layout::Compact,
     };
@@ -79,39 +61,78 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
     let mut out = anstream::AutoStream::new(io::stdout().lock(), color);
-    let mut code = 0;
-    for (index, (job, outcome)) in done.iter().enumerate() {
-        let (report, wire) = match outcome {
-            Ok(answered) => answered,
-            Err(error) => {
-                eprintln!("dedens: {}: {error:#}", job.id(&job.names[0]));
-                code = code.max(if no_reply(error) { 9 } else { 10 });
-                continue;
-            }
-        };
-        if index > 0 && layout == Layout::Compact {
-            writeln!(out)?;
+    let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
+    let code = runtime.block_on(async {
+        let client = Rc::new(Client::new());
+        let mut jobs = jobs.into_iter();
+        let mut running = VecDeque::new();
+        let (mut code, mut printed) = (0, false);
+        loop {
+            let room = IN_FLIGHT - running.len();
+            running.extend(jobs.by_ref().take(room).map(|job| {
+                let client = Rc::clone(&client);
+                let id = job.id.clone();
+                (
+                    id,
+                    compio::runtime::spawn(async move { ask(&client, &job).await }),
+                )
+            }));
+            let Some((id, handle)) = running.pop_front() else {
+                break;
+            };
+            let outcome = handle
+                .await
+                .map_err(|e| anyhow::Error::from(io::Error::from(e)))
+                .and_then(|outcome| outcome);
+            code = code.max(show(cli, layout, &mut out, &id, outcome, &mut printed)?);
         }
-        output::print(&mut out, layout, report)?;
-        if let Some(dir) = &cli.save_wire {
-            let path = dir.join(format!("{}.bin", report.id));
-            std::fs::write(&path, wire)
-                .with_context(|| format!("cannot write {}", path.display()))?;
+        io::Result::Ok(code)
+    })?;
+    Ok(ExitCode::from(code))
+}
+
+/// Prints the outcome of query `id` and saves its response; returns the exit code it calls for. `printed` tells
+/// whether a report came before, which the compact layout sets apart.
+fn show(
+    cli: &Cli,
+    layout: Layout,
+    out: &mut impl Write,
+    id: &Id,
+    outcome: anyhow::Result<(Report, Vec<u8>)>,
+    printed: &mut bool,
+) -> io::Result<u8> {
+    let (report, wire) = match outcome {
+        Ok(answered) => answered,
+        Err(error) => {
+            eprintln!("dedens: {id}: {error:#}");
+            return Ok(if no_reply(&error) { 9 } else { 10 });
         }
-        for failure in &report.failures {
-            eprintln!("dedens: {}: {failure}", report.id);
-            code = code.max(1);
+    };
+    if std::mem::replace(printed, true) && layout == Layout::Compact {
+        writeln!(out)?;
+    }
+    output::print(out, layout, &report)?;
+    out.flush()?;
+    if layout == Layout::Short {
+        for line in report.violations.iter().chain(&report.failures) {
+            eprintln!("dedens: {id}: {line}");
         }
     }
-    out.flush()?;
-    Ok(ExitCode::from(code))
+    let mut code = u8::from(!report.failures.is_empty());
+    if let Some(dir) = &cli.save_wire {
+        let path = dir.join(format!("{id}.bin"));
+        if let Err(error) = std::fs::write(&path, wire) {
+            eprintln!("dedens: cannot write {}: {error}", path.display());
+            code = 10;
+        }
+    }
+    Ok(code)
 }
 
 /// Asks `job`, trying its names in turn while the response is NXDOMAIN.
 async fn ask(client: &Client, job: &Job) -> anyhow::Result<(Report, Vec<u8>)> {
     let options = job.options.exchange();
-    let mut names = job.names.iter().peekable();
-    while let Some(name) = names.next() {
+    for (index, name) in job.names.iter().enumerate() {
         let question = Question {
             name: name.clone(),
             qtype: job.qtype,
@@ -120,11 +141,11 @@ async fn ask(client: &Client, job: &Job) -> anyhow::Result<(Report, Vec<u8>)> {
         let response = client
             .exchange(&job.options.query(question), job.server, &options)
             .await?;
-        let message = Message::decode(&response.wire)?.message;
-        if names.peek().is_none() || message.rcode() != Rcode::NXDOMAIN {
-            let mut report = Report::exchanged(job.id(name), job.server, &response, &message);
+        let decoded = Message::decode(&response.wire)?;
+        if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
+            let mut report = Report::exchanged(job.id.clone(), job.server, &response, &decoded);
             if let Some(expect) = &job.expect {
-                report.failures = expect.check(&message);
+                report.failures = expect.check(&decoded.message);
             }
             return Ok((report, response.wire));
         }
@@ -132,61 +153,42 @@ async fn ask(client: &Client, job: &Job) -> anyhow::Result<(Report, Vec<u8>)> {
     Err(anyhow!("no name to ask"))
 }
 
-/// Whether `error` is the server's silence or refusal of the connection: dig's exit code 9.
+/// Whether `error` is the server's silence, refusal or reset: dig's exit code 9.
 fn no_reply(error: &anyhow::Error) -> bool {
-    matches!(
-        error.downcast_ref(),
+    let refused = |e: &io::Error| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+        )
+    };
+    match error.downcast_ref() {
         Some(
             ClientError::Exchange(Failure::TimedOut { .. })
-                | ClientError::Udp(_)
-                | ClientError::Tcp(_)
-        )
-    )
+            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed),
+        ) => true,
+        Some(ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e))) => refused(e),
+        _ => false,
+    }
 }
 
-/// The queries of the command line: each name asked the types written after it, up to the next name, as dig
-/// reads them; a name without any the types written before the first name, else A. `-x` addresses ask PTR.
+/// The queries of the command line: its words (see [`args::lookups`]), then the `-x` addresses asked PTR.
 fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
-    // The types before the first name, then each name with the types after it.
-    let (mut leading, mut names, mut class) =
-        (Vec::new(), Vec::<(&str, Vec<RecordType>)>::new(), Class::IN);
-    for word in &cli.words {
-        match (word.parse(), word.parse()) {
-            (Ok(qtype), _) => names
-                .last_mut()
-                .map_or(&mut leading, |(_, types)| types)
-                .push(qtype),
-            (_, Ok(qclass)) => class = qclass,
-            _ => names.push((word.as_str(), Vec::new())),
-        }
-    }
-    if names.is_empty() && cli.reverse.is_empty() {
-        // dig without a name asks the root its servers.
-        names.push((".", Vec::new()));
-        if leading.is_empty() {
-            leading.push(RecordType::NS);
-        }
-    }
-    if leading.is_empty() {
-        leading.push(RecordType::A);
-    }
-    let conf = (cli.search || cli.server.is_none())
+    let (lookups, qclass) = args::lookups(&cli.words, !cli.reverse.is_empty());
+    let conf = (cli.search || cli.server().is_none())
         .then(resolv_conf)
         .transpose()?;
-    let server = server(cli.server.as_deref(), conf.as_ref())?;
-    let options = Options::from(&cli.options);
-    let job = |names, qtype| Job {
-        id: None,
+    let server = server(cli.server(), conf.as_ref(), cli.port)?;
+    let job = |names: Vec<Name<'static>>, qtype| Job {
+        id: Id::of(&names[0], qtype),
         names,
         qtype,
-        qclass: class,
+        qclass,
         server,
-        options,
+        options: cli.options,
         expect: None,
     };
     let mut jobs = Vec::new();
-    for (text, types) in names {
-        let types = if types.is_empty() { &leading } else { &types };
+    for (text, types) in lookups {
         let (ascii, warnings) =
             idn::to_ascii(text).map_err(|e| anyhow!("{text}: not a domain name: {e}"))?;
         for warning in warnings {
@@ -197,7 +199,11 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
             _ => ascii.parse().ok().map(|name| vec![name]),
         };
         let candidates = candidates.ok_or_else(|| anyhow!("{text}: not a domain name"))?;
-        jobs.extend(types.iter().map(|&qtype| job(candidates.clone(), qtype)));
+        jobs.extend(
+            types
+                .into_iter()
+                .map(|qtype| job(candidates.clone(), qtype)),
+        );
     }
     for &address in &cli.reverse {
         jobs.push(job(vec![Name::reverse(address)], RecordType::PTR));
@@ -214,12 +220,7 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
         text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", path.display()))?;
     }
-    let format = match cli.format {
-        Some(FileFormat::Json) => Format::Json,
-        Some(FileFormat::Yaml) => Format::Yaml,
-        None => Format::of(path).unwrap_or(Format::Yaml),
-    };
-    let file = QueryFile::parse(&text, format).with_context(|| format!("{}", path.display()))?;
+    let file = QueryFile::parse(&text).with_context(|| format!("{}", path.display()))?;
     if let Some(id) = cli
         .only
         .iter()
@@ -228,26 +229,27 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
         bail!("{}: no query with id {id}", path.display());
     }
     let missing = file.server.is_none() && file.queries.iter().any(|q| q.server.is_none());
-    let conf = (cli.server.is_none() && missing)
+    let conf = (cli.server().is_none() && missing)
         .then(resolv_conf)
         .transpose()?;
-    let options = Options::from(&cli.options).or(Options::default());
     file.queries
         .into_iter()
         .filter(|q| cli.only.is_empty() || cli.only.contains(&q.id()))
         .map(|query| {
+            let id = query.id();
+            let options = cli.options.or(query.options).or(file.options);
+            options.check().with_context(|| format!("{id}"))?;
             let named = cli
-                .server
-                .as_deref()
+                .server()
                 .or(query.server.as_deref())
                 .or(file.server.as_deref());
             Ok(Job {
-                id: Some(query.id()),
-                server: server(named, conf.as_ref())?,
+                server: server(named, conf.as_ref(), cli.port)?,
+                id,
                 names: vec![query.name],
                 qtype: query.qtype,
                 qclass: Class::IN,
-                options: options.or(query.options).or(file.options),
+                options,
                 expect: query.expect,
             })
         })
@@ -263,23 +265,27 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
     Ok(ResolvConf::parse(&text))
 }
 
-/// The address of `named`, an address with or without a port or a host name; else the first name server of
-/// `conf`. Port 53 unless given.
-fn server(named: Option<&str>, conf: Option<&ResolvConf>) -> anyhow::Result<SocketAddr> {
-    let Some(text) = named else {
-        let ip = conf
+/// The address of `named`, else of the first name server of `conf`: an address, IPv6 possibly in brackets or
+/// with its zone, or a host name, each with or without a port, `port` when without.
+fn server(named: Option<&str>, conf: Option<&ResolvConf>, port: u16) -> anyhow::Result<SocketAddr> {
+    let text = match named {
+        Some(text) => text,
+        None => conf
             .and_then(|conf| conf.nameservers.first())
             .ok_or_else(|| {
                 anyhow!("no server: give @server, or a nameserver in /etc/resolv.conf")
-            })?;
-        return Ok(SocketAddr::new(*ip, 53));
+            })?,
     };
-    if let Ok(ip) = text.parse() {
-        return Ok(SocketAddr::new(ip, 53));
+    let bare = text
+        .strip_prefix('[')
+        .and_then(|t| t.strip_suffix(']'))
+        .unwrap_or(text);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
     }
     let mut addresses = match text.to_socket_addrs() {
         Ok(addresses) => addresses,
-        Err(_) => (text, 53)
+        Err(_) => (bare, port)
             .to_socket_addrs()
             .with_context(|| format!("server {text}"))?,
     };

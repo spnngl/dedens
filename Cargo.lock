@@ -616,11 +616,11 @@ dependencies = [
 name = "dedens-scenario"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "dedens-net",
  "dedens-proto",
  "serde",
  "serde-saphyr",
- "serde_json",
  "thiserror",
 ]
 

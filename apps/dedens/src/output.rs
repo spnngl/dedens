@@ -1,4 +1,4 @@
-//! The outputs of a response (D32): compact, dig's layout, `+short`, and JSON (D35), all from its [`Report`].
+//! The outputs of a response (D32): compact, `+short`, and JSON (D35), all from its [`Report`].
 
 use std::io::{self, Write};
 
@@ -10,8 +10,6 @@ use dedens_scenario::{EdnsReport, OptionReport, RecordReport, Report, Transport}
 pub(crate) enum Layout {
     /// One line per record under each section's heading, then a footer in words.
     Compact,
-    /// dig 9.20's layout, as with `+nocmd`, without its `WHEN` line.
-    Dig,
     /// The data of the answer records.
     Short,
     /// One JSON object per line (D35).
@@ -27,7 +25,6 @@ const BAD: Style = AnsiColor::Red.on_default().bold();
 pub(crate) fn print(out: &mut impl Write, layout: Layout, report: &Report) -> io::Result<()> {
     match layout {
         Layout::Compact => compact(out, report),
-        Layout::Dig => dig(out, report),
         Layout::Short => report
             .answer
             .iter()
@@ -116,6 +113,9 @@ fn compact(out: &mut impl Write, report: &Report) -> io::Result<()> {
     if let Some(edns) = &report.edns {
         compact_edns(out, edns)?;
     }
+    for violation in &report.violations {
+        writeln!(out, "{BAD}violation{BAD:#} {violation}")?;
+    }
     for failure in &report.failures {
         writeln!(out, "{BAD}failed{BAD:#} {failure}")?;
     }
@@ -162,140 +162,4 @@ fn compact_edns(out: &mut impl Write, edns: &EdnsReport) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-fn dig(out: &mut impl Write, report: &Report) -> io::Result<()> {
-    let header = &report.header;
-    writeln!(out, ";; Got answer:")?;
-    writeln!(
-        out,
-        ";; ->>HEADER<<- opcode: {}, status: {}, id: {}",
-        header.opcode, header.rcode, header.id
-    )?;
-    writeln!(
-        out,
-        ";; flags: {}; QUERY: {}, ANSWER: {}, AUTHORITY: {}, ADDITIONAL: {}",
-        header.flags.join(" "),
-        report.question.len(),
-        report.answer.len(),
-        report.authority.len(),
-        report.additional.len() + usize::from(report.edns.is_some())
-    )?;
-    let flag = |name: &str| header.flags.iter().any(|f| f == name);
-    if flag("rd") && !flag("ra") {
-        writeln!(out, ";; WARNING: recursion requested but not available")?;
-    }
-    writeln!(out)?;
-    if let Some(edns) = &report.edns {
-        dig_edns(out, edns)?;
-    }
-    writeln!(out, ";; QUESTION SECTION:")?;
-    for question in &report.question {
-        let mut line = Columns::default();
-        line.push(&format!(";{}", question.name), 32);
-        line.push(&question.class, 40);
-        line.text.push_str(&question.qtype);
-        writeln!(out, "{}", line.text)?;
-    }
-    writeln!(out)?;
-    for (heading, records) in [
-        ("ANSWER", &report.answer),
-        ("AUTHORITY", &report.authority),
-        ("ADDITIONAL", &report.additional),
-    ] {
-        if records.is_empty() {
-            continue;
-        }
-        writeln!(out, ";; {heading} SECTION:")?;
-        for r in records {
-            let mut line = Columns::default();
-            line.push(&r.name, 24);
-            line.push(&r.ttl.to_string(), 32);
-            line.push(&r.class, 40);
-            line.push(&r.rtype, 48);
-            line.text.push_str(&r.data);
-            writeln!(out, "{}", line.text)?;
-        }
-        writeln!(out)?;
-    }
-    if let Some(exchange) = &report.exchange {
-        let transport = match exchange.transport {
-            Transport::Udp => "UDP",
-            Transport::Tcp => "TCP",
-        };
-        writeln!(out, ";; Query time: {} msec", exchange.rtt_us / 1000)?;
-        let ip = exchange.server.ip();
-        writeln!(
-            out,
-            ";; SERVER: {ip}#{}({ip}) ({transport})",
-            exchange.server.port()
-        )?;
-    }
-    writeln!(out, ";; MSG SIZE  rcvd: {}", report.size)?;
-    writeln!(out)
-}
-
-fn dig_edns(out: &mut impl Write, edns: &EdnsReport) -> io::Result<()> {
-    writeln!(out, ";; OPT PSEUDOSECTION:")?;
-    write!(out, "; EDNS: version: {}, flags:", edns.version)?;
-    for flag in &edns.flags {
-        write!(out, " {flag}")?;
-    }
-    writeln!(out, "; udp: {}", edns.payload)?;
-    for option in &edns.options {
-        match option {
-            OptionReport::Nsid { hex, text } => {
-                let bytes: Vec<&str> = (0..hex.len())
-                    .step_by(2)
-                    .filter_map(|at| hex.get(at..at + 2))
-                    .collect();
-                writeln!(out, "; NSID: {} (\"{text}\")", bytes.join(" "))?;
-            }
-            OptionReport::Cookie { client, server } => match server {
-                Some(server) => writeln!(out, "; COOKIE: {client}{server} (good)")?,
-                None => writeln!(out, "; COOKIE: {client}")?,
-            },
-            OptionReport::Ede {
-                code,
-                purpose,
-                text,
-            } => {
-                write!(out, "; EDE: {code}")?;
-                if let Some(purpose) = purpose {
-                    write!(out, " ({purpose})")?;
-                }
-                if !text.is_empty() {
-                    write!(out, ": ({text})")?;
-                }
-                writeln!(out)?;
-            }
-            OptionReport::Other { name, data } => writeln!(out, "; {name}: {data}")?,
-        }
-    }
-    Ok(())
-}
-
-/// A line of dig's columns: tab stops every 8 characters, one space when a field reaches past its column.
-#[derive(Default)]
-struct Columns {
-    text: String,
-    /// The column the next character goes to, a tab counting up to the next stop.
-    at: usize,
-}
-
-impl Columns {
-    /// Writes `field`, then moves to `column`, a multiple of 8.
-    fn push(&mut self, field: &str, column: usize) {
-        self.text.push_str(field);
-        self.at += field.len();
-        if self.at >= column {
-            self.text.push(' ');
-            self.at += 1;
-        } else {
-            for _ in 0..(column / 8 - self.at / 8) {
-                self.text.push('\t');
-            }
-            self.at = column;
-        }
-    }
 }

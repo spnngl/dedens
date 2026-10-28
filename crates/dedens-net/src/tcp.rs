@@ -30,7 +30,7 @@ use crate::exchange::after;
 #[non_exhaustive]
 pub enum TcpError {
     /// The connection could not be opened.
-    #[error("cannot connect: {0}")]
+    #[error("cannot connect")]
     Connect(#[source] io::Error),
     /// The connection closed before the response, twice: on the first connection and on a new one.
     #[error("connection closed before the response")]

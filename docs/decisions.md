@@ -164,13 +164,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## CLI
 
-- D17 Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
-  optional expectations; a failed one makes `dedens` exit non-zero) from JSON (serde_json) or YAML
-  (serde-saphyr), by extension or `--format`, `-` for stdin. Rejected: serde_yaml (archived 2024-03),
+- D17 (superseded by D36) Query files (`dedens-scenario`), so the server's tests reuse them: one serde model
+  (queries, options, optional expectations; a failed one makes `dedens` exit non-zero) from JSON (serde_json) or
+  YAML (serde-saphyr), by extension or `--format`, `-` for stdin. Rejected: serde_yaml (archived 2024-03),
   serde-yaml-ng (no commit in a year).
+- D36 Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
+  optional expectations; a failed one makes `dedens` exit non-zero) read as YAML 1.2 by serde-saphyr, `-` for
+  stdin. JSON is YAML 1.2, so JSON files read too, at the price of YAML-worded errors; no `--format`, no second
+  reader. `dedens` drops dig's layout (`--dig`): `--json` serves scripts, the compact output people, and dig
+  itself a side-by-side comparison. Rejected: serde_yaml (archived 2024-03), serde-yaml-ng (no commit in a
+  year).
 - D18 `dedens`, dig but better: dig argv (`@server name type class +opts`) and long flags; query files;
-  compact output by default (doggo-like), dig's layout behind a flag, `--json` with a stable schema (the
-  server's tests read it), `+short`, color; several names, types or servers per run, concurrent, side by side;
+  compact output by default (doggo-like), `--json` with a stable schema (the server's tests read it), `+short`,
+  color; several names, types or servers per run, concurrent, side by side;
   timing, transport, sizes, EDNS, cookies and EDE in words; `+trace`; `--repeat N` with latency percentiles;
   `--save-wire` (the source of captured test data); default server from `/etc/resolv.conf`. `-x ADDR` asks PTR
   for the `in-addr.arpa` or `ip6.arpa` name of an address (RFC 1035 §3.5, RFC 3152). The `resolv.conf`
@@ -178,31 +184,40 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and shown as such,
   with labels mixing scripts flagged (IDN homographs).
 - D32 CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
-  `+noopt` → `--opt=false`, `+opt=v` → `--opt=v`), then clap parses. One option set for both spellings, one help.
+  `+noopt` → `--opt=false` for an on/off flag only, `+opt=v` → `--opt=v`, `opt` any unique prefix as in dig;
+  `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
+  anything after `--` alone, then clap parses. One option set for both spellings (clap derived on
+  `dedens_scenario::Options` behind its `clap` feature), one help. An option needing EDNS (`bufsize`, `dnssec`,
+  `nsid`, `cookie`) with `+noedns` is a usage error; several `@servers` and AXFR/IXFR are refused until
+  supported. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
   Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
-  written after it, and one without any the types written before the first name, else A. Output: compact by default (one line
-  per record, a footer in words), `--dig` for dig's layout, `+short`, `--json`; color with anstream/anstyle,
+  written after it, and one without any the types written before the first name, else A. Output: compact by default
+  (one line per record, a footer in words), `+short`, `--json` (over `+short`); color with anstream/anstyle,
   `--color auto|always|never`, `NO_COLOR` honoured. IDNA with the `idna` crate (UTS 46 nontransitional, near
-  RFC 5895) and `unicode-script` for mixed-script labels, both in `apps/dedens`: the library stays ASCII.
+  RFC 5895) and `unicode-script` for mixed-script labels (Han with kana, Hangul or Bopomofo, and Latin, being one
+  writing, UTS 39 §5.2), both in `apps/dedens`: the library stays ASCII.
   `resolv.conf` read by our own parser (`nameserver`, `search`, `domain`, `ndots`), `DEDENS_RESOLV_CONF`
   overriding its path for tests; no Windows yet. `+search` tries the next candidate on NXDOMAIN. A class word
   applies to every query of the run. `-f FILE --only ID` runs some queries of a file.
 - D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
-  9 no reply (timeout, or a socket error such as a refused connection); 10 any other error.
-- D34 Query file schema (D17): top-level `server` and `options`, then `queries`, each with `id` (the
-  `--save-wire` file name; default `name_type`), `name`, `type`, its own `server`/`options`, and `expect`:
-  `rcode`, `flags` that must be set, and `answer`/`authority`/`additional` as presentation lines compared as
-  sets, the TTL compared only when written. `--save-wire DIR` writes the response to `DIR/<id>.bin`. Options
-  are dig's `+` options by name (`tcp`, `ignore`, `recurse`, `cd`, `ad`, `edns`, `bufsize`, `dnssec`, `nsid`,
-  `cookie`, `timeout`, `tries`), each one left out inherited (command line, query, file, dig's default);
+  9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
+  which leaves the other results.
+- D34 Query file schema (D36): top-level `server` and `options`, then `queries`, each with `id` (the
+  `--save-wire` file name, so no `/`, `\`, `.` or `..`, unique in the file; default `name_type`, `root_type`
+  for the root), `name`, `type`, its own `server`/`options`, and `expect`: `rcode`, `flags` that must be set,
+  and `answer`/`authority`/`additional` as presentation lines compared as lists in any order, a line written
+  twice expecting two records, the TTL compared only when written. `--save-wire DIR` writes the response to `DIR/<id>.bin`. Options
+  are dig's `+` options by name (`tcp`, `ignore`, `recurse`, `cdflag`, `adflag`, `edns`, `bufsize`, `dnssec`,
+  `nsid`, `cookie`, `time`, `tries`), each one left out inherited (command line, query, file, dig's default);
   `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and `+nocookie` need
   `dedens-net` exchange options `tcp_fallback` and `cookies`.
 - D35 `--json` prints one object per query and line (JSON lines, so a run streams): server, transport, RTT,
   sizes, header, question, sections, EDNS; each record `{name, ttl, class, type, data}` with `data` its
   presentation text. Server, transport, RTT (`rtt_us`), sends and query size sit in an `exchange` object, absent
   for a response read from a file; EDNS options are typed (`nsid`, `cookie`, `ede`, else `other` with the data
-  in words); broken expectations go in `failures`. The types live in `dedens-scenario`, so the server's tests
-  read the same schema.
+  in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
+  expectations in `failures`. The types live in `dedens-scenario`, serialized only until the server's tests
+  need to read them back.
 
 ## Server
 

@@ -5,19 +5,19 @@ use std::net::SocketAddr;
 
 use dedens_net::exchange::{self, Response};
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Edns, EdnsFlags, Message, Question, Record};
-use serde::{Deserialize, Serialize};
+use dedens_proto::text::Hex;
+use dedens_proto::{Decoded, Edns, EdnsFlags, Question, Record};
+use serde::Serialize;
 
-use crate::hex;
+use crate::Id;
 
 /// A response, with how it came when it came from an exchange.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
     /// The query's id: the `--save-wire` file name.
-    pub id: String,
+    pub id: Id,
     /// How the response came; absent for a response read from a file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exchange: Option<ExchangeReport>,
     /// The size of the response, in bytes.
     pub size: usize,
@@ -32,17 +32,21 @@ pub struct Report {
     /// The additional section, without the OPT record.
     pub additional: Vec<RecordReport>,
     /// The OPT record (RFC 6891 §6).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub edns: Option<EdnsReport>,
+    /// The rules of the protocol the response breaks, in words (D9).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub violations: Vec<String>,
     /// The expectations the response breaks, in words (D34).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<String>,
 }
 
 impl Report {
-    /// The report of `message`, `size` bytes on the wire.
+    /// The report of `decoded`, `size` bytes on the wire.
     #[must_use]
-    pub fn new(id: String, message: &Message<'_>, size: usize) -> Self {
+    pub fn new(id: Id, decoded: &Decoded<'_>, size: usize) -> Self {
+        let message = &decoded.message;
         let records = |section: &[Record<'_>]| section.iter().map(RecordReport::new).collect();
         Self {
             id,
@@ -59,17 +63,18 @@ impl Report {
             authority: records(&message.authority),
             additional: records(&message.additional),
             edns: message.edns.as_ref().map(EdnsReport::new),
+            violations: decoded.violations.iter().map(ToString::to_string).collect(),
             failures: Vec::new(),
         }
     }
 
-    /// The report of `response`, decoded as `message`, from `server`.
+    /// The report of `response`, `decoded`, from `server`.
     #[must_use]
     pub fn exchanged(
-        id: String,
+        id: Id,
         server: SocketAddr,
         response: &Response,
-        message: &Message<'_>,
+        decoded: &Decoded<'_>,
     ) -> Self {
         Self {
             exchange: Some(ExchangeReport {
@@ -82,14 +87,13 @@ impl Report {
                 sends: response.sends,
                 query_size: response.query.len(),
             }),
-            ..Self::new(id, message, response.wire.len())
+            ..Self::new(id, decoded, response.wire.len())
         }
     }
 }
 
 /// How a response came.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ExchangeReport {
     /// The server asked.
     pub server: SocketAddr,
@@ -104,7 +108,7 @@ pub struct ExchangeReport {
 }
 
 /// A transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
     /// UDP.
@@ -114,8 +118,7 @@ pub enum Transport {
 }
 
 /// The header of a message (RFC 1035 §4.1.1); its counts are the lengths of the sections.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HeaderReport {
     /// The ID.
     pub id: u16,
@@ -128,8 +131,7 @@ pub struct HeaderReport {
 }
 
 /// A question (RFC 1035 §4.1.2).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QuestionReport {
     /// The name, absolute.
     pub name: String,
@@ -151,8 +153,7 @@ impl QuestionReport {
 }
 
 /// A record, each field in presentation format (RFC 1035 §5.1).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecordReport {
     /// The owner, absolute.
     pub name: String,
@@ -180,8 +181,7 @@ impl RecordReport {
 }
 
 /// The OPT record (RFC 6891 §6.1.3).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EdnsReport {
     /// The largest UDP payload the sender takes, in bytes.
     pub payload: u16,
@@ -213,8 +213,8 @@ impl EdnsReport {
 }
 
 /// An EDNS option.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "option", rename_all = "lowercase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "option", rename_all = "lowercase")]
 pub enum OptionReport {
     /// The server's identifier (RFC 5001 §2.3).
     Nsid {
@@ -228,7 +228,7 @@ pub enum OptionReport {
         /// The client cookie in hex.
         client: String,
         /// The server cookie in hex, when present.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         server: Option<String>,
     },
     /// An Extended DNS Error (RFC 8914 §2).
@@ -236,9 +236,9 @@ pub enum OptionReport {
         /// The INFO-CODE.
         code: u16,
         /// Its purpose in the IANA registry, when registered.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
-        /// The EXTRA-TEXT, possibly empty.
+        /// The EXTRA-TEXT, possibly empty, its control characters escaped as in Rust.
         text: String,
     },
     /// Any other option: its name and data in words.
@@ -258,7 +258,7 @@ impl OptionReport {
         };
         match option {
             EdnsOption::Nsid(id) => Self::Nsid {
-                hex: hex(id),
+                hex: Hex(id).to_string(),
                 text: id
                     .iter()
                     .map(|&b| {
@@ -271,13 +271,13 @@ impl OptionReport {
                     .collect(),
             },
             EdnsOption::Cookie(cookie) => Self::Cookie {
-                client: hex(&cookie.client()),
-                server: cookie.server().map(hex),
+                client: Hex(&cookie.client()).to_string(),
+                server: cookie.server().map(|s| Hex(s).to_string()),
             },
             EdnsOption::Ede(error) => Self::Ede {
                 code: error.code.0,
                 purpose: InfoCode::mnemonic(error.code).map(str::to_owned),
-                text: error.text.to_string(),
+                text: printable(&error.text),
             },
             EdnsOption::ClientSubnet(subnet) => other(format!(
                 "{}/{}/{}",
@@ -287,11 +287,23 @@ impl OptionReport {
             )),
             EdnsOption::Keepalive(Some(units)) => other(format!("{}.{} s", units / 10, units % 10)),
             EdnsOption::Padding(len) => other(format!("{len} bytes")),
-            EdnsOption::Unknown(unknown) => other(hex(unknown.data())),
+            EdnsOption::Unknown(unknown) => other(Hex(unknown.data()).to_string()),
             // A keepalive without its timeout, as in a query, or an option of a later version.
             _ => other(String::new()),
         }
     }
+}
+
+/// `text`, its control characters escaped so that a server cannot drive the terminal.
+fn printable(text: &str) -> String {
+    text.chars().fold(String::new(), |mut out, c| {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+        out
+    })
 }
 
 #[cfg(test)]
@@ -337,18 +349,27 @@ mod tests {
     ];
 
     #[test]
-    fn reports_read_back_as_written() {
+    fn reports_hold_each_option() {
         for (id, wire, has_option) in CAPTURED {
-            let message = Message::decode(wire).expect("captured").message;
-            let report = Report::new(id.to_owned(), &message, wire.len());
-            let json = serde_json::to_string(&report).expect("serializes");
-            assert_eq!(
-                serde_json::from_str::<Report>(&json).expect("reads"),
-                report,
-                "{id}"
-            );
+            let decoded = dedens_proto::Message::decode(wire).expect("captured");
+            let report = Report::new(id.parse().expect("an id"), &decoded, wire.len());
             let edns = report.edns.expect("an OPT record");
-            assert!(edns.options.iter().any(has_option), "{id}: {json}");
+            assert!(edns.options.iter().any(has_option), "{id}: {edns:?}");
         }
+    }
+
+    #[test]
+    fn reports_hold_the_violations() {
+        // A captured response with a byte past its end (D9).
+        let mut wire = CAPTURED[0].1.to_vec();
+        wire.push(0);
+        let decoded = dedens_proto::Message::decode(&wire).expect("readable");
+        let report = Report::new("nsid".parse().expect("an id"), &decoded, wire.len());
+        assert_eq!(report.violations.len(), 1, "{:?}", report.violations);
+    }
+
+    #[test]
+    fn control_characters_of_extra_text_are_escaped() {
+        assert_eq!(printable("a\u{1b}[2J\r\nb é"), "a\\u{1b}[2J\\r\\nb é");
     }
 }

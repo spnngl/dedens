@@ -349,7 +349,6 @@ dependencies = [
  "dedens-proto",
  "serde",
  "serde-saphyr",
- "serde_json",
  "thiserror",
 ]
 

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use assert_cmd::Command;
 use common::{Responder, Transport};
 use dedens_proto::edns::{EdnsOption, OptionCode};
-use dedens_proto::{Class, EdnsFlags, Flags, Message, RecordType};
+use dedens_proto::{EdnsFlags, Flags, Message};
 use predicates::prelude::*;
 use predicates::str::contains;
 
@@ -36,10 +36,8 @@ fn run(args: &[&str], code: i32) -> String {
 
 /// `text` with the run's own numbers replaced by `N`: RTT, message ID, the server's port.
 fn redact(text: &str, port: u16) -> String {
-    let mut text = text
-        .replace(&format!(":{port}"), ":PORT")
-        .replace(&format!("#{port}"), "#PORT");
-    for prefix in [" in ", "id: ", "Query time: ", "\"rtt_us\":", "\"id\":"] {
+    let mut text = text.replace(&format!(":{port}"), ":PORT");
+    for prefix in [" in ", "\"rtt_us\":", "\"id\":"] {
         let mut out = String::new();
         let mut rest = text.as_str();
         while let Some(at) = rest.find(prefix) {
@@ -87,22 +85,6 @@ fn compact_output_lists_each_query_in_argument_order() {
         0,
     );
     insta::assert_snapshot!("compact", redact(&out, server.addr.port()));
-}
-
-#[test]
-fn dig_output_has_dig_layout() {
-    let server = Responder::start(&["cookie"]);
-    let out = run(
-        &[
-            &server.at(),
-            "isc.org",
-            "SOA",
-            "+cookie=0102030405060708",
-            "--dig",
-        ],
-        0,
-    );
-    insta::assert_snapshot!("dig", redact(&out, server.addr.port()));
 }
 
 #[test]
@@ -245,80 +227,35 @@ fn usage_errors_exit_2() {
         &["+tries=0"],
         &["+cookie=01"],
         &["-x", "example.com"],
-        &["--short", "--dig"],
+        &["+noedns", "+nsid"],
+        &["@192.0.2.1", "@192.0.2.2"],
+        &["@"],
+        &["-f", "queries.yaml", "example.com"],
+        &["+nosave-wire"],
+        &["+t"],
+        &["-t", "example.com"],
     ] {
         dedens().args(args).assert().code(2);
     }
 }
 
 #[test]
-fn words_and_reverse_addresses_make_the_questions() {
-    let server = Responder::start(&[]);
-    let at = server.at();
-    let args = [
-        &at,
-        "CH",
-        "TXT",
-        "version.bind",
-        "-x",
-        "192.0.2.1",
-        "-x",
-        "2001:db8::1",
-        "+tries=1",
-        "+time=100ms",
-    ];
-    dedens().args(args).assert().code(9);
-    let mut asked: Vec<_> = queries(&server)
-        .iter()
-        .map(|(_, q)| {
-            let question = &q.questions[0];
-            (question.name.to_string(), question.qtype, question.qclass)
-        })
-        .collect();
-    asked.sort();
-    let ip6 = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.";
-    assert_eq!(
-        asked,
-        [
-            (ip6.to_owned(), RecordType::PTR, Class::CH),
-            (
-                "1.2.0.192.in-addr.arpa.".to_owned(),
-                RecordType::PTR,
-                Class::CH
-            ),
-            ("version.bind.".to_owned(), RecordType::TXT, Class::CH),
-        ]
-    );
+fn the_port_applies_to_a_server_without_one() {
+    let server = Responder::start(&["a"]);
+    let port = server.addr.port().to_string();
+    for at in ["@127.0.0.1", "@[127.0.0.1]"] {
+        run(&[at, "-p", &port, "-q", "example.com", "+short"], 0);
+    }
+    assert_eq!(server.queries().len(), 2);
 }
 
 #[test]
-fn each_name_is_asked_the_types_after_it() {
-    let server = Responder::start(&[]);
-    let at = server.at();
-    let args = [
-        &at,
-        "TXT",
-        "a.example",
-        "b.example",
-        "MX",
-        "AAAA",
-        "+tries=1",
-        "+time=100ms",
-    ];
-    dedens().args(args).assert().code(9);
-    let mut asked: Vec<_> = queries(&server)
-        .iter()
-        .map(|(_, q)| (q.questions[0].name.to_string(), q.questions[0].qtype))
-        .collect();
-    asked.sort();
-    assert_eq!(
-        asked,
-        [
-            ("a.example.".to_owned(), RecordType::TXT),
-            ("b.example.".to_owned(), RecordType::MX),
-            ("b.example.".to_owned(), RecordType::AAAA),
-        ]
-    );
+fn zone_transfers_are_refused() {
+    dedens()
+        .args(["@192.0.2.1", "example.com", "AXFR"])
+        .assert()
+        .code(10)
+        .stderr(contains("zone transfers"));
 }
 
 #[test]
@@ -442,7 +379,7 @@ queries:
         server.addr
     );
     dedens()
-        .args(["-f", "-", "--format", "json", "+short"])
+        .args(["-f", "-", "+short"])
         .write_stdin(json)
         .assert()
         .success();
@@ -469,4 +406,30 @@ fn save_wire_writes_each_response() {
         captured[2..],
         "the response as received, its ID aside"
     );
+}
+
+#[test]
+fn a_failed_save_leaves_the_other_results() {
+    let server = Responder::start(&["a", "mx"]);
+    let dir = tempfile::tempdir().expect("a directory");
+    // A directory where the first response goes.
+    std::fs::create_dir(dir.path().join("example.com_A.bin")).expect("created");
+    let out = dedens()
+        .args([
+            &server.at(),
+            "example.com",
+            "gmail.com",
+            "MX",
+            "+short",
+            "--save-wire",
+        ])
+        .arg(dir.path())
+        .assert()
+        .code(10)
+        .stderr(contains("cannot write"))
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8_lossy(&out).lines().count(), 5 + 2);
+    assert!(dir.path().join("gmail.com_MX.bin").is_file());
 }
