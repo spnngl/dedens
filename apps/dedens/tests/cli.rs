@@ -266,6 +266,7 @@ fn usage_errors_exit_2() {
         &["@"],
         &["-f", "queries.yaml", "example.com"],
         &["+nosave-wire"],
+        &["--repeat=0", "example.com"],
         &["--json", "--yaml"],
         &["+short", "--format=human"],
         &["--format=xml"],
@@ -450,6 +451,28 @@ fn several_servers_answer_side_by_side() {
     let out = run(&[&a.at(), &nsid.at(), "example.com", "--color=never"], 0);
     assert_eq!(out.matches("answer").count(), 2, "{out}");
     assert!(!out.contains("disagree"), "{out}");
+}
+
+#[test]
+fn repeat_asks_again_and_gives_the_spread() {
+    let server = Responder::start(&["a"]);
+    let out = run(
+        &[&server.at(), "example.com", "+repeat=3", "--color=never"],
+        0,
+    );
+    assert_eq!(server.queries().len(), 3);
+    assert!(out.contains("\n3 queries: min "), "{out}");
+    assert!(!out.contains("unanswered"), "{out}");
+    let out = run(&[&server.at(), "example.com", "--repeat", "2", "--json"], 0);
+    let report: serde_json::Value = serde_json::from_str(&out).expect("one JSON object");
+    let latency = &report["latency"];
+    assert_eq!(
+        (latency["sent"].as_u64(), latency.get("errors")),
+        (Some(2), None)
+    );
+    assert!(latency["min_us"].as_u64() <= latency["max_us"].as_u64());
+    let once = run(&[&server.at(), "example.com", "--json"], 0);
+    assert!(!once.contains("latency"), "{once}");
 }
 
 #[test]

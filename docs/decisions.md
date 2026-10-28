@@ -235,6 +235,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries go to the command line's servers when given. The human format ends a query's blocks with
   `servers disagree: a, b vs c` when the rcodes or answer records, TTL and order aside, differ; JSON and YAML
   leave the comparison to their reader. A server that does not answer is left out of it.
+- D39 `--repeat N` (`+repeat=N`): each query is asked of each server N times in a row, not concurrently, so
+  the round trips are the server's and not our queue's. The last response is printed, with a `latency` object
+  when N > 1: `sent`, `errors` (left out when 0) and `min`/`p50`/`p90`/`p99`/`max` in microseconds, nearest
+  rank over the answered round trips; the human format shows them in milliseconds on one line. Exit code 0 when
+  any answer came, else the last error's.
 
 ## Server
 

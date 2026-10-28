@@ -82,6 +82,21 @@ fn human(out: &mut impl Write, report: &Report) -> io::Result<()> {
         }
     }
     footer(out, report)?;
+    if let Some(latency) = &report.latency {
+        let spread = [
+            ("min", latency.min_us),
+            ("p50", latency.p50_us),
+            ("p90", latency.p90_us),
+            ("p99", latency.p99_us),
+            ("max", latency.max_us),
+        ]
+        .map(|(rank, us)| format!("{rank} {}", millis(us)));
+        write!(out, "{} queries: {} ms", latency.sent, spread.join(" · "))?;
+        if latency.errors > 0 {
+            write!(out, " · {BAD}{} unanswered{BAD:#}", latency.errors)?;
+        }
+        writeln!(out)?;
+    }
     for violation in &report.violations {
         writeln!(out, "{BAD}violation{BAD:#} {violation}")?;
     }
@@ -111,12 +126,7 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
             Transport::Udp => "UDP",
             Transport::Tcp => "TCP",
         };
-        write!(
-            out,
-            "  {}.{} ms from ",
-            exchange.rtt_us / 1000,
-            exchange.rtt_us % 1000 / 100
-        )?;
+        write!(out, "  {} ms from ", millis(exchange.rtt_us))?;
         write!(out, "{} over {transport}", server(exchange.server))?;
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
@@ -248,6 +258,11 @@ pub(crate) fn disagreement(
         .map(|(_, servers)| servers.join(", "))
         .collect();
     writeln!(out, "{BAD}servers disagree{BAD:#}: {}", groups.join(" vs "))
+}
+
+/// `us` microseconds in milliseconds, to a tenth: `25.7`.
+fn millis(us: u64) -> String {
+    format!("{}.{}", us / 1000, us % 1000 / 100)
 }
 
 /// `address` without the DNS port, which goes without saying.

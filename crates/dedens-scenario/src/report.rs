@@ -44,6 +44,9 @@ pub struct Report {
     /// The expectations the response breaks, in words (D34).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<String>,
+    /// The round trips of a query asked several times (`dedens --repeat`), this report being of the last answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency: Option<Latency>,
 }
 
 impl Report {
@@ -69,6 +72,7 @@ impl Report {
             edns: message.edns.as_ref().map(EdnsReport::new),
             violations: decoded.violations.iter().map(ToString::to_string).collect(),
             failures: Vec::new(),
+            latency: None,
         }
     }
 
@@ -109,6 +113,49 @@ pub struct ExchangeReport {
     pub sends: u16,
     /// The size of the last query, in bytes.
     pub query_size: usize,
+}
+
+/// The round trips of a query asked `sent` times, in microseconds: those answered, by nearest rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Latency {
+    /// The times the query was asked.
+    pub sent: u16,
+    /// The times it got no response, left out when 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub errors: u16,
+    /// The fastest.
+    pub min_us: u64,
+    /// The median.
+    pub p50_us: u64,
+    /// The 90th percentile.
+    pub p90_us: u64,
+    /// The 99th percentile.
+    pub p99_us: u64,
+    /// The slowest.
+    pub max_us: u64,
+}
+
+impl Latency {
+    /// The latency of `sent` queries whose answered ones took `rtts_us`, in any order; `None` when none was
+    /// answered.
+    #[must_use]
+    pub fn of(sent: u16, rtts_us: &mut [u64]) -> Option<Self> {
+        rtts_us.sort_unstable();
+        let rank = |percent: usize| {
+            let rank = (rtts_us.len() * percent).div_ceil(100).max(1);
+            rtts_us[rank - 1]
+        };
+        let answered = u16::try_from(rtts_us.len()).ok()?;
+        Some(Self {
+            sent,
+            errors: sent.checked_sub(answered)?,
+            min_us: *rtts_us.first()?,
+            p50_us: rank(50),
+            p90_us: rank(90),
+            p99_us: rank(99),
+            max_us: *rtts_us.last()?,
+        })
+    }
 }
 
 /// A transport.
@@ -315,18 +362,34 @@ fn printable(text: &str) -> String {
     })
 }
 
-/// Whether `version` is 0, the EDNS version left out of a report.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde passes fields by reference"
-)]
-const fn is_zero(version: &u8) -> bool {
-    *version == 0
+/// Whether `n` is 0, a number left out of a report.
+fn is_zero<N: Default + PartialEq>(n: &N) -> bool {
+    *n == N::default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latency_ranks_the_answered_round_trips() {
+        let mut rtts: Vec<u64> = (1..=10).rev().collect();
+        let latency = Latency::of(12, &mut rtts).expect("answered");
+        assert_eq!(
+            [
+                latency.min_us,
+                latency.p50_us,
+                latency.p90_us,
+                latency.p99_us,
+                latency.max_us
+            ],
+            [1, 5, 9, 10, 10]
+        );
+        assert_eq!((latency.sent, latency.errors), (12, 2));
+        let one = Latency::of(1, &mut [7]).expect("answered");
+        assert_eq!([one.min_us, one.p50_us, one.p99_us, one.max_us], [7; 4]);
+        assert_eq!(Latency::of(3, &mut []), None);
+    }
 
     /// Whether a report holds the option a capture is for.
     type HasOption = fn(&OptionReport) -> bool;

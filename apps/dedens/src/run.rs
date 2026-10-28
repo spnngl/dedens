@@ -14,7 +14,7 @@ use dedens_net::exchange::Failure;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
-use dedens_scenario::{Expect, Id, Options, QueryFile, Report};
+use dedens_scenario::{Expect, Id, Latency, Options, QueryFile, Report};
 
 use crate::args::{self, Cli};
 use crate::idn;
@@ -80,8 +80,8 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         loop {
             let room = IN_FLIGHT - running.len();
             running.extend(tasks.by_ref().take(room).map(|(group, id, job, server)| {
-                let (client, task_id) = (Rc::clone(&client), id.clone());
-                let task = async move { ask(&client, &job, server, task_id).await };
+                let (client, task_id, times) = (Rc::clone(&client), id.clone(), cli.repeat);
+                let task = async move { repeat(&client, &job, server, task_id, times).await };
                 (group, id, compio::runtime::spawn(task))
             }));
             let next = running.pop_front();
@@ -147,6 +147,35 @@ fn show(
         }
     }
     Ok(code)
+}
+
+/// Asks `job` of `server` `times` in a row; the last response, with the latency of all when more than one, else
+/// the last error.
+async fn repeat(
+    client: &Client,
+    job: &Job,
+    server: SocketAddr,
+    id: Id,
+    times: u16,
+) -> anyhow::Result<(Report, Vec<u8>)> {
+    let mut rtts = Vec::with_capacity(times.into());
+    let mut last = Err(anyhow!("not asked"));
+    for _ in 0..times {
+        match ask(client, job, server, id.clone()).await {
+            Ok(answered) => {
+                rtts.extend(answered.0.exchange.map(|exchange| exchange.rtt_us));
+                last = Ok(answered);
+            }
+            Err(error) if last.is_err() => last = Err(error),
+            Err(_) => {}
+        }
+    }
+    if times > 1
+        && let Ok((report, _)) = &mut last
+    {
+        report.latency = Latency::of(times, &mut rtts);
+    }
+    last
 }
 
 /// Asks `job` of `server`, trying its names in turn while the response is NXDOMAIN; `id` names the report.

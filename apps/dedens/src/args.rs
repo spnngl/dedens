@@ -43,6 +43,9 @@ pub(crate) struct Cli {
     /// Write each response to `DIR/<id>.bin`, as received.
     #[arg(long, value_name = "DIR")]
     pub(crate) save_wire: Option<PathBuf>,
+    /// Ask each query this many times in a row, then print its last response and the spread of round trips.
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
+    pub(crate) repeat: u16,
     /// Try a name under the search list of /etc/resolv.conf until one is not NXDOMAIN, as dig.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) search: bool,

@@ -31,8 +31,8 @@ pub use expect::{Expect, Expected};
 pub use file::{Id, InvalidId, Query, QueryFile};
 pub use options::{CookieOption, InvalidOption, Options, Timeout};
 pub use report::{
-    EdnsReport, ExchangeReport, HeaderReport, OptionReport, QuestionReport, RecordReport, Report,
-    Transport,
+    EdnsReport, ExchangeReport, HeaderReport, Latency, OptionReport, QuestionReport, RecordReport,
+    Report, Transport,
 };
 
 /// A YAML scalar, which a field reads as text with its [`FromStr`](std::str::FromStr).
