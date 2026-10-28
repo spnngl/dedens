@@ -25,8 +25,10 @@
     clippy::print_stderr
 )]
 
+mod blocklist;
 mod hosts;
 mod text;
 
+pub use blocklist::{Action, Blocklist};
 pub use hosts::Hosts;
 pub use text::{LineError, LineErrorKind};

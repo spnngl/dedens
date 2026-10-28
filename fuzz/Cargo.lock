@@ -323,6 +323,7 @@ version = "0.0.0"
 dependencies = [
  "dedens-cache",
  "dedens-net",
+ "dedens-plugins",
  "dedens-proto",
  "dedens-scenario",
  "dedens-server",
@@ -338,6 +339,15 @@ dependencies = [
  "dedens-proto",
  "flume",
  "getrandom 0.4.3",
+ "thiserror",
+]
+
+[[package]]
+name = "dedens-plugins"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "dedens-server",
  "thiserror",
 ]
 

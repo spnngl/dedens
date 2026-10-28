@@ -7,7 +7,7 @@
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-server` | Server core: the stage pipeline and the replies it builds itself | none (sans-IO) |
-| `crates/dedens-plugins` | Plugin stages (D54): hosts | none (sans-IO) |
+| `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-net` | UDP and TCP transports on compio over a sans-IO exchange; `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |

@@ -15,6 +15,7 @@ cargo-fuzz = true
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-net = { path = "../crates/dedens-net" }
+dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 dedens-server = { path = "../crates/dedens-server" }
@@ -83,6 +84,13 @@ bench = false
 [[bin]]
 name = "differential_hickory"
 path = "fuzz_targets/differential_hickory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_lists"
+path = "fuzz_targets/parse_lists.rs"
 test = false
 doc = false
 bench = false

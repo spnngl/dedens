@@ -5,6 +5,8 @@ extend-exclude = [
   "docs/rfc/archive/",
   "apps/dedens/src/named.root",
   "apps/dedensd/tests/end_to_end.yaml",
+  # Blocklists and hosts files, as published.
+  "crates/dedens-plugins/tests/testdata/",
 ]
 [default]
 # RFC 4648 §10 base64 test vector

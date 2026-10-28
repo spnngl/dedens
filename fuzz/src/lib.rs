@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_net::resolv_conf::ResolvConf;
+use dedens_plugins::{Action, Blocklist, Hosts};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
@@ -46,6 +47,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("differential_hickory", differential_hickory),
     ("parse_query_file", parse_query_file),
     ("parse_resolv_conf", parse_resolv_conf),
+    ("parse_lists", parse_lists),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -532,4 +534,42 @@ fn truncate(message: &Message<'_>, size: usize) {
     }
     let total = message.answer.len() + message.authority.len() + message.additional.len();
     assert_eq!(kept + encoded.dropped, total);
+}
+
+/// Arbitrary text as a hosts file and as a blocklist: when both read, queries for its words get replies that
+/// decode, whatever the plugins answer.
+///
+/// # Panics
+///
+/// On a bug in the readers or in the replies of plugins.
+pub fn parse_lists(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let (Ok(hosts), Ok(blocklist)) = (
+        Hosts::new(text, Ttl::ZERO, false),
+        Blocklist::new(text, Action::Null, Ttl::ZERO),
+    ) else {
+        return;
+    };
+    let pipeline = Pipeline::new(vec![
+        Stage::Plugin(Box::new(blocklist)),
+        Stage::Plugin(Box::new(hosts)),
+    ]);
+    let mut out = vec![0; MAX_MESSAGE_LEN];
+    for word in text.split_ascii_whitespace().take(8) {
+        let Ok(name) = word.parse::<Name<'static>>() else {
+            continue;
+        };
+        for qtype in [RecordType::A, RecordType::AAAA, RecordType::PTR] {
+            let Ok(query) = Message::query(1, Question::new(name.clone(), qtype)).to_vec() else {
+                continue;
+            };
+            if let Step::Reply(len) = pipeline.query(&query, Transport::Udp, 0, &mut out)
+                && let Err(error) = Message::decode(&out[..len])
+            {
+                panic!("{word} {qtype}: the reply does not decode: {error}");
+            }
+        }
+    }
 }

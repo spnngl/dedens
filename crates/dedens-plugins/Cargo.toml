@@ -8,9 +8,14 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# `Action` read from configuration files (D24).
+serde = ["dep:serde"]
+
 [dependencies]
 dedens-proto.workspace = true
 dedens-server.workspace = true
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [lints]

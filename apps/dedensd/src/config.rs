@@ -4,8 +4,11 @@
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53"]
 //! zero_buffers: true
-//! pipeline: [hosts, cache, upstream]
+//! pipeline: [hosts, ads, cache, upstream]
 //! stages:
+//!   ads:
+//!     type: blocklist
+//!     file: /etc/dedensd/blocklist.hosts
 //!   hosts:
 //!     type: hosts
 //!     entries: ["192.0.2.10 printer.lan"]
@@ -29,7 +32,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail, ensure};
 use dedens_cache::Cache;
-use dedens_plugins::Hosts;
+use dedens_plugins::{Action, Blocklist, Hosts, LineError};
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage};
 use serde::Deserialize;
@@ -70,6 +73,16 @@ enum StageFile {
         ttl: Option<u32>,
         #[serde(default)]
         fallthrough: bool,
+    },
+    /// Names blocked with their subdomains (D54): `entries`, one name or a line in the format of `/etc/hosts`
+    /// each, then those of `file`, read once at start; answered as `action` says, `nxdomain` unless set, the
+    /// addresses of `null` with `ttl` seconds, 3600 unless set.
+    Blocklist {
+        #[serde(default)]
+        entries: Vec<String>,
+        file: Option<PathBuf>,
+        action: Option<Action>,
+        ttl: Option<u32>,
     },
 }
 
@@ -150,9 +163,25 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
                 ttl,
                 fallthrough,
             } => {
-                let hosts = hosts(&entries, file.as_deref(), ttl.unwrap_or(HOSTS_TTL), fallthrough)
-                    .with_context(|| format!("stage `{name}`"))?;
+                let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
+                let hosts = plugin(&entries, file.as_deref(), |text| {
+                    Hosts::new(text, ttl, fallthrough)
+                })
+                .with_context(|| format!("stage `{name}`"))?;
                 Stage::Plugin(Box::new(hosts))
+            }
+            StageFile::Blocklist {
+                entries,
+                file,
+                action,
+                ttl,
+            } => {
+                let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
+                let blocklist = plugin(&entries, file.as_deref(), |text| {
+                    Blocklist::new(text, action.unwrap_or_default(), ttl)
+                })
+                .with_context(|| format!("stage `{name}`"))?;
+                Stage::Plugin(Box::new(blocklist))
             }
         });
     }
@@ -166,16 +195,15 @@ pub(crate) fn read(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::
     })
 }
 
-/// The TTL of hosts records unless set, as the hosts plugin of `CoreDNS` gives them.
-const HOSTS_TTL: u32 = 3600;
+/// The TTL of plugin records unless set, as the hosts plugin of `CoreDNS` gives them.
+const PLUGIN_TTL: u32 = 3600;
 
-/// The hosts of `entries`, then of the file at `path`.
-fn hosts(
+/// A plugin built by `build` from `entries`, then the lines of the file at `path`; its errors locate the line.
+fn plugin<P>(
     entries: &[String],
     path: Option<&Path>,
-    ttl: u32,
-    fallthrough: bool,
-) -> anyhow::Result<Hosts> {
+    build: impl FnOnce(&str) -> Result<P, LineError>,
+) -> anyhow::Result<P> {
     let mut text = String::new();
     for entry in entries {
         text.push_str(entry);
@@ -187,7 +215,7 @@ fn hosts(
             fs::read_to_string(path).with_context(|| format!("reading `{}`", path.display()))?;
         text.push_str(&file);
     }
-    Hosts::new(&text, Ttl::from_wire(ttl), fallthrough).map_err(|error| {
+    build(&text).map_err(|error| {
         match (
             error.line.checked_sub(before).filter(|&line| line > 0),
             path,
@@ -397,6 +425,23 @@ mod tests {
             assert!(message_read.contains(message), "{message}: {message_read}");
         }
         std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn blocklists_read_their_action() {
+        let text = |action: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [block, up]\nstages:\n  block:\n    type: blocklist\n    entries: [ads.example, '0.0.0.0 tracker.example']\n{action}  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        for action in [
+            "",
+            "    action: nxdomain\n",
+            "    action: null\n    ttl: 60\n",
+        ] {
+            assert!(read(&text(action), env).is_ok(), "{action}");
+        }
+        assert!(error(&text("    action: drop\n")).contains("drop"));
     }
 
     #[test]
