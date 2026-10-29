@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 
+use dedens_net::tls::Trust;
 use dedens_server::Pipeline;
 
 use crate::config::Downloads;
@@ -50,6 +51,8 @@ impl Current {
 #[derive(Debug)]
 pub(crate) struct Fixed {
     pub(crate) listen: Vec<SocketAddr>,
+    /// What upstream servers are checked against: each thread's client holds it.
+    pub(crate) trust: Trust,
 }
 
 /// The first wait after a failed download; each failure in a row doubles it, up to the refresh interval.
@@ -160,6 +163,9 @@ fn reload(
         Ok(new) => {
             if new.listen != fixed.listen {
                 tracing::warn!(%config, "changes to `listen` take a restart");
+            }
+            if new.trust != fixed.trust {
+                tracing::warn!(%config, "changes to `upstream_ca` take a restart");
             }
             current.replace(new.pipeline);
             metrics::counter!(RELOADS, "result" => "ok").increment(1);

@@ -21,12 +21,14 @@ use compio::driver::op::RecvFromMultiResult;
 use compio::io::{AsyncWrite, AsyncWriteExt, BufReader};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use compio::runtime::{JoinHandle, Runtime, spawn};
-use dedens_net::client::Client;
+use compio::rustls::pki_types::ServerName;
+use dedens_net::client::{Client, Server};
 use dedens_net::exchange::Options;
 use dedens_net::tcp::{frame, read_message};
+use dedens_net::tls::Trust;
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_server::{Pipeline, Step, Transport, Upstream};
+use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
 use futures_util::future::{join_all, select_all};
 use futures_util::lock::Mutex;
 use futures_util::{Stream, StreamExt};
@@ -134,12 +136,13 @@ struct Thread {
 }
 
 impl Thread {
-    /// The state of a thread serving the pipeline of `current`, with room for `upstream_queries`.
-    fn new(current: Arc<Current>, upstream_queries: usize) -> Self {
+    /// The state of a thread serving the pipeline of `current`, with room for `upstream_queries`, upstream servers
+    /// over TLS and QUIC checked against `trust`.
+    fn new(current: Arc<Current>, upstream_queries: usize, trust: Trust) -> Self {
         Self {
             pipeline: RefCell::new((current.generation(), Rc::new(current.get()))),
             current,
-            client: Client::new(),
+            client: Client::new().trusting(trust),
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
             scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
@@ -210,13 +213,14 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
     Runtime::builder().with_proactor(proactor).build()
 }
 
-/// Answers on `sockets` with the pipeline of `current`, until the end of the process.
+/// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
+/// until the end of the process.
 ///
 /// # Errors
 ///
 /// A socket the runtime cannot take, or a task answering on one ended: it panicked.
-pub(crate) async fn serve(sockets: Sockets, current: Arc<Current>) -> io::Result<()> {
-    let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES));
+pub(crate) async fn serve(sockets: Sockets, current: Arc<Current>, trust: Trust) -> io::Result<()> {
+    let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, trust));
     let mut tasks = Vec::new();
     for (udp_socket, tcp_listener) in sockets {
         let socket = UdpSocket::from_std(udp_socket.into())?;
@@ -488,8 +492,8 @@ impl Replies {
     }
 }
 
-/// Asks the upstream servers for `upstream`, from `pipeline`, in turn, over `transport`, the client's, each with the forward stage's
-/// timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
+/// Asks the upstream servers for `upstream`, from `pipeline`, in turn, each over its transport ([`target`]), with
+/// the forward stage's timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
 /// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
 /// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch.
 async fn answer(
@@ -500,15 +504,17 @@ async fn answer(
     mut deliver: impl AsyncFnMut(Vec<u8>),
 ) {
     let mut options = Options::default();
-    options.transport = transport;
     (options.timeout, options.tries) = upstream.patience();
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;
     let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
     loop {
-        let server = upstream.server();
+        // A copy: the stale reply below takes `upstream`.
+        let server = upstream.server().clone();
+        let target;
+        (target, options.transport) = self::target(&server, transport);
         let response = 'ask: {
-            let mut exchange = pin!(thread.client.exchange(upstream.request(), server, &options));
+            let mut exchange = pin!(thread.client.exchange(upstream.request(), target, &options));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
                 if let Ok(response) = compio::time::timeout_at(at, exchange.as_mut()).await {
@@ -557,6 +563,27 @@ async fn answer(
     }
 }
 
+/// The server to ask for `server`, and the transport: its own, else UDP for a client over UDP and TCP for a client
+/// over a connection (D65). A name was checked when the configuration was read.
+fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transport) {
+    let (transport, name) = match &server.via {
+        Via::Plain if client == Transport::Udp => (Transport::Udp, None),
+        Via::Plain => (Transport::Tcp, None),
+        Via::Tls(name) => (Transport::Tls, name.as_deref()),
+        Via::Quic(name) => (Transport::Quic, name.as_deref()),
+    };
+    let name = name
+        .and_then(|name| ServerName::try_from(name).ok())
+        .map(|name| name.to_owned());
+    (
+        Server {
+            addr: server.addr,
+            name,
+        },
+        transport,
+    )
+}
+
 /// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length for TCP.
 /// Only its bytes leave the buffer, never those of an earlier reply.
 fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
@@ -582,6 +609,7 @@ mod tests {
     use compio::net::{TcpListener, TcpStream};
     use compio::runtime::{Runtime, spawn};
     use dedens_net::tcp::{frame, read_message};
+    use dedens_net::tls::Trust;
     use dedens_proto::{Message, Question, Rcode, RecordType};
     use dedens_server::Pipeline;
 
@@ -606,7 +634,11 @@ mod tests {
     fn a_tcp_query_without_upstream_room_gets_servfail() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
         let config = crate::config::read(text, |_| None, &Pipeline::default()).expect("read");
-        let thread = Rc::new(Thread::new(Arc::new(Current::new(config.pipeline)), 0));
+        let thread = Rc::new(Thread::new(
+            Arc::new(Current::new(config.pipeline)),
+            0,
+            Trust::default(),
+        ));
         let name = "example.com.".parse().expect("a name");
         let query = Message::query(1, Question::new(name, RecordType::A))
             .to_vec()

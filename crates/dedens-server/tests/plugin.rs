@@ -56,7 +56,7 @@ impl Plugin for Local {
 fn pipeline(count: u8) -> Pipeline {
     Pipeline::new(vec![
         Stage::Plugin(Box::new(Local::new(count))),
-        Stage::Forward(Forward::new(&servers()).expect("servers")),
+        Stage::Forward(Forward::new(servers()).expect("servers")),
     ])
 }
 

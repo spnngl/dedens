@@ -3,12 +3,12 @@
 mod common;
 
 use std::borrow::Cow;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use common::{captured, decode, dns, forwarder, query_for, run, wire};
 use dedens_proto::edns::{ClientSubnet, Cookie, EdnsOption};
 use dedens_proto::{Edns, Flags, Message};
-use dedens_server::{Forward, Transport};
+use dedens_server::{Forward, Pipeline, Server, Stage, Step, Transport, Via};
 
 #[test]
 fn upstream_gets_the_question_and_our_edns_without_the_clients_options() {
@@ -63,5 +63,35 @@ fn the_reply_has_the_question_in_the_clients_case() {
 
 #[test]
 fn a_forward_stage_has_a_server() {
-    assert_eq!(Forward::new(&[]), None);
+    assert_eq!(Forward::new(Vec::<SocketAddr>::new()), None);
+}
+
+/// D65: each server is asked over its own transport, handed to the caller as configured, and printed so.
+#[test]
+fn servers_go_upstream_as_configured() {
+    let addr: SocketAddr = "192.0.2.1:853".parse().expect("an address");
+    let tls = Server {
+        addr,
+        via: Via::Tls(Some("dns.example".into())),
+    };
+    let quic = Server {
+        addr,
+        via: Via::Quic(None),
+    };
+    let pipeline = Pipeline::new(vec![Stage::Forward(
+        Forward::new([tls.clone(), quic.clone()]).expect("servers"),
+    )]);
+    let mut out = vec![0; 65535];
+    let query = query_for(&captured("a"));
+    let Step::Upstream(first) = pipeline.query(&wire(&query), Transport::Udp, 0, &mut out) else {
+        unreachable!("a forwarder sends the query upstream");
+    };
+    assert_eq!(first.server(), &tls);
+    let Step::Upstream(second) = pipeline.receive(first, None, 0, &mut out) else {
+        unreachable!("the next server is asked");
+    };
+    assert_eq!(second.server(), &quic);
+    assert_eq!(Server::from(addr).to_string(), "192.0.2.1:853");
+    assert_eq!(tls.to_string(), "tls://192.0.2.1:853#dns.example");
+    assert_eq!(quic.to_string(), "quic://192.0.2.1:853");
 }

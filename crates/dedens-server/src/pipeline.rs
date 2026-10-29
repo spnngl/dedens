@@ -1,6 +1,5 @@
 //! The pipeline: the stages in order (D23), and the replies the core gives before any stage (D41).
 
-use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport};
 
 use crate::cache::{self, Looked, Read};
-use crate::forward::{self, Forward};
+use crate::forward::{self, Forward, Server};
 use crate::plugin::Plugin;
 use crate::reply::Client;
 
@@ -67,7 +66,7 @@ pub struct Upstream {
     /// The client's query, with a question, read again for the request and the reply.
     query: Box<[u8]>,
     transport: Transport,
-    server: SocketAddr,
+    server: Server,
     /// The forward stage, its next server, and the cache stage before it.
     forward: usize,
     next: usize,
@@ -224,7 +223,7 @@ impl Pipeline {
         Some(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
-            server: *forward.servers().first()?,
+            server: forward.servers().first()?.clone(),
             forward: index,
             next: 1,
             cache,
@@ -314,7 +313,7 @@ impl Pipeline {
             return reply(&client, decoded.message, rcode, out);
         }
         let next = match self.stages.get(upstream.forward) {
-            Some(Stage::Forward(forward)) => forward.servers().get(upstream.next).copied(),
+            Some(Stage::Forward(forward)) => forward.servers().get(upstream.next).cloned(),
             _ => None,
         };
         if let Some(server) = next {
@@ -382,8 +381,8 @@ impl Upstream {
 
     /// The server to send it to.
     #[must_use]
-    pub const fn server(&self) -> SocketAddr {
-        self.server
+    pub const fn server(&self) -> &Server {
+        &self.server
     }
 
     /// How long to wait for each response, and how many queries to send, before handing `None` to

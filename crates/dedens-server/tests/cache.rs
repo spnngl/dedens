@@ -172,10 +172,6 @@ fn entries_near_their_end_are_refreshed_once() {
 }
 
 /// The upstream query `query` gets at `now`.
-#[expect(
-    clippy::unnecessary_box_returns,
-    reason = "the pipeline takes it boxed"
-)]
 fn upstream_of(pipeline: &Pipeline, query: &Message<'_>, now: u32) -> Box<Upstream> {
     let mut out = vec![0; 65535];
     match pipeline.query(&wire(query), Transport::Udp, now, &mut out) {
@@ -271,7 +267,7 @@ fn without_expired_data_the_client_waits_for_resolution() {
 #[test]
 fn the_timer_is_the_cache_stages_and_the_patience_the_forward_stages() {
     let query = query_for(&captured("a"));
-    let forward = Forward::new(&servers()).expect("servers");
+    let forward = Forward::new(servers()).expect("servers");
     let alone = Pipeline::new(vec![Stage::Forward(forward.clone())]);
     let upstream = upstream_of(&alone, &query, 0);
     assert_eq!(upstream.stale_after(), None);

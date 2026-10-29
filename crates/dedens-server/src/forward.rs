@@ -1,7 +1,9 @@
 //! The forward stage: the client's question asked of upstream servers in turn (D41).
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU8;
+use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_proto::{Decoded, Flags, Message, Question, Rcode};
@@ -12,7 +14,7 @@ use crate::reply::Client;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forward {
     /// Never empty.
-    servers: Box<[SocketAddr]>,
+    servers: Box<[Server]>,
     timeout: Duration,
     tries: NonZeroU8,
 }
@@ -26,9 +28,10 @@ impl Forward {
     /// Forwards to `servers`, tried in order, each [`Forward::TRIES`] times waiting [`Forward::TIMEOUT`]; `None`
     /// without any.
     #[must_use]
-    pub fn new(servers: &[SocketAddr]) -> Option<Self> {
-        (!servers.is_empty()).then(|| Self {
-            servers: servers.into(),
+    pub fn new(servers: impl IntoIterator<Item = impl Into<Server>>) -> Option<Self> {
+        let servers: Box<[Server]> = servers.into_iter().map(Into::into).collect();
+        (!servers.is_empty()).then_some(Self {
+            servers,
             timeout: Self::TIMEOUT,
             tries: Self::TRIES,
         })
@@ -54,8 +57,54 @@ impl Forward {
     }
 
     /// The servers, in the order they are asked; the first always exists.
-    pub(crate) fn servers(&self) -> &[SocketAddr] {
+    pub(crate) fn servers(&self) -> &[Server] {
         &self.servers
+    }
+}
+
+/// An upstream server: its address, and how it is asked (D65).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Server {
+    /// Its address.
+    pub addr: SocketAddr,
+    /// The transport it is asked over.
+    pub via: Via,
+}
+
+/// The transport an upstream server is asked over (D65).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Via {
+    /// The client's: UDP for a query over UDP, TCP for one over a connection.
+    Plain,
+    /// TLS (RFC 7858), the server's certificate holding the name, else its address (RFC 8310 §8.1). Shared, so
+    /// that an upstream query holds it without a copy.
+    Tls(Option<Arc<str>>),
+    /// QUIC (RFC 9250), the certificate checked as over TLS.
+    Quic(Option<Arc<str>>),
+}
+
+impl From<SocketAddr> for Server {
+    fn from(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            via: Via::Plain,
+        }
+    }
+}
+
+/// As written in `dedensd`'s configuration: `IP:PORT`, `tls://IP:PORT#NAME`, `quic://IP:PORT`.
+impl fmt::Display for Server {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (scheme, name) = match &self.via {
+            Via::Plain => ("", None),
+            Via::Tls(name) => ("tls://", name.as_deref()),
+            Via::Quic(name) => ("quic://", name.as_deref()),
+        };
+        write!(f, "{scheme}{}", self.addr)?;
+        match name {
+            Some(name) => write!(f, "#{name}"),
+            None => Ok(()),
+        }
     }
 }
 

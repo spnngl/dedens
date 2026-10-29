@@ -61,7 +61,7 @@ fn query(bencher: divan::Bencher<'_, '_>, name: &str) {
             Action::Nxdomain,
             Ttl::ZERO,
         ))),
-        Stage::Forward(Forward::new(&[upstream]).expect("a server")),
+        Stage::Forward(Forward::new([upstream]).expect("a server")),
     ]);
     let blocked = name.starts_with("x.b.");
     let name = name.parse().expect("a name");

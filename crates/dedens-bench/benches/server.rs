@@ -35,7 +35,7 @@ fn forwarding() -> Pipeline {
         Stage::Cache(Arc::new(
             Cache::new(Config::default()).expect("the default config is valid"),
         )),
-        Stage::Forward(Forward::new(&[server]).expect("a server")),
+        Stage::Forward(Forward::new([server]).expect("a server")),
     ])
 }
 

@@ -277,7 +277,7 @@ pub fn serve_query(data: &[u8]) {
             Stage::Cache(Arc::new(
                 Cache::new(Config::default()).expect("the default settings"),
             )),
-            Stage::Forward(Forward::new(&[server]).expect("one server")),
+            Stage::Forward(Forward::new([server]).expect("one server")),
         ]);
         if let Step::Reply(len) = pipeline.query(data, transport, 0, &mut out) {
             let id = Header::peek(data).expect("a reply goes to a header").id;

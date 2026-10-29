@@ -37,7 +37,7 @@ fn with_lists(lists: Lists, action: Action) -> Pipeline {
     let upstream = SocketAddr::from(([192, 0, 2, 53], 53));
     Pipeline::new(vec![
         Stage::Plugin(Box::new(blocklist)),
-        Stage::Forward(Forward::new(&[upstream]).expect("a server")),
+        Stage::Forward(Forward::new([upstream]).expect("a server")),
     ])
 }
 

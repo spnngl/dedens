@@ -32,7 +32,9 @@ signal-hook.workspace = true
 
 [dev-dependencies]
 dedens-scenario.workspace = true
+rcgen.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -23,7 +23,7 @@
 //!     capacity: 67108864
 //!   upstream:
 //!     type: forward
-//!     servers: ["9.9.9.9", "149.112.112.112:53"]
+//!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
 //!     timeout_ms: 3000
 //!     tries: 2
 //! ```
@@ -37,10 +37,13 @@ use std::time::Duration;
 use std::{fs, io};
 
 use anyhow::{Context, anyhow, bail, ensure};
+use compio::rustls::pki_types::pem::PemObject as _;
+use compio::rustls::pki_types::{CertificateDer, ServerName};
 use dedens_cache::Cache;
+use dedens_net::tls::Trust;
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::Ttl;
-use dedens_server::{Forward, Pipeline, Stage};
+use dedens_server::{Forward, Pipeline, Stage, Via};
 use serde::Deserialize;
 
 use crate::download;
@@ -54,6 +57,9 @@ struct File {
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
+    /// A PEM file of the certificate authorities upstream servers over TLS and QUIC are checked against,
+    /// instead of the system's (D65).
+    upstream_ca: Option<PathBuf>,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -144,19 +150,52 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
 }
 
-/// An upstream server: `IP:PORT`, or an IP address on port 53.
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// An upstream server (D65): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in brackets);
+/// behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set, and `#NAME` after it for the name
+/// its certificate must hold, else its address.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
-pub(crate) struct Server(pub(crate) SocketAddr);
+pub(crate) struct Server(pub(crate) dedens_server::Server);
+
+/// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
+const ENCRYPTED_PORT: u16 = 853;
 
 impl TryFrom<String> for Server {
     type Error = String;
 
     fn try_from(text: String) -> Result<Self, String> {
-        text.parse()
-            .or_else(|_| text.parse().map(|ip: IpAddr| SocketAddr::new(ip, 53)))
-            .map(Self)
-            .map_err(|_| format!("`{text}` is neither IP:PORT nor IP"))
+        let (rest, scheme) = match text.split_once("://") {
+            Some((scheme, rest)) => (rest, Some(scheme)),
+            None => (text.as_str(), None),
+        };
+        let (rest, name) = match rest.split_once('#') {
+            Some((rest, name)) if scheme.is_some() => (rest, Some(name)),
+            _ => (rest, None),
+        };
+        let port = if scheme.is_some() { ENCRYPTED_PORT } else { 53 };
+        let bare = rest
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(rest);
+        let addr = rest
+            .parse()
+            .or_else(|_| bare.parse().map(|ip: IpAddr| SocketAddr::new(ip, port)))
+            .map_err(|_| format!("`{text}`: `{rest}` is neither IP:PORT nor IP"))?;
+        if let Some(name) = name
+            && ServerName::try_from(name).is_err()
+        {
+            return Err(format!("`{text}`: `{name}` is not a name for TLS"));
+        }
+        let name = name.map(Arc::from);
+        let via = match scheme {
+            None => Via::Plain,
+            Some("tls") => Via::Tls(name),
+            Some("quic") => Via::Quic(name),
+            Some(scheme) => {
+                return Err(format!("`{text}`: `{scheme}://` is not tls:// or quic://"));
+            }
+        };
+        Ok(Self(dedens_server::Server { addr, via }))
     }
 }
 
@@ -166,6 +205,8 @@ pub(crate) struct Config {
     pub(crate) listen: Vec<SocketAddr>,
     pub(crate) pipeline: Pipeline,
     pub(crate) downloads: Downloads,
+    /// What upstream servers over TLS and QUIC are checked against.
+    pub(crate) trust: Trust,
 }
 
 /// Reads `text`, a configuration file, taking `${VAR}` from `env`. The cache stage of `previous`, the pipeline a
@@ -219,8 +260,7 @@ pub(crate) fn read(
                 timeout_ms,
                 tries,
             } => {
-                let servers: Vec<_> = servers.into_iter().map(|server| server.0).collect();
-                let mut forward = Forward::new(&servers)
+                let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
                     .with_context(|| format!("stage `{name}` has no server"))?;
                 if let Some(ms) = timeout_ms {
                     forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
@@ -279,7 +319,33 @@ pub(crate) fn read(
         listen: file.listen,
         pipeline: Pipeline::new(built),
         downloads,
+        trust: trusted(file.upstream_ca.as_deref())?,
     })
+}
+
+/// The certificate authorities of the PEM file `path`, the system's without one.
+///
+/// # Errors
+///
+/// A file that does not read, or holds no certificate.
+fn trusted(path: Option<&Path>) -> anyhow::Result<Trust> {
+    let Some(path) = path else {
+        return Ok(Trust::System);
+    };
+    let certificates = CertificateDer::pem_file_iter(path)
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .with_context(|| {
+            format!(
+                "`upstream_ca`: cannot read certificates from {}",
+                path.display()
+            )
+        })?;
+    ensure!(
+        !certificates.is_empty(),
+        "`upstream_ca`: no certificate in {}",
+        path.display()
+    );
+    Ok(Trust::Roots(certificates))
 }
 
 /// The TTL of plugin records unless set, as the hosts plugin of `CoreDNS` gives them.
@@ -521,18 +587,51 @@ mod tests {
     }
 
     #[test]
-    fn upstream_servers_take_port_53_by_default() {
-        let server = |text: &str| Server::try_from(text.to_owned()).map(|server| server.0);
-        assert_eq!(server("192.0.2.1"), Ok("192.0.2.1:53".parse().unwrap()));
-        assert_eq!(
-            server("[2001:db8::1]:5353"),
-            Ok("[2001:db8::1]:5353".parse().unwrap())
+    fn upstream_servers_take_port_53_by_default_and_853_encrypted() {
+        let server =
+            |text: &str| Server::try_from(text.to_owned()).map(|server| server.0.to_string());
+        for (written, read) in [
+            ("192.0.2.1", "192.0.2.1:53"),
+            ("[2001:db8::1]:5353", "[2001:db8::1]:5353"),
+            ("2001:db8::1", "[2001:db8::1]:53"),
+            ("[2001:db8::1]", "[2001:db8::1]:53"),
+            (
+                "tls://1.1.1.1#one.one.one.one",
+                "tls://1.1.1.1:853#one.one.one.one",
+            ),
+            ("tls://[2001:db8::1]:8853", "tls://[2001:db8::1]:8853"),
+            (
+                "quic://94.140.14.140#dns.adguard-dns.com",
+                "quic://94.140.14.140:853#dns.adguard-dns.com",
+            ),
+            ("tls://192.0.2.1#192.0.2.1", "tls://192.0.2.1:853#192.0.2.1"),
+        ] {
+            assert_eq!(server(written).as_deref(), Ok(read), "{written}");
+        }
+        for refused in [
+            "example.com",
+            "tls://dns.google",
+            "https://192.0.2.1",
+            "192.0.2.1#dns.example",
+            "tls://192.0.2.1#",
+            "tls://192.0.2.1#not a name",
+        ] {
+            assert!(server(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn upstream_certificate_authorities_are_read() {
+        let refused = read(
+            &format!("upstream_ca: /nonexistent.pem\n{MINIMAL}"),
+            env,
+            &Pipeline::default(),
         );
+        assert!(refused.unwrap_err().to_string().contains("`upstream_ca`"));
         assert_eq!(
-            server("2001:db8::1"),
-            Ok("[2001:db8::1]:53".parse().unwrap())
+            read(MINIMAL, env, &Pipeline::default()).unwrap().trust,
+            Trust::System
         );
-        assert!(server("example.com").is_err());
     }
 
     #[test]

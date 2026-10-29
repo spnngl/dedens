@@ -21,7 +21,7 @@ pub(crate) fn servers() -> Vec<SocketAddr> {
 /// A pipeline forwarding to [`servers`].
 pub(crate) fn forwarder() -> Pipeline {
     Pipeline::new(vec![Stage::Forward(
-        Forward::new(&servers()).expect("servers"),
+        Forward::new(servers()).expect("servers"),
     )])
 }
 
@@ -31,7 +31,7 @@ pub(crate) fn caching() -> Pipeline {
         Stage::Cache(Arc::new(
             Cache::new(Config::default()).expect("the default settings"),
         )),
-        Stage::Forward(Forward::new(&servers()).expect("servers")),
+        Stage::Forward(Forward::new(servers()).expect("servers")),
     ])
 }
 
@@ -130,7 +130,7 @@ pub(crate) fn run_at(
                 step = Step::Upstream(upstream);
             }
             Step::Upstream(upstream) => {
-                asked.push(upstream.server());
+                asked.push(upstream.server().addr);
                 requests.push(upstream.request().clone());
                 step = pipeline.receive(upstream, responses.next().flatten(), now, &mut out);
             }

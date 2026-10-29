@@ -86,6 +86,7 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&current),
         Fixed {
             listen: config.listen,
+            trust: config.trust.clone(),
         },
         config.downloads,
     )
@@ -93,11 +94,11 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(config = %path, ?listen, threads = sockets.len(), "serving");
     let (ended, end) = mpsc::channel();
     for sockets in sockets {
-        let (current, ended) = (Arc::clone(&current), ended.clone());
+        let (current, ended, trust) = (Arc::clone(&current), ended.clone(), config.trust.clone());
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
                 serve::runtime()
-                    .and_then(|runtime| runtime.block_on(serve::serve(sockets, current)))
+                    .and_then(|runtime| runtime.block_on(serve::serve(sockets, current, trust)))
             }));
             let _ =
                 ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
