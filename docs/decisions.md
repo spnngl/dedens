@@ -140,6 +140,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `--tls-ca=FILE` trusts the authorities of a PEM file instead; `--tls-insecure` any certificate, for tests.
     Rejected: dig's default, which verifies nothing without `+tls-ca`.
   - Queries over TLS are padded to a multiple of 128 bytes (RFC 8467 §4.1); padding the caller set is replaced.
+    Replies to a padded query over TLS or QUIC are padded to a multiple of 468 bytes, with zeros, though the
+    reply buffer is reused (RFC 7830 §3-4).
     The CLI refuses `+noedns` over TLS or QUIC, which would leave a query unpadded.
   - The CLI writes a TLS server `tls://HOST[:PORT][#NAME]`, or any server with `+tls`; port 853 unless given. An
     address, `[ADDRESS]:PORT` or with its zone, is taken as such before any name; a name for TLS is made only

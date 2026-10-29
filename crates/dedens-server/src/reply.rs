@@ -20,6 +20,12 @@ const MIN_UDP_PAYLOAD: u16 = 512;
 /// The opcode's bits in the header's second 16-bit word (RFC 1035 §4.1.1).
 const OPCODE_MASK: u16 = 0x7800;
 
+/// The block a padded reply's length is a multiple of (RFC 8467 §4.1).
+const PADDING_BLOCK: usize = 468;
+
+/// The code and length of an EDNS option, before its data (RFC 6891 §6.1.2).
+const OPTION_HEAD: usize = 4;
+
 /// The client of a query, as its reply needs it.
 #[derive(Debug, Clone)]
 pub(crate) struct Client<'q> {
@@ -86,10 +92,12 @@ impl<'q> Client<'q> {
             message.header.rcode = Rcode::SERVFAIL;
         }
         let limit = self.limit().min(out.len());
-        message
-            .encode_truncated(&mut out[..limit])
-            .ok()
-            .map(|encoded| encoded.len)
+        let len = message.encode_truncated(&mut out[..limit]).ok()?.len;
+        Some(if self.edns.is_some() {
+            self.pad(out, len, error.map_or(0, |_| EDE_LEN))
+        } else {
+            len
+        })
     }
 
     /// Writes a plugin's `answer` to the query `wire` into `out` as the reply, and returns its length; `None` when
@@ -134,9 +142,43 @@ impl<'q> Client<'q> {
         out[4..12].copy_from_slice(&[0, 1, an_hi, an_lo, 0, 0, 0, 0]);
         out[at..len].copy_from_slice(records);
         match edns {
-            Some(edns) => append_opt(&edns, error, out, len),
+            Some(edns) => append_opt(&edns, error, out, len)
+                .map(|len| self.pad(out, len, error.map_or(0, |_| EDE_LEN))),
             None => Some(len),
         }
+    }
+
+    /// Pads the reply of `len` bytes in `out`, which ends with our OPT record and its `rdata` bytes of options, to
+    /// a multiple of [`PADDING_BLOCK`] bytes with a Padding option of zeros, for a client that padded its query
+    /// over TLS or QUIC (RFC 7830 §4, RFC 8467 §4.1, RFC 9250 §5.4); up to the longest reply, past which the
+    /// reply is padded less. Returns the new length, `len` for any other client.
+    pub(crate) fn pad(&self, out: &mut [u8], len: usize, rdata: usize) -> usize {
+        let padded = matches!(self.transport, Transport::Tls | Transport::Quic)
+            && self.edns.as_ref().is_some_and(|edns| {
+                edns.options()
+                    .any(|option| option.code() == OptionCode::PADDING)
+            });
+        let end = (len + OPTION_HEAD)
+            .next_multiple_of(PADDING_BLOCK)
+            .min(self.limit())
+            .min(out.len());
+        // The OPT record's RDLENGTH is just before its options; every length is below 65536.
+        let (true, Some(at), Ok(added), Ok(zeros)) = (
+            padded,
+            len.checked_sub(rdata + 2),
+            u16::try_from(end.saturating_sub(len)),
+            u16::try_from(end.wrapping_sub(len + OPTION_HEAD)),
+        ) else {
+            return len;
+        };
+        let rdlength = u16::from_be_bytes([out[at], out[at + 1]]) + added;
+        out[at..at + 2].copy_from_slice(&rdlength.to_be_bytes());
+        let [code_hi, code_lo] = u16::from(OptionCode::PADDING).to_be_bytes();
+        let [len_hi, len_lo] = zeros.to_be_bytes();
+        out[len..len + OPTION_HEAD].copy_from_slice(&[code_hi, code_lo, len_hi, len_lo]);
+        // A buffer reused across replies holds older bytes: padding is zeros (RFC 7830 §3).
+        out[len + OPTION_HEAD..end].fill(0);
+        end
     }
 
     /// The flags of a reply carrying a response with `flags`: QR and RA, the client's RD and CD, and AD when the

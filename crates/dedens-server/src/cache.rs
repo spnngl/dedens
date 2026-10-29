@@ -2,7 +2,7 @@
 //! failures (D43).
 
 use dedens_cache::{Cache, Freshness, Lookup, StalePolicy};
-use dedens_proto::edns::InfoCode;
+use dedens_proto::edns::{EDE_LEN, InfoCode};
 use dedens_proto::{Edns, Header, Query, Rcode};
 
 use crate::reply::{Client, append_opt};
@@ -83,7 +83,10 @@ pub(crate) fn look(
         }
     });
     match append_opt(&edns, error, &mut out[..limit], hit.len) {
-        Some(len) => Looked::Reply { len, refresh },
+        Some(len) => Looked::Reply {
+            len: client.pad(out, len, error.map_or(0, |_| EDE_LEN)),
+            refresh,
+        },
         None => Looked::Miss,
     }
 }
