@@ -67,7 +67,8 @@ fn main() -> anyhow::Result<()> {
             .exit()
     };
     let path = file.display();
-    let config = load(&file, &Pipeline::default())?;
+    let text = read(&file)?;
+    let config = build(&file, &text, &Pipeline::default())?;
     if let Some(Command::Validate) = args.command {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
@@ -78,9 +79,11 @@ fn main() -> anyhow::Result<()> {
     let sockets = (0..threads())
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    tracing::info!(config = %path, listen = ?config.listen, threads = sockets.len(), "serving");
+    let listen = config.listen.clone();
+    // Before "serving" is logged: a SIGHUP from then on reloads, never ends the process (D55).
     reload::control(
         file.clone(),
+        text,
         Arc::clone(&current),
         Fixed {
             listen: config.listen,
@@ -89,6 +92,7 @@ fn main() -> anyhow::Result<()> {
         config.downloads,
     )
     .context("cannot handle SIGHUP")?;
+    tracing::info!(config = %path, ?listen, threads = sockets.len(), "serving");
     let (ended, end) = mpsc::channel();
     for sockets in sockets {
         let (current, ended) = (Arc::clone(&current), ended.clone());
@@ -107,16 +111,23 @@ fn main() -> anyhow::Result<()> {
     end.recv()?.context("cannot serve")
 }
 
-/// The configuration in `file`, its cache stage that of `previous` while its settings are the same.
+/// The text of the configuration file `file`.
 ///
 /// # Errors
 ///
-/// A file that does not read, or a configuration [`config::read`] refuses.
-fn load(file: &Path, previous: &Pipeline) -> anyhow::Result<Config> {
-    let path = file.display();
-    let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {path}"))?;
-    config::read(&text, |name| std::env::var(name).ok(), previous)
-        .with_context(|| format!("in {path}"))
+/// A file that does not read.
+fn read(file: &Path) -> anyhow::Result<String> {
+    std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))
+}
+
+/// The configuration `text`, read from `file`, its cache stage that of `previous` while its settings are the same.
+///
+/// # Errors
+///
+/// A configuration [`config::read`] refuses.
+fn build(file: &Path, text: &str, previous: &Pipeline) -> anyhow::Result<Config> {
+    config::read(text, |name| std::env::var(name).ok(), previous)
+        .with_context(|| format!("in {}", file.display()))
 }
 
 /// The serving threads: one per core on Linux, where `SO_REUSEPORT` spreads queries across their sockets; one

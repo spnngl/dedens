@@ -52,7 +52,8 @@ use crate::download;
 struct File {
     /// Addresses answered on, over UDP and TCP.
     listen: Vec<SocketAddr>,
-    /// Whether a reused reply buffer is zeroed first (D52); `true` unless set.
+    /// Whether a spare TCP reply buffer is zeroed before reuse (D52); `true` unless set. The buffer each UDP task
+    /// and TCP connection reuses for replies made at once is not zeroed.
     zero_buffers: Option<bool>,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
@@ -179,7 +180,8 @@ pub(crate) struct Config {
 ///
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
-/// query on; a second cache stage, which would never be filled; settings a stage refuses.
+/// query on; a second cache stage, which would never be filled; a hosts or blocklist stage after a cache stage,
+/// whose answers a reload keeps; `refresh_minutes` above a year; settings a stage refuses.
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -194,27 +196,18 @@ pub(crate) fn read(
     let mut downloads = Downloads {
         urls: Vec::new(),
         dir: file.downloads.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
-        refresh: Duration::from_mins(
-            file.downloads
-                .refresh_minutes
-                .map_or(REFRESH_MINUTES, u64::from),
-        ),
+        refresh: refresh(file.downloads.refresh_minutes)?,
     };
     for (index, name) in file.pipeline.iter().enumerate() {
-        if let Some(Stage::Forward(_)) = built.last() {
-            bail!("stage `{name}` comes after a forward stage, which answers every query");
-        }
         let Some(stage) = stages.remove(name) else {
             if file.pipeline[..index].contains(name) {
                 bail!("stage `{name}` is listed twice in `pipeline`");
             }
             bail!("stage `{name}` is listed in `pipeline` but not defined in `stages`");
         };
+        placed(name, &stage, &built)?;
         built.push(match stage {
             StageFile::Cache(config) => {
-                if built.iter().any(|stage| matches!(stage, Stage::Cache(_))) {
-                    bail!("stage `{name}` is a second cache stage, which upstream answers would never fill");
-                }
                 let kept = previous.stages().iter().find_map(|stage| match stage {
                     Stage::Cache(cache) if *cache.config() == config => Some(Arc::clone(cache)),
                     _ => None,
@@ -263,16 +256,24 @@ pub(crate) fn read(
                 action,
                 ttl,
             } => {
-                let block = Sources { entries, file, urls };
-                let lists =
-                    lists(name, &block, &allow, &downloads.dir).with_context(|| format!("stage `{name}`"))?;
+                let block = Sources {
+                    entries,
+                    file,
+                    urls,
+                };
+                let lists = lists(name, &block, &allow, &downloads.dir)
+                    .with_context(|| format!("stage `{name}`"))?;
                 for Url(url) in block.urls.into_iter().chain(allow.urls) {
                     if !downloads.urls.contains(&url) {
                         downloads.urls.push(url);
                     }
                 }
                 let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
-                Stage::Plugin(Box::new(Blocklist::new(lists, action.unwrap_or_default(), ttl)))
+                Stage::Plugin(Box::new(Blocklist::new(
+                    lists,
+                    action.unwrap_or_default(),
+                    ttl,
+                )))
             }
         });
     }
@@ -295,6 +296,45 @@ const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
 
 /// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
 const REFRESH_MINUTES: u64 = 1440;
+
+/// The longest `refresh_minutes`: a year, far below the overflow of a `Duration` or an `Instant`.
+const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
+
+/// Checks that stage `name`, `stage`, may follow the stages `built`.
+///
+/// # Errors
+///
+/// Any stage after a forward stage, which answers every query; a second cache stage, which would never be
+/// filled; a hosts or blocklist stage after a cache stage, whose answers a reload keeps (D64).
+fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> {
+    if let Some(Stage::Forward(_)) = built.last() {
+        bail!("stage `{name}` comes after a forward stage, which answers every query");
+    }
+    let cached = built.iter().any(|stage| matches!(stage, Stage::Cache(_)));
+    match stage {
+        StageFile::Cache(_) if cached => {
+            bail!("stage `{name}` is a second cache stage, which upstream answers would never fill")
+        }
+        StageFile::Hosts { .. } | StageFile::Blocklist { .. } if cached => bail!(
+            "stage `{name}` comes after a cache stage, whose answers, kept across reloads, would bypass it"
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// How often downloaded lists are fetched again, from `refresh_minutes`.
+///
+/// # Errors
+///
+/// Above [`MAX_REFRESH_MINUTES`].
+fn refresh(minutes: Option<NonZeroU64>) -> anyhow::Result<Duration> {
+    let minutes = minutes.map_or(REFRESH_MINUTES, u64::from);
+    ensure!(
+        minutes <= MAX_REFRESH_MINUTES,
+        "`refresh_minutes` is above {MAX_REFRESH_MINUTES}, a year"
+    );
+    Ok(Duration::from_mins(minutes))
+}
 
 /// A plugin built by `build` from `entries`, then the lines of the file at `path`; its errors locate the line.
 fn plugin<P>(
@@ -385,15 +425,32 @@ fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::R
 }
 
 /// `text` with each `${VAR}` replaced by the variable's value, `${VAR:-default}` by `default` when it is unset or
-/// empty, and `$$` by `$`; any other `$` stays.
+/// empty, and `$$` by `$`; any other `$` stays, and so does a line whose first non-blank character is `#`, a
+/// comment.
 ///
 /// # Errors
 ///
-/// A variable without a value or default, one whose value spans lines (it would add YAML of its own), or a `${`
-/// left open.
+/// A variable without a value or default, one whose value spans lines (`\n` or `\r`: it would add YAML of its
+/// own), or a `${` left open on its line.
 fn interpolate(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<String> {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with('#') {
+            out.push_str(line);
+        } else {
+            interpolate_line(line, &env, &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+/// [`interpolate`] for one line, not a comment, appended to `out`.
+fn interpolate_line(
+    line: &str,
+    env: impl Fn(&str) -> Option<String>,
+    out: &mut String,
+) -> anyhow::Result<()> {
+    let mut rest = line;
     while let Some(at) = rest.find('$') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
@@ -417,7 +474,7 @@ fn interpolate(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Resu
                 (None, None) => bail!("variable `{name}` is not set"),
             };
             ensure!(
-                !value.contains('\n'),
+                !value.contains(['\n', '\r']),
                 "variable `{name}` spans several lines"
             );
             out.push_str(&value);
@@ -428,7 +485,7 @@ fn interpolate(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Resu
         }
     }
     out.push_str(rest);
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -440,6 +497,7 @@ mod tests {
             "PORT" => Some("5353".to_owned()),
             "EMPTY" => Some(String::new()),
             "LINES" => Some("a\nb".to_owned()),
+            "RETURN" => Some("a\rb: c".to_owned()),
             _ => None,
         }
     }
@@ -458,6 +516,12 @@ mod tests {
         assert_eq!(interpolate("a ${PORT} b", env).unwrap(), "a 5353 b");
         assert_eq!(interpolate("${NOPE:-53}${EMPTY:-x}", env).unwrap(), "53x");
         assert_eq!(interpolate("$$ $PORT $", env).unwrap(), "$ $PORT $");
+        // Comments are left as written, even with a variable unset or a `${` left open.
+        let comments = "# ${NOPE}\n  # ${PORT\nport: ${PORT} # ${PORT}\n";
+        assert_eq!(
+            interpolate(comments, env).unwrap(),
+            "# ${NOPE}\n  # ${PORT\nport: 5353 # 5353\n"
+        );
     }
 
     #[test]
@@ -466,6 +530,8 @@ mod tests {
             ("${NOPE}", "variable `NOPE` is not set"),
             ("${EMPTY}", "variable `EMPTY` is not set"),
             ("${LINES}", "variable `LINES` spans several lines"),
+            ("${RETURN}", "variable `RETURN` spans several lines"),
+            ("a: ${PORT\n}", "a `${` is not closed by `}`"),
             ("${PORT", "a `${` is not closed by `}`"),
             ("${}", "`${}` does not name a variable"),
             ("${A B}", "`${A B}` does not name a variable"),
@@ -547,6 +613,18 @@ mod tests {
             (
                 "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    shards: 3\n",
                 "stage `c`: the shard count must be a power of two up to 65536, not 3",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c, h, up]\nstages:\n  c:\n    type: cache\n  h:\n    type: hosts\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+                "stage `h` comes after a cache stage, whose answers, kept across reloads, would bypass it",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c, b]\nstages:\n  c:\n    type: cache\n  b:\n    type: blocklist\n",
+                "stage `b` comes after a cache stage, whose answers, kept across reloads, would bypass it",
+            ),
+            (
+                &format!("downloads:\n  refresh_minutes: 18446744073709551615\n{MINIMAL}"),
+                "`refresh_minutes` is above 527040, a year",
             ),
         ] {
             assert_eq!(error(text), message);

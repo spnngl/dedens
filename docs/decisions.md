@@ -333,7 +333,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `zero_buffers` (D52), `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53).
   `${VAR}` is replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML.
@@ -361,7 +361,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
-- D47 `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
+- D47 (amended by D64) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP connection closed), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore) and 10 s to write a
   reply (a client that stops reading loses its connection). A query waiting upstream holds no reply buffer until
@@ -397,14 +397,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   forwarding 155k → 82k).
 - D52 A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
   earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
-  configuration: no byte of an earlier reply stays, should a bug ever send past the reply's length (the encoder
-  writes before it reads, so nothing leaks today). Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
+  configuration: no byte of an earlier reply stays in it, should a bug ever send past the reply's length (the
+  encoder writes before it reads, so nothing leaks today). Only these spare buffers are: the buffer each UDP
+  task and each TCP connection reuse for the replies made at once (cache hits, plugins) keeps earlier replies'
+  bytes past the current one's length; whether to zero or drop them is open. Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
   84k zeroing new buffers → 90k-92k reusing them unzeroed; zeroing them again costs part of it (79k-88k against
   87k-90k). Rejected: skipping the zeroing of new buffers (uninitialized memory behind `unsafe`).
 - D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
   as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
   (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
-- D54 Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amended by D64) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -424,7 +426,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     without names of one label or starting with `localhost`: such files open with their host's own entries
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
     Formats, duplicates and the allowlist in D56.
-- D55 `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+- D55 (amended by D64) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed, holding it in
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
@@ -448,7 +450,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
-- D57 `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+- D57 (amended by D64) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
   with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
   never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
   Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
@@ -471,6 +473,27 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
   sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
   slower to build).
+- D64 Review fixes to D44, D47, D54, D55 and D57.
+  - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
+    more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
+    connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
+    waiting, so none holds its 65535-byte buffer meanwhile; the worst left is 64 replies of 64 KiB in flight past
+    the bound. A TCP query the thread has no upstream slot for gets SERVFAIL (`Pipeline::abandon`) instead of
+    closing the connection; a UDP one is still dropped. A UDP receive that fails right after another waits
+    100 ms, as `accept` does, instead of spinning.
+  - Panics: a serving thread waits on the tasks of its sockets, so one that panics (compio catches the panic and
+    keeps it silent) fails the thread, and `dedensd` (D46). The reload thread runs each fetch and each reload
+    under `catch_unwind`: a panic is logged and counts as a failure, and later reloads still run.
+  - Configuration (D44): a hosts or blocklist stage after a cache stage is refused: the cache, kept across
+    reloads (D55), would keep answering a name a reload newly blocks until its TTL ends. `refresh_minutes` above
+    a year (527040) is refused. `${VAR}` values with `\r` are refused as those with `\n`; lines whose first
+    non-blank character is `#` are comments, left as written.
+  - Reloads (D55, D57): a list change rebuilds the pipeline from the configuration text last loaded, not the file,
+    which may be half edited; only SIGHUP reads the file, and its lists are fetched at once after.
+  - Downloads (D57): an `https://` list is fetched with `https_only`, so a redirect cannot take it to `http://`;
+    `http://` URLs stay for a server of one's own. A copy and its `ETag` never disagree: the old tag is removed,
+    then the copy and the new tag are each written to a `.part` file, flushed, renamed and the directory flushed;
+    the list counts as changed once its copy is renamed, a tag that cannot be written only logged.
 
 ## Observability
 

@@ -2,6 +2,7 @@
 //! they started on, and a configuration that does not read leaves the running one in place.
 
 use std::net::SocketAddr;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -56,15 +57,18 @@ pub(crate) struct Fixed {
 const RETRY: Duration = Duration::from_secs(60);
 
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
-/// `downloads` changed, fetched at once then every refresh interval (D57). One thread for both, so a refresh never
-/// replaces the pipeline of a reload with an older one. The SIGHUP handler is installed before this returns: a
-/// SIGHUP once the server logged that it serves never ends the process.
+/// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
+/// configuration last loaded, again without reading `file`. One thread for both, so a refresh never replaces the
+/// pipeline of a reload with an older one. A panic while fetching or reloading is logged and counts as a failure;
+/// the thread goes on. The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that
+/// it serves never ends the process.
 ///
 /// # Errors
 ///
 /// A handler the OS refuses.
 pub(crate) fn control(
     file: PathBuf,
+    mut text: String,
     current: Arc<Current>,
     fixed: Fixed,
     mut downloads: Downloads,
@@ -89,13 +93,15 @@ pub(crate) fn control(
             let wait = if downloads.urls.is_empty() {
                 Duration::MAX
             } else {
-                let fetched = client.fetch(&downloads.urls, &downloads.dir);
-                if fetched.changed
-                    && let Some(new) = reload(&file, &current, &fixed)
+                let fetched = guarded("list download", || {
+                    client.fetch(&downloads.urls, &downloads.dir)
+                });
+                if fetched.is_some_and(|fetched| fetched.changed)
+                    && let Some(new) = reload(&file, Read::Last, &mut text, &current, &fixed)
                 {
                     downloads = new;
                 }
-                if fetched.failed {
+                if fetched.is_none_or(|fetched| fetched.failed) {
                     let next = retry.min(downloads.refresh);
                     retry = retry.saturating_mul(2);
                     next
@@ -104,9 +110,9 @@ pub(crate) fn control(
                     downloads.refresh
                 }
             };
-            // A SIGHUP reloads, then fetches again: its lists may have changed with it.
+            // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
             if hangups.recv_timeout(wait).is_ok()
-                && let Some(new) = reload(&file, &current, &fixed)
+                && let Some(new) = reload(&file, Read::File, &mut text, &current, &fixed)
             {
                 downloads = new;
             }
@@ -115,11 +121,43 @@ pub(crate) fn control(
     Ok(())
 }
 
-/// Reads `file` again and serves its pipeline, keeping the cache when its settings are unchanged; the new
-/// downloads, `None` when it fails.
-fn reload(file: &Path, current: &Current, fixed: &Fixed) -> Option<Downloads> {
+/// Which configuration a reload builds.
+#[derive(Debug, Clone, Copy)]
+enum Read {
+    /// The file, read again: a SIGHUP.
+    File,
+    /// The text last loaded, the file untouched: downloaded lists changed, and the file may be half edited.
+    Last,
+}
+
+/// Runs `work`; `None`, logged, when it panics, so the thread replacing the pipeline outlives a bug.
+fn guarded<T>(what: &str, work: impl FnOnce() -> T) -> Option<T> {
+    panic::catch_unwind(AssertUnwindSafe(work))
+        .inspect_err(|_| tracing::error!(what, "panicked, trying again later"))
+        .ok()
+}
+
+/// Builds the configuration `read` says, `text` the one last loaded, and serves its pipeline, keeping the cache
+/// when its settings are unchanged; the new downloads, `None` when it fails.
+fn reload(
+    file: &Path,
+    read: Read,
+    text: &mut String,
+    current: &Current,
+    fixed: &Fixed,
+) -> Option<Downloads> {
     let config = file.display();
-    match crate::load(file, &current.get()) {
+    let built = guarded("reload", || {
+        let new_text = match read {
+            Read::File => crate::read(file)?,
+            Read::Last => text.clone(),
+        };
+        let new = crate::build(file, &new_text, &current.get())?;
+        *text = new_text;
+        anyhow::Ok(new)
+    })
+    .unwrap_or_else(|| Err(anyhow::anyhow!("the reload panicked")));
+    match built {
         Ok(new) => {
             if new.listen != fixed.listen || new.zero_buffers != fixed.zero_buffers {
                 tracing::warn!(%config, "changes to `listen` and `zero_buffers` take a restart");

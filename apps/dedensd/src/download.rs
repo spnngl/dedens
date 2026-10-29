@@ -2,6 +2,7 @@
 //! (`ETag`), so a start serves the last copy at once and an unchanged list is neither downloaded nor read again.
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -99,7 +100,13 @@ impl Fetcher {
     fn one(&self, url: &str, dir: &Path) -> anyhow::Result<Option<Read>> {
         let copy = copy(dir, url);
         let tag = tag(&copy);
-        let mut request = self.agent.get(url);
+        // A redirect never takes an `https://` list to `http://`, where anyone on the path could change it.
+        let mut request = self
+            .agent
+            .get(url)
+            .config()
+            .https_only(url.starts_with("https://"))
+            .build();
         if copy.exists()
             && let Ok(version) = fs::read_to_string(&tag)
         {
@@ -123,18 +130,77 @@ impl Fetcher {
         // Block or allow, a list reads the same way.
         let read = Lists::new().read(List::Block, Origin::Downloaded, &text)?;
         fs::create_dir_all(dir).with_context(|| format!("creating `{}`", dir.display()))?;
-        // A copy is written whole or not at all: a start after a crash reads the previous copy or this one.
-        let part = copy.with_extension("part");
-        fs::write(&part, &text).with_context(|| format!("writing `{}`", part.display()))?;
-        fs::rename(&part, &copy).with_context(|| format!("writing `{}`", copy.display()))?;
-        match version {
-            Some(version) => fs::write(&tag, version),
-            None => fs::remove_file(&tag).or_else(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => Ok(()),
-                _ => Err(error),
-            }),
-        }
-        .with_context(|| format!("writing `{}`", tag.display()))?;
+        save(&copy, &text, version.as_deref())?;
         Ok(Some(read))
+    }
+}
+
+/// Saves `text` as the copy `copy`, then `version` as its tag, so that they never disagree, even across a crash:
+/// the old tag is removed first, and each file is written whole or not at all. A tag that cannot be written is
+/// logged, not an error: the copy is saved, and fetched whole next time.
+///
+/// # Errors
+///
+/// The old tag or the copy not replaced; the previous copy is then kept, without a tag.
+fn save(copy: &Path, text: &str, version: Option<&str>) -> anyhow::Result<()> {
+    let tag = tag(copy);
+    let dir = copy.parent().unwrap_or(Path::new("."));
+    match fs::remove_file(&tag) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => sync_dir(dir),
+    }
+    .with_context(|| format!("removing `{}`", tag.display()))?;
+    replace(copy, text).with_context(|| format!("writing `{}`", copy.display()))?;
+    if let Some(version) = version
+        && let Err(error) = replace(&tag, version)
+    {
+        tracing::warn!(tag = %tag.display(), %error, "version tag not saved, the list will be fetched whole");
+    }
+    Ok(())
+}
+
+/// Writes `contents` to `path` whole or not at all: to `path` with `.part` appended, flushed to disk, then renamed
+/// over `path`, the directory flushed too.
+fn replace(path: &Path, contents: &str) -> io::Result<()> {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let mut file = fs::File::create(&part)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&part, path)?;
+    sync_dir(path.parent().unwrap_or(Path::new(".")))
+}
+
+/// Flushes the entries of `dir` to disk, so a rename or removal in it survives a crash; a no-op where a directory
+/// cannot be opened as a file.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    if cfg!(unix) {
+        fs::File::open(dir)?.sync_all()
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_is_saved_without_a_stale_tag_when_its_tag_cannot_be() {
+        let dir = std::env::temp_dir().join(format!("dedensd-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let copy = copy(&dir, "https://a.example/list");
+        save(&copy, "a.example\n", Some("\"v1\"")).unwrap();
+        assert_eq!(fs::read_to_string(tag(&copy)).unwrap(), "\"v1\"");
+        // The new tag cannot be written: a directory stands where it would be.
+        let mut part = tag(&copy).into_os_string();
+        part.push(".part");
+        fs::create_dir(&part).unwrap();
+        save(&copy, "b.example\n", Some("\"v2\"")).unwrap();
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "b.example\n");
+        assert!(!tag(&copy).exists(), "the tag of the previous copy is gone");
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
