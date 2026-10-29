@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use common::{a, insert, key_of, lookup, query, response};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
-use dedens_proto::{Rcode, RecordType};
+use dedens_proto::{Query, Rcode, RecordType};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
 /// A cache whose counters go to the recorder behind the returned snapshotter.
@@ -80,6 +80,30 @@ fn lookups_count_by_outcome() {
     ];
     let expected: HashMap<String, u64> = expected.map(|(name, n)| (name.to_owned(), n)).into();
     assert_eq!(counters(&metrics), expected);
+}
+
+/// A miss served from what it stored counts as the miss alone, not as a hit too.
+#[test]
+fn serving_what_was_just_stored_counts_no_lookup() {
+    let (cache, metrics) = recorded(Config::default());
+    let q = query(1, "example.com.", RecordType::A);
+    let r = response(
+        "example.com.",
+        RecordType::A,
+        Rcode::NOERROR,
+        vec![a("example.com.", 100, 1)],
+        vec![],
+    );
+    assert_eq!(lookup(&cache, &q, 0, StalePolicy::Never).0, Lookup::Miss);
+    insert(&cache, &q, &r, 0).unwrap();
+    let query = Query::read(&q).unwrap();
+    assert!(cache.stored(&query, 0, &mut [0; 512]).is_some());
+    // Under 10% of the TTL left: still no prefetch asked.
+    assert!(cache.stored(&query, 95, &mut [0; 512]).is_some());
+    let counters = counters(&metrics);
+    assert_eq!(counters["dedens_cache_lookups_total{outcome=miss}"], 1);
+    assert_eq!(counters["dedens_cache_lookups_total{outcome=hit}"], 0);
+    assert_eq!(counters["dedens_cache_prefetches_total"], 0);
 }
 
 #[test]

@@ -401,6 +401,75 @@ fn only_hits_keep_an_entry() {
     );
 }
 
+/// What a server does on a miss: store the response, then serve it from the cache (`Cache::stored`).
+fn store_and_serve(cache: &Cache, name: &str) -> Vec<u8> {
+    let q = query(1, name, RecordType::A);
+    let r = response(
+        name,
+        RecordType::A,
+        Rcode::NOERROR,
+        vec![a(name, 600, 1)],
+        vec![],
+    );
+    insert(cache, &q, &r, T0).expect("a response to store");
+    let mut out = [0; 512];
+    let hit = cache
+        .stored(&Query::read(&q).expect("a valid query"), T0, &mut out)
+        .expect("the response just stored");
+    let served = Message::decode(&out[..hit.len])
+        .expect("a served response decodes")
+        .message;
+    assert_eq!(served.answer.len(), 1);
+    q
+}
+
+/// Serving the response just stored is no use of it: names asked once still go first, and names asked again
+/// survive a scan of one-off names (S3-FIFO).
+#[test]
+fn serving_what_was_just_stored_keeps_scan_resistance() {
+    let cache = Cache::new(Config {
+        capacity: 64 << 10,
+        shards: 1,
+        ..Config::default()
+    })
+    .unwrap();
+    let warm: Vec<_> = (0..40)
+        .map(|i| store_and_serve(&cache, &format!("warm{i}.example")))
+        .collect();
+    for q in &warm {
+        assert!(matches!(lookup(&cache, q, T0, NEVER).0, Lookup::Hit(_)));
+    }
+    for i in 0..5_000 {
+        store_and_serve(&cache, &format!("cold{i}.example"));
+    }
+    for q in &warm {
+        assert!(matches!(lookup(&cache, q, T0, NEVER).0, Lookup::Hit(_)));
+    }
+}
+
+/// A stale hit leaves `Cache::STALE_ROOM` bytes for the caller's EDE option; a fresh one uses all of `out`.
+#[test]
+fn only_a_stale_hit_leaves_room_for_its_ede_option() {
+    let cache = small_cache();
+    let q = query(1, "www.example", RecordType::A);
+    insert(&cache, &q, &www(60, 20), T0).unwrap();
+    let (hit, _) = served(&cache, &q, T0, 512);
+    let len = hit.len;
+    assert!(!served(&cache, &q, T0, len).0.truncated);
+    let mut out = vec![0; len];
+    let found = cache.lookup(
+        &Query::read(&q).unwrap(),
+        T0 + 61,
+        StalePolicy::Always,
+        &mut out,
+    );
+    let Lookup::Hit(stale) = found else {
+        panic!("expected a stale hit, got {found:?}");
+    };
+    assert!(stale.truncated);
+    assert!(stale.len <= len - Cache::STALE_ROOM);
+}
+
 /// Threads inserting and looking up at once: every hit is whole and for its query, the budget holds.
 #[test]
 fn threads_share_the_cache() {

@@ -5,12 +5,18 @@ use std::borrow::Cow;
 
 use dedens_cache::{Cache, Freshness, Lookup, StalePolicy};
 use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
-use dedens_proto::{Header, Query, Rcode};
+use dedens_proto::{Edns, Header, Query, Rcode};
 
 use crate::reply::Client;
 
-/// An EDE option without text: option code and length, then the info code (RFC 8914 §2).
-const STALE_OPTION_LEN: usize = 6;
+/// How [`look`] reads the cache.
+#[derive(Clone, Copy)]
+pub(crate) enum Read {
+    /// A query asked: a use of its entry; expired data answers as the policy lets it.
+    Lookup(StalePolicy),
+    /// The response just stored for the query, served without counting a use ([`Cache::stored`]).
+    Stored,
+}
 
 /// Outcome of looking a query up.
 pub(crate) enum Looked {
@@ -28,29 +34,33 @@ pub(crate) enum Looked {
 /// for the query, flags set as [`Client::reply`] sets them, and our OPT record when the client sent one, with EDE 3
 /// (Stale Answer) or 19 (Stale NXDOMAIN Answer) on expired data (RFC 8767 §4, RFC 8914 §4.4).
 ///
-/// Expired data answers as `stale` lets it: while resolving the query fails, or once the client's timer ran out
-/// (RFC 8767 §5).
+/// Expired data answers as a [`Read::Lookup`] policy lets it: while resolving the query fails, or once the
+/// client's timer ran out (RFC 8767 §5).
 pub(crate) fn look(
     cache: &Cache,
     query: &Query<'_>,
     client: &Client<'_>,
     now: u32,
-    stale: StalePolicy,
+    read: Read,
     out: &mut [u8],
 ) -> Looked {
     let limit = client.limit().min(out.len());
     let edns = client.edns.as_ref().map(|_| client.our_edns());
-    // Room is kept for the larger OPT record, with the stale EDE option, since freshness is known only once found.
-    let opt = edns
-        .as_ref()
-        .map_or(0, |edns| edns.wire_len() + STALE_OPTION_LEN);
+    // Room is kept for our OPT record; a stale hit leaves room for its EDE option itself (`Cache::STALE_ROOM`).
+    let opt = edns.as_ref().map_or(0, Edns::wire_len);
     let Some(room) = limit.checked_sub(opt) else {
         return Looked::Miss;
     };
     if room < Cache::MIN_OUT {
         return Looked::Miss;
     }
-    let hit = match cache.lookup(query, now, stale, &mut out[..room]) {
+    let found = match read {
+        Read::Lookup(stale) => cache.lookup(query, now, stale, &mut out[..room]),
+        Read::Stored => cache
+            .stored(query, now, &mut out[..room])
+            .map_or(Lookup::Miss, Lookup::Hit),
+    };
+    let hit = match found {
         Lookup::Hit(hit) => hit,
         Lookup::Failed => return Looked::Failed,
         Lookup::Miss => return Looked::Miss,

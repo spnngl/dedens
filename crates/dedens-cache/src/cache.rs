@@ -96,14 +96,19 @@ impl Cache {
         &self.config
     }
 
+    /// Bytes a stale hit leaves free at the end of `out`: an EDE option without text, which the caller adds to its
+    /// OPT record (RFC 8914 §2, RFC 8767 §4). A fresh hit uses all of `out`.
+    pub const STALE_ROOM: usize = 6;
+
     /// Shortest `out` [`Cache::lookup`] takes: a header and the longest question, what a truncated response
-    /// keeps at least (RFC 2181 §9). A shorter buffer may turn a hit into [`Lookup::Miss`]; debug builds panic.
-    pub const MIN_OUT: usize = HEADER_LEN + MAX_NAME_LEN + 4;
+    /// keeps at least (RFC 2181 §9), and [`Cache::STALE_ROOM`]. A shorter buffer may turn a hit into
+    /// [`Lookup::Miss`]; debug builds panic.
+    pub const MIN_OUT: usize = HEADER_LEN + MAX_NAME_LEN + 4 + Self::STALE_ROOM;
 
     /// Looks the first question of `query` up at time `now` (seconds, any monotonic origin) and writes the
     /// response into `out`, patched for the query: its ID, RD and CD bits, question case, TTLs counted down.
     /// `out` is as long as the response may be, less the OPT record the caller appends, and at least
-    /// [`Cache::MIN_OUT`].
+    /// [`Cache::MIN_OUT`]; a stale hit leaves its last [`Cache::STALE_ROOM`] bytes free.
     ///
     /// A hit that fits `out` is copied and patched under the shard's lock, without decoding or allocating. One too
     /// large is decoded and encoded again without the records that do not fit, after the lock is released.
@@ -115,12 +120,32 @@ impl Cache {
         stale: StalePolicy,
         out: &mut [u8],
     ) -> Lookup {
-        let found = self.find(query, now, stale, out);
+        let found = self.find(query, now, stale, out, true);
         self.metrics.lookup(found);
         found
     }
 
-    fn find(&self, query: &Query<'_>, now: u32, stale: StalePolicy, out: &mut [u8]) -> Lookup {
+    /// Writes the response [`Cache::insert`] just stored for `query` at `now` into `out`, as [`Cache::lookup`]
+    /// writes a fresh hit. Not a use of the entry: no hit counted for eviction, so a name asked once stays the
+    /// first to go (S3-FIFO), and no lookup counted in the metrics, so a miss is not counted a hit too. `None` when
+    /// nothing fresh is stored for `query`.
+    #[must_use]
+    pub fn stored(&self, query: &Query<'_>, now: u32, out: &mut [u8]) -> Option<Hit> {
+        match self.find(query, now, StalePolicy::Never, out, false) {
+            Lookup::Hit(hit) => Some(hit),
+            Lookup::Failed | Lookup::Miss | Lookup::Expired => None,
+        }
+    }
+
+    /// [`Cache::lookup`] without the metrics; `used` counts a hit and may ask for a prefetch.
+    fn find(
+        &self,
+        query: &Query<'_>,
+        now: u32,
+        stale: StalePolicy,
+        out: &mut [u8],
+        used: bool,
+    ) -> Lookup {
         debug_assert!(
             out.len() >= Self::MIN_OUT,
             "lookup takes at least Cache::MIN_OUT bytes"
@@ -129,6 +154,7 @@ impl Cache {
             return Lookup::Miss;
         };
         let (hash, shard) = self.shard(&key);
+        let mut end = out.len();
         let (freshness, ttl, large) = {
             let mut shard = lock(shard);
             let Some(entry) = shard.get(hash, key.as_bytes()) else {
@@ -144,7 +170,7 @@ impl Cache {
             };
             let (ttl, freshness) = if now < response.expires {
                 let prefetch =
-                    !entry.prefetched && response.ending(now, self.config.prefetch_percent);
+                    used && !entry.prefetched && response.ending(now, self.config.prefetch_percent);
                 entry.prefetched |= prefetch;
                 (response.left(now), Freshness::Fresh { prefetch })
             } else if now < response.stale_until {
@@ -164,9 +190,14 @@ impl Cache {
             } else {
                 return nothing;
             };
-            let served = response.serve(query, ttl, out);
+            if matches!(freshness, Freshness::Stale) {
+                end = end.saturating_sub(Self::STALE_ROOM);
+            }
+            let served = response.serve(query, ttl, &mut out[..end]);
             let large = served.is_none().then(|| response.share());
-            entry.hit();
+            if used {
+                entry.hit();
+            }
             if let Some(len) = served {
                 return Lookup::Hit(Hit {
                     len,
@@ -177,7 +208,7 @@ impl Cache {
             (freshness, ttl, large)
         };
         // Too large for the client: the slow path, outside the lock.
-        match large.and_then(|large| large.serve_truncated(query, ttl, out)) {
+        match large.and_then(|large| large.serve_truncated(query, ttl, &mut out[..end])) {
             Some(encoded) => Lookup::Hit(Hit {
                 len: encoded.len,
                 freshness,

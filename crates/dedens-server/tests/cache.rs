@@ -66,6 +66,27 @@ fn a_second_query_is_answered_from_the_cache() {
     assert_eq!(ttls(&second), counted_down);
 }
 
+/// A fresh hit keeps no room for the EDE option only a stale one carries: one that just fits the client's size
+/// goes out whole (RFC 2181 §9: TC only when records are dropped).
+#[test]
+fn a_fresh_hit_that_just_fits_is_whole() {
+    let response = captured("txt_large");
+    let pipeline = caching();
+    let mut query = query_for(&response);
+    let _ = ask(&pipeline, &query, 0, &[Some(&response)]);
+    let whole = run_at(&pipeline, &wire(&query), Transport::Udp, 0, &[])
+        .reply
+        .expect("a hit");
+    let whole_answer = decode(&whole).answer.len();
+    let fits = u16::try_from(whole.len()).expect("a UDP size");
+    assert!(fits > 512, "a size the client may ask for");
+    query.edns.as_mut().expect("EDNS").udp_payload = fits;
+    let (reply, asked) = ask(&pipeline, &query, 0, &[]);
+    assert_eq!(asked, 0);
+    assert!(!reply.header.flags.contains(Flags::TC));
+    assert_eq!(reply.answer.len(), whole_answer);
+}
+
 #[test]
 fn a_query_without_edns_gets_no_opt_record_from_the_cache() {
     let response = captured("a");

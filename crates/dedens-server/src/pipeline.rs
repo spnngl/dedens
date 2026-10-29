@@ -10,7 +10,7 @@ use dedens_cache::{Cache, Key, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport};
 
-use crate::cache::{self, Looked};
+use crate::cache::{self, Looked, Read};
 use crate::forward::{self, Forward};
 use crate::plugin::Plugin;
 use crate::reply::Client;
@@ -153,22 +153,25 @@ impl Pipeline {
         let mut expired = false;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
-                Stage::Cache(stored) => match cache::look(stored, query, client, now, stale, out) {
-                    Looked::Reply { len, refresh } => {
-                        if refresh
-                            && let Some(upstream) = self.upstream(index, query, client, Some(index))
-                        {
-                            upstream.purpose.set(Purpose::Prefetch);
-                            return Step::Refresh(len, upstream);
+                Stage::Cache(stored) => {
+                    match cache::look(stored, query, client, now, Read::Lookup(stale), out) {
+                        Looked::Reply { len, refresh } => {
+                            if refresh
+                                && let Some(upstream) =
+                                    self.upstream(index, query, client, Some(index))
+                            {
+                                upstream.purpose.set(Purpose::Prefetch);
+                                return Step::Refresh(len, upstream);
+                            }
+                            return Step::Reply(len);
                         }
-                        return Step::Reply(len);
+                        Looked::Failed if recursion => {
+                            return reply(client, Message::default(), Rcode::SERVFAIL, out);
+                        }
+                        Looked::Failed | Looked::Miss => cache = Some(index),
+                        Looked::Expired => (cache, expired) = (Some(index), true),
                     }
-                    Looked::Failed if recursion => {
-                        return reply(client, Message::default(), Rcode::SERVFAIL, out);
-                    }
-                    Looked::Failed | Looked::Miss => cache = Some(index),
-                    Looked::Expired => (cache, expired) = (Some(index), true),
-                },
+                }
                 Stage::Plugin(plugin) => {
                     if let Some(answer) = plugin.answer(query) {
                         return client
@@ -257,9 +260,14 @@ impl Pipeline {
         let cache = self.cache(upstream.cache?)?;
         let query = Query::read(&upstream.query).ok()?;
         let client = Client::of(&query, upstream.transport);
-        let Looked::Reply { len, .. } =
-            cache::look(cache, &query, &client, now, StalePolicy::Always, out)
-        else {
+        let Looked::Reply { len, .. } = cache::look(
+            cache,
+            &query,
+            &client,
+            now,
+            Read::Lookup(StalePolicy::Always),
+            out,
+        ) else {
             return None;
         };
         upstream.purpose.set(Purpose::Stale);
@@ -292,15 +300,16 @@ impl Pipeline {
             .and_then(|wire| Message::decode(wire).ok())
             .filter(forward::usable)
         {
-            // A stored response answers as a hit does, without encoding it again. Some are not stored (RFC 2308,
-            // D22): the reply goes out all the same.
+            // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
+            // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
+            // the same.
             let stored = cache.filter(|cache| cache.insert(&query, &decoded, now).is_ok());
             if purpose != Purpose::Reply {
                 return Step::Drop;
             }
             if let Some(cache) = stored
                 && let Looked::Reply { len, .. } =
-                    cache::look(cache, &query, &client, now, StalePolicy::Never, out)
+                    cache::look(cache, &query, &client, now, Read::Stored, out)
             {
                 return Step::Reply(len);
             }
@@ -324,8 +333,14 @@ impl Pipeline {
         {
             cache.fail(&key, now);
             if purpose == Purpose::Reply
-                && let Looked::Reply { len, .. } =
-                    cache::look(cache, &query, &client, now, StalePolicy::IfFailing, out)
+                && let Looked::Reply { len, .. } = cache::look(
+                    cache,
+                    &query,
+                    &client,
+                    now,
+                    Read::Lookup(StalePolicy::IfFailing),
+                    out,
+                )
             {
                 return Step::Reply(len);
             }

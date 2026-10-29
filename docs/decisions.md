@@ -319,9 +319,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D43 (amended by D45, D46) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
   seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
   is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
-  OPT when the query had one; room for the OPT with an EDE option is kept before the lookup, since freshness is
-  known only after. A miss runs the later stages, and the forward stage's usable response is stored under the
-  client's query (its DO and CD bits), then answers as a hit, not encoded again (`miss` bench, mx: 1.5 → 1.1 µs);
+  OPT when the query had one; room for the OPT is kept before the lookup, and a stale hit leaves 6 more bytes for
+  its EDE option (`Cache::STALE_ROOM`), since freshness is known only after. A miss runs the later stages, and the
+  forward stage's usable response is stored under the client's query (its DO and CD bits), then answers as a hit,
+  not encoded again (`miss` bench, mx: 1.5 → 1.1 µs), through `Cache::stored`: no use counted for eviction nor in
+  the lookup metrics, else every name asked once would look asked twice, defeating S3-FIFO's scan resistance;
   unstored responses (D22) are still the reply, encoded. After the last server fails, the failure is held (RFC 9520
   §3.2); during a hold the reply is SERVFAIL, upstream unasked. Expired data answers while failing
   (`StalePolicy::IfFailing`), and on the client timer (D45): after the last server fails, and during the hold, with

@@ -112,8 +112,13 @@ No decoding and no allocation. A response larger than `out` (a client's small UD
 `Arc` is cloned under the lock, and after the lock is released the bytes are copied, decoded and encoded again
 truncated (RFC 2181 §9: TC set only when answer or authority records were dropped).
 
-`out` must hold at least `Cache::MIN_OUT` bytes (a header and the longest question) and be as long as the reply may
-be, less the room the caller keeps for its OPT record.
+`out` must hold at least `Cache::MIN_OUT` bytes (a header, the longest question and `Cache::STALE_ROOM`) and be as
+long as the reply may be, less the room the caller keeps for its OPT record. A stale hit leaves its last
+`Cache::STALE_ROOM` bytes (6) free for the EDE option the caller adds (RFC 8914 §2).
+
+`Cache::stored` serves the response `insert` just stored, as a fresh hit, without counting a use: no `freq` raised,
+no prefetch asked, no lookup in the metrics. A server answering a miss from the cache calls it, so a name asked once
+stays the first evicted.
 
 ## Time
 
