@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as Slot;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use dedens_proto::name::MAX_NAME_LEN;
 use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, Ttl};
@@ -43,8 +43,8 @@ struct Pending {
 impl Hosts {
     /// The hosts of `text`, in the format of `/etc/hosts`: on each line an address, then its canonical name and
     /// any aliases, `#` starting a comment. All names get the address; the canonical name is the PTR record of
-    /// its first line. Lines of an address with a zone (`fe80::1%lo0`) are left out: a zone means nothing beyond
-    /// the host. Every record has `ttl`.
+    /// its first line. Lines of an IPv6 address with a zone (`fe80::1%lo0`) are left out: a zone means nothing
+    /// beyond the host. Every record has `ttl`.
     ///
     /// # Errors
     ///
@@ -55,7 +55,10 @@ impl Hosts {
         let mut buf = [0; MAX_NAME_LEN];
         for (line, mut fields) in text::lines(text) {
             let field = fields.next().unwrap_or_default();
-            if field.contains('%') {
+            if field
+                .split_once('%')
+                .is_some_and(|(address, _)| address.parse::<Ipv6Addr>().is_ok())
+            {
                 continue;
             }
             let address: IpAddr = field.parse().map_err(|_| LineError {

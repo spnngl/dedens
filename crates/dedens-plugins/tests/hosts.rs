@@ -123,6 +123,11 @@ fn unreadable_lines_are_errors() {
             LineErrorKind::Address("127.0.0.256".to_owned()),
         ),
         ("# none\n\n192.0.2.1  # no name", 3, LineErrorKind::NoName),
+        (
+            "192.0.2.1%eth0 a.example",
+            1,
+            LineErrorKind::Address("192.0.2.1%eth0".to_owned()),
+        ),
     ] {
         assert_eq!(
             Hosts::new(text, Ttl::ZERO, false).map(|_| ()),
