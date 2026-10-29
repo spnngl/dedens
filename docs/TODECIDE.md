@@ -49,10 +49,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.
-- Blocklists downloaded from URLs and refreshed, with allow-exceptions. A refresh replaces only the list, as
-  HAProxy's `prepare map` and `commit` do, keeping the pipeline and its cache. Then a compact list (names in one
-  buffer with a table of offsets, or 64-bit hashes only, against a `HashSet` of boxed names), with a bench and
-  its memory on a real downloaded list.
 - A systemd-resolved replacement plugin for desktop Linux: the stub on 127.0.0.53, per-link servers and
   routing domains pushed over D-Bus `org.freedesktop.resolve1` by NetworkManager and systemd-networkd,
   `stub-resolv.conf`, `/etc/hosts`, the synthesized names (localhost, the hostname, `_gateway`). Default:
