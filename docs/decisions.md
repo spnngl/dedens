@@ -348,7 +348,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
 - D44 (amended by D64) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
-  files; `listen` addresses, `zero_buffers` (D52), `pipeline` (stage names in order), `stages` (name to settings
+  files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53).
   `${VAR}` is replaced in the text before YAML reads it; a value spanning lines is refused, as it would add YAML.
   Errors: unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
@@ -410,7 +410,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
   forwarding 155k → 82k).
-- D52 A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
+- D52 (superseded by D63) A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
   earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
   configuration: no byte of an earlier reply stays in it, should a bug ever send past the reply's length (the
   encoder writes before it reads, so nothing leaks today). Only these spare buffers are: the buffer each UDP
@@ -418,6 +418,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   bytes past the current one's length; whether to zero or drop them is open. Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
   84k zeroing new buffers → 90k-92k reusing them unzeroed; zeroing them again costs part of it (79k-88k against
   87k-90k). Rejected: skipping the zeroing of new buffers (uninitialized memory behind `unsafe`).
+- D63 (supersedes D52) A `dedensd` thread makes its TCP replies and its replies after upstream in one 65535-byte
+  buffer, allocated at its start, and copies each reply's bytes out to send them: behind its length for TCP, as
+  framing already copied it. Making a reply never waits, so the buffer is borrowed only meanwhile and one serves
+  every task. Only a reply's bytes leave it, never those of an earlier reply, so there is nothing to zero:
+  `zero_buffers`, the spare buffers and each TCP connection's own 65535-byte buffer (16 MiB a thread at 256
+  connections) are gone. Each UDP task keeps its 1232-byte buffer for the replies it makes at once: it is owned
+  by the send in flight and reused, and only the reply's length is sent. Forwarding over TCP (`just
+  bench-dnsperf HEAD forward-tcp`): 230k-270k → 303k-305k queries/s; over UDP and from the cache unchanged.
 - D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
   as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
   (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
@@ -447,7 +455,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
   started on. The cache stage is an `Arc<Cache>` kept while its settings are unchanged, else a new empty one. A
   file that does not read, or a hosts or blocklist file it names, leaves the running pipeline and logs an error;
-  `listen` and `zero_buffers` take a restart (a warning), as does the thread count. Counted in
+  `listen` takes a restart (a warning), as does the thread count. Counted in
   `dedensd_reloads_total{result="ok|error"}`. The handler comes from `signal-hook`, installed before the
   server logs that it serves, so no SIGHUP ends the process. Rejected: compio's `signal`, which restores the
   default action between two waits, so a second SIGHUP during a reload would end the process; `arc-swap`,

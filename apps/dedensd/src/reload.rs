@@ -50,7 +50,6 @@ impl Current {
 #[derive(Debug)]
 pub(crate) struct Fixed {
     pub(crate) listen: Vec<SocketAddr>,
-    pub(crate) zero_buffers: bool,
 }
 
 /// The first wait after a failed download; each failure in a row doubles it, up to the refresh interval.
@@ -159,8 +158,8 @@ fn reload(
     .unwrap_or_else(|| Err(anyhow::anyhow!("the reload panicked")));
     match built {
         Ok(new) => {
-            if new.listen != fixed.listen || new.zero_buffers != fixed.zero_buffers {
-                tracing::warn!(%config, "changes to `listen` and `zero_buffers` take a restart");
+            if new.listen != fixed.listen {
+                tracing::warn!(%config, "changes to `listen` take a restart");
             }
             current.replace(new.pipeline);
             metrics::counter!(RELOADS, "result" => "ok").increment(1);

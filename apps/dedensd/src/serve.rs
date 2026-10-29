@@ -115,9 +115,6 @@ const TCP_QUEUED: usize = 128 << 10;
 /// none is left: a client that reads slower than it asks loses its connection (RFC 7766 §10).
 const TCP_WRITE: Duration = Duration::from_secs(10);
 
-/// Reply buffers of 65535 bytes a thread keeps for TCP queries answered after upstream: 2 MiB.
-const TCP_SPARE_BUFFERS: usize = 32;
-
 /// What the tasks of one thread share.
 struct Thread {
     current: Arc<Current>,
@@ -131,24 +128,21 @@ struct Thread {
     client: Client,
     upstream: Slots,
     connections: Slots,
-    /// Reply buffers for TCP, given back once their reply is queued.
-    spare: RefCell<Vec<Vec<u8>>>,
-    /// Whether a spare buffer is zeroed before reuse, so no byte of an earlier reply stays in it (D52). The
-    /// buffer each UDP task and each TCP connection reuse for the replies made at once is not zeroed.
-    zero_buffers: bool,
+    /// The buffer TCP replies and replies after upstream are made in, of a message's largest size (D63): making
+    /// one never waits, so one buffer serves every task, borrowed only while a reply is made and copied out.
+    scratch: RefCell<Box<[u8]>>,
 }
 
 impl Thread {
     /// The state of a thread serving the pipeline of `current`, with room for `upstream_queries`.
-    fn new(current: Arc<Current>, upstream_queries: usize, zero_buffers: bool) -> Self {
+    fn new(current: Arc<Current>, upstream_queries: usize) -> Self {
         Self {
             pipeline: RefCell::new((current.generation(), Rc::new(current.get()))),
             current,
             client: Client::new(),
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
-            spare: RefCell::default(),
-            zero_buffers,
+            scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
         }
     }
 
@@ -164,28 +158,6 @@ impl Thread {
             *held = (generation, Rc::new(self.current.get()));
         }
         Rc::clone(&held.1)
-    }
-
-    /// A reply buffer of `size` bytes: a spare one for TCP's size, zeroed unless the configuration says not to,
-    /// else a new one.
-    fn buffer(&self, size: usize) -> Vec<u8> {
-        if size == MAX_MESSAGE_LEN
-            && let Some(mut spare) = self.spare.borrow_mut().pop()
-        {
-            if self.zero_buffers {
-                spare.fill(0);
-            }
-            return spare;
-        }
-        vec![0; size]
-    }
-
-    /// Keeps `buffer` for [`Thread::buffer`] when it has TCP's size and room is left.
-    fn give_back(&self, buffer: Vec<u8>) {
-        let mut spare = self.spare.borrow_mut();
-        if buffer.len() == MAX_MESSAGE_LEN && spare.len() < TCP_SPARE_BUFFERS {
-            spare.push(buffer);
-        }
     }
 }
 
@@ -238,18 +210,13 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
     Runtime::builder().with_proactor(proactor).build()
 }
 
-/// Answers on `sockets` with the pipeline of `current`, zeroing spare reply buffers when `zero_buffers`, until the
-/// end of the process.
+/// Answers on `sockets` with the pipeline of `current`, until the end of the process.
 ///
 /// # Errors
 ///
 /// A socket the runtime cannot take, or a task answering on one ended: it panicked.
-pub(crate) async fn serve(
-    sockets: Sockets,
-    current: Arc<Current>,
-    zero_buffers: bool,
-) -> io::Result<()> {
-    let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, zero_buffers));
+pub(crate) async fn serve(sockets: Sockets, current: Arc<Current>) -> io::Result<()> {
+    let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES));
     let mut tasks = Vec::new();
     for (udp_socket, tcp_listener) in sockets {
         let socket = UdpSocket::from_std(udp_socket.into())?;
@@ -335,9 +302,11 @@ async fn udp_queries(
         };
         let (socket, thread) = (Rc::clone(socket), Rc::clone(thread));
         spawn(async move {
-            let deliver = async |out, len| send(&socket, out, len, peer).await;
-            let size = usize::from(DEFAULT_UDP_PAYLOAD);
-            answer(&thread, &pipeline, upstream, Transport::Udp, size, deliver).await;
+            let deliver = async |reply: Vec<u8>| {
+                let len = reply.len();
+                send(&socket, reply, len, peer).await;
+            };
+            answer(&thread, &pipeline, upstream, Transport::Udp, deliver).await;
             drop(slot);
         })
         .detach();
@@ -397,7 +366,6 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
     // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
     let (pending, done) = flume::bounded::<()>(TCP_PENDING);
     let mut reader = BufReader::new(reader);
-    let mut out = vec![0; MAX_MESSAGE_LEN];
     'read: loop {
         while replies.queued.get() > TCP_QUEUED {
             if wait_room.recv_async().await.is_err() {
@@ -408,49 +376,45 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
             break;
         };
         let pipeline = thread.pipeline();
-        let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
-            Step::Reply(len) => {
-                if replies.push(&out[..len]) {
-                    continue;
-                }
-                break;
-            }
-            Step::Drop => continue,
-            Step::Upstream(upstream) => upstream,
-            Step::Refresh(len, upstream) => {
-                if !replies.push(&out[..len]) {
+        // The thread's buffer is borrowed until the replies made are queued, before any wait.
+        let (upstream, slot) = {
+            let mut out = thread.scratch.borrow_mut();
+            let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
+                Step::Reply(len) => {
+                    if replies.push(&out[..len]) {
+                        continue;
+                    }
                     break;
                 }
-                upstream
-            }
-        };
-        let Some(slot) = thread.upstream.take() else {
-            tracing::debug!("too many upstream queries: SERVFAIL");
-            if let Step::Reply(len) = pipeline.abandon(&upstream, &mut out)
-                && !replies.push(&out[..len])
-            {
-                break;
-            }
-            continue;
+                Step::Drop => continue,
+                Step::Upstream(upstream) => upstream,
+                Step::Refresh(len, upstream) => {
+                    if !replies.push(&out[..len]) {
+                        break;
+                    }
+                    upstream
+                }
+            };
+            let Some(slot) = thread.upstream.take() else {
+                tracing::debug!("too many upstream queries: SERVFAIL");
+                if let Step::Reply(len) = pipeline.abandon(&upstream, &mut out)
+                    && !replies.push(&out[..len])
+                {
+                    break;
+                }
+                continue;
+            };
+            (upstream, slot)
         };
         if pending.send_async(()).await.is_err() {
             break;
         }
         let (replies, done, thread) = (replies.clone(), done.clone(), Rc::clone(thread));
         spawn(async move {
-            let deliver = async |out: Vec<u8>, len| {
-                replies.push(&out[..len]);
-                out
+            let deliver = async |framed| {
+                replies.queue(framed);
             };
-            answer(
-                &thread,
-                &pipeline,
-                upstream,
-                Transport::Tcp,
-                MAX_MESSAGE_LEN,
-                deliver,
-            )
-            .await;
+            answer(&thread, &pipeline, upstream, Transport::Tcp, deliver).await;
             drop(slot);
             let _ = done.try_recv();
         })
@@ -510,9 +474,11 @@ impl Replies {
     /// once the writer gave up.
     fn push(&self, wire: &[u8]) -> bool {
         // A reply fits 65535 bytes.
-        let Some(framed) = frame(wire) else {
-            return true;
-        };
+        frame(wire).is_none_or(|framed| self.queue(framed))
+    }
+
+    /// Queues `framed`, a reply behind its length, as [`Replies::push`] does.
+    fn queue(&self, framed: Vec<u8>) -> bool {
         let len = framed.len();
         let sent = self.sender.send(framed).is_ok();
         if sent {
@@ -523,16 +489,15 @@ impl Replies {
 }
 
 /// Asks the upstream servers for `upstream`, from `pipeline`, in turn, over `transport`, the client's, each with the forward stage's
-/// timeout and tries (D42), and hands `deliver` the replies to send, in a buffer of `size` bytes taken only then:
-/// expired data when the client response timer runs out first, resolution going on to refresh the cache (RFC 8767
-/// §5), then the response's unless that went out; none after a prefetch. `deliver` gives the buffer back.
+/// timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
+/// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
+/// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch.
 async fn answer(
     thread: &Thread,
     pipeline: &Pipeline,
     mut upstream: Box<Upstream>,
     transport: Transport,
-    size: usize,
-    mut deliver: impl AsyncFnMut(Vec<u8>, usize) -> Vec<u8>,
+    mut deliver: impl AsyncFnMut(Vec<u8>),
 ) {
     let mut options = Options::default();
     options.transport = transport;
@@ -540,8 +505,6 @@ async fn answer(
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;
     let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
-    // Pending queries wait seconds: the buffer is made when a reply is.
-    let mut out = Vec::new();
     loop {
         let server = upstream.server();
         let response = 'ask: {
@@ -552,40 +515,55 @@ async fn answer(
                     break 'ask response;
                 }
                 stale_at = None;
-                if out.is_empty() {
-                    out = thread.buffer(size);
-                }
-                if let Some(len) = pipeline.stale(&mut upstream, now(), &mut out) {
-                    out = deliver(out, len).await;
+                let stale = {
+                    let mut out = thread.scratch.borrow_mut();
+                    let len = pipeline.stale(&mut upstream, now(), &mut out);
+                    len.and_then(|len| copy_out(&out[..len], transport))
+                };
+                if let Some(reply) = stale {
+                    deliver(reply).await;
                 }
             }
             exchange.await
         };
-        if out.is_empty() {
-            out = thread.buffer(size);
-        }
-        let step = match &response {
-            Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
-            Err(error) if error.is_local() => {
-                tracing::warn!(%error, %server, "upstream query not sent");
-                pipeline.abandon(&upstream, &mut out)
-            }
-            Err(error) => {
-                tracing::debug!(%error, %server, "upstream");
-                pipeline.receive(upstream, None, now(), &mut out)
+        let (reply, next) = {
+            let mut out = thread.scratch.borrow_mut();
+            let step = match &response {
+                Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
+                Err(error) if error.is_local() => {
+                    tracing::warn!(%error, %server, "upstream query not sent");
+                    pipeline.abandon(&upstream, &mut out)
+                }
+                Err(error) => {
+                    tracing::debug!(%error, %server, "upstream");
+                    pipeline.receive(upstream, None, now(), &mut out)
+                }
+            };
+            match step {
+                Step::Reply(len) | Step::Refresh(len, _) => {
+                    (copy_out(&out[..len], transport), None)
+                }
+                Step::Drop => (None, None),
+                Step::Upstream(next) => (None, Some(next)),
             }
         };
-        match step {
-            Step::Reply(len) | Step::Refresh(len, _) => {
-                thread.give_back(deliver(out, len).await);
-                return;
-            }
-            Step::Drop => {
-                thread.give_back(out);
-                return;
-            }
-            Step::Upstream(next) => upstream = next,
+        if let Some(reply) = reply {
+            deliver(reply).await;
         }
+        let Some(next) = next else {
+            return;
+        };
+        upstream = next;
+    }
+}
+
+/// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length for TCP.
+/// Only its bytes leave the buffer, never those of an earlier reply.
+fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
+    if transport == Transport::Tcp {
+        frame(wire)
+    } else {
+        Some(wire.to_vec())
     }
 }
 
@@ -628,11 +606,7 @@ mod tests {
     fn a_tcp_query_without_upstream_room_gets_servfail() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
         let config = crate::config::read(text, |_| None, &Pipeline::default()).expect("read");
-        let thread = Rc::new(Thread::new(
-            Arc::new(Current::new(config.pipeline)),
-            0,
-            true,
-        ));
+        let thread = Rc::new(Thread::new(Arc::new(Current::new(config.pipeline)), 0));
         let name = "example.com.".parse().expect("a name");
         let query = Message::query(1, Question::new(name, RecordType::A))
             .to_vec()

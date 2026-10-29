@@ -3,7 +3,6 @@
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53"]
-//! zero_buffers: true
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
@@ -52,9 +51,6 @@ use crate::download;
 struct File {
     /// Addresses answered on, over UDP and TCP.
     listen: Vec<SocketAddr>,
-    /// Whether a spare TCP reply buffer is zeroed before reuse (D52); `true` unless set. The buffer each UDP task
-    /// and TCP connection reuses for replies made at once is not zeroed.
-    zero_buffers: Option<bool>,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
@@ -168,7 +164,6 @@ impl TryFrom<String> for Server {
 #[derive(Debug)]
 pub(crate) struct Config {
     pub(crate) listen: Vec<SocketAddr>,
-    pub(crate) zero_buffers: bool,
     pub(crate) pipeline: Pipeline,
     pub(crate) downloads: Downloads,
 }
@@ -282,7 +277,6 @@ pub(crate) fn read(
     }
     Ok(Config {
         listen: file.listen,
-        zero_buffers: file.zero_buffers.unwrap_or(true),
         pipeline: Pipeline::new(built),
         downloads,
     })
@@ -547,17 +541,6 @@ mod tests {
         let config = read(text, env, &Pipeline::default()).unwrap();
         assert_eq!(config.listen, ["127.0.0.1:5353".parse().unwrap()]);
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
-    }
-
-    #[test]
-    fn buffers_are_zeroed_unless_set_not_to() {
-        assert!(
-            read(MINIMAL, env, &Pipeline::default())
-                .unwrap()
-                .zero_buffers
-        );
-        let text = format!("zero_buffers: false\n{MINIMAL}");
-        assert!(!read(&text, env, &Pipeline::default()).unwrap().zero_buffers);
     }
 
     #[test]

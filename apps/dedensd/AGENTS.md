@@ -12,4 +12,4 @@ answering captured bytes (`tests/common/mod.rs`), reading its events as JSON, th
 `tests/lists.rs` serves lists from a loopback HTTP server.
 
 Measure a change to `src/serve.rs` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it
-in `docs/benchmarks.md`; `zero_buffers` (D52) trades safety for TCP forwarding speed.
+in `docs/benchmarks.md`.

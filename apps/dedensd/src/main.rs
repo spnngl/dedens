@@ -74,7 +74,6 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let current = Arc::new(Current::new(config.pipeline));
-    let zero_buffers = config.zero_buffers;
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..threads())
         .map(|_| serve::bind(&config.listen))
@@ -87,7 +86,6 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&current),
         Fixed {
             listen: config.listen,
-            zero_buffers,
         },
         config.downloads,
     )
@@ -98,9 +96,8 @@ fn main() -> anyhow::Result<()> {
         let (current, ended) = (Arc::clone(&current), ended.clone());
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
-                serve::runtime().and_then(|runtime| {
-                    runtime.block_on(serve::serve(sockets, current, zero_buffers))
-                })
+                serve::runtime()
+                    .and_then(|runtime| runtime.block_on(serve::serve(sockets, current)))
             }));
             let _ =
                 ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
