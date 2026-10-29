@@ -1,7 +1,7 @@
 # dedens-cache
 
-The server's response cache (D22). Read `README.md` before changing it: key, layout, insert rules, hit patching,
-time states, S3-FIFO eviction, memory and complexity. Update it in the same change as the behaviour it describes.
+The server's response cache (D22). The rustdoc holds its rules; `README.md` the memory an entry costs and the
+complexity of each operation: update both in the same change as the behaviour they describe.
 
 Sans-IO: the caller passes the time in seconds, so tests drive the clock. Speed is benched in
 `crates/dedens-bench/benches/cache.rs`. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in

@@ -87,7 +87,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   or a few % faster. Rejected: `#[repr(C, packed)]` native integers (a byte swap per read on little-endian
   CPUs anyway, references to fields refused, `unsafe` to cast the input); a `union` of RDATA (no tag, `unsafe`
   reads, and names, strings and lists cannot be laid over the wire: `RData` is that union with its tag, read
-  on demand, D28). Names stay hand-parsed: their length varies and they may point elsewhere.
+  on demand, D28); one `Reader::array::<N>` read per layout split into fields by hand, the same single bounds
+  check without the crate: not measured, as the gains above are against the former six reads of one field each,
+  so zerocopy is kept by owner decision, not by a measured gain over it. Names stay hand-parsed: their length
+  varies and they may point elsewhere.
 
 ## Transports
 
@@ -373,11 +376,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
 - D47 (amended by D64) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
-  UDP query is dropped, a TCP connection closed), 256 TCP connections (past them a new one is closed at once);
-  per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore) and 10 s to write a
-  reply (a client that stops reading loses its connection). A query waiting upstream holds no reply buffer until
-  a reply is made. Constants for now; configuration with need. Client allow and block lists come later
-  (`docs/TODECIDE.md`).
+  UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
+  per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
+  replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
+  it asks loses its connection). A query waiting upstream holds no reply buffer until a reply is made. Constants
+  for now; configuration with need. Client allow and block lists come later (`docs/TODECIDE.md`).
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
@@ -470,10 +473,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`/var/cache/dedensd`) under the 64-bit FNV-1a hash of its URL, written to a `.part` file then renamed, with
   its `ETag` beside it: a start or reload reads the copies and serves at once (a list not downloaded yet is
   empty), and fetching sends `If-None-Match`, so an unchanged list is neither downloaded nor read again (304).
-  A text replaces the copy only when it reads as a downloaded list (D56), at most 256 MB, within 30 s. Lists
-  are fetched once the server serves, on each SIGHUP after its reload, and every `downloads.refresh_minutes`
-  (1440, as numa and Pi-hole); a failure keeps the copy and retries after 1 min, doubling up to the interval. A
-  change rebuilds the pipeline as a reload does (D55; the cache kept). Counted in
+  An `https://` list is fetched with `https_only`: a redirect cannot take it to `http://`. A text replaces the
+  copy only when it reads as a downloaded list (D56), at most 256 MB, within 30 s. Lists are fetched once the
+  server serves, on each SIGHUP after its reload, and every `downloads.refresh_minutes` (1440, as numa and
+  Pi-hole); a failure keeps the copy and retries after 1 min, doubling up to the interval. A change rebuilds the
+  pipeline as a reload does (D55; the cache kept). Counted in
   `dedensd_list_fetches_total{result="changed|unchanged|error"}`. Later, with need: a list swapped alone instead
   of the pipeline, per-list intervals.
 - D58 A blocklist holds the 64-bit `SipHash` of each name's lowercase wire form under a key drawn per `Lists`
