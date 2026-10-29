@@ -68,6 +68,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 7830](https://datatracker.ietf.org/doc/html/rfc7830):** The EDNS(0) Padding Option
 * **[RFC 7858](https://datatracker.ietf.org/doc/html/rfc7858):** Specification for DNS over Transport Layer Security (DoT)
 * **[RFC 8310](https://datatracker.ietf.org/doc/html/rfc8310):** Usage Profiles for DNS over TLS and DNS over DTLS
+* **[RFC 8467](https://datatracker.ietf.org/doc/html/rfc8467):** Padding Policies for Extension Mechanisms for DNS (EDNS(0))
 * **[RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484):** DNS Queries over HTTPS (DoH)
 * **[RFC 8932](https://datatracker.ietf.org/doc/html/rfc8932):** Recommendations for DNS Privacy Service Operators
 * **[RFC 9103](https://datatracker.ietf.org/doc/html/rfc9103):** DNS Zone Transfer over TLS (XoT)

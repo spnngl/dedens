@@ -263,7 +263,7 @@ fn types_without_text_need_the_generic_form() {
     );
 }
 
-/// Character-strings in types without a typed form: HINFO (RFC 1035 \u00a73.3.2), NAPTR (RFC 3403 \u00a74.1), both as
+/// Character-strings in types without a typed form: HINFO (RFC 1035 §3.3.2), NAPTR (RFC 3403 §4.1), both as
 /// written by BIND and read back.
 #[test]
 fn character_strings_of_hinfo_and_naptr_read_back() {

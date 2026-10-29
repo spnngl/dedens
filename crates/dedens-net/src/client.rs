@@ -13,11 +13,13 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
 use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport, after};
-use crate::tcp::{TcpError, TcpPool};
+use crate::tcp::{Link, TcpError, TcpPool};
+use crate::tls::Trust;
 use crate::udp::{UdpPool, UdpQuery};
 
 /// How long a TCP connection stays open without a query waiting, unless the server asks for less (RFC 7766
@@ -43,8 +45,8 @@ pub enum ClientError {
     /// The UDP socket failed, for instance on an ICMP port unreachable.
     #[error("UDP")]
     Udp(#[source] io::Error),
-    /// The TCP connection failed.
-    #[error("TCP")]
+    /// The TCP or TLS connection failed.
+    #[error("connection")]
     Tcp(#[from] TcpError),
     /// The exchange ended without a response.
     #[error(transparent)]
@@ -58,7 +60,10 @@ impl ClientError {
     #[must_use]
     pub fn is_local(&self) -> bool {
         let io = match self {
-            Self::Random(_) | Self::Encode(_) | Self::Exchange(Failure::Encode(_)) => return true,
+            Self::Random(_)
+            | Self::Encode(_)
+            | Self::Tcp(TcpError::Trust(_))
+            | Self::Exchange(Failure::Encode(_)) => return true,
             Self::Udp(error) | Self::Tcp(TcpError::Connect(error)) => error,
             Self::Tcp(_) | Self::Exchange(Failure::TimedOut { .. }) => return false,
         };
@@ -75,7 +80,39 @@ impl ClientError {
     }
 }
 
-/// Sends queries and returns their responses, keeping TCP connections and cookies per server.
+/// A server to ask.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Server {
+    /// Its address.
+    pub addr: SocketAddr,
+    /// Over TLS, the name its certificate must hold, sent as SNI; without one, the certificate must hold its address
+    /// (RFC 8310 §8.1).
+    pub name: Option<ServerName<'static>>,
+}
+
+impl From<SocketAddr> for Server {
+    fn from(addr: SocketAddr) -> Self {
+        Self { addr, name: None }
+    }
+}
+
+impl Server {
+    /// The connection to it over `transport`, none over UDP.
+    fn link(&self, transport: Transport) -> Option<Link> {
+        match transport {
+            Transport::Udp => None,
+            Transport::Tcp => Some(Link::Tcp(self.addr)),
+            Transport::Tls => Some(Link::Tls(
+                self.addr,
+                self.name
+                    .clone()
+                    .unwrap_or_else(|| ServerName::IpAddress(self.addr.ip().into())),
+            )),
+        }
+    }
+}
+
+/// Sends queries and returns their responses, keeping TCP and TLS connections and cookies per server.
 #[derive(Debug)]
 pub struct Client {
     udp: UdpPool,
@@ -139,6 +176,15 @@ impl Client {
         }
     }
 
+    /// The client, its TLS connections trusting `trust`.
+    #[must_use]
+    pub fn trusting(self, trust: Trust) -> Self {
+        Self {
+            tcp: self.tcp.trusting(trust),
+            ..self
+        }
+    }
+
     /// Sends `query` to `server` and returns the response, with the retries and fallbacks of `options` (D27).
     ///
     /// The query goes with a random ID, and a cookie when it has EDNS and none of its own, unless
@@ -151,9 +197,11 @@ impl Client {
     pub async fn exchange(
         &self,
         query: &Message<'_>,
-        server: SocketAddr,
+        server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
+        let target = server.into();
+        let server = target.addr;
         let mut query = query.clone();
         // The ID, then the UDP socket of the pool.
         let random = self.random.borrow_mut().take::<4>()?;
@@ -162,8 +210,8 @@ impl Client {
         // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
         // so a late response to an earlier try still counts (D27).
         let mut udp = None;
-        let source = match options.transport {
-            Transport::Udp => {
+        let source = match target.link(options.transport) {
+            None => {
                 // Room for the largest response the query asks for (RFC 6891 §6.2.3); TCP takes any larger.
                 let size = query.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
                     edns.udp_payload.max(MIN_UDP_PAYLOAD)
@@ -175,9 +223,9 @@ impl Client {
                     .map_err(ClientError::Udp)?;
                 udp.insert(waiting).local_addr()
             }
-            Transport::Tcp => {
+            Some(link) => {
                 let deadline = after(Instant::now(), options.timeout);
-                self.tcp.local_addr(server, deadline).await?
+                self.tcp.local_addr(link, deadline).await?
             }
         };
         let pair = if options.cookies {
@@ -187,7 +235,7 @@ impl Client {
         };
         let mut exchange = Exchange::start(query, server, *options, Instant::now())?;
         let response = loop {
-            match self.step(exchange, udp.as_mut()).await? {
+            match self.step(exchange, &target, udp.as_mut()).await? {
                 Progress::Send(next) => {
                     self.keep_cookie(pair, next.cookie());
                     exchange = next;
@@ -215,49 +263,45 @@ impl Client {
     async fn step(
         &self,
         exchange: Exchange,
+        target: &Server,
         udp: Option<&mut UdpQuery>,
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
+        let transport = exchange.transport();
         trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
-        match exchange.transport() {
-            Transport::Udp => {
-                let channel =
-                    udp.expect("an exchange over UDP started over UDP, which took a socket");
-                // A fallback sends the query with the next ID (D27).
-                if let Some(&[high, low]) = exchange.wire().get(..2) {
-                    channel.expect(u16::from_be_bytes([high, low]));
-                }
-                channel
-                    .send(exchange.wire())
-                    .await
-                    .map_err(ClientError::Udp)?;
-                let mut exchange = exchange;
-                loop {
-                    let deadline = exchange.deadline();
-                    let Some(bytes) = channel.recv(deadline).await.map_err(ClientError::Udp)?
-                    else {
-                        return Ok(exchange.time_out(Instant::now().max(deadline)));
-                    };
-                    match exchange.receive(server, Transport::Udp, &bytes, Instant::now()) {
-                        Progress::Wait(next) => exchange = next,
-                        progress => return Ok(progress),
-                    }
-                }
+        let Some(link) = target.link(transport) else {
+            let channel = udp.expect("an exchange over UDP started over UDP, which took a socket");
+            // A fallback sends the query with the next ID (D27).
+            if let Some(&[high, low]) = exchange.wire().get(..2) {
+                channel.expect(u16::from_be_bytes([high, low]));
             }
-            Transport::Tcp => {
+            channel
+                .send(exchange.wire())
+                .await
+                .map_err(ClientError::Udp)?;
+            let mut exchange = exchange;
+            loop {
                 let deadline = exchange.deadline();
-                match self.tcp.exchange(server, exchange.wire(), deadline).await {
-                    Ok(bytes) => Ok(
-                        match exchange.receive(server, Transport::Tcp, &bytes, Instant::now()) {
-                            // Nothing else comes with that ID: the wait is over.
-                            Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
-                            progress => progress,
-                        },
-                    ),
-                    Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
-                    Err(error) => Err(error.into()),
+                let Some(bytes) = channel.recv(deadline).await.map_err(ClientError::Udp)? else {
+                    return Ok(exchange.time_out(Instant::now().max(deadline)));
+                };
+                match exchange.receive(server, Transport::Udp, &bytes, Instant::now()) {
+                    Progress::Wait(next) => exchange = next,
+                    progress => return Ok(progress),
                 }
             }
+        };
+        let deadline = exchange.deadline();
+        match self.tcp.exchange(link, exchange.wire(), deadline).await {
+            Ok(bytes) => Ok(
+                match exchange.receive(server, transport, &bytes, Instant::now()) {
+                    // Nothing else comes with that ID: the wait is over.
+                    Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
+                    progress => progress,
+                },
+            ),
+            Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+            Err(error) => Err(error.into()),
         }
     }
 

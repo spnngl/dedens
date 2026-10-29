@@ -2,16 +2,22 @@
 //! `crates/dedens-proto/tests/testdata`, their ID and question set to the query's, and keeps every query it gets.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use compio::rustls::crypto::ring;
+use compio::rustls::pki_types::PrivateKeyDer;
+use compio::rustls::{ServerConfig, ServerConnection, StreamOwned};
+use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 
 /// The transport a query came over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Transport {
     Udp,
     Tcp,
+    Tls,
 }
 
 /// The queries received, in order, with their transport.
@@ -44,23 +50,7 @@ impl Responder {
     }
 
     fn serve(names: &[&str], flaky: bool) -> Self {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/dedens-proto/tests/testdata");
-        let canned: Arc<Vec<Canned>> = Arc::new(
-            names
-                .iter()
-                .map(|name| {
-                    let wire =
-                        std::fs::read(dir.join(format!("{name}.bin"))).expect("captured response");
-                    let (key, _) = question(&wire).expect("a question");
-                    Canned {
-                        key,
-                        truncated: wire[2] & 0x02 != 0,
-                        wire,
-                    }
-                })
-                .collect(),
-        );
+        let canned = canned(names);
         let (udp, tcp) = loop {
             let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
             if let Ok(tcp) = TcpListener::bind(udp.local_addr().expect("bound")) {
@@ -89,7 +79,7 @@ impl Responder {
         thread::spawn(move || {
             for stream in tcp.incoming().flatten() {
                 let (queries, canned) = (Arc::clone(&queries), Arc::clone(&canned));
-                thread::spawn(move || serve_tcp(stream, &queries, &canned));
+                thread::spawn(move || serve_stream(stream, Transport::Tcp, &queries, &canned));
             }
         });
         responder
@@ -106,7 +96,13 @@ impl Responder {
     }
 }
 
-fn serve_tcp(mut stream: TcpStream, queries: &Mutex<Vec<(Transport, Vec<u8>)>>, canned: &[Canned]) {
+/// Answers each query of a connection over `transport`, TCP or TLS.
+fn serve_stream(
+    mut stream: impl Read + Write,
+    transport: Transport,
+    queries: &Mutex<Vec<(Transport, Vec<u8>)>>,
+    canned: &[Canned],
+) {
     let mut len = [0; 2];
     while stream.read_exact(&mut len).is_ok() {
         let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
@@ -116,12 +112,77 @@ fn serve_tcp(mut stream: TcpStream, queries: &Mutex<Vec<(Transport, Vec<u8>)>>, 
         queries
             .lock()
             .expect("unpoisoned")
-            .push((Transport::Tcp, query.clone()));
-        if let Some(response) = answer(canned, &query, Transport::Tcp) {
+            .push((transport, query.clone()));
+        if let Some(response) = answer(canned, &query, transport) {
             let len = u16::try_from(response.len()).expect("a response under 64 KiB");
             let _ = stream.write_all(&[&len.to_be_bytes()[..], &response].concat());
+            let _ = stream.flush();
         }
     }
+}
+
+/// The name the certificate of [`Responder::tls`] holds, with 127.0.0.1.
+pub(crate) const TLS_NAME: &str = "dns.example";
+
+impl Responder {
+    /// As [`Responder::start`], over TLS only (RFC 7858), with a certificate signed by a certificate authority
+    /// made for the test, whose PEM file comes with it.
+    pub(crate) fn tls(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+        let mut params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca = CertifiedIssuer::self_signed(params, KeyPair::generate().expect("a key"))
+            .expect("a CA");
+        let key = KeyPair::generate().expect("a key");
+        let certificate = CertificateParams::new(vec![TLS_NAME.to_owned(), "127.0.0.1".to_owned()])
+            .expect("server parameters")
+            .signed_by(&key, &ca)
+            .expect("a server certificate");
+        let mut pem = tempfile::NamedTempFile::new().expect("a temporary file");
+        pem.write_all(ca.pem().as_bytes()).expect("written");
+        let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.der().clone()],
+                PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+            )
+            .expect("a server configuration");
+        let config = Arc::new(config);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a TCP port");
+        let responder = Self {
+            addr: listener.local_addr().expect("bound"),
+            queries: Arc::default(),
+        };
+        let (queries, canned) = (Arc::clone(&responder.queries), canned(names));
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (queries, canned) = (Arc::clone(&queries), Arc::clone(&canned));
+                let connection = ServerConnection::new(Arc::clone(&config)).expect("a TLS session");
+                thread::spawn(move || {
+                    let tls = StreamOwned::new(connection, stream);
+                    serve_stream(tls, Transport::Tls, &queries, &canned);
+                });
+            }
+        });
+        (responder, pem)
+    }
+}
+
+/// The captured responses named, `"a"` for `a.bin`.
+fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
+    let dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/dedens-proto/tests/testdata");
+    let canned = names.iter().map(|name| {
+        let wire = std::fs::read(dir.join(format!("{name}.bin"))).expect("captured response");
+        let (key, _) = question(&wire).expect("a question");
+        Canned {
+            key,
+            truncated: wire[2] & 0x02 != 0,
+            wire,
+        }
+    });
+    Arc::new(canned.collect())
 }
 
 /// The captured response to `query`, its ID and question bytes those of the query.

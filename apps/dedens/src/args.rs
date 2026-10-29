@@ -4,9 +4,13 @@ use std::ffi::OsString;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::builder::NonEmptyStringValueParser;
 use clap::error::ErrorKind;
 use clap::{Arg, Args, CommandFactory, Parser};
+use compio::rustls::pki_types::CertificateDer;
+use compio::rustls::pki_types::pem::PemObject;
+use dedens_net::tls::Trust;
 use dedens_proto::{Class, RecordType};
 use dedens_scenario::{Id, Options};
 
@@ -28,9 +32,15 @@ pub(crate) struct Cli {
     /// Default: the first `nameserver` of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
-    /// The port of a server given without one.
-    #[arg(short, long, value_name = "PORT", default_value_t = 53)]
-    pub(crate) port: u16,
+    /// The port of a server given without one. Default: 853 over TLS, else 53.
+    #[arg(short, long, value_name = "PORT")]
+    pub(crate) port: Option<u16>,
+    /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.
+    #[arg(long, value_name = "FILE")]
+    tls_ca: Option<PathBuf>,
+    /// Accept any server certificate over TLS, unverified: the connection is encrypted, the server unknown.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false", conflicts_with = "tls_ca")]
+    tls_insecure: bool,
     /// Ask PTR for the reverse name of an address (RFC 1035 §3.5, RFC 3596 §2.5).
     #[arg(short = 'x', value_name = "ADDR")]
     pub(crate) reverse: Vec<IpAddr>,
@@ -137,6 +147,24 @@ impl Cli {
     /// The servers given, in order.
     pub(crate) fn servers(&self) -> &[String] {
         &self.server
+    }
+
+    /// The server certificates to accept over TLS.
+    ///
+    /// # Errors
+    ///
+    /// The file of `--tls-ca` cannot be read or holds no certificate.
+    pub(crate) fn trust(&self) -> anyhow::Result<Trust> {
+        if self.tls_insecure {
+            return Ok(Trust::Anyone);
+        }
+        let Some(path) = &self.tls_ca else {
+            return Ok(Trust::System);
+        };
+        let certificates = CertificateDer::pem_file_iter(path)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .with_context(|| format!("cannot read certificates from {}", path.display()))?;
+        Ok(Trust::Roots(certificates))
     }
 }
 

@@ -7,7 +7,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 - D1 Crates per [`ARCHITECTURE.md`](../ARCHITECTURE.md), all on `dedens-proto`. CLI and server are separate
   binaries.
-- D2 Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
+- D2 (amended by D60) Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
   DoQ). A stub resolver and CLI first; forwarder, recursive and authoritative servers follow.
 - D3 Own wire format, for full control of RFC behaviour and speed. hickory-dns and NLnet Labs' `domain` are
   reference code only.
@@ -123,6 +123,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
   alone may leave the question out; once a server has sent a cookie, a response without one is dropped, even
   without OPT (RFC 7873 §5.3 MUST), at the price of timeouts if that server loses cookie support mid-process.
+- D60 (amends D2) Encrypted transports come before DNSSEC: DoT, then DoQ and DoH, each in the client and CLI
+  first, then in `dedensd`. DoT (RFC 7858) is D27's TCP connection with a TLS session on it: one pipelined
+  connection per server, the same idle, keepalive and retry rules. The TLS stream splits into halves locked only
+  while polled (futures-util); compio's split holds its lock across a read and would stall the writer. rustls
+  with ring, already in the lock through ureq; TLS 1.2 and 1.3 (RFC 8310 §9); ALPN `dot` (RFC 9461 §4.1).
+  - Strict privacy profile by default (RFC 8310 §6.6): the OS trust store (`rustls-platform-verifier`, as D57),
+    and the certificate must hold the name after `#`, else the host name given, else the address (§8.1).
+    `--tls-ca=FILE` trusts the authorities of a PEM file instead; `--tls-insecure` any certificate, for tests.
+    Rejected: dig's default, which verifies nothing without `+tls-ca`.
+  - Queries over TLS are padded to a multiple of 128 bytes (RFC 8467 §4.1); padding the caller set is replaced.
+  - The CLI writes a TLS server `tls://HOST[:PORT][#NAME]`, or any server with `+tls`; port 853 unless given.
+  - Tests make their certificates with rcgen at run time, so no private key is checked in.
 
 ## Presentation format
 

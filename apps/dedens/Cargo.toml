@@ -28,6 +28,7 @@ unicode-script.workspace = true
 assert_cmd.workspace = true
 insta.workspace = true
 predicates.workspace = true
+rcgen.workspace = true
 tempfile.workspace = true
 
 [lints]

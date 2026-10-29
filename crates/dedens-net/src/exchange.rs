@@ -148,8 +148,7 @@ impl Exchange {
                 question.name = random_case(&question.name, bits);
             }
         }
-        set_keepalive(&mut query, options.transport);
-        let wire = query.to_vec()?;
+        let wire = encode(&mut query, options.transport)?;
         Ok(Self {
             server,
             transport: options.transport,
@@ -261,7 +260,7 @@ impl Exchange {
             // RFC 7873 §5.3: retry with the fresh server cookie, then over TCP.
             self.bad_cookies += 1;
             self.set_cookie(fresh);
-            let transport = if self.bad_cookies == 2 {
+            let transport = if self.bad_cookies == 2 && self.transport == Transport::Udp {
                 Transport::Tcp
             } else {
                 self.transport
@@ -355,8 +354,7 @@ impl Exchange {
     /// cannot end the exchange: it would not answer the changed query.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
         self.query.header.id = self.query.header.id.wrapping_add(1);
-        set_keepalive(&mut self.query, transport);
-        match self.query.to_vec() {
+        match encode(&mut self.query, transport) {
             Ok(wire) => {
                 self.wire = wire;
                 self.transport = transport;
@@ -384,16 +382,39 @@ pub(crate) fn after(at: Instant, wait: Duration) -> Instant {
     at + wait.min(CENTURY)
 }
 
-/// Makes the edns-tcp-keepalive of `query` the one for `transport`: over TCP, an empty one so the server may tell
-/// how long to keep the connection; over UDP, none (RFC 7828 §3.2.1). One the caller put in is dropped.
-fn set_keepalive(query: &mut Message<'_>, transport: Transport) {
-    if let Some(edns) = &mut query.edns {
-        edns.options
-            .retain(|option| !matches!(option, EdnsOption::Keepalive(_)));
-        if transport == Transport::Tcp {
-            edns.options.push(EdnsOption::Keepalive(None));
-        }
+/// The block length padded queries fill (RFC 8467 §4.1).
+const PADDING_BLOCK: usize = 128;
+
+/// The code and length of an EDNS option, before its data (RFC 6891 §6.1.2).
+const OPTION_HEAD: usize = 4;
+
+/// Encodes `query` for `transport`, with the options of a query with EDNS fitted to it; those the caller put in
+/// are replaced. Over a connection, an empty edns-tcp-keepalive, so the server may tell how long to keep it; over
+/// UDP, none (RFC 7828 §3.2.1, RFC 7858 §3.4). Over TLS, padding to a multiple of [`PADDING_BLOCK`] bytes, so the
+/// length tells less of the name (RFC 7830, RFC 8467 §4.1).
+fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, EncodeError> {
+    let Some(edns) = &mut query.edns else {
+        return query.to_vec();
+    };
+    edns.options.retain(|option| match option {
+        EdnsOption::Keepalive(_) => false,
+        EdnsOption::Padding(_) => transport != Transport::Tls,
+        _ => true,
+    });
+    if transport != Transport::Udp {
+        edns.options.push(EdnsOption::Keepalive(None));
     }
+    let wire = query.to_vec()?;
+    if transport != Transport::Tls {
+        return Ok(wire);
+    }
+    let short = (wire.len() + OPTION_HEAD) % PADDING_BLOCK;
+    let padding =
+        u16::try_from((PADDING_BLOCK - short) % PADDING_BLOCK).expect("less than PADDING_BLOCK");
+    if let Some(edns) = &mut query.edns {
+        edns.options.push(EdnsOption::Padding(padding));
+    }
+    query.to_vec()
 }
 
 /// The cookie `query` sends, if any.

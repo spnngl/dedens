@@ -6,7 +6,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
-use common::{Responder, Transport};
+use common::{Responder, TLS_NAME, Transport};
 use dedens_proto::edns::{EdnsOption, OptionCode};
 use dedens_proto::{EdnsFlags, Flags, Message};
 use predicates::prelude::*;
@@ -240,6 +240,33 @@ fn a_truncated_answer_is_asked_again_over_tcp_unless_ignored() {
     assert!(kept.contains("\"tc\""), "{kept}");
     let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
     assert_eq!(transports, [Transport::Udp, Transport::Tcp, Transport::Udp]);
+}
+
+/// RFC 7858, RFC 8310 §6.6 and §8.1: `tls://` or `+tls` asks over TLS a server whose certificate holds the name
+/// after `#`, else its address; another name is refused before any query, unless `+tls-insecure`.
+#[test]
+fn tls_servers_answer_once_their_certificate_verifies() {
+    let (server, ca) = Responder::tls(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let named = format!("@tls://127.0.0.1:{port}#{TLS_NAME}");
+    for args in [
+        vec![named.as_str(), &ca],
+        vec![&format!("@tls://127.0.0.1:{port}"), &ca],
+        vec!["@127.0.0.1", "+tls", "-p", &port.to_string(), &ca],
+    ] {
+        let out = run(&[&args[..], &["example.com"]].concat(), 0);
+        assert!(out.contains("over TLS"), "{out}");
+    }
+    let other = format!("@tls://127.0.0.1:{port}#other.example");
+    dedens()
+        .args([&other, &ca, "example.com"])
+        .assert()
+        .code(10)
+        .stderr(contains("TLS handshake failed"));
+    run(&[&other, "+tls-insecure", "example.com"], 0);
+    let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(transports, [Transport::Tls; 4]);
 }
 
 #[test]

@@ -19,6 +19,9 @@ pub struct Options {
     /// TCP from the start. Default: UDP, then TCP on a truncated response (RFC 7766 §5).
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub tcp: Option<bool>,
+    /// DNS over TLS (RFC 7858), its server on port 853 unless given another; over `tcp`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub tls: Option<bool>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub ignore: Option<bool>,
@@ -66,6 +69,7 @@ impl Options {
     pub fn or(self, fallback: Self) -> Self {
         Self {
             tcp: self.tcp.or(fallback.tcp),
+            tls: self.tls.or(fallback.tls),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
             cdflag: self.cdflag.or(fallback.cdflag),
@@ -136,7 +140,9 @@ impl Options {
     #[must_use]
     pub fn exchange(&self) -> exchange::Options {
         let mut options = exchange::Options::default();
-        if self.tcp == Some(true) {
+        if self.tls == Some(true) {
+            options.transport = Transport::Tls;
+        } else if self.tcp == Some(true) {
             options.transport = Transport::Tcp;
         }
         options.tcp_fallback = self.ignore != Some(true);

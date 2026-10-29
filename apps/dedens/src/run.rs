@@ -9,8 +9,9 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow, bail};
-use dedens_net::client::{Client, ClientError};
-use dedens_net::exchange::Failure;
+use compio::rustls::pki_types::ServerName;
+use dedens_net::client::{Client, ClientError, Server};
+use dedens_net::exchange::{Failure, Transport};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
@@ -40,9 +41,17 @@ struct Job {
 #[derive(Clone)]
 enum Route {
     /// To each of these servers, side by side; never empty, without duplicates.
-    Servers(Vec<SocketAddr>),
+    Servers(Vec<Endpoint>),
     /// From these root servers down the referrals (`+trace`).
     Trace(Rc<[SocketAddr]>),
+}
+
+/// A server of the command line or of a query file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Endpoint {
+    server: Server,
+    /// Over TLS whatever the options say: given as `tls://`.
+    tls: bool,
 }
 
 impl Route {
@@ -74,14 +83,15 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
     let mut out = anstream::AutoStream::new(io::stdout().lock(), color);
+    let trust = cli.trust()?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
-        let client = Rc::new(Client::new());
+        let client = Rc::new(Client::new().trusting(trust));
         // One task per job and server, the servers of a job one after the other: a group.
         let mut tasks = jobs.into_iter().enumerate().flat_map(|(group, job)| {
             let job = Rc::new(job);
             let servers = match &job.route {
-                Route::Servers(servers) => servers.iter().copied().map(Target::Server).collect(),
+                Route::Servers(servers) => servers.iter().cloned().map(Target::Server).collect(),
                 Route::Trace(roots) => vec![Target::Trace(Rc::clone(roots))],
             };
             servers
@@ -95,8 +105,10 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         loop {
             let room = IN_FLIGHT - running.len();
             running.extend(tasks.by_ref().take(room).map(|(group, job, target)| {
-                let id = match target {
-                    Target::Server(server) if job.route.several() => job.id.at(server),
+                let id = match &target {
+                    Target::Server(endpoint) if job.route.several() => {
+                        job.id.at(endpoint.server.addr)
+                    }
                     _ => job.id.clone(),
                 };
                 let task = query(
@@ -188,15 +200,15 @@ fn roots() -> anyhow::Result<Rc<[SocketAddr]>> {
 
 /// Where one task sends a query.
 enum Target {
-    Server(SocketAddr),
+    Server(Endpoint),
     /// The root servers of `+trace`.
     Trace(Rc<[SocketAddr]>),
 }
 
 /// Asks `job` of a server `times` in a row (see [`repeat`]), or traces it from the roots.
 async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: u16) -> Trail {
-    let server = match target {
-        Target::Server(server) => server,
+    let endpoint = match target {
+        Target::Server(endpoint) => endpoint,
         Target::Trace(roots) => {
             let question = Question {
                 name: job.names[0].clone(),
@@ -206,7 +218,7 @@ async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: 
             return trace::trace(&client, job.options, question, &id, &roots).await;
         }
     };
-    match repeat(&client, &job, server, id, times).await {
+    match repeat(&client, &job, &endpoint, id, times).await {
         Ok(answered) => (vec![answered], None),
         Err(error) => (Vec::new(), Some(error)),
     }
@@ -217,14 +229,14 @@ async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: 
 async fn repeat(
     client: &Client,
     job: &Job,
-    server: SocketAddr,
+    endpoint: &Endpoint,
     id: Id,
     times: u16,
 ) -> anyhow::Result<(Report, Vec<u8>)> {
     let mut rtts = Vec::with_capacity(times.into());
     let mut last = Err(anyhow!("not asked"));
     for _ in 0..times {
-        match ask(client, job, server, id.clone()).await {
+        match ask(client, job, endpoint, id.clone()).await {
             Ok(answered) => {
                 rtts.extend(answered.0.exchange.map(|exchange| exchange.rtt_us));
                 last = Ok(answered);
@@ -244,14 +256,18 @@ async fn repeat(
     last
 }
 
-/// Asks `job` of `server`, trying its names in turn while the response is NXDOMAIN; `id` names the report.
+/// Asks `job` of `endpoint`, trying its names in turn while the response is NXDOMAIN; `id` names the report.
 async fn ask(
     client: &Client,
     job: &Job,
-    server: SocketAddr,
+    endpoint: &Endpoint,
     id: Id,
 ) -> anyhow::Result<(Report, Vec<u8>)> {
-    let options = job.options.exchange();
+    let mut options = job.options.exchange();
+    if endpoint.tls {
+        options.transport = Transport::Tls;
+    }
+    let server = endpoint.server.addr;
     for (index, name) in job.names.iter().enumerate() {
         let question = Question {
             name: name.clone(),
@@ -259,7 +275,11 @@ async fn ask(
             qclass: job.qclass,
         };
         let response = client
-            .exchange(&job.options.query(question), server, &options)
+            .exchange(
+                &job.options.query(question),
+                endpoint.server.clone(),
+                &options,
+            )
             .await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
@@ -283,7 +303,9 @@ fn no_reply(error: &anyhow::Error) -> bool {
             ClientError::Exchange(Failure::TimedOut { .. })
             | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed),
         ) => true,
-        Some(ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e))) => refused(e),
+        Some(
+            ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e) | TcpError::Handshake(e)),
+        ) => refused(e),
         _ => false,
     }
 }
@@ -296,9 +318,12 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         .transpose()?;
     let route = match servers(cli, conf.as_ref())? {
         _ if cli.trace => Route::Trace(roots()?),
-        servers if servers.is_empty() => {
-            Route::Servers(vec![server(None, conf.as_ref(), cli.port)?])
-        }
+        servers if servers.is_empty() => Route::Servers(vec![server(
+            None,
+            conf.as_ref(),
+            cli.port,
+            cli.options.tls,
+        )?]),
         servers => Route::Servers(servers),
     };
     let job = |names: Vec<Name<'static>>, qtype| Job {
@@ -366,7 +391,9 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
                 route: Route::Servers(match &servers {
-                    servers if servers.is_empty() => vec![server(named, conf.as_ref(), cli.port)?],
+                    servers if servers.is_empty() => {
+                        vec![server(named, conf.as_ref(), cli.port, options.tls)?]
+                    }
                     servers => servers.clone(),
                 }),
                 id,
@@ -389,11 +416,11 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
     Ok(ResolvConf::parse(&text))
 }
 
-/// The addresses of the servers of the command line, in order, each once.
-fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<SocketAddr>> {
+/// The servers of the command line, in order, each once.
+fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>> {
     let mut servers = Vec::new();
     for named in cli.servers() {
-        let address = server(Some(named), conf, cli.port)?;
+        let address = server(Some(named), conf, cli.port, cli.options.tls)?;
         if !servers.contains(&address) {
             servers.push(address);
         }
@@ -401,9 +428,19 @@ fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<SocketAdd
     Ok(servers)
 }
 
-/// The address of `named`, else of the first name server of `conf`: an address, IPv6 possibly in brackets or
-/// with its zone, or a host name, each with or without a port, `port` when without.
-fn server(named: Option<&str>, conf: Option<&ResolvConf>, port: u16) -> anyhow::Result<SocketAddr> {
+/// The port of DNS over TLS (RFC 7858 §3.1).
+const TLS_PORT: u16 = 853;
+
+/// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
+/// host name, each with or without a port; `tls://` before it for TLS, and `#NAME` after it for the name the
+/// server's certificate must hold, else its host name. Without a port, `port`, else 853 over TLS (`tls` on or
+/// `tls://`), else 53.
+fn server(
+    named: Option<&str>,
+    conf: Option<&ResolvConf>,
+    port: Option<u16>,
+    tls: Option<bool>,
+) -> anyhow::Result<Endpoint> {
     let text = match named {
         Some(text) => text,
         None => conf
@@ -412,20 +449,47 @@ fn server(named: Option<&str>, conf: Option<&ResolvConf>, port: u16) -> anyhow::
                 anyhow!("no server: give @server, or a nameserver in /etc/resolv.conf")
             })?,
     };
+    let given = text;
+    let (text, forced) = match text.strip_prefix("tls://") {
+        Some(rest) => (rest, true),
+        None => (text, false),
+    };
+    let (text, name) = match text.rsplit_once('#') {
+        Some((text, name)) => (text, Some(name)),
+        None => (text, None),
+    };
+    let port = port.unwrap_or(if forced || tls == Some(true) {
+        TLS_PORT
+    } else {
+        53
+    });
     let bare = text
         .strip_prefix('[')
         .and_then(|t| t.strip_suffix(']'))
         .unwrap_or(text);
-    if let Ok(ip) = bare.parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, port));
-    }
-    let mut addresses = match text.to_socket_addrs() {
-        Ok(addresses) => addresses,
-        Err(_) => (bare, port)
-            .to_socket_addrs()
-            .with_context(|| format!("server {text}"))?,
+    let (addr, host) = if let Ok(ip) = bare.parse::<IpAddr>() {
+        (SocketAddr::new(ip, port), None)
+    } else {
+        let mut addresses = match text.to_socket_addrs() {
+            Ok(addresses) => addresses,
+            Err(_) => (bare, port)
+                .to_socket_addrs()
+                .with_context(|| format!("server {given}"))?,
+        };
+        let addr = addresses
+            .next()
+            .ok_or_else(|| anyhow!("server {given}: no address"))?;
+        // The host name without its port.
+        let host = text.rsplit_once(':').map_or(text, |(host, _)| host);
+        (addr, Some(host))
     };
-    addresses
-        .next()
-        .ok_or_else(|| anyhow!("server {text}: no address"))
+    let name = name
+        .or(host)
+        .map(|name| ServerName::try_from(name.to_owned()))
+        .transpose()
+        .with_context(|| format!("server {given}: not a name for TLS"))?;
+    Ok(Endpoint {
+        server: Server { addr, name },
+        tls: forced,
+    })
 }

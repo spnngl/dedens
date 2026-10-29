@@ -1,6 +1,6 @@
 [package]
 name = "dedens-net"
-description = "DNS transports (UDP, TCP) on the compio runtime."
+description = "DNS transports (UDP, TCP, TLS) on the compio runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,9 @@ publish.workspace = true
 compio.workspace = true
 dedens-proto.workspace = true
 flume.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
+rustls-platform-verifier.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 
@@ -23,6 +25,7 @@ tracing = ["dep:tracing"]
 [dev-dependencies]
 compio = { workspace = true, features = ["macros"] }
 proptest.workspace = true
+rcgen.workspace = true
 
 [lints]
 workspace = true

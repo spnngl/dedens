@@ -17,12 +17,15 @@ anstyle = "1.0.14"
 anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 clap = { version = "4.6.7", features = ["derive"] }
-# D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS.
+# D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS. D60: TLS by
+# rustls with ring.
 compio = { version = "0.19.2", default-features = false, features = [
   "io-uring",
   "net",
   "polling",
+  "ring",
   "runtime",
+  "rustls",
   "time",
 ] }
 dedens-cache = { path = "crates/dedens-cache" }
@@ -34,8 +37,10 @@ dedens-server = { path = "crates/dedens-server" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-# dedensd: the lock its tasks take turns with on a UDP socket's stream of datagrams; compio depends on it already.
+# dedensd: the lock its tasks take turns with on a UDP socket's stream of datagrams; D60: a TLS stream split in
+# halves locked only while polled. compio depends on it already.
 futures-util = { version = "0.3.34", default-features = false, features = [
+  "io",
   "std",
 ] }
 # D27: query IDs and client cookies.
@@ -48,6 +53,13 @@ metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
 proptest = "1.12"
+# D60: certificates made by the DNS over TLS tests, none checked in.
+rcgen = { version = "0.14", default-features = false, features = [
+  "pem",
+  "ring",
+] }
+# D60: the OS trust store for DNS over TLS, as ureq's for the list downloads.
+rustls-platform-verifier = "0.7.1"
 # D36: query files and the JSON and YAML output (D37).
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "2.0.0", default-features = false, features = [
