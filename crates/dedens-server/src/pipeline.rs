@@ -1,6 +1,5 @@
 //! The pipeline: the stages in order (D23), and the replies the core gives before any stage (D41).
 
-use std::cell::Cell;
 use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::sync::Arc;
@@ -77,8 +76,7 @@ pub struct Upstream {
     patience: (Duration, NonZeroU8),
     /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
     stale_after: Option<Duration>,
-    /// A cell: [`Pipeline::stale`] answers while the caller still sends [`Upstream::request`].
-    purpose: Cell<Purpose>,
+    purpose: Purpose,
 }
 
 impl Pipeline {
@@ -156,10 +154,10 @@ impl Pipeline {
                     match cache::look(stored, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh } => {
                             if refresh
-                                && let Some(upstream) =
+                                && let Some(mut upstream) =
                                     self.upstream(index, query, client, Some(index))
                             {
-                                upstream.purpose.set(Purpose::Prefetch);
+                                upstream.purpose = Purpose::Prefetch;
                                 return Step::Refresh(len, upstream);
                             }
                             return Step::Reply(len);
@@ -232,7 +230,7 @@ impl Pipeline {
             cache,
             patience: forward.patience(),
             stale_after: None,
-            purpose: Cell::new(Purpose::Reply),
+            purpose: Purpose::Reply,
         }))
     }
 
@@ -252,8 +250,8 @@ impl Pipeline {
     /// client was answered already.
     ///
     /// `upstream` comes from this pipeline.
-    pub fn stale(&self, upstream: &Upstream, now: u32, out: &mut [u8]) -> Option<usize> {
-        if upstream.purpose.get() != Purpose::Reply {
+    pub fn stale(&self, upstream: &mut Upstream, now: u32, out: &mut [u8]) -> Option<usize> {
+        if upstream.purpose != Purpose::Reply {
             return None;
         }
         let cache = self.cache(upstream.cache?)?;
@@ -269,7 +267,7 @@ impl Pipeline {
         ) else {
             return None;
         };
-        upstream.purpose.set(Purpose::Stale);
+        upstream.purpose = Purpose::Stale;
         Some(len)
     }
 
@@ -294,7 +292,7 @@ impl Pipeline {
         };
         let client = Client::of(&query, upstream.transport);
         let cache = upstream.cache.and_then(|index| self.cache(index));
-        let purpose = upstream.purpose.get();
+        let purpose = upstream.purpose;
         if let Some(decoded) = response
             .and_then(|wire| Message::decode(wire).ok())
             .filter(forward::usable)
@@ -356,7 +354,7 @@ impl Pipeline {
     ///
     /// `upstream` comes from this pipeline.
     pub fn abandon(&self, upstream: &Upstream, out: &mut [u8]) -> Step {
-        if upstream.purpose.get() != Purpose::Reply {
+        if upstream.purpose != Purpose::Reply {
             return Step::Drop;
         }
         let Ok(query) = Query::read(&upstream.query) else {
@@ -376,7 +374,9 @@ impl Upstream {
     #[must_use]
     pub fn request(&self) -> Message<'static> {
         let query = Query::read(&self.query).expect("an upstream's query reads");
-        let question = query.question().expect("an upstream's query has a question");
+        let question = query
+            .question()
+            .expect("an upstream's query has a question");
         forward::request(&Client::of(&query, self.transport), question)
     }
 

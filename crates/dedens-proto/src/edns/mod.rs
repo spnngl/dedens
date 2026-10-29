@@ -14,7 +14,7 @@ use std::borrow::Cow;
 
 pub use rfc7871_client_subnet::{ClientSubnet, InvalidClientSubnet};
 pub use rfc7873_cookie::{Cookie, InvalidServerCookie};
-pub use rfc8914_ede::{ExtendedError, InfoCode};
+pub use rfc8914_ede::{EDE_LEN, ExtendedError, InfoCode};
 
 use crate::codes::{RecordType, code_type};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};

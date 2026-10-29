@@ -2,7 +2,9 @@
 
 use std::borrow::Cow;
 
-use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, EdnsOption, ExtendedError, InfoCode, OptionCode};
+use dedens_proto::edns::{
+    DEFAULT_UDP_PAYLOAD, EDE_LEN, EdnsOption, ExtendedError, InfoCode, OptionCode,
+};
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
@@ -17,9 +19,6 @@ const MIN_UDP_PAYLOAD: u16 = 512;
 
 /// The opcode's bits in the header's second 16-bit word (RFC 1035 §4.1.1).
 const OPCODE_MASK: u16 = 0x7800;
-
-/// An extended error option without text: code, length and INFO-CODE (RFC 8914 §2).
-const EDE_LEN: usize = 6;
 
 /// The client of a query, as its reply needs it.
 #[derive(Debug, Clone)]
@@ -134,19 +133,10 @@ impl<'q> Client<'q> {
         let [an_hi, an_lo] = count.to_be_bytes();
         out[4..12].copy_from_slice(&[0, 1, an_hi, an_lo, 0, 0, 0, 0]);
         out[at..len].copy_from_slice(records);
-        let Some(edns) = edns else {
-            return Some(len);
-        };
-        let mut len = edns.append(out, len).ok()?;
-        if let Some(code) = error {
-            // Our OPT record ends with its RDLENGTH, 0: the option becomes its RDATA (RFC 8914 §2, no text).
-            let [option_hi, option_lo] = u16::from(OptionCode::EDE).to_be_bytes();
-            let [hi, lo] = u16::from(code).to_be_bytes();
-            out[len - 2..len + EDE_LEN]
-                .copy_from_slice(&[0, 6, option_hi, option_lo, 0, 2, hi, lo]);
-            len += EDE_LEN;
+        match edns {
+            Some(edns) => append_opt(&edns, error, out, len),
+            None => Some(len),
         }
-        Some(len)
     }
 
     /// The flags of a reply carrying a response with `flags`: QR and RA, the client's RD and CD, and AD when the
@@ -203,4 +193,24 @@ impl<'q> Client<'q> {
             })),
         }
     }
+}
+
+/// Appends `edns`, which has no option, to the message of `len` bytes in `out`, with the extended `error` if any
+/// (RFC 8914 §2, no text), and returns the new length; `None` when `out` cannot hold them. Allocates nothing.
+pub(crate) fn append_opt(
+    edns: &Edns<'_>,
+    error: Option<InfoCode>,
+    out: &mut [u8],
+    len: usize,
+) -> Option<usize> {
+    let len = edns.append(out, len).ok()?;
+    let Some(code) = error else {
+        return Some(len);
+    };
+    // The OPT record ends with its RDLENGTH, 0: the option becomes its RDATA.
+    let [option_hi, option_lo] = u16::from(OptionCode::EDE).to_be_bytes();
+    let [hi, lo] = u16::from(code).to_be_bytes();
+    out.get_mut(len - 2..len + EDE_LEN)?
+        .copy_from_slice(&[0, 6, option_hi, option_lo, 0, 2, hi, lo]);
+    Some(len + EDE_LEN)
 }

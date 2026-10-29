@@ -172,7 +172,10 @@ fn entries_near_their_end_are_refreshed_once() {
 }
 
 /// The upstream query `query` gets at `now`.
-#[expect(clippy::unnecessary_box_returns, reason = "the pipeline takes it boxed")]
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the pipeline takes it boxed"
+)]
 fn upstream_of(pipeline: &Pipeline, query: &Message<'_>, now: u32) -> Box<Upstream> {
     let mut out = vec![0; 65535];
     match pipeline.query(&wire(query), Transport::Udp, now, &mut out) {
@@ -195,19 +198,19 @@ fn expired_data_answers_once_the_client_timer_runs_out_and_resolution_goes_on() 
     let pipeline = caching();
     let (response, first, expired) = expired_a(&pipeline);
     let query = query_for(&response);
-    let upstream = upstream_of(&pipeline, &query, expired);
+    let mut upstream = upstream_of(&pipeline, &query, expired);
     // RFC 8767 §5 suggests 1.8 seconds.
     assert_eq!(upstream.stale_after(), Some(Duration::from_millis(1800)));
     let mut out = vec![0; 65535];
     let len = pipeline
-        .stale(&upstream, expired, &mut out)
+        .stale(&mut upstream, expired, &mut out)
         .expect("expired data");
     let reply = decode(&out[..len]);
     assert_eq!((reply.header.id, reply.rcode()), (7, Rcode::NOERROR));
     assert!(ttls(&reply).iter().all(|&ttl| ttl == 30));
     assert_eq!(reply.edns, Some(stale(InfoCode::STALE_ANSWER)));
     assert_eq!(
-        pipeline.stale(&upstream, expired, &mut out),
+        pipeline.stale(&mut upstream, expired, &mut out),
         None,
         "one reply"
     );
@@ -223,9 +226,9 @@ fn a_failure_after_a_stale_answer_is_held_without_another_reply() {
     let pipeline = caching();
     let (response, _, expired) = expired_a(&pipeline);
     let query = query_for(&response);
-    let upstream = upstream_of(&pipeline, &query, expired);
+    let mut upstream = upstream_of(&pipeline, &query, expired);
     let mut out = vec![0; 65535];
-    assert!(pipeline.stale(&upstream, expired, &mut out).is_some());
+    assert!(pipeline.stale(&mut upstream, expired, &mut out).is_some());
     let Step::Upstream(next) = pipeline.receive(upstream, None, expired, &mut out) else {
         panic!("the second server");
     };
@@ -256,11 +259,11 @@ fn a_failure_of_ours_is_servfail_without_a_hold() {
 fn without_expired_data_the_client_waits_for_resolution() {
     let pipeline = caching();
     let response = captured("a");
-    let upstream = upstream_of(&pipeline, &query_for(&response), 0);
+    let mut upstream = upstream_of(&pipeline, &query_for(&response), 0);
     // No timer to wait for: nothing could answer when it ran out.
     assert_eq!(upstream.stale_after(), None);
     let mut out = vec![0; 65535];
-    assert_eq!(pipeline.stale(&upstream, 0, &mut out), None);
+    assert_eq!(pipeline.stale(&mut upstream, 0, &mut out), None);
     let step = pipeline.receive(upstream, Some(&response), 0, &mut out);
     assert!(matches!(step, Step::Reply(_)), "{step:?}");
 }

@@ -555,7 +555,7 @@ async fn answer(
                 if out.is_empty() {
                     out = thread.buffer(size);
                 }
-                if let Some(len) = pipeline.stale(&upstream, now(), &mut out) {
+                if let Some(len) = pipeline.stale(&mut upstream, now(), &mut out) {
                     out = deliver(out, len).await;
                 }
             }

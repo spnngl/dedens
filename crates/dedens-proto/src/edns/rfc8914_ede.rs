@@ -69,6 +69,9 @@ code_type! {
     INVALID_QUERY_TYPE = 30, "Invalid Query Type";
 }
 
+/// The wire length of an extended error option without text: option code, length and INFO-CODE (RFC 8914 §2).
+pub const EDE_LEN: usize = 6;
+
 /// Why a query failed or what was done to its answer, with optional human-readable text (RFC 8914 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExtendedError<'a> {

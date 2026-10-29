@@ -3,6 +3,7 @@
 use std::hash::{BuildHasher, RandomState};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use dedens_proto::edns::EDE_LEN;
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::name::MAX_NAME_LEN;
 use dedens_proto::{Decoded, Query};
@@ -98,7 +99,7 @@ impl Cache {
 
     /// Bytes a stale hit leaves free at the end of `out`: an EDE option without text, which the caller adds to its
     /// OPT record (RFC 8914 §2, RFC 8767 §4). A fresh hit uses all of `out`.
-    pub const STALE_ROOM: usize = 6;
+    pub const STALE_ROOM: usize = EDE_LEN;
 
     /// Shortest `out` [`Cache::lookup`] takes: a header and the longest question, what a truncated response
     /// keeps at least (RFC 2181 §9), and [`Cache::STALE_ROOM`]. A shorter buffer may turn a hit into

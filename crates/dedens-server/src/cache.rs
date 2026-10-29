@@ -1,13 +1,11 @@
 //! The cache stage: answers from `dedens-cache` before any later stage, stores what upstream answers, and holds
 //! failures (D43).
 
-use std::borrow::Cow;
-
 use dedens_cache::{Cache, Freshness, Lookup, StalePolicy};
-use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
+use dedens_proto::edns::InfoCode;
 use dedens_proto::{Edns, Header, Query, Rcode};
 
-use crate::reply::Client;
+use crate::reply::{Client, append_opt};
 
 /// How [`look`] reads the cache.
 #[derive(Clone, Copy)]
@@ -71,25 +69,21 @@ pub(crate) fn look(
         Freshness::Fresh { prefetch } => prefetch,
         Freshness::Stale => false,
     };
-    let Some(mut edns) = edns else {
+    let Some(edns) = edns else {
         return Looked::Reply {
             len: hit.len,
             refresh,
         };
     };
-    if hit.freshness == Freshness::Stale {
-        let nxdomain = Header::peek(out).is_some_and(|header| header.rcode == Rcode::NXDOMAIN);
-        edns.options.push(EdnsOption::Ede(ExtendedError {
-            code: if nxdomain {
-                InfoCode::STALE_NXDOMAIN_ANSWER
-            } else {
-                InfoCode::STALE_ANSWER
-            },
-            text: Cow::Borrowed(""),
-        }));
-    }
-    match edns.append(&mut out[..limit], hit.len) {
-        Ok(len) => Looked::Reply { len, refresh },
-        Err(_) => Looked::Miss,
+    let error = (hit.freshness == Freshness::Stale).then(|| {
+        if Header::peek(out).is_some_and(|header| header.rcode == Rcode::NXDOMAIN) {
+            InfoCode::STALE_NXDOMAIN_ANSWER
+        } else {
+            InfoCode::STALE_ANSWER
+        }
+    });
+    match append_opt(&edns, error, &mut out[..limit], hit.len) {
+        Some(len) => Looked::Reply { len, refresh },
+        None => Looked::Miss,
     }
 }
