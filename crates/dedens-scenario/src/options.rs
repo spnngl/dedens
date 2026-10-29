@@ -92,15 +92,17 @@ impl Options {
     ///
     /// # Errors
     ///
-    /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid` or a cookie.
+    /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS or QUIC, whose
+    /// queries are padded with EDNS (RFC 8467 §4.1).
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
             || self.nsid == Some(true)
-            || matches!(self.cookie, Some(CookieOption::On | CookieOption::Fixed(_)));
+            || matches!(self.cookie, Some(CookieOption::On | CookieOption::Fixed(_)))
+            || self.encrypted();
         if self.edns == Some(false) && needs_edns {
             return Err(InvalidOption(
-                "bufsize, dnssec, nsid and cookie need EDNS, which noedns turns off",
+                "bufsize, dnssec, nsid, cookie, tls and quic need EDNS, which noedns turns off",
             ));
         }
         Ok(())
@@ -297,6 +299,14 @@ mod tests {
             },
             Options {
                 cookie: Some(CookieOption::On),
+                ..noedns
+            },
+            Options {
+                tls: Some(true),
+                ..noedns
+            },
+            Options {
+                quic: Some(true),
                 ..noedns
             },
         ] {

@@ -56,6 +56,20 @@ struct Endpoint {
     forced: Option<Transport>,
 }
 
+impl Endpoint {
+    /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, `+tls` or `+quic` after
+    /// it when forced, so `tls://` and `quic://` to one address stay apart.
+    fn id(&self, id: &Id) -> Id {
+        let id = id.at(self.server.addr);
+        let over = match self.forced {
+            Some(Transport::Tls) => "tls",
+            Some(Transport::Quic) => "quic",
+            _ => return id,
+        };
+        Id::try_from(format!("{id}+{over}")).expect("an id with letters after it stays an id")
+    }
+}
+
 impl Route {
     /// Whether the query goes to several servers, whose answers are compared.
     fn several(&self) -> bool {
@@ -108,9 +122,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             let room = IN_FLIGHT - running.len();
             running.extend(tasks.by_ref().take(room).map(|(group, job, target)| {
                 let id = match &target {
-                    Target::Server(endpoint) if job.route.several() => {
-                        job.id.at(endpoint.server.addr)
-                    }
+                    Target::Server(endpoint) if job.route.several() => endpoint.id(&job.id),
                     _ => job.id.clone(),
                 };
                 let task = query(
@@ -438,8 +450,8 @@ const ENCRYPTED_PORT: u16 = 853;
 
 /// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
 /// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, and `#NAME` after it
-/// for the name the server's certificate must hold, else its host name. Without a port, `port`, else 853 over TLS
-/// or QUIC (`encrypted` on, or a scheme), else 53.
+/// for the name the server's certificate must hold, else its host name, else its address. Without a port, `port`,
+/// else 853 over TLS or QUIC (`encrypted` on, or a scheme), else 53.
 fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
@@ -463,33 +475,40 @@ fn server(
         Some((text, name)) => (text, Some(name)),
         None => (text, None),
     };
-    let port = port.unwrap_or(if forced.is_some() || encrypted {
-        ENCRYPTED_PORT
-    } else {
-        53
-    });
-    let bare = text
-        .strip_prefix('[')
-        .and_then(|t| t.strip_suffix(']'))
-        .unwrap_or(text);
-    let (addr, host) = if let Ok(ip) = bare.parse::<IpAddr>() {
-        (SocketAddr::new(ip, port), None)
-    } else {
-        let mut addresses = match text.to_socket_addrs() {
-            Ok(addresses) => addresses,
-            Err(_) => (bare, port)
-                .to_socket_addrs()
-                .with_context(|| format!("server {given}"))?,
-        };
-        let addr = addresses
+    let encrypted = forced.is_some() || encrypted;
+    // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
+    let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
+        Some((host, "")) => (host, None),
+        Some((host, port)) => (host, Some(port.strip_prefix(':').unwrap_or(port))),
+        None => match text.split_once(':') {
+            Some((host, port)) if !port.contains(':') => (host, Some(port)),
+            _ => (text, None),
+        },
+    };
+    let port = match written {
+        Some(written) => written
+            .parse()
+            .with_context(|| format!("server {given}: not a port"))?,
+        None => port.unwrap_or(if encrypted { ENCRYPTED_PORT } else { 53 }),
+    };
+    // An address, its zone aside, has no name to check.
+    let literal = host
+        .split_once('%')
+        .map_or(host, |(address, _)| address)
+        .parse::<IpAddr>()
+        .is_ok();
+    let addr = match host.parse::<IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, port),
+        // A host name, or an address with its zone, which the system resolver reads.
+        Err(_) => (host, port)
+            .to_socket_addrs()
+            .with_context(|| format!("server {given}"))?
             .next()
-            .ok_or_else(|| anyhow!("server {given}: no address"))?;
-        // The host name without its port.
-        let host = text.rsplit_once(':').map_or(text, |(host, _)| host);
-        (addr, Some(host))
+            .ok_or_else(|| anyhow!("server {given}: no address"))?,
     };
     let name = name
-        .or(host)
+        .or((!literal).then_some(host))
+        .filter(|_| encrypted)
         .map(|name| ServerName::try_from(name.to_owned()))
         .transpose()
         .with_context(|| format!("server {given}: not a name for TLS"))?;

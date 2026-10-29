@@ -338,9 +338,57 @@ fn usage_errors_exit_2() {
         &["+trace", "@127.0.0.1", "example.com"],
         &["+trace", "+repeat=2", "example.com"],
         &["+trace", "+search", "example.com"],
+        &["+trace", "+tls", "example.com"],
+        &["+trace", "+quic", "example.com"],
+        &["+tls", "+noedns", "example.com"],
+        &["@quic://127.0.0.1", "+noedns", "example.com"],
     ] {
         dedens().args(args).assert().code(2);
     }
+}
+
+/// An IPv6 address in brackets, with a port, is a server over UDP: no name for TLS to make of it.
+#[test]
+fn a_bracketed_ipv6_address_with_its_port_is_asked() {
+    let server = std::net::UdpSocket::bind("[::1]:0").expect("an IPv6 loopback port");
+    server
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("a timeout");
+    let port = server.local_addr().expect("bound").port();
+    dedens()
+        .args([&format!("@[::1]:{port}"), "example.com"])
+        .args(["+tries=1", "+time=100ms"])
+        .assert()
+        .code(9);
+    server.recv_from(&mut [0; 512]).expect("the query");
+}
+
+/// D38: `tls://` and `quic://` to one address are two servers, each with its id.
+#[test]
+fn tls_and_quic_to_one_address_have_their_own_ids() {
+    dedens()
+        .args(["@tls://127.0.0.1:1", "@quic://127.0.0.1:1", "example.com"])
+        .args(["+tries=1", "+time=100ms"])
+        .assert()
+        .code(9)
+        .stderr(
+            contains("example.com_A@127.0.0.1:1+tls:")
+                .and(contains("example.com_A@127.0.0.1:1+quic:")),
+        );
+}
+
+#[test]
+fn a_ca_file_without_a_certificate_is_refused() {
+    let empty = tempfile::NamedTempFile::new().expect("a file");
+    dedens()
+        .arg(format!("--tls-ca={}", empty.path().display()))
+        .args(["@tls://127.0.0.1:1", "example.com"])
+        .assert()
+        .code(10)
+        .stderr(contains(format!(
+            "no certificate in {}",
+            empty.path().display()
+        )));
 }
 
 #[test]

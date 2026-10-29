@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::builder::NonEmptyStringValueParser;
 use clap::error::ErrorKind;
 use clap::{Arg, Args, CommandFactory, Parser};
@@ -114,11 +114,23 @@ impl Cli {
         let cli = Self::parse_from(args);
         // Checked here, on the values: clap would refuse `+notrace` or `+nojson` with them, given as `--trace=false`.
         if cli.trace
-            && (!cli.server.is_empty() || cli.file.is_some() || cli.repeat > 1 || cli.search)
+            && (!cli.server.is_empty()
+                || cli.file.is_some()
+                || cli.repeat > 1
+                || cli.search
+                || cli.options.encrypted())
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat or +search".to_owned(),
+                "+trace goes with no @server, -f, +repeat, +search, +tls or +quic".to_owned(),
+            );
+        }
+        // Over TLS and QUIC a query is padded with EDNS (RFC 8467 §4.1).
+        let scheme = |server: &String| ["tls://", "quic://"].iter().any(|s| server.starts_with(s));
+        if cli.options.edns == Some(false) && cli.server.iter().any(scheme) {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "tls:// and quic:// need EDNS, which noedns turns off".to_owned(),
             );
         }
         let output = &cli.output;
@@ -164,6 +176,9 @@ impl Cli {
         let certificates = CertificateDer::pem_file_iter(path)
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
             .with_context(|| format!("cannot read certificates from {}", path.display()))?;
+        if certificates.is_empty() {
+            bail!("no certificate in {}", path.display());
+        }
         Ok(Trust::Roots(certificates))
     }
 }

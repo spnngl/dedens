@@ -133,7 +133,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `--tls-ca=FILE` trusts the authorities of a PEM file instead; `--tls-insecure` any certificate, for tests.
     Rejected: dig's default, which verifies nothing without `+tls-ca`.
   - Queries over TLS are padded to a multiple of 128 bytes (RFC 8467 §4.1); padding the caller set is replaced.
-  - The CLI writes a TLS server `tls://HOST[:PORT][#NAME]`, or any server with `+tls`; port 853 unless given.
+    The CLI refuses `+noedns` over TLS or QUIC, which would leave a query unpadded.
+  - The CLI writes a TLS server `tls://HOST[:PORT][#NAME]`, or any server with `+tls`; port 853 unless given. An
+    address, `[ADDRESS]:PORT` or with its zone, is taken as such before any name; a name for TLS is made only
+    over TLS or QUIC.
   - Tests make their certificates with rcgen at run time, so no private key is checked in.
 - D61 DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
   One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
@@ -257,7 +260,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   expectations in `failures`. Serialized only, until the server's tests need to read it back. Replaces D35,
   whose objects held every field however empty.
 - D38 Several `@servers`: each query is asked of each, the blocks of one query together in argument order,
-  each id then `name_type@server` (port left out when 53) so `--save-wire` keeps them apart. A query file's
+  each id then `name_type@server` (port left out when 53, `+tls` or `+quic` after it for a `tls://` or
+  `quic://` server) so `--save-wire` keeps them apart. A query file's
   queries go to the command line's servers when given. The human format ends a query's blocks with
   `servers disagree: a, b vs c` when the rcodes or answer records, TTL and order aside, differ; JSON and YAML
   leave the comparison to their reader. A server that does not answer is left out of it.
@@ -274,7 +278,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Glue is an address record of a name server inside the answering server's zone (RFC 2181 §5.4.1), unlike dig;
   name servers without glue are looked up the same way, A then AAAA, at most 4 deep, those inside the referred
   zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
-  validation, no CNAME following. Refused with `@server`, `-f`, `--repeat` and `--search`. The human format
+  validation, no CNAME following. Refused with `@server`, `-f`, `--repeat`, `--search`, `+tls` and `+quic`. The human format
   counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS` replaces the roots
   for tests.
 
