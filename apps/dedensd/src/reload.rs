@@ -186,3 +186,15 @@ fn reload(
 
 /// Reloads by result, `ok` or `error`.
 const RELOADS: &str = "dedensd_reloads_total";
+
+#[cfg(test)]
+mod tests {
+    use super::guarded;
+
+    /// D64: a panic in a reload or a download is logged, and the reload thread goes on.
+    #[test]
+    fn a_panic_is_contained() {
+        assert_eq!(guarded("work", || 7), Some(7));
+        assert_eq!(guarded("work", || -> u8 { panic!("a bug") }), None);
+    }
+}

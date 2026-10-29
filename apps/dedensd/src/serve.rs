@@ -787,9 +787,12 @@ fn now() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
+    use std::time::Duration;
 
+    use compio::BufResult;
     use compio::io::{AsyncWriteExt, BufReader};
     use compio::net::{TcpListener, TcpStream};
     use compio::runtime::{Runtime, spawn};
@@ -799,7 +802,7 @@ mod tests {
     use dedens_proto::{Message, Question, Rcode, RecordType};
     use dedens_server::{Pipeline, Transport};
 
-    use super::{Slots, Thread, breaks_doq, connection, first_end};
+    use super::{Replies, Slots, TCP_QUEUED, Thread, breaks_doq, connection, first_end, write};
     use crate::reload::Current;
 
     #[test]
@@ -867,6 +870,68 @@ mod tests {
         assert!(breaks_doq(&query(1, false)));
         assert!(breaks_doq(&query(0, true)));
         assert!(!breaks_doq(b"not a query"));
+    }
+
+    /// A writer that writes once let through by `gate`, recording each batch's length.
+    struct Gated {
+        gate: flume::Receiver<()>,
+        batches: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl dedens_net::tcp::Outbound for Gated {
+        async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>> {
+            let _ = self.gate.recv_async().await;
+            self.batches.borrow_mut().push(batch.len());
+            BufResult(Ok(()), batch)
+        }
+
+        async fn close(&mut self) {}
+    }
+
+    /// D47: replies queued count in bytes; the reader hears of room once they are 128 KiB or fewer, and replies
+    /// queued meanwhile go out together, until a batch reaches a message's size.
+    #[test]
+    fn queued_replies_are_counted_in_bytes_and_written_together() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let (sender, queue) = flume::unbounded();
+            let replies = Replies {
+                sender,
+                queued: Rc::default(),
+            };
+            let (room, wait_room) = flume::bounded(1);
+            let (open, gate) = flume::unbounded();
+            let batches = Rc::default();
+            let writer = Gated {
+                gate,
+                batches: Rc::clone(&batches),
+            };
+            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let reply = vec![0; 1000];
+            for _ in 0..200 {
+                assert!(replies.push(&reply));
+            }
+            let total = 200 * 1002;
+            assert_eq!(replies.queued.get(), total);
+            // A batch takes replies until it holds 65535 bytes, 66 of them: the first write leaves more than
+            // 128 KiB queued, the second not.
+            open.send(()).expect("open");
+            compio::time::sleep(Duration::from_millis(50)).await;
+            assert!(wait_room.is_empty());
+            assert_eq!(replies.queued.get(), total - 66 * 1002);
+            open.send(()).expect("open");
+            wait_room.recv_async().await.expect("room");
+            assert!(replies.queued.get() <= TCP_QUEUED);
+            for _ in 0..2 {
+                open.send(()).expect("open");
+            }
+            drop(replies);
+            writing.await.expect("the writer ends");
+            assert_eq!(
+                *batches.borrow(),
+                [66 * 1002, 66 * 1002, 66 * 1002, 2 * 1002]
+            );
+        });
     }
 
     #[test]
