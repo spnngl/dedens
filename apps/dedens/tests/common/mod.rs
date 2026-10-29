@@ -10,13 +10,17 @@ use std::thread;
 use compio::BufResult;
 use compio::io::AsyncWriteExt as _;
 use compio::quic::ServerBuilder;
-use compio::rustls::crypto::ring;
-use compio::rustls::pki_types::PrivateKeyDer;
 use compio::rustls::version::TLS13;
 use compio::rustls::{
     DEFAULT_VERSIONS, ServerConfig, ServerConnection, StreamOwned, SupportedProtocolVersion,
 };
-use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
+
+#[path = "../../../../crates/dedens-net/tests/common/certificates.rs"]
+#[allow(
+    dead_code,
+    reason = "shared with the tests of dedens-net, which use all of it"
+)]
+mod certificates;
 
 /// The transport a query came over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +133,7 @@ fn serve_stream(
 }
 
 /// The name the certificate of [`Responder::tls`] holds, with 127.0.0.1.
-pub(crate) const TLS_NAME: &str = "dns.example";
+pub(crate) use certificates::NAME as TLS_NAME;
 
 impl Responder {
     /// As [`Responder::start`], over TLS only (RFC 7858), with a certificate signed by a certificate authority
@@ -215,28 +219,11 @@ fn certified(
     versions: &[&'static SupportedProtocolVersion],
     alpn: &[u8],
 ) -> (ServerConfig, tempfile::NamedTempFile) {
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    let ca =
-        CertifiedIssuer::self_signed(params, KeyPair::generate().expect("a key")).expect("a CA");
-    let key = KeyPair::generate().expect("a key");
-    let certificate = CertificateParams::new(vec![TLS_NAME.to_owned(), "127.0.0.1".to_owned()])
-        .expect("server parameters")
-        .signed_by(&key, &ca)
-        .expect("a server certificate");
+    let certificates = certificates::certificates();
     let mut pem = tempfile::NamedTempFile::new().expect("a temporary file");
-    pem.write_all(ca.pem().as_bytes()).expect("written");
-    let mut config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
-        .with_protocol_versions(versions)
-        .expect("TLS versions")
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![certificate.der().clone()],
-            PrivateKeyDer::Pkcs8(key.serialize_der().into()),
-        )
-        .expect("a server configuration");
-    config.alpn_protocols = vec![alpn.to_vec()];
-    (config, pem)
+    pem.write_all(certificates.ca_pem.as_bytes())
+        .expect("written");
+    (certificates.config(versions, alpn), pem)
 }
 
 /// The captured responses named, `"a"` for `a.bin`.

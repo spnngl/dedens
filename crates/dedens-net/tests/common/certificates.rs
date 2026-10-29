@@ -15,6 +15,8 @@ pub(crate) const NAME: &str = "dns.example";
 /// A certificate authority, and the server's certificate it signed, with its key.
 pub(crate) struct Certificates {
     pub(crate) ca: CertificateDer<'static>,
+    /// The authority in PEM, for a client reading it from a file.
+    pub(crate) ca_pem: String,
     pub(crate) server: CertificateDer<'static>,
     pub(crate) key: PrivateKeyDer<'static>,
 }
@@ -49,6 +51,7 @@ pub(crate) fn certificates() -> Certificates {
         .expect("a server certificate");
     Certificates {
         ca: ca.der().clone(),
+        ca_pem: ca.pem(),
         server: server.der().clone(),
         key: PrivateKeyDer::Pkcs8(key.serialize_der().into()),
     }
