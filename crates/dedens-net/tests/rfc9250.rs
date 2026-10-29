@@ -5,6 +5,7 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
+use std::num::NonZero;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -34,6 +35,10 @@ enum Serve {
     ClosingAtSecond,
     /// More bytes than a response holds, the stream left open.
     Endless,
+    /// Framed, padded to the most a response holds: 65535 bytes.
+    Largest,
+    /// No response: the stream waits for the client to stop it, the code it gives kept.
+    Silent,
 }
 
 /// What the server saw.
@@ -44,6 +49,8 @@ struct Seen {
     opened: Cell<bool>,
     /// Each stream's bytes, its length first.
     streams: RefCell<Vec<Vec<u8>>>,
+    /// The code of each `STOP_SENDING` the server got.
+    stopped: RefCell<Vec<u64>>,
 }
 
 /// A QUIC server on the loopback address answering each stream's query on it as `serve` says.
@@ -80,11 +87,26 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                     let BufResult(read, bytes) = recv.read_to_end(Vec::new()).await;
                     read.expect("the query");
                     log.streams.borrow_mut().push(bytes.clone());
+                    if serve == Serve::Silent {
+                        if let Ok(Some(code)) = send.stopped().await {
+                            log.stopped.borrow_mut().push(code.into_inner());
+                        }
+                        continue;
+                    }
                     let response = answer(&bytes[2..], Vec::new());
                     let response = match serve {
                         Serve::Unframed => response,
                         Serve::Endless => vec![0; 70_000],
-                        Serve::Framed | Serve::ClosingAtSecond => frame(&response).expect("framed"),
+                        Serve::Largest => {
+                            let short =
+                                u16::MAX - u16::try_from(response.len() + 4).expect("short");
+                            let padded = answer(&bytes[2..], vec![EdnsOption::Padding(short)]);
+                            assert_eq!(padded.len(), 65_535);
+                            frame(&padded).expect("framed")
+                        }
+                        Serve::Framed | Serve::ClosingAtSecond | Serve::Silent => {
+                            frame(&response).expect("framed")
+                        }
                     };
                     let BufResult(written, _) = send.write_all(response).await;
                     if serve == Serve::Endless {
@@ -176,17 +198,54 @@ async fn a_certificate_for_another_name_is_refused() {
     assert_eq!(seen.streams.borrow().len(), 0);
 }
 
-/// RFC 9250 §4.2: a response without its length is a protocol error.
+/// RFC 9250 §4.2: a response without its length is a protocol error, on a new connection or a reused one alike:
+/// the query is not asked again.
 #[compio::test]
 async fn s4_2_a_response_without_its_length_is_refused() {
     let certificates = certificates();
-    let (addr, _) = quic_server(&certificates, Serve::Unframed).await;
+    let (addr, seen) = quic_server(&certificates, Serve::Unframed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
-    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
-    assert!(
-        matches!(error, Err(ClientError::Quic(QuicError::Framing))),
-        "{error:?}"
-    );
+    for _ in 0..2 {
+        let error = client.exchange(query(), named(addr, NAME), &quic()).await;
+        assert!(
+            matches!(error, Err(ClientError::Quic(QuicError::Framing))),
+            "{error:?}"
+        );
+    }
+    assert_eq!(seen.streams.borrow().len(), 2);
+}
+
+/// RFC 9250 §4.2: a response of 65535 bytes, the most its length can say, is read whole.
+#[compio::test]
+async fn s4_2_the_largest_response_is_read() {
+    let certificates = certificates();
+    let (addr, _) = quic_server(&certificates, Serve::Largest).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let response = client
+        .exchange(query(), named(addr, NAME), &quic())
+        .await
+        .expect("a response");
+    assert_eq!(response.wire.len(), 65_535);
+}
+
+/// RFC 9250 §4.3.1: a query given up, here at its timeout, is cancelled: `STOP_SENDING` with `DOQ_REQUEST_CANCELLED`.
+#[compio::test]
+async fn s4_3_1_a_query_given_up_is_cancelled() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::Silent).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let mut options = quic();
+    options.timeout = Duration::from_millis(300);
+    options.tries = NonZero::<u8>::MIN;
+    let error = client.exchange(query(), named(addr, NAME), &options).await;
+    assert!(error.is_err(), "{error:?}");
+    for _ in 0..50 {
+        if !seen.stopped.borrow().is_empty() {
+            break;
+        }
+        compio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*seen.stopped.borrow(), [3]);
 }
 
 /// RFC 9250 §4.2: a response is at most 65535 bytes behind its length; past that the stream is a protocol error,

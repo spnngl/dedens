@@ -192,6 +192,27 @@ async fn a_query_shorter_than_a_header_is_refused() {
     assert!(matches!(result, Err(TcpError::BadLength(11))), "{result:?}");
 }
 
+/// A header alone is a whole message, as a FORMERR without its question (RFC 1035 §4.1.1): it goes out, and comes
+/// back matched by its ID.
+#[compio::test]
+async fn a_header_alone_is_a_message() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let header = query_with_id(22)[..12].to_vec();
+    let asked = {
+        let pool = Rc::clone(&pool);
+        let header = header.clone();
+        compio::runtime::spawn(async move { pool.exchange(server, &header, deadline()).await })
+    };
+    let mut peer = compio::time::timeout(Duration::from_secs(5), Peer::accept(&listener))
+        .await
+        .expect("the header goes out");
+    assert_eq!(peer.read().await.expect("a query"), header);
+    peer.write(std::slice::from_ref(&header)).await;
+    let response = asked.await.expect("joined").expect("a response");
+    assert_eq!(response, header);
+}
+
 /// RFC 7766 §6.2.3: the client closes a connection idle for its timeout.
 #[compio::test]
 async fn an_idle_connection_closes() {
