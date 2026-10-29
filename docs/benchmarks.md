@@ -30,6 +30,11 @@ Nanoseconds, `a`/`mx`/`txt_large`.
 - Truncation keeping whole additional `RRsets` (D10), `encode_truncated_dedens`: 3000 additional records of
   distinct owners into 16 KiB. Looking up each kept record's `RRset` among all the records was quadratic: 3.97 ms;
   one hash per record: 253 µs (same session).
+- Fixed layouts as `zerocopy` structs (D59), fastest of 3000 samples, base and new alternated in one session:
+  `decode_reusing` 42-83/219/432-445 -> 42-83/211/429-437 (`a` swings between two values in both),
+  `Query::read` 41.7-44.7 -> 37.1-39.8, `encode` 56-58/330-344/183-187 -> 52-53/349-359/177-181 (`mx` moves
+  5% between runs of one binary), `to_vec` 88-94/88-90/105-109 -> 84-86/83-87/101-105, server `hit`
+  87-88/88-92/105-111 -> 83-87/82-86/97-101.
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
   instructions, same cycles), `#[inline]` hints (no change); `to_vec` going from 512 bytes straight to 65535
   instead of growing 4 times: zeroing and freeing 64 KiB made `txt_large` 496 → 869-1745 ns.

@@ -80,6 +80,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   65535 bytes are refused. Gain: one message type instead of two, at the same measured speed
   (`docs/benchmarks.md`); typed records were expected to explain the encode gap with Unbound and did not.
   Rejected: expanding compressed names at decode (one allocation per such record).
+- D59 The fixed wire layouts, the header and the fields after a question's or a record's name, are `zerocopy`
+  structs of big-endian byte-array fields (`network_endian::U16`), read in place with one bounds check
+  (`Reader::fields`) and written with one copy. No `unsafe` of ours, no alignment need on the input. Measured
+  in one session (`docs/benchmarks.md`): cache hit 3-8% faster, query read ~10%, decode and encode the same
+  or a few % faster. Rejected: `#[repr(C, packed)]` native integers (a byte swap per read on little-endian
+  CPUs anyway, references to fields refused, `unsafe` to cast the input); a `union` of RDATA (no tag, `unsafe`
+  reads, and names, strings and lists cannot be laid over the wire: `RData` is that union with its tag, read
+  on demand, D28). Names stay hand-parsed: their length varies and they may point elsewhere.
 
 ## Transports
 

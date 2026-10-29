@@ -4,6 +4,9 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::str::FromStr;
 
+use zerocopy::network_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
 use crate::codes::{Class, RecordType};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::name::Name;
@@ -242,6 +245,16 @@ pub struct Record<'a> {
     pub rdata: WireRdata<'a>,
 }
 
+/// The fields after a record's owner name as they are on the wire (RFC 1035 §4.1.3), read and written in place.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct Fixed {
+    rtype: U16,
+    class: U16,
+    ttl: U32,
+    rdlength: U16,
+}
+
 /// The fixed fields of a record and its RDATA still unparsed, so the message decoder can take an OPT record
 /// before its CLASS and TTL are read as such (RFC 6891 §6.1.2).
 #[derive(Debug, Clone)]
@@ -320,13 +333,11 @@ impl<'a> Record<'a> {
     /// Reads the owner name and the fixed fields, and delimits the RDATA without parsing it.
     pub(crate) fn read_raw(r: &mut Reader<'a>) -> Result<RawRecord<'a>, DecodeError> {
         let name = Name::decode(r)?;
-        // Type, class, TTL and RDLENGTH in one bounds check.
-        let [t0, t1, c0, c1, l0, l1, l2, l3, d0, d1] = r.array()?;
-        let rtype = RecordType(u16::from_be_bytes([t0, t1]));
-        let class = Class(u16::from_be_bytes([c0, c1]));
-        let ttl = u32::from_be_bytes([l0, l1, l2, l3]);
-        let len = usize::from(u16::from_be_bytes([d0, d1]));
-        let rdata = r.sub(len).map_err(|mut e| {
+        let fixed: &Fixed = r.fields()?;
+        let rtype = RecordType(fixed.rtype.get());
+        let class = Class(fixed.class.get());
+        let ttl = fixed.ttl.get();
+        let rdata = r.sub(usize::from(fixed.rdlength.get())).map_err(|mut e| {
             e.kind = DecodeErrorKind::RdataLength;
             e
         })?;
@@ -383,10 +394,14 @@ impl<'a> Record<'a> {
     ) -> Result<Option<u16>, EncodeError> {
         w.all_or_nothing(|w| {
             let owner = w.put_owner(&self.name, owner)?;
-            w.put_u16(self.rtype().0)?;
-            w.put_u16(self.class.0)?;
-            w.put_u32(self.ttl.get())?;
-            let at = w.reserve_u16()?;
+            let fixed = Fixed {
+                rtype: self.rtype().0.into(),
+                class: self.class.0.into(),
+                ttl: self.ttl.get().into(),
+                rdlength: U16::ZERO,
+            };
+            w.put_bytes(fixed.as_bytes())?;
+            let at = w.len() - 2;
             self.rdata.encode(w)?;
             let len = u16::try_from(w.len() - at - 2).map_err(|_| EncodeError::BufferFull)?;
             w.patch_u16(at, len);

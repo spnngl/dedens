@@ -47,7 +47,8 @@ fn s4_1_2_question_layout() {
 fn s4_1_2_question_cut_short() {
     let err = Message::decode(&one_question(&[0, 0, 1, 0])).unwrap_err();
     assert_eq!(err.kind, DecodeErrorKind::UnexpectedEnd);
-    assert_eq!(err.offset, 15);
+    // QTYPE and QCLASS are read together, so the error points at QTYPE.
+    assert_eq!(err.offset, 13);
 }
 
 #[test]

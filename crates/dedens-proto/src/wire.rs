@@ -1,5 +1,7 @@
 //! The message size limit, and the crate's byte cursors: `Reader` decodes, `Writer` encodes, neither allocates.
 
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::HEADER_LEN;
 use crate::name::{MAX_NAME_LEN, Name};
@@ -102,6 +104,22 @@ impl<'a> Reader<'a> {
         let mut out = [0; N];
         out.copy_from_slice(self.bytes(N)?);
         Ok(out)
+    }
+
+    /// Reads a fixed layout in place, one bounds check for all its fields.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeErrorKind::UnexpectedEnd`] when fewer bytes than its size are left.
+    pub(crate) fn fields<T: FromBytes + KnownLayout + Immutable + Unaligned>(
+        &mut self,
+    ) -> Result<&'a T, DecodeError> {
+        let left = self.msg.get(self.pos..self.end).unwrap_or_default();
+        let Ok((fields, _)) = T::ref_from_prefix(left) else {
+            return Err(self.error(DecodeErrorKind::UnexpectedEnd));
+        };
+        self.pos += size_of::<T>();
+        Ok(fields)
     }
 
     /// Reads one byte.

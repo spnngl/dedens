@@ -3,6 +3,9 @@
 use core::fmt;
 use core::ops::{BitAnd, BitOr};
 
+use zerocopy::network_endian::U16;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
 use crate::codes::{Opcode, Rcode};
 use crate::error::{DecodeError, EncodeError};
 use crate::wire::{Reader, Writer};
@@ -173,19 +176,19 @@ impl Header {
     ///
     /// [`DecodeError`] when fewer than 12 bytes are left.
     pub(crate) fn decode(r: &mut Reader<'_>) -> Result<(Self, Counts), DecodeError> {
-        let id = r.u16()?;
-        let [hi, lo] = r.u16()?.to_be_bytes();
+        let wire: &WireHeader = r.fields()?;
+        let [hi, lo] = wire.flags;
         let header = Self {
-            id,
-            flags: Flags::from_word(u16::from_be_bytes([hi, lo])),
+            id: wire.id.get(),
+            flags: Flags::from_word(u16::from_be_bytes(wire.flags)),
             opcode: Opcode((hi >> 3) & 0x0F),
             rcode: Rcode(u16::from(lo & 0x0F)),
         };
         let counts = Counts {
-            questions: r.u16()?,
-            answers: r.u16()?,
-            authority: r.u16()?,
-            additional: r.u16()?,
+            questions: wire.counts[0].get(),
+            answers: wire.counts[1].get(),
+            authority: wire.counts[2].get(),
+            additional: wire.counts[3].get(),
         };
         Ok((header, counts))
     }
@@ -205,16 +208,32 @@ impl Header {
             .filter(|&rcode| rcode <= 0x0F)
             .ok_or(EncodeError::RcodeOutOfRange)?;
         let [flags_hi, flags_lo] = self.flags.bits().to_be_bytes();
-        let hi = flags_hi | (opcode << 3);
-        let lo = flags_lo | rcode;
-        w.put_u16(self.id)?;
-        w.put_bytes(&[hi, lo])?;
-        w.put_u16(counts.questions)?;
-        w.put_u16(counts.answers)?;
-        w.put_u16(counts.authority)?;
-        w.put_u16(counts.additional)
+        let wire = WireHeader {
+            id: self.id.into(),
+            flags: [flags_hi | (opcode << 3), flags_lo | rcode],
+            counts: [
+                counts.questions,
+                counts.answers,
+                counts.authority,
+                counts.additional,
+            ]
+            .map(U16::new),
+        };
+        w.put_bytes(wire.as_bytes())
     }
 }
+
+/// The header as it is on the wire (RFC 1035 §4.1.1), read and written in place: the flag byte pair also holds
+/// the opcode and the rcode, and the counts are QDCOUNT, ANCOUNT, NSCOUNT and ARCOUNT.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct WireHeader {
+    id: U16,
+    flags: [u8; 2],
+    counts: [U16; 4],
+}
+
+const _: () = assert!(size_of::<WireHeader>() == HEADER_LEN);
 
 #[cfg(test)]
 mod tests {

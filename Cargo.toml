@@ -74,6 +74,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 unicode-script = "0.5.8"
 # D57: dedensd's list downloads, blocking on a thread of their own; the OS trust store ("platform-verifier").
 ureq = { version = "3.5.0", features = ["platform-verifier"] }
+# D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
+zerocopy = { version = "0.8.63", features = ["derive"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

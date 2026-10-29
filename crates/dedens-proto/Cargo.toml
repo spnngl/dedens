@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+zerocopy.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
