@@ -145,6 +145,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Queries are padded as over TLS (§5.4), and carry no edns-tcp-keepalive (§5.5.2).
   - The CLI writes a QUIC server `quic://HOST[:PORT][#NAME]`, or any server with `+quic`; UDP port 853 unless
     given.
+- D62 DoH (RFC 8484) waits for compio to release tokio's I/O traits on its streams (the `h2` crate needs them;
+  draft on branch `feat/io-tokio-compat` of compio); no adapter of our own meanwhile. HTTP/3 waits for compio
+  too. Queries go by GET by default, ID 0 so HTTP caches can keep them (§4.1), and by POST with
+  `+https-post`, as dig.
 
 ## Presentation format
 
