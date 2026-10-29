@@ -4,11 +4,17 @@
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53"]
 //! zero_buffers: true
+//! downloads:
+//!   dir: /var/cache/dedensd
+//!   refresh_minutes: 1440
 //! pipeline: [hosts, ads, cache, upstream]
 //! stages:
 //!   ads:
 //!     type: blocklist
 //!     file: /etc/dedensd/blocklist.hosts
+//!     urls: ["https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"]
+//!     allow:
+//!       entries: ["*.example.org"]
 //!   hosts:
 //!     type: hosts
 //!     entries: ["192.0.2.10 printer.lan"]
@@ -24,12 +30,12 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::net::{IpAddr, SocketAddr};
-use std::num::{NonZeroU8, NonZeroU32};
+use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fs, io};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use dedens_cache::Cache;
@@ -37,6 +43,8 @@ use dedens_plugins::{Action, Blocklist, Hosts, LineError, List, ListError, Lists
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage};
 use serde::Deserialize;
+
+use crate::download;
 
 /// The configuration file, as written.
 #[derive(Debug, Deserialize)]
@@ -46,6 +54,9 @@ struct File {
     listen: Vec<SocketAddr>,
     /// Whether a reused reply buffer is zeroed first (D52); `true` unless set.
     zero_buffers: Option<bool>,
+    /// Where downloaded lists are kept, and how often they are fetched again (D57).
+    #[serde(default)]
+    downloads: DownloadsFile,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -76,13 +87,15 @@ enum StageFile {
         fallthrough: bool,
     },
     /// Names blocked with their subdomains (D54, D56): `entries`, one name, `*.name` or a line in the format of
-    /// `/etc/hosts` each, then those of `file`, read at start and on reload, unless they or a parent are in `allow`;
-    /// answered as `action` says, `nxdomain` unless set, the addresses of `null` with `ttl` seconds, 3600 unless
-    /// set.
+    /// `/etc/hosts` each, then those of `file`, read at start and on reload, then those of `urls`, downloaded (D57),
+    /// unless they or a parent are in `allow`; answered as `action` says, `nxdomain` unless set, the addresses of
+    /// `null` with `ttl` seconds, 3600 unless set.
     Blocklist {
         #[serde(default)]
         entries: Vec<String>,
         file: Option<PathBuf>,
+        #[serde(default)]
+        urls: Vec<Url>,
         #[serde(default)]
         allow: Sources,
         action: Option<Action>,
@@ -90,13 +103,48 @@ enum StageFile {
     },
 }
 
-/// Names of a list, as written: `entries`, then those of `file`.
+/// Names of a list, as written: `entries`, then those of `file`, then the saved copies of `urls` (D57).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sources {
     #[serde(default)]
     entries: Vec<String>,
     file: Option<PathBuf>,
+    #[serde(default)]
+    urls: Vec<Url>,
+}
+
+/// The URL of a list: `https://`, or `http://` for a server of one's own.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+struct Url(String);
+
+impl TryFrom<String> for Url {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        if text.starts_with("https://") || text.starts_with("http://") {
+            Ok(Self(text))
+        } else {
+            Err(format!("`{text}` is not an http:// or https:// URL"))
+        }
+    }
+}
+
+/// The `downloads` settings, as written.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DownloadsFile {
+    dir: Option<PathBuf>,
+    refresh_minutes: Option<NonZeroU64>,
+}
+
+/// Downloaded lists: their URLs, where their copies are kept, how often they are fetched again (D57).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Downloads {
+    pub(crate) urls: Vec<String>,
+    pub(crate) dir: PathBuf,
+    pub(crate) refresh: Duration,
 }
 
 /// An upstream server: `IP:PORT`, or an IP address on port 53.
@@ -121,6 +169,7 @@ pub(crate) struct Config {
     pub(crate) listen: Vec<SocketAddr>,
     pub(crate) zero_buffers: bool,
     pub(crate) pipeline: Pipeline,
+    pub(crate) downloads: Downloads,
 }
 
 /// Reads `text`, a configuration file, taking `${VAR}` from `env`. The cache stage of `previous`, the pipeline a
@@ -142,6 +191,15 @@ pub(crate) fn read(
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
+    let mut downloads = Downloads {
+        urls: Vec::new(),
+        dir: file.downloads.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
+        refresh: Duration::from_mins(
+            file.downloads
+                .refresh_minutes
+                .map_or(REFRESH_MINUTES, u64::from),
+        ),
+    };
     for (index, name) in file.pipeline.iter().enumerate() {
         if let Some(Stage::Forward(_)) = built.last() {
             bail!("stage `{name}` comes after a forward stage, which answers every query");
@@ -200,12 +258,19 @@ pub(crate) fn read(
             StageFile::Blocklist {
                 entries,
                 file,
+                urls,
                 allow,
                 action,
                 ttl,
             } => {
-                let block = Sources { entries, file };
-                let lists = lists(name, &block, &allow).with_context(|| format!("stage `{name}`"))?;
+                let block = Sources { entries, file, urls };
+                let lists =
+                    lists(name, &block, &allow, &downloads.dir).with_context(|| format!("stage `{name}`"))?;
+                for Url(url) in block.urls.into_iter().chain(allow.urls) {
+                    if !downloads.urls.contains(&url) {
+                        downloads.urls.push(url);
+                    }
+                }
                 let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
                 Stage::Plugin(Box::new(Blocklist::new(lists, action.unwrap_or_default(), ttl)))
             }
@@ -218,11 +283,18 @@ pub(crate) fn read(
         listen: file.listen,
         zero_buffers: file.zero_buffers.unwrap_or(true),
         pipeline: Pipeline::new(built),
+        downloads,
     })
 }
 
 /// The TTL of plugin records unless set, as the hosts plugin of `CoreDNS` gives them.
 const PLUGIN_TTL: u32 = 3600;
+
+/// Where downloaded lists are kept unless set, as the FHS places a program's cache.
+const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
+
+/// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
+const REFRESH_MINUTES: u64 = 1440;
 
 /// A plugin built by `build` from `entries`, then the lines of the file at `path`; its errors locate the line.
 fn plugin<P>(
@@ -252,9 +324,10 @@ fn plugin<P>(
     })
 }
 
-/// The lists of the blocklist stage `stage`, `block` and `allow` read, then the blocked names under a blocked parent
-/// dropped; logs the counts.
-fn lists(stage: &str, block: &Sources, allow: &Sources) -> anyhow::Result<Lists> {
+/// The lists of the blocklist stage `stage`, `block` and `allow` read, their downloaded ones from their copies in
+/// `dir`, then the blocked names under a blocked parent dropped; logs the counts. A list not downloaded yet is
+/// empty until it is, and a copy that does not read is left out with a warning: neither stops the server.
+fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::Result<Lists> {
     let mut lists = Lists::new();
     let mut duplicates = 0;
     for (list, sources) in [(List::Block, block), (List::Allow, allow)] {
@@ -280,6 +353,25 @@ fn lists(stage: &str, block: &Sources, allow: &Sources) -> anyhow::Result<Lists>
             let text = fs::read_to_string(path)
                 .with_context(|| format!("reading `{}`", path.display()))?;
             read(&text, Some(path))?;
+        }
+        for Url(url) in &sources.urls {
+            let copy = download::copy(dir, url);
+            match fs::read_to_string(&copy) {
+                Ok(text) => match lists.read(list, Origin::Downloaded, &text) {
+                    Ok(Read {
+                        duplicates: dups, ..
+                    }) => duplicates += dups,
+                    Err(error) => {
+                        tracing::warn!(stage, url, %error, "the saved copy is not a list");
+                    }
+                },
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    tracing::info!(stage, url, "list not downloaded yet");
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("reading `{}`", copy.display()));
+                }
+            }
         }
     }
     let covered = lists.prune();
@@ -546,7 +638,20 @@ mod tests {
         assert!(error(&text(allow)).contains("entry 3"), "{allow}");
         let allow = allow.replace(", 'bad..name'", "");
         assert!(read(&text(&allow), env, &Pipeline::default()).is_ok());
-        assert!(error(&text("    allow:\n      urls: []\n")).contains("urls"));
+        assert!(error(&text("    allow:\n      urls: ['ftp://x']\n")).contains("ftp://x"));
+        let urls = "    urls: [https://a.example/list, http://b.example/list]\n    allow:\n      urls: [https://a.example/list]\n";
+        let config = read(&text(urls), env, &Pipeline::default()).unwrap();
+        assert_eq!(
+            config.downloads,
+            Downloads {
+                urls: vec![
+                    "https://a.example/list".into(),
+                    "http://b.example/list".into()
+                ],
+                dir: DOWNLOADS_DIR.into(),
+                refresh: Duration::from_hours(24),
+            }
+        );
     }
 
     #[test]
@@ -560,6 +665,8 @@ mod tests {
             (MINIMAL.replace("192.0.2.1", "example.com"), "example.com"),
             (format!("{MINIMAL}    tries: 0\n"), "nonzero"),
             (format!("{MINIMAL}    timeout_ms: 0\n"), "nonzero"),
+            (format!("downloads:\n  refresh_minutes: 0\n{MINIMAL}"), "nonzero"),
+            (format!("downloads:\n  path: /tmp\n{MINIMAL}"), "path"),
         ] {
             let message = error(&text);
             assert!(message.contains(needle), "{needle}: {message}");

@@ -408,6 +408,20 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
+- D57 `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+  with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
+  never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
+  Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
+  the system resolver, possibly `dedensd` itself, which forwards them. Each list is kept in `downloads.dir`
+  (`/var/cache/dedensd`) under the 64-bit FNV-1a hash of its URL, written to a `.part` file then renamed, with
+  its `ETag` beside it: a start or reload reads the copies and serves at once (a list not downloaded yet is
+  empty), and fetching sends `If-None-Match`, so an unchanged list is neither downloaded nor read again (304).
+  A text replaces the copy only when it reads as a downloaded list (D56), at most 256 MB, within 30 s. Lists
+  are fetched once the server serves, on each SIGHUP after its reload, and every `downloads.refresh_minutes`
+  (1440, as numa and Pi-hole); a failure keeps the copy and retries after 1 min, doubling up to the interval. A
+  change rebuilds the pipeline as a reload does (D55; the cache kept). Counted in
+  `dedensd_list_fetches_total{result="changed|unchanged|error"}`. Later, with need: a list swapped alone instead
+  of the pipeline, per-list intervals, a compact name store (2.2M names take ~250 MB).
 
 ## Observability
 

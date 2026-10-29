@@ -9,7 +9,16 @@ unmaintained = "all"
 yanked = "deny"
 
 [licenses]
-allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Zlib"]
+# ISC: rustls's `ring`, `untrusted` and `webpki`; CDLA-Permissive-2.0: the CA certificates of `webpki-roots` (D57).
+allow = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
 # LLVM's libFuzzer, vendored by the fuzz harness only, never shipped.
 exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]
 

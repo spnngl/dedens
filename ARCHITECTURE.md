@@ -12,7 +12,7 @@
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches against hickory-proto, `domain`, Go's `miekg/dns`, Unbound | none |
 | `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
-| `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net` | sockets |
+| `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net` | sockets, files, HTTP (lists) |
 | `fuzz/` | libFuzzer targets, own workspace | none |
 
 Planned: `dedens-resolver`.

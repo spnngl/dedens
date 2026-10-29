@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod config;
+mod download;
 mod reload;
 mod serve;
 
@@ -78,14 +79,14 @@ fn main() -> anyhow::Result<()> {
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
     tracing::info!(config = %path, listen = ?config.listen, threads = sockets.len(), "serving");
-    #[cfg(unix)]
-    reload::on_hangup(
+    reload::control(
         file.clone(),
         Arc::clone(&current),
         Fixed {
             listen: config.listen,
             zero_buffers,
         },
+        config.downloads,
     )
     .context("cannot handle SIGHUP")?;
     let (ended, end) = mpsc::channel();

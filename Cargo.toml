@@ -72,6 +72,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
   "std",
 ] }
 unicode-script = "0.5.8"
+# D57: dedensd's list downloads, blocking on a thread of their own; the OS trust store ("platform-verifier").
+ureq = { version = "3.5.0", features = ["platform-verifier"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
