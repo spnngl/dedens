@@ -539,7 +539,12 @@ async fn write(
                 {
                     batch.extend_from_slice(&framed);
                 }
-                match compio::time::timeout(limit, stream.write_all(batch)).await {
+                match compio::time::timeout_at(
+                    after(Instant::now(), limit),
+                    stream.write_all(batch),
+                )
+                .await
+                {
                     Ok(BufResult(Ok(()), written)) => batch = written,
                     Ok(BufResult(Err(_), _)) | Err(_) => break,
                 }
@@ -549,7 +554,7 @@ async fn write(
     }
     state.borrow_mut().close();
     // The server closes its side in turn.
-    let _ = compio::time::timeout(limit, stream.close()).await;
+    let _ = compio::time::timeout_at(after(Instant::now(), limit), stream.close()).await;
 }
 
 /// Reads messages and hands each to the query waiting for its ID; the rest are dropped. Closes on end or error.
