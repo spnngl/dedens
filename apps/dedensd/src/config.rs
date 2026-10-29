@@ -39,7 +39,7 @@ use std::{fs, io};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use dedens_cache::Cache;
-use dedens_plugins::{Action, Blocklist, Hosts, LineError, List, ListError, Lists, Origin, Read};
+use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage};
 use serde::Deserialize;
@@ -242,8 +242,8 @@ pub(crate) fn read(
                 fallthrough,
             } => {
                 let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
-                let hosts = plugin(&entries, file.as_deref(), |text| {
-                    Hosts::new(text, ttl, fallthrough)
+                let hosts = local(&entries, file.as_deref(), |text| {
+                    Ok(Hosts::new(text, ttl, fallthrough)?)
                 })
                 .with_context(|| format!("stage `{name}`"))?;
                 Stage::Plugin(Box::new(hosts))
@@ -336,11 +336,12 @@ fn refresh(minutes: Option<NonZeroU64>) -> anyhow::Result<Duration> {
     Ok(Duration::from_mins(minutes))
 }
 
-/// A plugin built by `build` from `entries`, then the lines of the file at `path`; its errors locate the line.
-fn plugin<P>(
+/// What `read` makes of `entries`, then the lines of the file at `path`, its byte order mark left out, as one
+/// text; its errors locate the line.
+fn local<P>(
     entries: &[String],
     path: Option<&Path>,
-    build: impl FnOnce(&str) -> Result<P, LineError>,
+    read: impl FnOnce(&str) -> Result<P, ListError>,
 ) -> anyhow::Result<P> {
     let mut text = String::new();
     for entry in entries {
@@ -351,9 +352,12 @@ fn plugin<P>(
     if let Some(path) = path {
         let file =
             fs::read_to_string(path).with_context(|| format!("reading `{}`", path.display()))?;
-        text.push_str(&file);
+        text.push_str(file.strip_prefix('\u{feff}').unwrap_or(&file));
     }
-    build(&text).map_err(|error| {
+    read(&text).map_err(|error| {
+        let ListError::Line(error) = error else {
+            return anyhow!(error);
+        };
         match (
             error.line.checked_sub(before).filter(|&line| line > 0),
             path,
@@ -371,29 +375,10 @@ fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::R
     let mut lists = Lists::new();
     let mut duplicates = 0;
     for (list, sources) in [(List::Block, block), (List::Allow, allow)] {
-        let mut read = |text: &str, path: Option<&Path>| {
-            let Read {
-                duplicates: dups, ..
-            } = lists
-                .read(list, Origin::Local, text)
-                .map_err(|error| match (error, path) {
-                    (ListError::Line(error), Some(path)) => {
-                        anyhow!("`{}` line {}: {}", path.display(), error.line, error.kind)
-                    }
-                    (ListError::Line(error), None) => {
-                        anyhow!("entry {}: {}", error.line, error.kind)
-                    }
-                    (error, _) => anyhow!(error),
-                })?;
-            duplicates += dups;
-            anyhow::Ok(())
-        };
-        read(&sources.entries.join("\n"), None)?;
-        if let Some(path) = &sources.file {
-            let text = fs::read_to_string(path)
-                .with_context(|| format!("reading `{}`", path.display()))?;
-            read(&text, Some(path))?;
-        }
+        let read = local(&sources.entries, sources.file.as_deref(), |text| {
+            lists.read(list, Origin::Local, text)
+        })?;
+        duplicates += read.duplicates;
         for Url(url) in &sources.urls {
             let copy = download::copy(dir, url);
             match fs::read_to_string(&copy) {
