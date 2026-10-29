@@ -131,7 +131,7 @@ pub struct Exchange {
 impl Exchange {
     /// Starts an exchange: send [`Exchange::wire`] now. The ID, and the cookie when the query has EDNS, are the
     /// caller's, as are the random bits of [`Options::random_case`]; a query changed by a fallback goes with the
-    /// next ID.
+    /// next ID. Over QUIC, the ID is 0, the stream telling the response (RFC 9250 §4.2.1).
     ///
     /// # Errors
     ///
@@ -143,6 +143,9 @@ impl Exchange {
         now: Instant,
     ) -> Result<Self, EncodeError> {
         let mut query = query.into_owned();
+        if options.transport == Transport::Quic {
+            query.header.id = 0;
+        }
         if let Some(bits) = &options.random_case {
             for question in &mut query.questions {
                 question.name = random_case(&question.name, bits);
@@ -353,7 +356,9 @@ impl Exchange {
     /// Sends the changed query over `transport`, with the next ID so that a late response to the query before
     /// cannot end the exchange: it would not answer the changed query.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
-        self.query.header.id = self.query.header.id.wrapping_add(1);
+        if transport != Transport::Quic {
+            self.query.header.id = self.query.header.id.wrapping_add(1);
+        }
         match encode(&mut self.query, transport) {
             Ok(wire) => {
                 self.wire = wire;
@@ -389,23 +394,24 @@ const PADDING_BLOCK: usize = 128;
 const OPTION_HEAD: usize = 4;
 
 /// Encodes `query` for `transport`, with the options of a query with EDNS fitted to it; those the caller put in
-/// are replaced. Over a connection, an empty edns-tcp-keepalive, so the server may tell how long to keep it; over
-/// UDP, none (RFC 7828 §3.2.1, RFC 7858 §3.4). Over TLS, padding to a multiple of [`PADDING_BLOCK`] bytes, so the
-/// length tells less of the name (RFC 7830, RFC 8467 §4.1).
+/// are replaced. Over TCP and TLS, an empty edns-tcp-keepalive, so the server may tell how long to keep the
+/// connection; over UDP and QUIC, none (RFC 7828 §3.2.1, RFC 7858 §3.4, RFC 9250 §5.5.2). Over TLS and QUIC,
+/// padding to a multiple of [`PADDING_BLOCK`] bytes, so the length tells less of the name (RFC 7830, RFC 8467
+/// §4.1, RFC 9250 §5.4).
 fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, EncodeError> {
     let Some(edns) = &mut query.edns else {
         return query.to_vec();
     };
     edns.options.retain(|option| match option {
         EdnsOption::Keepalive(_) => false,
-        EdnsOption::Padding(_) => transport != Transport::Tls,
+        EdnsOption::Padding(_) => !padded(transport),
         _ => true,
     });
-    if transport != Transport::Udp {
+    if matches!(transport, Transport::Tcp | Transport::Tls) {
         edns.options.push(EdnsOption::Keepalive(None));
     }
     let wire = query.to_vec()?;
-    if transport != Transport::Tls {
+    if !padded(transport) {
         return Ok(wire);
     }
     let short = (wire.len() + OPTION_HEAD) % PADDING_BLOCK;
@@ -415,6 +421,11 @@ fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, Enco
         edns.options.push(EdnsOption::Padding(padding));
     }
     query.to_vec()
+}
+
+/// Whether queries over `transport` are padded: those encrypted.
+const fn padded(transport: Transport) -> bool {
+    matches!(transport, Transport::Tls | Transport::Quic)
 }
 
 /// The cookie `query` sends, if any.

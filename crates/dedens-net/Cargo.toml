@@ -1,6 +1,6 @@
 [package]
 name = "dedens-net"
-description = "DNS transports (UDP, TCP, TLS) on the compio runtime."
+description = "DNS transports (UDP, TCP, TLS, QUIC) on the compio runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

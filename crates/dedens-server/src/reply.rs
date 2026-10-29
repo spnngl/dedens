@@ -197,7 +197,7 @@ impl<'q> Client<'q> {
     /// The longest reply.
     pub(crate) fn limit(&self) -> usize {
         match self.transport {
-            Transport::Tcp | Transport::Tls => MAX_MESSAGE_LEN,
+            Transport::Tcp | Transport::Tls | Transport::Quic => MAX_MESSAGE_LEN,
             Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
                 edns.udp_payload.clamp(MIN_UDP_PAYLOAD, DEFAULT_UDP_PAYLOAD)
             })),

@@ -8,13 +8,12 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::{answer, listen};
 use common::{query, sent, start, t0};
 use compio::BufResult;
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use compio::rustls::ServerConfig;
-use compio::rustls::crypto::ring;
-use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use compio::rustls::DEFAULT_VERSIONS;
 use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::exchange::{Options, Response, Transport};
@@ -22,34 +21,6 @@ use dedens_net::tcp::{TcpError, frame};
 use dedens_net::tls::Trust;
 use dedens_proto::Message;
 use dedens_proto::edns::EdnsOption;
-use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
-
-/// The name the server's certificate holds, with 127.0.0.1.
-const NAME: &str = "dns.example";
-
-/// A certificate authority, and the server's certificate it signed, with its key.
-struct Certificates {
-    ca: CertificateDer<'static>,
-    server: CertificateDer<'static>,
-    key: PrivateKeyDer<'static>,
-}
-
-fn certificates() -> Certificates {
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    let ca =
-        CertifiedIssuer::self_signed(params, KeyPair::generate().expect("a key")).expect("a CA");
-    let key = KeyPair::generate().expect("a key");
-    let server = CertificateParams::new(vec![NAME.to_owned(), "127.0.0.1".to_owned()])
-        .expect("server parameters")
-        .signed_by(&key, &ca)
-        .expect("a server certificate");
-    Certificates {
-        ca: ca.der().clone(),
-        server: server.der().clone(),
-        key: PrivateKeyDer::Pkcs8(key.serialize_der().into()),
-    }
-}
 
 /// What the server saw.
 #[derive(Default)]
@@ -61,16 +32,7 @@ struct Seen {
 /// A TLS server on the loopback address: on each connection, reads `batch` queries, then answers them in reverse
 /// order, and again.
 async fn tls_server(certificates: &Certificates, batch: usize) -> (SocketAddr, Rc<Seen>) {
-    let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .expect("TLS versions")
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![certificates.server.clone()],
-            certificates.key.clone_key(),
-        )
-        .expect("a server configuration");
-    let acceptor = TlsAcceptor::from(Arc::new(config));
+    let acceptor = TlsAcceptor::from(Arc::new(certificates.config(DEFAULT_VERSIONS, b"dot")));
     let (listener, addr) = listen().await;
     let seen = Rc::new(Seen::default());
     let log = Rc::clone(&seen);
@@ -119,13 +81,6 @@ fn tls() -> Options {
     let mut options = Options::default();
     options.transport = Transport::Tls;
     options
-}
-
-fn named(addr: SocketAddr, name: &'static str) -> Server {
-    Server {
-        addr,
-        name: Some(ServerName::try_from(name).expect("a server name")),
-    }
 }
 
 async fn ask(client: &Client, server: Server) -> Result<Response, ClientError> {

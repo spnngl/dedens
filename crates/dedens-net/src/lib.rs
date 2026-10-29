@@ -1,4 +1,4 @@
-//! DNS transports (UDP, TCP, TLS) on the compio runtime.
+//! DNS transports (UDP, TCP, TLS, QUIC) on the compio runtime.
 //!
 //! The only crate of the workspace that touches sockets and timers; `dedens-proto` stays free of I/O.
 
@@ -29,6 +29,7 @@ macro_rules! trace {
 
 pub mod client;
 pub mod exchange;
+pub mod quic;
 pub mod resolv_conf;
 pub mod tcp;
 pub mod tls;

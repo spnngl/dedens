@@ -91,6 +91,7 @@ impl Report {
                     exchange::Transport::Udp => Transport::Udp,
                     exchange::Transport::Tcp => Transport::Tcp,
                     exchange::Transport::Tls => Transport::Tls,
+                    exchange::Transport::Quic => Transport::Quic,
                 },
                 rtt_us: u64::try_from(response.rtt.as_micros()).unwrap_or(u64::MAX),
                 sends: response.sends,
@@ -172,6 +173,8 @@ pub enum Transport {
     Tcp,
     /// TLS (RFC 7858).
     Tls,
+    /// QUIC (RFC 9250).
+    Quic,
 }
 
 /// The header of a message (RFC 1035 §4.1.1); its counts are the lengths of the sections.

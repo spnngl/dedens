@@ -135,6 +135,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Queries over TLS are padded to a multiple of 128 bytes (RFC 8467 §4.1); padding the caller set is replaced.
   - The CLI writes a TLS server `tls://HOST[:PORT][#NAME]`, or any server with `+tls`; port 853 unless given.
   - Tests make their certificates with rcgen at run time, so no private key is checked in.
+- D61 DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
+  One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
+  opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
+  (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
+  time (§4.4) and is opened again on the next query. A query given up is cancelled with STOP_SENDING (§4.3.1).
+  - TLS 1.3 only (RFC 9001 §4.2), ALPN `doq`, the same trust as D60 (strict profile). No 0-RTT: a query waits for
+    the handshake, since one in early data could be replayed (§4.5).
+  - Queries are padded as over TLS (§5.4), and carry no edns-tcp-keepalive (§5.5.2).
+  - The CLI writes a QUIC server `quic://HOST[:PORT][#NAME]`, or any server with `+quic`; UDP port 853 unless
+    given.
 
 ## Presentation format
 

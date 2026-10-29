@@ -270,6 +270,42 @@ fn tls_servers_answer_once_their_certificate_verifies() {
 }
 
 #[test]
+fn quic_servers_answer_once_their_certificate_verifies() {
+    let (server, ca) = Responder::quic(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    for args in [
+        vec![format!("@quic://127.0.0.1:{port}#{TLS_NAME}"), ca.clone()],
+        vec![
+            "@127.0.0.1".to_owned(),
+            "+quic".to_owned(),
+            "-p".to_owned(),
+            port.to_string(),
+            ca.clone(),
+        ],
+    ] {
+        let args: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .chain(["example.com"])
+            .collect();
+        let out = run(&args, 0);
+        assert!(out.contains("over QUIC"), "{out}");
+    }
+    dedens()
+        .args([
+            &format!("@quic://127.0.0.1:{port}#other.example"),
+            &ca,
+            "example.com",
+        ])
+        .assert()
+        .code(10)
+        .stderr(contains("QUIC"));
+    let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(transports, [Transport::Quic; 2]);
+}
+
+#[test]
 fn no_reply_exits_9_after_the_tries() {
     let server = Responder::start(&[]);
     let started = Instant::now();

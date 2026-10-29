@@ -9,9 +9,11 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow, bail};
+use compio::quic::ConnectionError;
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::exchange::{Failure, Transport};
+use dedens_net::quic::QuicError;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
@@ -50,8 +52,8 @@ enum Route {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Endpoint {
     server: Server,
-    /// Over TLS whatever the options say: given as `tls://`.
-    tls: bool,
+    /// The transport whatever the options say: given as `tls://` or `quic://`.
+    forced: Option<Transport>,
 }
 
 impl Route {
@@ -264,8 +266,8 @@ async fn ask(
     id: Id,
 ) -> anyhow::Result<(Report, Vec<u8>)> {
     let mut options = job.options.exchange();
-    if endpoint.tls {
-        options.transport = Transport::Tls;
+    if let Some(transport) = endpoint.forced {
+        options.transport = transport;
     }
     let server = endpoint.server.addr;
     for (index, name) in job.names.iter().enumerate() {
@@ -301,7 +303,10 @@ fn no_reply(error: &anyhow::Error) -> bool {
     match error.downcast_ref() {
         Some(
             ClientError::Exchange(Failure::TimedOut { .. })
-            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed),
+            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed)
+            | ClientError::Quic(
+                QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
+            ),
         ) => true,
         Some(
             ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e) | TcpError::Handshake(e)),
@@ -322,7 +327,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
             None,
             conf.as_ref(),
             cli.port,
-            cli.options.tls,
+            cli.options.encrypted(),
         )?]),
         servers => Route::Servers(servers),
     };
@@ -392,7 +397,7 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             Ok(Job {
                 route: Route::Servers(match &servers {
                     servers if servers.is_empty() => {
-                        vec![server(named, conf.as_ref(), cli.port, options.tls)?]
+                        vec![server(named, conf.as_ref(), cli.port, options.encrypted())?]
                     }
                     servers => servers.clone(),
                 }),
@@ -420,7 +425,7 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
 fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>> {
     let mut servers = Vec::new();
     for named in cli.servers() {
-        let address = server(Some(named), conf, cli.port, cli.options.tls)?;
+        let address = server(Some(named), conf, cli.port, cli.options.encrypted())?;
         if !servers.contains(&address) {
             servers.push(address);
         }
@@ -428,18 +433,18 @@ fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>
     Ok(servers)
 }
 
-/// The port of DNS over TLS (RFC 7858 §3.1).
-const TLS_PORT: u16 = 853;
+/// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
+const ENCRYPTED_PORT: u16 = 853;
 
 /// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
-/// host name, each with or without a port; `tls://` before it for TLS, and `#NAME` after it for the name the
-/// server's certificate must hold, else its host name. Without a port, `port`, else 853 over TLS (`tls` on or
-/// `tls://`), else 53.
+/// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, and `#NAME` after it
+/// for the name the server's certificate must hold, else its host name. Without a port, `port`, else 853 over TLS
+/// or QUIC (`encrypted` on, or a scheme), else 53.
 fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
     port: Option<u16>,
-    tls: Option<bool>,
+    encrypted: bool,
 ) -> anyhow::Result<Endpoint> {
     let text = match named {
         Some(text) => text,
@@ -450,16 +455,16 @@ fn server(
             })?,
     };
     let given = text;
-    let (text, forced) = match text.strip_prefix("tls://") {
-        Some(rest) => (rest, true),
-        None => (text, false),
-    };
+    let (text, forced) = [("tls://", Transport::Tls), ("quic://", Transport::Quic)]
+        .into_iter()
+        .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
+        .unwrap_or((text, None));
     let (text, name) = match text.rsplit_once('#') {
         Some((text, name)) => (text, Some(name)),
         None => (text, None),
     };
-    let port = port.unwrap_or(if forced || tls == Some(true) {
-        TLS_PORT
+    let port = port.unwrap_or(if forced.is_some() || encrypted {
+        ENCRYPTED_PORT
     } else {
         53
     });
@@ -490,6 +495,6 @@ fn server(
         .with_context(|| format!("server {given}: not a name for TLS"))?;
     Ok(Endpoint {
         server: Server { addr, name },
-        tls: forced,
+        forced,
     })
 }

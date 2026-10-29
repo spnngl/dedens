@@ -1,6 +1,6 @@
 //! The transports a message goes over, which bound its size.
 
-/// UDP, TCP or TLS: the client's and the server's.
+/// UDP, TCP, TLS or QUIC: the client's and the server's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// UDP: a message fits the EDNS payload size, at most 1232 bytes asked (D10), or 512 without EDNS; TC says
@@ -10,4 +10,6 @@ pub enum Transport {
     Tcp,
     /// TLS: as TCP, the TCP connection carrying a TLS session (RFC 7858 §3.3).
     Tls,
+    /// QUIC: as TCP, each query and its response alone on a QUIC stream (RFC 9250 §4.2).
+    Quic,
 }

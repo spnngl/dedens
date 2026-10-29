@@ -22,6 +22,9 @@ pub struct Options {
     /// DNS over TLS (RFC 7858), its server on port 853 unless given another; over `tcp`. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub tls: Option<bool>,
+    /// DNS over QUIC (RFC 9250), its server on UDP port 853 unless given another; over `tls` and `tcp`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub quic: Option<bool>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub ignore: Option<bool>,
@@ -70,6 +73,7 @@ impl Options {
         Self {
             tcp: self.tcp.or(fallback.tcp),
             tls: self.tls.or(fallback.tls),
+            quic: self.quic.or(fallback.quic),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
             cdflag: self.cdflag.or(fallback.cdflag),
@@ -136,11 +140,19 @@ impl Options {
         query
     }
 
+    /// Whether the server is asked over TLS or QUIC, whose port is 853.
+    #[must_use]
+    pub fn encrypted(&self) -> bool {
+        self.tls == Some(true) || self.quic == Some(true)
+    }
+
     /// The exchange options: transport, TCP fallback, cookies, timeout and tries.
     #[must_use]
     pub fn exchange(&self) -> exchange::Options {
         let mut options = exchange::Options::default();
-        if self.tls == Some(true) {
+        if self.quic == Some(true) {
+            options.transport = Transport::Quic;
+        } else if self.tls == Some(true) {
             options.transport = Transport::Tls;
         } else if self.tcp == Some(true) {
             options.transport = Transport::Tcp;

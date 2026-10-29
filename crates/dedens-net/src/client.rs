@@ -18,6 +18,7 @@ use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
 use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport, after};
+use crate::quic::{QuicError, QuicPool};
 use crate::tcp::{Link, TcpError, TcpPool};
 use crate::tls::Trust;
 use crate::udp::{UdpPool, UdpQuery};
@@ -48,6 +49,9 @@ pub enum ClientError {
     /// The TCP or TLS connection failed.
     #[error("connection")]
     Tcp(#[from] TcpError),
+    /// The QUIC connection or stream failed.
+    #[error("QUIC")]
+    Quic(#[from] QuicError),
     /// The exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
@@ -63,9 +67,14 @@ impl ClientError {
             Self::Random(_)
             | Self::Encode(_)
             | Self::Tcp(TcpError::Trust(_))
+            | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
             | Self::Exchange(Failure::Encode(_)) => return true,
-            Self::Udp(error) | Self::Tcp(TcpError::Connect(error)) => error,
-            Self::Tcp(_) | Self::Exchange(Failure::TimedOut { .. }) => return false,
+            Self::Udp(error)
+            | Self::Tcp(TcpError::Connect(error))
+            | Self::Quic(QuicError::Bind(error)) => error,
+            Self::Tcp(_) | Self::Quic(_) | Self::Exchange(Failure::TimedOut { .. }) => {
+                return false;
+            }
         };
         !matches!(
             io.kind(),
@@ -97,26 +106,29 @@ impl From<SocketAddr> for Server {
 }
 
 impl Server {
-    /// The connection to it over `transport`, none over UDP.
+    /// The TCP or TLS connection to it over `transport`, none over UDP and QUIC.
     fn link(&self, transport: Transport) -> Option<Link> {
         match transport {
-            Transport::Udp => None,
+            Transport::Udp | Transport::Quic => None,
             Transport::Tcp => Some(Link::Tcp(self.addr)),
-            Transport::Tls => Some(Link::Tls(
-                self.addr,
-                self.name
-                    .clone()
-                    .unwrap_or_else(|| ServerName::IpAddress(self.addr.ip().into())),
-            )),
+            Transport::Tls => Some(Link::Tls(self.addr, self.certified())),
         }
+    }
+
+    /// The name its certificate must hold: the one given, else its address.
+    fn certified(&self) -> ServerName<'static> {
+        self.name
+            .clone()
+            .unwrap_or_else(|| ServerName::IpAddress(self.addr.ip().into()))
     }
 }
 
-/// Sends queries and returns their responses, keeping TCP and TLS connections and cookies per server.
+/// Sends queries and returns their responses, keeping TCP, TLS and QUIC connections and cookies per server.
 #[derive(Debug)]
 pub struct Client {
     udp: UdpPool,
     tcp: TcpPool,
+    quic: QuicPool,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
     random: RefCell<Random>,
@@ -168,6 +180,7 @@ impl Client {
         Self {
             udp: UdpPool::new(UDP_SOCKETS),
             tcp: TcpPool::new(TCP_IDLE),
+            quic: QuicPool::new(TCP_IDLE),
             cookies: RefCell::default(),
             random: RefCell::new(Random {
                 bytes: [0; RANDOM_BATCH],
@@ -176,11 +189,12 @@ impl Client {
         }
     }
 
-    /// The client, its TLS connections trusting `trust`.
+    /// The client, its TLS and QUIC connections trusting `trust`.
     #[must_use]
     pub fn trusting(self, trust: Trust) -> Self {
         Self {
-            tcp: self.tcp.trusting(trust),
+            tcp: self.tcp.trusting(trust.clone()),
+            quic: self.quic.trusting(trust),
             ..self
         }
     }
@@ -188,7 +202,8 @@ impl Client {
     /// Sends `query` to `server` and returns the response, with the retries and fallbacks of `options` (D27).
     ///
     /// The query goes with a random ID, and a cookie when it has EDNS and none of its own, unless
-    /// [`Options::cookies`] is off.
+    /// [`Options::cookies`] is off. Over QUIC, with ID 0 and no cookie: QUIC checks the client's address itself
+    /// (RFC 9000 §8).
     ///
     /// # Errors
     ///
@@ -211,6 +226,7 @@ impl Client {
         // so a late response to an earlier try still counts (D27).
         let mut udp = None;
         let source = match target.link(options.transport) {
+            None if options.transport == Transport::Quic => None,
             None => {
                 // Room for the largest response the query asks for (RFC 6891 §6.2.3); TCP takes any larger.
                 let size = query.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
@@ -221,17 +237,18 @@ impl Client {
                     .query(server, pick, query.header.id, usize::from(size))
                     .await
                     .map_err(ClientError::Udp)?;
-                udp.insert(waiting).local_addr()
+                Some(udp.insert(waiting).local_addr())
             }
             Some(link) => {
                 let deadline = after(Instant::now(), options.timeout);
-                self.tcp.local_addr(link, deadline).await?
+                Some(self.tcp.local_addr(link, deadline).await?)
             }
         };
-        let pair = if options.cookies {
-            self.add_cookie(&mut query, (source.ip(), server))?
-        } else {
-            None
+        let pair = match source {
+            Some(source) if options.cookies => {
+                self.add_cookie(&mut query, (source.ip(), server))?
+            }
+            _ => None,
         };
         let mut exchange = Exchange::start(query, server, *options, Instant::now())?;
         let response = loop {
@@ -269,6 +286,19 @@ impl Client {
         let server = exchange.server();
         let transport = exchange.transport();
         trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
+        let deadline = exchange.deadline();
+        if transport == Transport::Quic {
+            let name = target.certified();
+            return match self
+                .quic
+                .exchange(server, &name, exchange.wire(), deadline)
+                .await
+            {
+                Ok(bytes) => Ok(answered(exchange, transport, &bytes, deadline)),
+                Err(QuicError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+                Err(error) => Err(error.into()),
+            };
+        }
         let Some(link) = target.link(transport) else {
             let channel = udp.expect("an exchange over UDP started over UDP, which took a socket");
             // A fallback sends the query with the next ID (D27).
@@ -291,15 +321,8 @@ impl Client {
                 }
             }
         };
-        let deadline = exchange.deadline();
         match self.tcp.exchange(link, exchange.wire(), deadline).await {
-            Ok(bytes) => Ok(
-                match exchange.receive(server, transport, &bytes, Instant::now()) {
-                    // Nothing else comes with that ID: the wait is over.
-                    Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
-                    progress => progress,
-                },
-            ),
+            Ok(bytes) => Ok(answered(exchange, transport, &bytes, deadline)),
             Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
             Err(error) => Err(error.into()),
         }
@@ -334,6 +357,16 @@ impl Client {
         });
         edns.options.push(EdnsOption::Cookie(cookie));
         Ok(Some(pair))
+    }
+}
+
+/// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with its
+/// ID, so a response that does not match ends the wait at `deadline`.
+fn answered(exchange: Exchange, transport: Transport, bytes: &[u8], deadline: Instant) -> Progress {
+    let server = exchange.server();
+    match exchange.receive(server, transport, bytes, Instant::now()) {
+        Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
+        progress => progress,
     }
 }
 

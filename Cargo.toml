@@ -18,11 +18,12 @@ anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 clap = { version = "4.6.7", features = ["derive"] }
 # D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS. D60: TLS by
-# rustls with ring.
+# rustls with ring, QUIC by quinn-proto.
 compio = { version = "0.19.2", default-features = false, features = [
   "io-uring",
   "net",
   "polling",
+  "quic",
   "ring",
   "runtime",
   "rustls",
