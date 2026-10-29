@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::InfoCode;
 use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, Ttl};
+use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, TextErrorKind, Ttl};
 use dedens_server::{Answer, Plugin, Records};
 
 use crate::text::{self, LineError, LineErrorKind};
@@ -137,8 +137,10 @@ impl Lists {
     /// (`0.0.0.0 ads.example`), `#` starting a comment. A name may start with `*.`, as in the lists made for
     /// Blocky (`*.ads.example`), where it means the name and its subdomains, as any name here does. Of hosts
     /// lines, only those of the addresses blocklists use count, `0.0.0.0`, `::`, `127.0.0.1` and `::1`, and of
-    /// their names neither those of one label nor those starting with `localhost`: such files start with the
-    /// entries of their host (`127.0.0.1 localhost`, `::1 ip6-loopback`). Lines of other addresses are left out.
+    /// their names neither addresses, those of one label nor those starting with `localhost`: such files start
+    /// with the entries of their host (`127.0.0.1 localhost`, `::1 ip6-loopback`, `0.0.0.0 0.0.0.0`). Lines of
+    /// other addresses are left out. Names are host names, not the root: HTML or Adblock rules (`||ads.example^`)
+    /// do not read.
     ///
     /// # Errors
     ///
@@ -221,7 +223,14 @@ fn read_line<'t>(
     match first.parse::<IpAddr>() {
         Ok(address) if address.is_unspecified() || address.is_loopback() => {}
         Ok(_) => return Ok(()),
-        Err(_) if first.contains('%') => return Ok(()),
+        // An address with a zone (`fe80::1%lo0 localhost`), of the host's own entries.
+        Err(_)
+            if first
+                .split_once('%')
+                .is_some_and(|(address, _)| address.parse::<Ipv6Addr>().is_ok()) =>
+        {
+            return Ok(());
+        }
         Err(_) => {
             let name = name(line, first)?;
             if let Some(extra) = fields.next() {
@@ -235,6 +244,10 @@ fn read_line<'t>(
         }
     }
     for field in fields {
+        // An address as a name, of the host's own entries (`0.0.0.0 0.0.0.0`).
+        if field.parse::<IpAddr>().is_ok() {
+            continue;
+        }
         let name = name(line, field)?;
         let local = name.label_count() < 2
             || name
@@ -248,9 +261,28 @@ fn read_line<'t>(
     Ok(())
 }
 
-/// `field` without a leading `*.`, as a name.
+/// `field` as a host name, after an optional `*.`: labels of ASCII letters, digits, `-` and `_` (`_dmarc`)
+/// between dots, one of them not all digits so that no address reads as a name, and an optional trailing dot. No
+/// escapes, and no root (`.`, `@`): HTML, Adblock rules (`||name^`), URLs and `host:port` do not read, so an error
+/// page is no list.
 fn name(line: usize, field: &str) -> Result<Name<'static>, LineError> {
-    text::name(line, field.strip_prefix("*.").unwrap_or(field))
+    let host = field.strip_prefix("*.").unwrap_or(field);
+    let host = host.strip_suffix('.').unwrap_or(host);
+    let error = |kind| LineError {
+        line,
+        kind: LineErrorKind::Name(field.to_owned(), kind),
+    };
+    let label = |label: &str| {
+        !label.is_empty()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    };
+    let digits = |label: &str| label.bytes().all(|byte| byte.is_ascii_digit());
+    if !host.split('.').all(label) || host.split('.').all(digits) {
+        return Err(error(TextErrorKind::Invalid("host name")));
+    }
+    Name::from_labels(host.split('.').map(str::as_bytes)).map_err(|e| error(TextErrorKind::Name(e)))
 }
 
 /// The keys of the parents of the name `key`, nearest first, the root left out: a root entry would block every

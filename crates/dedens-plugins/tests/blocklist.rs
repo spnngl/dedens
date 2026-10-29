@@ -2,7 +2,9 @@
 //! (`testdata/stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists`
 //! (`testdata/hagezi-light.txt`), of its Multi PRO in the wildcard format (`testdata/hagezi-pro-wildcard.txt`) and
 //! of its referral allowlist (`testdata/hagezi-referral-allow.txt`), each with a few lines of further down. Blocked
-//! answers carry the Extended DNS Error Blocked (RFC 8914 §4.16).
+//! answers carry the Extended DNS Error Blocked (RFC 8914 §4.16). Texts that are no lists: the head of the Multi
+//! LIGHT in Adblock syntax (`testdata/hagezi-light.adblock`) and nginx's 404 page, as `dl-cdn.alpinelinux.org`
+//! serves it (`testdata/nginx-404.html`).
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -15,6 +17,8 @@ const STEVENBLACK: &str = include_str!("testdata/stevenblack.hosts");
 const HAGEZI: &str = include_str!("testdata/hagezi-light.txt");
 const WILDCARD: &str = include_str!("testdata/hagezi-pro-wildcard.txt");
 const REFERRAL: &str = include_str!("testdata/hagezi-referral-allow.txt");
+const ADBLOCK: &str = include_str!("testdata/hagezi-light.adblock");
+const NGINX_404: &str = include_str!("testdata/nginx-404.html");
 
 fn lists(text: &str) -> Lists {
     let mut lists = Lists::new();
@@ -69,12 +73,7 @@ fn blocked(pipeline: &Pipeline, name: &str) -> bool {
 #[test]
 fn listed_names_and_their_subdomains_are_blocked() {
     let hosts = pipeline(STEVENBLACK, Action::Nxdomain);
-    for name in [
-        "2no.co.",
-        "WWW.2no.CO.",
-        "a.b.ad-assets.futurecdn.net.",
-        "0.0.0.0.",
-    ] {
+    for name in ["2no.co.", "WWW.2no.CO.", "a.b.ad-assets.futurecdn.net."] {
         assert!(blocked(&hosts, name), "{name}");
     }
     for name in ["co.", "futurecdn.net.", "example.com."] {
@@ -87,7 +86,7 @@ fn listed_names_and_their_subdomains_are_blocked() {
 }
 
 /// The host's own entries at the head of a hosts file are not blocked: localhost (RFC 6761 §6.3), names of one
-/// label, and lines of other addresses.
+/// label, addresses as names (`0.0.0.0 0.0.0.0`), and lines of other addresses.
 #[test]
 fn the_entries_of_the_host_are_not_blocked() {
     let hosts = pipeline(STEVENBLACK, Action::Nxdomain);
@@ -98,6 +97,8 @@ fn the_entries_of_the_host_are_not_blocked() {
         "printer.local.",
         "broadcasthost.",
         "ip6-allnodes.",
+        "0.0.0.0.",
+        "x.0.0.0.0.",
     ] {
         assert!(!blocked(&hosts, name), "{name}");
     }
@@ -159,6 +160,54 @@ fn fields_that_are_not_names_are_errors() {
     assert_eq!(error.line, 2);
     assert!(matches!(error.kind, LineErrorKind::Name(..)), "{error}");
     assert_eq!(lists.names(List::Block), 0);
+}
+
+/// Names are host names: letters, digits, `-` and `_` between dots, not all digits, without escapes, not the root.
+#[test]
+fn names_are_host_names() {
+    for field in [
+        "<html>",
+        "||ads.example^",
+        "https://ads.example/path",
+        "ads.example:443",
+        "ads..example",
+        r"ads\.example",
+        "*.*.ads.example",
+        "ads.*.example",
+        "1.2.3",
+        "100%",
+        "*.",
+        ".",
+        "@",
+    ] {
+        let mut lists = Lists::new();
+        let result = lists.read(List::Block, Origin::Local, field);
+        assert!(
+            matches!(&result, Err(ListError::Line(e)) if e.line == 1
+                && matches!(&e.kind, LineErrorKind::Name(f, _) if f == field)),
+            "{field}: {result:?}"
+        );
+    }
+    let mut lists = Lists::new();
+    let read = lists
+        .read(
+            List::Block,
+            Origin::Local,
+            "_dmarc.ads-1.example.\n*.ADS.example\n123.example\nzip\n0.0.0.0 0.0.0.0\n",
+        )
+        .expect("host names");
+    assert_eq!(read.names, 4);
+}
+
+/// A byte order mark at the head of a text is no part of its first line.
+#[test]
+fn a_byte_order_mark_is_left_out() {
+    for text in [STEVENBLACK, HAGEZI] {
+        let names = lists(&format!("\u{feff}{text}")).names(List::Block);
+        assert_eq!(names, lists(text).names(List::Block));
+    }
+    let pipeline = pipeline("\u{feff}ads.example", Action::Nxdomain);
+    assert!(blocked(&pipeline, "ads.example."));
 }
 
 /// `*.name` in the lists made for Blocky blocks the name and its subdomains, as its documentation says.
@@ -238,6 +287,12 @@ fn downloaded_lists_skip_lines_that_are_not_names() {
     }
     assert_eq!(lists.names(List::Block), names);
     assert_eq!(
+        lists
+            .read(List::Block, Origin::Downloaded, STEVENBLACK)
+            .map(|read| read.skipped),
+        Ok(0)
+    );
+    assert_eq!(
         lists.read(List::Allow, Origin::Downloaded, REFERRAL),
         Ok(Read {
             names: lists_of(REFERRAL),
@@ -245,6 +300,20 @@ fn downloaded_lists_skip_lines_that_are_not_names() {
             skipped: 0
         })
     );
+}
+
+/// An error page served with status 200, or a list in Adblock syntax, is refused, not read as names.
+#[test]
+fn error_pages_and_adblock_lists_are_not_lists() {
+    let mut lists = Lists::new();
+    for (text, lines) in [(NGINX_404, 7), (ADBLOCK, 30)] {
+        assert_eq!(
+            lists.read(List::Block, Origin::Downloaded, text),
+            Err(ListError::NotAList { lines, read: 0 }),
+            "{text}"
+        );
+    }
+    assert_eq!(lists.names(List::Block), 0);
 }
 
 /// The names of `text`, one a line, comments left out.

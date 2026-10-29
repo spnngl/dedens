@@ -107,6 +107,13 @@ fn addresses_with_a_zone_are_left_out() {
     assert!(hosts.is_ok());
 }
 
+/// A byte order mark at the head of the file is no part of its first line.
+#[test]
+fn a_byte_order_mark_is_left_out() {
+    let text = format!("\u{feff}{HOSTS}");
+    assert!(Hosts::new(&text, Ttl::ZERO, false).is_ok());
+}
+
 #[test]
 fn unreadable_lines_are_errors() {
     for (text, line, kind) in [

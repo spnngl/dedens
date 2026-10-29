@@ -1,0 +1,30 @@
+[Adblock Plus]
+! Title: HaGeZi's Multi LIGHT - basic protection
+! Description: Hand brush edition. Cleans up the internet and protects your privacy without going overboard. Blocks ads, trackers, metrics, telemetry, and some badware. Basically a size-optimized version of Multi NORMAL, built only from domains that appear on Top 1M/10M lists.
+! Note: This version shouldn't cause any real restrictions. Great if there's no admin around to unblock stuff for you, or if your ad blocker chokes on big lists.
+! Homepage: https://github.com/hagezi/dns-blocklists
+! License: https://github.com/hagezi/dns-blocklists/blob/main/LICENSE
+! Issues: https://github.com/hagezi/dns-blocklists/issues
+! Disclaimer: https://github.com/hagezi/dns-blocklists/blob/main/README.md#disclaimer
+! Expires: 8 hours
+! Last modified: 29 Oct 2026 09:41 UTC
+! Version: 2026.1029.0941.19
+! Syntax: AdBlock
+! Number of entries: 74278
+!
+||telemetry.001-studio.com^
+||ad.001zb.com^
+||00254ap.00254ab6322fb418ceb2495152f81bcc5259a917.com^
+||sst.013.nl^
+||017f7ap.017f7aa0a7d095b13114a019d282599ffb8a4a95.com^
+||securite.01net.com^
+||umami.01o.de^
+||03e7fbp.03e7fb2bb603196d16d1922f57ffb94bb98c2d50.com^
+||49c8a51182.04917011a8.com^
+||c0538031ec.05f953e8ed.com^
+||066711p.066711fc9394370f20e8b18dd3ad8ac35bbb9697.com^
+||repo.075a3e36a0a52dcbc568c05788e8a713.biz^
+||0.07c225f3.online^
+||9.07c225f3.online^
+||0942b5p.0942b5a707ef15f34ab35d715dcb2a66f5598c16.com^
+||897c4cd046b8467524281c9d5d4cb94d.0dc5127bd3b3bc23fd0c57e8375f595f.de^

@@ -36,8 +36,10 @@ pub enum LineErrorKind {
     TooMany(String),
 }
 
-/// The fields of each line of `text` with any, from 1, with comments (`#` to the end of the line) left out.
+/// The fields of each line of `text` with any, from 1, with comments (`#` to the end of the line) and a leading
+/// byte order mark (U+FEFF, as some Windows editors write) left out.
 pub(crate) fn lines(text: &str) -> impl Iterator<Item = (usize, SplitWhitespace<'_>)> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines().enumerate().filter_map(|(index, line)| {
         let line = line.split_once('#').map_or(line, |(before, _)| before);
         let fields = line.split_whitespace();

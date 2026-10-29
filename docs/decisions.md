@@ -435,7 +435,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   whose guards may not be held across an await and whose `Arc` clones share a count between threads. Later:
   watching the file, and upstreams pushed while running (D-Bus, for a systemd-resolved replacement).
 - D56 Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
-  blocks the name and its subdomains, as any entry here does. A plain line holds one name. An `allow` list
+  blocks the name and its subdomains, as any entry here does. A plain line holds one name. Names are host names,
+  not zone-file names, which read nearly anything (`<html>`, `||ads.example^`, URLs) so that an error page passed
+  as a list: ASCII letters, digits, `-` and `_` between dots, a label not all digits (no address is a name), an
+  optional trailing dot, `*.` only first; no escapes, no root (`.`, `@`). Hosts lines leave out addresses as
+  names (StevenBlack's `0.0.0.0 0.0.0.0`) and lines of an address with a zone (`fe80::1%lo0`), of the host's
+  own entries. A byte order mark opening a list or hosts file is dropped. An `allow` list
   (entries, file) lets a name through when it or a parent is listed, whichever parent is blocked, as numa and
   Blocky do; looked up only for blocked names. Names listed twice count once, counted in the log. Lines
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
