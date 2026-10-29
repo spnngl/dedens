@@ -125,6 +125,8 @@ async fn the_id_of_a_timed_out_query_stays_taken() {
     };
     let mut peer = Peer::accept(&listener).await;
     let late = peer.read().await.expect("a query");
+    // Something read on the connection since the query went: it stays.
+    peer.write(&[answer(&query_with_id(3), Vec::new())]).await;
     let timed_out = timed_out.await.expect("joined");
     assert!(
         matches!(timed_out, Err(TcpError::TimedOut)),
@@ -357,4 +359,80 @@ async fn a_connection_not_open_in_time_is_a_connect_error() {
         )
         .await;
     assert!(matches!(result, Err(TcpError::Connect(_))), "{result:?}");
+}
+
+/// A connection with nothing read since a query that timed out, as to a server that stopped answering or reading,
+/// takes no more queries: the next goes on a new one.
+#[compio::test]
+async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let timed_out = {
+        let pool = Rc::clone(&pool);
+        let soon = Instant::now() + Duration::from_millis(50);
+        compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(16), soon).await })
+    };
+    let mut silent = Peer::accept(&listener).await;
+    silent.read().await.expect("a query");
+    let timed_out = timed_out.await.expect("joined");
+    assert!(
+        matches!(timed_out, Err(TcpError::TimedOut)),
+        "{timed_out:?}"
+    );
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(17), deadline()).await
+        })
+    };
+    let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+        .await
+        .expect("a new connection");
+    let query = fresh.read().await.expect("the query on a new connection");
+    fresh.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
+}
+
+/// The error of a connection that cannot open goes to every query waiting for it, not to the first only.
+#[compio::test]
+async fn a_connect_error_goes_to_every_query_waiting() {
+    let (listener, server) = listen().await;
+    drop(listener);
+    let pool = pool();
+    let (first, second) = futures_util::future::join(
+        pool.local_addr(server, deadline()),
+        pool.local_addr(server, deadline()),
+    )
+    .await;
+    assert!(matches!(first, Err(TcpError::Connect(_))), "{first:?}");
+    assert!(matches!(second, Err(TcpError::Connect(_))), "{second:?}");
+}
+
+/// RFC 7766 §6.2.1: once all 65536 IDs of a connection wait for a response, the next query goes on a new one.
+#[compio::test]
+async fn a_query_finding_every_id_taken_opens_a_connection() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let waiting: Vec<_> = (0..=u16::MAX)
+        .map(|n| {
+            let pool = Rc::clone(&pool);
+            compio::runtime::spawn(async move {
+                pool.exchange(server, &query_with_id(n), deadline()).await
+            })
+        })
+        .collect();
+    let _full = Peer::accept(&listener).await;
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(18), deadline()).await
+        })
+    };
+    let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+        .await
+        .expect("a new connection");
+    let query = fresh.read().await.expect("the query on a new connection");
+    fresh.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
+    drop(waiting);
 }

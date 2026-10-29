@@ -114,12 +114,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     ID free on the connection (§6.2.1), the caller's put back in the response; the ID of a query that stopped
     waiting stays taken until its response comes. Idle close; edns-tcp-keepalive sent empty in TCP queries only
     and its timeout honoured when shorter, 0 taking no new query (RFC 7828); a closed
-    connection retried once on a new one. Queries are written whole by a task of the connection, so a query that
-    stops waiting never cuts a message short; those queued meanwhile go in one write (D53).
+    connection retried once on a new one, as is one whose IDs are all taken. Queries are written whole by a task of
+    the connection, so a query that stops waiting never cuts a message short; those queued meanwhile go in one
+    write (D53). A write lasts the idle time at most, and a query that times out with nothing read on its
+    connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
+    that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
+    the source address of a cookie, costs that try, not the exchange.
 - D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
   it, and owns no randomness or secret; `0x20` takes its random bits as an option, which also turns on the
   exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
-  and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries; the TC,
+  and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries, and tries lost to a socket error or a slow connection; the TC,
   EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
   alone may leave the question out; once a server has sent a cookie, a response without one is dropped, even
   without OPT (RFC 7873 §5.3 MUST), at the price of timeouts if that server loses cookie support mid-process.
@@ -142,8 +146,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
   opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
   (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
-  time (§4.4) and is opened again on the next query. A query given up is cancelled with STOP_SENDING (§4.3.1).
-  - TLS 1.3 only (RFC 9001 §4.2), ALPN `doq`, the same trust as D60 (strict profile). No 0-RTT: a query waits for
+  time (§4.4) and is opened again on the next query; a query on a reused connection found closed goes again once
+  on a new one, as D27's TCP. A query given up is cancelled with STOP_SENDING and RESET_STREAM (§4.3.1). A
+  response is read up to its 2 + 65535 bytes, a longer stream being a protocol error; the server may open no
+  stream (§4.3.3), the client allowing none.
+  - TLS 1.3 only (RFC 9001 §4.2), ALPN `doq`, the same trust as D60 (strict profile). No 0-RTT, early data off: a query waits for
     the handshake, since one in early data could be replayed (§4.5).
   - Queries are padded as over TLS (§5.4), and carry no edns-tcp-keepalive (§5.5.2).
   - The CLI writes a QUIC server `quic://HOST[:PORT][#NAME]`, or any server with `+quic`; UDP port 853 unless
@@ -390,8 +397,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
   socket: 16 + 8 bits (RFC 5452 §9.2), against about 32 with a socket per query; cookies (RFC 7873) and `0x20`
   stay the way to win more. Matching stays D27's: a datagram goes to each query waiting for its ID, and the
-  exchange drops those of another question. A socket's datagrams are cut to the largest size its queries
-  advertised. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
+  exchange drops those of another question. A datagram is received whole, up to 65535 bytes, into
+  one buffer per socket, whatever size the queries advertised. A socket error goes to the queries that sent on
+  it, each counting it as a lost try; errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
 - D51 The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,

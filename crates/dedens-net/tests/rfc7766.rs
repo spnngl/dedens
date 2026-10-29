@@ -25,7 +25,7 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     // The UDP socket is gone: only TCP counts now.
     let full = wire(&response(&common::sent(&exchange), Rcode::NOERROR));
     let exchange = common::expect_wait(udp(exchange, &full, now));
-    let got = expect_response(exchange.receive(server(), Transport::Tcp, &full, now));
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, full.clone(), now));
     assert_eq!(got.transport, Transport::Tcp);
     assert_eq!(got.sends, 2);
 }
@@ -54,7 +54,7 @@ fn a_truncated_response_over_tcp_is_the_response() {
     assert_eq!(exchange.transport(), Transport::Tcp);
     let mut truncated = response(&query, Rcode::NOERROR);
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
-    let got = expect_response(exchange.receive(server(), Transport::Tcp, &wire(&truncated), now));
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, wire(&truncated), now));
     assert_eq!(got.wire, wire(&truncated));
 }
 
@@ -67,5 +67,5 @@ fn over_tcp_the_source_address_is_the_connection() {
     let exchange = start(&query, options, now);
     let other = "198.51.100.1:4242".parse().expect("a socket address");
     let full = wire(&response(&query, Rcode::NOERROR));
-    expect_response(exchange.receive(other, Transport::Tcp, &full, now));
+    expect_response(exchange.receive(other, Transport::Tcp, full.clone(), now));
 }

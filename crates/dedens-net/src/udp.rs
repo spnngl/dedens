@@ -14,7 +14,7 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::rc::Rc;
 use std::task::{Poll, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::net::UdpSocket;
@@ -44,18 +44,12 @@ impl UdpPool {
     }
 
     /// Waits on socket `pick` modulo the pool's size for `server`, opening it first if need be, for datagrams with
-    /// ID `id` of up to `size` bytes: the UDP payload size the query advertises (RFC 6891 §6.2.3).
+    /// ID `id`.
     ///
     /// # Errors
     ///
     /// The socket cannot be opened or connected.
-    pub async fn query(
-        &self,
-        server: SocketAddr,
-        pick: usize,
-        id: u16,
-        size: usize,
-    ) -> io::Result<UdpQuery> {
+    pub async fn query(&self, server: SocketAddr, pick: usize, id: u16) -> io::Result<UdpQuery> {
         let index = pick % self.size;
         let open = self
             .servers
@@ -73,7 +67,7 @@ impl UdpPool {
                 .or_insert_with(|| vec![None; self.size].into_boxed_slice());
             Rc::clone(sockets[index].get_or_insert(mux))
         };
-        let token = mux.waiting.borrow_mut().add(id, size);
+        let token = mux.waiting.borrow_mut().add(id);
         Ok(UdpQuery { mux, token })
     }
 }
@@ -111,19 +105,32 @@ impl Mux {
     }
 }
 
-/// Receives the datagrams of `socket` for the queries `waiting`.
+/// Receives the datagrams of `socket` for the queries `waiting`, each whole: a query may advertise any UDP payload
+/// size (RFC 6891 §6.2.3), and one buffer of the largest serves them all.
 async fn receive(socket: Rc<UdpSocket>, waiting: Rc<RefCell<Waiting>>) {
-    let mut buf = Vec::new();
+    /// The largest UDP payload.
+    const MAX_DATAGRAM: usize = 65535;
+    /// The pause after an error that follows an error, so one that keeps coming does not spin.
+    const PAUSE: Duration = Duration::from_millis(10);
+    let mut buf = Vec::with_capacity(MAX_DATAGRAM);
+    let mut failed = false;
     loop {
-        let size = waiting.borrow().size;
         // A receive fills the buffer from its start: what it does not overwrite is stale.
         buf.clear();
-        buf.reserve_exact(size);
         let BufResult(received, back) = socket.recv(buf).await;
         buf = back;
         match received {
-            Ok(len) => waiting.borrow_mut().deliver(&buf[..len.min(size)]),
-            Err(error) => waiting.borrow_mut().fail(error.kind()),
+            Ok(len) => {
+                failed = false;
+                waiting.borrow_mut().deliver(&buf[..len]);
+            }
+            Err(error) => {
+                waiting.borrow_mut().fail(error.kind());
+                if failed {
+                    compio::time::sleep(PAUSE).await;
+                }
+                failed = true;
+            }
         }
     }
 }
@@ -135,8 +142,6 @@ struct Waiting {
     /// Datagrams not read yet, by the token of their query.
     inbox: Vec<(u64, Vec<u8>)>,
     next: u64,
-    /// The largest size a query advertised.
-    size: usize,
 }
 
 /// A query waiting for datagrams with its ID.
@@ -144,19 +149,21 @@ struct Waiting {
 struct Waiter {
     token: u64,
     id: u16,
+    /// Whether it sent a datagram: only then may an error be its.
+    sent: bool,
     error: Option<io::ErrorKind>,
     waker: Option<Waker>,
 }
 
 impl Waiting {
-    /// Adds a query waiting for ID `id` and datagrams of up to `size` bytes, and returns its token.
-    fn add(&mut self, id: u16, size: usize) -> u64 {
+    /// Adds a query waiting for ID `id`, and returns its token.
+    fn add(&mut self, id: u16) -> u64 {
         let token = self.next;
         self.next += 1;
-        self.size = self.size.max(size);
         self.queries.push(Waiter {
             token,
             id,
+            sent: false,
             error: None,
             waker: None,
         });
@@ -183,9 +190,10 @@ impl Waiting {
         }
     }
 
-    /// Hands `error` to every query: all wait on the same server.
+    /// Hands `error` to every query that sent a datagram: all went to the same server, and which one the error
+    /// answers is unknown. Each counts it as a try lost.
     fn fail(&mut self, error: io::ErrorKind) {
-        for waiter in &mut self.queries {
+        for waiter in self.queries.iter_mut().filter(|waiter| waiter.sent) {
             waiter.error = Some(error);
             if let Some(waker) = waiter.waker.take() {
                 waker.wake();
@@ -215,12 +223,17 @@ impl UdpQuery {
         }
     }
 
-    /// Sends `wire` as one datagram.
+    /// Sends `wire` as one datagram; from then on, an error of the socket is the query's too.
     ///
     /// # Errors
     ///
     /// The send fails, or sends only part of the message.
     pub async fn send(&self, wire: &[u8]) -> io::Result<()> {
+        if let Some(waiter) = self.mux.waiting.borrow_mut().waiter(self.token) {
+            waiter.sent = true;
+            // An error before this try was the last one's.
+            waiter.error = None;
+        }
         let BufResult(sent, _) = self.mux.socket.send(wire.to_vec()).await;
         if sent? == wire.len() {
             Ok(())
@@ -234,12 +247,10 @@ impl UdpQuery {
 
     /// Receives the next datagram with the query's ID, or `None` once `deadline` passes.
     ///
-    /// A datagram larger than the largest size given to [`UdpPool::query`] for the socket comes cut to that size: a
-    /// server that honours the advertised size never sends one, and the exchange drops it as unreadable.
-    ///
     /// # Errors
     ///
-    /// The socket failed, for instance with [`io::ErrorKind::ConnectionRefused`] after an ICMP port unreachable.
+    /// The socket failed after the query sent, for instance with [`io::ErrorKind::ConnectionRefused`] after an ICMP
+    /// port unreachable: maybe for another query on the socket.
     pub async fn recv(&mut self, deadline: Instant) -> io::Result<Option<Vec<u8>>> {
         let next = poll_fn(|cx| {
             let mut waiting = self.mux.waiting.borrow_mut();

@@ -144,7 +144,7 @@ fn badcookie_is_retried_with_the_fresh_cookie_then_over_tcp() {
 
     // A third BADCOOKIE is the response.
     let last = bad(&over_tcp, newer);
-    let got = expect_response(exchange.receive(server(), Transport::Tcp, &last, now));
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, last, now));
     assert_eq!(got.sends, 3);
     assert_eq!(
         Message::decode(&got.wire)

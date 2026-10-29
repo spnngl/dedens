@@ -43,6 +43,21 @@ fn three_tries_then_the_exchange_fails() {
     assert_eq!(failure, Failure::TimedOut { sends: 3 });
 }
 
+/// A try lost before its deadline, to a socket error or a slow connection, counts as one timed out.
+#[test]
+fn a_lost_try_counts_as_timed_out() {
+    let now = t0();
+    let exchange = start(&query(), Options::default(), now);
+    let exchange = expect_send(exchange.lose(now + secs(1)));
+    assert_eq!(exchange.sends(), 2);
+    assert_eq!(exchange.deadline(), now + secs(6));
+    let exchange = expect_send(exchange.lose(now + secs(2)));
+    assert_eq!(
+        expect_failure(exchange.lose(now + secs(3))),
+        Failure::TimedOut { sends: 3 }
+    );
+}
+
 #[test]
 fn a_timeout_too_long_for_a_clock_waits_a_century() {
     let now = t0();

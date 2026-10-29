@@ -1,21 +1,22 @@
 //! DNS over QUIC (RFC 9250): one QUIC connection per server and certificate name, opened on first use and reused
 //! while open; each query alone on a bidirectional stream, behind its two-byte length, the stream finished after it
-//! (RFC 9250 §4.2). No 0-RTT: queries wait for the handshake (RFC 9250 §4.5).
+//! (RFC 9250 §4.2). No 0-RTT: queries wait for the handshake (RFC 9250 §4.5). The server may open no stream
+//! (RFC 9250 §4.3.3).
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::AsyncWriteExt as _;
+use compio::quic::crypto::rustls::QuicClientConfig;
 use compio::quic::{
-    ClientBuilder, ClientConfig, ConnectError, Connection, ConnectionError, Endpoint, IdleTimeout,
-    RecvStream, TransportConfig, VarInt,
+    ClientConfig, ConnectError, Connection, ConnectionError, Endpoint, IdleTimeout, RecvStream,
+    SendStream, TransportConfig, VarInt,
 };
 use compio::rustls::pki_types::ServerName;
 use futures_util::lock::Mutex;
@@ -25,6 +26,9 @@ use crate::tls::{self, Trust};
 
 /// `DOQ_REQUEST_CANCELLED`: the client gave up waiting for a response (RFC 9250 §4.3, §4.3.1).
 const DOQ_REQUEST_CANCELLED: u32 = 0x3;
+
+/// The most a response stream holds: the two-byte length, then the message (RFC 9250 §4.2).
+const MAX_STREAM: usize = 2 + 65535;
 
 /// Why a QUIC exchange failed.
 #[derive(Debug, thiserror::Error)]
@@ -93,6 +97,9 @@ impl QuicPool {
 
     /// Sends `wire` to `addr`, whose certificate must hold `name`, and returns the response.
     ///
+    /// A reused connection found closed once the query fails, as one the server dropped while idle (RFC 9250
+    /// §4.4), is replaced once and the query sent again (D27).
+    ///
     /// # Errors
     ///
     /// [`QuicError`]: no TLS, socket or connection, a failed stream, a response not framed, or none before
@@ -106,26 +113,13 @@ impl QuicPool {
     ) -> Result<Vec<u8>, QuicError> {
         let framed = frame(wire).ok_or(QuicError::BadLength(wire.len()))?;
         let asked = async {
-            let connection = self.connection(addr, name).await?;
-            let (mut send, recv) = connection
-                .open_bi_wait()
-                .await
-                .map_err(QuicError::Connection)?;
-            let mut recv = Cancelled(recv);
-            let BufResult(written, _) = send.write_all(framed).await;
-            written.map_err(QuicError::Stream)?;
-            send.finish()
-                .map_err(|closed| QuicError::Stream(io::Error::other(closed)))?;
-            let BufResult(read, mut bytes) = recv.read_to_end(Vec::new()).await;
-            read.map_err(QuicError::Stream)?;
-            match bytes.get(..2) {
-                Some(&[high, low])
-                    if usize::from(u16::from_be_bytes([high, low])) == bytes.len() - 2 =>
-                {
-                    bytes.drain(..2);
-                    Ok(bytes)
+            let (connection, reused) = self.connection(addr, name).await?;
+            match ask(&connection, &framed).await {
+                Err(_) if reused && connection.close_reason().is_some() => {
+                    let (fresh, _) = self.connection(addr, name).await?;
+                    ask(&fresh, &framed).await
                 }
-                _ => Err(QuicError::Framing),
+                asked => asked,
             }
         };
         compio::time::timeout_at(deadline, asked)
@@ -133,12 +127,12 @@ impl QuicPool {
             .unwrap_or(Err(QuicError::TimedOut))
     }
 
-    /// The open connection to `addr` for `name`, or a new one.
+    /// The open connection to `addr` for `name`, reused, or a new one.
     async fn connection(
         &self,
         addr: SocketAddr,
         name: &ServerName<'static>,
-    ) -> Result<Connection, QuicError> {
+    ) -> Result<(Connection, bool), QuicError> {
         let slot = Rc::clone(
             self.connections
                 .borrow_mut()
@@ -149,7 +143,7 @@ impl QuicPool {
         if let Some(open) = slot.as_ref()
             && open.close_reason().is_none()
         {
-            return Ok(open.clone());
+            return Ok((open.clone(), true));
         }
         let endpoint = self.endpoint(addr).await?;
         let connection = endpoint
@@ -157,7 +151,7 @@ impl QuicPool {
             .map_err(QuicError::Connect)?
             .await
             .map_err(QuicError::Connection)?;
-        Ok(slot.insert(connection).clone())
+        Ok((slot.insert(connection).clone(), false))
     }
 
     /// The endpoint of `addr`'s address family, bound to any address on first use.
@@ -172,8 +166,10 @@ impl QuicPool {
             SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
         };
         let endpoint = Endpoint::client(any).await.map_err(QuicError::Bind)?;
-        self.endpoints.borrow_mut()[family] = Some(endpoint.clone());
-        Ok(endpoint)
+        // Another query may have bound one meanwhile: the first stays.
+        Ok(self.endpoints.borrow_mut()[family]
+            .get_or_insert(endpoint)
+            .clone())
     }
 
     /// The configuration of new connections, built on first use.
@@ -181,36 +177,78 @@ impl QuicPool {
         if let Some(config) = self.config.get() {
             return Ok(config.clone());
         }
+        // rustls leaves early data off: no 0-RTT (D61).
         let tls = tls::quic_config(&self.trust).map_err(QuicError::Trust)?;
-        let mut config = ClientBuilder::new_with_rustls_client_config(tls).build();
+        let tls = QuicClientConfig::try_from(tls)
+            .expect("TLS 1.3 with ring's cipher suites has QUIC's initial suite");
+        let mut config = ClientConfig::new(Arc::new(tls));
         let mut transport = TransportConfig::default();
-        transport.max_idle_timeout(IdleTimeout::try_from(self.idle).ok());
+        transport
+            .max_idle_timeout(IdleTimeout::try_from(self.idle).ok())
+            .max_concurrent_bidi_streams(VarInt::from_u32(0))
+            .max_concurrent_uni_streams(VarInt::from_u32(0));
         config.transport_config(Arc::new(transport));
         Ok(self.config.get_or_init(|| config).clone())
     }
 }
 
-/// A stream whose response is no longer waited for when dropped: `STOP_SENDING` with `DOQ_REQUEST_CANCELLED` (RFC 9250
-/// §4.3.1); nothing once the response is read whole.
-struct Cancelled(RecvStream);
+/// Sends `framed` alone on a new stream of `connection` and reads the response to the end of the stream.
+async fn ask(connection: &Connection, framed: &[u8]) -> Result<Vec<u8>, QuicError> {
+    let (send, recv) = connection
+        .open_bi_wait()
+        .await
+        .map_err(QuicError::Connection)?;
+    let mut stream = Stream {
+        send,
+        recv,
+        read: false,
+    };
+    let BufResult(written, _) = stream.send.write_all(framed.to_vec()).await;
+    written.map_err(QuicError::Stream)?;
+    stream
+        .send
+        .finish()
+        .map_err(|closed| QuicError::Stream(io::Error::other(closed)))?;
+    let mut bytes = Vec::new();
+    // One byte past the most a response holds is enough to refuse it.
+    while let Some(chunk) = stream
+        .recv
+        .read_chunk(MAX_STREAM + 1 - bytes.len(), true)
+        .await
+        .map_err(|error| QuicError::Stream(error.into()))?
+    {
+        bytes.extend_from_slice(&chunk.bytes);
+        if bytes.len() > MAX_STREAM {
+            return Err(QuicError::Framing);
+        }
+    }
+    stream.read = true;
+    match bytes.get(..2) {
+        Some(&[high, low]) if usize::from(u16::from_be_bytes([high, low])) == bytes.len() - 2 => {
+            bytes.drain(..2);
+            Ok(bytes)
+        }
+        _ => Err(QuicError::Framing),
+    }
+}
 
-impl Drop for Cancelled {
+/// The stream of a query, cancelled when dropped before its response is read whole: `RESET_STREAM` and
+/// `STOP_SENDING` with `DOQ_REQUEST_CANCELLED` (RFC 9250 §4.3.1), so that a query cut by a timeout does not go out
+/// finished.
+struct Stream {
+    send: SendStream,
+    recv: RecvStream,
+    /// The response was read to the end of the stream: nothing to cancel.
+    read: bool,
+}
+
+impl Drop for Stream {
     fn drop(&mut self) {
-        // Fails once the stream is read to its end: nothing to cancel.
-        let _ = self.0.stop(VarInt::from_u32(DOQ_REQUEST_CANCELLED));
-    }
-}
-
-impl Deref for Cancelled {
-    type Target = RecvStream;
-
-    fn deref(&self) -> &RecvStream {
-        &self.0
-    }
-}
-
-impl DerefMut for Cancelled {
-    fn deref_mut(&mut self) -> &mut RecvStream {
-        &mut self.0
+        if !self.read {
+            let code = VarInt::from_u32(DOQ_REQUEST_CANCELLED);
+            // Each fails once its side is closed: nothing left to cancel there.
+            let _ = self.send.reset(code);
+            let _ = self.recv.stop(code);
+        }
     }
 }

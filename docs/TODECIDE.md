@@ -10,6 +10,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
+- Renewing the pooled upstream UDP sockets (D50) now and then, for the port entropy of RFC 5452 §9.2 against
+  an attacker who learned a kept port. Default: keep the sockets, relying on `0x20` and cookies.
 - Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED.
   Default: a stage or core setting, loopback and private ranges allowed when unset; networks in a
   longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for blocking by answer address.

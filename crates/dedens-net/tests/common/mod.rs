@@ -83,7 +83,7 @@ pub(crate) fn start(query: &Message<'_>, options: Options, now: Instant) -> Exch
 
 /// Hands `bytes` from the server over UDP to `exchange`.
 pub(crate) fn udp(exchange: Exchange, bytes: &[u8], now: Instant) -> Progress {
-    exchange.receive(server(), Transport::Udp, bytes, now)
+    exchange.receive(server(), Transport::Udp, bytes.to_vec(), now)
 }
 
 pub(crate) fn sent(exchange: &Exchange) -> Message<'static> {

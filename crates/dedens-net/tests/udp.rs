@@ -11,7 +11,7 @@ use compio::net::UdpSocket;
 use dedens_net::udp::UdpPool;
 use dedens_proto::edns::EdnsOption;
 
-/// Room for any response of these tests.
+/// Room for any datagram of these tests.
 const SIZE: usize = 1232;
 
 fn soon() -> Instant {
@@ -22,7 +22,7 @@ fn soon() -> Instant {
 async fn a_query_gets_its_response() {
     let server = udp_responder(|query| Some(answer(query, Vec::new()))).await;
     let pool = UdpPool::new(4);
-    let mut query = pool.query(server, 0, 7, SIZE).await.expect("a socket");
+    let mut query = pool.query(server, 0, 7).await.expect("a socket");
     query.send(&query_with_id(7)).await.expect("sent");
     let response = query.recv(soon()).await.expect("received");
     assert_eq!(response.as_deref().map(id), Some(7));
@@ -31,10 +31,7 @@ async fn a_query_gets_its_response() {
 #[compio::test]
 async fn the_os_picks_the_source_port() {
     let server = udp_responder(|_| None).await;
-    let query = UdpPool::new(4)
-        .query(server, 0, 1, SIZE)
-        .await
-        .expect("a socket");
+    let query = UdpPool::new(4).query(server, 0, 1).await.expect("a socket");
     assert_ne!(query.local_addr().port(), 0);
 }
 
@@ -43,8 +40,8 @@ async fn the_os_picks_the_source_port() {
 async fn queries_on_one_socket_get_their_own_responses() {
     let server = udp_responder(|query| Some(answer(query, Vec::new()))).await;
     let pool = UdpPool::new(4);
-    let mut first = pool.query(server, 1, 1, SIZE).await.expect("a socket");
-    let mut second = pool.query(server, 5, 2, SIZE).await.expect("a socket");
+    let mut first = pool.query(server, 1, 1).await.expect("a socket");
+    let mut second = pool.query(server, 5, 2).await.expect("a socket");
     assert_eq!(first.local_addr(), second.local_addr());
     first.send(&query_with_id(1)).await.expect("sent");
     second.send(&query_with_id(2)).await.expect("sent");
@@ -61,7 +58,7 @@ async fn sockets_are_picked_modulo_the_pool_size() {
     let server = udp_responder(|_| None).await;
     let pool = UdpPool::new(2);
     let port = async |pick| {
-        let query = pool.query(server, pick, 1, SIZE).await.expect("a socket");
+        let query = pool.query(server, pick, 1).await.expect("a socket");
         query.local_addr().port()
     };
     let (a, b, c) = (port(0).await, port(1).await, port(2).await);
@@ -74,7 +71,7 @@ async fn sockets_are_picked_modulo_the_pool_size() {
 async fn a_query_waits_for_its_id() {
     let server = udp_responder(|query| Some(answer(query, Vec::new()))).await;
     let pool = UdpPool::new(1);
-    let mut query = pool.query(server, 0, 3, SIZE).await.expect("a socket");
+    let mut query = pool.query(server, 0, 3).await.expect("a socket");
     query.send(&query_with_id(4)).await.expect("sent");
     let early = query
         .recv(Instant::now() + Duration::from_millis(50))
@@ -92,7 +89,7 @@ async fn a_late_response_still_arrives_after_the_deadline() {
     let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
     let addr = server.local_addr().expect("an address");
     let pool = UdpPool::new(1);
-    let mut query = pool.query(addr, 0, 9, SIZE).await.expect("a socket");
+    let mut query = pool.query(addr, 0, 9).await.expect("a socket");
     query.send(&query_with_id(9)).await.expect("sent");
     let early = query
         .recv(Instant::now() + Duration::from_millis(20))
@@ -119,7 +116,7 @@ async fn a_short_response_after_a_long_one_comes_out_whole() {
     let server = udp_responder(move |query| Some(answer(query, options(id(query))))).await;
     let pool = UdpPool::new(1);
     for n in [1, 2] {
-        let mut waiting = pool.query(server, 0, n, SIZE).await.expect("a socket");
+        let mut waiting = pool.query(server, 0, n).await.expect("a socket");
         let query = query_with_id(n);
         waiting.send(&query).await.expect("sent");
         let response = waiting.recv(soon()).await.expect("received");
@@ -127,15 +124,17 @@ async fn a_short_response_after_a_long_one_comes_out_whole() {
     }
 }
 
-/// RFC 6891 §6.2.3: a datagram over the size the queries advertised comes cut to it.
+/// RFC 6891 §6.2.3: a datagram comes whole, whatever size the queries on the socket advertised.
 #[compio::test]
-async fn a_datagram_over_the_size_comes_cut() {
-    let server = udp_responder(|query| Some(answer(query, vec![EdnsOption::Padding(600)]))).await;
+async fn a_large_datagram_comes_whole() {
+    let padded = || vec![EdnsOption::Padding(4000)];
+    let server = udp_responder(move |query| Some(answer(query, padded()))).await;
     let pool = UdpPool::new(1);
-    let mut query = pool.query(server, 0, 3, 512).await.expect("a socket");
-    query.send(&query_with_id(3)).await.expect("sent");
+    let mut query = pool.query(server, 0, 3).await.expect("a socket");
+    let sent = query_with_id(3);
+    query.send(&sent).await.expect("sent");
     let response = query.recv(soon()).await.expect("received");
-    assert_eq!(response.as_ref().map(Vec::len), Some(512));
+    assert_eq!(response, Some(answer(&sent, padded())));
 }
 
 /// The socket is connected: an ICMP port unreachable reaches the query waiting on it.
@@ -145,8 +144,27 @@ async fn a_closed_port_is_refused() {
     let addr = closed.local_addr().expect("an address");
     drop(closed);
     let pool = UdpPool::new(1);
-    let mut query = pool.query(addr, 0, 3, SIZE).await.expect("a socket");
+    let mut query = pool.query(addr, 0, 3).await.expect("a socket");
     query.send(&query_with_id(3)).await.expect("sent");
     let refused = query.recv(soon()).await.map_err(|error| error.kind());
     assert_eq!(refused, Err(io::ErrorKind::ConnectionRefused));
+}
+
+/// An error of the socket goes to the queries that sent on it, not to one that sent nothing yet.
+#[compio::test]
+async fn an_error_skips_a_query_that_sent_nothing() {
+    let closed = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+    let addr = closed.local_addr().expect("an address");
+    drop(closed);
+    let pool = UdpPool::new(1);
+    let mut sending = pool.query(addr, 0, 3).await.expect("a socket");
+    let mut quiet = pool.query(addr, 0, 4).await.expect("a socket");
+    sending.send(&query_with_id(3)).await.expect("sent");
+    let refused = sending.recv(soon()).await.map_err(|error| error.kind());
+    assert_eq!(refused, Err(io::ErrorKind::ConnectionRefused));
+    let nothing = quiet
+        .recv(Instant::now() + Duration::from_millis(50))
+        .await
+        .map_err(|error| error.kind());
+    assert_eq!(nothing, Ok(None));
 }

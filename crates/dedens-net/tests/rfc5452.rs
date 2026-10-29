@@ -31,7 +31,7 @@ fn a_response_from_another_address_is_dropped() {
     let mut exchange = start(&query, Options::default(), now);
     for from in ["192.0.2.53:5353", "192.0.2.54:53", "[2001:db8::53]:53"] {
         let from = from.parse().expect("a socket address");
-        exchange = expect_wait(exchange.receive(from, Transport::Udp, &answer, now));
+        exchange = expect_wait(exchange.receive(from, Transport::Udp, answer.clone(), now));
     }
     expect_response(udp(exchange, &answer, now));
 }
@@ -42,7 +42,7 @@ fn a_response_over_another_transport_is_dropped() {
     let query = query();
     let answer = wire(&response(&query, Rcode::NOERROR));
     let exchange = start(&query, Options::default(), now);
-    let exchange = expect_wait(exchange.receive(server(), Transport::Tcp, &answer, now));
+    let exchange = expect_wait(exchange.receive(server(), Transport::Tcp, answer.clone(), now));
     expect_response(udp(exchange, &answer, now));
 }
 

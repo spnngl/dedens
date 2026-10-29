@@ -27,9 +27,6 @@ use crate::udp::{UdpPool, UdpQuery};
 /// §6.2.3, RFC 7828 §3.2.2).
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
-/// The UDP payload size of a query without EDNS, and the least one with it means (RFC 6891 §6.2.3).
-const MIN_UDP_PAYLOAD: u16 = 512;
-
 /// UDP sockets per server, each muxing queries by ID (D50).
 const UDP_SOCKETS: usize = 256;
 
@@ -225,24 +222,31 @@ impl Client {
         // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
         // so a late response to an earlier try still counts (D27).
         let mut udp = None;
+        // A connection slower than the try's timeout costs that try (D27).
+        let mut slow = false;
         let source = match target.link(options.transport) {
             None if options.transport == Transport::Quic => None,
             None => {
-                // Room for the largest response the query asks for (RFC 6891 §6.2.3); TCP takes any larger.
-                let size = query.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
-                    edns.udp_payload.max(MIN_UDP_PAYLOAD)
-                });
                 let waiting = self
                     .udp
-                    .query(server, pick, query.header.id, usize::from(size))
+                    .query(server, pick, query.header.id)
                     .await
                     .map_err(ClientError::Udp)?;
                 Some(udp.insert(waiting).local_addr())
             }
-            Some(link) => {
+            // The connection's address, for the cookie only.
+            Some(link) if options.cookies => {
                 let deadline = after(Instant::now(), options.timeout);
-                Some(self.tcp.local_addr(link, deadline).await?)
+                match self.tcp.local_addr(link, deadline).await {
+                    Ok(local) => Some(local),
+                    Err(TcpError::TimedOut) => {
+                        slow = true;
+                        None
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
+            Some(_) => None,
         };
         let pair = match source {
             Some(source) if options.cookies => {
@@ -250,16 +254,21 @@ impl Client {
             }
             _ => None,
         };
-        let mut exchange = Exchange::start(query, server, *options, Instant::now())?;
+        let exchange = Exchange::start(query, server, *options, Instant::now())?;
+        let mut progress = if slow {
+            exchange.lose(Instant::now())
+        } else {
+            Progress::Send(exchange)
+        };
         let response = loop {
-            match self.step(exchange, &target, udp.as_mut()).await? {
+            progress = match progress {
                 Progress::Send(next) => {
                     self.keep_cookie(pair, next.cookie());
-                    exchange = next;
+                    self.step(next, &target, udp.as_mut()).await?
                 }
-                Progress::Wait(next) => exchange = next,
+                Progress::Wait(next) => self.step(next, &target, udp.as_mut()).await?,
                 Progress::Done(done) => break done?,
-            }
+            };
         };
         self.keep_cookie(pair, response.cookie);
         Ok(response)
@@ -294,7 +303,7 @@ impl Client {
                 .exchange(server, &name, exchange.wire(), deadline)
                 .await
             {
-                Ok(bytes) => Ok(answered(exchange, transport, &bytes, deadline)),
+                Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
                 Err(QuicError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
@@ -312,17 +321,27 @@ impl Client {
             let mut exchange = exchange;
             loop {
                 let deadline = exchange.deadline();
-                let Some(bytes) = channel.recv(deadline).await.map_err(ClientError::Udp)? else {
-                    return Ok(exchange.time_out(Instant::now().max(deadline)));
+                let bytes = match channel.recv(deadline).await {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return Ok(exchange.time_out(Instant::now().max(deadline))),
+                    // Maybe another query's: the try is lost, not the exchange, unless it was the last.
+                    Err(error) => {
+                        return match exchange.lose(Instant::now()) {
+                            Progress::Done(Err(Failure::TimedOut { .. })) => {
+                                Err(ClientError::Udp(error))
+                            }
+                            progress => Ok(progress),
+                        };
+                    }
                 };
-                match exchange.receive(server, Transport::Udp, &bytes, Instant::now()) {
+                match exchange.receive(server, Transport::Udp, bytes, Instant::now()) {
                     Progress::Wait(next) => exchange = next,
                     progress => return Ok(progress),
                 }
             }
         };
         match self.tcp.exchange(link, exchange.wire(), deadline).await {
-            Ok(bytes) => Ok(answered(exchange, transport, &bytes, deadline)),
+            Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
             Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
             Err(error) => Err(error.into()),
         }
@@ -362,7 +381,12 @@ impl Client {
 
 /// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with its
 /// ID, so a response that does not match ends the wait at `deadline`.
-fn answered(exchange: Exchange, transport: Transport, bytes: &[u8], deadline: Instant) -> Progress {
+fn answered(
+    exchange: Exchange,
+    transport: Transport,
+    bytes: Vec<u8>,
+    deadline: Instant,
+) -> Progress {
     let server = exchange.server();
     match exchange.receive(server, transport, bytes, Instant::now()) {
         Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),

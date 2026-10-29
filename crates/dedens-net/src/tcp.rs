@@ -53,6 +53,21 @@ pub enum TcpError {
     TimedOut,
 }
 
+impl TcpError {
+    /// The same error for another query: an I/O error keeps its kind and message, not its source.
+    fn copy(&self) -> Self {
+        let io = |error: &io::Error| io::Error::new(error.kind(), error.to_string());
+        match self {
+            Self::Connect(error) => Self::Connect(io(error)),
+            Self::Handshake(error) => Self::Handshake(io(error)),
+            Self::Trust(error) => Self::Trust(error.clone()),
+            Self::Closed => Self::Closed,
+            Self::BadLength(len) => Self::BadLength(*len),
+            Self::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
 /// The two-byte length then `wire` (RFC 1035 §4.2.2), or `None` when `wire` is longer than 65535 bytes.
 #[must_use]
 pub fn frame(wire: &[u8]) -> Option<Vec<u8>> {
@@ -123,7 +138,9 @@ impl TcpPool {
     /// The query goes under an ID no other query on the connection has, its own when free, and the response comes
     /// back with the ID of `wire` (RFC 7766 §6.2.1). The ID of a query that stopped waiting stays taken until its
     /// response comes or the connection closes. Opens a connection when there is none or the last one takes no
-    /// more queries; a connection that closes before the response is replaced once and the query sent again (D27).
+    /// more queries, all its IDs taken for one; a connection that closes before the response is replaced once and
+    /// the query sent again (D27). A query that times out with nothing read on its open connection since it was
+    /// sent closes the connection: the server stopped answering, or reading.
     ///
     /// # Errors
     ///
@@ -138,26 +155,39 @@ impl TcpPool {
             return Err(TcpError::BadLength(wire.len()));
         };
         let link = link.into();
+        // The connection of the last try, and when the query went on it.
+        let mut last = None;
         let attempt = async {
             for _ in 0..2 {
                 // Held while the query waits: a connection replaced in the pool lives until its queries are answered.
                 let connection = self.connection(&link)?;
-                let response = connection.send(wire)?;
+                let sent = Instant::now();
+                let response = match connection.send(wire) {
+                    Ok(response) => response,
+                    // It took no more queries: the next is new.
+                    Err(TcpError::Closed) => continue,
+                    Err(error) => return Err(error),
+                };
+                let connection = last.insert((connection, sent)).0.clone();
                 if let Ok(mut response) = response.recv_async().await {
                     if let Some(head) = response.first_chunk_mut() {
                         *head = id.to_be_bytes();
                     }
                     return Ok(response);
                 }
-                if let Some(error) = connection.state.borrow_mut().failure.take() {
-                    return Err(error);
+                if let Some(error) = &connection.state.borrow().failure {
+                    return Err(error.copy());
                 }
             }
             Err(TcpError::Closed)
         };
-        compio::time::timeout_at(deadline, attempt)
-            .await
-            .unwrap_or(Err(TcpError::TimedOut))
+        let answered = compio::time::timeout_at(deadline, attempt).await;
+        answered.unwrap_or_else(|_| {
+            if let Some((connection, sent)) = last {
+                connection.state.borrow_mut().stalled(sent);
+            }
+            Err(TcpError::TimedOut)
+        })
     }
 
     /// The local address of the connection over `link`, the source of its queries, once it is open; opens one
@@ -174,11 +204,14 @@ impl TcpPool {
         let connection = self.connection(&link.into())?;
         // Ends when the connecting does: nothing is ever sent.
         let opened = compio::time::timeout_at(deadline, connection.opening.recv_async()).await;
-        let mut state = connection.state.borrow_mut();
+        let state = connection.state.borrow();
         match (state.local, opened) {
             (Some(local), _) => Ok(local),
             (None, Err(_)) => Err(TcpError::TimedOut),
-            (None, Ok(_)) => Err(state.failure.take().unwrap_or(TcpError::Closed)),
+            (None, Ok(_)) => Err(state
+                .failure
+                .as_ref()
+                .map_or(TcpError::Closed, TcpError::copy)),
         }
     }
 
@@ -239,10 +272,12 @@ struct State {
     outgoing: Option<flume::Sender<Vec<u8>>>,
     /// The local address, once open.
     local: Option<SocketAddr>,
-    /// Why the connection could not be opened, for the first query to see it.
+    /// Why the connection could not be opened, for each query on it to see.
     failure: Option<TcpError>,
     /// The last query sent or response received.
     last: Instant,
+    /// The last message read.
+    read: Instant,
     /// The idle timeout; zero once the server asked for no more queries (RFC 7828 §3.2.2).
     idle: Duration,
 }
@@ -265,6 +300,13 @@ impl State {
         self.outgoing = None;
         self.waiting.clear();
     }
+
+    /// Closes the open connection when nothing was read since `sent`, when a query that went then timed out.
+    fn stalled(&mut self, sent: Instant) {
+        if self.local.is_some() && self.read < sent {
+            self.close();
+        }
+    }
 }
 
 impl Connection {
@@ -272,12 +314,14 @@ impl Connection {
     fn open(link: Link, tls: Option<TlsConnector>, idle: Duration) -> Self {
         let (opened, opening) = flume::bounded(0);
         let (outgoing, queue) = flume::unbounded();
+        let now = Instant::now();
         let state = Rc::new(RefCell::new(State {
             waiting: HashMap::new(),
             outgoing: Some(outgoing),
             local: None,
             failure: None,
-            last: Instant::now(),
+            last: now,
+            read: now,
             idle,
         }));
         let task = compio::runtime::spawn(run(link, tls, Rc::clone(&state), queue, opened));
@@ -317,7 +361,7 @@ impl Connection {
 }
 
 /// Connects, and shakes hands with `tls` over a TLS link, within the idle timeout; then reads and writes until
-/// the connection closes.
+/// the connection closes, each write within the idle timeout too.
 async fn run(
     link: Link,
     tls: Option<TlsConnector>,
@@ -325,7 +369,8 @@ async fn run(
     queue: flume::Receiver<Vec<u8>>,
     opened: flume::Sender<()>,
 ) {
-    let deadline = after(Instant::now(), state.borrow().idle);
+    let idle = state.borrow().idle;
+    let deadline = after(Instant::now(), idle);
     let connected = async {
         let stream = TcpStream::connect(link.addr())
             .await
@@ -363,11 +408,11 @@ async fn run(
     match open {
         Open::Plain(stream) => {
             let (reader, writer) = stream.into_split();
-            serve(BufReader::new(reader), writer, &state, &queue).await;
+            serve(BufReader::new(reader), writer, &state, &queue, idle).await;
         }
         Open::Secured(stream) => {
             let (reader, writer) = futures_util::io::AsyncReadExt::split(*stream);
-            serve(Polled(reader), Polled(writer), &state, &queue).await;
+            serve(Polled(reader), Polled(writer), &state, &queue, idle).await;
         }
     }
 }
@@ -386,9 +431,10 @@ async fn serve(
     writer: impl Outbound,
     state: &Rc<RefCell<State>>,
     queue: &flume::Receiver<Vec<u8>>,
+    limit: Duration,
 ) {
     let _reader = compio::runtime::spawn(read(reader, Rc::clone(state)));
-    write(writer, state, queue).await;
+    write(writer, state, queue, limit).await;
 }
 
 /// The reading side of a connection, one message at a time.
@@ -455,12 +501,14 @@ impl<W: futures_util::AsyncWrite + Unpin> Outbound for Polled<W> {
 const BATCH_LEN: usize = 65535;
 
 /// Writes each queued message whole, those queued meanwhile with it up to [`BATCH_LEN`] bytes: one write, and one
-/// wake-up of the server, for many. Stops when a write fails or the connection closes; closes the connection once
-/// no query has been waiting for the idle timeout (RFC 7766 §6.2.3), and shuts its side down.
+/// wake-up of the server, for many. Stops when a write fails or takes longer than `limit`, as to a server that no
+/// longer reads, or when the connection closes; closes the connection once no query has been waiting for the idle
+/// timeout (RFC 7766 §6.2.3), and shuts its side down.
 async fn write(
     mut stream: impl Outbound,
     state: &RefCell<State>,
     queue: &flume::Receiver<Vec<u8>>,
+    limit: Duration,
 ) {
     /// How often to look again while queries wait, so a zero timeout does not spin.
     const RECHECK: Duration = Duration::from_millis(100);
@@ -470,12 +518,13 @@ async fn write(
             let state = state.borrow();
             let now = Instant::now();
             let idle_end = after(state.last, state.idle);
-            if state.busy() {
-                after(now, state.idle.max(RECHECK))
-            } else if now >= idle_end {
-                break;
-            } else {
+            // The queries waiting are looked at once idle only.
+            if now < idle_end {
                 idle_end
+            } else if state.busy() {
+                after(now, state.idle.max(RECHECK))
+            } else {
+                break;
             }
         };
         match compio::time::timeout_at(wake, queue.recv_async()).await {
@@ -490,9 +539,9 @@ async fn write(
                 {
                     batch.extend_from_slice(&framed);
                 }
-                match stream.write_all(batch).await {
-                    BufResult(Ok(()), written) => batch = written,
-                    BufResult(Err(_), _) => break,
+                match compio::time::timeout(limit, stream.write_all(batch)).await {
+                    Ok(BufResult(Ok(()), written)) => batch = written,
+                    Ok(BufResult(Err(_), _)) | Err(_) => break,
                 }
             }
             Ok(Err(_)) => break,
@@ -500,7 +549,7 @@ async fn write(
     }
     state.borrow_mut().close();
     // The server closes its side in turn.
-    stream.close().await;
+    let _ = compio::time::timeout(limit, stream.close()).await;
 }
 
 /// Reads messages and hands each to the query waiting for its ID; the rest are dropped. Closes on end or error.
@@ -508,6 +557,7 @@ async fn read(mut stream: impl Inbound, state: Rc<RefCell<State>>) {
     while let Ok(message) = stream.message().await {
         let mut state = state.borrow_mut();
         state.last = Instant::now();
+        state.read = state.last;
         if let Some(timeout) = keepalive(&message)
             && timeout < state.idle
         {

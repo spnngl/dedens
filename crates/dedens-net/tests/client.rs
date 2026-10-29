@@ -8,10 +8,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use common::cookie_of;
-use common::loopback::{answer, id, responders, udp_responder};
+use common::loopback::{answer, id, listen, responders, udp_responder};
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Failure, Options, Transport};
 use dedens_net::tcp::TcpError;
+use dedens_net::tls::Trust;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{Message, Rcode};
 
@@ -181,6 +182,28 @@ async fn the_fresh_cookie_of_a_badcookie_is_kept_when_the_exchange_fails() {
     // The first query of the second exchange, after the BADCOOKIE retry.
     let next = cookie_of(&queries.borrow()[2]).expect("a cookie");
     assert_eq!(next.server(), Some(FRESH));
+}
+
+/// D27: a TLS handshake slower than a try, the cookie waiting for its address, costs that try, not the exchange.
+#[compio::test]
+async fn a_handshake_slower_than_a_try_costs_one_try() {
+    // Accepted by the kernel, never answered.
+    let (_listener, server) = listen().await;
+    let mut options = Options::default();
+    options.transport = Transport::Tls;
+    options.timeout = Duration::from_millis(50);
+    options.tries = 2.try_into().expect("not zero");
+    let result = Client::new()
+        .trusting(Trust::Anyone)
+        .exchange(&common::query(), server, &options)
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Exchange(Failure::TimedOut { sends: 2 }))
+        ),
+        "{result:?}"
+    );
 }
 
 #[test]

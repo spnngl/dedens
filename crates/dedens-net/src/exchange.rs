@@ -215,7 +215,7 @@ impl Exchange {
         mut self,
         from: SocketAddr,
         transport: Transport,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         now: Instant,
     ) -> Progress {
         trace!(server = %self.server, %from, ?transport, len = bytes.len(), "received");
@@ -224,7 +224,7 @@ impl Exchange {
             return Progress::Wait(self);
         }
         // Checked as `Message::decode` checks, without building the message: the caller decodes it if it wants.
-        let Ok(response) = Query::read(bytes) else {
+        let Ok(response) = Query::read(&bytes) else {
             debug!(server = %self.server, "dropped: unreadable");
             return Progress::Wait(self);
         };
@@ -272,7 +272,7 @@ impl Exchange {
             return self.send_changed(transport, now);
         }
         Progress::Done(Ok(Response {
-            wire: bytes.to_vec(),
+            wire: bytes,
             query: self.wire,
             transport,
             rtt: now.saturating_duration_since(self.sent_at),
@@ -296,6 +296,14 @@ impl Exchange {
         debug!(server = %self.server, sends = self.sends, "timed out: asking again");
         self.sent(now);
         Progress::Send(self)
+    }
+
+    /// Notes that the try ended at `now` with no response to come, a socket error or a connection slower than the
+    /// timeout: as past the deadline.
+    #[must_use]
+    pub fn lose(mut self, now: Instant) -> Progress {
+        self.deadline = self.deadline.min(now);
+        self.time_out(now)
     }
 
     /// Whether `response` answers the query: QR, ID, opcode and questions (RFC 5452 §9.1).
