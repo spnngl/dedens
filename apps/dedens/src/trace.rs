@@ -203,7 +203,10 @@ impl Tracer<'_> {
             }
             self.left.set(left - 1);
             let outcome = async {
-                let response = self.client.exchange(&query, server, &exchange).await?;
+                let response = self
+                    .client
+                    .exchange(query.clone(), server, &exchange)
+                    .await?;
                 let decoded = Message::decode(&response.wire)?;
                 if let Some((id, hops)) = &mut hops {
                     hops.push((

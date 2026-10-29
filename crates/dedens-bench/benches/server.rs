@@ -65,6 +65,7 @@ fn miss(bencher: Bencher<'_, '_>, case: &str) {
             else {
                 unreachable!("an empty cache sends the query upstream");
             };
+            black_box(upstream.request());
             let step = pipeline.receive(upstream, Some(black_box(&response)), 0, &mut out);
             assert!(matches!(step, Step::Reply(_)));
         });

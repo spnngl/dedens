@@ -24,7 +24,7 @@ fn answer_plainly(query: &[u8]) -> Vec<u8> {
 async fn a_query_gets_its_response_over_udp() {
     let server = udp_responder(|query| Some(answer_plainly(query))).await;
     let response = Client::new()
-        .exchange(&common::query(), server, &Options::default())
+        .exchange(common::query(), server, &Options::default())
         .await
         .expect("a response");
     assert_eq!(response.transport, Transport::Udp);
@@ -45,7 +45,7 @@ async fn a_truncated_response_is_asked_again_over_tcp() {
     )
     .await;
     let response = Client::new()
-        .exchange(&common::query(), server, &Options::default())
+        .exchange(common::query(), server, &Options::default())
         .await
         .expect("a response");
     assert_eq!(response.transport, Transport::Tcp);
@@ -68,7 +68,7 @@ async fn the_server_cookie_goes_back_to_its_server() {
     let client = Client::new();
     for _ in 0..2 {
         let response = client
-            .exchange(&common::query(), server, &Options::default())
+            .exchange(common::query(), server, &Options::default())
             .await
             .expect("a response");
         assert!(cookie_of(&response.wire).is_some());
@@ -90,7 +90,7 @@ async fn no_response_times_out_after_every_try() {
     options.timeout = Duration::from_millis(20);
     options.tries = 2.try_into().expect("not zero");
     let result = Client::new()
-        .exchange(&common::query(), server, &options)
+        .exchange(common::query(), server, &options)
         .await;
     assert!(
         matches!(
@@ -107,7 +107,7 @@ async fn a_query_without_edns_goes_without_a_cookie() {
     let mut query = common::query();
     query.edns = None;
     let response = Client::new()
-        .exchange(&query, server, &Options::default())
+        .exchange(query, server, &Options::default())
         .await
         .expect("a response");
     assert_eq!(cookie_of(&response.query), None);
@@ -119,7 +119,7 @@ async fn without_cookies_a_query_goes_without_one() {
     let mut options = Options::default();
     options.cookies = false;
     let response = Client::new()
-        .exchange(&common::query(), server, &options)
+        .exchange(common::query(), server, &options)
         .await
         .expect("a response");
     assert_eq!(cookie_of(&response.query), None);
@@ -144,7 +144,7 @@ async fn a_response_without_a_server_cookie_keeps_the_known_one() {
     let client = Client::new();
     for _ in 0..3 {
         client
-            .exchange(&common::query(), server, &Options::default())
+            .exchange(common::query(), server, &Options::default())
             .await
             .expect("a response");
     }
@@ -176,9 +176,9 @@ async fn the_fresh_cookie_of_a_badcookie_is_kept_when_the_exchange_fails() {
     let mut options = Options::default();
     options.timeout = Duration::from_millis(20);
     options.tries = 1.try_into().expect("not zero");
-    let failed = client.exchange(&common::query(), server, &options).await;
+    let failed = client.exchange(common::query(), server, &options).await;
     assert!(failed.is_err(), "{failed:?}");
-    let _ = client.exchange(&common::query(), server, &options).await;
+    let _ = client.exchange(common::query(), server, &options).await;
     // The first query of the second exchange, after the BADCOOKIE retry.
     let next = cookie_of(&queries.borrow()[2]).expect("a cookie");
     assert_eq!(next.server(), Some(FRESH));
@@ -195,7 +195,7 @@ async fn a_handshake_slower_than_a_try_costs_one_try() {
     options.tries = 2.try_into().expect("not zero");
     let result = Client::new()
         .trusting(Trust::Anyone)
-        .exchange(&common::query(), server, &options)
+        .exchange(common::query(), server, &options)
         .await;
     assert!(
         matches!(

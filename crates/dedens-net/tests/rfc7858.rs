@@ -84,7 +84,7 @@ fn tls() -> Options {
 }
 
 async fn ask(client: &Client, server: Server) -> Result<Response, ClientError> {
-    client.exchange(&query(), server, &tls()).await
+    client.exchange(query(), server, &tls()).await
 }
 
 /// RFC 7858 §3.3, RFC 8310 §8.1: the query goes over TLS to a server whose certificate holds the name given.

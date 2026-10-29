@@ -208,13 +208,12 @@ impl Client {
     /// response after all the tries.
     pub async fn exchange(
         &self,
-        query: &Message<'_>,
+        mut query: Message<'_>,
         server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
         let target = server.into();
         let server = target.addr;
-        let mut query = query.clone();
         // The ID, then the UDP socket of the pool.
         let random = self.random.borrow_mut().take::<4>()?;
         query.header.id = u16::from_be_bytes([random[0], random[1]]);

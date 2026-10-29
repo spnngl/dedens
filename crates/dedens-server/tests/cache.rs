@@ -172,6 +172,7 @@ fn entries_near_their_end_are_refreshed_once() {
 }
 
 /// The upstream query `query` gets at `now`.
+#[expect(clippy::unnecessary_box_returns, reason = "the pipeline takes it boxed")]
 fn upstream_of(pipeline: &Pipeline, query: &Message<'_>, now: u32) -> Box<Upstream> {
     let mut out = vec![0; 65535];
     match pipeline.query(&wire(query), Transport::Udp, now, &mut out) {

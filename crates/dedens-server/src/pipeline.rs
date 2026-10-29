@@ -65,10 +65,9 @@ enum Purpose {
 /// the query.
 #[derive(Debug)]
 pub struct Upstream {
-    /// The client's query, read again for the reply.
+    /// The client's query, with a question, read again for the request and the reply.
     query: Box<[u8]>,
     transport: Transport,
-    request: Message<'static>,
     server: SocketAddr,
     /// The forward stage, its next server, and the cache stage before it.
     forward: usize,
@@ -223,10 +222,10 @@ impl Pipeline {
                     Stage::Forward(forward) => Some((index, forward)),
                     Stage::Cache(_) | Stage::Plugin(_) => None,
                 })?;
+        query.question()?;
         Some(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
-            request: forward::request(client, query.question()?),
             server: *forward.servers().first()?,
             forward: index,
             next: 1,
@@ -369,10 +368,16 @@ impl Pipeline {
 }
 
 impl Upstream {
-    /// The query to send; its ID is the transport's to pick at random (D27).
+    /// The query to send, made for each server: the transport takes it, and picks its ID at random (D27).
+    ///
+    /// # Panics
+    ///
+    /// Never: a [`Pipeline`] sends upstream only a query that reads, with a question.
     #[must_use]
-    pub const fn request(&self) -> &Message<'static> {
-        &self.request
+    pub fn request(&self) -> Message<'static> {
+        let query = Query::read(&self.query).expect("an upstream's query reads");
+        let question = query.question().expect("an upstream's query has a question");
+        forward::request(&Client::of(&query, self.transport), question)
     }
 
     /// The server to send it to.

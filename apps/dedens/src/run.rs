@@ -290,7 +290,7 @@ async fn ask(
         };
         let response = client
             .exchange(
-                &job.options.query(question),
+                job.options.query(question),
                 endpoint.server.clone(),
                 &options,
             )

@@ -117,7 +117,7 @@ async fn s4_2_a_query_goes_alone_on_a_stream_with_id_0() {
     let (addr, seen) = quic_server(&certificates, Serve::Framed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let response = client
-        .exchange(&query(), named(addr, NAME), &quic())
+        .exchange(query(), named(addr, NAME), &quic())
         .await
         .expect("a response");
     assert_eq!(response.transport, Transport::Quic);
@@ -148,7 +148,7 @@ async fn s4_2_queries_share_one_connection_each_on_its_stream() {
     let (addr, seen) = quic_server(&certificates, Serve::Framed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let (query, options) = (query(), quic());
-    let ask = || client.exchange(&query, named(addr, NAME), &options);
+    let ask = || client.exchange(query.clone(), named(addr, NAME), &options);
     let (first, second) = futures_util::future::join(ask(), ask()).await;
     first.expect("a response");
     second.expect("a response");
@@ -165,7 +165,7 @@ async fn a_certificate_for_another_name_is_refused() {
     let (addr, seen) = quic_server(&certificates, Serve::Framed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let error = client
-        .exchange(&query(), named(addr, "other.example"), &quic())
+        .exchange(query(), named(addr, "other.example"), &quic())
         .await;
     assert!(
         matches!(error, Err(ClientError::Quic(QuicError::Connection(_)))),
@@ -180,7 +180,7 @@ async fn s4_2_a_response_without_its_length_is_refused() {
     let certificates = certificates();
     let (addr, _) = quic_server(&certificates, Serve::Unframed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
-    let error = client.exchange(&query(), named(addr, NAME), &quic()).await;
+    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
     assert!(
         matches!(error, Err(ClientError::Quic(QuicError::Framing))),
         "{error:?}"
@@ -194,7 +194,7 @@ async fn s4_2_a_stream_longer_than_a_response_is_refused() {
     let certificates = certificates();
     let (addr, _) = quic_server(&certificates, Serve::Endless).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
-    let error = client.exchange(&query(), named(addr, NAME), &quic()).await;
+    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
     assert!(
         matches!(error, Err(ClientError::Quic(QuicError::Framing))),
         "{error:?}"
@@ -208,7 +208,7 @@ async fn s5_5_a_closed_reused_connection_is_replaced_once() {
     let (addr, seen) = quic_server(&certificates, Serve::ClosingAtSecond).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let (query, options) = (query(), quic());
-    let ask = || client.exchange(&query, named(addr, NAME), &options);
+    let ask = || client.exchange(query.clone(), named(addr, NAME), &options);
     ask().await.expect("a response");
     ask().await.expect("a response on a new connection");
     assert_eq!(seen.connections.get(), 2);
@@ -221,7 +221,7 @@ async fn s4_3_3_the_server_cannot_open_a_stream() {
     let (addr, seen) = quic_server(&certificates, Serve::Framed).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     client
-        .exchange(&query(), named(addr, NAME), &quic())
+        .exchange(query(), named(addr, NAME), &quic())
         .await
         .expect("a response");
     assert!(!seen.opened.get());
