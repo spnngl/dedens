@@ -87,11 +87,7 @@ impl Mux {
     /// Opens a socket on port 0 of the unspecified address of `server`'s family, connected to `server`, and starts
     /// its task.
     async fn connect(server: SocketAddr) -> io::Result<Self> {
-        let local = match server {
-            SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
-            SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
-        };
-        let socket = UdpSocket::bind(local).await?;
+        let socket = UdpSocket::bind(unspecified(server)).await?;
         socket.connect(server).await?;
         let local = socket.local_addr()?;
         let (socket, waiting) = (Rc::new(socket), Rc::<RefCell<Waiting>>::default());
@@ -102,6 +98,14 @@ impl Mux {
             waiting,
             _receiving: receiving,
         })
+    }
+}
+
+/// Port 0 of the unspecified address of `addr`'s family, to bind a socket that reaches `addr`.
+pub(crate) fn unspecified(addr: SocketAddr) -> SocketAddr {
+    match addr {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
     }
 }
 

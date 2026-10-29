@@ -6,7 +6,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use futures_util::lock::Mutex;
 
 use crate::tcp::frame;
 use crate::tls::{self, Trust};
+use crate::udp::unspecified;
 
 /// `DOQ_REQUEST_CANCELLED`: the client gave up waiting for a response (RFC 9250 §4.3, §4.3.1).
 const DOQ_REQUEST_CANCELLED: u32 = 0x3;
@@ -107,16 +108,17 @@ impl QuicPool {
     pub async fn exchange(
         &self,
         addr: SocketAddr,
-        name: &ServerName<'static>,
+        name: ServerName<'static>,
         wire: &[u8],
         deadline: Instant,
     ) -> Result<Vec<u8>, QuicError> {
         let framed = frame(wire).ok_or(QuicError::BadLength(wire.len()))?;
+        let server = (addr, name);
         let asked = async {
-            let (connection, reused) = self.connection(addr, name).await?;
+            let (connection, reused) = self.connection(&server).await?;
             match ask(&connection, &framed).await {
                 Err(_) if reused && connection.close_reason().is_some() => {
-                    let (fresh, _) = self.connection(addr, name).await?;
+                    let (fresh, _) = self.connection(&server).await?;
                     ask(&fresh, &framed).await
                 }
                 asked => asked,
@@ -127,18 +129,22 @@ impl QuicPool {
             .unwrap_or(Err(QuicError::TimedOut))
     }
 
-    /// The open connection to `addr` for `name`, reused, or a new one.
+    /// The open connection to the server at `addr` for `name`, reused, or a new one.
     async fn connection(
         &self,
-        addr: SocketAddr,
-        name: &ServerName<'static>,
+        server: &(SocketAddr, ServerName<'static>),
     ) -> Result<(Connection, bool), QuicError> {
-        let slot = Rc::clone(
-            self.connections
-                .borrow_mut()
-                .entry((addr, name.clone()))
-                .or_default(),
-        );
+        let (addr, name) = (server.0, &server.1);
+        let known = self.connections.borrow().get(server).cloned();
+        // The key is copied for a new server only.
+        let slot = known.unwrap_or_else(|| {
+            Rc::clone(
+                self.connections
+                    .borrow_mut()
+                    .entry(server.clone())
+                    .or_default(),
+            )
+        });
         let mut slot = slot.lock().await;
         if let Some(open) = slot.as_ref()
             && open.close_reason().is_none()
@@ -160,12 +166,9 @@ impl QuicPool {
         if let Some(endpoint) = &self.endpoints.borrow()[family] {
             return Ok(endpoint.clone());
         }
-        let any = if addr.is_ipv6() {
-            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
-        } else {
-            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
-        };
-        let endpoint = Endpoint::client(any).await.map_err(QuicError::Bind)?;
+        let endpoint = Endpoint::client(unspecified(addr))
+            .await
+            .map_err(QuicError::Bind)?;
         // Another query may have bound one meanwhile: the first stays.
         Ok(self.endpoints.borrow_mut()[family]
             .get_or_insert(endpoint)

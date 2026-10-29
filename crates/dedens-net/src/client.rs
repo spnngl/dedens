@@ -297,10 +297,9 @@ impl Client {
         trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
         let deadline = exchange.deadline();
         if transport == Transport::Quic {
-            let name = target.certified();
             return match self
                 .quic
-                .exchange(server, &name, exchange.wire(), deadline)
+                .exchange(server, target.certified(), exchange.wire(), deadline)
                 .await
             {
                 Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
