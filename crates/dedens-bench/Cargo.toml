@@ -16,6 +16,7 @@ recorder = ["metrics", "dep:metrics-util"]
 
 [dependencies]
 dedens-cache.workspace = true
+dedens-plugins.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
 divan.workspace = true
@@ -38,6 +39,10 @@ harness = false
 
 [[bench]]
 name = "server"
+harness = false
+
+[[bench]]
+name = "blocklist"
 harness = false
 
 [lints]

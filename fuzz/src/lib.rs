@@ -564,7 +564,6 @@ pub fn parse_lists(data: &[u8]) {
         .collect();
     // Refused or not, the blocklist answers as before.
     let _ = lists.read(List::Allow, Origin::Downloaded, &allowed);
-    lists.prune();
     let pipeline = Pipeline::new(vec![
         Stage::Plugin(Box::new(Blocklist::new(lists, Action::Null, Ttl::ZERO))),
         Stage::Plugin(Box::new(hosts)),

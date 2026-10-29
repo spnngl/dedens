@@ -613,6 +613,7 @@ name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
  "dedens-cache",
+ "dedens-plugins",
  "dedens-proto",
  "dedens-server",
  "divan",

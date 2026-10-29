@@ -403,8 +403,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D56 Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
   blocks the name and its subdomains, as any entry here does. A plain line holds one name. An `allow` list
   (entries, file) lets a name through when it or a parent is listed, whichever parent is blocked, as numa and
-  Blocky do; looked up only for blocked names. Names listed twice count once, and a blocked name under a blocked
-  parent is dropped after reading (2% of a 2.2M-name set of published lists), both counted in the log. Lines
+  Blocky do; looked up only for blocked names. Names listed twice count once, counted in the log. Lines
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
@@ -421,7 +420,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (1440, as numa and Pi-hole); a failure keeps the copy and retries after 1 min, doubling up to the interval. A
   change rebuilds the pipeline as a reload does (D55; the cache kept). Counted in
   `dedensd_list_fetches_total{result="changed|unchanged|error"}`. Later, with need: a list swapped alone instead
-  of the pipeline, per-list intervals, a compact name store (2.2M names take ~250 MB).
+  of the pipeline, per-list intervals.
+- D58 A blocklist holds the 64-bit `SipHash` of each name's lowercase wire form under a key drawn per `Lists`
+  (std's `RandomState`), in a `HashSet<u64>` hashing them no further: 8 bytes a name instead of the name and its
+  allocation. Published lists of 2.29M names: 110 MB resident instead of 240 MB, read in 0.64 s instead of
+  0.87 s, lookups as fast (`benches/blocklist.rs`). A false match needs two names of equal hash, 2^-64 a pair:
+  ~10^12 queries per wrong answer against 2M names, and the key, unknown outside the process, keeps a client from
+  aiming at one. The cost: names cannot be listed back, so a blocked name under a blocked parent is no longer
+  dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
+  sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
+  slower to build).
 
 ## Observability
 

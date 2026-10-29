@@ -192,9 +192,9 @@ fn allowed_names_are_not_blocked() {
     }
 }
 
-/// Names listed twice are counted once; a name listed with a parent is dropped, the parent blocking it.
+/// Names listed twice, in any case or as `*.name`, are counted once.
 #[test]
-fn duplicates_and_names_under_a_listed_parent() {
+fn duplicates_are_counted_once() {
     let mut lists = lists(STEVENBLACK);
     let again = lists
         .read(List::Block, Origin::Local, STEVENBLACK)
@@ -206,12 +206,11 @@ fn duplicates_and_names_under_a_listed_parent() {
         .read(
             List::Block,
             Origin::Local,
-            "ad-assets.futurecdn.net\na.b.ad-assets.futurecdn.net\nb.ad-assets.futurecdn.net\n*.b.ad-assets.futurecdn.net",
+            "ad-assets.futurecdn.net\nb.ad-assets.futurecdn.net\n*.B.ad-assets.futurecdn.net",
         )
         .expect("the names read");
-    assert_eq!((read.names, read.duplicates), (3, 1));
-    assert_eq!(lists.prune(), 2);
-    assert_eq!(lists.names(List::Block), 1);
+    assert_eq!((read.names, read.duplicates), (2, 1));
+    assert_eq!(lists.names(List::Block), 2);
     assert!(blocked(
         &with_lists(lists, Action::Nxdomain),
         "a.b.ad-assets.futurecdn.net."

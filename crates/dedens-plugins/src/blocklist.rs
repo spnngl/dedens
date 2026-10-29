@@ -1,6 +1,8 @@
 //! Names refused to clients, and their subdomains (D54), unless an allowlist lets them through (D56).
 
 use std::collections::HashSet;
+use std::fmt;
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::InfoCode;
@@ -80,10 +82,48 @@ pub enum ListError {
 
 /// The names of a blocklist and of its allowlist, each matching itself and its subdomains without regard to case
 /// (RFC 4343 §3).
-#[derive(Debug, Default)]
+///
+/// Each name is held as a 64-bit hash of its lowercase wire form under a key drawn for these lists (`SipHash`, as
+/// std's `HashMap`), 8 bytes instead of the name and its allocation (D58). Two names share a hash with a chance
+/// of 2⁻⁶⁴ per pair: a query of a few labels against 2M names hits a name it does not hold once in 10¹² queries,
+/// and the key, unknown outside the process, keeps a client from aiming at one.
+#[derive(Default)]
 pub struct Lists {
-    block: HashSet<Box<[u8]>>,
-    allow: HashSet<Box<[u8]>>,
+    block: Set,
+    allow: Set,
+    keys: RandomState,
+}
+
+/// The hashes of the names of a list.
+type Set = HashSet<u64, BuildHasherDefault<Same>>;
+
+/// The hasher of [`Set`]: its keys are hashes already, uniform, so a key is its own hash.
+#[derive(Default)]
+struct Same(u64);
+
+impl Hasher for Same {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+    }
+
+    fn write_u64(&mut self, hash: u64) {
+        self.0 = hash;
+    }
+}
+
+impl fmt::Debug for Lists {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lists")
+            .field("block", &self.block.len())
+            .field("allow", &self.allow.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Lists {
@@ -105,18 +145,21 @@ impl Lists {
     /// [`ListError::Line`] for a line of a [`Origin::Local`] text that is not a name, [`ListError::NotAList`] for a
     /// [`Origin::Downloaded`] text with no lines or fewer than half of them read; `list` is unchanged then.
     pub fn read(&mut self, list: List, origin: Origin, text: &str) -> Result<Read, ListError> {
-        let mut keys = Vec::new();
+        let mut hashes = Vec::new();
         let mut lines = 0;
         let mut skipped = 0;
-        let mut buf = [0; MAX_NAME_LEN];
         for (line, fields) in text::lines(text) {
             lines += 1;
-            let before = keys.len();
-            if let Err(error) = read_line(line, fields, &mut keys, &mut buf) {
+            let before = hashes.len();
+            let mut add = |name: &Name<'_>| {
+                let mut buf = [0; MAX_NAME_LEN];
+                hashes.push(self.keys.hash_one(text::key(name, &mut buf)));
+            };
+            if let Err(error) = read_line(line, fields, &mut add) {
                 match origin {
                     Origin::Local => return Err(error.into()),
                     Origin::Downloaded => {
-                        keys.truncate(before);
+                        hashes.truncate(before);
                         skipped += 1;
                     }
                 }
@@ -136,29 +179,15 @@ impl Lists {
             skipped,
             ..Read::default()
         };
-        set.reserve(keys.len());
-        for key in keys {
-            if set.insert(key) {
+        set.reserve(hashes.len());
+        for hash in hashes {
+            if set.insert(hash) {
                 read.names += 1;
             } else {
                 read.duplicates += 1;
             }
         }
         Ok(read)
-    }
-
-    /// Drops the blocked names a parent of which is blocked too, as they block nothing more; returns how many.
-    pub fn prune(&mut self) -> usize {
-        let covered: Vec<Box<[u8]>> = self
-            .block
-            .iter()
-            .filter(|key| parents(key).any(|parent| self.block.contains(parent)))
-            .cloned()
-            .collect();
-        for key in &covered {
-            self.block.remove(key);
-        }
-        covered.len()
     }
 
     /// How many names `list` holds.
@@ -172,20 +201,21 @@ impl Lists {
 
     /// Whether the name `key` is blocked: it or a parent is listed, and neither is allowed.
     fn blocks(&self, key: &[u8]) -> bool {
-        let listed = |set: &HashSet<Box<[u8]>>| {
+        let listed = |set: &Set| {
             // Most names are in neither list: the allowlist is looked at only on a hit.
-            set.contains(key) || parents(key).any(|parent| set.contains(parent))
+            std::iter::once(key)
+                .chain(parents(key))
+                .any(|key| set.contains(&self.keys.hash_one(key)))
         };
         listed(&self.block) && !listed(&self.allow)
     }
 }
 
-/// The keys of the names of a line, read or not.
+/// Calls `add` with each name of a line, read or not.
 fn read_line<'t>(
     line: usize,
     mut fields: impl Iterator<Item = &'t str>,
-    keys: &mut Vec<Box<[u8]>>,
-    buf: &mut [u8; MAX_NAME_LEN],
+    add: &mut impl FnMut(&Name<'_>),
 ) -> Result<(), LineError> {
     let first = fields.next().unwrap_or_default();
     match first.parse::<IpAddr>() {
@@ -200,7 +230,7 @@ fn read_line<'t>(
                     kind: LineErrorKind::Extra(extra.to_owned()),
                 });
             }
-            keys.push(text::key(&name, buf).into());
+            add(&name);
             return Ok(());
         }
     }
@@ -212,7 +242,7 @@ fn read_line<'t>(
                 .next()
                 .is_some_and(|label| label.eq_ignore_ascii_case(b"localhost"));
         if !local {
-            keys.push(text::key(&name, buf).into());
+            add(&name);
         }
     }
     Ok(())

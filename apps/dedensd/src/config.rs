@@ -325,8 +325,8 @@ fn plugin<P>(
 }
 
 /// The lists of the blocklist stage `stage`, `block` and `allow` read, their downloaded ones from their copies in
-/// `dir`, then the blocked names under a blocked parent dropped; logs the counts. A list not downloaded yet is
-/// empty until it is, and a copy that does not read is left out with a warning: neither stops the server.
+/// `dir`; logs the counts. A list not downloaded yet is empty until it is, and a copy that does not read is left
+/// out with a warning: neither stops the server.
 fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::Result<Lists> {
     let mut lists = Lists::new();
     let mut duplicates = 0;
@@ -374,13 +374,11 @@ fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::R
             }
         }
     }
-    let covered = lists.prune();
     tracing::info!(
         stage,
         blocked = lists.names(List::Block),
         allowed = lists.names(List::Allow),
         duplicates,
-        covered,
         "blocklist read"
     );
     Ok(lists)

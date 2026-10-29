@@ -103,6 +103,15 @@ removed `MessageView` read every record in 178/505/1093 ns.
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
 
+## Blocklist (D56, D58)
+
+- `dedensd validate` reading 4 published lists (stevenblack, hagezi light, two hagezi wildcard; 44 MB, 2.29M
+  names) and an allowlist, `/usr/bin/time -l`: names as boxed byte strings, 240 MB resident, 0.87 s → their
+  keyed 64-bit hashes, 110 MB, 0.64 s; running server 236 → 110 MB (`ps` RSS), heap 131 → 39 MB (`heap`).
+- `benches/blocklist.rs` `query` on the test heads of those lists, median of 3000: blocked under a listed
+  parent 110 → 116 ns, allowed 140 → 136 ns, in no list (sent upstream) 156 → 195 ns (noise ±30%); a blocked
+  name allocates nothing.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on
