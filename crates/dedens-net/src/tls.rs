@@ -1,26 +1,31 @@
-//! TLS for DNS over TLS (RFC 7858) and over QUIC (RFC 9250): which certificates a client trusts, and the client
-//! configurations built from that.
+//! TLS for DNS over TLS (RFC 7858) and over QUIC (RFC 9250): which certificates a client trusts and the client
+//! configurations built from that; the certificate a server presents and the server configurations.
 //!
 //! The strict privacy profile of RFC 8310 §6.6: a server whose certificate does not verify for the name expected,
 //! or the address when there is none, is not queried, short of [`Trust::Anyone`]. rustls with ring, TLS 1.2 and
 //! 1.3 (RFC 8310 §9: no older version) over TCP, TLS 1.3 alone over QUIC (RFC 9001 §4.2), session resumption on
 //! (RFC 7858 §3.4), ALPN `dot` or `doq` (RFC 9461 §4.1, RFC 9250 §4.1.1).
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
+use compio::quic::ServerConfig;
+use compio::quic::crypto::rustls::QuicServerConfig;
+use compio::rustls;
 use compio::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
 use compio::rustls::crypto::{
     CryptoProvider, ring, verify_tls12_signature, verify_tls13_signature,
 };
-use compio::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use compio::rustls::server::{ClientHello, ResolvesServerCert};
+use compio::rustls::sign::CertifiedKey;
 use compio::rustls::version::TLS13;
 use compio::rustls::{
     ClientConfig, DEFAULT_VERSIONS, DigitallySignedStruct, Error, RootCertStore, SignatureScheme,
     SupportedProtocolVersion,
 };
-use compio::tls::TlsConnector;
+use compio::tls::{TlsAcceptor, TlsConnector};
 
 /// Which server certificates a client accepts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +45,79 @@ const ALPN_DOT: &[u8] = b"dot";
 
 /// The ALPN protocol of DNS over QUIC (RFC 9250 §4.1.1).
 const ALPN_DOQ: &[u8] = b"doq";
+
+/// The certificate a server presents, which may be replaced while it serves: each handshake takes the one
+/// current then.
+#[derive(Debug)]
+pub struct Presented(RwLock<Arc<CertifiedKey>>);
+
+impl Presented {
+    /// Presents `chain`, the server's certificate first, signed with `key`.
+    ///
+    /// # Errors
+    ///
+    /// rustls' [`Error`] for a key ring cannot sign with, or which is not that of the first certificate.
+    pub fn new(
+        chain: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+    ) -> Result<Self, Error> {
+        let certified = CertifiedKey::from_der(chain, key, &ring::default_provider())?;
+        Ok(Self(RwLock::new(Arc::new(certified))))
+    }
+
+    /// Presents what `with` presents, from the next handshake on.
+    pub fn replace(&self, with: Self) {
+        let certified = with.0.into_inner().unwrap_or_else(PoisonError::into_inner);
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = certified;
+    }
+}
+
+impl ResolvesServerCert for Presented {
+    fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(Arc::clone(
+            &self.0.read().unwrap_or_else(PoisonError::into_inner),
+        ))
+    }
+}
+
+/// The acceptor of TLS sessions presenting `presented`, for DNS over TLS.
+///
+/// # Errors
+///
+/// rustls' [`Error`], never with ring's defaults.
+pub fn acceptor(presented: Arc<Presented>) -> Result<TlsAcceptor, Error> {
+    let config = server_config(presented, DEFAULT_VERSIONS, ALPN_DOT)?;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+/// The configuration of QUIC connections presenting `presented`, for DNS over QUIC: without 0-RTT, which a
+/// replayed query could use (RFC 9250 §4.5).
+///
+/// # Errors
+///
+/// As [`acceptor`].
+pub fn quic_server_config(presented: Arc<Presented>) -> Result<ServerConfig, Error> {
+    let config = server_config(presented, &[&TLS13], ALPN_DOQ)?;
+    let crypto =
+        QuicServerConfig::try_from(config).map_err(|error| Error::General(error.to_string()))?;
+    Ok(ServerConfig::with_crypto(Arc::new(crypto)))
+}
+
+/// The configuration of servers presenting `presented`, over `versions`, offering `alpn` alone: a client asking
+/// for another protocol is refused.
+fn server_config(
+    presented: Arc<Presented>,
+    versions: &[&'static SupportedProtocolVersion],
+    alpn: &[u8],
+) -> Result<rustls::ServerConfig, Error> {
+    let mut config =
+        rustls::ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_protocol_versions(versions)?
+            .with_no_client_auth()
+            .with_cert_resolver(presented);
+    config.alpn_protocols = vec![alpn.to_vec()];
+    Ok(config)
+}
 
 /// The connector of TLS sessions trusting `trust`.
 ///

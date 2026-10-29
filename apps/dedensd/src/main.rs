@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let listen = config.listen.clone();
+    let presented = config.presented.map(Arc::new);
     // Before "serving" is logged: a SIGHUP from then on reloads, never ends the process (D55).
     reload::control(
         file.clone(),
@@ -87,6 +88,7 @@ fn main() -> anyhow::Result<()> {
         Fixed {
             listen: config.listen,
             trust: config.trust.clone(),
+            presented: presented.clone(),
         },
         config.downloads,
     )
@@ -94,11 +96,12 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(config = %path, ?listen, threads = sockets.len(), "serving");
     let (ended, end) = mpsc::channel();
     for sockets in sockets {
-        let (current, ended, trust) = (Arc::clone(&current), ended.clone(), config.trust.clone());
+        let (current, ended) = (Arc::clone(&current), ended.clone());
+        let (trust, presented) = (config.trust.clone(), presented.clone());
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
-                serve::runtime()
-                    .and_then(|runtime| runtime.block_on(serve::serve(sockets, current, trust)))
+                let serving = serve::serve(sockets, current, trust, presented);
+                serve::runtime().and_then(|runtime| runtime.block_on(serving))
             }));
             let _ =
                 ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));

@@ -322,7 +322,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
   AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
   cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
-- D42 (amended by D45, D47-D49, D52, D65) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
+- D42 (amended by D45, D47-D49, D52, D65, D66) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
   own UDP socket and TCP listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one
   thread elsewhere, where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind
   together. Every socket is bound before any thread starts, so a taken address fails the start. A reply the
@@ -349,7 +349,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64, D65) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -524,12 +524,23 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D65 (amends D42) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
   D61): `IP[:PORT]` over the client's (UDP for a query over UDP, TCP for one over a connection), `tls://` over TLS
   and `quic://` over QUIC, port 853 unless set, `#NAME` for the name the certificate must hold, else the address
-  (RFC 8310 \u00a78.1). An address only: a host name would need resolving before `dedensd` can resolve. One stage
+  (RFC 8310 §8.1). An address only: a host name would need resolving before `dedensd` can resolve. One stage
   can mix transports, the first server over TLS and the next plain. Upstream certificates are checked against
   the OS trust store, or the PEM file of a top-level `upstream_ca`, which a reload cannot change (each thread's
   `dedens_net::Client` holds it; changing it logs that it takes a restart). `dedens-server` only carries the
   transport and name (`Server`, `Via`), staying sans-IO. Rejected: transport settings per stage (`transport:
   tls`, `tls_name`), which cannot mix servers.
+- D66 (amends D42, D44) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
+  `tls://` and `quic://`, port 853 unless set; with a top-level `tls: {certificate, key}` of PEM files, required
+  with such an address and refused without one. A reload reads the files again and the next handshakes present
+  the new certificate (`dedens_net::tls::Presented`, a rustls certificate resolver); a bad file fails the reload.
+  rustls with ring, ALPN `dot` or `doq` alone, TLS 1.3 alone over QUIC, no 0-RTT (RFC 9250 §4.5). Over TLS a
+  connection is a TCP one (D47's limits, its handshake within the idle time), its halves polled as the client's
+  (D60). Over QUIC each query is alone on a stream the client opens, read to its end: a stream that is not one
+  query behind its length, a Message ID other than 0, or an edns-tcp-keepalive option closes the connection with
+  `DOQ_PROTOCOL_ERROR` (§4.3.3); a connection holds 64 streams at once and counts as a TCP one against the
+  thread's connections; each thread's QUIC socket takes `SO_REUSEPORT`, so a client changing address may land
+  on another thread and lose its connection. Replies to padded queries are padded (D60).
 
 ## Observability
 

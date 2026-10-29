@@ -1,7 +1,6 @@
 //! Replacing the pipeline, on SIGHUP (D55) or once downloaded lists changed (D57): queries in flight end on the one
 //! they started on, and a configuration that does not read leaves the running one in place.
 
-use std::net::SocketAddr;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,10 +8,10 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 
-use dedens_net::tls::Trust;
+use dedens_net::tls::{Presented, Trust};
 use dedens_server::Pipeline;
 
-use crate::config::Downloads;
+use crate::config::{Downloads, Listen};
 use crate::download::Fetcher;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
@@ -50,9 +49,11 @@ impl Current {
 /// What a reload cannot change: the sockets are bound and the threads started.
 #[derive(Debug)]
 pub(crate) struct Fixed {
-    pub(crate) listen: Vec<SocketAddr>,
+    pub(crate) listen: Vec<Listen>,
     /// What upstream servers are checked against: each thread's client holds it.
     pub(crate) trust: Trust,
+    /// The certificate presented over TLS and QUIC, which a reload replaces (D66).
+    pub(crate) presented: Option<Arc<Presented>>,
 }
 
 /// The first wait after a failed download; each failure in a row doubles it, up to the refresh interval.
@@ -166,6 +167,9 @@ fn reload(
             }
             if new.trust != fixed.trust {
                 tracing::warn!(%config, "changes to `upstream_ca` take a restart");
+            }
+            if let (Some(presented), Some(new)) = (&fixed.presented, new.presented) {
+                presented.replace(new);
             }
             current.replace(new.pipeline);
             metrics::counter!(RELOADS, "result" => "ok").increment(1);

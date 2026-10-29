@@ -25,6 +25,9 @@ use crate::tcp::frame;
 use crate::tls::{self, Trust};
 use crate::udp::unspecified;
 
+/// `DOQ_PROTOCOL_ERROR`: the peer broke the protocol, and the connection is closed (RFC 9250 §4.3, §4.3.3).
+pub const DOQ_PROTOCOL_ERROR: u32 = 0x2;
+
 /// `DOQ_REQUEST_CANCELLED`: the client gave up waiting for a response (RFC 9250 §4.3, §4.3.1).
 const DOQ_REQUEST_CANCELLED: u32 = 0x3;
 
@@ -54,8 +57,8 @@ pub enum QuicError {
     /// The query is longer than 65535 bytes.
     #[error("a query of {0} bytes cannot be framed")]
     BadLength(usize),
-    /// What came back is not one message behind its length (RFC 9250 §4.3.3).
-    #[error("the response is not one message behind its length")]
+    /// What the stream held is not one message behind its length (RFC 9250 §4.3.3).
+    #[error("the stream is not one message behind its length")]
     Framing,
     /// No response before the deadline.
     #[error("no response before the deadline")]
@@ -212,10 +215,22 @@ async fn ask(connection: &Connection, framed: &[u8]) -> Result<Vec<u8>, QuicErro
         .send
         .finish()
         .map_err(|closed| QuicError::Stream(io::Error::other(closed)))?;
+    let response = read_message(&mut stream.recv).await?;
+    stream.read = true;
+    Ok(response)
+}
+
+/// The message on `recv`, read to the end of the stream: one message behind its two-byte length, a stream holding
+/// anything else being a protocol error (RFC 9250 §4.2, §4.3.3).
+///
+/// # Errors
+///
+/// [`QuicError::Stream`] for a stream reset or a connection lost, [`QuicError::Framing`] for a stream that is not
+/// one message behind its length.
+pub async fn read_message(recv: &mut RecvStream) -> Result<Vec<u8>, QuicError> {
     let mut bytes = Vec::new();
-    // One byte past the most a response holds is enough to refuse it.
-    while let Some(chunk) = stream
-        .recv
+    // One byte past the most a stream holds is enough to refuse it.
+    while let Some(chunk) = recv
         .read_chunk(MAX_STREAM + 1 - bytes.len(), true)
         .await
         .map_err(|error| QuicError::Stream(error.into()))?
@@ -225,7 +240,6 @@ async fn ask(connection: &Connection, framed: &[u8]) -> Result<Vec<u8>, QuicErro
             return Err(QuicError::Framing);
         }
     }
-    stream.read = true;
     match bytes.get(..2) {
         Some(&[high, low]) if usize::from(u16::from_be_bytes([high, low])) == bytes.len() - 2 => {
             bytes.drain(..2);

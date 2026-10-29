@@ -18,15 +18,21 @@ use compio::BufResult;
 use compio::buf::{IntoInner, IoBuf};
 use compio::driver::ProactorBuilder;
 use compio::driver::op::RecvFromMultiResult;
-use compio::io::{AsyncWrite, AsyncWriteExt, BufReader};
-use compio::net::{TcpListener, TcpStream, UdpSocket};
+use compio::io::{AsyncWriteExt, BufReader};
+use compio::net::{TcpListener, UdpSocket};
+use compio::quic::{
+    Connection, Endpoint, EndpointConfig, IdleTimeout, SendStream, TransportConfig, VarInt,
+};
 use compio::runtime::{JoinHandle, Runtime, spawn};
 use compio::rustls::pki_types::ServerName;
+use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, Server};
 use dedens_net::exchange::Options;
-use dedens_net::tcp::{frame, read_message};
-use dedens_net::tls::Trust;
-use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
+use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
+use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
+use dedens_net::tls::{self, Presented, Trust};
+use dedens_proto::Query;
+use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, OptionCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
 use futures_util::future::{join_all, select_all};
@@ -34,6 +40,7 @@ use futures_util::lock::Mutex;
 use futures_util::{Stream, StreamExt};
 use socket2::{Domain, Socket, Type};
 
+use crate::config::Listen;
 use crate::reload::Current;
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
@@ -62,21 +69,35 @@ const TCP_BACKLOG: i32 = 1024;
 /// receiving again after a UDP receive failed twice in a row: an error that repeats at once would spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(100);
 
-/// The sockets of one thread, bound but not yet on its runtime: a UDP socket and a TCP listener per address.
-pub(crate) type Sockets = Vec<(Socket, Socket)>;
+/// The sockets of one thread for an address of `listen`, bound but not yet on its runtime.
+pub(crate) enum Bound {
+    /// A UDP socket and a TCP listener.
+    Plain(Socket, Socket),
+    /// A TCP listener for TLS.
+    Tls(Socket),
+    /// A UDP socket for QUIC.
+    Quic(Socket),
+}
 
-/// Binds a UDP socket and a TCP listener on each of `addrs`. On Linux they take `SO_REUSEPORT`, so each thread
-/// binds its own on the same addresses.
-pub(crate) fn bind(addrs: &[SocketAddr]) -> anyhow::Result<Sockets> {
-    addrs
+/// The sockets of one thread.
+pub(crate) type Sockets = Vec<Bound>;
+
+/// Binds the sockets of each address of `listen`. On Linux they take `SO_REUSEPORT`, so each thread binds its own
+/// on the same addresses; the OS sends the datagrams of a QUIC client to one socket while its address and port
+/// stay the same.
+pub(crate) fn bind(listen: &[Listen]) -> anyhow::Result<Sockets> {
+    let udp = |addr| socket(addr, Type::DGRAM).with_context(|| format!("cannot bind UDP {addr}"));
+    let tcp = |addr| {
+        socket(addr, Type::STREAM)
+            .and_then(|tcp| tcp.listen(TCP_BACKLOG).map(|()| tcp))
+            .with_context(|| format!("cannot listen on TCP {addr}"))
+    };
+    listen
         .iter()
-        .map(|&addr| {
-            let udp =
-                socket(addr, Type::DGRAM).with_context(|| format!("cannot bind UDP {addr}"))?;
-            let tcp = socket(addr, Type::STREAM)
-                .and_then(|tcp| tcp.listen(TCP_BACKLOG).map(|()| tcp))
-                .with_context(|| format!("cannot listen on TCP {addr}"))?;
-            Ok((udp, tcp))
+        .map(|&listen| match listen {
+            Listen::Plain(addr) => Ok(Bound::Plain(udp(addr)?, tcp(addr)?)),
+            Listen::Tls(addr) => tcp(addr).map(Bound::Tls),
+            Listen::Quic(addr) => udp(addr).map(Bound::Quic),
         })
         .collect()
 }
@@ -214,19 +235,44 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 }
 
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
-/// until the end of the process.
+/// presenting `presented` over TLS and QUIC, until the end of the process.
 ///
 /// # Errors
 ///
-/// A socket the runtime cannot take, or a task answering on one ended: it panicked.
-pub(crate) async fn serve(sockets: Sockets, current: Arc<Current>, trust: Trust) -> io::Result<()> {
+/// A socket the runtime cannot take, no certificate for a TLS or QUIC socket, or a task answering on one ended:
+/// it panicked.
+pub(crate) async fn serve(
+    sockets: Sockets,
+    current: Arc<Current>,
+    trust: Trust,
+    presented: Option<Arc<Presented>>,
+) -> io::Result<()> {
     let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, trust));
+    let certificate = || {
+        presented
+            .clone()
+            .ok_or_else(|| io::Error::other("no certificate to present"))
+    };
     let mut tasks = Vec::new();
-    for (udp_socket, tcp_listener) in sockets {
-        let socket = UdpSocket::from_std(udp_socket.into())?;
-        tasks.push(spawn(udp(socket, Rc::clone(&thread))));
-        let listener = TcpListener::from_std(tcp_listener.into())?;
-        tasks.push(spawn(tcp(listener, Rc::clone(&thread))));
+    for bound in sockets {
+        let task = match bound {
+            Bound::Plain(udp_socket, tcp_listener) => {
+                let socket = UdpSocket::from_std(udp_socket.into())?;
+                tasks.push(spawn(udp(socket, Rc::clone(&thread))));
+                let listener = TcpListener::from_std(tcp_listener.into())?;
+                spawn(tcp(listener, None, Rc::clone(&thread)))
+            }
+            Bound::Tls(tcp_listener) => {
+                let acceptor = tls::acceptor(certificate()?).map_err(io::Error::other)?;
+                let listener = TcpListener::from_std(tcp_listener.into())?;
+                spawn(tcp(listener, Some(acceptor), Rc::clone(&thread)))
+            }
+            Bound::Quic(udp_socket) => {
+                let endpoint = endpoint(udp_socket, certificate()?)?;
+                spawn(quic(endpoint, Rc::clone(&thread)))
+            }
+        };
+        tasks.push(task);
     }
     first_end(tasks).await
 }
@@ -326,18 +372,34 @@ async fn send(socket: &UdpSocket, out: Vec<u8>, len: usize, peer: SocketAddr) ->
     out.into_inner()
 }
 
-/// Accepts the connections of one TCP listener, up to [`TCP_CONNECTIONS`] at once.
-async fn tcp(listener: TcpListener, thread: Rc<Thread>) {
+/// Accepts the connections of one TCP listener, up to [`TCP_CONNECTIONS`] at once, over TLS with `acceptor`
+/// (RFC 7858): the handshake must end within [`TCP_IDLE`].
+async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Thread>) {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let Some(slot) = thread.connections.take() else {
-                    tracing::debug!(%peer, "too many TCP connections: closed");
+                    tracing::debug!(%peer, "too many connections: closed");
                     continue;
                 };
-                let thread = Rc::clone(&thread);
+                let (acceptor, thread) = (acceptor.clone(), Rc::clone(&thread));
                 spawn(async move {
-                    connection(stream, &thread).await;
+                    // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
+                    let _ = stream.set_nodelay(true);
+                    let Some(acceptor) = acceptor else {
+                        let (reader, writer) = stream.into_split();
+                        connection(BufReader::new(reader), writer, Transport::Tcp, &thread).await;
+                        drop(slot);
+                        return;
+                    };
+                    match compio::time::timeout(TCP_IDLE, acceptor.accept(stream)).await {
+                        Ok(Ok(secured)) => {
+                            let (reader, writer) = Polled::halves(secured);
+                            connection(reader, writer, Transport::Tls, &thread).await;
+                        }
+                        Ok(Err(error)) => tracing::debug!(%peer, %error, "TLS handshake failed"),
+                        Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
+                    }
                     drop(slot);
                 })
                 .detach();
@@ -350,15 +412,17 @@ async fn tcp(listener: TcpListener, thread: Rc<Thread>) {
     }
 }
 
-/// Answers the queries of one TCP connection (RFC 7766): read one after the other, each answered as soon as it can
-/// be, so replies may come in another order (§6.2.1.1). Reading waits while [`TCP_PENDING`] queries are in flight
-/// or more than [`TCP_QUEUED`] bytes of replies wait to be written, and stops after [`TCP_IDLE`] without a query,
-/// at the first error, or once the writer gave up; the connection closes once the replies still waiting are
-/// written (§6.2.3). A query the thread has no room to ask upstream is answered SERVFAIL.
-async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
-    // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
-    let _ = stream.set_nodelay(true);
-    let (reader, writer) = stream.into_split();
+/// Answers the queries of one TCP connection (RFC 7766), its halves `reader` and `writer`, over `transport`, TCP
+/// or TLS: read one after the other, each answered as soon as it can be, so replies may come in another order
+/// (§6.2.1.1). Reading waits while [`TCP_PENDING`] queries are in flight or more than [`TCP_QUEUED`] bytes of
+/// replies wait to be written, and stops after [`TCP_IDLE`] without a query, at the first error, or once the
+/// writer gave up; the connection closes once the replies still waiting are written (§6.2.3).
+async fn connection(
+    mut reader: impl Inbound,
+    writer: impl Outbound + 'static,
+    transport: Transport,
+    thread: &Rc<Thread>,
+) {
     let (sender, queue) = flume::unbounded::<Vec<u8>>();
     let replies = Replies {
         sender,
@@ -369,46 +433,22 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
     let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
     // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
     let (pending, done) = flume::bounded::<()>(TCP_PENDING);
-    let mut reader = BufReader::new(reader);
     'read: loop {
         while replies.queued.get() > TCP_QUEUED {
             if wait_room.recv_async().await.is_err() {
                 break 'read;
             }
         }
-        let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, read_message(&mut reader)).await else {
+        let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, reader.message()).await else {
             break;
         };
         let pipeline = thread.pipeline();
-        // The thread's buffer is borrowed until the replies made are queued, before any wait.
-        let (upstream, slot) = {
-            let mut out = thread.scratch.borrow_mut();
-            let upstream = match pipeline.query(&query, Transport::Tcp, now(), &mut out) {
-                Step::Reply(len) => {
-                    if replies.push(&out[..len]) {
-                        continue;
-                    }
-                    break;
-                }
-                Step::Drop => continue,
-                Step::Upstream(upstream) => upstream,
-                Step::Refresh(len, upstream) => {
-                    if !replies.push(&out[..len]) {
-                        break;
-                    }
-                    upstream
-                }
-            };
-            let Some(slot) = thread.upstream.take() else {
-                tracing::debug!("too many upstream queries: SERVFAIL");
-                if let Step::Reply(len) = pipeline.abandon(&upstream, &mut out)
-                    && !replies.push(&out[..len])
-                {
-                    break;
-                }
-                continue;
-            };
-            (upstream, slot)
+        let (upstream, slot) = match start(thread, &pipeline, &query, transport, |wire| {
+            replies.push(wire)
+        }) {
+            Some(Started::Upstream(upstream, slot)) => (upstream, slot),
+            Some(Started::Done) => continue,
+            None => break,
         };
         if pending.send_async(()).await.is_err() {
             break;
@@ -418,7 +458,7 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
             let deliver = async |framed| {
                 replies.queue(framed);
             };
-            answer(&thread, &pipeline, upstream, Transport::Tcp, deliver).await;
+            answer(&thread, &pipeline, upstream, transport, deliver).await;
             drop(slot);
             let _ = done.try_recv();
         })
@@ -433,7 +473,7 @@ async fn connection(stream: TcpStream, thread: &Rc<Thread>) {
 /// [`TCP_WRITE`] after its first reply. The replies queued meanwhile go out together, up to a message's size: one
 /// write for many.
 async fn write(
-    mut writer: impl AsyncWrite,
+    mut writer: impl Outbound,
     queue: flume::Receiver<Vec<u8>>,
     queued: Rc<Cell<usize>>,
     room: flume::Sender<()>,
@@ -462,7 +502,152 @@ async fn write(
             next = queue.try_recv().ok();
         }
     }
-    let _ = writer.shutdown().await;
+    writer.close().await;
+}
+
+/// What became of a query after the pipeline's first step.
+enum Started {
+    /// Answered, or dropped.
+    Done,
+    /// To ask upstream, in a place of the thread's upstream queries.
+    Upstream(Box<Upstream>, Slot),
+}
+
+/// Runs `query`, from a client over `transport`, through `pipeline`, handing `push` the reply made in the thread's
+/// buffer, if any, before any wait; past the thread's upstream queries, the reply is SERVFAIL. `None` once `push`
+/// returned `false`: the client is gone.
+fn start(
+    thread: &Thread,
+    pipeline: &Pipeline,
+    query: &[u8],
+    transport: Transport,
+    mut push: impl FnMut(&[u8]) -> bool,
+) -> Option<Started> {
+    let mut out = thread.scratch.borrow_mut();
+    let upstream = match pipeline.query(query, transport, now(), &mut out) {
+        Step::Reply(len) => return push(&out[..len]).then_some(Started::Done),
+        Step::Drop => return Some(Started::Done),
+        Step::Upstream(upstream) => upstream,
+        Step::Refresh(len, upstream) => {
+            if !push(&out[..len]) {
+                return None;
+            }
+            upstream
+        }
+    };
+    let Some(slot) = thread.upstream.take() else {
+        tracing::debug!("too many upstream queries: SERVFAIL");
+        return match pipeline.abandon(&upstream, &mut out) {
+            Step::Reply(len) => push(&out[..len]).then_some(Started::Done),
+            _ => Some(Started::Done),
+        };
+    };
+    Some(Started::Upstream(upstream, slot))
+}
+
+/// The QUIC endpoint on `socket`, presenting `presented` (RFC 9250 §4.1): connections closed after [`TCP_IDLE`]
+/// without a packet (§5.5.1), with [`TCP_PENDING`] queries in flight at most, and no stream the server opens
+/// (§4.2).
+fn endpoint(socket: Socket, presented: Arc<Presented>) -> io::Result<Endpoint> {
+    let mut config = tls::quic_server_config(presented).map_err(io::Error::other)?;
+    let mut transport = TransportConfig::default();
+    transport
+        .max_idle_timeout(IdleTimeout::try_from(TCP_IDLE).ok())
+        .max_concurrent_bidi_streams(
+            u32::try_from(TCP_PENDING).map_or(VarInt::MAX, VarInt::from_u32),
+        )
+        .max_concurrent_uni_streams(VarInt::from_u32(0));
+    config.transport_config(Arc::new(transport));
+    let socket = UdpSocket::from_std(socket.into())?;
+    Endpoint::new(socket, EndpointConfig::default(), Some(config), None)
+}
+
+/// Accepts the connections of one QUIC endpoint, up to [`TCP_CONNECTIONS`] at once with those over TCP.
+async fn quic(endpoint: Endpoint, thread: Rc<Thread>) {
+    while let Some(incoming) = endpoint.wait_incoming().await {
+        let peer = incoming.remote_address();
+        let Some(slot) = thread.connections.take() else {
+            tracing::debug!(%peer, "too many connections: refused");
+            incoming.refuse();
+            continue;
+        };
+        let connecting = match incoming.accept() {
+            Ok(connecting) => connecting,
+            Err(error) => {
+                tracing::debug!(%peer, %error, "QUIC connection refused");
+                continue;
+            }
+        };
+        let thread = Rc::clone(&thread);
+        spawn(async move {
+            match connecting.await {
+                Ok(connection) => streams(&connection, &thread).await,
+                Err(error) => tracing::debug!(%peer, %error, "QUIC handshake failed"),
+            }
+            drop(slot);
+        })
+        .detach();
+    }
+}
+
+/// Answers the queries of one QUIC connection (RFC 9250 §4.2), each alone on a stream the client opened, as soon
+/// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned, and a query breaking
+/// the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3).
+async fn streams(connection: &Connection, thread: &Rc<Thread>) {
+    while let Ok((send, mut recv)) = connection.accept_bi().await {
+        let (connection, thread) = (connection.clone(), Rc::clone(thread));
+        spawn(async move {
+            let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
+            match read {
+                Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, send, &thread).await,
+                Ok(Ok(_) | Err(QuicError::Framing)) => {
+                    connection.close(VarInt::from_u32(DOQ_PROTOCOL_ERROR), b"");
+                }
+                Ok(Err(_)) | Err(_) => {}
+            }
+        })
+        .detach();
+    }
+}
+
+/// Whether `query` breaks DNS over QUIC: a Message ID other than 0 (RFC 9250 §4.2.1) or an edns-tcp-keepalive option
+/// (§5.5.2). A query that does not read goes on, to be answered FORMERR.
+fn breaks_doq(query: &[u8]) -> bool {
+    Query::read(query).is_ok_and(|query| {
+        query.header().id != 0
+            || query.edns().is_some_and(|edns| {
+                edns.options()
+                    .any(|option| option.code() == OptionCode::KEEPALIVE)
+            })
+    })
+}
+
+/// Answers `query` on its stream `send`, then finishes it: one reply, the first made.
+async fn stream(query: &[u8], send: SendStream, thread: &Thread) {
+    let pipeline = thread.pipeline();
+    let mut first = None;
+    let started = start(thread, &pipeline, query, Transport::Quic, |wire| {
+        first = frame(wire);
+        true
+    });
+    let mut send = Some(send);
+    if let Some(framed) = first {
+        respond(&mut send, framed).await;
+    }
+    if let Some(Started::Upstream(upstream, slot)) = started {
+        let deliver = async |framed| respond(&mut send, framed).await;
+        answer(thread, &pipeline, upstream, Transport::Quic, deliver).await;
+        drop(slot);
+    }
+}
+
+/// Writes `framed` on `send` and finishes it, unless it was answered already.
+async fn respond(send: &mut Option<SendStream>, framed: Vec<u8>) {
+    if let Some(mut stream) = send.take()
+        && let BufResult(Ok(()), _) = stream.write_all(framed).await
+    {
+        let _ = stream.finish();
+    }
 }
 
 /// The replies of a TCP connection waiting for its writer, and their bytes.
@@ -584,13 +769,13 @@ fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transpo
     )
 }
 
-/// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length for TCP.
-/// Only its bytes leave the buffer, never those of an earlier reply.
+/// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length but
+/// over UDP. Only its bytes leave the buffer, never those of an earlier reply.
 fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
-    if transport == Transport::Tcp {
-        frame(wire)
-    } else {
+    if transport == Transport::Udp {
         Some(wire.to_vec())
+    } else {
+        frame(wire)
     }
 }
 
@@ -605,15 +790,16 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use compio::io::AsyncWriteExt;
+    use compio::io::{AsyncWriteExt, BufReader};
     use compio::net::{TcpListener, TcpStream};
     use compio::runtime::{Runtime, spawn};
     use dedens_net::tcp::{frame, read_message};
     use dedens_net::tls::Trust;
+    use dedens_proto::edns::EdnsOption;
     use dedens_proto::{Message, Question, Rcode, RecordType};
-    use dedens_server::Pipeline;
+    use dedens_server::{Pipeline, Transport};
 
-    use super::{Slots, Thread, connection, first_end};
+    use super::{Slots, Thread, breaks_doq, connection, first_end};
     use crate::reload::Current;
 
     #[test]
@@ -650,7 +836,8 @@ mod tests {
             let addr = listener.local_addr().expect("its address");
             let serving = spawn(async move {
                 let (stream, _) = listener.accept().await.expect("accepted");
-                connection(stream, &thread).await;
+                let (reader, writer) = stream.into_split();
+                connection(BufReader::new(reader), writer, Transport::Tcp, &thread).await;
             });
             let mut client = TcpStream::connect(addr).await.expect("connected");
             for _ in 0..2 {
@@ -663,6 +850,23 @@ mod tests {
             drop(client);
             let _ = serving.await;
         });
+    }
+
+    /// RFC 9250 \u00a74.3.3: a Message ID other than 0 and an edns-tcp-keepalive option break DNS over QUIC.
+    #[test]
+    fn doq_queries_have_id_0_and_no_keepalive() {
+        let name: dedens_proto::Name<'static> = "example.com.".parse().expect("a name");
+        let query = |id, keepalive| {
+            let mut query = Message::query(id, Question::new(name.clone(), RecordType::A));
+            if keepalive && let Some(edns) = &mut query.edns {
+                edns.options.push(EdnsOption::Keepalive(None));
+            }
+            query.to_vec().expect("a query fits")
+        };
+        assert!(!breaks_doq(&query(0, false)));
+        assert!(breaks_doq(&query(1, false)));
+        assert!(breaks_doq(&query(0, true)));
+        assert!(!breaks_doq(b"not a query"));
     }
 
     #[test]

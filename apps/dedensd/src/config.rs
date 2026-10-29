@@ -2,7 +2,10 @@
 //! `pipeline` lists them.
 //!
 //! ```yaml
-//! listen: ["127.0.0.1:53", "[::1]:53"]
+//! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0"]
+//! tls:
+//!   certificate: /etc/dedensd/tls/fullchain.pem
+//!   key: /etc/dedensd/tls/key.pem
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
@@ -34,13 +37,13 @@ use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use std::{fs, io};
+use std::{fmt, fs, io};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use compio::rustls::pki_types::pem::PemObject as _;
-use compio::rustls::pki_types::{CertificateDer, ServerName};
+use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use dedens_cache::Cache;
-use dedens_net::tls::Trust;
+use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage, Via};
@@ -52,8 +55,10 @@ use crate::download;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
-    /// Addresses answered on, over UDP and TCP.
-    listen: Vec<SocketAddr>,
+    /// Addresses answered on, over UDP and TCP, or TLS or QUIC.
+    listen: Vec<Listen>,
+    /// The certificate presented over TLS and QUIC (D66).
+    tls: Option<TlsFile>,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
@@ -64,6 +69,72 @@ struct File {
     pipeline: Vec<String>,
     /// The stages, by name.
     stages: BTreeMap<String, StageFile>,
+}
+
+/// The certificate `dedensd` presents, as written: PEM files, read again on each reload.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TlsFile {
+    /// The certificate chain, the server's first.
+    certificate: PathBuf,
+    /// Its private key.
+    key: PathBuf,
+}
+
+/// An address `dedensd` answers on (D66): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
+/// over QUIC, on port 853 unless `:PORT` follows (RFC 7858 §3.1, RFC 9250 §4.1.1).
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) enum Listen {
+    Plain(SocketAddr),
+    Tls(SocketAddr),
+    Quic(SocketAddr),
+}
+
+impl Listen {
+    /// Whether queries come encrypted, with the certificate of `tls`.
+    const fn encrypted(self) -> bool {
+        !matches!(self, Self::Plain(_))
+    }
+}
+
+/// As written, for the logs: `[tls://127.0.0.1:853]` rather than `[Tls(127.0.0.1:853)]`.
+impl fmt::Debug for Listen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plain(addr) => write!(f, "{addr}"),
+            Self::Tls(addr) => write!(f, "tls://{addr}"),
+            Self::Quic(addr) => write!(f, "quic://{addr}"),
+        }
+    }
+}
+
+impl TryFrom<String> for Listen {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let encrypted = |rest: &str| address(rest, ENCRYPTED_PORT);
+        let listen = match text.split_once("://") {
+            None => text.parse().ok().map(Self::Plain),
+            Some(("tls", rest)) => encrypted(rest).map(Self::Tls),
+            Some(("quic", rest)) => encrypted(rest).map(Self::Quic),
+            Some(_) => None,
+        };
+        listen.ok_or_else(|| {
+            format!("`{text}` is neither IP:PORT nor tls:// or quic:// before IP[:PORT]")
+        })
+    }
+}
+
+/// `IP:PORT`, or an IP address, on `port`; an IPv6 address in brackets or not.
+fn address(text: &str, port: u16) -> Option<SocketAddr> {
+    let bare = text
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(text);
+    text.parse()
+        .or_else(|_| bare.parse().map(|ip: IpAddr| SocketAddr::new(ip, port)))
+        .ok()
 }
 
 /// A stage, as written: its settings under its `type`.
@@ -173,14 +244,8 @@ impl TryFrom<String> for Server {
             _ => (rest, None),
         };
         let port = if scheme.is_some() { ENCRYPTED_PORT } else { 53 };
-        let bare = rest
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-            .unwrap_or(rest);
-        let addr = rest
-            .parse()
-            .or_else(|_| bare.parse().map(|ip: IpAddr| SocketAddr::new(ip, port)))
-            .map_err(|_| format!("`{text}`: `{rest}` is neither IP:PORT nor IP"))?;
+        let addr = address(rest, port)
+            .ok_or_else(|| format!("`{text}`: `{rest}` is neither IP:PORT nor IP"))?;
         if let Some(name) = name
             && ServerName::try_from(name).is_err()
         {
@@ -202,7 +267,9 @@ impl TryFrom<String> for Server {
 /// A configuration ready to serve.
 #[derive(Debug)]
 pub(crate) struct Config {
-    pub(crate) listen: Vec<SocketAddr>,
+    pub(crate) listen: Vec<Listen>,
+    /// The certificate presented over TLS and QUIC: there when `listen` has such an address.
+    pub(crate) presented: Option<Presented>,
     pub(crate) pipeline: Pipeline,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
@@ -226,6 +293,7 @@ pub(crate) fn read(
     let text = interpolate(text, env)?;
     let file: File = serde_saphyr::from_str(&text)?;
     ensure!(!file.listen.is_empty(), "`listen` has no address");
+    let presented = presented(&file.listen, file.tls.as_ref())?;
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
@@ -317,10 +385,43 @@ pub(crate) fn read(
     }
     Ok(Config {
         listen: file.listen,
+        presented,
         pipeline: Pipeline::new(built),
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
+}
+
+/// The certificate of `tls`, read from its files, when `listen` has an address over TLS or QUIC.
+///
+/// # Errors
+///
+/// A certificate without such an address or the reverse, a file that does not read, a chain without a certificate,
+/// a file without a key, or a key that is not the certificate's.
+fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<Presented>> {
+    let encrypted = listen.iter().any(|listen| listen.encrypted());
+    let tls = match (tls, encrypted) {
+        (Some(tls), true) => tls,
+        (None, false) => return Ok(None),
+        (None, true) => bail!("`listen` has a tls:// or quic:// address, and `tls` no certificate"),
+        (Some(_), false) => {
+            bail!("`tls` has a certificate, and `listen` no tls:// or quic:// address")
+        }
+    };
+    let path = tls.certificate.display();
+    let chain = CertificateDer::pem_file_iter(&tls.certificate)
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .with_context(|| format!("`tls`: cannot read certificates from {path}"))?;
+    ensure!(!chain.is_empty(), "`tls`: no certificate in {path}");
+    let key = PrivateKeyDer::from_pem_file(&tls.key).with_context(|| {
+        format!(
+            "`tls`: cannot read a private key from {}",
+            tls.key.display()
+        )
+    })?;
+    let presented = Presented::new(chain, key)
+        .with_context(|| format!("`tls`: the key does not fit {path}"))?;
+    Ok(Some(presented))
 }
 
 /// The certificate authorities of the PEM file `path`, the system's without one.
@@ -635,10 +736,63 @@ mod tests {
     }
 
     #[test]
+    fn listen_addresses_take_port_853_encrypted() {
+        for (text, listen) in [
+            (
+                "127.0.0.1:53",
+                Listen::Plain("127.0.0.1:53".parse().unwrap()),
+            ),
+            (
+                "tls://127.0.0.1",
+                Listen::Tls("127.0.0.1:853".parse().unwrap()),
+            ),
+            (
+                "tls://[::1]:8853",
+                Listen::Tls("[::1]:8853".parse().unwrap()),
+            ),
+            ("quic://[::1]", Listen::Quic("[::1]:853".parse().unwrap())),
+        ] {
+            assert_eq!(Listen::try_from(text.to_owned()), Ok(listen), "{text}");
+        }
+        for text in [
+            "127.0.0.1",
+            "https://127.0.0.1",
+            "tls://dns.example",
+            "tls://127.0.0.1#dns.example",
+        ] {
+            assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
+        }
+    }
+
+    /// A certificate goes with an address over TLS or QUIC, and the reverse.
+    #[test]
+    fn tls_listeners_and_a_certificate_go_together() {
+        let encrypted = MINIMAL.replace("'127.0.0.1:53'", "'tls://127.0.0.1'");
+        let tls = "tls:\n  certificate: /nonexistent.pem\n  key: /nonexistent.pem\n";
+        for (text, message) in [
+            (encrypted.clone(), "`tls` no certificate"),
+            (format!("{tls}{MINIMAL}"), "`listen` no tls://"),
+            (format!("{tls}{encrypted}"), "cannot read certificates"),
+        ] {
+            let error = read(&text, env, &Pipeline::default()).unwrap_err();
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+        }
+        assert!(
+            read(MINIMAL, env, &Pipeline::default())
+                .unwrap()
+                .presented
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_caching_forwarder_reads() {
         let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
         let config = read(text, env, &Pipeline::default()).unwrap();
-        assert_eq!(config.listen, ["127.0.0.1:5353".parse().unwrap()]);
+        assert_eq!(
+            config.listen,
+            [Listen::Plain("127.0.0.1:5353".parse().unwrap())]
+        );
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
     }
 

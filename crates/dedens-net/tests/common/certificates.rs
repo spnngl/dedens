@@ -19,6 +19,9 @@ pub(crate) struct Certificates {
     pub(crate) ca_pem: String,
     pub(crate) server: CertificateDer<'static>,
     pub(crate) key: PrivateKeyDer<'static>,
+    /// The server's certificate and key in PEM, for a server reading them from files.
+    pub(crate) server_pem: String,
+    pub(crate) key_pem: String,
 }
 
 impl Certificates {
@@ -54,6 +57,8 @@ pub(crate) fn certificates() -> Certificates {
         ca_pem: ca.pem(),
         server: server.der().clone(),
         key: PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+        server_pem: server.pem(),
+        key_pem: key.serialize_pem(),
     }
 }
 

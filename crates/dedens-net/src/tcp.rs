@@ -24,7 +24,7 @@ use compio::rustls::pki_types::ServerName;
 use compio::tls::{TlsConnector, TlsStream};
 use dedens_proto::Query;
 use dedens_proto::edns::EdnsOption;
-use futures_util::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use futures_util::io::{AsyncReadExt as _, AsyncWriteExt as _, ReadHalf, WriteHalf};
 
 use crate::exchange::after;
 use crate::tls::{self, Trust};
@@ -411,8 +411,8 @@ async fn run(
             serve(BufReader::new(reader), writer, &state, &queue, idle).await;
         }
         Open::Secured(stream) => {
-            let (reader, writer) = futures_util::io::AsyncReadExt::split(*stream);
-            serve(Polled(reader), Polled(writer), &state, &queue, idle).await;
+            let (reader, writer) = Polled::halves(*stream);
+            serve(reader, writer, &state, &queue, idle).await;
         }
     }
 }
@@ -438,13 +438,21 @@ async fn serve(
 }
 
 /// The reading side of a connection, one message at a time.
-trait Inbound: 'static {
+#[expect(
+    async_fn_in_trait,
+    reason = "compio tasks stay on their thread: no caller needs the future to be `Send`"
+)]
+pub trait Inbound: 'static {
     /// The next message (see [`read_message`]).
     async fn message(&mut self) -> io::Result<Vec<u8>>;
 }
 
 /// The writing side of a connection.
-trait Outbound {
+#[expect(
+    async_fn_in_trait,
+    reason = "compio tasks stay on their thread: no caller needs the future to be `Send`"
+)]
+pub trait Outbound {
     /// Writes `batch` whole.
     async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>>;
 
@@ -469,8 +477,17 @@ impl Outbound for TcpStream {
 }
 
 /// A half of a TLS stream, polled: each half locks the stream only while polled, so the reader waiting for a
-/// response never holds back the writer.
-struct Polled<T>(T);
+/// message never holds back the writer (D60). [`Polled::halves`] makes both.
+#[derive(Debug)]
+pub struct Polled<T>(T);
+
+impl<S: futures_util::AsyncRead + futures_util::AsyncWrite> Polled<S> {
+    /// The reading and the writing half of `stream`.
+    pub fn halves(stream: S) -> (Polled<ReadHalf<S>>, Polled<WriteHalf<S>>) {
+        let (reader, writer) = futures_util::io::AsyncReadExt::split(stream);
+        (Polled(reader), Polled(writer))
+    }
+}
 
 impl<R: futures_util::AsyncRead + Unpin + 'static> Inbound for Polled<R> {
     async fn message(&mut self) -> io::Result<Vec<u8>> {
