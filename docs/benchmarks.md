@@ -135,6 +135,8 @@ one core answering four names from its cache, dnsperf on six, 10 s a run, two ro
   Cooperative io_uring task work (D51; signal-like task work was 7.3% of the profile): 135.0k-135.4k →
   158.0k-158.2k, average latency 3.7 → 3.1 ms; UDP and TCP from the cache unchanged (506k-516k, 1.86M-1.93M).
   `SQPOLL` instead: cache hits over UDP 475k → 230k, forwarding 155k → 82k.
+  Registered file descriptors (io_uring fixed files, a compio prototype: the listening socket registered, its
+  multishot receive and sends given its index), cache hits over UDP: 488k-513k → 501k-517k, +1%, within noise.
 - Forwarding over TCP (`forward-tcp`), the same against itself: 84.5k-88.6k. A 65535-byte reply buffer zeroed
   for each query → kept per thread and reused (D52): 83.9k → 90.1k-92.3k unzeroed; zeroed on reuse, the default:
   79.4k-87.6k against 87.1k-90.0k unzeroed in the same run. Upstream queries queued meanwhile written together
