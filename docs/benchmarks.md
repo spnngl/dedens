@@ -116,6 +116,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
 - `benches/blocklist.rs` `query` on the test heads of those lists, median of 3000: blocked under a listed
   parent 110 → 116 ns, allowed 140 → 136 ns, in no list (sent upstream) 156 → 195 ns (noise ±30%); a blocked
   name allocates nothing.
+- A download checked before it is saved: `read` into throwaway lists (2.29M names: a 37 MB set, its hashes
+  buffered first) → `Lists::check`, names counted, not hashed or stored. `benches/blocklist.rs` `check` on the
+  three block heads: 15.7 µs fastest, at most 98 B held at once; `read` of the same heads and the allowlist,
+  15-16 µs fastest of 1000 samples both before and after `read` and `check` shared their line reader.
 
 ## dedensd under dnsperf (D48-D53)
 

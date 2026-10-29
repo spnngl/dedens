@@ -147,32 +147,10 @@ impl Lists {
     /// [`ListError::Line`] for a line of a [`Origin::Local`] text that is not a name, [`ListError::NotAList`] for a
     /// [`Origin::Downloaded`] text with no lines or fewer than half of them read; `list` is unchanged then.
     pub fn read(&mut self, list: List, origin: Origin, text: &str) -> Result<Read, ListError> {
-        let mut hashes = Vec::new();
-        let mut lines = 0;
-        let mut skipped = 0;
-        for (line, fields) in text::lines(text) {
-            lines += 1;
-            let before = hashes.len();
-            let mut add = |name: &Name<'_>| {
-                let mut buf = [0; MAX_NAME_LEN];
-                hashes.push(self.keys.hash_one(text::key(name, &mut buf)));
-            };
-            if let Err(error) = read_line(line, fields, &mut add) {
-                match origin {
-                    Origin::Local => return Err(error.into()),
-                    Origin::Downloaded => {
-                        hashes.truncate(before);
-                        skipped += 1;
-                    }
-                }
-            }
-        }
-        if origin == Origin::Downloaded && (lines == 0 || skipped * 2 > lines) {
-            return Err(ListError::NotAList {
-                lines,
-                read: lines - skipped,
-            });
-        }
+        let (hashes, skipped) = scan(origin, text, |name| {
+            let mut buf = [0; MAX_NAME_LEN];
+            self.keys.hash_one(text::key(name, &mut buf))
+        })?;
         let set = match list {
             List::Block => &mut self.block,
             List::Allow => &mut self.allow,
@@ -190,6 +168,22 @@ impl Lists {
             }
         }
         Ok(read)
+    }
+
+    /// Whether a downloaded `text` reads as [`Lists::read`] would read it, without hashing or storing its names:
+    /// `names` counts each name read, duplicates included.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError::NotAList`] for a text with no lines or fewer than half of them read.
+    pub fn check(text: &str) -> Result<Read, ListError> {
+        // A vector of `()` counts without allocating.
+        let (names, skipped) = scan(Origin::Downloaded, text, |_| ())?;
+        Ok(Read {
+            names: names.len(),
+            duplicates: 0,
+            skipped,
+        })
     }
 
     /// How many names `list` holds.
@@ -211,6 +205,38 @@ impl Lists {
         };
         listed(&self.block) && !listed(&self.allow)
     }
+}
+
+/// What `each` makes of the names of `text`, read as of `origin`, and the lines skipped: the names of a line that
+/// does not read are left out.
+fn scan<T>(
+    origin: Origin,
+    text: &str,
+    mut each: impl FnMut(&Name<'_>) -> T,
+) -> Result<(Vec<T>, usize), ListError> {
+    let mut items = Vec::new();
+    let mut lines = 0;
+    let mut skipped = 0;
+    for (line, fields) in text::lines(text) {
+        lines += 1;
+        let before = items.len();
+        if let Err(error) = read_line(line, fields, &mut |name| items.push(each(name))) {
+            match origin {
+                Origin::Local => return Err(error.into()),
+                Origin::Downloaded => {
+                    items.truncate(before);
+                    skipped += 1;
+                }
+            }
+        }
+    }
+    if origin == Origin::Downloaded && (lines == 0 || skipped * 2 > lines) {
+        return Err(ListError::NotAList {
+            lines,
+            read: lines - skipped,
+        });
+    }
+    Ok((items, skipped))
 }
 
 /// Calls `add` with each name of a line, read or not.

@@ -40,6 +40,15 @@ fn read() -> Lists {
     lists()
 }
 
+/// A downloaded list checked before it is saved, its names counted, not stored.
+#[divan::bench]
+fn check() -> usize {
+    BLOCK
+        .into_iter()
+        .map(|text| Lists::check(text).expect("a list").names)
+        .sum()
+}
+
 /// Names: blocked under a listed parent, allowed under a blocked one, in no list.
 const NAMES: [&str; 3] = ["x.b.adform.net.", "x.track.adform.net.", "www.example.com."];
 

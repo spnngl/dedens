@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, ensure};
-use dedens_plugins::{List, Lists, Origin, Read};
+use dedens_plugins::{Lists, Read};
 use ureq::tls::{RootCerts, TlsConfig};
 
 /// The largest list downloaded, as text: four times the largest published list read, 2M names in 36 MB.
@@ -128,7 +128,7 @@ impl Fetcher {
             .limit(MAX_LIST_LEN)
             .read_to_string()?;
         // Block or allow, a list reads the same way.
-        let read = Lists::new().read(List::Block, Origin::Downloaded, &text)?;
+        let read = Lists::check(&text)?;
         fs::create_dir_all(dir).with_context(|| format!("creating `{}`", dir.display()))?;
         save(&copy, &text, version.as_deref())?;
         Ok(Some(read))

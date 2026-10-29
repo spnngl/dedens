@@ -316,6 +316,19 @@ fn error_pages_and_adblock_lists_are_not_lists() {
     assert_eq!(lists.names(List::Block), 0);
 }
 
+/// Checking a downloaded text agrees with reading it, duplicates counted as names.
+#[test]
+fn a_check_reads_as_a_download_does() {
+    let bad = format!("{HAGEZI}{}.example\n", "a".repeat(64));
+    for text in [HAGEZI, STEVENBLACK, REFERRAL, &bad, NGINX_404, ADBLOCK, ""] {
+        let read = Lists::new()
+            .read(List::Block, Origin::Downloaded, text)
+            .map(|read| (read.names + read.duplicates, read.skipped));
+        let checked = Lists::check(text).map(|read| (read.names, read.skipped));
+        assert_eq!(checked, read);
+    }
+}
+
 /// The names of `text`, one a line, comments left out.
 fn lists_of(text: &str) -> usize {
     text.lines()
