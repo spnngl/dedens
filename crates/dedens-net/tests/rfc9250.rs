@@ -131,13 +131,15 @@ async fn s4_2_a_query_goes_alone_on_a_stream_with_id_0() {
         usize::from(u16::from_be_bytes([stream[0], stream[1]])),
         stream.len() - 2
     );
-    assert_eq!(
-        Message::decode(&stream[2..])
-            .expect("a query")
-            .message
-            .header
-            .id,
-        0
+    let sent = Message::decode(&stream[2..]).expect("a query").message;
+    assert_eq!(sent.header.id, 0);
+    // No cookie: QUIC checks the client's address itself (RFC 9000 §8).
+    let options = sent.edns.expect("EDNS").options;
+    assert!(
+        !options
+            .iter()
+            .any(|option| matches!(option, EdnsOption::Cookie(_))),
+        "{options:?}"
     );
 }
 

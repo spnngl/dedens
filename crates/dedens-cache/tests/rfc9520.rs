@@ -97,3 +97,23 @@ fn an_answer_ends_the_hold() {
     // Counted from one again: the first hold, raised to the RFC 8767 recheck time as stale data now exists.
     assert_eq!(cache.fail(&key, now + 60), 30);
 }
+
+/// The RFC 8767 recheck time holds only while the stale data may still be served.
+#[test]
+fn the_recheck_time_ends_with_the_stale_data() {
+    let q = query(1, "down.example", RecordType::A);
+    let key = key_of(&q);
+    let r = response(
+        "down.example",
+        RecordType::A,
+        Rcode::NOERROR,
+        vec![a("down.example", 60, 1)],
+        vec![],
+    );
+    for (late, hold) in [(0, 30), (1, 5)] {
+        let cache = small_cache();
+        insert(&cache, &q, &r, T0).unwrap();
+        let stale_until = T0 + 60 + cache.config().max_stale;
+        assert_eq!(cache.fail(&key, stale_until - 1 + late), hold);
+    }
+}

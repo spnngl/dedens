@@ -1,0 +1,2 @@
+# cargo-mutants: test with every feature, so the tests behind `metrics` and `serde` see their mutants.
+all_features = true

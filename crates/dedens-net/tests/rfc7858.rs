@@ -97,7 +97,23 @@ async fn s3_3_a_query_goes_over_tls_to_the_name_given() {
     assert_eq!(response.transport, Transport::Tls);
     let answered = Message::decode(&response.wire).expect("a response").message;
     assert_eq!(answered.questions, query().questions);
-    assert_eq!(seen.queries.borrow().len(), 1);
+    let queries = seen.queries.borrow();
+    let [sent] = queries.as_slice() else {
+        panic!("one query, not {}", queries.len());
+    };
+    // RFC 7873 §5.1: the query carries a client cookie, as over TCP.
+    let options = Message::decode(sent)
+        .expect("a query")
+        .message
+        .edns
+        .expect("EDNS")
+        .options;
+    assert!(
+        options
+            .iter()
+            .any(|option| matches!(option, EdnsOption::Cookie(_))),
+        "{options:?}"
+    );
 }
 
 /// RFC 8310 §8.1: a server known by its address only is verified by it.
@@ -172,7 +188,8 @@ fn s3_4_a_query_over_tls_is_padded_and_asks_how_long_to_stay() {
     assert!(
         matches!(
             options.as_slice(),
-            [EdnsOption::Keepalive(None), EdnsOption::Padding(_)]
+            // The fewest bytes reaching a multiple of 128.
+            [EdnsOption::Keepalive(None), EdnsOption::Padding(0..128)]
         ),
         "{options:?}"
     );
@@ -192,4 +209,12 @@ fn padding_of_the_caller_is_replaced_over_tls_only() {
     );
     let over_tls = start(&padded, tls(), t0());
     assert_eq!(over_tls.wire().len() % 128, 0);
+    let options = sent(&over_tls).edns.expect("EDNS").options;
+    assert!(
+        matches!(
+            options.as_slice(),
+            [EdnsOption::Keepalive(None), EdnsOption::Padding(_)]
+        ),
+        "{options:?}"
+    );
 }

@@ -78,6 +78,8 @@ fn prefetch_is_asked_once_near_expiry() {
         other => panic!("expected a hit, got {other:?}"),
     };
     assert_eq!(freshness(T0 + 50), Freshness::Fresh { prefetch: false });
+    // 10 of 100 seconds left is not under 10%.
+    assert_eq!(freshness(T0 + 90), Freshness::Fresh { prefetch: false });
     assert_eq!(freshness(T0 + 91), Freshness::Fresh { prefetch: true });
     assert_eq!(freshness(T0 + 92), Freshness::Fresh { prefetch: false });
     // A new answer re-arms it.
@@ -342,6 +344,33 @@ fn min_out_holds_a_truncated_response() {
     assert!(hit.truncated);
     assert!(served.header.flags.contains(Flags::TC));
     assert_eq!(served.header.id, 1);
+}
+
+/// The longest name (255 bytes on the wire) is a key, and its truncated response fits `MIN_OUT`, stale too with
+/// room for the EDE option.
+#[test]
+fn min_out_holds_the_longest_question() {
+    let longest = format!("{0}.{0}.{0}.{1}.", "a".repeat(63), "a".repeat(61));
+    assert_eq!(dns(&longest).wire_len(), 255);
+    let cache = small_cache();
+    let q = query(1, &longest, RecordType::A);
+    let answer = (0..20).map(|i| a(&longest, 60, i)).collect();
+    let r = response(&longest, RecordType::A, Rcode::NOERROR, answer, vec![]);
+    insert(&cache, &q, &r, T0).unwrap();
+    let (hit, served) = served(&cache, &q, T0, Cache::MIN_OUT);
+    assert!(hit.truncated);
+    assert_eq!(served.questions[0].name, dns(&longest));
+    let mut out = vec![0; Cache::MIN_OUT];
+    let found = cache.lookup(
+        &Query::read(&q).unwrap(),
+        T0 + 61,
+        StalePolicy::Always,
+        &mut out,
+    );
+    let Lookup::Hit(stale) = found else {
+        panic!("expected a stale hit, got {found:?}");
+    };
+    assert_eq!(stale.len, Cache::MIN_OUT - Cache::STALE_ROOM);
 }
 
 #[cfg(debug_assertions)]
