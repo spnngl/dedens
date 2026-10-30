@@ -9,7 +9,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{caching, captured, decode, query_for, run_at, servers, wire};
+use common::{caching, captured, decode, query_for, run_at, servers, wire, with_flags};
 use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::{Edns, Flags, Message, Rcode};
@@ -110,6 +110,33 @@ fn failures_are_held() {
     assert_eq!((reply.rcode(), asked), (Rcode::SERVFAIL, 0));
     let (reply, asked) = ask(&pipeline, &query, 5, &[None, None]);
     assert_eq!((reply.rcode(), asked), (Rcode::SERVFAIL, 2));
+}
+
+/// A hit carries the flags of the query it answers (RFC 1035 §4.1.1), not those of the one that stored it: no AD
+/// for a client that did not ask with AD or DO (RFC 6840 §5.8).
+#[test]
+fn a_hit_carries_the_flags_of_its_query() {
+    let response = with_flags(captured("a"), Flags::QR | Flags::RD | Flags::RA | Flags::AD);
+    let pipeline = caching();
+    let mut query = query_for(&response);
+    query.header.flags = Flags::RD | Flags::AD;
+    let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
+    assert!(first.header.flags.contains(Flags::AD));
+    query.header.flags = Flags::default();
+    let (reply, asked) = ask(&pipeline, &query, 0, &[]);
+    assert_eq!((reply.rcode(), asked), (Rcode::NOERROR, 0));
+    assert_eq!(reply.header.flags, Flags::QR | Flags::RA);
+}
+
+/// A held failure answers recursive queries only: one without RD is refused, as when nothing is cached.
+#[test]
+fn a_held_failure_answers_recursive_queries_only() {
+    let pipeline = caching();
+    let mut query = query_for(&captured("a"));
+    let _ = ask(&pipeline, &query, 0, &[None, None]);
+    query.header.flags = Flags::default();
+    let (reply, asked) = ask(&pipeline, &query, 1, &[]);
+    assert_eq!((reply.rcode(), asked), (Rcode::REFUSED, 0));
 }
 
 #[test]
@@ -288,7 +315,9 @@ fn the_timer_is_the_cache_stages_and_the_patience_the_forward_stages() {
                 .with_tries(tries),
         ),
     ]);
-    let upstream = upstream_of(&patient, &query, 0);
+    // A timer of 0 ms is none, even with expired data to answer.
+    let (_, _, expired) = expired_a(&patient);
+    let upstream = upstream_of(&patient, &query, expired);
     assert_eq!(upstream.stale_after(), None);
     assert_eq!(upstream.patience(), (Duration::from_millis(500), tries));
 }

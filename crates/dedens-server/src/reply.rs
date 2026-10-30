@@ -193,20 +193,6 @@ impl<'q> Client<'q> {
         }
     }
 
-    /// Sets the header flags of `reply`, a response encoded for this client, as [`Client::reply`] sets them; TC
-    /// stays as it is.
-    pub(crate) fn patch_flags(&self, reply: &mut [u8]) {
-        if let Some(word) = reply.get_mut(2..4) {
-            let old = u16::from_be_bytes([word[0], word[1]]);
-            let mut flags = self.flags(Flags::from_word(old));
-            if Flags::from_word(old).contains(Flags::TC) {
-                flags = flags.with(Flags::TC);
-            }
-            let new = old & !Flags::ALL.bits() | flags.bits();
-            word.copy_from_slice(&new.to_be_bytes());
-        }
-    }
-
     /// Whether the client asked for DNSSEC records (RFC 3225 §3).
     fn dnssec(&self) -> bool {
         self.edns

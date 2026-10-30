@@ -29,7 +29,8 @@ pub(crate) enum Looked {
 }
 
 /// Looks `query` up in `cache` at `now` and writes the reply to `client` into `out`: the stored response patched
-/// for the query, flags set as [`Client::reply`] sets them, and our OPT record when the client sent one, with EDE 3
+/// for the query by the cache, flags included (AA and Z clear, RA set, the client's RD and CD, AD as RFC 6840 §5.8
+/// says), and our OPT record when the client sent one, with EDE 3
 /// (Stale Answer) or 19 (Stale NXDOMAIN Answer) on expired data (RFC 8767 §4, RFC 8914 §4.4).
 ///
 /// Expired data answers as a [`Read::Lookup`] policy lets it: while resolving the query fails, or once the
@@ -64,7 +65,6 @@ pub(crate) fn look(
         Lookup::Miss => return Looked::Miss,
         Lookup::Expired => return Looked::Expired,
     };
-    client.patch_flags(&mut out[..hit.len]);
     let refresh = match hit.freshness {
         Freshness::Fresh { prefetch } => prefetch,
         Freshness::Stale => false,
