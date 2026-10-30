@@ -1,6 +1,14 @@
 # dédéns
 
-A DNS library and a dig-like CLI, `dedens`, written in Rust. Work in progress: nothing usable yet.
+A DNS library, a dig-like CLI, `dedens`, and a server, `dedensd`, written in Rust. Work in progress, not
+released.
+
+- `dedens`: dig's arguments (`@server name type +opts`) and long flags, over UDP, TCP, TLS (`+tls`,
+  `tls://host#name`) and QUIC (`+quic`, `quic://host#name`); several servers, `--repeat`, `+trace`, `-x`;
+  human, short, JSON and YAML output; YAML query files with expectations (`dedens --help`).
+- `dedensd`: a caching forwarder (serve-stale, prefetch) with hosts and blocklist stages, listening on UDP, TCP,
+  TLS and QUIC, asking upstreams over any of them; one YAML file, reloaded on SIGHUP
+  (example and keys in `apps/dedensd/src/config.rs`).
 
 ## Development
 

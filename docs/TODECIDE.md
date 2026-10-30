@@ -42,7 +42,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the `base64-simd` crate and our table against a signed zone; `unsafe` only if it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
-- Order after the server forwarder: kubernetes stage, recursive resolver (with an RRset cache, priming per
+- Order after the server forwarder: DoH in the client, CLI and server once compio releases tokio's I/O traits
+  (D62), kubernetes stage, recursive resolver (with an RRset cache, priming per
   RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
   DNSSEC, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
   (RFC 9567) with the server.
@@ -52,10 +53,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - A systemd-resolved replacement plugin for desktop Linux: the stub on 127.0.0.53, per-link servers and
   routing domains pushed over D-Bus `org.freedesktop.resolve1` by NetworkManager and systemd-networkd,
   `stub-resolv.conf`, `/etc/hosts`, the synthesized names (localhost, the hostname, `_gateway`). Default:
-  study the interfaces it must keep (`src/resolve/` of systemd) after reload lands; dynamic upstreams need it.
+  study the interfaces it must keep (`src/resolve/` of systemd); its upstreams change at run time, as reload
+  (D55) does not.
 - Dynamic stage loading (D23): WASM or gRPC, as one stage type after a cache miss, or never. Against: Vector
   dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.
 - A small typed rule language for matchers (D23), beyond declarative matchers.
 - crates.io publishing, a container image, dnsperf benchmarks against Unbound and CoreDNS.
 - A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config.rs`), which needs the reader in a
-  library crate. Default: move it to `dedens-server` when reload comes.
+  library crate. Default: move the reader to `dedens-server` with the next change to the configuration.

@@ -1,7 +1,7 @@
 # dedens-net
 
-DNS transports (UDP, TCP, TLS, QUIC; later DoH) on compio (D4, D60, D61): the only library crate that touches sockets and
-timers.
+DNS transports (UDP, TCP, TLS, QUIC; DoH waits for compio, D62) on compio (D4, D60, D61): the only library crate
+that touches sockets and timers.
 
 - `src/exchange.rs`: the sans-IO exchange of one query (D26, D27, D31), fed bytes and time; no socket, no clock,
   no randomness.
@@ -14,7 +14,7 @@ timers.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
 - `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs` and `rfc9250.rs` against loopback TLS and QUIC
   servers too, with certificates of `tests/common/certificates.rs`. `tests/udp.rs`, `tests/tcp.rs`,
-  `tests/client.rs`: the transports and the client against scripted servers on the loopback address (`tests/common/loopback.rs`);
-  `tests/common/` builds messages and steps.
+  `tests/client.rs`: the transports and the client against scripted servers on the loopback address
+  (`tests/common/loopback.rs`); `tests/common/` builds messages and steps.
 
 Measure a transport change with `just bench-dnsperf <base> forward` or `forward-tcp`.
