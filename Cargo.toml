@@ -55,7 +55,7 @@ metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
 proptest = "1.12"
 # D60: certificates made by the DNS over TLS tests, none checked in.
-rcgen = { version = "0.14", default-features = false, features = [
+rcgen = { version = "0.14.10", default-features = false, features = [
   "pem",
   "ring",
 ] }
@@ -75,7 +75,7 @@ signal-hook = { version = "0.4.5", default-features = false, features = [
 # D42: SO_REUSEPORT, one socket per thread ("all" has it).
 socket2 = { version = "0.6.5", features = ["all"] }
 tempfile = "3.27.0"
-thiserror = "2.0"
+thiserror = "2.0.21"
 # D30: diagnostics of net, the CLI and dedensd; the CLI prints them as text under -v, dedensd as JSON ("json"
 # there), without env-filter and its regexes.
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
