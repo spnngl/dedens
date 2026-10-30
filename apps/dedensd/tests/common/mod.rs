@@ -101,13 +101,18 @@ impl Responder {
                 }
             }
         });
+        // A thread per connection: on Linux each `dedensd` thread opens its own, and one kept open must not hold
+        // up the others.
         thread::spawn(move || {
             for mut stream in tcp.incoming().flatten() {
-                while let Some(query) = read_framed(&mut stream) {
-                    if let Some(answer) = reply(&query) {
-                        let _ = stream.write_all(&framed(&answer));
+                let reply = reply.clone();
+                thread::spawn(move || {
+                    while let Some(query) = read_framed(&mut stream) {
+                        if let Some(answer) = reply(&query) {
+                            let _ = stream.write_all(&framed(&answer));
+                        }
                     }
-                }
+                });
             }
         });
         Self { addr, queries }
