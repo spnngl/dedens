@@ -335,3 +335,11 @@ fn lists_of(text: &str) -> usize {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .count()
 }
+
+/// A downloaded list with half its lines read is a list still.
+#[test]
+fn a_downloaded_list_half_read_is_a_list() {
+    let text = format!("one.example\n{}.example\n", "a".repeat(64));
+    let read = Lists::new().read(List::Block, Origin::Downloaded, &text);
+    assert_eq!(read.map(|read| (read.names, read.skipped)), Ok((1, 1)));
+}

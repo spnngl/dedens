@@ -383,3 +383,20 @@ impl Plugin for Blocklist {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+
+    use super::Same;
+
+    /// A key is a hash already: it is its own.
+    #[test]
+    fn a_key_is_its_own_hash() {
+        let same = BuildHasherDefault::<Same>::default();
+        assert_eq!(
+            same.hash_one(0x0123_4567_89ab_cdef_u64),
+            0x0123_4567_89ab_cdef
+        );
+    }
+}

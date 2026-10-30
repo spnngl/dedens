@@ -244,7 +244,7 @@ async fn the_server_keepalive_shortens_the_idle_timeout() {
     };
     let mut peer = Peer::accept(&listener).await;
     let query = peer.read().await.expect("a query");
-    // Records and another option before it, the keepalive found all the same. One unit is 100 ms.
+    // Records and another option before it, the keepalive found all the same. One unit is 100 ms: 500 ms here.
     let plain = answer(&query, Vec::new());
     let mut response = Message::decode(&plain).expect("a response").message;
     let record = |text: &str| text.parse::<Record<'static>>().expect("a record");
@@ -252,9 +252,11 @@ async fn the_server_keepalive_shortens_the_idle_timeout() {
     response.authority = vec![record("example.com. 300 IN NS ns.example.com.")];
     response.additional = vec![record("ns.example.com. 300 IN A 192.0.2.53")];
     response.edns.as_mut().expect("EDNS").options =
-        vec![EdnsOption::Padding(3), EdnsOption::Keepalive(Some(1))];
+        vec![EdnsOption::Padding(3), EdnsOption::Keepalive(Some(5))];
     peer.write(&[common::wire(&response)]).await;
     assert!(asked.await.expect("joined").is_ok());
+    let open = compio::time::timeout(Duration::from_millis(100), peer.read()).await;
+    assert!(open.is_err(), "closed before its timeout");
     let closed = compio::time::timeout(Duration::from_secs(2), peer.read()).await;
     assert_eq!(closed, Ok(None));
 }

@@ -168,3 +168,51 @@ async fn an_error_skips_a_query_that_sent_nothing() {
         .map_err(|error| error.kind());
     assert_eq!(nothing, Ok(None));
 }
+
+/// A query dropped stops taking datagrams: those with its ID that come later do not crowd out the next query's.
+#[compio::test]
+async fn a_dropped_query_takes_no_more_datagrams() {
+    let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+    let addr = server.local_addr().expect("an address");
+    let pool = UdpPool::new(1);
+    let gone = pool.query(addr, 0, 7).await.expect("a socket");
+    gone.send(&query_with_id(7)).await.expect("sent");
+    let BufResult(received, sent_query) = server.recv_from(Vec::with_capacity(SIZE)).await;
+    let (_, from) = received.expect("a query");
+    drop(gone);
+    // As many as a socket keeps for its queries, delivered before the next query waits.
+    for _ in 0..64 {
+        let BufResult(sent, _) = server.send_to(answer(&sent_query, Vec::new()), from).await;
+        sent.expect("sent");
+    }
+    compio::time::sleep(Duration::from_millis(100)).await;
+    let mut next = pool.query(addr, 0, 7).await.expect("a socket");
+    next.send(&query_with_id(7)).await.expect("sent");
+    let BufResult(received, sent_query) = server.recv_from(Vec::with_capacity(SIZE)).await;
+    received.expect("a query");
+    let BufResult(sent, _) = server.send_to(answer(&sent_query, Vec::new()), from).await;
+    sent.expect("sent");
+    let response = next
+        .recv(Instant::now() + Duration::from_secs(1))
+        .await
+        .expect("received");
+    assert_eq!(response.as_deref().map(id), Some(7));
+}
+
+/// A query dropped takes only its own datagrams with it: another's, received but not read yet, stays.
+#[compio::test]
+async fn a_dropped_query_leaves_the_others_datagrams() {
+    let server = udp_responder(|query| Some(answer(query, Vec::new()))).await;
+    let pool = UdpPool::new(1);
+    let gone = pool.query(server, 0, 1).await.expect("a socket");
+    let mut kept = pool.query(server, 0, 2).await.expect("a socket");
+    gone.send(&query_with_id(1)).await.expect("sent");
+    kept.send(&query_with_id(2)).await.expect("sent");
+    compio::time::sleep(Duration::from_millis(100)).await;
+    drop(gone);
+    let response = kept
+        .recv(Instant::now() + Duration::from_secs(1))
+        .await
+        .expect("received");
+    assert_eq!(response.as_deref().map(id), Some(2));
+}
