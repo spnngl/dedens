@@ -61,8 +61,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   proxy that relays GET), from the target's SVCB record (RFC 9460; the ODoH SVCB parameters are not in an RFC), a
   fetch at a random time apart from the query. Default: well-known, direct.
 - ODoH target throttle (D79): `dedensd` opens every POST of the media type, an X25519 decapsulation and an AEAD open,
-  before it knows the sender; the proxy of RFC 9230 §4 is no authentication, and the rate limit of `dedensd` (when
-  there is one) comes after. Default: none; add a per-address budget before the decapsulation with the rate limits.
+  before it knows the sender; the proxy of RFC 9230 §4 is no authentication, and the limit per address
+  (D90) is the deployment's, in front of `dedensd`. Default: none.
 - ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
   `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
   one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
@@ -99,8 +99,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   deployment shows the need.
 - Validating forwarder (D77): the allowance is one bucket for all clients and has no knob in the configuration
   (`Allowance` defaults), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a P-256
-  one). Default: global, fixed; a bucket per source (an IP prefix) once the pipeline sees the client's address
-  (the rate limits), `dnssec_allowance:` keys when a deployment hits the default, units weighted by algorithm
+  one). Default: global, fixed (a limit per source is the deployment's, D90); `dnssec_allowance:` keys when a
+  deployment hits the default, units weighted by algorithm
   when one signs with P-384 to burn the bucket's CPU.
 - Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a
   bare SERVFAIL, with no EDE 22 (No Reachable Authority) or 23 (Network Error). Default: bare.
@@ -129,9 +129,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - QUIC datagram without control data (D89): `compio-io`'s `CMsgIter::new` panics on an empty control buffer, which
   macOS gives for a datagram queued before the socket options were set. Default: as is (`serving` waits for the
   endpoints); an upstream fix (accept an empty buffer), then drop the note.
-- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED; a cap of
-  connections per address, over TCP, TLS, QUIC and HTTP/3 alike (D47 caps a thread's connections only, so one host
-  can take them all, for as long as it keeps asking). Default: a stage or core setting, loopback and private ranges
+- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED. Rate limits
+  and a cap of connections per address are the deployment's, not `dedensd`'s (D90). Default: a stage or core setting, loopback and private ranges
   allowed when unset; networks in a longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for
   blocking by answer address.
 - Steering each datagram to the socket of the CPU that received it: `SO_INCOMING_CPU` on each thread's socket
