@@ -118,6 +118,14 @@ impl<'t> ZoneReader<'t> {
         self.origin.as_ref()
     }
 
+    /// The line of the last token the reader took, from 1: where the entry it just returned ends, for a caller
+    /// that refuses an entry and names its place. An entry spanning lines in parentheses ends on its last RDATA
+    /// token's line.
+    #[must_use]
+    pub const fn line(&self) -> usize {
+        self.lexer.end().0
+    }
+
     fn entry(&mut self) -> Result<Option<Entry>, TextError> {
         loop {
             let Some(blank) = self.lexer.entry()? else {

@@ -101,6 +101,20 @@ fn s5_3_master_file_example() {
 }
 
 #[test]
+fn s5_1_line_is_where_the_last_entry_ends() {
+    let text = "; comment\n\nwww 60 A 192.0.2.1\n\n$ORIGIN a.\nsoa 60 SOA ns h (\n 1 2 3\n 4 5 )\n";
+    let mut reader = ZoneReader::new(text.as_bytes(), Some(dns("example.")));
+    assert_eq!(reader.line(), 1);
+    let mut ends = Vec::new();
+    while let Some(entry) = reader.next() {
+        entry.unwrap();
+        ends.push(reader.line());
+    }
+    // The `$ORIGIN` is no entry; a parenthesized record ends on the line of its last token.
+    assert_eq!(ends, [3, 8]);
+}
+
+#[test]
 fn s5_1_origin_resets_relative_names() {
     let records = zone(
         "$ORIGIN sub\nwww 60 A 192.0.2.1\n$ORIGIN other.\n@ 60 A 192.0.2.2\nx.y. 60 CNAME z\n",
