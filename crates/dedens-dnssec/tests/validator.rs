@@ -913,6 +913,31 @@ fn a_dname_with_another_target_is_bogus() {
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
 }
 
+/// RFC 6672 §5.3.3: only the CNAME a DNAME makes goes unverified. Derived from the `dname_answer` capture: a second
+/// record in that set is unsigned data of a secure zone, and must not ride under the first one.
+#[test]
+fn a_second_record_in_the_synthesized_cname_is_bogus() {
+    let script = Script::new();
+    let mut response = capture("dname_answer");
+    let at = response
+        .answer
+        .iter()
+        .position(|record| record.rtype() == RecordType::CNAME)
+        .expect("the synthesized CNAME");
+    let evil = Record {
+        rdata: WireRdata::new(&RData::Cname(name("evil.example"))),
+        ..response.answer[at].clone()
+    };
+    response.answer.insert(at + 1, evil.clone());
+    let verdict = script.run(&Script::validator(), &response, captured_at());
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    // Before the genuine record as well: the set is compared whole, in any order.
+    response.answer.remove(at + 1);
+    response.answer.insert(at, evil);
+    let verdict = script.run(&Script::validator(), &response, captured_at());
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+}
+
 #[test]
 fn a_cname_below_a_dname_that_is_gone_is_bogus() {
     // The synthesized CNAME is unsigned by rule only where a DNAME explains it (RFC 6672 §5.3.3).

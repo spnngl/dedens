@@ -200,13 +200,20 @@ impl Chain {
 }
 
 /// Whether `cname` is what a DNAME of `section` makes of its owner (RFC 6672 §3.1): the server synthesizes it
-/// unsigned, so it is not validated (RFC 6672 §5.3.3).
+/// unsigned, so it is not validated (RFC 6672 §5.3.3). Every record of the set is that one: a set with another
+/// record is not the DNAME's doing, and is checked as any other.
 pub(super) fn synthesized(cname: &RrSet<'_>, section: &Section) -> bool {
     cname.rtype() == RecordType::CNAME
+        && !cname.rdatas().is_empty()
         && dname_of(section, cname.owner()).is_some_and(|dname| {
             target(dname)
                 .and_then(|to| substitute(cname.owner(), dname.owner(), &to).ok())
-                .is_some_and(|name| target(cname).is_some_and(|got| got == name))
+                .is_some_and(|name| {
+                    cname
+                        .rdatas()
+                        .iter()
+                        .all(|rdata| matches!(rdata.data(), RData::Cname(got) if got == name))
+                })
         })
 }
 

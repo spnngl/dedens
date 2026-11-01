@@ -253,9 +253,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dropped (RFC 4035 §3.2.3), with the RRSIGs that sign nothing left; NSEC, NSEC3 and SOA of the authority section
   stay, the validator verified them. Every TTL is capped at the verdict's. The CNAME a DNAME makes is kept as the
   one record the DNAME makes of its owner (RFC 4035 §4.8 lets the resolver return it; a client that does not
-  synthesize it would otherwise lose the answer): the validator compares only the first record of that CNAME set
-  with the expected one and skips verifying the set, so another record in it would ride under AD; the cut drops
-  it (`dedens-dnssec` should compare every record: reported to the step 06 owner). `Incomplete`: the answer of
+  synthesize it would otherwise lose the answer): the validator skips verifying that CNAME set only when every
+  record of it is the expected one, so another record in it is checked as any CNAME: unsigned, bogus. `Incomplete`: the answer of
   `next` is validated apart, at most 8 names a query (as `dedens`; `next` is the upstream's, not 0x20 entropy, and
   dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
   incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
