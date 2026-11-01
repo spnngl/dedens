@@ -1,0 +1,5 @@
+# coap-client -m get coap://127.0.0.1:56831/async (coap-server -p 56830), libcoap 4.3.5b
+0 c2s 40011bd372ddff456173796e63e4000cb812b72b
+0 s2c 60001bd3
+4006 s2c 4045e52bc0ff646f6e65
+4007 c2s 6000e52b
