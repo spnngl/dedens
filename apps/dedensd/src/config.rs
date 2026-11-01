@@ -6,6 +6,8 @@
 //! tls:
 //!   certificate: /etc/dedensd/tls/fullchain.pem
 //!   key: /etc/dedensd/tls/key.pem
+//! odoh:                              # Oblivious DoH target on the https:// addresses (D79); needs the odoh feature
+//!   key: /etc/dedensd/odoh.key         # 64 hex digits; default: a key made at each start
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
@@ -61,6 +63,8 @@ struct File {
     listen: Vec<Listen>,
     /// The certificate presented over TLS and QUIC (D66).
     tls: Option<TlsFile>,
+    /// Serving as an Oblivious `DoH` target at the paths of the `https://` addresses (D79).
+    odoh: Option<OdohFile>,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
@@ -81,6 +85,18 @@ struct TlsFile {
     certificate: PathBuf,
     /// Its private key.
     key: PathBuf,
+}
+
+/// The Oblivious `DoH` target `dedensd` serves as (D79).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OdohFile {
+    /// A file with the target's secret, 64 hexadecimal digits. Default: a new random secret at each start.
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the target, built with the odoh feature")
+    )]
+    key: Option<PathBuf>,
 }
 
 /// An address `dedensd` answers on (D66, D84): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
@@ -372,6 +388,9 @@ pub(crate) struct Config {
     pub(crate) listen: Vec<Listen>,
     /// The certificate presented over TLS and QUIC: there when `listen` has such an address.
     pub(crate) presented: Option<Presented>,
+    /// The Oblivious `DoH` target, there when `odoh` is.
+    #[cfg(feature = "odoh")]
+    pub(crate) odoh: Option<Arc<crate::odoh::Target>>,
     pub(crate) pipeline: Pipeline,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
@@ -396,6 +415,13 @@ pub(crate) fn read(
     let file: File = serde_saphyr::from_str(&text)?;
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     let presented = presented(&file.listen, file.tls.as_ref())?;
+    #[cfg(feature = "odoh")]
+    let odoh = target(file.odoh.as_ref(), &file.listen)?;
+    #[cfg(not(feature = "odoh"))]
+    ensure!(
+        file.odoh.is_none(),
+        "`odoh` needs a dedensd built with the odoh feature"
+    );
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
@@ -429,17 +455,7 @@ pub(crate) fn read(
                 servers,
                 timeout_ms,
                 tries,
-            } => {
-                let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
-                    .with_context(|| format!("stage `{name}` has no server"))?;
-                if let Some(ms) = timeout_ms {
-                    forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
-                }
-                if let Some(tries) = tries {
-                    forward = forward.with_tries(tries);
-                }
-                Stage::Forward(forward)
-            }
+            } => Stage::Forward(forward(name, servers, timeout_ms, tries)?),
             StageFile::Hosts {
                 entries,
                 file,
@@ -488,10 +504,56 @@ pub(crate) fn read(
     Ok(Config {
         listen: file.listen,
         presented,
+        #[cfg(feature = "odoh")]
+        odoh,
         pipeline: Pipeline::new(built),
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
+}
+
+/// The forward stage `name` of `servers`, with the timeout and tries it sets.
+///
+/// # Errors
+///
+/// A stage without a server.
+fn forward(
+    name: &str,
+    servers: Vec<Server>,
+    timeout_ms: Option<NonZeroU32>,
+    tries: Option<NonZeroU8>,
+) -> anyhow::Result<Forward> {
+    let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
+        .with_context(|| format!("stage `{name}` has no server"))?;
+    if let Some(ms) = timeout_ms {
+        forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
+    }
+    if let Some(tries) = tries {
+        forward = forward.with_tries(tries);
+    }
+    Ok(forward)
+}
+
+/// The Oblivious `DoH` target of `odoh`, if any (D79).
+///
+/// # Errors
+///
+/// `odoh` without an `https://` address in `listen`, or a key that does not read.
+#[cfg(feature = "odoh")]
+fn target(
+    odoh: Option<&OdohFile>,
+    listen: &[Listen],
+) -> anyhow::Result<Option<Arc<crate::odoh::Target>>> {
+    let Some(odoh) = odoh else {
+        return Ok(None);
+    };
+    ensure!(
+        listen
+            .iter()
+            .any(|listen| matches!(listen, Listen::Https(..))),
+        "`odoh` is served over HTTP/3: `listen` has no https:// address"
+    );
+    crate::odoh::Target::new(odoh.key.as_deref()).map(|target| Some(Arc::new(target)))
 }
 
 /// The certificate of `tls`, read from its files, when `listen` has an address over TLS, QUIC or HTTP/3.
@@ -916,6 +978,23 @@ mod tests {
         ] {
             assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
         }
+    }
+
+    /// `odoh` needs an `https://` address and a dedensd built for it, and takes a `key` and nothing else (D79).
+    #[test]
+    fn odoh_needs_an_https_listener() {
+        let odoh = |section: &str| format!("odoh:\n{section}{MINIMAL}");
+        let error = read(&odoh("  key: /nonexistent\n"), env, &Pipeline::default()).unwrap_err();
+        let message = format!("{error:#}");
+        #[cfg(feature = "odoh")]
+        assert!(
+            message.contains("`listen` has no https:// address"),
+            "{message}"
+        );
+        #[cfg(not(feature = "odoh"))]
+        assert!(message.contains("built with the odoh feature"), "{message}");
+        let error = read(&odoh("  keys: 1\n"), env, &Pipeline::default()).unwrap_err();
+        assert!(format!("{error:#}").contains("keys"), "{error:#}");
     }
 
     /// A certificate goes with an address over TLS or QUIC, and the reverse.

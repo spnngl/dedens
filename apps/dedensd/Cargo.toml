@@ -14,11 +14,13 @@ clap.workspace = true
 compio.workspace = true
 dedens-cache = { workspace = true, features = ["serde"] }
 dedens-net = { workspace = true, features = ["tracing"] }
+dedens-odoh = { workspace = true, optional = true }
 dedens-plugins = { workspace = true, features = ["serde"] }
 dedens-proto.workspace = true
 dedens-server.workspace = true
 flume.workspace = true
 futures-util.workspace = true
+getrandom = { workspace = true, optional = true }
 http.workspace = true
 metrics.workspace = true
 serde.workspace = true
@@ -27,13 +29,14 @@ socket2.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json"] }
 ureq.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook.workspace = true
 
 [features]
 # D69: experimental transports, off by default.
-odoh = ["dedens-net/odoh"]
+odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:getrandom", "dep:zeroize"]
 doc = ["dedens-net/doc"]
 
 [dev-dependencies]

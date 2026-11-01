@@ -16,7 +16,7 @@ cargo-fuzz = true
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-dnssec = { path = "../crates/dedens-dnssec" }
-dedens-net = { path = "../crates/dedens-net" }
+dedens-net = { path = "../crates/dedens-net", features = ["odoh"] }
 dedens-odoh = { path = "../crates/dedens-odoh" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
@@ -152,6 +152,13 @@ bench = false
 [[bin]]
 name = "odoh_decrypt"
 path = "fuzz_targets/odoh_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_odoh_http"
+path = "fuzz_targets/read_odoh_http.rs"
 test = false
 doc = false
 bench = false

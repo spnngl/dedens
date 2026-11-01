@@ -129,6 +129,15 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             ]
             .concat(),
         ),
+        // Oblivious DoH: the headers of Cloudflare's configurations (captured) and a message around its body.
+        (
+            "odoh http".into(),
+            [
+                &b"\x69\x00no-cache, no-store\x000\x00"[..],
+                include_bytes!("../../crates/dedens-odoh/tests/testdata/odoh-go-query.bin"),
+            ]
+            .concat(),
+        ),
     ]
 }
 

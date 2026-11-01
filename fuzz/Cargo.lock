@@ -605,6 +605,7 @@ name = "dedens-net"
 version = "0.1.0"
 dependencies = [
  "compio",
+ "dedens-odoh",
  "dedens-proto",
  "flume",
  "futures-util",
@@ -612,6 +613,7 @@ dependencies = [
  "http",
  "rustls-platform-verifier",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

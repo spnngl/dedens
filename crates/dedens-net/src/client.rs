@@ -24,6 +24,8 @@ use crate::doc::{DocError, coap};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
 use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
 use crate::https::{HttpsError, HttpsPool};
+#[cfg(feature = "odoh")]
+use crate::odoh::{self, OdohError};
 use crate::quic::{QuicError, QuicPool};
 use crate::tcp::{Link, TcpError, TcpPool};
 use crate::tls::Trust;
@@ -64,6 +66,14 @@ pub enum ClientError {
     /// The server's name and port make no `DoH` template.
     #[error("no DoH template for the server")]
     Template(#[from] TemplateError),
+    /// The Oblivious `DoH` exchange failed (D79).
+    #[cfg(feature = "odoh")]
+    #[error("Oblivious DoH")]
+    Odoh(#[from] OdohError),
+    /// Oblivious `DoH` was asked for and the crate built without its `odoh` feature (D69).
+    #[cfg(not(feature = "odoh"))]
+    #[error("built without the odoh feature")]
+    OdohNotBuilt,
     /// The CoAP exchange failed, or its response holds no DNS response (D81).
     #[cfg(feature = "doc")]
     #[error("CoAP")]
@@ -94,6 +104,10 @@ impl ClientError {
                 | HttpsError::Request(_),
             )
             | Self::Exchange(Failure::Encode(_)) => return true,
+            #[cfg(feature = "odoh")]
+            Self::Odoh(error) => return error.is_local(),
+            #[cfg(not(feature = "odoh"))]
+            Self::OdohNotBuilt => return true,
             Self::Udp(error)
             | Self::Tcp(TcpError::Connect(error))
             | Self::Quic(QuicError::Bind(error))
@@ -109,17 +123,22 @@ impl ClientError {
                 return false;
             }
         };
-        !matches!(
-            io.kind(),
-            io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::HostUnreachable
-                | io::ErrorKind::NetworkUnreachable
-                | io::ErrorKind::NetworkDown
-                | io::ErrorKind::TimedOut
-        )
+        local_io(io)
     }
+}
+
+/// Whether a socket error is ours: not the server or network refusing, resetting or being unreachable.
+pub(crate) fn local_io(error: &io::Error) -> bool {
+    !matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::NetworkDown
+            | io::ErrorKind::TimedOut
+    )
 }
 
 /// A server to ask.
@@ -152,14 +171,18 @@ impl Server {
     /// The TCP or TLS connection to it over `transport`, none over UDP, QUIC, HTTPS and CoAP.
     fn link(&self, transport: Transport) -> Option<Link> {
         match transport {
-            Transport::Udp | Transport::Quic | Transport::Https | Transport::Coap => None,
+            Transport::Udp
+            | Transport::Quic
+            | Transport::Https
+            | Transport::Odoh
+            | Transport::Coap => None,
             Transport::Tcp => Some(Link::Tcp(self.addr)),
             Transport::Tls => Some(Link::Tls(self.addr, self.certified())),
         }
     }
 
     /// The URI template of its `DoH` service: the one given, else the default one.
-    fn template(&self) -> Result<Template, TemplateError> {
+    pub(crate) fn template(&self) -> Result<Template, TemplateError> {
         match &self.doh {
             Some(template) => Ok(template.clone()),
             None => self.template_at(DEFAULT_PATH),
@@ -189,7 +212,7 @@ impl Server {
     }
 
     /// The name its certificate must hold: the one given, else its address.
-    fn certified(&self) -> ServerName<'static> {
+    pub(crate) fn certified(&self) -> ServerName<'static> {
         self.name
             .clone()
             .unwrap_or_else(|| ServerName::IpAddress(self.addr.ip().into()))
@@ -203,6 +226,9 @@ pub struct Client {
     tcp: TcpPool,
     quic: QuicPool,
     https: HttpsPool,
+    /// The key configurations of the Oblivious `DoH` targets asked (D79).
+    #[cfg(feature = "odoh")]
+    odoh: odoh::Configs,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
     random: RefCell<Random>,
@@ -256,6 +282,8 @@ impl Client {
             tcp: TcpPool::new(TCP_IDLE),
             quic: QuicPool::new(TCP_IDLE),
             https: HttpsPool::new(TCP_IDLE),
+            #[cfg(feature = "odoh")]
+            odoh: odoh::Configs::default(),
             cookies: RefCell::default(),
             random: RefCell::new(Random {
                 bytes: [0; RANDOM_BATCH],
@@ -287,11 +315,47 @@ impl Client {
     /// response after all the tries.
     pub async fn exchange(
         &self,
-        mut query: Message<'_>,
+        query: Message<'_>,
         server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
-        let target = server.into();
+        self.run(query, &server.into(), None, options).await
+    }
+
+    /// Sends `query` to the Oblivious `DoH` `target` through `proxy`, or straight to it without one, and returns the
+    /// response, over [`Transport::Odoh`] whatever [`Options::transport`] says (RFC 9230 §4, D79).
+    ///
+    /// The query goes with ID 0 and no cookie, as over HTTPS; the encryption pads it (D78). Both servers are
+    /// reached over HTTP/3, and the target's key configurations are fetched from it directly, kept as long as it
+    /// allows ([`crate::odoh`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::exchange`], and for the target's configurations or the encryption.
+    #[cfg(feature = "odoh")]
+    pub async fn exchange_oblivious(
+        &self,
+        query: Message<'_>,
+        target: impl Into<Server>,
+        proxy: Option<Server>,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let options = Options {
+            transport: Transport::Odoh,
+            ..*options
+        };
+        self.run(query, &target.into(), proxy.as_ref(), &options)
+            .await
+    }
+
+    /// [`Client::exchange`] with the proxy of an Oblivious `DoH` exchange, if any.
+    async fn run(
+        &self,
+        mut query: Message<'_>,
+        target: &Server,
+        proxy: Option<&Server>,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
         let server = target.addr;
         // The ID, then the UDP socket of the pool.
         let random = self.random.borrow_mut().take::<4>()?;
@@ -305,7 +369,7 @@ impl Client {
         let source = match target.link(options.transport) {
             None if matches!(
                 options.transport,
-                Transport::Quic | Transport::Https | Transport::Coap
+                Transport::Quic | Transport::Https | Transport::Odoh | Transport::Coap
             ) =>
             {
                 None
@@ -355,11 +419,11 @@ impl Client {
             progress = match progress {
                 Progress::Send(next) => {
                     self.keep_cookie(pair, next.cookie());
-                    self.step(next, &target, udp.as_mut(), options, &mut http)
+                    self.step(next, (target, proxy), udp.as_mut(), options, &mut http)
                         .await?
                 }
                 Progress::Wait(next) => {
-                    self.step(next, &target, udp.as_mut(), options, &mut http)
+                    self.step(next, (target, proxy), udp.as_mut(), options, &mut http)
                         .await?
                 }
                 Progress::Done(done) => break done?,
@@ -385,7 +449,7 @@ impl Client {
     async fn step(
         &self,
         exchange: Exchange,
-        target: &Server,
+        (target, proxy): (&Server, Option<&Server>),
         udp: Option<&mut UdpQuery>,
         options: &Options,
         http: &mut Option<Http>,
@@ -414,6 +478,9 @@ impl Client {
                 Err(HttpsError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
+        }
+        if transport == Transport::Odoh {
+            return self.oblivious(exchange, target, proxy, http).await;
         }
         if transport == Transport::Coap {
             let random = self.random.borrow_mut().take::<14>()?;
@@ -468,6 +535,52 @@ impl Client {
             Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Sends the query of `exchange` encrypted to the Oblivious `DoH` `target`, through `proxy` if there is one (D79).
+    #[cfg(feature = "odoh")]
+    async fn oblivious(
+        &self,
+        exchange: Exchange,
+        target: &Server,
+        proxy: Option<&Server>,
+        http: &mut Option<Http>,
+    ) -> Result<Progress, ClientError> {
+        let deadline = exchange.deadline();
+        // Boxed, as the HTTPS exchange is: two HTTP/3 exchanges and the encryption make a large future.
+        let asked =
+            Box::pin(
+                self.odoh
+                    .exchange(&self.https, target, proxy, exchange.wire(), deadline),
+            );
+        match asked.await {
+            Ok(reply) => {
+                debug!(server = %exchange.server(), status = %reply.http.status, "Oblivious DoH response");
+                *http = Some(reply.http);
+                Ok(answered(exchange, Transport::Odoh, reply.wire, deadline))
+            }
+            Err(OdohError::Https(HttpsError::TimedOut)) => {
+                Ok(exchange.time_out(Instant::now().max(deadline)))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Without the `odoh` feature there is no Oblivious `DoH` to send.
+    #[cfg(not(feature = "odoh"))]
+    #[expect(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "the same call as with the feature"
+    )]
+    async fn oblivious(
+        &self,
+        _exchange: Exchange,
+        _target: &Server,
+        _proxy: Option<&Server>,
+        _http: &mut Option<Http>,
+    ) -> Result<Progress, ClientError> {
+        Err(ClientError::OdohNotBuilt)
     }
 
     /// Adds a cookie to a query with EDNS and none of its own, and returns the pair of addresses it belongs to.

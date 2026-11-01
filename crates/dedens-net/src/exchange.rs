@@ -486,7 +486,8 @@ fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, Enco
     query.to_vec()
 }
 
-/// Whether queries over `transport` are padded: those encrypted.
+/// Whether queries over `transport` are padded: those encrypted, but for Oblivious `DoH`, which pads inside its
+/// encryption instead (RFC 9230 §6.1, D79).
 const fn padded(transport: Transport) -> bool {
     matches!(
         transport,
@@ -495,11 +496,11 @@ const fn padded(transport: Transport) -> bool {
 }
 
 /// Whether each query has a stream, an HTTP exchange or a CoAP token of its own, which tells its response: the ID
-/// is 0 (RFC 9250 §4.2.1, RFC 8484 §4.1, RFC 9953 §4.2.2).
+/// is 0 (RFC 9250 §4.2.1, RFC 8484 §4.1, RFC 9953 §4.2.2; Oblivious `DoH` follows `DoH`, D79).
 const fn streamed(transport: Transport) -> bool {
     matches!(
         transport,
-        Transport::Quic | Transport::Https | Transport::Coap
+        Transport::Quic | Transport::Https | Transport::Odoh | Transport::Coap
     )
 }
 

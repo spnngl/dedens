@@ -479,6 +479,56 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
+- D79 (amends D69, D78, D83) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
+  through a proxy, `dedensd` serves as a target. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
+  - Messages: a client sends the encrypted query by POST to the proxy (RFC 9230 §4.1: media type
+    `application/oblivious-dns-message` as content type and accept, `targethost` and `targetpath` in the query of the
+    proxy's URI, which `+odoh-proxy=URI` gives as a plain `https://HOST[:PORT][/PATH][#NAME]`); `targetpath` keeps `/`
+    unescaped, as the RFC's example, and escapes every other reserved character. Without a proxy (tests, a target
+    asked directly) the POST goes to the target's URI. The query is ID 0 (RFC 8484 §4.1; RFC 9230 does not ask for
+    it, DoH does, and a target answers the same) and not padded with EDNS: the padding is inside the encryption
+    (`query_padding`, `response_padding`, D78), so the message is one block of its own. A response is read only from
+    a 2xx of the media type (§4.3); a 3xx is an error (no redirect is followed). The request carries
+    `content-length`: Cloudflare's target answers 400 to an HTTP/3 POST without it (found by the live check).
+  - Configurations: fetched by GET from `/.well-known/odohconfigs` of the target (a convention, RFC 9230 §5 leaves
+    discovery out; Cloudflare, `odoh-rs` and `odoh-go` use it) and cached per target for the HTTP lifetime:
+    `Cache-Control: max-age` less `Age` (RFC 9111 §4.2.1); `no-store`, `no-cache`, no `max-age` or a value that does
+    not parse is no lifetime, the configurations are fetched again for each exchange (Cloudflare's answer is
+    `no-cache, no-store`, so it costs a request each time). The fetch goes straight to the target, not through the
+    proxy: a proxy relays POSTs of oblivious messages only (§4.1), and public ones relay no GET. Cost: the target
+    sees the client's address once per lifetime (never a query, which is all §8 protects); `+odoh-proxy` therefore
+    hides the address from the target for queries only. Alternatives (configurations through the proxy, from a file,
+    from SVCB) are in `docs/TODECIDE.md`.
+  - Errors: a 401 (the target does not hold the key, §4.3) or a response that does not decrypt after configurations
+    kept from the cache fetches them again and asks once more; after configurations fetched for this exchange it
+    ends the exchange (no loop, no second fetch). Other statuses end it too. The cache is the client's own
+    (`Client`, per target address and authority), not shared between `Client`s.
+  - Client API: `Client::exchange_oblivious(query, target, proxy, options)` (not `exchange`, which refuses
+    `Transport::Odoh`: the proxy is a second server). Randomness is `odoh::Entropy`, 64 bytes read from the OS when
+    the exchange starts and wiped when dropped, so an OS failure is an error (`OdohError::Random`) and no later
+    draw can panic (`encrypt_query` draws 32 bytes, `encrypt_response` 16, tested). The HTTP side is sans-IO
+    functions in `dedens-net::odoh` (`request`, `configs_request`, `response`, `configs_lifetime`, `classify`,
+    `target_response`, `configs_response`) over `http` types, tested without a socket; the fuzz target
+    `read_odoh_http` covers the readers of outside data.
+  - CLI: `+odoh-proxy=URI` with an `https://` target server (D83's); usage errors (exit 2) without such a target, with
+    `+tcp`, `+tls`, `+quic`, `+https-get` or `+trace`; `+noedns` is accepted (the padding is not EDNS's); a build
+    without the feature refuses the option.
+  - `dedensd`, feature `odoh`: a section `odoh:` makes each `https://` listener a target at its path (default
+    `/dns-query`): a POST of the media type is opened, asked of the pipeline as a query over `Transport::Odoh`
+    (padded replies are the encryption's, so the pipeline's EDNS padding is off for it) and answered sealed with
+    `Cache-Control: no-cache, no-store` (§4.1); a key that is not the target's is 401 and a message that does not
+    open 400 (§4.3, D78). `GET /.well-known/odohconfigs` answers the configurations with `max-age=3600`. Plain DoH
+    stays served at the same path. The key is the secret of `odoh.key`, a file of 64 hexadecimal digits
+    (`openssl rand -hex 32`), else a random one made at start (so the configurations change at each start). A
+    reload keeps the key and ignores a changed `odoh` (warned: it takes a restart). `odoh` without an `https://`
+    listener is an error. Metrics: `dedensd_doh_queries_total` gains status 401.
+  - Not here: the proxy role (`docs/TODECIDE.md`), HTTP/2 (public proxies speak HTTP/2 only, so the live check
+    through one waits for 23; against Cloudflare's target, which answers HTTP/3, the CLI resolved with the target
+    as its own proxy, 2026-11-01).
+  - Tests: `crates/dedens-net/tests/rfc9230.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
+    headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch),
+    `apps/dedensd/tests/rfc9230.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
+
 - D80 (amends D69) CoAP is our own sans-IO codec, `dedens_net::coap` (RFC 7252, RFC 7959, RFC 8132), for DoC (RFC 9953):
   no crate of CoAP is pulled in, since DoC needs a small part of it and the rest would carry its own socket, clock
   and randomness, which D26 keeps out of the exchanges. It is not behind the `doc` feature: the module has no

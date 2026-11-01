@@ -70,6 +70,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_odoh_configs", parse_odoh_configs),
     ("parse_odoh_message", parse_odoh_message),
     ("odoh_decrypt", odoh_decrypt),
+    ("read_odoh_http", read_odoh_http),
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
     ("validate", validate),
@@ -878,6 +879,73 @@ pub fn parse_odoh_message(data: &[u8]) {
     }
     if let Ok(plaintext) = ObliviousDoHMessagePlaintext::parse(data) {
         assert_eq!(plaintext.encode(), data);
+    }
+}
+
+/// Arbitrary bytes as the HTTP side of Oblivious `DoH` (RFC 9230 §4, D79): `meta`, `cache-control`, `age` and the
+/// body, apart by NUL bytes. A target's configurations are never kept longer than `max-age` says nor at all under
+/// `no-store`; a request is classified with a status or a body within a message's size; a response is read as a
+/// message or an error.
+///
+/// # Panics
+///
+/// On a bug in one of the readers.
+pub fn read_odoh_http(data: &[u8]) {
+    use dedens_net::odoh;
+    let mut parts = data.splitn(4, |&byte| byte == 0);
+    let (Some(meta), Some(control), Some(age), Some(body)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return;
+    };
+    let shape = meta.first().copied().unwrap_or(0);
+    if let (Ok(control), Ok(age)) = (
+        http::HeaderValue::from_bytes(control),
+        http::HeaderValue::from_bytes(age),
+    ) {
+        let mut headers = http::HeaderMap::new();
+        let text = String::from_utf8_lossy(control.as_bytes()).to_ascii_lowercase();
+        headers.insert(http::header::CACHE_CONTROL, control);
+        headers.insert(http::header::AGE, age);
+        let lifetime = odoh::configs_lifetime(&headers, std::time::SystemTime::UNIX_EPOCH);
+        if text.contains("no-store") || text.contains("no-cache") {
+            assert!(lifetime.is_zero(), "{text}: kept for {lifetime:?}");
+        }
+    }
+    let method = match shape & 3 {
+        0 => http::Method::GET,
+        1 => http::Method::POST,
+        2 => http::Method::PUT,
+        _ => http::Method::HEAD,
+    };
+    let path = if shape & 4 == 0 {
+        "/dns-query"
+    } else {
+        odoh::CONFIGS_PATH
+    };
+    let mut builder = http::Request::builder()
+        .method(method)
+        .uri(format!("https://odoh.example{path}"));
+    if shape & 8 != 0 {
+        builder = builder.header(http::header::CONTENT_TYPE, dedens_odoh::MEDIA_TYPE);
+    }
+    if let Ok(request) = builder.body(()) {
+        match odoh::classify(&request, body, "/dns-query").1 {
+            Ok(accepted) => assert!(accepted.len() <= MAX_MESSAGE_LEN),
+            Err(status) => assert!(
+                [400, 404, 405, 413, 415].contains(&status.as_u16()),
+                "status {status}"
+            ),
+        }
+    }
+    let mut builder = http::Response::builder().status(if shape & 16 == 0 { 200 } else { 401 });
+    if shape & 32 != 0 {
+        builder = builder.header(http::header::CONTENT_TYPE, dedens_odoh::MEDIA_TYPE);
+    }
+    if let Ok(response) = builder.body(())
+        && let Ok(message) = odoh::response(&response, body)
+    {
+        assert_eq!(message.encode(), body);
     }
 }
 

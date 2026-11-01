@@ -58,8 +58,11 @@ enum Route {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Endpoint {
     server: Server,
-    /// The transport whatever the options say: given as `tls://`, `quic://` or `https://`.
+    /// The transport whatever the options say: given as `tls://`, `quic://` or `https://`, or Oblivious `DoH`, which
+    /// `+odoh-proxy` makes of an `https://` server (D79).
     forced: Option<Transport>,
+    /// The proxy of Oblivious `DoH`, `server` being the target.
+    proxy: Option<Box<Server>>,
 }
 
 impl Endpoint {
@@ -71,6 +74,7 @@ impl Endpoint {
             Some(Transport::Tls) => "tls",
             Some(Transport::Quic) => "quic",
             Some(Transport::Https) => "https",
+            Some(Transport::Odoh) => "odoh",
             Some(Transport::Coap) => "coap",
             _ => return id,
         };
@@ -289,23 +293,27 @@ async fn ask(
     if let Some(transport) = endpoint.forced {
         options.transport = transport;
     }
-    let server = endpoint.server.addr;
+    let address = endpoint.server.addr;
     for (index, name) in job.names.iter().enumerate() {
         let question = Question {
             name: name.clone(),
             qtype: job.qtype,
             qclass: job.qclass,
         };
-        let response = client
-            .exchange(
-                job.options.query(question),
-                endpoint.server.clone(),
-                &options,
-            )
-            .await?;
+        let query = job.options.query(question);
+        let server = endpoint.server.clone();
+        let response = match &endpoint.proxy {
+            #[cfg(feature = "odoh")]
+            Some(proxy) => {
+                client
+                    .exchange_oblivious(query, server, Some(Server::clone(proxy)), &options)
+                    .await?
+            }
+            _ => client.exchange(query, server, &options).await?,
+        };
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
-            let report = Report::exchanged(id, server, &response, &decoded);
+            let report = Report::exchanged(id, address, &response, &decoded);
             return Ok((report, response.wire));
         }
     }
@@ -498,7 +506,8 @@ fn template(host: &str, port: u16, path: &str) -> Result<Template, TemplateError
 /// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
 /// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), `coap://` and a path after it for
 /// DNS over CoAP (D81), and `#NAME` after it for the name the server's certificate must hold, else its host name,
-/// else its address. Without a port, `port`, else 443 over HTTPS, else 5683 over CoAP, else 853 over TLS or QUIC
+/// else its address. With `+odoh-proxy`, the server must be an `https://` one: the target of Oblivious `DoH`
+/// through that proxy. Without a port, `port`, else 443 over HTTPS, else 5683 over CoAP, else 853 over TLS or QUIC
 /// (`options` or a scheme), else 53.
 fn server(
     named: Option<&str>,
@@ -529,6 +538,9 @@ fn server(
         None => (text, None),
     };
     let https = forced == Some(Transport::Https);
+    // The target of Oblivious `DoH` is a server asked over HTTPS, the proxy a URI: both are found as one (D79).
+    let proxy = oblivious_proxy(options, forced, given)?;
+    let forced = proxy.as_ref().map_or(forced, |_| Some(Transport::Odoh));
     let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
     // CoAP is over UDP and unprotected: no other transport under it.
     if coap
@@ -537,7 +549,7 @@ fn server(
             || options.encrypted()
             || options.https())
     {
-        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC or HTTPS");
+        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC, HTTPS or Oblivious DoH");
     }
     let (text, url_path) = match text.split_once('/') {
         Some((host, path)) if https || forced == Some(Transport::Coap) => {
@@ -545,7 +557,7 @@ fn server(
         }
         _ => (text, None),
     };
-    let doh = https || options.https();
+    let doh = https || options.https() || proxy.is_some();
     let encrypted = (forced.is_some() && !coap) || options.encrypted() || doh;
     // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
     let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
@@ -607,5 +619,41 @@ fn server(
             docpath,
         },
         forced,
+        proxy,
     })
+}
+
+/// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
+/// without the option, an error for a target that is not an `https://` server.
+#[cfg(feature = "odoh")]
+fn oblivious_proxy(
+    options: &Options,
+    forced: Option<Transport>,
+    given: &str,
+) -> anyhow::Result<Option<Box<Server>>> {
+    let Some(uri) = options.odoh_proxy.as_deref() else {
+        return Ok(None);
+    };
+    if forced != Some(Transport::Https) {
+        bail!("server {given}: +odoh-proxy needs an https:// target server");
+    }
+    if !uri.starts_with("https://") {
+        bail!("+odoh-proxy {uri}: not an https:// URI");
+    }
+    Ok(Some(Box::new(
+        server(Some(uri), None, None, &Options::default())?.server,
+    )))
+}
+
+/// Without the `odoh` feature there is no Oblivious `DoH` to ask (D69).
+#[cfg(not(feature = "odoh"))]
+fn oblivious_proxy(
+    options: &Options,
+    _forced: Option<Transport>,
+    _given: &str,
+) -> anyhow::Result<Option<Box<Server>>> {
+    if options.odoh() {
+        bail!("+odoh-proxy: built without the odoh feature");
+    }
+    Ok(None)
 }

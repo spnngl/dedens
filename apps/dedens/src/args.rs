@@ -122,11 +122,12 @@ impl Cli {
                 || cli.search
                 || cli.options.encrypted()
                 || cli.options.https()
+                || cli.options.odoh()
                 || cli.options.coap == Some(true))
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https or +coap"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy or +coap"
                     .to_owned(),
             );
         }
@@ -136,7 +137,8 @@ impl Cli {
                 .iter()
                 .any(|s| server.starts_with(s))
         };
-        if cli.options.edns == Some(false) && cli.server.iter().any(scheme) {
+        // Oblivious DoH pads inside its encryption (D79).
+        if cli.options.edns == Some(false) && !cli.options.odoh() && cli.server.iter().any(scheme) {
             usage(
                 ErrorKind::ArgumentConflict,
                 "tls://, quic:// and https:// need EDNS, which noedns turns off".to_owned(),
@@ -152,15 +154,25 @@ impl Cli {
                 "https:// goes with no +tcp, +tls or +quic".to_owned(),
             );
         }
+        // The target of Oblivious DoH is a server of the command line; a query file names its own.
+        if cli.options.odoh() && cli.file.is_none() && !cli.server.iter().any(https) {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "+odoh-proxy needs an https:// target @server".to_owned(),
+            );
+        }
         // CoAP is over UDP: no other transport under it.
         let coap = |server: &String| server.starts_with("coap://");
         if (cli.server.iter().any(coap)
-            && (cli.options.tcp == Some(true) || cli.options.encrypted() || cli.options.https()))
+            && (cli.options.tcp == Some(true)
+                || cli.options.encrypted()
+                || cli.options.https()
+                || cli.options.odoh()))
             || (cli.options.coap == Some(true) && cli.server.iter().any(scheme))
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "coap:// and +coap go with no +tcp, +tls, +quic, +https, tls://, quic:// or https://"
+                "coap:// and +coap go with no +tcp, +tls, +quic, +https, +odoh-proxy, tls://, quic:// or https://"
                     .to_owned(),
             );
         }

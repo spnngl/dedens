@@ -34,6 +34,9 @@ pub(crate) enum Transport {
     HttpsGet,
     /// HTTP/3, a POST.
     HttpsPost,
+    /// HTTP/3, a POST of an Oblivious `DoH` message, opened: the query it held.
+    #[cfg(feature = "odoh")]
+    Oblivious,
     /// CoAP, a FETCH (RFC 9953).
     #[cfg(feature = "doc")]
     Coap,
@@ -225,6 +228,21 @@ impl Responder {
     /// As [`Responder::start`], over HTTP/3 only (RFC 8484 over RFC 9114), on any path: each query on its request
     /// stream, answered on it.
     pub(crate) fn https(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+        Self::h3(names, None)
+    }
+
+    /// As [`Responder::https`], and an Oblivious `DoH` target with `key` (RFC 9230 §8) and its own proxy: its
+    /// configurations at the well-known path, oblivious messages opened wherever they come.
+    #[cfg(feature = "odoh")]
+    #[allow(dead_code, reason = "only the tests of Oblivious `DoH` use it")]
+    pub(crate) fn oblivious(
+        names: &[&str],
+        key: dedens_odoh::TargetKey,
+    ) -> (Self, tempfile::NamedTempFile) {
+        Self::h3(names, Some(Arc::new(key)))
+    }
+
+    fn h3(names: &[&str], key: Option<Arc<Key>>) -> (Self, tempfile::NamedTempFile) {
         let (config, pem) = certified(&[&TLS13], b"h3");
         let (queries, canned): (Log, _) = (Arc::default(), canned(names));
         let log = Arc::clone(&queries);
@@ -240,7 +258,7 @@ impl Responder {
                     .send(endpoint.local_addr().expect("bound"))
                     .expect("the test waits");
                 while let Some(incoming) = endpoint.wait_incoming().await {
-                    let (log, canned) = (Arc::clone(&log), Arc::clone(&canned));
+                    let (log, canned, key) = (Arc::clone(&log), Arc::clone(&canned), key.clone());
                     compio::runtime::spawn(async move {
                         let Ok(connecting) = incoming.accept() else {
                             return;
@@ -254,7 +272,8 @@ impl Responder {
                             return;
                         };
                         while let Ok(Some(resolver)) = server.accept().await {
-                            let (log, canned) = (Arc::clone(&log), Arc::clone(&canned));
+                            let (log, canned, key) =
+                                (Arc::clone(&log), Arc::clone(&canned), key.clone());
                             compio::runtime::spawn(async move {
                                 let Ok((request, mut stream)) = resolver.resolve_request().await
                                 else {
@@ -264,6 +283,19 @@ impl Responder {
                                 while let Ok(Some(mut chunk)) = stream.recv_data().await {
                                     body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
                                 }
+                                #[cfg(feature = "odoh")]
+                                if let Some(key) = &key {
+                                    let (head, body) =
+                                        oblivious_answer(key, &request, &body, &log, &canned);
+                                    let _ = stream
+                                        .send_response(http::Response::from_parts(head, ()))
+                                        .await;
+                                    let _ = stream.send_data(Bytes::from(body)).await;
+                                    let _ = stream.finish().await;
+                                    return;
+                                }
+                                #[cfg(not(feature = "odoh"))]
+                                let _ = &key;
                                 let Ok(query) = dedens_net::doh::server_request(&request, &body)
                                 else {
                                     return;
@@ -344,6 +376,72 @@ impl Responder {
         });
         responder
     }
+}
+
+/// The key of a target: nothing without the `odoh` feature.
+#[cfg(feature = "odoh")]
+type Key = dedens_odoh::TargetKey;
+#[cfg(not(feature = "odoh"))]
+type Key = std::convert::Infallible;
+
+/// The response of a target with `key` to `request`: the configurations, the answer to a query opened, or a status.
+#[cfg(feature = "odoh")]
+fn oblivious_answer(
+    key: &Key,
+    request: &http::Request<()>,
+    body: &[u8],
+    log: &Mutex<Vec<(Transport, Vec<u8>)>>,
+    canned: &[Canned],
+) -> (http::response::Parts, Vec<u8>) {
+    use dedens_net::odoh::{self, Entropy, Kind};
+    use dedens_odoh::{ObliviousDoHConfigs, ObliviousDoHMessage};
+    let status = |status| {
+        http::Response::builder()
+            .status(status)
+            .body(Vec::new())
+            .expect("a response")
+    };
+    let (kind, query) = odoh::classify(request, body, request.uri().path());
+    let response = match (kind, query) {
+        (_, Err(code)) => status(code),
+        (Kind::Configs, Ok(_)) => {
+            let configs = ObliviousDoHConfigs::new(vec![key.config().clone()])
+                .encode()
+                .expect("configurations encode");
+            odoh::configs_response(configs, 3600)
+        }
+        (Kind::Oblivious, Ok(message)) => {
+            let opened = ObliviousDoHMessage::parse(&message)
+                .ok()
+                .and_then(|message| dedens_odoh::decrypt_query(key, &message).ok());
+            match opened {
+                None => status(http::StatusCode::BAD_REQUEST),
+                Some((plaintext, context)) => {
+                    let query = plaintext.into_dns_message();
+                    log.lock()
+                        .expect("unpoisoned")
+                        .push((Transport::Oblivious, query.clone()));
+                    match answer(canned, &query, Transport::Quic) {
+                        None => status(http::StatusCode::SERVICE_UNAVAILABLE),
+                        Some(wire) => {
+                            let mut entropy = Entropy::new().expect("randomness");
+                            let padding = dedens_odoh::response_padding(wire.len());
+                            let sealed = dedens_odoh::encrypt_response(
+                                context,
+                                &wire,
+                                padding,
+                                &mut entropy,
+                            )
+                            .expect("a response");
+                            odoh::target_response(&sealed)
+                        }
+                    }
+                }
+            }
+        }
+        (Kind::Dns, Ok(_)) => status(http::StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    };
+    response.into_parts()
 }
 
 /// A server configuration for TLS versions `versions` and protocol `alpn`, with a certificate for [`TLS_NAME`] and
