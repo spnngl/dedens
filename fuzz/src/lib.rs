@@ -956,7 +956,8 @@ pub fn parse_odoh_message(data: &[u8]) {
 /// and `no-cache` without field names meaning the hour and a warning, whatever `Age` and `Date` say; a request is
 /// classified with a status or a body within the cap, by its `Content-Type` and path; a response is read as a message
 /// or an error; and the proxy request for a target holds the target's authority and path as `targethost` and
-/// `targetpath`, percent-encoded, which decode to them.
+/// `targetpath`, percent-encoded, which decode to them; and a request naming a target and a path is routed to the proxy
+/// (D94): the destination is what was named, and what is forwarded carries nothing of the client.
 ///
 /// # Panics
 ///
@@ -992,6 +993,124 @@ pub fn read_odoh_http(data: &[u8]) {
         assert_eq!(message.encode(), body);
     }
     odoh_proxy_request(held, body);
+    odoh_route(control, held, body);
+}
+
+/// A request to a proxy for the target `host` and the path `path` (both arbitrary bytes, percent-encoded into its
+/// query), routed: a request to forward names the target and the path it was given, its forwarded request goes to
+/// that authority and path and carries nothing of the client, and every error of the proxy makes a response that says
+/// its `error`; the query as it came is routed too, and a request not for the target is a 4xx.
+fn odoh_route(host: &[u8], path: &[u8], body: &[u8]) {
+    use std::fmt::Write as _;
+
+    use dedens_net::odoh::proxy::{Route, Target, forward_request, rejection, route};
+    use http::header::{COOKIE, FORWARDED, VIA};
+    let encode = |bytes: &[u8]| {
+        bytes.iter().fold(String::new(), |mut text, byte| {
+            let _ = write!(text, "%{byte:02X}");
+            text
+        })
+    };
+    let request = |query: &str| {
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("https://proxy.example/dns-query?{query}"))
+            .header(http::header::CONTENT_TYPE, dedens_odoh::MEDIA_TYPE)
+            .body(())
+    };
+    let encoded = format!("targethost={}&targetpath={}", encode(host), encode(path));
+    for query in [encoded, String::from_utf8_lossy(path).into_owned()] {
+        let Ok(request) = request(&query) else {
+            continue;
+        };
+        let (routed, accepted) = route(&request, body, "/dns-query", Some(&()));
+        match (&routed, &accepted) {
+            (Route::Proxy((), destination), Ok(accepted)) => {
+                assert!(!accepted.is_empty() && accepted.len() <= dedens_net::odoh::MAX_BODY);
+                let listed = std::str::from_utf8(host)
+                    .ok()
+                    .and_then(|host| host.parse::<Target>().ok());
+                if query.starts_with("targethost=%") {
+                    assert_eq!(listed.as_ref(), Some(&destination.target));
+                    assert_eq!(destination.path.as_str().as_bytes(), path);
+                }
+                assert!(destination.path.as_str().starts_with('/'), "{query}");
+                // The proxy's own request is one `http` takes: the 500 it answers otherwise is not reached.
+                let forward =
+                    forward_request(destination, accepted).expect("a request for a routed target");
+                assert_eq!(
+                    forward.uri().authority().map(http::uri::Authority::as_str),
+                    Some(destination.target.to_string().as_str())
+                );
+                assert_eq!(forward.uri().path_and_query(), Some(&destination.path));
+                assert_eq!(forward.body(), accepted);
+                for header in [VIA, FORWARDED, COOKIE] {
+                    assert!(!forward.headers().contains_key(&header), "{header}");
+                }
+                // Read back as written: what is listed is what is forwarded to.
+                assert_eq!(
+                    destination.target.to_string().parse::<Target>().as_ref(),
+                    Ok(&destination.target)
+                );
+            }
+            (Route::Proxy(..), Err(status)) => panic!("forwarding with status {status}"),
+            (Route::Malformed(status), _) => {
+                assert!(status.is_client_error(), "status {status}");
+                assert_eq!(rejection(*status).status(), *status);
+            }
+            (Route::Target(_), Err(status)) => {
+                assert!(status.is_client_error(), "status {status}");
+            }
+            (Route::Target(_), Ok(_)) => {}
+        }
+    }
+    odoh_proxy_responses(host, body);
+}
+
+/// What the proxy answers: every error with its status, saying what it is, and the target's response, which goes on
+/// whatever its status unless it is none of an encrypted message.
+fn odoh_proxy_responses(content_type: &[u8], body: &[u8]) {
+    use dedens_net::odoh::proxy::{ProxyError, failure, forwarded};
+    for error in [
+        ProxyError::HttpRequestError,
+        ProxyError::HttpRequestDenied,
+        ProxyError::ClientDenied,
+        ProxyError::DnsError,
+        ProxyError::DnsTimeout,
+        ProxyError::DestinationIpProhibited,
+        ProxyError::ConnectionRefused,
+        ProxyError::ConnectionTimeout,
+        ProxyError::ConnectionTerminated,
+        ProxyError::ConnectionLimitReached,
+        ProxyError::TlsProtocolError,
+        ProxyError::HttpProtocolError,
+        ProxyError::HttpResponseBodySize,
+        ProxyError::HttpResponseTimeout,
+        ProxyError::ProxyInternalError,
+    ] {
+        let response = failure(error.status(), error);
+        assert_eq!(response.status(), error.status());
+        assert!(dedens_net::odoh::proxy_error(response.headers()));
+    }
+    let status = body
+        .first()
+        .copied()
+        .map_or(200, |byte| 200 + u16::from(byte));
+    if let Ok(head) = http::Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, content_type)
+        .body(())
+    {
+        let response = forwarded(&head, body.to_vec());
+        assert!(
+            response.status() == head.status()
+                || response.status() == ProxyError::HttpProtocolError.status()
+        );
+        assert_eq!(
+            response.headers().get(http::header::CACHE_CONTROL),
+            Some(&http::HeaderValue::from_static("no-cache, no-store"))
+        );
+    }
 }
 
 /// How long the configurations of a response with the given `Cache-Control`, `Age` and `Date` are kept at `clock`

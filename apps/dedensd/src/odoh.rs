@@ -1,5 +1,5 @@
 //! `dedensd` as an Oblivious `DoH` target (RFC 9230 §8, D79): the key, the configurations served for it, and the
-//! opening of queries and sealing of replies.
+//! opening of queries and sealing of replies; and the proxy role (D94), [`proxy`].
 
 use std::fs::File;
 use std::io::{self, Read as _};
@@ -14,24 +14,31 @@ use dedens_odoh::{
 use http::{Response, StatusCode};
 use zeroize::Zeroizing;
 
+use self::proxy::{Proxy, Settings as ProxySettings};
+
+pub(crate) mod proxy;
+
 /// How long clients may keep the configurations, in seconds (D79).
 const CONFIGS_MAX_AGE: u32 = 3600;
 
 /// The bytes of the secret a key derives from (D78).
 const SECRET_LEN: usize = 32;
 
-/// The settings of a target: where its secret comes from. A reload builds them again and compares: the secret is
-/// read at start only (D79).
+/// The settings of a target: where its secret comes from, and the proxy role if it has it. A reload builds them again
+/// and compares: the secret is read at start only (D79), and so are the proxy's targets (D94).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Section {
     /// The file the secret is read from; `None` for one generated at start.
     key: Option<PathBuf>,
+    /// The proxy role: what it forwards to; `None` for a target only.
+    proxy: Option<ProxySettings>,
 }
 
 impl Section {
-    pub(crate) fn new(key: Option<&Path>) -> Self {
+    pub(crate) fn new(key: Option<&Path>, proxy: Option<ProxySettings>) -> Self {
         Self {
             key: key.map(Path::to_path_buf),
+            proxy,
         }
     }
 
@@ -41,16 +48,22 @@ impl Section {
     ///
     /// As [`Target::new`].
     pub(crate) fn target(&self) -> anyhow::Result<Target> {
-        Target::new(self.key.as_deref())
+        let target = Target::new(self.key.as_deref())?;
+        Ok(match &self.proxy {
+            Some(settings) => target.proxying(settings.clone()),
+            None => target,
+        })
     }
 }
 
-/// The key of a target and the configurations that go with it.
+/// The key of a target and the configurations that go with it, and the proxy that shares its listeners (D94).
 #[derive(Debug)]
 pub(crate) struct Target {
     key: TargetKey,
     /// The encoded configurations (RFC 9230 §5), served at the well-known path.
     configs: Vec<u8>,
+    /// Forwards the requests that name a target of their own; `None` when `dedensd` is no proxy.
+    pub(crate) proxy: Option<Proxy>,
 }
 
 impl Target {
@@ -72,7 +85,19 @@ impl Target {
         let configs = ObliviousDoHConfigs::new(vec![key.config().clone()])
             .encode()
             .context("`odoh`: the configurations do not encode")?;
-        Ok(Self { key, configs })
+        Ok(Self {
+            key,
+            configs,
+            proxy: None,
+        })
+    }
+
+    /// The target, forwarding too as `settings` say.
+    fn proxying(self, settings: ProxySettings) -> Self {
+        Self {
+            proxy: Some(Proxy::new(settings)),
+            ..self
+        }
     }
 
     /// The response to a GET of the configurations.
@@ -204,10 +229,17 @@ mod tests {
     /// A reload compares the settings: the key's path, never its content, which is not read again.
     #[test]
     fn settings_differ_by_the_key_path() {
-        let section = |path: Option<&str>| Section::new(path.map(Path::new));
+        let section = |path: Option<&str>| Section::new(path.map(Path::new), None);
         assert_eq!(section(Some("/a")), section(Some("/a")));
         assert_ne!(section(Some("/a")), section(Some("/b")));
         assert_ne!(section(Some("/a")), section(None));
+        let proxy = |target: &str| {
+            let settings = ProxySettings::new(&[target.to_owned()], None).expect("settings");
+            Section::new(None, Some(settings))
+        };
+        assert_eq!(proxy("a.example"), proxy("A.example"));
+        assert_ne!(proxy("a.example"), proxy("b.example"));
+        assert_ne!(proxy("a.example"), section(None));
         // Nothing is read until the target is made.
         assert!(section(Some("/nonexistent/odoh.key")).target().is_err());
     }

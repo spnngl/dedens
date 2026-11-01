@@ -9,7 +9,8 @@ certificate on SIGHUP (D55, D66) and once downloaded lists changed, which `src/d
 `src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot.
 `src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
 `src/odoh.rs`, feature `odoh`, is the Oblivious DoH target on the HTTP/3 listeners: its key, its configurations, and
-opening and sealing messages (D79). RFC
+opening and sealing messages (D79); `src/odoh/proxy.rs` is its proxy role: the listed targets, their resolution and
+the forward (D94). RFC
 behaviour belongs in `crates/dedens-server` and its sans-IO tests.
 
 `tests/serve.rs`, `tests/reload.rs` and `tests/end_to_end.rs` run the binary on loopback against a responder
@@ -18,9 +19,10 @@ answering captured bytes (`tests/common/mod.rs`), reading its events as JSON, th
 `tests/lists.rs` serves lists from a loopback HTTP server; `tests/encrypted.rs` asks upstream over TLS and QUIC,
 with the responder of `apps/dedens/tests/common` and its test certificates; `tests/listeners.rs` answers over TLS
 and QUIC with the certificates of `crates/dedens-net/tests/common`; `tests/rfc8484.rs` serves DoH over HTTP/3;
-`tests/rfc9230.rs` the target; `tests/rfc9953.rs` DoC (feature `doc`); `tests/blocklists.rs` checks
-`docs/blocklists/blocklists.yaml` (D87); `tests/access.rs` the access lists over loopback UDP, TCP, DoH and DoC (feature `doc`), their
-default, their reload and the configurations refused (D91). `benches/doh3.rs` measures DoH over HTTP/3 (`docs/benchmarks.md`).
+`tests/rfc9230.rs` the target and the proxy; `tests/rfc9953.rs` DoC (feature `doc`); `tests/blocklists.rs` checks
+`docs/blocklists/blocklists.yaml` (D87); `tests/access.rs` the access lists over loopback UDP, TCP, DoH and DoC
+(feature `doc`), their default, their reload and the configurations refused (D91). `benches/doh3.rs` measures DoH
+over HTTP/3 (`docs/benchmarks.md`).
 
 Measure a change to `src/serve.rs` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it
 in `docs/benchmarks.md`.

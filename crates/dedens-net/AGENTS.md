@@ -24,7 +24,8 @@ crate that touches sockets and timers.
   randomness; fuzzed by `parse_coap` and `parse_link_format`.
 - `src/odoh.rs`, feature `odoh`: Oblivious DoH over `https.rs` (D79): the sans-IO requests, responses and target
   classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
-  `Client::exchange_oblivious`.
+  `Client::exchange_oblivious`. `src/odoh/proxy.rs` is the proxy's side (D94): routing a request, the listed `Target`s,
+  the forwarded request and response, the `Proxy-Status` errors; fuzzed by `read_odoh_http`.
 - `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs;
   the discovery of the resource by `/.well-known/core` (D95).
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.

@@ -13,6 +13,9 @@
 //! follows, the configurations are kept for an hour at least, whatever the target says: they are public (D79).
 //!
 //! A proxy's URI is a plain URI: the RFC 9230 §4.1 URI templates (`{?targethost,targetpath}`) are not supported.
+//! The proxy role, the other side of that URI, is [`proxy`] (D94).
+
+pub mod proxy;
 
 use core::convert::Infallible;
 use std::cell::RefCell;
@@ -386,16 +389,20 @@ pub fn classify<T>(
         return (Kind::Dns, Err(StatusCode::NOT_FOUND));
     }
     if request.method() == http::Method::POST && doh::is_media_type(request.headers(), MEDIA_TYPE) {
-        let query = if body.is_empty() {
-            Err(StatusCode::BAD_REQUEST)
-        } else if body.len() > MAX_BODY {
-            Err(StatusCode::PAYLOAD_TOO_LARGE)
-        } else {
-            Ok(body.to_vec())
-        };
-        return (Kind::Oblivious, query);
+        return (Kind::Oblivious, check_message(body).map(|()| body.to_vec()));
     }
     (Kind::Dns, doh::server_request(request, body))
+}
+
+/// Whether `body` can be an encrypted message to open or forward: 400 when empty, 413 when longer than [`MAX_BODY`].
+fn check_message(body: &[u8]) -> Result<(), StatusCode> {
+    if body.is_empty() {
+        Err(StatusCode::BAD_REQUEST)
+    } else if body.len() > MAX_BODY {
+        Err(StatusCode::PAYLOAD_TOO_LARGE)
+    } else {
+        Ok(())
+    }
 }
 
 /// The 200 response carrying the encrypted `message`: of the oblivious media type, and not to be cached, by the proxy

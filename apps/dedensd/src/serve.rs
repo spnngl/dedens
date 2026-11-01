@@ -32,7 +32,9 @@ use dedens_net::doh::Method;
 use dedens_net::exchange::{Options, Response};
 use dedens_net::https::{Exchange, HttpsError, Pending, Requests};
 #[cfg(feature = "odoh")]
-use dedens_net::odoh::{Kind, MAX_BODY, classify};
+use dedens_net::odoh::proxy::{Destination, ProxyError, Route, failure, rejection, route};
+#[cfg(feature = "odoh")]
+use dedens_net::odoh::{Kind, MAX_BODY};
 use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
@@ -50,6 +52,8 @@ use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
 use crate::flights::{Flight, Flights, Key, Lead};
+#[cfg(feature = "odoh")]
+use crate::odoh::proxy::{Forwarder, Proxy};
 #[cfg(feature = "odoh")]
 use crate::odoh::{self, Target};
 use crate::reload::Current;
@@ -183,6 +187,9 @@ struct Thread {
     /// The Oblivious `DoH` target the HTTP/3 listeners serve, if any (D79).
     #[cfg(feature = "odoh")]
     odoh: Option<Arc<Target>>,
+    /// What the Oblivious `DoH` proxy forwards with: connections, checked addresses and a limit of its own (D94).
+    #[cfg(feature = "odoh")]
+    forwarder: Forwarder,
 }
 
 impl Thread {
@@ -192,6 +199,8 @@ impl Thread {
         Self {
             pipeline: RefCell::new((current.generation(), Rc::new(current.get()))),
             current,
+            #[cfg(feature = "odoh")]
+            forwarder: Forwarder::new(trust.clone()),
             client: Client::new().trusting(trust),
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
@@ -266,7 +275,8 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 }
 
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
-/// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target `odoh` over HTTP/3, until the end
+/// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target (and proxy) `odoh` over
+/// HTTP/3, until the end
 /// of the process. `listening` is sent once the sockets are taken by the runtime: on macOS a datagram that arrived before
 /// carries none of the control data `compio-quic` reads, and it panics (D89), so the process announces itself only
 /// then.
@@ -813,7 +823,8 @@ async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread
 
 /// Answers one request at a listener that is an Oblivious `DoH` target too (D79): a POST of an encrypted query is
 /// opened, asked of the pipeline as a query over [`Transport::Odoh`] and answered sealed; a GET of the configurations
-/// is answered with them; any other request is `DoH`'s, as [`request`] answers it.
+/// is answered with them; any other request is `DoH`'s, as [`request`] answers it. When the target is a proxy too, a
+/// request that names a target of its own is forwarded there (D94).
 #[cfg(feature = "odoh")]
 async fn oblivious(
     pending: Pending,
@@ -822,7 +833,9 @@ async fn oblivious(
     thread: &Thread,
     target: &Target,
 ) {
-    let read = pending.read_with(MAX_BODY, |request, body| classify(request, body, path));
+    let read = pending.read_with(MAX_BODY, |request, body| {
+        route(request, body, path, target.proxy.as_ref())
+    });
     let exchange = match compio::time::timeout(TCP_IDLE, read).await {
         Ok(Ok(exchange)) => exchange,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
@@ -830,20 +843,33 @@ async fn oblivious(
     };
     let (transport, mut context, query) = match (exchange.kind(), exchange.query()) {
         // Not `DoH` requests: not counted (D84).
-        (Kind::Configs, Err(status)) => {
+        (Route::Target(Kind::Configs), Err(status)) => {
             sent(exchange.reject(status), peer).await;
             return;
         }
+        (Route::Malformed(status), _) => {
+            let response = rejection(*status);
+            return proxied(exchange, response, peer).await;
+        }
         (_, Err(status)) => return reject(exchange, status, peer).await,
-        (Kind::Configs, Ok(_)) => {
+        (Route::Target(Kind::Configs), Ok(_)) => {
             sent(exchange.respond_with(target.configs()), peer).await;
             return;
         }
-        (Kind::Oblivious, Ok(body)) => match target.open(body) {
+        (Route::Proxy(proxy, destination), Ok(body)) => {
+            // A client the access lists deny is served no forward, whatever the action (D91, D94).
+            let response = if thread.pipeline().denies(peer.ip()) {
+                failure(StatusCode::FORBIDDEN, ProxyError::ClientDenied)
+            } else {
+                forward(proxy, destination, body, thread).await
+            };
+            return proxied(exchange, response, peer).await;
+        }
+        (Route::Target(Kind::Oblivious), Ok(body)) => match target.open(body) {
             Ok((query, context)) => (Transport::Odoh, Some(context), query),
             Err(status) => return reject(exchange, status, peer).await,
         },
-        (Kind::Dns, Ok(query)) => (Transport::Https, None, query.to_vec()),
+        (Route::Target(Kind::Dns), Ok(query)) => (Transport::Https, None, query.to_vec()),
     };
     let pipeline = thread.pipeline();
     let mut first = None;
@@ -865,11 +891,51 @@ async fn oblivious(
     }
 }
 
+/// The response to the request to forward the encrypted query `body` to `destination` (D94): the target's, or the
+/// proxy's error. Boxed: the futures of the HTTP/3 request tasks are large already.
+#[cfg(feature = "odoh")]
+async fn forward(
+    proxy: &Proxy,
+    destination: &Destination,
+    body: &[u8],
+    thread: &Thread,
+) -> http::Response<Vec<u8>> {
+    Box::pin(proxy.forward(&thread.forwarder, destination, body)).await
+}
+
+/// Answers `exchange` with `response` of the proxy role, and counts it (D94).
+#[cfg(feature = "odoh")]
+async fn proxied(
+    exchange: Exchange<Route<&Proxy>>,
+    response: http::Response<Vec<u8>>,
+    peer: SocketAddr,
+) {
+    let status = match response.status() {
+        StatusCode::OK => "200",
+        StatusCode::BAD_REQUEST => "400",
+        StatusCode::UNAUTHORIZED => "401",
+        StatusCode::FORBIDDEN => "403",
+        StatusCode::METHOD_NOT_ALLOWED => "405",
+        StatusCode::PAYLOAD_TOO_LARGE => "413",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "415",
+        StatusCode::INTERNAL_SERVER_ERROR => "500",
+        StatusCode::BAD_GATEWAY => "502",
+        StatusCode::SERVICE_UNAVAILABLE => "503",
+        StatusCode::GATEWAY_TIMEOUT => "504",
+        _ => "other",
+    };
+    metrics::counter!(ODOH_PROXIED, "status" => status).increment(1);
+    sent(exchange.respond_with(response), peer).await;
+}
+
+#[cfg(feature = "odoh")]
+const ODOH_PROXIED: &str = "dedensd_odoh_proxied_total";
+
 /// Answers 200 with `wire` on `exchange`, sealed for the client when `context` holds what that takes, unless it was
 /// answered already.
 #[cfg(feature = "odoh")]
 async fn respond_sealed(
-    exchange: &mut Option<Exchange<Kind>>,
+    exchange: &mut Option<Exchange<Route<&Proxy>>>,
     context: &mut Option<ResponseContext>,
     wire: Vec<u8>,
     peer: SocketAddr,
@@ -1238,7 +1304,7 @@ mod tests {
         });
     }
 
-    /// RFC 9250 \u00a74.3.3: a Message ID other than 0 and an edns-tcp-keepalive option break DNS over QUIC.
+    /// RFC 9250 §4.3.3: a Message ID other than 0 and an edns-tcp-keepalive option break DNS over QUIC.
     #[test]
     fn doq_queries_have_id_0_and_no_keepalive() {
         let name: dedens_proto::Name<'static> = "example.com.".parse().expect("a name");

@@ -127,6 +127,14 @@ impl Pipeline {
             .is_some_and(|access| access.denial() == Denial::Drop && access.deny(from))
     }
 
+    /// Whether the client at `from` is denied, with either action (D91). Counts the denial. For a caller that serves
+    /// a client something other than a query the pipeline answers, such as a request to forward (D94), and has no
+    /// REFUSED message to give.
+    #[must_use]
+    pub fn denies(&self, from: IpAddr) -> bool {
+        self.access.as_ref().is_some_and(|access| access.deny(from))
+    }
+
     /// The stages, in order.
     #[must_use]
     pub fn stages(&self) -> &[Stage] {

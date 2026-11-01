@@ -38,9 +38,15 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - ODoH target keys (D78, D79): `dedensd` serves one key, from `odoh.key` or made at start. Default: replaced by hand
   with a restart; several keys served at once (the configurations list them, a client picks the first) and rotation
   with an overlap, when a daemon holds state.
-- ODoH proxy role (D79): `dedensd` as the proxy of RFC 9230 §4 (forwards the POST to `targethost` and `targetpath`;
-  §4.1's checks: no non-standard port, 502 when the target is unreachable, no caching, no redirects). Default: out of
-  this phase, `dedensd` is a target only.
+- ODoH proxy connections (D94): a target name's first global address is tried alone, and a pool slot is kept for each
+  address a listed name ever resolved to. Default: one address, no fallback to the next or to IPv6 or IPv4 (a host
+  without the one family fails with `connection_timeout`); several addresses tried in turn (RFC 8305), and slots
+  dropped with their idle connection, when a target in use needs it or a rotating name grows the pool.
+- Trust per hop in the CLI (D79, D94): `--tls-ca` and `--tls-insecure` apply to the proxy and the target alike, so
+  `dedens +odoh-proxy=https://PROXY @https://TARGET` against a proxy with a private certificate needs the target's
+  configurations pinned (`+odoh-config`) or a CA that signs both. Default: one trust for all; a `--tls-ca` for the
+  proxy only (or one `+odoh-proxy` option carrying it) when a deployment with a private proxy needs the target's
+  configurations fetched.
 - ODoH configurations discovery (D79): fetched from `/.well-known/odohconfigs` of the target, straight to it, so the
   target sees the client's address, and the query that follows may be linked to it by timing; `dedens` keeps them an
   hour at least (a longer-lived `dedensd` client fetches rarely) and warns when the target forbids keeping them, but

@@ -8,6 +8,9 @@
 //!   key: /etc/dedensd/tls/key.pem
 //! odoh:                              # Oblivious DoH target on the https:// addresses (D79); needs the odoh feature
 //!   key: /etc/dedensd/odoh.key         # 64 hex digits; default: a key made at each start
+//!   proxy:                           # also the proxy of RFC 9230 §4 (D94): forwards to these targets only
+//!     targets: [odoh.cloudflare-dns.com, "odoh-target.example:8443"]   # HOST[:PORT], port 443 by default
+//!     timeout_ms: 5000
 //! access:                           # who is answered (D91); default: loopback, private and link-local networks
 //!   allow: ["10.0.0.0/8", "2001:db8::/32"]
 //!   deny: ["10.9.0.0/16"]            # the longest network holding the client decides; deny wins a tie
@@ -174,6 +177,30 @@ struct OdohFile {
         expect(dead_code, reason = "read by the target, built with the odoh feature")
     )]
     key: Option<PathBuf>,
+    /// Forwarding queries to other targets too (D94).
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the proxy, built with the odoh feature")
+    )]
+    proxy: Option<ProxyFile>,
+}
+
+/// The Oblivious `DoH` proxy `dedensd` serves as (D94).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyFile {
+    /// The targets forwarded to, `HOST[:PORT]` each: any other is refused.
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the proxy, built with the odoh feature")
+    )]
+    targets: Vec<String>,
+    /// How long a forward may take, in milliseconds. Default: 5000.
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the proxy, built with the odoh feature")
+    )]
+    timeout_ms: Option<NonZeroU32>,
 }
 
 /// An address `dedensd` answers on (D66, D84): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
@@ -814,12 +841,12 @@ fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::
     Ok(Validating::new(Validator::new(anchors, Limits::default()), Arc::new(clock)).tagged(&tag))
 }
 
-/// The Oblivious `DoH` target settings of `odoh`, if any (D79). The key is not read: a reload builds this again, and
-/// the key is read at start (D79).
+/// The Oblivious `DoH` target settings of `odoh`, if any (D79, D94). The key is not read: a reload builds this again,
+/// and the key is read at start (D79).
 ///
 /// # Errors
 ///
-/// `odoh` without an `https://` address in `listen`.
+/// `odoh` without an `https://` address in `listen`, or a proxy without a target or with one that is not `HOST[:PORT]`.
 #[cfg(feature = "odoh")]
 fn section(
     odoh: Option<&OdohFile>,
@@ -834,7 +861,12 @@ fn section(
             .any(|listen| matches!(listen, Listen::Https(..))),
         "`odoh` is served over HTTP/3: `listen` has no https:// address"
     );
-    Ok(Some(crate::odoh::Section::new(odoh.key.as_deref())))
+    let proxy = odoh
+        .proxy
+        .as_ref()
+        .map(|proxy| crate::odoh::proxy::Settings::new(&proxy.targets, proxy.timeout_ms))
+        .transpose()?;
+    Ok(Some(crate::odoh::Section::new(odoh.key.as_deref(), proxy)))
 }
 
 /// The certificate of `tls`, read from its files, when `listen` has an address over TLS, QUIC or HTTP/3.
@@ -1280,6 +1312,40 @@ mod tests {
         assert!(message.contains("built with the odoh feature"), "{message}");
         let error = read(&odoh("  keys: 1\n"), env, &Pipeline::default()).unwrap_err();
         assert!(format!("{error:#}").contains("keys"), "{error:#}");
+        let error = read(
+            &odoh("  proxy:\n    target: 1\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("target"), "{error:#}");
+    }
+
+    /// A proxy lists the targets it forwards to, `HOST[:PORT]` each, and at least one (D94).
+    #[cfg(feature = "odoh")]
+    #[test]
+    fn a_proxy_needs_targets() {
+        let listen = [Listen::Https(
+            "127.0.0.1:443".parse().unwrap(),
+            "/dns-query".into(),
+        )];
+        let section = |text: &str| {
+            let odoh: OdohFile = serde_saphyr::from_str(text).unwrap();
+            section(Some(&odoh), &listen)
+        };
+        assert!(
+            section("proxy:\n  targets: [odoh.example, '127.0.0.1:8443']\n  timeout_ms: 100\n")
+                .is_ok()
+        );
+        assert!(section("key: /a\n").is_ok());
+        for bad in [
+            "proxy:\n  targets: []\n",
+            "proxy:\n  targets: ['a b']\n",
+            "proxy:\n  targets: ['a:0']\n",
+        ] {
+            assert!(section(bad).is_err(), "{bad}");
+        }
+        assert!(serde_saphyr::from_str::<OdohFile>("proxy:\n  timeout_ms: 100\n").is_err());
     }
 
     /// A certificate goes with an address over TLS or QUIC, and the reverse.

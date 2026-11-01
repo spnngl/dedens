@@ -732,7 +732,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
-- D79 (amends D69, D78, D83) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
+- D79 (amends D69, D78, D83; amended by D94) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
   through a proxy, `dedensd` serves as a target. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
   - Messages: a client sends the encrypted query by POST to the proxy (RFC 9230 §4.1: media type
     `application/oblivious-dns-message` as content type and accept, `targethost` and `targetpath` in the query of the
@@ -791,7 +791,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
     gains status 401 and counts no configurations GET (not a `DoH` query). The unauthenticated decapsulation per
     POST has no throttle yet (`docs/TODECIDE.md`).
-  - Not here: the proxy role (`docs/TODECIDE.md`), HTTP/2.
+  - Not here: HTTP/2. The proxy role is D94's.
   - Checked live (2026-11-01, `dedens @https://TARGET/PATH +odoh-proxy=PROXY example.com A`, the targets and
     relays of `DNSCrypt/dnscrypt-resolvers` `v3/odoh-servers.md` and `odoh-relays.md`): every target below answers
     HTTP/3 and serves, at `/.well-known/odohconfigs`, one config of version 1 with the one suite of D78 (no other
@@ -1393,7 +1393,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `DOQ_PROTOCOL_ERROR` (§4.3.3); a connection holds 64 streams at once and counts as a TCP one against the
   thread's connections; each thread's QUIC socket takes `SO_REUSEPORT`, so a client changing address may land
   on another thread and lose its connection. Replies to padded queries are padded (D60).
-- D84 (amends D42, D44, D65; completes D82, D83) `dedensd` serves DNS over HTTPS on HTTP/3 (RFC 8484, RFC 9114) and
+- D84 (amends D42, D44, D65; completes D82, D83; amended by D94) `dedensd` serves DNS over HTTPS on HTTP/3 (RFC 8484, RFC 9114) and
   forwards to DoH upstreams. A `listen` address `https://ADDR[:PORT][/PATH]` (port 443, path `/dns-query`; a path
   with a query, a fragment or a template expression is refused) takes UDP, as `quic://` does: the certificate of
   `tls` (D66) is required with it, ALPN `h3`, TLS 1.3 alone, no 0-RTT, the connection counted against the thread's
@@ -1437,8 +1437,79 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   above `max_ttl`. Rejected: capping in `dedens-server`
   (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
   `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
+- D94 (amends D79, D84, D91) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
+  [HOST[:PORT]], timeout_ms}}` makes each `https://` listener forward the requests that name a target. `targets` is
+  required and not empty, a port is 443 unless given; a name is read strictly (UTS 46 with STD3 rules and the label
+  and 253-byte limits, as A-labels in lower case, one trailing dot dropped) and a name or port that does not read is
+  refused at start; targets are kept sorted and without duplicates. `timeout_ms` (default 5000) bounds a forward: the
+  name's resolution, the connection and the response together. A restart applies a change (D79: `odoh` is fixed at
+  start). No proxy section, no proxy.
+  - Routing: at the listener's path, a request whose query has `targethost` or `targetpath` is the proxy's; any other
+    is the target's (D79) or plain DoH's, as before. The query form of §4.1's template is the one served
+    (`/dns-query?targethost=H&targetpath=P`, percent-decoded, `+` kept): the path form `/{targethost}/{targetpath}`
+    would need a listener path with expressions, which D84 refuses and which would shadow the paths of a DNS
+    server. A proxy's request is a POST of the media type with a body (405 with `Allow: POST` (RFC 9110 §15.5.6), 415,
+    400, 413 as D79's target), each variable once, `targethost` a `HOST[:PORT]`, `targetpath` an absolute path of
+    the characters RFC 3986 allows in a path and a query once decoded (a decoded `é` or DEL is not re-encoded: 400);
+    else 400 (§4.1). The body is the same bytes both ways: the proxy never opens it.
+  - Policy (§11.2): only listed targets (403 `http_request_denied` with `details`, as §4.1 words it, also for a port
+    not listed: the non-standard ports §4.1 allows refusing), and only for the clients D91's access lists allow: one
+    they deny, with either action, gets the same 403 and error with `details="client not allowed"` before any
+    resolution, counted in `dedensd_access_denied_total{action}` (D91); RFC 9209 §2.3.17 says the intermediary
+    rejected the request by its policy and forwarded nothing, which is this, so no token of its own. A `drop`
+    client mostly never gets this far: its connection is ignored or closed at accept. A listed IP literal is forwarded as written (the tests'
+    loopback target). A name is resolved by the system resolver (D83's client does too: `getaddrinfo` through compio)
+    rather than the pipeline, which may block or rewrite it; so a host whose system resolver is `dedensd` itself
+    sends the lookup through the pipeline and back, and waits for the forward's time. The first address that is global
+    (not in the IANA special-purpose registries, RFC 6890, nor multicast; IPv6 outside 2000::/3, 6to4, documentation;
+    mapped and NAT64 addresses judged by the IPv4 inside; the whole of 192.0.0.0/24, which includes 192.0.0.9 and
+    192.0.0.10, and 192.88.99.0/24 on purpose) is used, and a name with none is 502 `destination_ip_prohibited`: a
+    listed name that points inside the network is not an open door to it. The address a name was checked as is kept
+    60 s per thread, so a forward within that time, and any on a connection that is still up, does no lookup.
+  - Forward: a new POST to `https://targethost/targetpath` over HTTP/3 through `HttpsPool` (D83), one connection per
+    address and name kept 30 s idle and shared by requests (§11.2 recommends it: a connection of a client's own would
+    let the target link its queries), checked against `upstream_ca` or the system (D65). The request is built, not
+    copied: media type as content type and accept, `content-length`, no `Forwarded`, `Via`, cookie or other header of
+    the client (§4.5; the pool adds none), no address. Forwards have their own limit, 256 in flight per thread,
+    apart from the resolver's upstream queries (D47), so a target that does not answer cannot starve resolution: one
+    more is 503 `connection_limit_reached`. No redirect is followed.
+  - Response: the target's status and body, its content type only (a `Location` would send the client to the target
+    directly), `Cache-Control: no-cache, no-store` (§4.1) and `Proxy-Status: dedensd; received-status=N` (§4.3; RFC
+    9209 §2.1.4). A success of the target with another content type than the media type is 502 `http_protocol_error`
+    (§4.3 gives the client no other reading). The client's `proxy_error` (D79) reads only `error`, so a target's 401
+    stays the target's and leads to the refetch. A failure is a response of its own with `Proxy-Status: dedensd;
+    error=TOKEN` (RFC 9209 §2.1.1, and `details` on a 403) and no body: 400 `http_request_error`; 403
+    `http_request_denied`; 502 `dns_error`, `dns_timeout` (§4.1 says 502 for it where RFC 9209 says 504),
+    `destination_ip_prohibited`, `connection_refused` (the QUIC `CONNECTION_REFUSED`), `tls_protocol_error` (any TLS
+    alert of the handshake, a certificate not trusted included: no finer `tls_certificate_error`),
+    `connection_terminated`, `http_protocol_error`, `http_response_body_size` (RFC 9209 §2.3.21); 503
+    `connection_limit_reached`; 504 `connection_timeout` while the connection is not up and `http_response_timeout`
+    (§2.3.26) once the request is out; 500 `proxy_internal_error`. They live in `dedens_net::odoh::proxy` (`route`,
+    `forward_request`, `forwarded`, `failure`, `rejection`, `ProxyError`) over `http` types, tested without a socket,
+    as D79's functions, and fuzzed with `read_odoh_http`; the `dedensd` part (`apps/dedensd/src/odoh/proxy.rs`)
+    resolves, checks and sends.
+  - Privacy: no log line at info or below tells a client address and a target together; a failure logs its `error`
+    token at debug, with neither. Stats: `dedensd_odoh_proxied_total{status}`, the status one of those above or
+    `other`. No rate limit per client: the deployment's (D90, D79's throttle in `docs/TODECIDE.md`). The pool keeps
+    a slot per address a listed name resolved to (`docs/TODECIDE.md`).
+  - Tests: `apps/dedensd/tests/rfc9230.rs` (a real `dedensd` as proxy to a real one, or to a test HTTP/3 server that
+    records what it sees: the client's query answered, the proxy answering as a target too, the target's 200 and its
+    401 returned with their `received-status`, never cached, two forwards on one connection and no header of the
+    client at the target, each of the statuses above with its `Proxy-Status` except `dns_timeout`, which no test can
+    make without a resolver that hangs, and the ones for which no port is free to be silent: refused by a QUIC
+    server, silent by a UDP socket nobody reads, a target that connects and never answers, untrusted by another
+    authority), unit tests of the routing, the target syntax and the address classes.
+  - Checked live (2026-11-01): the brief's command needs a proxy certificate a public store trusts, and `dedens` has
+    one trust for both hops (`--tls-ca` replaces the store for the target too: `docs/TODECIDE.md`), so a local
+    `dedensd` listened on `https://0.0.0.0` (an unprivileged process cannot bind UDP 443 on one address here) with
+    a certificate of a throwaway authority and the targets listed, and `dedens --tls-ca CA
+    +odoh-proxy=https://127.0.0.1/dns-query +odoh-config=FILE @https://TARGET/PATH example.com A`, the
+    configurations fetched with `curl` and pinned, answered NOERROR over ODoH (HTTP/3 200) from
+    `odoh.cloudflare-dns.com`, `odoh.crypto.sx` and `doh.tiar.app` (path `/odoh`). `odoh.cloudflare-dns.com:8443`, not
+    listed, was 403: the CLI exits 10 with "the proxy answered HTTP status 403". Not checked live: a client other than
+    ours against this proxy, `dns_timeout`, a host with one IP family only.
 
-- D91 (amends D44, D90) Client access lists: `dedensd` answers the networks it is told to, so it is no open
+- D91 (amends D44, D90; amended by D94) Client access lists: `dedensd` answers the networks it is told to, so it is no open
   resolver (RFC 5358 §4). The client's address enters `Pipeline::query` with the transport, from every listener
   (UDP, TCP, TLS, QUIC, DoH, DoC, and ODoH where `dedensd` is the target, the proxy's address being the client's
   there), an IPv4-mapped IPv6 address read as its IPv4 one. A `Pipeline` holds an optional `Access`: the library
@@ -1467,6 +1538,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     slot and a handshake. Accepted, because a client that is told it is refused does not retry, and checking
     before the handshake would be `drop` in effect; the deployment's firewall (D90) is what keeps denied clients
     off the slots.
+  - ODoH proxy (D94): a request to forward is served only to a client the lists allow, whatever the action
+    (`Pipeline::denies`, which counts); a client they drop is closed at accept, as for any request, and on a
+    connection a reload found open, or one they refuse, the answer is 403 and nothing goes to the target.
   - DoC Block2 follow-ups (RFC 7959) are served from the kept response only to a client the lists still allow,
     so a reload takes effect on a transfer under way; a confirmable request the duplicate filter replays a reply to
     is not checked, as the filter keeps it for the exchange lifetime only. `breaks_doq` runs before the check: breaking DoQ ends the connection and

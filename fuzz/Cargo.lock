@@ -617,6 +617,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "http",
+ "idna",
  "rustls-platform-verifier",
  "thiserror",
  "zeroize",
