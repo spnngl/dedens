@@ -94,7 +94,8 @@ impl Response {
     }
 
     /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it.
-    /// `bad` data failed validation: it lives at most `Config::bogus_ttl`, never stale (RFC 4035 §4.7).
+    /// `bad` data failed validation: it lives at most `Config::bogus_ttl`, never stale (RFC 4035 §4.7). An
+    /// insecure one lives at most `Config::insecure_ttl` (D93).
     pub(crate) fn build(
         key: &Key,
         decoded: &Decoded<'_>,
@@ -128,6 +129,9 @@ impl Response {
             return Err(NotCached::ClientSubnet);
         }
         let mut ttl = lifetime(message, question, rcode, config)?;
+        if checked == Checked::Insecure {
+            ttl = ttl.min(config.insecure_ttl());
+        }
         let mut stale = config.max_stale;
         if bad {
             ttl = ttl.min(config.bogus_ttl);

@@ -1206,12 +1206,16 @@ mod tests {
 
     #[test]
     fn a_caching_forwarder_reads() {
-        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
+        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    max_insecure_ttl: 600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
         let config = read(text, env, &Pipeline::default()).unwrap();
         assert_eq!(
             config.listen,
             [Listen::Plain("127.0.0.1:5353".parse().unwrap())]
         );
+        let [Stage::Cache(cache), _] = config.pipeline.stages() else {
+            panic!("a cache stage, then a forward stage")
+        };
+        assert_eq!(cache.config().max_insecure_ttl, Some(600));
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
     }
 
@@ -1253,6 +1257,10 @@ mod tests {
             (
                 "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    shards: 3\n",
                 "stage `c`: the shard count must be a power of two up to 65536, not 3",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    max_ttl: 3600\n    max_insecure_ttl: 3601\n",
+                "stage `c`: the insecure TTL must lie within 1 second and `max_ttl`",
             ),
             (
                 "listen: ['127.0.0.1:53']\npipeline: [c, h, up]\nstages:\n  c:\n    type: cache\n  h:\n    type: hosts\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",

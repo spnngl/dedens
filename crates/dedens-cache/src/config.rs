@@ -7,6 +7,10 @@ use crate::shard::MIN_BUDGET;
 /// Most a resolution failure may be cached (RFC 9520 §3.2, after RFC 2308 §7).
 const MAX_FAILURE_SECS: u32 = 300;
 
+/// Cap on the TTL of an answer proved insecure unless `max_insecure_ttl` says otherwise (D93): a day, as the key
+/// cache's (D86).
+const INSECURE_TTL: u32 = 86_400;
+
 /// Most shards: bits 40 to 55 of a key's hash pick its shard, as the shard's table takes its buckets from the low
 /// bits and its tags from the top 7.
 pub(crate) const MAX_SHARDS: usize = 1 << 16;
@@ -49,6 +53,10 @@ pub struct Config {
     /// Seconds a response that failed DNSSEC validation is kept, so that a query repeated meanwhile is not
     /// validated again (D77; Unbound's `val-bogus-ttl`: 60 seconds); at least 1.
     pub bogus_ttl: u32,
+    /// Cap on the TTL of a response stored as [`Checked::Insecure`](crate::Checked::Insecure), within `max_ttl`
+    /// (D93): a zone that turns secure gets AD on its answers within that time. `None`: a day, or `max_ttl` if it
+    /// is less. At least 1, at most `max_ttl`.
+    pub max_insecure_ttl: Option<u32>,
 }
 
 impl Default for Config {
@@ -66,6 +74,7 @@ impl Default for Config {
             prefetch_percent: 10,
             stale_answer_after_ms: 1_800,
             bogus_ttl: 60,
+            max_insecure_ttl: None,
         }
     }
 }
@@ -94,9 +103,23 @@ pub enum ConfigError {
     /// A bogus response kept for 0 seconds would not be kept.
     #[error("the bogus TTL must be above 0")]
     BogusTtl,
+    /// An insecure response kept for 0 seconds would not be kept, and one kept longer than `max_ttl` would outlive
+    /// the cap on every response.
+    #[error("the insecure TTL must lie within 1 second and `max_ttl`")]
+    InsecureTtl,
 }
 
 impl Config {
+    /// The cap on the TTL of an insecure response: `max_insecure_ttl`, else a day within `max_ttl`.
+    #[must_use]
+    pub const fn insecure_ttl(&self) -> u32 {
+        match self.max_insecure_ttl {
+            Some(ttl) => ttl,
+            None if self.max_ttl < INSECURE_TTL => self.max_ttl,
+            None => INSECURE_TTL,
+        }
+    }
+
     /// Checks the settings against each other and the RFCs.
     ///
     /// # Errors
@@ -124,6 +147,11 @@ impl Config {
         }
         if self.bogus_ttl == 0 {
             return Err(ConfigError::BogusTtl);
+        }
+        if let Some(ttl) = self.max_insecure_ttl
+            && (ttl == 0 || ttl > self.max_ttl)
+        {
+            return Err(ConfigError::InsecureTtl);
         }
         Ok(())
     }
