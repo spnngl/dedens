@@ -882,64 +882,42 @@ pub fn parse_odoh_message(data: &[u8]) {
     }
 }
 
-/// Arbitrary bytes as the HTTP side of Oblivious `DoH` (RFC 9230 §4, D79): `meta`, `cache-control`, `age` and the
-/// body, apart by NUL bytes. A target's configurations are never kept longer than `max-age` says nor at all under
-/// `no-store`; a request is classified with a status or a body within a message's size; a response is read as a
-/// message or an error.
+/// Arbitrary bytes as the HTTP side of Oblivious `DoH` (RFC 9230 §4, D79): `meta`, `cache-control`, `age`, `date`
+/// and the body, apart by NUL bytes. The first byte of `meta` picks the shape of the request (method, path,
+/// `Content-Type`), the second that of the response, the rest the clock.
+///
+/// A target's configurations are kept at least an hour, at most a day and no longer than `max-age` says, `no-store`
+/// and `no-cache` without field names meaning the hour and a warning, whatever `Age` and `Date` say; a request is
+/// classified with a status or a body within the cap, by its `Content-Type` and path; a response is read as a message
+/// or an error; and the proxy request for a target holds the target's authority and path as `targethost` and
+/// `targetpath`, percent-encoded, which decode to them.
 ///
 /// # Panics
 ///
 /// On a bug in one of the readers.
 pub fn read_odoh_http(data: &[u8]) {
     use dedens_net::odoh;
-    let mut parts = data.splitn(4, |&byte| byte == 0);
-    let (Some(meta), Some(control), Some(age), Some(body)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+    let mut parts = data.splitn(5, |&byte| byte == 0);
+    let (Some(meta), Some(control), Some(held), Some(stamp), Some(body)) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
         return;
     };
     let shape = meta.first().copied().unwrap_or(0);
-    if let (Ok(control), Ok(age)) = (
-        http::HeaderValue::from_bytes(control),
-        http::HeaderValue::from_bytes(age),
-    ) {
-        let mut headers = http::HeaderMap::new();
-        let text = String::from_utf8_lossy(control.as_bytes()).to_ascii_lowercase();
-        headers.insert(http::header::CACHE_CONTROL, control);
-        headers.insert(http::header::AGE, age);
-        let lifetime = odoh::configs_lifetime(&headers, std::time::SystemTime::UNIX_EPOCH);
-        if text.contains("no-store") || text.contains("no-cache") {
-            assert!(lifetime.is_zero(), "{text}: kept for {lifetime:?}");
-        }
-    }
-    let method = match shape & 3 {
-        0 => http::Method::GET,
-        1 => http::Method::POST,
-        2 => http::Method::PUT,
-        _ => http::Method::HEAD,
-    };
-    let path = if shape & 4 == 0 {
-        "/dns-query"
-    } else {
-        odoh::CONFIGS_PATH
-    };
-    let mut builder = http::Request::builder()
-        .method(method)
-        .uri(format!("https://odoh.example{path}"));
-    if shape & 8 != 0 {
-        builder = builder.header(http::header::CONTENT_TYPE, dedens_odoh::MEDIA_TYPE);
-    }
-    if let Ok(request) = builder.body(()) {
-        match odoh::classify(&request, body, "/dns-query").1 {
-            Ok(accepted) => assert!(accepted.len() <= MAX_MESSAGE_LEN),
-            Err(status) => assert!(
-                [400, 404, 405, 413, 415].contains(&status.as_u16()),
-                "status {status}"
-            ),
-        }
-    }
-    let mut builder = http::Response::builder().status(if shape & 16 == 0 { 200 } else { 401 });
-    if shape & 32 != 0 {
+    let response_shape = meta.get(1).copied().unwrap_or(0);
+    let clock = meta
+        .iter()
+        .skip(2)
+        .fold(0_u32, |clock, &byte| clock.rotate_left(8) ^ u32::from(byte));
+    odoh_lifetime(control, held, stamp, clock);
+    odoh_classify(shape, body);
+    let mut builder =
+        http::Response::builder().status(if response_shape & 1 == 0 { 200 } else { 401 });
+    if response_shape & 2 != 0 {
         builder = builder.header(http::header::CONTENT_TYPE, dedens_odoh::MEDIA_TYPE);
     }
     if let Ok(response) = builder.body(())
@@ -947,6 +925,160 @@ pub fn read_odoh_http(data: &[u8]) {
     {
         assert_eq!(message.encode(), body);
     }
+    odoh_proxy_request(held, body);
+}
+
+/// How long the configurations of a response with the given `Cache-Control`, `Age` and `Date` are kept at `clock`
+/// seconds after the epoch: the directives as the RFC reads them, apart from the code under test, say how long.
+fn odoh_lifetime(control: &[u8], age: &[u8], date: &[u8], clock: u32) {
+    const HOUR: u64 = 3600;
+    const DAY: u64 = 24 * HOUR;
+    let (Ok(control), Ok(age), Ok(date)) = (
+        http::HeaderValue::from_bytes(control),
+        http::HeaderValue::from_bytes(age),
+        http::HeaderValue::from_bytes(date),
+    ) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(control.as_bytes()).into_owned();
+    let mut forbidden = false;
+    let mut max_age = None;
+    for directive in text.split(',') {
+        let directive = directive.trim();
+        let (name, value) = directive
+            .split_once('=')
+            .map_or((directive, None), |(name, value)| (name, Some(value)));
+        let name = name.trim().to_ascii_lowercase();
+        forbidden |= name == "no-store" || (name == "no-cache" && value.is_none());
+        if name == "max-age" && max_age.is_none() {
+            max_age = value.map(|value| value.trim().trim_matches('"').parse::<u64>().unwrap_or(0));
+        }
+    }
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::CACHE_CONTROL, control);
+    headers.insert(http::header::AGE, age);
+    headers.insert(http::header::DATE, date);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(clock));
+    let lifetime = dedens_net::odoh::configs_lifetime(&headers, now);
+    let kept = lifetime.keep.as_secs();
+    assert_eq!(lifetime.forbidden, forbidden, "{text}");
+    assert!((HOUR..=DAY).contains(&kept), "{text}: kept {kept} s");
+    assert!(
+        kept <= max_age.unwrap_or(0).max(HOUR),
+        "{text}: kept {kept} s over max-age {max_age:?}"
+    );
+    if forbidden {
+        assert_eq!(kept, HOUR, "{text}: forbidden, yet kept {kept} s");
+    }
+}
+
+/// A request of the shape `shape` (method, path, `Content-Type`) with `body`, classified.
+fn odoh_classify(shape: u8, body: &[u8]) {
+    use dedens_net::odoh::{self, Kind};
+    let method = match shape & 3 {
+        0 => http::Method::GET,
+        1 => http::Method::POST,
+        2 => http::Method::PUT,
+        _ => http::Method::HEAD,
+    };
+    let at_listener = shape & 4 == 0;
+    let path = if at_listener {
+        "/dns-query"
+    } else {
+        odoh::CONFIGS_PATH
+    };
+    let content_types: &[&str] = match (shape >> 3) & 7 {
+        0 => &[dedens_odoh::MEDIA_TYPE],
+        1 => &["Application/Oblivious-DNS-Message"],
+        2 => &["application/oblivious-dns-message; charset=utf-8"],
+        3 => &["application/oblivious-dns-message-x"],
+        4 => &["application/dns-message"],
+        5 => &[],
+        _ => &["application/dns-message", dedens_odoh::MEDIA_TYPE],
+    };
+    let mut builder = http::Request::builder()
+        .method(method.clone())
+        .uri(format!("https://odoh.example{path}"));
+    for content_type in content_types {
+        builder = builder.header(http::header::CONTENT_TYPE, *content_type);
+    }
+    if let Ok(request) = builder.body(()) {
+        let (kind, query) = odoh::classify(&request, body, "/dns-query");
+        match &query {
+            Ok(accepted) => assert!(accepted.len() <= odoh::MAX_BODY),
+            Err(status) => assert!(
+                [400, 404, 405, 413, 415].contains(&status.as_u16()),
+                "status {status}"
+            ),
+        }
+        // The listener's path is its own, the well-known one is configurations'.
+        let oblivious = method == http::Method::POST && matches!((shape >> 3) & 7, 0..=2);
+        let expected = match (at_listener, oblivious) {
+            (true, true) => Kind::Oblivious,
+            (true, false) => Kind::Dns,
+            (false, _) => Kind::Configs,
+        };
+        assert_eq!(kind, expected, "{method} {path} {content_types:?}");
+    }
+}
+
+/// The request through a proxy to a target whose path is `path`, as far as it is one, with `body`, as far as it is a
+/// message: the target's authority and path are its `targethost` and `targetpath`, percent-encoded.
+fn odoh_proxy_request(path: &[u8], body: &[u8]) {
+    use dedens_net::odoh;
+    if let Ok(message) = ObliviousDoHMessage::parse(body)
+        && let target_path = format!("/{}", String::from_utf8_lossy(path))
+        && let Ok(authority) = "target.example:8443".parse()
+        && let Ok(target) = Template::relative(authority, &target_path)
+        && let Ok(proxy) = Template::parse("https://proxy.example/proxy")
+        && let Ok(request) = odoh::request(Some(&proxy), &target, &message)
+    {
+        let uri = request.uri();
+        assert_eq!(
+            uri.authority().map(http::uri::Authority::as_str),
+            Some("proxy.example")
+        );
+        assert_eq!(uri.path(), "/proxy");
+        let query = uri.query().unwrap_or_default();
+        let mut pairs = query
+            .split('&')
+            .map(|pair| pair.split_once('=').unwrap_or((pair, "")));
+        let (host, path) = (pairs.next(), pairs.next());
+        assert_eq!(pairs.next(), None, "{query}");
+        assert_eq!(
+            host.map(|(name, value)| (name, percent_decoded(value))),
+            Some(("targethost", "target.example:8443".to_owned())),
+            "{query}"
+        );
+        assert_eq!(
+            path.map(|(name, value)| (name, percent_decoded(value))),
+            Some(("targetpath", target.path().to_owned())),
+            "{query}"
+        );
+        assert_eq!(request.body(), &message.encode());
+    }
+}
+
+/// `value` with its `%XX` escapes decoded, as a proxy reads a query value (RFC 3986 §2.1); a `%` without two digits
+/// stays.
+fn percent_decoded(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        let digits = bytes
+            .get(at + 1..at + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        if let (b'%', Some(decoded)) = (byte, digits) {
+            out.push(decoded);
+            at += 3;
+        } else {
+            out.push(byte);
+            at += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Bytes the "randomness" of a fuzz run repeats: the exchange stays deterministic.

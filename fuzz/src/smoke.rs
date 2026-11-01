@@ -133,7 +133,7 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
         (
             "odoh http".into(),
             [
-                &b"\x69\x00no-cache, no-store\x000\x00"[..],
+                &b"\x11\x01\x3b\x9a\xca\x01\x00no-cache, no-store\x000\x00Sun, 06 Nov 1994 08:49:37 GMT\x00"[..],
                 include_bytes!("../../crates/dedens-odoh/tests/testdata/odoh-go-query.bin"),
             ]
             .concat(),

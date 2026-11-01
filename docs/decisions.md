@@ -491,23 +491,35 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     a 2xx of the media type (§4.3); a 3xx is an error (no redirect is followed). The request carries
     `content-length`: Cloudflare's target answers 400 to an HTTP/3 POST without it (found by the live check).
   - Configurations: fetched by GET from `/.well-known/odohconfigs` of the target (a convention, RFC 9230 §5 leaves
-    discovery out; Cloudflare, `odoh-rs` and `odoh-go` use it) and cached per target for the HTTP lifetime:
-    `Cache-Control: max-age` less `Age` (RFC 9111 §4.2.1); `no-store`, `no-cache`, no `max-age` or a value that does
-    not parse is no lifetime, the configurations are fetched again for each exchange (Cloudflare's answer is
-    `no-cache, no-store`, so it costs a request each time). The fetch goes straight to the target, not through the
-    proxy: a proxy relays POSTs of oblivious messages only (§4.1), and public ones relay no GET. Cost: the target
-    sees the client's address once per lifetime (never a query, which is all §8 protects); `+odoh-proxy` therefore
-    hides the address from the target for queries only. Alternatives (configurations through the proxy, from a file,
-    from SVCB) are in `docs/TODECIDE.md`.
-  - Errors: a 401 (the target does not hold the key, §4.3) or a response that does not decrypt after configurations
-    kept from the cache fetches them again and asks once more; after configurations fetched for this exchange it
-    ends the exchange (no loop, no second fetch). Other statuses end it too. The cache is the client's own
-    (`Client`, per target address and authority), not shared between `Client`s.
+    discovery out; Cloudflare, `odoh-rs` and `odoh-go` use it) and kept per target. The fetch goes straight to the
+    target, not through the proxy: a proxy relays POSTs of oblivious messages only (§4.1), and public ones relay no
+    GET. Cost: the target sees the client's address (never a query, which is all §8 protects) and may link the query
+    that follows to it by timing, so the fetch must be rare: the lifetime is `Cache-Control: max-age` less `Age` and
+    the age `Date` shows (RFC 9111 §4.2.1), but never under an hour (`MIN_KEPT`) nor over a day (`MAX_KEPT`), whatever
+    the target says, `no-store` and `no-cache` without field names included: the configurations are public keys, and
+    Cloudflare's `no-cache, no-store` would otherwise cost a fetch per exchange; a skewed clock only shortens the
+    lifetime, to the hour. `no-cache="field"` does not forbid keeping. At most 64 targets are kept (expired first,
+    then the soonest to expire). A client of one exchange per process (`dedens`) fetches each run anyway: when the
+    target forbids keeping and a proxy is used, it prints a warning on stderr (`odoh::Notice::ConfigsNotToBeKept`,
+    from `Client::take_odoh_notices`), and `+odoh-config=FILE` (a file of the configurations as the target serves
+    them, `Client::pin_odoh_configs`) fetches nothing: pinned ones never expire and are never fetched again, a 401 is
+    an error then. Other discovery (through the proxy, SVCB) is in `docs/TODECIDE.md`.
+  - Errors: a 401 (the target does not hold the key, §4.3) after configurations kept from the cache fetches them
+    again and asks once more, when the target made it: with a proxy, a response
+    with a `Proxy-Status` header holding an `error` parameter (RFC 9209) is the proxy's (`OdohError::Proxy`) and ends
+    the exchange (a proxy that answers 401 for its own reasons must not make the client leak its address). A response
+    that does not decrypt, and any error of the encryption, end it: the configurations are not at fault. After
+    configurations fetched for this exchange, or pinned, a 401 ends it too (no loop, no second fetch). The cache is
+    the client's own (`Client`, per target address and authority), not shared between `Client`s.
   - Client API: `Client::exchange_oblivious(query, target, proxy, options)` (not `exchange`, which refuses
-    `Transport::Odoh`: the proxy is a second server). Randomness is `odoh::Entropy`, 64 bytes read from the OS when
-    the exchange starts and wiped when dropped, so an OS failure is an error (`OdohError::Random`) and no later
-    draw can panic (`encrypt_query` draws 32 bytes, `encrypt_response` 16, tested). The HTTP side is sans-IO
-    functions in `dedens-net::odoh` (`request`, `configs_request`, `response`, `configs_lifetime`, `classify`,
+    `Transport::Odoh` with `ClientError::OdohWithoutProxy`: the proxy is a second server). Randomness is
+    `odoh::Entropy`, 64 bytes read from the OS when the exchange starts and wiped when dropped, so an OS failure is
+    an error (`OdohError::Random`); `encrypt_query` draws 32 bytes, `encrypt_response` 16 (tested), and a draw beyond
+    the 64 gives zeros and fails `Entropy::finish`, which the caller asks after the encryption, so that no draw panics
+    and none is silently weak. The proxy URI is a plain one, not an RFC 9230 §4.1 URI Template: one that already
+    holds `targethost` or `targetpath` is refused (`OdohError::ProxyVariables`). A message may be a kilobyte over
+    a DNS message's cap (`odoh::MAX_BODY`: the header, the encapsulated key, the tag and the padding), at the HTTP
+    reader and at `classify`. The HTTP side is sans-IO functions in `dedens-net::odoh` (`request`, `configs_request`, `response`, `configs_lifetime`, `classify`,
     `target_response`, `configs_response`) over `http` types, tested without a socket; the fuzz target
     `read_odoh_http` covers the readers of outside data.
   - CLI: `+odoh-proxy=URI` with an `https://` target server (D83's); usage errors (exit 2) without such a target, with
@@ -517,11 +529,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `/dns-query`): a POST of the media type is opened, asked of the pipeline as a query over `Transport::Odoh`
     (padded replies are the encryption's, so the pipeline's EDNS padding is off for it) and answered sealed with
     `Cache-Control: no-cache, no-store` (§4.1); a key that is not the target's is 401 and a message that does not
-    open 400 (§4.3, D78). `GET /.well-known/odohconfigs` answers the configurations with `max-age=3600`. Plain DoH
-    stays served at the same path. The key is the secret of `odoh.key`, a file of 64 hexadecimal digits
-    (`openssl rand -hex 32`), else a random one made at start (so the configurations change at each start). A
-    reload keeps the key and ignores a changed `odoh` (warned: it takes a restart). `odoh` without an `https://`
-    listener is an error. Metrics: `dedensd_doh_queries_total` gains status 401.
+    open 400 (§4.3, D78). `GET /.well-known/odohconfigs` answers the configurations with `max-age=3600`, unless the
+    listener's own path is that one (the listener wins). Plain DoH stays served at the same path. The key is the
+    secret of `odoh.key`, a file of 64 hexadecimal digits (`openssl rand -hex 32`; at most 256 bytes, read into a
+    buffer wiped on drop; a file readable by its group or others is warned about on Unix), else a random one made at
+    start (so the configurations change at each start). A reload keeps the key and never reads the file again: a
+    changed `odoh` section (the key file's path) is ignored with a warning (it takes a restart), and a key file that
+    went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
+    gains status 401 and counts no configurations GET (not a `DoH` query). The unauthenticated decapsulation per
+    POST has no throttle yet (`docs/TODECIDE.md`).
   - Not here: the proxy role (`docs/TODECIDE.md`), HTTP/2 (public proxies speak HTTP/2 only, so the live check
     through one waits for 23; against Cloudflare's target, which answers HTTP/3, the CLI resolved with the target
     as its own proxy, 2026-11-01).

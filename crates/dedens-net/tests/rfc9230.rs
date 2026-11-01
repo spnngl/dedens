@@ -18,20 +18,23 @@ use common::query;
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ServerBuilder, h3};
 use compio::rustls::version::TLS13;
-use dedens_net::client::{Client, ClientError};
+use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Template;
 use dedens_net::exchange::{Http, Options, Transport};
 use dedens_net::odoh::{
-    CONFIGS_PATH, Entropy, Kind, OdohError, classify, configs_lifetime, configs_request,
-    configs_response, request, response, target_response,
+    CONFIGS_PATH, Entropy, Kind, Lifetime, MAX_BODY, Notice, OdohError, classify, configs_lifetime,
+    configs_request, configs_response, names_target, proxy_error, request, response,
+    target_response,
 };
 use dedens_net::tls::Trust;
+use dedens_odoh::rand_core::TryRng;
 use dedens_odoh::{
     MEDIA_TYPE, MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, TargetKey, decrypt_query,
     encrypt_query, encrypt_response, query_padding, response_padding,
 };
 use dedens_proto::Message;
-use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE};
+use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
+use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 
 /// The proxy of RFC 9230 §4.2, without the variables the client adds (D79)
@@ -41,7 +44,10 @@ const PROXY: &str = "https://dnsproxy.example/dns-query";
 const TARGET: &str = "https://dnstarget.example/dns-query";
 
 /// What the target of the tests serves its configurations for, in seconds.
-const MAX_AGE: u32 = 3600;
+const MAX_AGE: u32 = 7200;
+
+/// The header of a proxy's errors.
+const PROXY_STATUS: HeaderName = HeaderName::from_static("proxy-status");
 
 fn message() -> ObliviousDoHMessage {
     let key = TargetKey::derive(&[1; 32]);
@@ -168,43 +174,130 @@ fn s4_3_responses() {
 }
 
 /// What `curl -i https://odoh.cloudflare-dns.com/.well-known/odohconfigs` answered: `cache-control: no-cache,
-/// no-store`. Cloudflare's configurations are fetched again for every exchange.
+/// no-store`. The client asks it to be told, and keeps the configurations an hour all the same (D79).
 #[test]
 fn the_captured_cloudflare_headers_forbid_keeping_the_configurations() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let cloudflare = headers(&[(CACHE_CONTROL, "no-cache, no-store")]);
-    assert_eq!(configs_lifetime(&cloudflare, now), Duration::ZERO);
+    assert_eq!(
+        configs_lifetime(&cloudflare, now),
+        Lifetime {
+            keep: HOUR,
+            forbidden: true
+        }
+    );
 }
 
-/// RFC 9111 §4.2.1, §5.2.2: `max-age` less the age, and none where the response says not to keep it or says nothing.
+const HOUR: Duration = Duration::from_secs(3600);
+
+/// RFC 9111 §4.2.1, §5.2.2 with D79: `max-age` less the age, between an hour and a day; a response that says not to
+/// keep it is flagged; `no-cache` with field names is no `no-cache` of the whole response.
 #[test]
 fn the_lifetime_of_configurations() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let lifetime =
         |fields: &[(http::header::HeaderName, &str)]| configs_lifetime(&headers(fields), now);
+    let kept = |keep: Duration| Lifetime {
+        keep,
+        forbidden: false,
+    };
     assert_eq!(
-        lifetime(&[(CACHE_CONTROL, "max-age=3600")]),
-        Duration::from_secs(3600)
+        lifetime(&[(CACHE_CONTROL, "max-age=7200")]),
+        kept(Duration::from_secs(7200))
     );
     assert_eq!(
-        lifetime(&[(CACHE_CONTROL, "public, Max-Age=\"3600\""), (AGE, "100")]),
-        Duration::from_secs(3500)
+        lifetime(&[(CACHE_CONTROL, "public, Max-Age=\"7200\""), (AGE, "100")]),
+        kept(Duration::from_secs(7100))
     );
     assert_eq!(
         lifetime(&[(CACHE_CONTROL, "max-age=60"), (AGE, "100")]),
-        Duration::ZERO
+        kept(HOUR),
+        "an hour at least"
     );
     assert_eq!(
-        lifetime(&[(CACHE_CONTROL, "max-age=3600, no-store")]),
-        Duration::ZERO
+        lifetime(&[(CACHE_CONTROL, "max-age=31536000")]),
+        kept(Duration::from_hours(24)),
+        "a day at most"
     );
     assert_eq!(
-        lifetime(&[(CACHE_CONTROL, "max-age=3600, no-cache")]),
-        Duration::ZERO
+        lifetime(&[(CACHE_CONTROL, "max-age=7200, no-store")]),
+        Lifetime {
+            keep: HOUR,
+            forbidden: true
+        }
     );
-    assert_eq!(lifetime(&[(CACHE_CONTROL, "max-age=soon")]), Duration::ZERO);
-    assert_eq!(lifetime(&[(CACHE_CONTROL, "public")]), Duration::ZERO);
-    assert_eq!(lifetime(&[]), Duration::ZERO);
+    assert!(lifetime(&[(CACHE_CONTROL, "max-age=7200, No-Cache")]).forbidden);
+    assert_eq!(
+        lifetime(&[(CACHE_CONTROL, "max-age=7200, no-cache=\"set-cookie\"")]),
+        kept(Duration::from_secs(7200)),
+        "a no-cache for a field leaves the response cacheable"
+    );
+    assert_eq!(
+        lifetime(&[(CACHE_CONTROL, "x-no-store=1, max-age=7200")]),
+        kept(Duration::from_secs(7200))
+    );
+    assert_eq!(lifetime(&[(CACHE_CONTROL, "max-age=soon")]), kept(HOUR));
+    assert_eq!(lifetime(&[(CACHE_CONTROL, "public")]), kept(HOUR));
+    assert_eq!(lifetime(&[]), kept(HOUR));
+}
+
+/// RFC 9111 §4.2.3: a `Date` far before the client's clock, or after it, is no reason to keep the configurations
+/// less than an hour, nor more than a day.
+#[test]
+fn a_skewed_date_leaves_the_bounds() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let behind = headers(&[
+        (CACHE_CONTROL, "max-age=7200"),
+        (http::header::DATE, "Sun, 13 Sep 2020 12:26:40 GMT"),
+    ]);
+    assert_eq!(configs_lifetime(&behind, now).keep, HOUR);
+    let ahead = headers(&[
+        (CACHE_CONTROL, "max-age=7200"),
+        (http::header::DATE, "Fri, 15 Jan 2027 08:00:00 GMT"),
+    ]);
+    assert_eq!(
+        configs_lifetime(&ahead, now).keep,
+        Duration::from_secs(7200)
+    );
+}
+
+/// D79: a proxy's URI is plain: one that sets `targethost` or `targetpath` is a URI template.
+#[test]
+fn proxy_uris_with_the_variables_are_found() {
+    let named = |uri: &str| names_target(&Template::parse(uri).expect("a template"));
+    assert!(!named(PROXY));
+    assert!(!named("https://proxy.example/relay?key=1"));
+    assert!(named("https://proxy.example/relay?targethost=a"));
+    assert!(named("https://proxy.example/relay?key=1&targetpath"));
+    assert!(!named("https://proxy.example/relay?mytargethost=a"));
+}
+
+/// RFC 9209 §2: a `Proxy-Status` that names an error says the proxy made the response.
+#[test]
+fn proxy_errors_are_found() {
+    let status = |value: &str| proxy_error(&headers(&[(PROXY_STATUS, value)]));
+    assert!(status("proxy.example; error=http_request_error"));
+    assert!(status(
+        "other; received-status=200, proxy.example; Error=connection_timeout"
+    ));
+    assert!(!status("proxy.example; received-status=401"));
+    assert!(!status("proxy.example"));
+    assert!(!proxy_error(&HeaderMap::new()));
+}
+
+/// RFC 9230 §6.1, §6.2: the draws of an encryption stay within the entropy, and one past it is an error, not a
+/// panic (D79).
+#[test]
+fn entropy_past_its_bytes_is_an_error() {
+    let mut entropy = Entropy::new().expect("randomness");
+    let mut bytes = [1; 40];
+    entropy.try_fill_bytes(&mut bytes).expect("infallible");
+    assert!(entropy.finish().is_ok());
+    let mut entropy = Entropy::new().expect("randomness");
+    entropy.try_fill_bytes(&mut bytes).expect("infallible");
+    entropy.try_fill_bytes(&mut bytes).expect("infallible");
+    assert_eq!(bytes, [0; 40]);
+    assert!(entropy.finish().is_err());
 }
 
 /// RFC 9230 §4.1, §4.3 with RFC 8484 §4.1: what a target takes at its path, and what it answers.
@@ -227,13 +320,25 @@ fn s4_1_a_target_classifies_requests() {
     );
     let (kind, query) = classify(
         &post("/dns-query", MEDIA_TYPE),
-        &vec![0; 65536],
+        &vec![0; MAX_BODY],
+        "/dns-query",
+    );
+    assert_eq!(
+        (kind, query.map(|body| body.len())),
+        (Kind::Oblivious, Ok(MAX_BODY))
+    );
+    let (kind, query) = classify(
+        &post("/dns-query", MEDIA_TYPE),
+        &vec![0; MAX_BODY + 1],
         "/dns-query",
     );
     assert_eq!(
         (kind, query),
         (Kind::Oblivious, Err(StatusCode::PAYLOAD_TOO_LARGE))
     );
+    // The listener's path wins over the well-known one.
+    let (kind, query) = classify(&post(CONFIGS_PATH, MEDIA_TYPE), b"abc", CONFIGS_PATH);
+    assert_eq!((kind, query), (Kind::Oblivious, Ok(b"abc".to_vec())));
     let (kind, query) = classify(&post("/elsewhere", MEDIA_TYPE), b"abc", "/dns-query");
     assert_eq!((kind, query), (Kind::Dns, Err(StatusCode::NOT_FOUND)));
     let (kind, query) = classify(&post("/dns-query", "text/plain"), b"abc", "/dns-query");
@@ -577,10 +682,10 @@ async fn s4_3_a_401_under_fresh_configurations_fails() {
 }
 
 /// What `curl https://odoh.cloudflare-dns.com/.well-known/odohconfigs` returned, with its `cache-control: no-cache,
-/// no-store`: the client parses it, encrypts to it, and fetches it again for each exchange. This target does not
-/// hold Cloudflare's key, so it answers 401.
+/// no-store`: the client parses it, encrypts to it, and keeps it all the same (D79). This target does not hold
+/// Cloudflare's key, so it answers 401.
 #[compio::test]
-async fn s5_the_captured_configurations_are_fetched_for_each_exchange() {
+async fn s5_the_captured_configurations_are_kept_though_forbidden() {
     let captured = fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../dedens-odoh/tests/testdata/odohconfigs-cloudflare.bin"),
@@ -597,20 +702,22 @@ async fn s5_the_captured_configurations_are_fetched_for_each_exchange() {
     )
     .await;
     let client = trusting(certificates);
-    for _ in 0..2 {
-        let error = client
-            .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
-            .await
-            .expect_err("a 401: the key is not this target's");
-        assert!(
-            matches!(
-                error,
-                ClientError::Odoh(OdohError::Status(StatusCode::UNAUTHORIZED))
-            ),
-            "{error:?}"
-        );
-    }
-    assert_eq!(target.configs_asked.get(), 2);
+    let error = client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect_err("a 401: the key is not this target's");
+    assert!(
+        matches!(
+            error,
+            ClientError::Odoh(OdohError::Status(StatusCode::UNAUTHORIZED))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(target.configs_asked.get(), 1);
+    assert!(
+        client.take_odoh_notices().is_empty(),
+        "no proxy to hide the address from"
+    );
 }
 
 /// RFC 9230 §4.3: a response without the media type is an error, whatever its status.
@@ -660,4 +767,202 @@ fn s6_2_the_client_pads_inside_the_encryption() {
     let (plaintext, _) = decrypt_query(&key, &message).expect("the query");
     assert_eq!(plaintext.dns_message(), wire);
     assert_eq!((wire.len() + plaintext.padding()) % 128, 0);
+}
+
+/// A proxy forwarding to `target` what it is sent, or, while `failing`, answering 401 with a `Proxy-Status` naming
+/// an error.
+async fn proxy_to(
+    certificates: &Certificates,
+    target: &Rc<Target>,
+    failing: &Rc<Cell<bool>>,
+) -> SocketAddr {
+    let target = Rc::clone(target);
+    let failing = Rc::clone(failing);
+    h3_server(
+        certificates,
+        Rc::new(move |request, body| {
+            if failing.get() {
+                return Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header(PROXY_STATUS, "proxy.example; error=http_request_denied")
+                    .body(Vec::new())
+                    .expect("a response");
+            }
+            let forwarded = Request::builder()
+                .method(request.method())
+                .uri("https://dns.example/dns-query")
+                .header(CONTENT_TYPE, request.headers()[CONTENT_TYPE].clone())
+                .body(())
+                .expect("a request");
+            target.handle(&forwarded, body)
+        }),
+    )
+    .await
+}
+
+/// D79: a target that asks for its configurations not to be kept gets them kept an hour all the same, and a client
+/// that sends its queries through a proxy tells its user, once, that the target saw its address.
+#[compio::test]
+async fn s5_forbidden_configurations_are_kept_and_noticed() {
+    let certificates = certificates();
+    let mut target = Target::new(10);
+    Rc::get_mut(&mut target).expect("one owner").cache_control = "no-cache, no-store";
+    let handler = Rc::clone(&target);
+    let target_addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let proxy_addr = proxy_to(&certificates, &target, &Rc::new(Cell::new(false))).await;
+    let client = trusting(certificates);
+    for _ in 0..2 {
+        client
+            .exchange_oblivious(
+                query(),
+                named(target_addr, NAME),
+                Some(named(proxy_addr, NAME)),
+                &Options::default(),
+            )
+            .await
+            .expect("a response");
+    }
+    assert_eq!(target.configs_asked.get(), 1);
+    let authority = Authority::try_from(format!("{NAME}:{}", target_addr.port())).expect("one");
+    assert_eq!(
+        client.take_odoh_notices(),
+        [Notice::ConfigsNotToBeKept(authority)]
+    );
+    assert_eq!(client.take_odoh_notices(), []);
+}
+
+/// RFC 9230 §4.3, §11.3 with RFC 9209: a 401 the proxy made, as its `Proxy-Status` says, tells nothing of the
+/// target's key: the configurations are not fetched again, which would also give the target the client's address.
+#[compio::test]
+async fn s4_3_a_401_of_the_proxy_does_not_fetch_the_configurations_again() {
+    let certificates = certificates();
+    let target = Target::new(11);
+    let handler = Rc::clone(&target);
+    let target_addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let failing = Rc::new(Cell::new(false));
+    let proxy_addr = proxy_to(&certificates, &target, &failing).await;
+    let client = trusting(certificates);
+    let options = Options::default();
+    let ask = || {
+        client.exchange_oblivious(
+            query(),
+            named(target_addr, NAME),
+            Some(named(proxy_addr, NAME)),
+            &options,
+        )
+    };
+    ask().await.expect("a response");
+    failing.set(true);
+    let error = ask().await.expect_err("the proxy refuses");
+    assert!(
+        matches!(
+            error,
+            ClientError::Odoh(OdohError::Proxy(StatusCode::UNAUTHORIZED))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(target.configs_asked.get(), 1);
+}
+
+/// D79: a proxy URI that sets `targethost` is a URI template, which is not supported: refused before any request.
+#[compio::test]
+async fn s4_1_a_proxy_uri_with_the_variables_is_refused() {
+    let certificates = certificates();
+    let target = Target::new(12);
+    let handler = Rc::clone(&target);
+    let target_addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let proxy_addr = proxy_to(&certificates, &target, &Rc::new(Cell::new(false))).await;
+    let proxy = Server {
+        doh: Some(Template::parse("https://proxy.example/relay?targethost=x").expect("one")),
+        ..named(proxy_addr, NAME)
+    };
+    let client = trusting(certificates);
+    let error = client
+        .exchange_oblivious(
+            query(),
+            named(target_addr, NAME),
+            Some(proxy),
+            &Options::default(),
+        )
+        .await
+        .expect_err("a template");
+    assert!(
+        matches!(error, ClientError::Odoh(OdohError::ProxyVariables)),
+        "{error:?}"
+    );
+    assert!(error.is_local());
+    assert_eq!(target.configs_asked.get(), 0);
+}
+
+/// D79: `Client::exchange` has no proxy to give, so no Oblivious `DoH`.
+#[compio::test]
+async fn exchange_refuses_oblivious_without_a_proxy() {
+    let mut options = Options::default();
+    options.transport = Transport::Odoh;
+    let addr: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let error = Client::new()
+        .exchange(query(), named(addr, NAME), &options)
+        .await
+        .expect_err("no proxy");
+    assert!(matches!(error, ClientError::OdohWithoutProxy), "{error:?}");
+    assert!(error.is_local());
+}
+
+/// D79: configurations the caller gives are not fetched, and a 401 under them is the error: they are not fetched
+/// again either.
+#[compio::test]
+async fn s5_pinned_configurations_are_not_fetched() {
+    let certificates = certificates();
+    let target = Target::new(13);
+    let handler = Rc::clone(&target);
+    let addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let client = trusting(certificates);
+    let encode = |key: &TargetKey| {
+        ObliviousDoHConfigs::new(vec![key.config().clone()])
+            .encode()
+            .expect("configurations encode")
+    };
+    assert!(matches!(
+        client.pin_odoh_configs(named(addr, NAME), b"nonsense"),
+        Err(OdohError::Wire(_))
+    ));
+    client
+        .pin_odoh_configs(named(addr, NAME), &encode(&TargetKey::derive(&[13; 32])))
+        .expect("configurations");
+    client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect("a response");
+    assert_eq!(target.configs_asked.get(), 0);
+    client
+        .pin_odoh_configs(named(addr, NAME), &encode(&TargetKey::derive(&[14; 32])))
+        .expect("configurations");
+    let error = client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect_err("a 401");
+    assert!(
+        matches!(
+            error,
+            ClientError::Odoh(OdohError::Status(StatusCode::UNAUTHORIZED))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(target.configs_asked.get(), 0);
 }

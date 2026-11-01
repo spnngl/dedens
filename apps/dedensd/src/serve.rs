@@ -32,7 +32,7 @@ use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
 use dedens_net::https::{Exchange, Pending, Requests};
 #[cfg(feature = "odoh")]
-use dedens_net::odoh::{Kind, classify};
+use dedens_net::odoh::{Kind, MAX_BODY, classify};
 use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
@@ -776,16 +776,22 @@ async fn oblivious(
     thread: &Thread,
     target: &Target,
 ) {
-    let read = pending.read_with(|request, body| classify(request, body, path));
+    let read = pending.read_with(MAX_BODY, |request, body| classify(request, body, path));
     let exchange = match compio::time::timeout(TCP_IDLE, read).await {
         Ok(Ok(exchange)) => exchange,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
         Err(_) => return tracing::debug!(%peer, "HTTP/3 request timed out"),
     };
     let (transport, mut context, query) = match (exchange.kind(), exchange.query()) {
+        // Not `DoH` requests: not counted (D84).
+        (Kind::Configs, Err(status)) => {
+            if let Err(error) = exchange.reject(status).await {
+                tracing::debug!(%peer, %error, "HTTP/3 response failed");
+            }
+            return;
+        }
         (_, Err(status)) => return reject(exchange, status, peer).await,
         (Kind::Configs, Ok(_)) => {
-            count_doh(exchange.method(), StatusCode::OK);
             if let Err(error) = exchange.respond_with(target.configs()).await {
                 tracing::debug!(%peer, %error, "HTTP/3 response failed");
             }

@@ -1,6 +1,8 @@
 //! `dedensd` as an Oblivious `DoH` target (RFC 9230 §8, D79): the key, the configurations served for it, and the
 //! opening of queries and sealing of replies.
 
+use std::fs::File;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail, ensure};
@@ -18,11 +20,34 @@ const CONFIGS_MAX_AGE: u32 = 3600;
 /// The bytes of the secret a key derives from (D78).
 const SECRET_LEN: usize = 32;
 
+/// The settings of a target: where its secret comes from. A reload builds them again and compares: the secret is
+/// read at start only (D79).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Section {
+    /// The file the secret is read from; `None` for one generated at start.
+    key: Option<PathBuf>,
+}
+
+impl Section {
+    pub(crate) fn new(key: Option<&Path>) -> Self {
+        Self {
+            key: key.map(Path::to_path_buf),
+        }
+    }
+
+    /// The target of the settings: reads the key.
+    ///
+    /// # Errors
+    ///
+    /// As [`Target::new`].
+    pub(crate) fn target(&self) -> anyhow::Result<Target> {
+        Target::new(self.key.as_deref())
+    }
+}
+
 /// The key of a target and the configurations that go with it.
 #[derive(Debug)]
 pub(crate) struct Target {
-    /// The file the secret was read from; `None` for one generated at start.
-    source: Option<PathBuf>,
     key: TargetKey,
     /// The encoded configurations (RFC 9230 §5), served at the well-known path.
     configs: Vec<u8>,
@@ -47,16 +72,7 @@ impl Target {
         let configs = ObliviousDoHConfigs::new(vec![key.config().clone()])
             .encode()
             .context("`odoh`: the configurations do not encode")?;
-        Ok(Self {
-            source: file.map(Path::to_path_buf),
-            key,
-            configs,
-        })
-    }
-
-    /// Where the secret came from: a change takes a restart.
-    pub(crate) fn source(&self) -> Option<&Path> {
-        self.source.as_deref()
+        Ok(Self { key, configs })
     }
 
     /// The response to a GET of the configurations.
@@ -83,35 +99,73 @@ impl Target {
 /// The response carrying `wire`, sealed and padded (RFC 9230 §6.2, §4.3); 500 when it cannot be sealed.
 pub(crate) fn seal(context: ResponseContext, wire: &[u8]) -> Result<Response<Vec<u8>>, StatusCode> {
     let mut entropy = Entropy::new().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    encrypt_response(context, wire, response_padding(wire.len()), &mut entropy)
-        .map(|message| odoh::target_response(&message))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let message = encrypt_response(context, wire, response_padding(wire.len()), &mut entropy)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    entropy
+        .finish()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(odoh::target_response(&message))
 }
 
-/// The secret in `file`: [`SECRET_LEN`] bytes as hexadecimal digits, surrounding whitespace aside.
+/// The most bytes a key file holds: [`SECRET_LEN`] bytes as digits and room for whitespace.
+const KEY_FILE_MAX: usize = 4 * SECRET_LEN;
+
+/// The secret in `file`: [`SECRET_LEN`] bytes as hexadecimal digits, surrounding whitespace aside. Read into a buffer
+/// of its size, wiped on drop, so that no copy of the secret is left where a growing buffer was; a file group or
+/// world readable is warned about.
 fn read_secret(file: &Path) -> anyhow::Result<Zeroizing<[u8; SECRET_LEN]>> {
-    let text = Zeroizing::new(
-        std::fs::read_to_string(file)
-            .with_context(|| format!("`odoh`: cannot read the key {}", file.display()))?,
+    let shown = file.display();
+    let mut input =
+        File::open(file).with_context(|| format!("`odoh`: cannot read the key {shown}"))?;
+    if exposed(&input).with_context(|| format!("`odoh`: cannot read the key {shown}"))? {
+        tracing::warn!(key = %shown, "`odoh`: the key is readable by others than its owner: chmod 600");
+    }
+    // One byte more than the most, to tell a file that is too long.
+    let mut buffer = Zeroizing::new([0; KEY_FILE_MAX + 1]);
+    let mut len = 0;
+    while let Some(rest) = buffer.get_mut(len..).filter(|rest| !rest.is_empty()) {
+        match input.read(rest) {
+            Ok(0) => break,
+            Ok(read) => len += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("`odoh`: cannot read the key {shown}"));
+            }
+        }
+    }
+    ensure!(
+        len <= KEY_FILE_MAX,
+        "`odoh`: the key {shown} is longer than {KEY_FILE_MAX} bytes"
     );
-    let (pairs, rest) = text.trim().as_bytes().as_chunks::<2>();
+    let text = buffer.get(..len).unwrap_or_default().trim_ascii();
+    let (pairs, rest) = text.as_chunks::<2>();
     let mut secret = Zeroizing::new([0; SECRET_LEN]);
     ensure!(
         rest.is_empty() && pairs.len() == SECRET_LEN,
-        "`odoh`: the key {} is not {} hexadecimal digits",
-        file.display(),
+        "`odoh`: the key {shown} is not {} hexadecimal digits",
         2 * SECRET_LEN
     );
     for (byte, &[high, low]) in secret.iter_mut().zip(pairs) {
         let (Some(high), Some(low)) = (digit(high), digit(low)) else {
-            bail!(
-                "`odoh`: the key {} has a character that is no hexadecimal digit",
-                file.display()
-            );
+            bail!("`odoh`: the key {shown} has a character that is no hexadecimal digit");
         };
         *byte = high << 4 | low;
     }
     Ok(secret)
+}
+
+/// Whether `file` can be read or written by its group or by others.
+#[cfg(unix)]
+fn exposed(file: &File) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt as _;
+    Ok(file.metadata()?.permissions().mode() & 0o077 != 0)
+}
+
+/// Whether `file` can be read or written by others than its owner: not known off Unix.
+#[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the signature of the Unix one")]
+fn exposed(_file: &File) -> io::Result<bool> {
+    Ok(false)
 }
 
 /// The value of the hexadecimal digit `digit`.
@@ -143,10 +197,36 @@ mod tests {
         let one = Target::new(Some(file.path())).expect("a target");
         let two = Target::new(Some(file.path())).expect("a target");
         assert_eq!(one.configs, two.configs);
-        assert_eq!(one.source(), Some(file.path()));
         let generated = Target::new(None).expect("a target");
         assert_ne!(generated.configs, one.configs);
-        assert_eq!(generated.source(), None);
+    }
+
+    /// A reload compares the settings: the key's path, never its content, which is not read again.
+    #[test]
+    fn settings_differ_by_the_key_path() {
+        let section = |path: Option<&str>| Section::new(path.map(Path::new));
+        assert_eq!(section(Some("/a")), section(Some("/a")));
+        assert_ne!(section(Some("/a")), section(Some("/b")));
+        assert_ne!(section(Some("/a")), section(None));
+        // Nothing is read until the target is made.
+        assert!(section(Some("/nonexistent/odoh.key")).target().is_err());
+    }
+
+    /// A key file longer than a key and its whitespace is refused, as is one others can read, which is warned about.
+    #[cfg(unix)]
+    #[test]
+    fn a_long_key_file_is_refused_and_an_exposed_one_found() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let file = secret_file(&format!("{}\n", "ab".repeat(KEY_FILE_MAX)));
+        let error = Target::new(Some(file.path())).unwrap_err();
+        assert!(format!("{error:#}").contains("longer"), "{error:#}");
+        let file = secret_file(&format!("  {}\n\n\n", "ab".repeat(SECRET_LEN)));
+        assert!(Target::new(Some(file.path())).is_ok(), "whitespace around");
+        let open = || File::open(file.path()).expect("opens");
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600)).expect("set");
+        assert!(!exposed(&open()).expect("metadata"));
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o640)).expect("set");
+        assert!(exposed(&open()).expect("metadata"));
     }
 
     #[test]
