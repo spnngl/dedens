@@ -70,7 +70,7 @@ impl Script {
                 Next::Ask(ask) => {
                     asked.push(format!("{} {}", ask.name, ask.qtype));
                     validation.answer(answer(&ask));
-                    assert!(asked.len() <= 64, "asks without end: {asked:?}");
+                    assert!(asked.len() <= 128, "asks without end: {asked:?}");
                 }
                 Next::Done(verdict) => return (verdict, asked),
             }
@@ -197,6 +197,21 @@ fn every_secure_capture_is_secure() {
         .map(|(id, verdict)| format!("{id}: {verdict:?}"))
         .collect();
     assert_eq!(failed, Vec::<String>::new());
+}
+
+/// An IPv6 reverse name has 34 labels, and the walk asks the DS of each below `arpa` (a real capture of RIPE
+/// NCC's `www.ipv6.ripe.net`): the default limits cover it.
+#[test]
+fn a_reverse_name_of_34_labels_is_secure() {
+    let script = Script::new();
+    let (verdict, asked) = Script::drive(
+        &Script::validator(),
+        &capture("ip6_ptr"),
+        captured_at(),
+        |ask| script.answer(ask),
+    );
+    assert!(secure(&verdict), "{verdict:?} after {asked:?}");
+    assert!(asked.len() > 34, "{asked:?}");
 }
 
 #[test]
@@ -520,7 +535,7 @@ fn a_name_too_deep_is_indeterminate() {
 }
 
 #[test]
-fn an_exhausted_budget_is_bogus() {
+fn an_exhausted_budget_is_indeterminate_not_bogus() {
     let script = Script::new();
     let limits = Limits {
         budget: Budget::new(Verifications(2), Nsec3Hashes(0)),
@@ -528,7 +543,10 @@ fn an_exhausted_budget_is_bogus() {
     };
     let validator = Validator::new(TrustAnchors::root(), limits);
     let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
-    assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+    assert!(
+        matches!(&verdict, Verdict::Indeterminate { ede } if ede.code == InfoCode::DNSSEC_INDETERMINATE),
+        "{verdict:?}"
+    );
 }
 
 #[test]
@@ -1118,4 +1136,110 @@ fn the_depth_is_counted_from_the_anchor_whatever_the_order() {
     let validator = Validator::new(TrustAnchors::read(&text).expect("anchors"), limits);
     let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
     assert!(secure(&verdict), "{verdict:?}");
+}
+
+// What the walk asks, and what a response may hold besides its answer.
+
+#[test]
+fn the_walk_asks_the_ds_of_an_empty_non_terminal_a_cname_and_a_wildcard() {
+    // The DS of a name that has none is answered as the name is: no data at an empty non-terminal, the CNAME at
+    // a CNAME's owner, the wildcard's no data at a name a wildcard matches (RFC 4035 §3.1.4.1, RFC 6840 §4.3).
+    let script = Script::new();
+    for (id, ask) in [
+        ("ent_nsec", "_tcp.nlnetlabs.nl. DS"),
+        ("cname_cross_zone", "www.icann.org. DS"),
+        ("wildcard_answer", "wildcard-test.sidnlabs.nl. DS"),
+    ] {
+        let (verdict, asked) =
+            Script::drive(&Script::validator(), &capture(id), captured_at(), |ask| {
+                script.answer(ask)
+            });
+        assert!(secure(&verdict), "{id}: {verdict:?}");
+        assert!(
+            asked.iter().any(|a| a == ask),
+            "{id} did not ask {ask}: {asked:?}"
+        );
+    }
+}
+
+#[test]
+fn a_referral_to_a_zone_of_an_unsupported_algorithm_is_unsigned() {
+    // `ed448.nl` has a DS the parent signs, of an algorithm `ring` lacks (D71): a delegation that is signed,
+    // but to a zone this validator cannot validate (RFC 4035 §5.2, RFC 6840 §5.2).
+    let script = Script::new();
+    let mut response = capture("alg8_a");
+    response.questions = vec![Question::new(name("www.ed448.nl"), RecordType::A)];
+    response.header.flags = response.header.flags.without(Flags::AA);
+    response.answer.clear();
+    response.authority = capture("ed448_nl_ds").answer;
+    response.authority.push(ns("ed448.nl", "ns1.ed448.nl"));
+    let question = response.questions.first().expect("a question").clone();
+    let mut validation =
+        Script::validator().start_referral(&question, &response, u64::from(captured_at()));
+    let verdict = loop {
+        match validation.step() {
+            Next::Ask(ask) => validation.answer(script.answer(&ask)),
+            Next::Done(verdict) => break verdict,
+        }
+    };
+    assert_eq!(
+        verdict,
+        Verdict::Referral {
+            child: name("ed448.nl"),
+            delegation: Delegation::Unsigned {
+                reason: InsecureReason::UnsupportedAlgorithm
+            }
+        }
+    );
+}
+
+#[test]
+fn records_that_are_not_part_of_the_answer_are_neither_walked_nor_checked() {
+    // An unsigned A at another name and an unsigned NS of another zone: out of bailiwick (D75). Nothing is
+    // asked for them, and they change no verdict: the caller strips them from what it hands on.
+    let script = Script::new();
+    let validator = Script::validator();
+    let plain = capture("alg8_a");
+    let (verdict, asked) =
+        Script::drive(&validator, &plain, captured_at(), |ask| script.answer(ask));
+    let mut response = plain.clone();
+    let a = response
+        .answer
+        .iter()
+        .find(|record| record.rtype() == RecordType::A)
+        .expect("an A record")
+        .clone();
+    response.answer.push(Record {
+        name: name("evil.example"),
+        ..a
+    });
+    response
+        .authority
+        .push(ns("evil.example", "ns.evil.example"));
+    response.authority.push(ns("com", "ns.evil.example"));
+    let (forged, forged_asked) = Script::drive(&validator, &response, captured_at(), |ask| {
+        script.answer(ask)
+    });
+    assert!(secure(&verdict), "{verdict:?}");
+    assert_eq!(forged, verdict);
+    assert_eq!(forged_asked, asked);
+}
+
+#[test]
+fn proofs_of_two_zones_in_one_response_are_each_checked_by_their_zone() {
+    // The DNAME of `sidnlabs.nl` with the AAAA it leads to in `example.nl`, and a proof from each zone: the
+    // NSEC3 records of the one are not checked with the keys of the other (D75).
+    let script = Script::new();
+    let mut response = capture("dname_answer");
+    response.authority.extend(capture("ent_nsec3").authority);
+    response
+        .authority
+        .extend(capture("leaf_www_example_nl_ds").authority);
+    let verdict = script.run(&Script::validator(), &response, captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    // And a proof of neither zone is still forged data: bogus.
+    let mut other = capture("dname_answer");
+    other.authority.extend(capture("nxdomain_nsec3").authority);
+    let verdict = script.run(&Script::validator(), &other, captured_at());
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
 }

@@ -67,8 +67,21 @@ pub(super) fn parent(name: &Name<'_>) -> Option<Name<'static>> {
         .flatten()
 }
 
+/// What an error of a signature check makes of the data it was about: bogus, but for an exhausted budget, which
+/// says nothing of the data (the caller or an attacker spent it) and so is indeterminate, like a lame server
+/// (RFC 9276 §3.2, D71, D75).
+pub(super) fn sig_failure(error: &SigError, set: &RrSet<'_>) -> Failure {
+    match error {
+        SigError::BudgetExhausted(_) => Failure::indeterminate(
+            InfoCode::DNSSEC_INDETERMINATE,
+            format!("{} {}: {error}", set.owner(), set.rtype()),
+        ),
+        _ => Failure::Bogus(error.ede(set)),
+    }
+}
+
 /// What an error of a signature check makes of a zone or delegation: insecure when only the DS records are
-/// unusable (RFC 6840 §5.2, D73), bogus otherwise.
+/// unusable (RFC 6840 §5.2, D73), bogus (indeterminate for the budget, [`sig_failure`]) otherwise.
 pub(super) fn unusable(error: &SigError, set: &RrSet<'_>, ttl: Ttl) -> Unusable {
     match error {
         SigError::UnsupportedDigest { .. } => Unusable::Insecure {
@@ -79,7 +92,7 @@ pub(super) fn unusable(error: &SigError, set: &RrSet<'_>, ttl: Ttl) -> Unusable 
             reason: InsecureReason::UnsupportedAlgorithm,
             ttl,
         },
-        _ => Unusable::Failed(Failure::Bogus(error.ede(set))),
+        _ => Unusable::Failed(sig_failure(error, set)),
     }
 }
 
@@ -287,7 +300,7 @@ impl Validation {
                     InfoCode::DNSSEC_BOGUS,
                     format!("{name} DS comes from a wildcard"),
                 ))),
-                Err(error) => Cut::Unusable(Unusable::Failed(Failure::Bogus(error.ede(ds)))),
+                Err(error) => Cut::Unusable(Unusable::Failed(sig_failure(&error, ds))),
             };
         }
         let rewrite = answer
