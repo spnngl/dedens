@@ -28,7 +28,11 @@ pub(super) struct Parsed {
 }
 
 impl Parsed {
-    pub(super) fn new(question: &Question<'_>, answer: &[Record<'static>], authority: &[Record<'static>]) -> Self {
+    pub(super) fn new(
+        question: &Question<'_>,
+        answer: &[Record<'static>],
+        authority: &[Record<'static>],
+    ) -> Self {
         let answer = Section::new(answer);
         let chain = Chain::follow(question, &answer);
         Self {
@@ -172,10 +176,8 @@ impl Validation {
             ));
         }
         // A CNAME chain that stops before the type asked has no denial to make: the caller asks on.
-        let partial = !chain.found
-            && chain.links > 0
-            && rcode == Rcode::NOERROR
-            && !authority.has_denial();
+        let partial =
+            !chain.found && chain.links > 0 && rcode == Rcode::NOERROR && !authority.has_denial();
         let needs_denial = !chain.found && !partial;
 
         // What is asked of the chain of trust, before anything is checked.
@@ -238,11 +240,10 @@ impl Validation {
             Err(unusable) => return unusable.into(),
         };
         let apex = &item.zone.apex;
-        let (ttl, wildcard) =
-            match self.authentic(item.set, item.section, apex, &keys, keys_ttl) {
-                Ok(authentic) => authentic,
-                Err(unusable) => return unusable.into(),
-            };
+        let (ttl, wildcard) = match self.authentic(item.set, item.section, apex, &keys, keys_ttl) {
+            Ok(authentic) => authentic,
+            Err(unusable) => return unusable.into(),
+        };
         let Some(encloser) = wildcard else {
             return Verdict::Secure { ttl };
         };
@@ -271,14 +272,20 @@ impl Validation {
         if !owner.is_within(apex) || (set.rtype() == RecordType::DNSKEY && owner != apex) {
             return Err(Unusable::Failed(Failure::bogus(
                 InfoCode::DNSSEC_BOGUS,
-                format!("{owner} {} is in no zone with keys: the zone is {apex}", set.rtype()),
+                format!(
+                    "{owner} {} is in no zone with keys: the zone is {apex}",
+                    set.rtype()
+                ),
             )));
         }
         let sigs = section.signatures(set);
         if sigs.is_empty() {
             return Err(Unusable::Failed(Failure::bogus(
                 InfoCode::RRSIGS_MISSING,
-                format!("{owner} {} is unsigned in the secure zone {apex}", set.rtype()),
+                format!(
+                    "{owner} {} is unsigned in the secure zone {apex}",
+                    set.rtype()
+                ),
             )));
         }
         match verify_any(set, &sigs, &Key::all(keys), self.now, &mut self.budget) {
@@ -402,9 +409,7 @@ impl Validation {
         if let Some((_, known)) = evidences.iter().find(|(name, _)| name == apex) {
             return known.clone();
         }
-        let evidence = self
-            .evidence(apex, keys, keys_ttl, authority)
-            .map(Arc::new);
+        let evidence = self.evidence(apex, keys, keys_ttl, authority).map(Arc::new);
         evidences.push((apex.clone(), evidence.clone()));
         evidence
     }

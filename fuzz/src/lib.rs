@@ -982,6 +982,26 @@ const CAPTURED_AT: &str = include_str!("../../crates/dedens-dnssec/tests/testdat
 static VALIDATOR: LazyLock<Validator> =
     LazyLock::new(|| Validator::new(TrustAnchors::root(), Limits::default()));
 
+/// A captured response, as the bytes it was saved as and as a message.
+type Captured = (Vec<u8>, Message<'static>);
+
+/// The captured responses a validation is answered from: the real chains of `tests/testdata/`.
+static POOL: LazyLock<Vec<Captured>> = LazyLock::new(|| {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/dedens-dnssec/tests/testdata");
+    let mut pool: Vec<Captured> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.ok()?.path()).ok())
+        .filter_map(|wire| {
+            let message = Message::decode(&wire).ok()?.message.into_owned();
+            Some((wire, message))
+        })
+        .collect();
+    pool.sort_by(|a, b| a.0.cmp(&b.0));
+    pool
+});
+
 /// `message` as a response to `question`, whatever it answered.
 fn answering(message: &Message<'static>, question: &Question<'static>) -> Message<'static> {
     let mut message = message.clone();
@@ -989,10 +1009,21 @@ fn answering(message: &Message<'static>, question: &Question<'static>) -> Messag
     message
 }
 
-/// A response read from the input, validated: the input is the response, and the byte it holds at the number of
-/// the question picks the answer to that question: none, the response read as the answer, or the message the input
-/// holds from another offset read as the answer. Whatever the bytes, the validation asks only for DS and DNSKEY,
-/// asks at most the limit, ends, and a verdict that is not secure carries an extended error with text.
+/// The captured response to `ask`, when there is one.
+fn captured(ask: &Question<'static>) -> Option<&'static Captured> {
+    POOL.iter().find(|(_, message)| {
+        message
+            .questions
+            .first()
+            .is_some_and(|q| q.name == ask.name && q.qtype == ask.qtype)
+    })
+}
+
+/// A response read from the input, validated, its questions answered from the captured chains: each answer is
+/// picked by a byte of the input, as the input's own message, none, the captured response to the question, that
+/// response with a bit of it flipped, or a captured response to another question. Whatever the bytes, the
+/// validation asks only for DS and DNSKEY, asks at most the limit, ends, and a verdict that is not secure and has
+/// an extended error gives it text.
 ///
 /// # Panics
 ///
@@ -1017,17 +1048,22 @@ pub fn validate(data: &[u8]) {
                     ask.qtype
                 );
                 assert!(asked < limit, "asked past the limit");
-                let pick = data.get(asked).copied().unwrap_or(0);
-                let from = usize::from(pick).saturating_mul(asked + 1) % data.len();
-                let other = data
-                    .get(from..)
-                    .and_then(|rest| Message::decode(rest).ok())
-                    .map(|decoded| decoded.message.into_owned());
-                match (pick % 3, other) {
-                    (1, _) => validation.answer(Some(&answering(&response, &ask))),
-                    (2, Some(other)) => validation.answer(Some(&answering(&other, &ask))),
-                    _ => validation.answer(None),
-                }
+                let pick = data.get(asked.wrapping_add(12)).copied().unwrap_or(2);
+                let answer = match pick % 5 {
+                    0 => None,
+                    1 => Some(answering(&response, &ask)),
+                    2 => captured(&ask).map(|(_, message)| message.clone()),
+                    3 => captured(&ask).and_then(|(wire, _)| {
+                        let mut wire = wire.clone();
+                        let at = usize::from(pick).saturating_mul(asked + 7) % wire.len().max(1);
+                        *wire.get_mut(at)? ^= 1 << (pick % 8);
+                        Some(Message::decode(&wire).ok()?.message.into_owned())
+                    }),
+                    _ => POOL
+                        .get(usize::from(pick) % POOL.len().max(1))
+                        .map(|(_, message)| answering(message, &ask)),
+                };
+                validation.answer(answer.as_ref());
             }
             Next::Done(verdict) => {
                 if let Some(ede) = verdict.ede() {
