@@ -840,7 +840,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     getting 4.00 for the second block of a 2649-byte answer, as the RFCs do not say how a server finds the response
     again. No such response kept is 4.00. CON requests are
     deduplicated (`Dedup`, 4096 entries, EXCHANGE_LIFETIME) and answered by a piggybacked ACK, never a separate
-    response; a NON request gets a NON response; a ping gets a RST. The path is read as written, no
+    response; a NON request gets a NON response, its message ID from a counter that starts at random (RFC 7252
+    §4.4); a ping, and a CON message with a format error whose ID can be read (`Message::reject`, §4.2), get a RST;
+    a NON one, or one of another version, is dropped. The path is read as written, no
     percent-decoding; `?` and `#` in it are refused at configuration.
   - Unprotected: `dedensd` logs a warning at start for each `coap://` address, NOT RECOMMENDED (§6). DTLS and
     OSCORE are not built; the proxy parts (§9.2 redirects, §9.3 hop limit) are ignored: see `docs/TODECIDE.md`.
