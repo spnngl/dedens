@@ -331,8 +331,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (Unbound's `val-bogus-ttl`), for a zone only, by name. A hit gives the TTL it has left, so what is derived from it
   never outlives it, and a hit is never written back, so reading renews nothing.
   Never kept: an indeterminate outcome or one of the budget (D71), nor `Failure::Transient`: a bogus verdict that
-  says nothing lasting of the zone, i.e. every bogus found before the zone's keys were reached (a DS that fails,
-  a denial that does not hold, the signature limit of D73 `TooManyFailures`) and any outcome inherited from the parent zone
+  says nothing lasting of the zone: every bogus found before the zone's keys were reached (a DS that fails, a
+  denial that does not hold), the signature limit of D73 (`TooManyFailures`), a DNSKEY answer that is empty,
+  missing, unsigned, of keys no signature names, expired or not yet valid (`SigError::is_proven` is false: any
+  answer can lack those, and a replay repeats them), any bogus resting on the response `start` was given
+  (`Validation::seeded`: the caller's, however fetched), and any outcome inherited from the parent zone
   (`Zone::Beneath`, recomputed from its entry); nor what a trust anchor decides (no anchor, negative anchor), which
   is the `Validator`'s own and costs nothing to find. A validation keeps what it settled in its own map as before
   (so no step spends the budget twice) and copies a hit into it, so that it sees one outcome whatever the
@@ -342,11 +345,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Poisoning. Secure, insecure and no-cut entries come of verified data only: a signature under keys that a DS or
   an anchor vouches for, a denial bound to the name asked, so what an attacker sends is either true (then it is what
   an honest answer gives) or no entry. One validation's forged DS, signature or denial changes no other
-  (`tests/validator.rs`). The one thing a forged answer can still do is the bogus zone: whoever answers the
-  validator's DNSKEY question under an authentic DS can make that zone bogus, as it could for its own validation
-  (an unsigned or garbled DNSKEY answer). It is kept to what limits the harm: 60 s, fixed, never renewed by a hit,
-  one zone (the name of the zone that failed, not its children's names), and only this failure. That is Unbound's
-  behaviour; TODECIDE has the alternative.
+  (`tests/validator.rs`). The one thing a forged answer can still do is the bogus zone, and only for two facts:
+  the DNSKEY answer to the validator's own question under an authentic DS or anchor either lacks the key the DS
+  digests (`NoKeyForDs`) or has a signature by that key that does not check (`BadSignature`). Whoever answers that
+  question can say so, as it could for its own validation: no answer is authenticated before its keys are, and a
+  sans-IO validator cannot retry another server or TCP as Unbound's iterator does before it stores the failure
+  (TODECIDE has the retry). The entry is kept to what limits the harm: 60 s, fixed, never renewed by a hit, one
+  zone (the name of the zone that failed, not its children's names).
   Bound: `key_cache` entries in each of two tables, zones (keys, insecure, bogus) and names that are no zone cut, so
   a flood of names under a signed zone, each with a proof of no DS, evicts names and never the keys. Full, a table
   drops the entry that stops holding first (expired ones go before the others; a scan, paid only when full, and
