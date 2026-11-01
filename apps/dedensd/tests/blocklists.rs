@@ -1,10 +1,11 @@
 //! The published blocklists of `docs/blocklists/blocklists.yaml` (D87): the file is read and checked offline, and
-//! the ignored test, `just blocklists`, downloads every list and checks its format.
+//! the ignored test, `just blocklists`, downloads every list and checks its format and its freshness.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
+use std::io::Read as _;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_plugins::Lists;
 use serde::Deserialize;
@@ -16,16 +17,33 @@ const CATALOG: &str = include_str!("../../../docs/blocklists/blocklists.yaml");
 /// The largest list taken, as `dedensd` (D57).
 const MAX_LIST_LEN: u64 = 256 << 20;
 
+/// The bytes read of a list `dedensd` does not read, whose format its first lines tell.
+const PREFIX_LEN: u64 = 1 << 20;
+
 /// The time a download may take: more than `dedensd`'s 30 s, the largest lists being tens of MB.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Downloads running at once.
 const DOWNLOADS_AT_ONCE: usize = 8;
 
-/// Tries of a download, which public servers sometimes fail (oisd answers 503 now and then), and the wait
+/// Tries of a request, which public servers sometimes fail (oisd answers 503 now and then), and the wait
 /// before the first retry, doubled for each next one.
 const TRIES: u32 = 3;
 const RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// A list may miss this many updates, plus [`GRACE`], before it counts as stale: the lists of `stevenblack`, announced
+/// daily, come every 1 to 3 days.
+const MISSED_UPDATES: u32 = 3;
+const GRACE: Duration = Duration::from_hours(24);
+
+/// The SPDX ids the file uses; one is added when a source takes it.
+const SPDX: [&str; 5] = [
+    "BSD-3-Clause",
+    "GPL-3.0-only",
+    "MIT",
+    "MPL-2.0",
+    "Unlicense",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,10 +58,81 @@ struct Source {
     name: String,
     maintainer: String,
     site: String,
-    /// An SPDX id, else the terms.
-    license: String,
+    status: Status,
+    license: License,
+    #[serde(rename = "use")]
+    usage: Use,
+    /// For a [`License::Custom`] or [`License::None`] only.
+    terms: Option<String>,
     description: String,
     lists: Vec<List>,
+}
+
+/// Whether a source still publishes.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Status {
+    Active,
+    /// Its lists unchanged since that day.
+    Frozen(Day),
+    /// No list left to download.
+    Retired,
+}
+
+/// A day, `2026-11-01`: its midnight UTC.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "String")]
+struct Day(SystemTime);
+
+impl TryFrom<String> for Day {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        parse_date(&text)
+            .map(Self)
+            .ok_or_else(|| format!("{text:?} is no YYYY-MM-DD date"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+enum License {
+    /// One of [`SPDX`].
+    Spdx,
+    /// The source's own terms.
+    Custom,
+    /// None given.
+    None,
+}
+
+impl TryFrom<String> for License {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        match text.as_str() {
+            "custom" => Ok(Self::Custom),
+            "none" => Ok(Self::None),
+            id if SPDX.contains(&id) => Ok(Self::Spdx),
+            id => Err(format!(
+                "{id:?} is neither `custom`, `none` nor an SPDX id of {SPDX:?}"
+            )),
+        }
+    }
+}
+
+/// What the terms allow with the data, as read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Use {
+    /// Any use, commercial included.
+    Free,
+    /// Any use but selling it.
+    NoResale,
+    NonCommercial,
+    /// In a product or a service for others, only with permission.
+    Ask,
+    /// No terms given.
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,8 +143,28 @@ struct List {
     url: String,
     format: Format,
     categories: Vec<Category>,
-    /// How often, as announced, else as measured.
-    updated: String,
+    updated: Updated,
+}
+
+/// How often a list changes, as announced, else as measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+enum Updated {
+    Every(Duration),
+    Irregular,
+}
+
+impl TryFrom<String> for Updated {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        if text == "irregular" {
+            return Ok(Self::Irregular);
+        }
+        parse_duration(&text).map(Self::Every).ok_or_else(|| {
+            format!("{text:?} is neither an ISO 8601 duration of weeks to seconds nor `irregular`")
+        })
+    }
 }
 
 /// What a line of a list holds, after comments.
@@ -172,6 +281,130 @@ fn unique<T: Eq + std::hash::Hash>(items: impl IntoIterator<Item = T>) -> bool {
     items.into_iter().all(|item| seen.insert(item))
 }
 
+/// Decimal digits only, as `str::parse` also takes `+1`.
+fn number(text: &str) -> Option<u64> {
+    if text.bytes().all(|b| b.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// `N` numbers between `separator`s.
+fn numbers<const N: usize>(text: &str, separator: char) -> Option<[u64; N]> {
+    let mut parts = text.split(separator);
+    let mut numbers = [0; N];
+    for slot in &mut numbers {
+        *slot = number(parts.next()?)?;
+    }
+    parts.next().is_none().then_some(numbers)
+}
+
+/// An ISO 8601 duration of weeks to seconds, `P1D` or `PT1H30M`, not zero: years and months have no fixed length.
+fn parse_duration(text: &str) -> Option<Duration> {
+    let text = text.strip_prefix('P')?;
+    let (date, time) = match text.split_once('T') {
+        Some((_, "")) => return None,
+        Some((date, time)) => (date, time),
+        None => (text, ""),
+    };
+    let date_units: &[(char, u64)] = &[('W', 604_800), ('D', 86_400)];
+    let time_units: &[(char, u64)] = &[('H', 3_600), ('M', 60), ('S', 1)];
+    let mut seconds = 0_u64;
+    for (mut part, units) in [(date, date_units), (time, time_units)] {
+        for &(unit, scale) in units {
+            if let Some((count, rest)) = part.split_once(unit) {
+                seconds = seconds.checked_add(number(count)?.checked_mul(scale)?)?;
+                part = rest;
+            }
+        }
+        if !part.is_empty() {
+            return None;
+        }
+    }
+    (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+/// The midnight UTC opening a day of 1970 or later (Howard Hinnant's `days_from_civil`).
+fn civil(year: u64, month: u64, day: u64) -> Option<SystemTime> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = if month <= 2 {
+        year.checked_sub(1)?
+    } else {
+        year
+    };
+    let (era, year_of_era) = (year / 400, year % 400);
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = (era * 146_097 + day_of_era).checked_sub(719_468)?;
+    Some(UNIX_EPOCH + Duration::from_secs(days * 86_400))
+}
+
+/// `2026-11-01`.
+fn parse_date(text: &str) -> Option<SystemTime> {
+    let [year, month, day] = numbers(text, '-')?;
+    civil(year, month, day)
+}
+
+/// `date` at `10:08:50`.
+fn at(date: SystemTime, clock: &str) -> Option<SystemTime> {
+    let [hours, minutes, seconds] = numbers(clock, ':')?;
+    (hours < 24 && minutes < 60 && seconds < 61)
+        .then(|| date + Duration::from_secs(hours * 3_600 + minutes * 60 + seconds))
+}
+
+/// `2026-11-01T10:08:50Z`, as GitHub's API writes a time.
+fn parse_iso_time(text: &str) -> Option<SystemTime> {
+    let (date, clock) = text.strip_suffix('Z')?.split_once('T')?;
+    at(parse_date(date)?, clock)
+}
+
+/// `Sun, 01 Nov 2026 10:08:50 GMT`, an HTTP date (RFC 9110 §5.6.7).
+fn parse_http_date(text: &str) -> Option<SystemTime> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let fields: Vec<&str> = text.split_whitespace().collect();
+    let [_, day, month, year, clock, "GMT"] = fields.as_slice() else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|name| name == month)? + 1;
+    let date = civil(number(year)?, u64::try_from(month).ok()?, number(day)?)?;
+    at(date, clock)
+}
+
+/// `duration` in hours, or days past two.
+fn shown(duration: Duration) -> String {
+    let hours = duration.as_secs() / 3_600;
+    if hours < 48 {
+        format!("{hours} h")
+    } else {
+        format!("{} days", hours / 24)
+    }
+}
+
+/// Whether a list last `changed` agrees with its source's `status` and its `updated`.
+fn judge_freshness(
+    status: Status,
+    updated: Updated,
+    changed: SystemTime,
+    now: SystemTime,
+) -> Result<String, String> {
+    let age = now.duration_since(changed).unwrap_or_default();
+    let changed_ago = format!("changed {} ago", shown(age));
+    match (status, updated) {
+        (Status::Frozen(Day(since)), _) if changed > since + GRACE => Err(format!(
+            "{changed_ago}, after the day it froze: set `status: active`"
+        )),
+        (Status::Active, Updated::Every(every)) if age > every * MISSED_UPDATES + GRACE => Err(
+            format!("{changed_ago}, announced every {}: frozen?", shown(every)),
+        ),
+        _ => Ok(changed_ago),
+    }
+}
+
 #[test]
 fn catalog_is_well_formed() {
     let catalog = catalog();
@@ -196,12 +429,26 @@ fn catalog_is_well_formed() {
         for (field, text) in [
             ("name", &s.name),
             ("maintainer", &s.maintainer),
-            ("license", &s.license),
             ("description", &s.description),
         ] {
             assert!(!text.trim().is_empty(), "{at}: empty {field}");
         }
         assert!(s.site.starts_with("https://"), "{at}: site {}", s.site);
+        let explained = matches!(s.license, License::Custom | License::None);
+        assert_eq!(
+            s.terms.as_ref().is_some_and(|t| !t.trim().is_empty()),
+            explained,
+            "{at}: terms go with a `custom` or `none` licence, and only there"
+        );
+        assert!(
+            s.license != License::Spdx || s.usage == Use::Free,
+            "{at}: an SPDX licence allows any use"
+        );
+        assert_eq!(
+            s.lists.is_empty(),
+            matches!(s.status, Status::Retired),
+            "{at}: a retired source has no list, and only it"
+        );
         assert!(
             unique(s.lists.iter().map(|l| &l.id)),
             "{at}: list ids repeat"
@@ -220,7 +467,6 @@ fn catalog_is_well_formed() {
                 "{at}: categories {:?}",
                 l.categories
             );
-            assert!(!l.updated.trim().is_empty(), "{at}: empty updated");
         }
     }
 }
@@ -251,25 +497,201 @@ fn formats_of_lines() {
     }
 }
 
-/// The text at `url`, or why not.
-fn download(agent: &ureq::Agent, url: &str) -> Result<String, String> {
+#[test]
+fn durations() {
+    for (text, seconds) in [
+        ("P1D", Some(86_400)),
+        ("P1W", Some(604_800)),
+        ("PT30M", Some(1_800)),
+        ("PT1H30M", Some(5_400)),
+        ("P1DT12H", Some(129_600)),
+        ("P", None),
+        ("PT", None),
+        ("P1DT", None),
+        ("PT0S", None),
+        ("P1M", None),
+        ("P1Y", None),
+        ("P1H", None),
+        ("PT1D", None),
+        ("PT30M1H", None),
+        ("P+1D", None),
+        ("1D", None),
+        ("daily", None),
+    ] {
+        assert_eq!(
+            parse_duration(text),
+            seconds.map(Duration::from_secs),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn dates() {
+    // 2026-11-01 is day 20,758 of the Unix epoch.
+    let day = UNIX_EPOCH + Duration::from_hours(20_758 * 24);
+    let time = day + Duration::from_secs(10 * 3_600 + 8 * 60 + 50);
+    assert_eq!(parse_date("1970-01-01"), Some(UNIX_EPOCH));
+    assert_eq!(parse_date("2026-11-01"), Some(day));
+    assert_eq!(parse_iso_time("2026-11-01T10:08:50Z"), Some(time));
+    assert_eq!(parse_http_date("Sun, 01 Nov 2026 10:08:50 GMT"), Some(time));
+    for text in [
+        "2026-13-01",
+        "2026-11-32",
+        "1969-12-31",
+        "2026-11",
+        "2026-11-01-02",
+    ] {
+        assert_eq!(parse_date(text), None, "{text:?}");
+    }
+    assert_eq!(parse_iso_time("2026-11-01T24:00:00Z"), None);
+    assert_eq!(parse_http_date("Sun, 01 Nov 2026 10:08:50 CET"), None);
+}
+
+#[test]
+fn freshness() {
+    let now = UNIX_EPOCH + Duration::from_hours(20_758 * 24);
+    let hours = |n: u64| now - Duration::from_hours(n);
+    let daily = Updated::Every(Duration::from_hours(24));
+    let frozen = Status::Frozen(Day(hours(30 * 24)));
+    for (status, updated, changed, fresh) in [
+        (Status::Active, daily, hours(1), true),
+        (Status::Active, daily, hours(4 * 24), true),
+        (Status::Active, daily, hours(4 * 24 + 1), false),
+        (Status::Active, Updated::Irregular, hours(365 * 24), true),
+        (frozen, daily, hours(30 * 24), true),
+        (frozen, daily, hours(40 * 24), true),
+        (frozen, daily, hours(28 * 24), false),
+    ] {
+        assert_eq!(
+            judge_freshness(status, updated, changed, now).is_ok(),
+            fresh,
+            "{status:?} {updated:?} {changed:?}"
+        );
+    }
+}
+
+/// `request` tried [`TRIES`] times.
+fn retried<T>(mut request: impl FnMut() -> Result<T, String>) -> Result<T, String> {
     let mut error = String::new();
     for tried in 0..TRIES {
         if tried > 0 {
             std::thread::sleep(RETRY_AFTER * 2_u32.pow(tried - 1));
         }
-        match agent.get(url).call().and_then(|mut response| {
-            response
-                .body_mut()
-                .with_config()
-                .limit(MAX_LIST_LEN)
-                .read_to_string()
-        }) {
-            Ok(text) => return Ok(text),
-            Err(e) => error = e.to_string(),
+        match request() {
+            Ok(value) => return Ok(value),
+            Err(e) => error = e,
         }
     }
     Err(error)
+}
+
+/// A downloaded list: its text, whole when `dedensd` reads its format, else its first lines; and when it last
+/// changed, when its server tells (`Last-Modified`).
+struct Fetched {
+    text: String,
+    /// Whether `text` is the first lines only.
+    cut: bool,
+    changed: Option<SystemTime>,
+}
+
+fn download(agent: &ureq::Agent, list: &List) -> Result<Fetched, String> {
+    let mut response = agent.get(&list.url).call().map_err(|e| e.to_string())?;
+    let changed = response
+        .headers()
+        .get("last-modified")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_http_date);
+    let body = response.body_mut();
+    let mut cut = false;
+    let text = if list.format.is_read() {
+        body.with_config()
+            .limit(MAX_LIST_LEN)
+            .read_to_string()
+            .map_err(|e| e.to_string())?
+    } else {
+        let mut bytes = Vec::new();
+        body.as_reader()
+            .take(PREFIX_LEN)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        cut = u64::try_from(bytes.len()) == Ok(PREFIX_LEN);
+        if cut && let Some(end) = bytes.iter().rposition(|&b| b == b'\n') {
+            bytes.truncate(end + 1);
+        }
+        String::from_utf8(bytes).map_err(|e| e.to_string())?
+    };
+    Ok(Fetched { text, cut, changed })
+}
+
+#[derive(Deserialize)]
+struct Commit {
+    commit: CommitData,
+}
+
+#[derive(Deserialize)]
+struct CommitData {
+    committer: Signature,
+}
+
+#[derive(Deserialize)]
+struct Signature {
+    date: String,
+}
+
+/// When a list last changed, as far as one can tell.
+enum Changed {
+    At(SystemTime),
+    /// Why not.
+    Unknown(&'static str),
+}
+
+/// When the file at a `raw.githubusercontent.com` URL last changed, its last commit as GitHub's API tells. With
+/// `GITHUB_TOKEN` when set: GitHub answers 60 requests an hour without one, and past them a date is unknown, not
+/// wrong.
+fn github_changed(agent: &ureq::Agent, url: &str) -> Result<Changed, String> {
+    let Some(path) = url.strip_prefix("https://raw.githubusercontent.com/") else {
+        return Ok(Changed::Unknown("no Last-Modified"));
+    };
+    let parts: Vec<&str> = path.split('/').collect();
+    let ([owner, repo, "refs", "heads", branch, file @ ..] | [owner, repo, branch, file @ ..]) =
+        parts.as_slice()
+    else {
+        return Err(format!("{url}: no GitHub file"));
+    };
+    let mut request = agent
+        .get(format!(
+            "https://api.github.com/repos/{owner}/{repo}/commits"
+        ))
+        .query("path", file.join("/"))
+        .query("sha", *branch)
+        .query("per_page", "1")
+        .header("Accept", "application/vnd.github+json");
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    let text = match request
+        .call()
+        .and_then(|mut response| response.body_mut().read_to_string())
+    {
+        Ok(text) => text,
+        Err(ureq::Error::StatusCode(403 | 429)) => {
+            return Ok(Changed::Unknown(
+                "GitHub's API limit reached, set GITHUB_TOKEN",
+            ));
+        }
+        Err(e) => return Err(format!("GitHub API: {e}")),
+    };
+    let commits: Vec<Commit> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let date = &commits
+        .first()
+        .ok_or_else(|| format!("{url}: no commit"))?
+        .commit
+        .committer
+        .date;
+    parse_iso_time(date)
+        .map(Changed::At)
+        .ok_or_else(|| format!("GitHub API: {date:?} is no time"))
 }
 
 /// What the lines of `text` hold, when most are of `format`; when `dedensd` reads `format`, `text` must read as a
@@ -294,6 +716,27 @@ fn judge(text: &str, format: Format) -> Result<String, String> {
     Ok(format!("{held} of {lines} lines {format:?}"))
 }
 
+/// A list downloaded and judged: its format, then its freshness when its date is known.
+fn check(
+    agent: &ureq::Agent,
+    status: Status,
+    list: &List,
+    now: SystemTime,
+) -> Result<String, String> {
+    let fetched = retried(|| download(agent, list))?;
+    let lines = judge(&fetched.text, list.format)?;
+    let changed = match fetched.changed {
+        Some(changed) => Changed::At(changed),
+        None => retried(|| github_changed(agent, &list.url))?,
+    };
+    let freshness = match changed {
+        Changed::At(changed) => judge_freshness(status, list.updated, changed, now)?,
+        Changed::Unknown(why) => format!("date unknown: {why}"),
+    };
+    let cut = if fetched.cut { " in its first MiB" } else { "" };
+    Ok(format!("{lines}{cut}, {freshness}"))
+}
+
 #[test]
 #[ignore = "downloads every published list: `just blocklists`"]
 fn every_list_has_its_format() {
@@ -306,11 +749,16 @@ fn every_list_has_its_format() {
         .tls_config(tls)
         .build()
         .new_agent();
+    let now = SystemTime::now();
     let catalog = catalog();
-    let lists: Vec<(String, &List)> = catalog
+    let lists: Vec<(String, Status, &List)> = catalog
         .sources
         .iter()
-        .flat_map(|s| s.lists.iter().map(|l| (format!("{}.{}", s.id, l.id), l)))
+        .flat_map(|s| {
+            s.lists
+                .iter()
+                .map(|l| (format!("{}.{}", s.id, l.id), s.status, l))
+        })
         .collect();
     let outcomes: Vec<Result<String, String>> = lists
         .chunks(DOWNLOADS_AT_ONCE)
@@ -318,11 +766,9 @@ fn every_list_has_its_format() {
             std::thread::scope(|scope| {
                 let runs: Vec<_> = chunk
                     .iter()
-                    .map(|(_, list)| {
+                    .map(|&(_, status, list)| {
                         let agent = &agent;
-                        scope.spawn(move || {
-                            download(agent, &list.url).and_then(|text| judge(&text, list.format))
-                        })
+                        scope.spawn(move || check(agent, status, list, now))
                     })
                     .collect();
                 runs.into_iter()
@@ -334,7 +780,7 @@ fn every_list_has_its_format() {
 
     let mut table = String::new();
     let mut failures = 0;
-    for ((id, list), outcome) in lists.iter().zip(&outcomes) {
+    for ((id, _, list), outcome) in lists.iter().zip(&outcomes) {
         let (status, detail) = match outcome {
             Ok(detail) => ("ok", detail),
             Err(error) => ("FAILED", error),

@@ -635,6 +635,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   list of a format `dedensd` reads reads as a downloaded list. Licences differ: several forbid commercial use or
   redistribution (OpenPhish, Maltrail, Binary Defense), which the file quotes; none is a default of `dedensd`.
   Rejected: list sizes in the file (they change daily; the test prints them).
+- D88 (amends D87) The blocklist file is parsed, not read as prose. `updated` is an ISO 8601 duration of weeks
+  to seconds (`P1D`, `PT30M`; years and months have no fixed length) or `irregular`. A source has a `status`:
+  `active`, `frozen: <date>` (unchanged since that day: 1Hosts, ipanalytics, botvrij), or `retired`, the only one
+  with `lists: []`. Its `license` is an SPDX id of a short known set, `custom` or `none`, the quoted `terms`
+  going with the last two only; `use` (`free`, `no-resale`, `non-commercial`, `ask`, `unknown`) is our reading of
+  the terms, an SPDX licence being `free`. `just blocklists` also checks freshness: a list's date is its
+  `Last-Modified`, else, on `raw.githubusercontent.com`, its last commit from GitHub's API (60 requests an hour,
+  more with `GITHUB_TOKEN`); an active list older than 3 updates and a day, or a frozen one changed after its
+  day, fails, so a list that stops or resumes shows. A list `dedensd` does not read is checked on its first
+  MiB, its format being in every line. Dates are parsed by hand in the test, a date crate being a dependency for
+  three formats.
 - D64 Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
