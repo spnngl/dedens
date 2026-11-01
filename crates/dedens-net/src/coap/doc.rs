@@ -6,7 +6,7 @@ use dedens_proto::DecodeError;
 use dedens_proto::message::ttl_offsets;
 use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams};
 
-use super::block::{self, BlockSize};
+use super::block::{self, Block, BlockSize, Slice};
 use super::exchange::Request;
 use super::message::{Code, Message, OptionNumber, Options, Token, Type};
 
@@ -93,8 +93,9 @@ pub enum Query<'a> {
     Dns(&'a [u8]),
     /// Another block of the response to an earlier query: a request with no body that asks for a block past the first
     /// (RFC 7959 §2.4). The clients that send the body with the first block only (libcoap, aiocoap) do it; the
-    /// server finds the response again by [`Options::request_tag`] (see [`super::server::Blocks`]).
-    Block,
+    /// server finds the response again by [`Options::request_tag`] (see [`super::server::Blocks`]). Holds the block
+    /// asked for.
+    Block(Block),
 }
 
 /// What a server at the path `path` takes from `request`: the DNS query in the body of a FETCH or a POST with the
@@ -147,7 +148,7 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, 
     }
     let query = if request.payload.is_empty() {
         match options.block2() {
-            Ok(Some(block)) if block.num() != 0 => Query::Block,
+            Ok(Some(block)) if block.num() != 0 => Query::Block(block),
             _ => return Err(Code::BAD_REQUEST),
         }
     } else {
@@ -277,8 +278,7 @@ fn link(path: &[Box<[u8]>]) -> String {
 /// message.
 pub fn response(request: &Message, id: u16, mut dns: Vec<u8>) -> Result<Message, Code> {
     let max_age = take_max_age(&mut dns).map_err(|_| Code::INTERNAL_SERVER_ERROR)?;
-    let requested = request.options.block2().map_err(|_| Code::BAD_OPTION)?;
-    let slice = block::slice(&dns, requested, BLOCK_SIZE).map_err(|_| Code::BAD_OPTION)?;
+    let slice = cut(request, &dns)?;
     let mut reply = answer(request, id, Code::CONTENT);
     reply.options.set_content_format(Options::DNS_MESSAGE);
     reply.options.set_max_age(max_age);
@@ -288,6 +288,21 @@ pub fn response(request: &Message, id: u16, mut dns: Vec<u8>) -> Result<Message,
     }
     reply.payload = slice.payload.to_vec();
     Ok(reply)
+}
+
+/// Whether [`response`] to `request` with `dns` carries a block that has more after it: the caller keeps `dns` for the
+/// requests of the next blocks then (see [`super::server::Blocks`]). False when the response is an error, as with a bad
+/// Block2 option, or has no more blocks. It cuts as [`response`] does, with the same code.
+#[must_use]
+pub fn more_blocks(request: &Message, dns: &[u8]) -> bool {
+    cut(request, dns).is_ok_and(|slice| slice.block.is_some_and(Block::more))
+}
+
+/// The part of `dns` that [`response`] to `request` sends, and its Block2 option. Taking the TTLs off does not change
+/// the length of `dns`, so it is the same cut from the message as it is received.
+fn cut<'a>(request: &Message, dns: &'a [u8]) -> Result<Slice<'a>, Code> {
+    let requested = request.options.block2().map_err(|_| Code::BAD_OPTION)?;
+    block::slice(dns, requested, BLOCK_SIZE).map_err(|_| Code::BAD_OPTION)
 }
 
 /// The `ETag` of the DNS response `dns`, as [`response`] cuts it into blocks (TTLs less their least, so not the

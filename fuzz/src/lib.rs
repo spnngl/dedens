@@ -23,7 +23,7 @@ use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
 use dedens_net::coap::block::{Block, BlockSize, slice};
 use dedens_net::coap::exchange::{Exchange, Params, Request};
-use dedens_net::coap::{Code, Message as CoapMessage};
+use dedens_net::coap::{Code, MAX_OPTIONS, Message as CoapMessage};
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
@@ -1629,6 +1629,10 @@ pub fn parse_coap(data: &[u8]) {
     let Ok(message) = CoapMessage::parse(data) else {
         return;
     };
+    assert!(
+        message.options.iter().count() <= MAX_OPTIONS,
+        "more options than the cap"
+    );
     let wire = message.to_vec().expect("a message that was read writes");
     assert_eq!(
         CoapMessage::parse(&wire).as_ref(),

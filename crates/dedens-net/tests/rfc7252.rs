@@ -7,9 +7,12 @@ use std::num::NonZero;
 use std::time::{Duration, Instant};
 
 use coap_capture::{SERVER, capture, delivered, essence, ids, play, request_of};
-use dedens_net::coap::exchange::{Exchange, Failure, Next, Params, Request, Step};
-use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Seen};
-use dedens_net::coap::{Code, Message, OptionNumber, Options, ParseError, Token, Type, WriteError};
+use dedens_net::coap::block::{Block, BlockSize};
+use dedens_net::coap::exchange::{Exchange, Failure, MAX_RETRANSMIT, Next, Params, Request, Step};
+use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFETIME, Seen};
+use dedens_net::coap::{
+    Code, MAX_OPTIONS, Message, OptionNumber, Options, ParseError, Token, Type, WriteError,
+};
 use proptest::prelude::*;
 
 fn token(bytes: &[u8]) -> Token {
@@ -258,6 +261,34 @@ fn errors_of_the_format() {
     }
 }
 
+/// A message of `count` options, each the 1 byte `delta 0, length 0`, as a datagram of 4 + `count` bytes holds.
+fn with_empty_options(count: usize) -> Vec<u8> {
+    let mut wire = vec![0x40, 0x01, 0x7d, 0x34];
+    wire.resize(wire.len() + count, 0x00);
+    wire
+}
+
+/// A message holds at most `MAX_OPTIONS` options: a datagram of 1000 of them is a format error (D105), not a list of
+/// a thousand entries. The bytes are the audit's trigger (a datagram of zeros after the header), by hand: they hold no
+/// DNS data.
+#[test]
+fn more_options_than_the_cap_is_a_format_error() {
+    let at_cap = Message::parse(&with_empty_options(MAX_OPTIONS)).expect("a message");
+    assert_eq!(at_cap.options.iter().count(), MAX_OPTIONS);
+    for count in [MAX_OPTIONS + 1, 1000, 65_000] {
+        assert_eq!(
+            Message::parse(&with_empty_options(count)),
+            Err(ParseError::TooManyOptions),
+            "{count} options"
+        );
+    }
+    // The RST of §4.2 is still sent to a CON message of that kind.
+    assert_eq!(
+        Message::reject(&with_empty_options(1000)),
+        Some(Message::empty(Type::Reset, 0x7d34))
+    );
+}
+
 #[test]
 fn extended_option_deltas_and_lengths() {
     // Delta 13 + 1 byte (Size1, 60, after nothing), length 14 + 2 bytes (300 bytes of Uri-Path first).
@@ -433,22 +464,105 @@ fn blocks_are_found_by_endpoint_and_tag_and_forgotten_like_dedup() {
     let t0 = Instant::now();
     let mut blocks = Blocks::new(Duration::from_secs(10), NonZero::new(2).expect("a value"));
     let other = "127.0.0.2:5683".parse().expect("a value");
+    let asked = block(1, 6);
     blocks.keep(SERVER, &[1], t0, vec![1]);
-    assert_eq!(blocks.get(SERVER, &[1], t0), Some(&[1][..]));
+    assert_eq!(blocks.get(SERVER, &[1], asked, t0), Found::Response(&[1]));
     // Another tag, another endpoint, no tag: nothing kept for them.
-    assert_eq!(blocks.get(SERVER, &[2], t0), None);
-    assert_eq!(blocks.get(other, &[1], t0), None);
-    assert_eq!(blocks.get(SERVER, &[], t0), None);
+    assert_eq!(blocks.get(SERVER, &[2], asked, t0), Found::Unknown);
+    assert_eq!(blocks.get(other, &[1], asked, t0), Found::Unknown);
+    assert_eq!(blocks.get(SERVER, &[], asked, t0), Found::Unknown);
     // The same request again replaces the response, taking no room.
     blocks.keep(SERVER, &[1], t0, vec![2]);
     blocks.keep(other, &[1], t0, vec![3]);
-    assert_eq!(blocks.get(SERVER, &[1], t0), Some(&[2][..]));
+    assert_eq!(blocks.get(SERVER, &[1], asked, t0), Found::Response(&[2]));
     // Full: the oldest goes.
     blocks.keep(SERVER, &[], t0, vec![4]);
-    assert_eq!(blocks.get(SERVER, &[1], t0), None);
-    assert_eq!(blocks.get(other, &[1], t0), Some(&[3][..]));
+    assert_eq!(blocks.get(SERVER, &[1], asked, t0), Found::Unknown);
+    assert_eq!(blocks.get(other, &[1], asked, t0), Found::Response(&[3]));
     // The lifetime is over.
-    assert_eq!(blocks.get(other, &[1], t0 + Duration::from_secs(11)), None);
+    let later = t0 + Duration::from_secs(11);
+    assert_eq!(blocks.get(other, &[1], asked, later), Found::Unknown);
+}
+
+/// The block `num` of the size `szx` (64 bytes for 2, 1024 for 6), as a request for a later block asks.
+fn block(num: u32, szx: u8) -> Block {
+    Block::new(num, false, BlockSize::new(szx).expect("a size")).expect("a block")
+}
+
+/// A response kept is served as many bytes of blocks as `1 + MAX_RETRANSMIT` readings of it whole, whatever the size
+/// of the blocks, and nothing after that, however long the client goes on asking (D105): the blocks asked for are not
+/// a way to have the server send the same answer over and over for a datagram each. Asking does not keep it longer.
+#[test]
+fn a_kept_response_is_served_a_bounded_number_of_bytes_and_for_its_lifetime() {
+    let t0 = Instant::now();
+    let mut blocks = Blocks::new(EXCHANGE_LIFETIME, NonZero::new(2).expect("a value"));
+    // 2649 bytes, as the answer libcoap read in 64-byte blocks (D81): 42 blocks.
+    let response = vec![7; 2649];
+    blocks.keep(SERVER, &[], t0, response.clone());
+    let mut served = 0;
+    // The block 1 of 1024 bytes, again and again: 1024 bytes each.
+    while let Found::Response(sent) = blocks.get(SERVER, &[], block(1, 6), t0) {
+        assert_eq!(sent, &response[..]);
+        served += 1024;
+    }
+    assert_eq!(served, 5 * 2649 / 1024 * 1024);
+    assert_eq!(blocks.get(SERVER, &[], block(1, 6), t0), Found::Spent);
+    // A client with 64-byte blocks reads it whole, and again: every block counts the bytes it holds.
+    blocks.keep(SERVER, &[], t0, response.clone());
+    for _ in 0..=MAX_RETRANSMIT {
+        for num in 1..=41 {
+            assert!(matches!(
+                blocks.get(SERVER, &[], block(num, 2), t0),
+                Found::Response(_)
+            ));
+        }
+    }
+    // Asking does not keep it longer: gone after the lifetime from when it was kept, though asked all the while.
+    blocks.keep(SERVER, &[1], t0, vec![1; 10]);
+    let near_end = t0 + Duration::from_secs(246);
+    assert_eq!(
+        blocks.get(SERVER, &[1], block(1, 6), near_end),
+        Found::Response(&[1; 10])
+    );
+    assert_eq!(
+        blocks.get(SERVER, &[1], block(1, 6), t0 + EXCHANGE_LIFETIME),
+        Found::Unknown
+    );
+}
+
+/// §4.8: a client sends a CON message at most `MAX_RETRANSMIT` times again, so a reply is sent again at most that many
+/// times, then not at all (D105): the same CON sent 100 times is answered 5 times at most, once by the processing.
+#[test]
+fn dedup_replays_a_reply_at_most_max_retransmit_times() {
+    let t0 = Instant::now();
+    let mut dedup = Dedup::new(EXCHANGE_LIFETIME, NonZero::new(2).expect("a value"));
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::New);
+    // Sent again before the reply is ready: nothing to send, and nothing used of the replays.
+    for _ in 0..10 {
+        assert_eq!(dedup.check(SERVER, 1, t0), Seen::Duplicate(None));
+    }
+    dedup.reply(SERVER, 1, vec![9; 1024]);
+    let replies = (0..100)
+        .filter(|_| matches!(dedup.check(SERVER, 1, t0), Seen::Duplicate(Some(_))))
+        .count();
+    assert_eq!(replies, usize::from(MAX_RETRANSMIT));
+    assert_eq!(MAX_RETRANSMIT, 4);
+    // Still a duplicate, for the rest of the lifetime: not processed again.
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::Duplicate(None));
+    // Another message has its own replays, and after the lifetime the same ID is new, with new ones.
+    assert_eq!(dedup.check(SERVER, 2, t0), Seen::New);
+    dedup.reply(SERVER, 2, vec![8]);
+    assert!(matches!(
+        dedup.check(SERVER, 2, t0),
+        Seen::Duplicate(Some(_))
+    ));
+    let later = t0 + EXCHANGE_LIFETIME;
+    assert_eq!(dedup.check(SERVER, 1, later), Seen::New);
+    dedup.reply(SERVER, 1, vec![7]);
+    assert_eq!(
+        dedup.check(SERVER, 1, later),
+        Seen::Duplicate(Some(&[7][..]))
+    );
 }
 
 /// A full table still holds as many messages as its capacity says: only a message that is new makes room.
@@ -463,6 +577,34 @@ fn dedup_at_capacity_still_knows_what_it_holds() {
     let mut dedup = Dedup::new(EXCHANGE_LIFETIME, NonZero::new(1).expect("a value"));
     assert_eq!(dedup.check(SERVER, 1, t0), Seen::New);
     assert_eq!(dedup.check(SERVER, 1, t0), Seen::Duplicate(None));
+}
+
+/// A message is noted when the caller says so, not by the lookup: a request dropped for want of a task is new when
+/// its client sends it again (D105). Noting a message twice does not hold a place for it twice.
+#[test]
+fn dedup_notes_a_message_only_when_told_to() {
+    let t0 = Instant::now();
+    let mut dedup = Dedup::new(EXCHANGE_LIFETIME, NonZero::new(2).expect("a value"));
+    assert_eq!(dedup.lookup(SERVER, 1, t0), Seen::New);
+    assert_eq!(dedup.lookup(SERVER, 1, t0), Seen::New);
+    dedup.note(SERVER, 1, t0);
+    dedup.note(SERVER, 1, t0);
+    assert_eq!(dedup.lookup(SERVER, 1, t0), Seen::Duplicate(None));
+    dedup.note(SERVER, 2, t0);
+    assert_eq!(dedup.lookup(SERVER, 1, t0), Seen::Duplicate(None));
+    assert_eq!(dedup.lookup(SERVER, 2, t0), Seen::Duplicate(None));
+}
+
+/// §4.5, §4.8.2: a NON message is a duplicate for `NON_LIFETIME`, 145 seconds, which is shorter than the CON message's.
+#[test]
+fn non_messages_are_duplicates_for_the_non_lifetime() {
+    assert_eq!(NON_LIFETIME, Duration::from_secs(145));
+    let t0 = Instant::now();
+    let mut dedup = Dedup::new(NON_LIFETIME, NonZero::new(4).expect("a value"));
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::New);
+    let before = t0 + Duration::from_secs(144);
+    assert_eq!(dedup.check(SERVER, 1, before), Seen::Duplicate(None));
+    assert_eq!(dedup.check(SERVER, 1, t0 + NON_LIFETIME), Seen::New);
 }
 
 // Captured from aiocoap.

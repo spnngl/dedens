@@ -14,7 +14,9 @@ use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::block::{Block, BlockSize, slice};
-use dedens_net::coap::doc::{add_max_age, etag, path_segments, response, take_max_age};
+use dedens_net::coap::doc::{
+    add_max_age, etag, more_blocks, path_segments, response, take_max_age,
+};
 use dedens_net::coap::exchange::Failure;
 use dedens_net::coap::link::LinkError;
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Type};
@@ -291,6 +293,38 @@ fn s4_3_a_server_tags_the_blocks_of_a_response_with_its_etag() {
     assert_eq!(tags[2], tags[3]);
     assert_ne!(tags[0], tags[2]);
     assert!((1..=8).contains(&tags[0].len()));
+}
+
+/// D105: `more_blocks` tells what `response` sends: a block with more after it, and not the last block, an answer in
+/// one message, a block past the end or a Block2 option that is not one, which `response` refuses.
+#[test]
+fn more_blocks_tells_whether_the_response_goes_on() {
+    let request = |block: Option<Block>| {
+        let mut request = Message::empty(Type::Confirmable, 1);
+        request.code = Code::FETCH;
+        if let Some(block) = block {
+            request.options.set_block2(block);
+        }
+        request
+    };
+    let block = |num| Block::new(num, false, BlockSize::new(2).expect("64 bytes"));
+    let last = u32::try_from((ANSWER.len() - 1) / 64).expect("a block number");
+    assert!(last > 0, "an answer over 64 bytes");
+    assert!(more_blocks(&request(block(0)), ANSWER));
+    assert!(!more_blocks(&request(block(last)), ANSWER));
+    assert!(!more_blocks(&request(None), ANSWER));
+    assert!(!more_blocks(&request(block(last + 1)), ANSWER));
+    assert_eq!(
+        response(&request(block(last + 1)), 0, ANSWER.to_vec()).expect_err("past the end"),
+        Code::BAD_OPTION
+    );
+    let mut malformed = request(None);
+    malformed.options.insert(OptionNumber::BLOCK2, [0; 4]);
+    assert!(!more_blocks(&malformed, ANSWER));
+    assert_eq!(
+        response(&malformed, 0, ANSWER.to_vec()).expect_err("a Block2 of 4 bytes"),
+        Code::BAD_OPTION
+    );
 }
 
 /// RFC 9953 §4.3.1: a CoAP error is no DNS response: the client reports the code.

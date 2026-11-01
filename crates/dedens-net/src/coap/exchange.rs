@@ -40,6 +40,10 @@ use super::block::{Block, BlockError, BlockSize, Reassembly, ReassemblyError};
 use super::message::{Code, Message, OptionNumber, Options, Token, Type, WriteError};
 use crate::exchange::after;
 
+/// `MAX_RETRANSMIT`: the retransmissions of a CON message before giving up, 4 (RFC 7252 §4.8). A server answers
+/// that many of them again at most (D105, [`super::server::Dedup`]).
+pub const MAX_RETRANSMIT: u8 = 4;
+
 /// How an exchange behaves; the default is RFC 7252 §4.8's.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -68,7 +72,7 @@ impl Default for Params {
         Self {
             ack_timeout: Duration::from_secs(2),
             ack_random_factor: 1.5,
-            max_retransmit: 4,
+            max_retransmit: MAX_RETRANSMIT,
             separate_timeout: Duration::from_secs(93),
             block1_size: BlockSize::MAX,
             block2_size: None,

@@ -10,6 +10,10 @@ const VERSION: u8 = 1;
 const PAYLOAD_MARKER: u8 = 0xFF;
 /// The longest token, in bytes (RFC 7252 §3).
 const MAX_TOKEN: usize = 8;
+/// The most options [`Message::parse`] reads in a message, 64 (D105): the RFC sets no limit, and a datagram of zeros
+/// holds a thousand empty options, each an allocation. A `DoC` request has a dozen (Uri-Path segments, Content-Format,
+/// Accept, Request-Tag, Block2, Uri-Query of a discovery).
+pub const MAX_OPTIONS: usize = 64;
 
 /// The type of a message: how it is delivered (RFC 7252 §3, §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -504,6 +508,9 @@ pub enum ParseError {
     /// Option numbers adding up past 65535.
     #[error("an option number over 65535")]
     OptionNumber,
+    /// More than [`MAX_OPTIONS`] options.
+    #[error("more than {MAX_OPTIONS} options")]
+    TooManyOptions,
 }
 
 /// Why a message cannot be written.
@@ -617,6 +624,9 @@ impl Message {
             let number = u16::try_from(number).map_err(|_| ParseError::OptionNumber)?;
             let len = usize::try_from(len).map_err(|_| ParseError::Truncated)?;
             let (value, tail) = tail.split_at_checked(len).ok_or(ParseError::Truncated)?;
+            if options.0.len() == MAX_OPTIONS {
+                return Err(ParseError::TooManyOptions);
+            }
             // Numbers never go down, so this is the end of the order.
             options.0.push((OptionNumber(number), value.to_vec()));
             rest = tail;

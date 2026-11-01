@@ -18,5 +18,6 @@ mod message;
 pub mod server;
 
 pub use message::{
-    Code, Message, OptionNumber, Options, ParseError, Token, TokenTooLong, Type, WriteError,
+    Code, MAX_OPTIONS, Message, OptionNumber, Options, ParseError, Token, TokenTooLong, Type,
+    WriteError,
 };
