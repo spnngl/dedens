@@ -15,7 +15,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   insecure (RFC 6840 §5.2); a pure-Rust crate only if a signed zone in use needs it.
 - SHA-1 switch: RFC 9905 §2 tells operators of validating resolvers to treat RSASHA1, RSASHA1-NSEC3-SHA1 and their
   DS records as unsupported (insecure), and implementations to keep validating them (D71 validates by default).
-  Default: validated; a setting of the validator marking algorithms 5 and 7 unsupported, added with 06.
+  Default: validated; a setting of the validator marking algorithms 5 and 7 unsupported, which
+  needs a filter on the DS records and RRSIGs that `rrsig` does not have (D75 leaves it out).
 - Trust anchor rollover (RFC 5011): follow a root key roll while running. Default: bundled anchors and anchor
   files only, replaced by hand; automate in the recursive phase, when a daemon holds state.
 - NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
@@ -23,8 +24,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   clock passed in when `dedensd` keeps state across reloads.
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
-- NSEC3 iteration limit (D74: 150, as Unbound and BIND). RFC 9276 §3.2 recommends treating more than 0 as
-  insecure, and BIND and Unbound lowered theirs over time. Default: 150, a setting of the validator added with 06.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
