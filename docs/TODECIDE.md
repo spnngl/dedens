@@ -125,6 +125,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   load balancers or quinn cause it before giving each connection its own socket.
 - Renewing the pooled upstream UDP sockets (D50) now and then, for the port entropy of RFC 5452 §9.2 against
   an attacker who learned a kept port. Default: keep the sockets, relying on `0x20` and cookies.
+- QUIC datagram without control data (D89): `compio-io`'s `CMsgIter::new` panics on an empty control buffer, which
+  macOS gives for a datagram queued before the socket options were set. Default: as is (`serving` waits for the
+  endpoints); an upstream fix (accept an empty buffer), then drop the note.
 - Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED; a cap of
   connections per address, over TCP, TLS, QUIC and HTTP/3 alike (D47 caps a thread's connections only, so one host
   can take them all, for as long as it keeps asking). Default: a stage or core setting, loopback and private ranges

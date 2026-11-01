@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -267,7 +267,9 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
 /// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target `odoh` over HTTP/3, until the end
-/// of the process.
+/// of the process. `listening` is sent once the sockets are taken by the runtime: on macOS a datagram that arrived before
+/// carries none of the control data `compio-quic` reads, and it panics (D89), so the process announces itself only
+/// then.
 ///
 /// # Errors
 ///
@@ -279,6 +281,7 @@ pub(crate) async fn serve(
     trust: Trust,
     presented: Option<Arc<Presented>>,
     #[cfg(feature = "odoh")] odoh: Option<Arc<Target>>,
+    listening: mpsc::Sender<()>,
 ) -> io::Result<()> {
     #[cfg_attr(
         not(feature = "odoh"),
@@ -327,6 +330,9 @@ pub(crate) async fn serve(
         };
         tasks.push(task);
     }
+    // The receiver is gone only if another thread failed first.
+    let _ = listening.send(());
+    drop(listening);
     first_end(tasks).await
 }
 

@@ -116,10 +116,12 @@ fn main() -> anyhow::Result<()> {
             "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
         );
     }
-    tracing::info!(config = %path, ?listen, threads = sockets.len(), "serving");
+    let threads = sockets.len();
     let (ended, end) = mpsc::channel();
+    let (listening, listened) = mpsc::channel();
     for sockets in sockets {
         let (current, ended) = (Arc::clone(&current), ended.clone());
+        let listening = listening.clone();
         let (trust, presented) = (config.trust.clone(), presented.clone());
         #[cfg(feature = "odoh")]
         let odoh = odoh.clone();
@@ -132,6 +134,7 @@ fn main() -> anyhow::Result<()> {
                     presented,
                     #[cfg(feature = "odoh")]
                     odoh,
+                    listening,
                 );
                 serve::runtime().and_then(|runtime| runtime.block_on(serving))
             }));
@@ -139,7 +142,11 @@ fn main() -> anyhow::Result<()> {
                 ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
         });
     }
-    drop(ended);
+    drop((ended, listening));
+    // Announced once every thread has its sockets; a thread that failed to start never sends, and `end` has why.
+    if (0..threads).all(|_| listened.recv().is_ok()) {
+        tracing::info!(config = %path, ?listen, threads, "serving");
+    }
     // Threads serve until one fails to start or panics; each sends before ending.
     end.recv()?.context("cannot serve")
 }
