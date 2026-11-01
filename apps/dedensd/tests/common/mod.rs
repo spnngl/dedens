@@ -25,6 +25,15 @@ pub(crate) fn captured(case: &str) -> Vec<u8> {
     std::fs::read(path).expect("a captured response")
 }
 
+/// A captured response of `dedens-dnssec`'s test data.
+pub(crate) fn captured_dnssec(case: &str) -> Vec<u8> {
+    let path = format!(
+        "{}/../../crates/dedens-dnssec/tests/testdata/{case}.bin",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read(path).expect("a captured response")
+}
+
 /// A query, under `id`, for the question of `response`.
 pub(crate) fn query_for(response: &[u8], id: u16) -> Vec<u8> {
     let question = Message::decode(response)
@@ -51,13 +60,20 @@ fn question(wire: &[u8]) -> Option<(Name<'static>, RecordType)> {
 pub(crate) struct Responder {
     pub(crate) addr: SocketAddr,
     queries: Arc<AtomicUsize>,
+    asked: Arc<Mutex<Vec<(Name<'static>, RecordType)>>>,
 }
 
 impl Responder {
     /// Answers with the captures named `cases`.
     pub(crate) fn start(cases: &[&str]) -> Self {
         let captures = cases.iter().map(|case| captured(case)).collect();
-        Self::answering(captures, Duration::ZERO)
+        Self::answering(captures, Duration::ZERO, 1)
+    }
+
+    /// Answers with the captures of `dedens-dnssec` named `cases`, each query `delay` late.
+    pub(crate) fn dnssec(cases: &[&str], delay: Duration) -> Self {
+        let captures = cases.iter().map(|case| captured_dnssec(case)).collect();
+        Self::answering(captures, delay, 0)
     }
 
     /// Answers with the capture named `case`, its records' TTL `ttl`, every query after the first `delay` late.
@@ -67,27 +83,34 @@ impl Responder {
         for record in &mut message.answer {
             record.ttl = ttl;
         }
-        Self::answering(vec![message.to_vec().expect("it fits")], delay)
+        Self::answering(vec![message.to_vec().expect("it fits")], delay, 1)
     }
 
-    fn answering(responses: Vec<Vec<u8>>, delay: Duration) -> Self {
+    /// Answers each of `responses` to its question, the queries after the first `undelayed` ones `delay` late.
+    fn answering(responses: Vec<Vec<u8>>, delay: Duration, undelayed: usize) -> Self {
         let captures: Arc<[_]> = responses
             .into_iter()
             .map(|wire| (question(&wire).expect("a captured question"), wire))
             .collect();
         let queries = Arc::new(AtomicUsize::new(0));
+        let questions = Arc::new(Mutex::new(Vec::new()));
         let reply = {
             let queries = Arc::clone(&queries);
+            let questions = Arc::clone(&questions);
             move |query: &[u8]| {
                 // A port is reused as soon as it closes: what comes may be meant for the socket before, such as
                 // the packets a QUIC server of another test keeps sending to the port of a client that is gone.
                 if !is_query(query) {
                     return None;
                 }
-                if queries.fetch_add(1, Ordering::Relaxed) > 0 {
+                if queries.fetch_add(1, Ordering::Relaxed) >= undelayed {
                     thread::sleep(delay);
                 }
                 let asked = question(query)?;
+                questions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(asked.clone());
                 let (_, wire) = captures.iter().find(|(question, _)| *question == asked)?;
                 let mut answer = wire.clone();
                 answer[..2].copy_from_slice(&query[..2]);
@@ -125,7 +148,21 @@ impl Responder {
                 });
             }
         });
-        Self { addr, queries }
+        Self {
+            addr,
+            queries,
+            asked: questions,
+        }
+    }
+
+    /// How many times `name` was asked for `qtype`, over both transports.
+    pub(crate) fn asked(&self, name: &str, qtype: RecordType) -> usize {
+        let name: Name<'static> = name.parse().expect("a name");
+        let asked = self.asked.lock().unwrap_or_else(PoisonError::into_inner);
+        asked
+            .iter()
+            .filter(|question| **question == (name.clone(), qtype))
+            .count()
     }
 
     /// The queries received so far, over both transports.

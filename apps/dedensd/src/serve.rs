@@ -27,9 +27,9 @@ use compio::quic::{
 use compio::runtime::{JoinHandle, Runtime, spawn};
 use compio::rustls::pki_types::ServerName;
 use compio::tls::TlsAcceptor;
-use dedens_net::client::{Client, Server};
+use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Method;
-use dedens_net::exchange::Options;
+use dedens_net::exchange::{Options, Response};
 use dedens_net::https::{Exchange, Pending, Requests};
 #[cfg(feature = "odoh")]
 use dedens_net::odoh::{Kind, MAX_BODY, classify};
@@ -38,9 +38,9 @@ use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
 #[cfg(feature = "odoh")]
 use dedens_odoh::ResponseContext;
-use dedens_proto::Query;
 use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, OptionCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
+use dedens_proto::{Message, Query};
 use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
 use futures_util::future::{join_all, select_all};
 use futures_util::lock::Mutex;
@@ -49,6 +49,7 @@ use http::StatusCode;
 use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
+use crate::flights::{Flight, Flights, Key, Lead};
 #[cfg(feature = "odoh")]
 use crate::odoh::{self, Target};
 use crate::reload::Current;
@@ -947,12 +948,18 @@ async fn answer(
         let server = upstream.server().clone();
         let target;
         (target, options.transport) = self::target(&server, transport);
-        let response = 'ask: {
-            let mut exchange = pin!(thread.client.exchange(upstream.request(), target, &options));
+        // The validator's questions are shared with the queries asking them at the same time (D86).
+        let key = upstream.probe().map(|question| Key {
+            server: server.clone(),
+            udp: transport == Transport::Udp,
+            question: question.clone(),
+        });
+        let fetched = 'ask: {
+            let mut exchange = pin!(fetch(thread, key, upstream.request(), target, &options));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
-                if let Ok(response) = compio::time::timeout_at(at, exchange.as_mut()).await {
-                    break 'ask response;
+                if let Ok(fetched) = compio::time::timeout_at(at, exchange.as_mut()).await {
+                    break 'ask fetched;
                 }
                 stale_at = None;
                 let stale = {
@@ -968,15 +975,20 @@ async fn answer(
         };
         let (reply, next) = {
             let mut out = thread.scratch.borrow_mut();
-            let step = match &response {
-                Ok(response) => pipeline.receive(upstream, Some(&response.wire), now(), &mut out),
-                Err(error) if error.is_local() => {
+            let step = match &fetched {
+                Fetched::Own(Ok(response), _) => {
+                    pipeline.receive(upstream, Some(&response.wire), now(), &mut out)
+                }
+                Fetched::Own(Err(error), _) if error.is_local() => {
                     tracing::warn!(%error, %server, "upstream query not sent");
                     pipeline.abandon(&upstream, &mut out)
                 }
-                Err(error) => {
+                Fetched::Own(Err(error), _) => {
                     tracing::debug!(%error, %server, "upstream");
                     pipeline.receive(upstream, None, now(), &mut out)
+                }
+                Fetched::Shared(wire) => {
+                    pipeline.receive(upstream, wire.as_deref(), now(), &mut out)
                 }
             };
             match step {
@@ -987,6 +999,16 @@ async fn answer(
                 Step::Upstream(next) => (None, Some(next)),
             }
         };
+        // After `receive`, which put what the response proved in the key cache, and before the client is
+        // written to, which may wait.
+        if let Fetched::Own(result, Some(lead)) = fetched {
+            match result {
+                Ok(response) => lead.finish(Some(&response.wire)),
+                Err(error) if !error.is_local() => lead.finish(None),
+                // Not sent: the followers ask for themselves.
+                Err(_) => drop(lead),
+            }
+        }
         if let Some(reply) = reply {
             deliver(reply).await;
         }
@@ -995,6 +1017,47 @@ async fn answer(
         };
         upstream = next;
     }
+}
+
+/// What an upstream question got.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "made once per upstream query and used at once: a box would be an allocation on the forwarding path"
+)]
+enum Fetched<'a> {
+    /// The response, or why there was none, to a query sent by this one; `Some` when others wait for it.
+    Own(Result<Response, ClientError>, Option<Lead<'a>>),
+    /// The response, bytes only, of the query another sent, or none if that one failed on the server's side.
+    Shared(Option<Arc<[u8]>>),
+}
+
+/// Sends `request` to `target`, unless a query of the same `key` is in flight: then waits for its response.
+async fn fetch<'a>(
+    thread: &'a Thread,
+    key: Option<Key>,
+    request: Message<'static>,
+    target: Server,
+    options: &Options,
+) -> Fetched<'a> {
+    let flights: &Flights = thread.current.flights();
+    let mut lead = None;
+    if let Some(key) = key {
+        loop {
+            match flights.join(key.clone()) {
+                Flight::Lead(flight) => {
+                    lead = Some(flight);
+                    break;
+                }
+                Flight::Follow(response) => {
+                    if let Ok(shared) = response.recv_async().await {
+                        return Fetched::Shared(shared);
+                    }
+                    // Its query ended without a response: ask again, as the first of those left.
+                }
+            }
+        }
+    }
+    Fetched::Own(thread.client.exchange(request, target, options).await, lead)
 }
 
 /// The server to ask for `server`, and the transport: its own, else UDP for a client over UDP and TCP for a client

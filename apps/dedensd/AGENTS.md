@@ -4,6 +4,7 @@ The server binary (D42, D44-D57, D63-D66, D84, D81): `src/main.rs` parses flags 
 reads the YAML configuration into a pipeline (D44), `src/serve.rs` binds the sockets and runs the UDP, TCP, TLS,
 QUIC, DoH over HTTP/3, DoC (`src/serve/coap.rs`, feature `doc`) and upstream tasks around `dedens_server::Pipeline`, `src/reload.rs` swaps the pipeline and the TLS
 certificate on SIGHUP (D55, D66) and once downloaded lists changed, which `src/download.rs` fetches (D57).
+`src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
 `src/odoh.rs`, feature `odoh`, is the Oblivious DoH target on the HTTP/3 listeners: its key, its configurations, and
 opening and sealing messages (D79). RFC
 behaviour belongs in `crates/dedens-server` and its sans-IO tests.
