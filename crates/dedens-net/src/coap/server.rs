@@ -1,4 +1,5 @@
-//! What a CoAP server keeps between messages: the CON messages it has seen (RFC 7252 §4.5).
+//! What a CoAP server keeps between messages: the CON messages it has seen (RFC 7252 §4.5), and the responses it
+//! sends in blocks.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -70,6 +71,79 @@ impl Dedup {
     pub fn reply(&mut self, endpoint: SocketAddr, id: u16, reply: Vec<u8>) {
         if let Some(slot) = self.replies.get_mut(&(endpoint, id)) {
             *slot = Some(reply);
+        }
+    }
+}
+
+/// The responses a server is sending in blocks, for the client to ask for the next blocks without the request
+/// again: libcoap and aiocoap send a FETCH with its body for the first block only (RFC 8132 §2.5, RFC 7959 §2.4).
+///
+/// A response is found by the endpoint and the Request-Tag of the request asking for it (RFC 9175 §3.2, empty
+/// if there is none), and kept for `lifetime` and at most a number: when it is full the oldest is forgotten.
+#[derive(Debug)]
+pub struct Blocks {
+    lifetime: Duration,
+    capacity: NonZeroUsize,
+    /// In the order kept, so by time.
+    kept: VecDeque<Kept>,
+}
+
+/// A response kept for a request.
+#[derive(Debug)]
+struct Kept {
+    endpoint: SocketAddr,
+    tag: Box<[u8]>,
+    at: Instant,
+    response: Vec<u8>,
+}
+
+impl Kept {
+    fn is_for(&self, endpoint: SocketAddr, tag: &[u8]) -> bool {
+        self.endpoint == endpoint && *self.tag == *tag
+    }
+}
+
+impl Blocks {
+    /// Keeps up to `capacity` responses for `lifetime`.
+    #[must_use]
+    pub fn new(lifetime: Duration, capacity: NonZeroUsize) -> Self {
+        Self {
+            lifetime,
+            capacity,
+            kept: VecDeque::new(),
+        }
+    }
+
+    /// Keeps `response` for the request of `endpoint` tagged `tag` at `now`, in place of the one it kept for them.
+    pub fn keep(&mut self, endpoint: SocketAddr, tag: &[u8], now: Instant, response: Vec<u8>) {
+        self.kept.retain(|kept| !kept.is_for(endpoint, tag));
+        self.forget(now);
+        if self.kept.len() >= self.capacity.get() {
+            self.kept.pop_front();
+        }
+        self.kept.push_back(Kept {
+            endpoint,
+            tag: tag.into(),
+            at: now,
+            response,
+        });
+    }
+
+    /// The response kept for the request of `endpoint` tagged `tag`, if it is not older than the lifetime at `now`.
+    pub fn get(&mut self, endpoint: SocketAddr, tag: &[u8], now: Instant) -> Option<&[u8]> {
+        self.forget(now);
+        self.kept
+            .iter()
+            .find(|kept| kept.is_for(endpoint, tag))
+            .map(|kept| kept.response.as_slice())
+    }
+
+    fn forget(&mut self, now: Instant) {
+        while let Some(kept) = self.kept.front() {
+            if now.saturating_duration_since(kept.at) < self.lifetime {
+                break;
+            }
+            self.kept.pop_front();
         }
     }
 }

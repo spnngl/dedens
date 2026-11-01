@@ -60,16 +60,27 @@ pub fn path_segments(path: &str) -> Vec<Box<[u8]>> {
     }
 }
 
-/// The DNS query a server at the path `path` takes from `request`: the body of a FETCH or a POST with the content
-/// format `application/dns-message` (RFC 9953 §4.2.1). A GET, which RFC 9953 does not define, is refused with the
-/// other methods.
+/// What a request to a `DoC` server asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Query<'a> {
+    /// A DNS query, the body of the request.
+    Dns(&'a [u8]),
+    /// Another block of the response to an earlier query: a request with no body that asks for a block past the first
+    /// (RFC 7959 §2.4). The clients that send the body with the first block only (libcoap, aiocoap) do it; the
+    /// server finds the response again by [`Options::request_tag`] (see [`super::server::Blocks`]).
+    Block,
+}
+
+/// What a server at the path `path` takes from `request`: the DNS query in the body of a FETCH or a POST with the
+/// content format `application/dns-message` (RFC 9953 §4.2.1), or a request for a later block of a response with no
+/// body. A GET, which RFC 9953 does not define, is refused with the other methods.
 ///
 /// # Errors
 ///
 /// The response code of the CoAP error (RFC 9953 §4.3.1), to answer with [`error`]: 4.04 for another path, 4.05
 /// for another method, 4.02 for an unknown critical option, a query option or a bad block option, 4.15 for another
-/// content format, 4.06 for another one accepted, 4.13 for a body sent in blocks, and 4.00 for no body.
-pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<&'a [u8], Code> {
+/// content format, 4.06 for another one accepted, 4.13 for a body sent in blocks, and 4.00 for no body unless it asks for a block past the first.
+pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, Code> {
     let options = &request.options;
     if !options.uri_path().eq(path.iter().map(|segment| &**segment)) {
         return Err(Code::NOT_FOUND);
@@ -101,9 +112,12 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<&'a [u8], C
         Err(_) => return Err(Code::BAD_OPTION),
     }
     if request.payload.is_empty() {
-        return Err(Code::BAD_REQUEST);
+        return match options.block2() {
+            Ok(Some(block)) if block.num() != 0 => Ok(Query::Block),
+            _ => Err(Code::BAD_REQUEST),
+        };
     }
-    Ok(&request.payload)
+    Ok(Query::Dns(&request.payload))
 }
 
 /// The answer to `request` that carries the DNS response `dns` (RFC 9953 §4.3): 2.05 with the content format
