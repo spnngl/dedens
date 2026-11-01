@@ -271,6 +271,38 @@ fn s4_3_a_ping_is_answered_with_a_reset() {
     assert_eq!((response.kind, response.id), (Type::Reset, 0x0505));
 }
 
+/// RFC 7252 §4.2, §4.3: a CON message with a message format error is rejected with a RST echoing its message ID; a
+/// NON one, or one of another version (§3), is dropped, and no query is asked.
+#[test]
+fn s4_2_a_message_format_error_is_rejected_with_a_reset() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    // A token length of 9, over the 8 that RFC 7252 §3 allows.
+    let broken = |request: &Message, edit: &dyn Fn(&mut u8)| {
+        let mut wire = request.to_vec().expect("it writes");
+        edit(&mut wire[0]);
+        wire
+    };
+    let ask_raw = |wire: &[u8]| {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("a timeout");
+        socket.send_to(wire, server.addr).expect("sent");
+        let mut buf = vec![0; 65535];
+        let len = socket.recv(&mut buf).ok()?;
+        Some(Message::parse(&buf[..len]).expect("a CoAP message"))
+    };
+    let request = fetch(0x0bad, &query_for(&captured("a"), 0));
+    let reset = ask_raw(&broken(&request, &|first| *first = (*first & 0xF0) | 9));
+    assert_eq!(reset, Some(Message::empty(Type::Reset, 0x0bad)));
+    let mut non = request.clone();
+    non.kind = Type::NonConfirmable;
+    assert_eq!(ask_raw(&broken(&non, &|first| *first |= 0x0F)), None);
+    assert_eq!(ask_raw(&broken(&request, &|first| *first |= 0x80)), None);
+    assert_eq!(upstream.queries(), 0);
+}
+
 /// RFC 9953 §4.3, RFC 7959 §2.4: a response over 1024 bytes goes in blocks of 1024, each asked for with the query
 /// again; one asked in smaller blocks goes in those.
 #[test]

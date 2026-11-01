@@ -543,6 +543,18 @@ impl Message {
         }
     }
 
+    /// The RST that rejects `bytes`, a datagram [`Message::parse`] refused: one for a CON message of version 1 with a
+    /// message ID to echo (RFC 7252 §4.2). None for the rest, which is dropped: NON (§4.3, a RST would be allowed,
+    /// not needed), ACK and RST (§4.2), another version (§3), and under 4 bytes.
+    #[must_use]
+    pub fn reject(bytes: &[u8]) -> Option<Self> {
+        let [first, _, id_hi, id_lo, ..] = bytes else {
+            return None;
+        };
+        (first >> 6 == VERSION && Type::from_bits(first >> 4) == Type::Confirmable)
+            .then(|| Self::empty(Type::Reset, u16::from_be_bytes([*id_hi, *id_lo])))
+    }
+
     /// The options a recipient must reject the message for: critical, and not among those with a constant
     /// in [`OptionNumber`] (RFC 7252 §5.4.1). The reply is 4.02 to a CON request, a RST to a CON response or
     /// a NON.
@@ -557,8 +569,8 @@ impl Message {
     ///
     /// # Errors
     ///
-    /// [`ParseError`] for what RFC 7252 §3 calls a message format error. The reply to a CON with one is a RST,
-    /// except for [`ParseError::Version`], which is dropped.
+    /// [`ParseError`] for what RFC 7252 §3 calls a message format error. The reply to a CON with one is the RST of
+    /// [`Message::reject`].
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let [first, code, id_hi, id_lo, rest @ ..] = bytes else {
             return Err(ParseError::Truncated);
