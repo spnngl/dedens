@@ -1,0 +1,655 @@
+# Public DNS resolvers (D67). `apps/dedens/tests/providers.rs` reads this file: `cargo test` checks its fields,
+# `just providers` asks every endpoint over the network, and each resolver every canary below.
+#
+# A provider: `id` (unique), `name`, `operator`, `country` (ISO 3166-1 alpha-2, where the operator is
+# established), `site`, `description`, `privacy` (logging and jurisdiction), then its `resolvers`.
+# A resolver: `id` (unique in its provider), an optional `description`, `blocks` (any of `ads` (and trackers),
+# `malware` (and phishing), `adult`, `gambling`, `social`; as measured with the `canaries` below), `block_pages`
+# (addresses answered for a blocked name, beside `0.0.0.0`, `127.0.0.1` and NXDOMAIN), `dnssec` (as
+# measured: `validates`, `ignores`, or `inconsistent` when its servers disagree), `stale_cookies: true` when a
+# packet cache answers with the cookie of an earlier client (RFC 7873 §5.3 drops such a response; the test asks
+# without a cookie), then its endpoints, at least one:
+#   plain: addresses answering DNS over UDP and TCP, port 53;
+#   tls: {name, addresses}: DNS over TLS (RFC 7858), port 853, `name` the one its certificate holds;
+#   quic: {name, addresses}: DNS over QUIC (RFC 9250), UDP port 853;
+#   https: DNS over HTTPS (RFC 8484) URLs, listed only until `dedens` speaks DoH (D62).
+# IPv6 addresses are quoted: a plain YAML scalar cannot end with `:`. Anchors (`&x`, `*x`) share a list.
+
+# Per category, a name every resolver blocking it blocks and the others answer (measured November 2026). No
+# provider publishes a test name all its peers block: Cloudflare's `malware.testcategory.com` and Quad9's
+# `isitblocked.org` work at their own resolvers only. `malware.wicar.org` is the WICAR malware test site.
+canaries:
+  ads: pagead2.googlesyndication.com
+  malware: malware.wicar.org
+  adult: pornhub.com
+  gambling: bet365.com
+  social: facebook.com
+
+providers:
+  - id: cloudflare
+    name: Cloudflare
+    operator: Cloudflare, Inc.
+    country: US
+    site: https://one.one.one.one
+    description: >-
+      Anycast resolver in hundreds of cities, among the fastest worldwide; QNAME minimization. 1.1.1.1 for Families adds malware and adult content blocking.
+    privacy: >-
+      No client IP written to disk; the logs kept are deleted within 25 hours and audited yearly. US company (Five Eyes); no custom blocking.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain: &cloudflare
+          - 1.1.1.1
+          - 1.0.0.1
+          - "2606:4700:4700::1111"
+          - "2606:4700:4700::1001"
+        tls: {name: cloudflare-dns.com, addresses: *cloudflare}
+        https:
+          - https://cloudflare-dns.com/dns-query
+      - id: security
+        blocks:
+          - malware
+        dnssec: validates
+        plain: &cloudflare-security
+          - 1.1.1.2
+          - 1.0.0.2
+          - "2606:4700:4700::1112"
+          - "2606:4700:4700::1002"
+        tls: {name: security.cloudflare-dns.com, addresses: *cloudflare-security}
+        https:
+          - https://security.cloudflare-dns.com/dns-query
+      - id: family
+        blocks:
+          - malware
+          - adult
+        dnssec: validates
+        plain: &cloudflare-family
+          - 1.1.1.3
+          - 1.0.0.3
+          - "2606:4700:4700::1113"
+          - "2606:4700:4700::1003"
+        tls: {name: family.cloudflare-dns.com, addresses: *cloudflare-family}
+        https:
+          - https://family.cloudflare-dns.com/dns-query
+
+  - id: google
+    name: Google Public DNS
+    operator: Google LLC
+    country: US
+    site: https://developers.google.com/speed/public-dns
+    description: >-
+      Anycast resolver with a large global network; no filtering. Sends a truncated EDNS Client Subnet to authoritative servers.
+    privacy: >-
+      Temporary logs with the full client IP, deleted within 24 to 48 hours; permanent logs keep a city-level location, no IP. Not used for ad targeting. US company (Five Eyes).
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain: &google
+          - 8.8.8.8
+          - 8.8.4.4
+          - "2001:4860:4860::8888"
+          - "2001:4860:4860::8844"
+        tls: {name: dns.google, addresses: *google}
+        https:
+          - https://dns.google/dns-query
+
+  - id: adguard
+    name: AdGuard DNS
+    operator: AdGuard Software Ltd
+    country: CY
+    site: https://adguard-dns.io/en/public-dns.html
+    description: >-
+      Ad, tracker and phishing blocking resolver at 15+ locations; unfiltered and family variants. DNSCrypt too. Blocking may break some sites.
+    privacy: >-
+      The public servers keep no personal data, only anonymized aggregate statistics; the paid private DNS logs queries as configured, and payment goes through Paddle (or crypto).
+    resolvers:
+      - id: default
+        blocks:
+          - ads
+          - malware
+        block_pages: &adguard-block-pages
+          - 94.140.14.33
+          - 94.140.14.35
+        dnssec: validates
+        plain: &adguard
+          - 94.140.14.14
+          - 94.140.15.15
+          - "2a10:50c0::ad1:ff"
+          - "2a10:50c0::ad2:ff"
+        tls: {name: dns.adguard-dns.com, addresses: *adguard}
+        quic: {name: dns.adguard-dns.com, addresses: *adguard}
+        https:
+          - https://dns.adguard-dns.com/dns-query
+      - id: unfiltered
+        blocks: []
+        dnssec: validates
+        plain: &adguard-unfiltered
+          - 94.140.14.140
+          - 94.140.14.141
+          - "2a10:50c0::1:ff"
+          - "2a10:50c0::2:ff"
+        tls: {name: unfiltered.adguard-dns.com, addresses: *adguard-unfiltered}
+        quic: {name: unfiltered.adguard-dns.com, addresses: *adguard-unfiltered}
+        https:
+          - https://unfiltered.adguard-dns.com/dns-query
+      - id: family
+        description: Also enforces safe search.
+        blocks:
+          - ads
+          - malware
+          - adult
+        block_pages: *adguard-block-pages
+        dnssec: validates
+        plain: &adguard-family
+          - 94.140.14.15
+          - 94.140.15.16
+          - "2a10:50c0::bad1:ff"
+          - "2a10:50c0::bad2:ff"
+        tls: {name: family.adguard-dns.com, addresses: *adguard-family}
+        quic: {name: family.adguard-dns.com, addresses: *adguard-family}
+        https:
+          - https://family.adguard-dns.com/dns-query
+
+  - id: quad9
+    name: Quad9
+    operator: Quad9 Foundation
+    country: CH
+    site: https://quad9.net/service/service-addresses-and-features/
+    description: >-
+      Swiss non-profit blocking malicious domains from threat intelligence feeds, at 200+ locations in 90 countries. DNSCrypt too. No custom blocking; false positives possible.
+    privacy: >-
+      No client IP logged; GDPR applied to every user; would leave a country rather than deanonymize users.
+    resolvers:
+      - id: secure
+        blocks:
+          - malware
+        dnssec: validates
+        plain: &quad9
+          - 9.9.9.9
+          - 149.112.112.112
+          - "2620:fe::fe"
+          - "2620:fe::9"
+        tls: {name: dns.quad9.net, addresses: *quad9}
+        quic: {name: dns.quad9.net, addresses: *quad9}
+        https:
+          - https://dns.quad9.net/dns-query
+      - id: unsecured
+        description: >-
+          No blocking. Announced without DNSSEC validation, yet answers SERVFAIL (EDE 6, DNSSEC Bogus) to a broken signature.
+        blocks: []
+        dnssec: validates
+        plain: &quad9-unsecured
+          - 9.9.9.10
+          - 149.112.112.10
+          - "2620:fe::10"
+          - "2620:fe::fe:10"
+        tls: {name: dns10.quad9.net, addresses: *quad9-unsecured}
+        https:
+          - https://dns10.quad9.net/dns-query
+      - id: ecs
+        description: Secure, and sends EDNS Client Subnet to authoritative servers.
+        blocks:
+          - malware
+        dnssec: validates
+        plain: &quad9-ecs
+          - 9.9.9.11
+          - 149.112.112.11
+          - "2620:fe::11"
+          - "2620:fe::fe:11"
+        tls: {name: dns11.quad9.net, addresses: *quad9-ecs}
+        https:
+          - https://dns11.quad9.net/dns-query
+
+  - id: cleanbrowsing
+    name: CleanBrowsing
+    operator: CleanBrowsing
+    country: US
+    site: https://cleanbrowsing.org/filters
+    description: >-
+      Filtering resolver on an anycast network: security, adult and family filters. DNSCrypt too.
+    privacy: >-
+      The free filters keep no logs; paid plans keep query logs for long. No audit. US company (Five Eyes).
+    # DNSSEC: the same address answers a broken signature with NOERROR, then SERVFAIL, then nothing.
+    resolvers:
+      - id: security
+        blocks:
+          - malware
+        dnssec: inconsistent
+        plain: &cleanbrowsing-security
+          - 185.228.168.9
+          - 185.228.169.9
+          - "2a0d:2a00:1::2"
+          - "2a0d:2a00:2::2"
+        tls: {name: security-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-security}
+        https:
+          - https://doh.cleanbrowsing.org/doh/security-filter/
+      - id: adult
+        description: Also enforces safe search.
+        blocks:
+          - malware
+          - adult
+        dnssec: inconsistent
+        plain: &cleanbrowsing-adult
+          - 185.228.168.10
+          - 185.228.169.11
+          - "2a0d:2a00:1::1"
+          - "2a0d:2a00:2::1"
+        tls: {name: adult-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-adult}
+        https:
+          - https://doh.cleanbrowsing.org/doh/adult-filter/
+      - id: family
+        description: Also blocks VPNs and proxies, and enforces safe search.
+        blocks:
+          - malware
+          - adult
+        dnssec: inconsistent
+        plain: &cleanbrowsing-family
+          - 185.228.168.168
+          - 185.228.169.168
+          - "2a0d:2a00:1::"
+          - "2a0d:2a00:2::"
+        tls: {name: family-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-family}
+        https:
+          - https://doh.cleanbrowsing.org/doh/family-filter/
+
+  - id: opendns
+    name: OpenDNS
+    operator: Cisco Systems, Inc.
+    country: US
+    site: https://www.opendns.com/setupguide/
+    description: >-
+      Cisco's resolver on a global network with large caches: phishing protection by default, FamilyShield blocks adult content too; custom filtering with an account.
+    privacy: >-
+      Query data may be used for Cisco's business operations. US company (Five Eyes). Refuses every query from France (REFUSED with EDE 16 Censored, a court order under the French Sport Code).
+    resolvers:
+      - id: home
+        blocks:
+          - malware
+        dnssec: ignores
+        plain: &opendns
+          - 208.67.222.222
+          - 208.67.220.220
+          - "2620:119:35::35"
+          - "2620:119:53::53"
+        tls: {name: dns.opendns.com, addresses: *opendns}
+        https:
+          - https://doh.opendns.com/dns-query
+      - id: familyshield
+        blocks:
+          - malware
+          - adult
+        dnssec: ignores
+        plain: &opendns-familyshield
+          - 208.67.222.123
+          - 208.67.220.123
+          - "2620:119:35::123"
+          - "2620:119:53::123"
+        tls: {name: familyshield.opendns.com, addresses: *opendns-familyshield}
+        https:
+          - https://doh.familyshield.opendns.com/dns-query
+
+  - id: nextdns
+    name: NextDNS
+    operator: NextDNS Inc.
+    country: US
+    site: https://nextdns.io
+    description: >-
+      Configurable resolver: ads, trackers, threats (real-time analysis) and parental control, set in a profile. The endpoints here have no profile, so filter nothing.
+    privacy: >-
+      Without a profile, no logs. With one, logs are kept by default (opt-out), for a chosen time. Free tier: 300,000 filtered queries a month.
+    resolvers:
+      - id: anonymous
+        blocks: []
+        dnssec: validates
+        plain: &nextdns
+          - 45.90.28.0
+          - 45.90.30.0
+          - "2a07:a8c0::"
+          - "2a07:a8c1::"
+        tls: {name: dns.nextdns.io, addresses: *nextdns}
+        quic: {name: dns.nextdns.io, addresses: *nextdns}
+        https:
+          - https://dns.nextdns.io/
+
+  - id: comodo
+    name: Comodo Secure DNS
+    operator: Comodo Security Solutions, Inc.
+    country: US
+    site: https://www.comodo.com/secure-dns/
+    description: >-
+      Sold as a secure DNS, yet blocked none of the malware domains the other filtering resolvers block (November 2026, `malware.wicar.org` and a hundred domains of a threat feed). Plain DNS over IPv4 only, and lossy: about half the UDP queries go unanswered (November 2026, from France).
+    privacy: Little published on logging. US company (Five Eyes).
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain:
+          - 8.26.56.26
+          - 8.20.247.20
+
+  - id: controld
+    name: Control D
+    operator: Control D (Windscribe)
+    country: CA
+    site: https://controld.com/free-dns
+    description: >-
+      Free resolvers from unfiltered to family on an anycast network; the paid service adds custom filters and proxies. Sends a custom EDNS Client Subnet, not the client's. Encrypted endpoints have their own addresses.
+    privacy: >-
+      The free resolvers keep no logs; paid ones log the source IP. Site analytics go to PostHog. Canada (Five Eyes).
+    resolvers:
+      - id: p0
+        blocks: []
+        dnssec: validates
+        plain:
+          - 76.76.2.0
+          - 76.76.10.0
+          - "2606:1a40::"
+          - "2606:1a40:1::"
+        tls: {name: p0.freedns.controld.com, addresses: &controld [76.76.2.11, "2606:1a40::11"]}
+        quic: {name: p0.freedns.controld.com, addresses: *controld}
+        https:
+          - https://freedns.controld.com/p0
+      - id: p1
+        blocks:
+          - malware
+        dnssec: validates
+        plain:
+          - 76.76.2.1
+          - 76.76.10.1
+          - "2606:1a40::1"
+          - "2606:1a40:1::1"
+        tls: {name: p1.freedns.controld.com, addresses: *controld}
+        quic: {name: p1.freedns.controld.com, addresses: *controld}
+        https:
+          - https://freedns.controld.com/p1
+      - id: p2
+        blocks:
+          - ads
+          - malware
+        dnssec: validates
+        plain:
+          - 76.76.2.2
+          - 76.76.10.2
+          - "2606:1a40::2"
+          - "2606:1a40:1::2"
+        tls: {name: p2.freedns.controld.com, addresses: *controld}
+        quic: {name: p2.freedns.controld.com, addresses: *controld}
+        https:
+          - https://freedns.controld.com/p2
+      - id: p3
+        blocks:
+          - ads
+          - malware
+          - social
+        dnssec: validates
+        plain:
+          - 76.76.2.3
+          - 76.76.10.3
+          - "2606:1a40::3"
+          - "2606:1a40:1::3"
+        tls: {name: p3.freedns.controld.com, addresses: *controld}
+        quic: {name: p3.freedns.controld.com, addresses: *controld}
+        https:
+          - https://freedns.controld.com/p3
+      - id: family
+        blocks:
+          - ads
+          - malware
+          - adult
+        dnssec: validates
+        plain:
+          - 76.76.2.4
+          - 76.76.10.4
+          - "2606:1a40::4"
+          - "2606:1a40:1::4"
+        tls: {name: family.freedns.controld.com, addresses: *controld}
+        quic: {name: family.freedns.controld.com, addresses: *controld}
+        https:
+          - https://freedns.controld.com/family
+
+  - id: dnswatch
+    name: DNS.WATCH
+    operator: DNS.WATCH
+    country: DE
+    site: https://dns.watch/
+    description: Uncensored, neutral resolver in Germany. Plain DNS only.
+    privacy: No query logs.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain:
+          - 84.200.69.80
+          - 84.200.70.40
+          - "2001:1608:10:25::1c04:b12f"
+          - "2001:1608:10:25::9249:d69b"
+
+  - id: dns4eu
+    name: DNS4EU
+    operator: Whalebone, for the DNS4EU consortium
+    country: CZ
+    site: https://joindns4.eu/for-public
+    description: >-
+      EU co-funded resolver run by a consortium of European companies, servers in Europe only: protective, child protection, ad blocking and unfiltered variants. Blocked names get the address of a block page; the child protection variants also block gambling, unannounced. Court-ordered blocks apply to every variant.
+    privacy: >-
+      The client IP is pseudonymized in memory (HMAC); anonymized query metadata is kept up to 6 months for threat intelligence. GDPR.
+    resolvers:
+      - id: protective
+        blocks:
+          - malware
+        block_pages: &dns4eu-block-page
+          - 51.15.69.11
+        dnssec: validates
+        plain: &dns4eu-protective
+          - 86.54.11.1
+          - 86.54.11.201
+          - "2a13:1001::86:54:11:1"
+          - "2a13:1001::86:54:11:201"
+        tls: {name: protective.joindns4.eu, addresses: *dns4eu-protective}
+        https:
+          - https://protective.joindns4.eu/dns-query
+      - id: child
+        blocks:
+          - malware
+          - adult
+          - gambling
+        block_pages: *dns4eu-block-page
+        dnssec: validates
+        plain: &dns4eu-child
+          - 86.54.11.12
+          - 86.54.11.212
+          - "2a13:1001::86:54:11:12"
+          - "2a13:1001::86:54:11:212"
+        tls: {name: child.joindns4.eu, addresses: *dns4eu-child}
+        https:
+          - https://child.joindns4.eu/dns-query
+      - id: noads
+        blocks:
+          - ads
+          - malware
+        block_pages: *dns4eu-block-page
+        dnssec: validates
+        plain: &dns4eu-noads
+          - 86.54.11.13
+          - 86.54.11.213
+          - "2a13:1001::86:54:11:13"
+          - "2a13:1001::86:54:11:213"
+        tls: {name: noads.joindns4.eu, addresses: *dns4eu-noads}
+        https:
+          - https://noads.joindns4.eu/dns-query
+      - id: child-noads
+        blocks:
+          - ads
+          - malware
+          - adult
+          - gambling
+        block_pages: *dns4eu-block-page
+        dnssec: validates
+        plain: &dns4eu-child-noads
+          - 86.54.11.11
+          - 86.54.11.211
+          - "2a13:1001::86:54:11:11"
+          - "2a13:1001::86:54:11:211"
+        tls: {name: child-noads.joindns4.eu, addresses: *dns4eu-child-noads}
+        https:
+          - https://child-noads.joindns4.eu/dns-query
+      - id: unfiltered
+        blocks: []
+        dnssec: validates
+        plain: &dns4eu-unfiltered
+          - 86.54.11.100
+          - 86.54.11.200
+          - "2a13:1001::86:54:11:100"
+          - "2a13:1001::86:54:11:200"
+        tls: {name: unfiltered.joindns4.eu, addresses: *dns4eu-unfiltered}
+        https:
+          - https://unfiltered.joindns4.eu/dns-query
+
+  - id: wikimedia
+    name: Wikimedia DNS
+    operator: Wikimedia Foundation, Inc.
+    country: US
+    site: https://meta.wikimedia.org/wiki/Wikimedia_DNS
+    description: >-
+      Censorship-free resolver of the Wikipedia operator, encrypted only; QNAME minimization. Fast near its data centers, slow elsewhere.
+    privacy: No logs or analytics. Non-profit.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        tls: {name: wikimedia-dns.org, addresses: [185.71.138.138, "2001:67c:930::1"]}
+        https:
+          - https://wikimedia-dns.org/dns-query
+
+  - id: applied-privacy
+    name: Applied Privacy DNS
+    operator: Foundation for Applied Privacy
+    country: AT
+    site: https://applied-privacy.net/services/dns/
+    description: >-
+      Non-profit resolver in Vienna only, encrypted only (DoT also on port 443); QNAME minimization and a local copy of the root zone. Donation-funded, best effort.
+    privacy: No logs of IP addresses or queries, only aggregate statistics; nothing shared.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        tls: {name: dot1.applied-privacy.net, addresses: [146.255.56.98, "2a02:1b8:10:234::2"]}
+        https:
+          - https://doh.applied-privacy.net/query
+
+  - id: cira
+    name: CIRA Canadian Shield
+    operator: Canadian Internet Registration Authority
+    country: CA
+    site: https://www.cira.ca/en/canadian-shield/
+    description: >-
+      Not-for-profit resolver of the .ca registry, fast in Canada, slow elsewhere; QNAME minimization. Private, protected and family variants.
+    privacy: Client IPs kept up to 24 hours; no data resale. Canada (Five Eyes).
+    resolvers:
+      - id: private
+        blocks: []
+        dnssec: validates
+        plain: &cira-private
+          - 149.112.121.10
+          - 149.112.122.10
+          - "2620:10a:80bb::10"
+          - "2620:10a:80bc::10"
+        tls: {name: private.canadianshield.cira.ca, addresses: *cira-private}
+        https:
+          - https://private.canadianshield.cira.ca/dns-query
+      - id: protected
+        blocks:
+          - malware
+        dnssec: validates
+        plain: &cira-protected
+          - 149.112.121.20
+          - 149.112.122.20
+          - "2620:10a:80bb::20"
+          - "2620:10a:80bc::20"
+        tls: {name: protected.canadianshield.cira.ca, addresses: *cira-protected}
+        https:
+          - https://protected.canadianshield.cira.ca/dns-query
+      - id: family
+        blocks:
+          - malware
+          - adult
+        dnssec: validates
+        plain: &cira-family
+          - 149.112.121.30
+          - 149.112.122.30
+          - "2620:10a:80bb::30"
+          - "2620:10a:80bc::30"
+        tls: {name: family.canadianshield.cira.ca, addresses: *cira-family}
+        https:
+          - https://family.canadianshield.cira.ca/dns-query
+
+  - id: dnssb
+    name: DNS.SB
+    operator: xTom GmbH
+    country: DE
+    site: https://dns.sb/
+    description: >-
+      Resolver on xTom's anycast network, 30 locations on 6 continents; QNAME minimization, no filtering or customization. Yearly transparency report.
+    privacy: No query logs. Commercial operator, in Germany.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain: &dnssb
+          - 185.222.222.222
+          - 45.11.45.11
+          - "2a09::"
+          - "2a11::"
+        tls: {name: dot.sb, addresses: *dnssb}
+        https:
+          - https://doh.dns.sb/dns-query
+
+  - id: ffmuc
+    name: FFMUC DNS
+    operator: Freifunk München e.V.
+    country: DE
+    site: https://ffmuc.net/wiki/doku.php?id=knb:dohdot
+    description: >-
+      Donation-funded community resolver, servers in Europe only; QNAME minimization, no filtering.
+    privacy: No logs of queries or IPs, no tracking; anonymous aggregate statistics are published.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        plain: &ffmuc
+          - 5.1.66.255
+          - 185.150.99.255
+          - "2001:678:e68:f000::"
+          - "2001:678:ed0:f000::"
+        tls: {name: dot.ffmuc.net, addresses: *ffmuc}
+        quic: {name: doq.ffmuc.net, addresses: *ffmuc}
+        https:
+          - https://doh.ffmuc.net/dns-query
+
+  - id: uncensoreddns
+    name: UncensoredDNS
+    operator: Thomas Steen Rasmussen
+    country: DK
+    site: https://blog.uncensoreddns.org/dns-servers/
+    description: >-
+      Uncensored resolver run by one person since 2009: an anycast address (servers in Denmark and the US) and a unicast server in Denmark; QNAME minimization, no filtering. Encrypted only: plain DNS on port 53 was turned off in September 2022.
+    privacy: Logs nothing but query counts; warrant canary. Single operator, single point of failure.
+    # Stale cookies: a padded query with AD set gets the cached response of the first such query, its client
+    # cookie included (November 2026).
+    resolvers:
+      - id: anycast
+        blocks: []
+        dnssec: validates
+        stale_cookies: true
+        tls: {name: anycast.uncensoreddns.org, addresses: [91.239.100.100, "2001:67c:28a4::"]}
+        https:
+          - https://anycast.uncensoreddns.org/dns-query
+      - id: unicast
+        blocks: []
+        dnssec: validates
+        stale_cookies: true
+        tls: {name: unicast.uncensoreddns.org, addresses: [89.233.43.71, "2a01:3a0:53:53::"]}
+        https:
+          - https://unicast.uncensoreddns.org/dns-query

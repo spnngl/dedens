@@ -10,6 +10,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
+- QUIC connections sharing the client's one UDP socket per address family (`crates/dedens-net/src/quic.rs`):
+  over IPv6, two at once to NextDNS (`2a07:a8c0::`, `2a07:a8c1::`) or to Control D (`2606:1a40::11` under two
+  names) often time out, one per process never does; IPv4 does not show it. Default: find whether the servers'
+  load balancers or quinn cause it before giving each connection its own socket.
 - Renewing the pooled upstream UDP sockets (D50) now and then, for the port entropy of RFC 5452 §9.2 against
   an attacker who learned a kept port. Default: keep the sockets, relying on `0x20` and cookies.
 - Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED.
