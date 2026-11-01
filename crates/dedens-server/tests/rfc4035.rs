@@ -436,7 +436,7 @@ fn a_chased_name_without_an_answer_is_indeterminate() {
     let reply = decode(&done.reply.expect("a reply")).into_owned();
     assert_eq!(reply.rcode(), Rcode::SERVFAIL);
     assert!(!reply.header.flags.contains(Flags::AD));
-    assert!(reply.answer.is_empty());
+    assert!(!some(&reply.answer));
 }
 
 /// D77: a server that did not answer is not asked again for the next question of the same query: one dead server
