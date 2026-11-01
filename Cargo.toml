@@ -55,6 +55,12 @@ getrandom = "0.4.3"
 hickory-proto = { version = "0.26.3", default-features = false }
 # D82: the request and response types of DoH, shared by `h2` and `h3`.
 http = "1.5.0"
+# D78: HPKE (RFC 9180) for ODoH, with only the suite RFC 9230 §9 requires: X25519, HKDF-SHA256, AES-128-GCM.
+hpke = { version = "0.15.1", default-features = false, features = [
+  "aes",
+  "alloc",
+  "x25519",
+] }
 # D32: Unicode names to A-labels (UTS 46), and the scripts of their labels.
 idna = "1.1.0"
 insta = "1.49"
