@@ -105,6 +105,8 @@ unicode-script = "0.5.8"
 ureq = { version = "3.5.0", features = ["platform-verifier"] }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
+# D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.
+zeroize = "1.9.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

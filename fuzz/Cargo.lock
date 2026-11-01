@@ -621,6 +621,7 @@ dependencies = [
  "hpke",
  "ring",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

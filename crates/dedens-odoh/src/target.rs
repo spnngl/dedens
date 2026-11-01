@@ -2,6 +2,7 @@
 
 use hpke::rand_core::CryptoRng;
 use hpke::{Deserializable as _, Kem as _, OpModeR, Serializable as _};
+use zeroize::Zeroizing;
 
 use crate::config::{ObliviousDoHConfigContents, PUBLIC_KEY_LEN};
 use crate::error::{ExchangeError, WireError};
@@ -27,17 +28,12 @@ impl std::fmt::Debug for TargetKey {
 impl TargetKey {
     /// The key pair of `ikm`, by `DeriveKeyPair` of RFC 9180 §7.1.3.
     ///
-    /// `ikm` is the secret the target stores: at least 32 bytes from a CSPRNG (RFC 9180 §7.1.3 asks for
-    /// `Nsk`). The same `ikm` gives the same key and the same key ID.
-    ///
-    /// # Panics
-    ///
-    /// Never for X25519: the public key of a derived pair is 32 bytes.
+    /// `ikm` is the secret the target stores: 32 bytes from a CSPRNG, `Nsk` of RFC 9180 §7.1.3. The same
+    /// `ikm` gives the same key and the same key ID. The caller wipes its copy.
     #[must_use]
-    pub fn derive(ikm: &[u8]) -> Self {
+    pub fn derive(ikm: &[u8; 32]) -> Self {
         let (private_key, public_key) = Kem::derive_keypair(ikm);
-        let public_key = <[u8; PUBLIC_KEY_LEN]>::try_from(public_key.to_bytes().as_slice())
-            .expect("an X25519 public key is 32 bytes");
+        let public_key: [u8; PUBLIC_KEY_LEN] = public_key.to_bytes().into();
         Self {
             private_key,
             config: ObliviousDoHConfigContents::new(public_key),
@@ -51,10 +47,11 @@ impl TargetKey {
     }
 }
 
-/// What the target keeps of a query to answer it; one response per query.
+/// What the target keeps of a query to answer it; one response per query, and its secrets are wiped when it is
+/// dropped.
 #[derive(Debug)]
 pub struct ResponseContext {
-    secrets: Secrets,
+    pub(crate) secrets: Secrets,
 }
 
 /// Decrypts a query (RFC 9230 §8 steps 1 to 4).
@@ -92,11 +89,12 @@ pub fn decrypt_query(
     )
     .map_err(|_| ExchangeError::Decapsulation)?;
     let query_plaintext = context
-        .open(sealed, &aad(MessageType::Query, message.key_id()))
+        .open(sealed, &aad(MessageType::Query, message.key_id())?)
+        .map(Zeroizing::new)
         .map_err(|_| ExchangeError::Decrypt)?;
-    let mut exporter = [0; NK];
+    let mut exporter = Zeroizing::new([0; NK]);
     context
-        .export(RESPONSE_EXPORT, &mut exporter)
+        .export(RESPONSE_EXPORT, exporter.as_mut_slice())
         .map_err(|_| ExchangeError::Decrypt)?;
 
     let plaintext = ObliviousDoHMessagePlaintext::parse(&query_plaintext)?;
@@ -111,6 +109,12 @@ pub fn decrypt_query(
 ///
 /// `padding` zero bytes follow the DNS message inside the encryption; [`response_padding`](crate::response_padding)
 /// gives the length RFC 8467 recommends. `rng` yields the 16-byte response nonce.
+///
+/// # Warning
+///
+/// Give each call its own randomness: a generator whose state is replayed or cloned repeats the nonce, the
+/// one input that keeps the keys of responses apart when two queries share a secret. Only tests, which replay a
+/// vector, do so.
 ///
 /// # Errors
 ///

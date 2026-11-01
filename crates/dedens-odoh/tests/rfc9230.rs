@@ -16,6 +16,7 @@ use dedens_odoh::{
     response_padding, suite,
 };
 use hpke::{Deserializable as _, OpModeS, Serializable as _};
+use ring::{aead, hkdf};
 use serde::Deserialize;
 
 fn testdata(name: &str) -> Vec<u8> {
@@ -55,6 +56,11 @@ fn target() -> TargetKey {
     TargetKey::derive(&[7; 32])
 }
 
+/// The 32 bytes of a hex seed.
+fn seed(text: &str) -> [u8; 32] {
+    hex(text).try_into().expect("a seed of 32 bytes")
+}
+
 /// A full exchange of `query` and `response` under `key`, with fixed "random" bytes.
 fn exchange(
     key: &TargetKey,
@@ -77,7 +83,7 @@ fn exchange(
         &mut Replay::new(&[2; 16]),
     )
     .expect("encrypts");
-    let plaintext = decrypt_response(client, &response_message).expect("decrypts");
+    let plaintext = decrypt_response(&client, &response_message).expect("decrypts");
     assert_eq!(plaintext.dns_message(), response);
     (query_message, response_message)
 }
@@ -169,40 +175,51 @@ fn configs_this_crate_cannot_use_are_skipped() {
     .expect("parses");
     assert_eq!(parsed.configs().len(), 1);
     assert_eq!(parsed.encode(), Ok(list(&[ours])));
-
-    let none = ObliviousDoHConfigs::parse(&list(&[config(2, 0x20, 1, 1, 32)])).expect("parses");
-    assert_eq!(none.configs(), []);
-    assert_eq!(
-        none.encode(),
-        Err(WireError::EmptyField("ObliviousDoHConfigs"))
-    );
 }
 
 #[test]
-fn a_key_of_the_wrong_length_for_our_suite_is_refused() {
+fn a_list_without_a_usable_config_is_refused() {
     assert_eq!(
-        ObliviousDoHConfigs::parse(&list(&[config(1, 0x20, 1, 1, 31)])),
-        Err(WireError::PublicKeyLength(31))
+        ObliviousDoHConfigs::parse(&list(&[config(2, 0x20, 1, 1, 32)])),
+        Err(WireError::NoUsableConfig)
     );
 }
 
-#[test]
-fn an_empty_key_is_refused_even_for_other_suites() {
-    assert_eq!(
-        ObliviousDoHConfigs::parse(&list(&[config(1, 0x10, 1, 1, 0)])),
-        Err(WireError::EmptyField("public_key"))
-    );
+/// A config of ours with a key of the wrong length, an empty key and bytes after its fields: malformed
+/// each, and skipped as long as the list is well framed.
+fn malformed_configs() -> Vec<Vec<u8>> {
+    let mut trailing = config(1, 0x20, 1, 1, 32);
+    trailing.push(0);
+    trailing[3] += 1; // `length` counts the extra byte
+    vec![
+        config(1, 0x20, 1, 1, 31),
+        config(1, 0x20, 1, 1, 0),
+        config(1, 0x10, 1, 1, 0),
+        trailing,
+        vec![0, 1, 0, 3, 0, 0x20, 0], // the key's length is cut off
+    ]
 }
 
 #[test]
-fn a_config_longer_than_its_fields_is_refused() {
-    let mut bad = config(1, 0x20, 1, 1, 32);
-    bad.push(0);
-    bad[3] += 1; // `length` counts the extra byte
-    assert_eq!(
-        ObliviousDoHConfigs::parse(&list(&[bad])),
-        Err(WireError::TrailingBytes)
-    );
+fn malformed_configs_are_skipped_not_fatal() {
+    let ours = config(1, 0x20, 1, 1, 32);
+    for bad in malformed_configs() {
+        let parsed =
+            ObliviousDoHConfigs::parse(&list(&[bad.clone(), ours.clone()])).expect("parses");
+        assert_eq!(parsed.encode(), Ok(list(std::slice::from_ref(&ours))));
+        assert_eq!(
+            ObliviousDoHConfigs::parse(&list(&[bad])),
+            Err(WireError::NoUsableConfig)
+        );
+    }
+}
+
+#[test]
+fn a_config_running_past_the_list_is_refused() {
+    let mut cut = list(&[config(1, 0x20, 1, 1, 32)]);
+    cut.truncate(cut.len() - 1);
+    cut[1] -= 1; // the list's length follows the cut: only the config's own `length` is wrong
+    assert_eq!(ObliviousDoHConfigs::parse(&cut), Err(WireError::Truncated));
 }
 
 // §6.1 ----------------------------------------------------------------------------------------------------
@@ -215,7 +232,7 @@ fn the_key_id_follows_the_config() {
             configs.configs()[0].key_id().as_slice(),
             hex(&vector.key_id)
         );
-        let key = TargetKey::derive(&hex(&vector.public_key_seed));
+        let key = TargetKey::derive(&seed(&vector.public_key_seed));
         assert_eq!(key.config(), &configs.configs()[0]);
     }
 }
@@ -270,7 +287,7 @@ fn plaintext_with_non_zero_padding_is_refused() {
 #[test]
 fn the_target_decrypts_and_answers_as_odoh_go_does() {
     for vector in vectors() {
-        let key = TargetKey::derive(&hex(&vector.public_key_seed));
+        let key = TargetKey::derive(&seed(&vector.public_key_seed));
         for transaction in &vector.transactions {
             let query =
                 ObliviousDoHMessage::parse(&hex(&transaction.oblivious_query)).expect("parses");
@@ -339,7 +356,7 @@ fn a_flipped_bit_in_a_response_is_refused() {
     for index in 0..wire.len() {
         let mut flipped = wire.clone();
         flipped[index] ^= 1;
-        // The same query as in `exchange`, so the same secrets; one context per try, as it is consumed.
+        // The same query as in `exchange`, so the same secrets.
         let (_, client) = encrypt_query(
             key.config(),
             b"query",
@@ -349,7 +366,7 @@ fn a_flipped_bit_in_a_response_is_refused() {
         .expect("encrypts");
         let outcome = ObliviousDoHMessage::parse(&flipped)
             .map_err(ExchangeError::from)
-            .and_then(|message| decrypt_response(client, &message).map(|_| ()));
+            .and_then(|message| decrypt_response(&client, &message).map(|_| ()));
         assert!(outcome.is_err(), "byte {index}");
     }
 }
@@ -361,7 +378,7 @@ fn a_response_to_another_query_is_refused() {
     let (_, other) =
         encrypt_query(key.config(), b"other", 0, &mut Replay::new(&[5; 32])).expect("encrypts");
     assert_eq!(
-        decrypt_response(other, &response),
+        decrypt_response(&other, &response),
         Err(ExchangeError::Decrypt)
     );
 }
@@ -390,7 +407,7 @@ fn the_message_type_must_match() {
     let (_, client) =
         encrypt_query(key.config(), b"query", 0, &mut Replay::new(&[1; 32])).expect("encrypts");
     assert_eq!(
-        decrypt_response(client, &query),
+        decrypt_response(&client, &query),
         Err(ExchangeError::WrongType {
             expected: MessageType::Response,
             found: MessageType::Query
@@ -406,7 +423,7 @@ fn a_response_nonce_of_the_wrong_length_is_refused() {
     let message =
         ObliviousDoHMessage::new(MessageType::Response, vec![0; 15], vec![0; 20]).expect("fits");
     assert_eq!(
-        decrypt_response(client, &message),
+        decrypt_response(&client, &message),
         Err(ExchangeError::ResponseNonceLength(15))
     );
 }
@@ -491,5 +508,180 @@ fn empty_and_over_long_dns_messages_are_refused() {
     assert_eq!(
         encrypt_query(key.config(), &vec![0; 65536], 0, &mut Replay::new(&[1; 32])).map(|_| ()),
         Err(ExchangeError::Wire(WireError::FieldTooLong("dns_message")))
+    );
+}
+
+// Key exchange and AEAD failures --------------------------------------------------------------------------
+
+#[test]
+fn a_public_key_of_small_order_is_an_encapsulation_error() {
+    let weak = ObliviousDoHConfigContents::new([0; 32]);
+    assert_eq!(
+        encrypt_query(&weak, b"query", 0, &mut Replay::new(&[1; 32])).map(|_| ()),
+        Err(ExchangeError::Encapsulation)
+    );
+}
+
+#[test]
+fn an_encapsulated_key_of_small_order_is_a_decapsulation_error() {
+    let key = target();
+    let message = ObliviousDoHMessage::new(
+        MessageType::Query,
+        key.config().key_id().to_vec(),
+        vec![0; 32 + 16 + 4],
+    )
+    .expect("fits");
+    assert_eq!(
+        decrypt_query(&key, &message).map(|_| ()),
+        Err(ExchangeError::Decapsulation)
+    );
+}
+
+#[test]
+fn a_ciphertext_shorter_than_the_tag_is_refused() {
+    let key = target();
+    let (query, client) =
+        encrypt_query(key.config(), b"query", 0, &mut Replay::new(&[1; 32])).expect("encrypts");
+    // The encapsulated key and 15 bytes: one short of the tag.
+    let short = ObliviousDoHMessage::new(
+        MessageType::Query,
+        query.key_id().to_vec(),
+        query.encrypted_message()[..32 + 15].to_vec(),
+    )
+    .expect("fits");
+    assert_eq!(
+        decrypt_query(&key, &short).map(|_| ()),
+        Err(ExchangeError::Decrypt)
+    );
+    let response =
+        ObliviousDoHMessage::new(MessageType::Response, vec![0; 16], vec![0; 15]).expect("fits");
+    assert_eq!(
+        decrypt_response(&client, &response),
+        Err(ExchangeError::Decrypt)
+    );
+}
+
+/// A response sealed as a target would, but for the plaintext, which `plaintext` sets: the client of
+/// `encrypt_query` with `Replay::new(&[4; 32])` and `raw_query`'s HPKE setup share their secrets.
+fn raw_response(
+    config: &ObliviousDoHConfigContents,
+    query_plaintext: &[u8],
+    plaintext: &[u8],
+) -> ObliviousDoHMessage {
+    let public_key =
+        <suite::Kem as hpke::Kem>::PublicKey::from_bytes(config.public_key()).expect("32 bytes");
+    let (_, context) = hpke::setup_sender_with_rng::<suite::Aead, suite::Kdf, suite::Kem>(
+        &OpModeS::Base,
+        &public_key,
+        b"odoh query",
+        &mut Replay::new(&[4; 32]),
+    )
+    .expect("sets up");
+    let mut exporter = [0; 16];
+    context
+        .export(b"odoh response", &mut exporter)
+        .expect("exports");
+
+    let nonce = [6; 16];
+    let salt = [query_plaintext, &[0, 16], &nonce].concat();
+    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &salt).extract(&exporter);
+    let expand = |info: &[u8], len: usize| {
+        let mut out = vec![0; len];
+        prk.expand(&[info], Len(len))
+            .and_then(|okm| okm.fill(&mut out))
+            .expect("expands");
+        out
+    };
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_128_GCM, &expand(b"odoh key", 16)).expect("a key"),
+    );
+    let aead_nonce =
+        aead::Nonce::try_assume_unique_for_key(&expand(b"odoh nonce", 12)).expect("12");
+    let mut sealed = plaintext.to_vec();
+    key.seal_in_place_append_tag(
+        aead_nonce,
+        aead::Aad::from([&[2, 0, 16][..], &nonce].concat()),
+        &mut sealed,
+    )
+    .expect("seals");
+    ObliviousDoHMessage::new(MessageType::Response, nonce.to_vec(), sealed).expect("fits")
+}
+
+struct Len(usize);
+
+impl hkdf::KeyType for Len {
+    fn len(&self) -> usize {
+        self.0
+    }
+}
+
+#[test]
+fn a_response_sealed_by_hand_opens_and_its_padding_is_checked() {
+    let key = target();
+    let query_plaintext = [0, 2, b'a', b'b', 0, 2, 0, 0];
+    let (_, client) =
+        encrypt_query(key.config(), b"ab", 2, &mut Replay::new(&[4; 32])).expect("encrypts");
+    let good = raw_response(key.config(), &query_plaintext, &[0, 1, b'r', 0, 2, 0, 0]);
+    let plaintext = decrypt_response(&client, &good).expect("decrypts");
+    assert_eq!(
+        (plaintext.dns_message(), plaintext.padding()),
+        (&b"r"[..], 2)
+    );
+    let dirty = raw_response(key.config(), &query_plaintext, &[0, 1, b'r', 0, 2, 0, 1]);
+    assert_eq!(
+        decrypt_response(&client, &dirty),
+        Err(ExchangeError::Wire(WireError::NonZeroPadding))
+    );
+}
+
+#[test]
+fn a_forged_response_does_not_cost_the_context() {
+    let key = target();
+    let (_, client) =
+        encrypt_query(key.config(), b"ab", 2, &mut Replay::new(&[4; 32])).expect("encrypts");
+    let forged =
+        ObliviousDoHMessage::new(MessageType::Response, vec![0; 16], vec![0; 40]).expect("fits");
+    assert_eq!(
+        decrypt_response(&client, &forged),
+        Err(ExchangeError::Decrypt)
+    );
+    let good = raw_response(
+        key.config(),
+        &[0, 2, b'a', b'b', 0, 2, 0, 0],
+        &[0, 1, b'r', 0, 0],
+    );
+    assert!(decrypt_response(&client, &good).is_ok());
+}
+
+// Bounds --------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_plaintext_that_overflows_the_encrypted_message_is_refused() {
+    let key = target();
+    // 65535 bytes of DNS message fit their own field, but not the ciphertext with the key and the tag.
+    let long = vec![1; 65535];
+    assert_eq!(
+        encrypt_query(key.config(), &long, 0, &mut Replay::new(&[1; 32])).map(|_| ()),
+        Err(ExchangeError::Wire(WireError::FieldTooLong(
+            "encrypted_message"
+        )))
+    );
+    let (query, _) =
+        encrypt_query(key.config(), b"q", 0, &mut Replay::new(&[1; 32])).expect("encrypts");
+    let (_, target) = decrypt_query(&key, &query).expect("decrypts");
+    assert_eq!(
+        encrypt_response(target, &long, 0, &mut Replay::new(&[2; 16])).map(|_| ()),
+        Err(ExchangeError::Wire(WireError::FieldTooLong(
+            "encrypted_message"
+        )))
+    );
+}
+
+#[test]
+fn padding_over_65535_is_refused() {
+    let key = target();
+    assert_eq!(
+        encrypt_query(key.config(), b"q", 65536, &mut Replay::new(&[1; 32])).map(|_| ()),
+        Err(ExchangeError::Wire(WireError::FieldTooLong("padding")))
     );
 }

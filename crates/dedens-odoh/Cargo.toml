@@ -12,6 +12,7 @@ publish.workspace = true
 hpke.workspace = true
 ring.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 data-encoding.workspace = true

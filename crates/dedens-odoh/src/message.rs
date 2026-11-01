@@ -1,18 +1,26 @@
 //! `ObliviousDoHMessage` and `ObliviousDoHMessagePlaintext` (RFC 9230 §6.1), and the padding of §11.
 
 use crate::error::WireError;
-use crate::wire::{MAX_FIELD, Reader, check_vec16, put_vec16};
+use crate::wire::{Field, Reader};
 
 /// The `message_type` of an [`ObliviousDoHMessage`] (RFC 9230 §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     /// A query, `0x01`.
-    Query = 1,
+    Query,
     /// A response, `0x02`.
-    Response = 2,
+    Response,
 }
 
 impl MessageType {
+    /// The `message_type` byte.
+    pub(crate) const fn byte(self) -> u8 {
+        match self {
+            Self::Query => 1,
+            Self::Response => 2,
+        }
+    }
+
     fn from_byte(byte: u8) -> Result<Self, WireError> {
         match byte {
             1 => Ok(Self::Query),
@@ -36,8 +44,8 @@ impl MessageType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObliviousDoHMessage {
     message_type: MessageType,
-    key_id: Vec<u8>,
-    encrypted_message: Vec<u8>,
+    key_id: Field,
+    encrypted_message: Field,
 }
 
 impl ObliviousDoHMessage {
@@ -52,12 +60,10 @@ impl ObliviousDoHMessage {
         key_id: Vec<u8>,
         encrypted_message: Vec<u8>,
     ) -> Result<Self, WireError> {
-        check_vec16("key_id", &key_id, 0)?;
-        check_vec16("encrypted_message", &encrypted_message, 1)?;
         Ok(Self {
             message_type,
-            key_id,
-            encrypted_message,
+            key_id: Field::new("key_id", key_id, 0)?,
+            encrypted_message: Field::new("encrypted_message", encrypted_message, 1)?,
         })
     }
 
@@ -79,10 +85,10 @@ impl ObliviousDoHMessage {
     /// The bytes of the message.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(5 + self.key_id.len() + self.encrypted_message.len());
-        out.push(self.message_type as u8);
-        put_vec16(&mut out, &self.key_id);
-        put_vec16(&mut out, &self.encrypted_message);
+        let mut out = Vec::new();
+        out.push(self.message_type.byte());
+        self.key_id.put(&mut out);
+        self.encrypted_message.put(&mut out);
         out
     }
 
@@ -95,13 +101,13 @@ impl ObliviousDoHMessage {
     /// The identifier of the target's key (query), or the response nonce (response).
     #[must_use]
     pub fn key_id(&self) -> &[u8] {
-        &self.key_id
+        self.key_id.as_slice()
     }
 
     /// The HPKE encapsulated key and ciphertext (query), or the ciphertext (response).
     #[must_use]
     pub fn encrypted_message(&self) -> &[u8] {
-        &self.encrypted_message
+        self.encrypted_message.as_slice()
     }
 }
 
@@ -117,8 +123,8 @@ impl ObliviousDoHMessage {
 /// The padding is its length alone, so a padding that is not all zeros cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObliviousDoHMessagePlaintext {
-    dns_message: Vec<u8>,
-    padding: usize,
+    dns_message: Field,
+    padding: u16,
 }
 
 impl ObliviousDoHMessagePlaintext {
@@ -129,13 +135,9 @@ impl ObliviousDoHMessagePlaintext {
     /// [`WireError::EmptyField`] for an empty message, [`WireError::FieldTooLong`] when the message or
     /// the padding exceeds 65535 bytes.
     pub fn new(dns_message: Vec<u8>, padding: usize) -> Result<Self, WireError> {
-        check_vec16("dns_message", &dns_message, 1)?;
-        if padding > MAX_FIELD {
-            return Err(WireError::FieldTooLong("padding"));
-        }
         Ok(Self {
-            dns_message,
-            padding,
+            dns_message: Field::new("dns_message", dns_message, 1)?,
+            padding: u16::try_from(padding).map_err(|_| WireError::FieldTooLong("padding"))?,
         })
     }
 
@@ -159,28 +161,29 @@ impl ObliviousDoHMessagePlaintext {
     /// The bytes of the plaintext.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(4 + self.dns_message.len() + self.padding);
-        put_vec16(&mut out, &self.dns_message);
-        put_vec16(&mut out, &vec![0; self.padding]);
+        let mut out = Vec::new();
+        self.dns_message.put(&mut out);
+        out.extend_from_slice(&self.padding.to_be_bytes());
+        out.resize(out.len() + usize::from(self.padding), 0);
         out
     }
 
     /// The DNS message.
     #[must_use]
     pub fn dns_message(&self) -> &[u8] {
-        &self.dns_message
+        self.dns_message.as_slice()
     }
 
     /// The DNS message, taken out.
     #[must_use]
     pub fn into_dns_message(self) -> Vec<u8> {
-        self.dns_message
+        self.dns_message.into_vec()
     }
 
     /// The number of padding bytes.
     #[must_use]
-    pub const fn padding(&self) -> usize {
-        self.padding
+    pub fn padding(&self) -> usize {
+        usize::from(self.padding)
     }
 }
 

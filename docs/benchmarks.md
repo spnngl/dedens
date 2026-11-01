@@ -247,26 +247,26 @@ name ten labels deep hashes about a dozen names, 1800 hashes at 150 iterations. 
 makes the validator check every signature against every key of one tag (KeyTrap, CVE-2023-50387) costs it
 seconds.
 
-
 ## Oblivious DoH (D78)
 
 `benches/odoh.rs`, one call each on the captured response `a` (and `mx`, `txt_large` for the responses), padded
 to 128 and 468 bytes (RFC 8467); median, with fixed bytes for the ephemeral key and the response nonce. HPKE is the
-`hpke` crate (RustCrypto, X25519 and AES-128-GCM), the response's HKDF and AES-GCM are `ring`'s.
+`hpke` crate (RustCrypto, X25519 and AES-128-GCM); the response's HKDF is one HMAC of `ring`, its AES-GCM `ring`'s.
 
 | Measure | Median |
 |---|---|
-| Encrypt a query (client: HPKE seal) | 54.6 µs |
-| Decrypt a query (target: HPKE open) | 51.5 µs |
-| Encrypt a response, 3 captures | 0.82-0.96 µs |
-| Decrypt a response, 3 captures | 0.79-0.97 µs |
-| Derive a target key (`DeriveKeyPair`, public key, key ID) | 18.5 µs |
+| Encrypt a query (client: HPKE seal) | 51.6 µs |
+| Decrypt a query (target: HPKE open) | 34.6 µs |
+| Encrypt a response, 3 captures | 1.11-1.30 µs |
+| Decrypt a response, 3 captures | 0.95-1.00 µs |
+| Derive a target key (`DeriveKeyPair`, public key, key ID) | 17.0 µs |
 
-A query costs each side two X25519 multiplications, a public key and a shared secret (an encapsulation derives the
-ephemeral public key, a decapsulation the target's again): they are the whole of the 50 µs. The response is one HKDF
-and one AES-GCM of under 1 KB, a fiftieth of that: the target answers from the context of its query, with no
-public-key operation. An ODoH exchange adds about 105 µs of CPU across both parties to a DNS over HTTPS one, small
-next to the extra hop.
+Deriving a key is one X25519 multiplication, so a query is three of them for the client and two for the target (the
+ratios of the times are 3.0 and 2.0), and they are the whole of its cost. The response is one HKDF and one AES-GCM of
+under 1 KB, a thirtieth of the target's side: the target answers from the context of its query, with no public-key
+operation. An ODoH exchange adds about 88 µs of CPU across both parties to a DNS over HTTPS one, small next to the
+extra hop. Three runs on a quiet machine agree within 1%.
+
 ## DNSSEC `RRset` verification (D73)
 
 `benches/dnssec.rs`, `verify_rrset`: one `rrsig::verify` of a captured `RRset` (`crates/dedens-dnssec/tests/testdata`)
