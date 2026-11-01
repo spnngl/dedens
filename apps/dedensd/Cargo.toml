@@ -38,7 +38,7 @@ signal-hook.workspace = true
 [features]
 # D69: experimental transports, off by default.
 odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:getrandom", "dep:zeroize"]
-doc = ["dedens-net/doc"]
+doc = ["dedens-net/doc", "dep:getrandom"]
 
 [dev-dependencies]
 dedens-scenario.workspace = true

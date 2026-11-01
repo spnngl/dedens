@@ -41,7 +41,8 @@ struct Coap {
     path: Vec<Box<[u8]>>,
     dedup: RefCell<Dedup>,
     blocks: RefCell<Blocks>,
-    /// The message ID of the next NON message.
+    /// The message ID of the next NON message: a counter from a random start (RFC 7252 §4.4), so that a reply cannot be
+    /// told from its place in the run of the server's own.
     ids: Cell<u16>,
 }
 
@@ -96,6 +97,16 @@ impl Coap {
     }
 }
 
+/// A random message ID to count from (RFC 7252 §4.4). Without randomness, 0: the IDs of the NON messages are no
+/// secret worth stopping for.
+fn first_id() -> u16 {
+    let mut bytes = [0; 2];
+    if let Err(error) = getrandom::fill(&mut bytes) {
+        tracing::warn!(%error, "CoAP: no randomness for the first message ID");
+    }
+    u16::from_be_bytes(bytes)
+}
+
 /// Answers the requests of `socket` for the resource at `path`, until the end of the process.
 pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>) {
     let coap = Rc::new(Coap {
@@ -103,7 +114,7 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
         path: path_segments(&path),
         dedup: RefCell::new(Dedup::new(EXCHANGE_LIFETIME, DEDUP_CAPACITY)),
         blocks: RefCell::new(Blocks::new(EXCHANGE_LIFETIME, BLOCKS_CAPACITY)),
-        ids: Cell::new(0),
+        ids: Cell::new(first_id()),
     });
     let mut buf = Vec::with_capacity(MAX_DATAGRAM);
     let mut failing = false;
@@ -123,8 +134,14 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
             }
         };
         failing = false;
-        // What is not a message is dropped: with no message ID, nothing can be said back (RFC 7252 §4.2).
+        // A CON message with a format error is rejected with a RST; the rest of what is not a message is dropped
+        // (RFC 7252 §4.2).
         let Ok(message) = Message::parse(&buf[..len]) else {
+            if let Some(reset) = Message::reject(&buf[..len])
+                && let Ok(reset) = reset.to_vec()
+            {
+                coap.send(peer, reset).await;
+            }
             continue;
         };
         let confirmable = message.kind == Type::Confirmable;
