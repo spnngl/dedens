@@ -297,6 +297,23 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   validation, no CNAME following. Refused with `@server`, `-f`, `--repeat`, `--search`, `+tls` and `+quic`. The human format
   counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS` replaces the roots
   for tests.
+- D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
+  privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
+  measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
+  nothing, DNS4EU's child variants block gambling), and its endpoints per transport, DoH URLs kept as data
+  until D62. `apps/dedens/tests/providers.rs` reads it into typed structs: `cargo test` checks the file
+  offline; `just providers` (an ignored test, outside `just check`, which stays offline) asks, through one
+  `dedens -f -` run (2 tries), `example.com` of every endpoint, `dnssec-failed.org` of each resolver, and
+  each resolver a canary per category, which it must block if `blocks` lists it and answer if not: NXDOMAIN,
+  EDE 15 to 17, no address, `0.0.0.0`, loopback or a listed block page. No provider publishes a canary its
+  peers block, so the canaries are names measured to split the resolvers so. An address family without a
+  route is skipped (IPv6 on CI); half the queries failing stops the test, the network being down. Each
+  failure is then asked again alone with 8 tries, 16 runs at once, since public servers drop queries (Comodo
+  half of them) and QUIC connections sharing a socket stall (`docs/TODECIDE.md`). A REFUSED with EDE 16
+  (Censored) passes: the resolver answered, the law where the test runs refused (OpenDNS from France). A
+  resolver whose packet cache answers with an earlier client's cookie (UncensoredDNS), which `dedens` drops
+  as forged (RFC 7873 §5.3, D68), is marked `stale_cookies` and asked without a cookie. Rejected: a query
+  file generated from it (a file to keep in step), a test per endpoint (480 processes).
 
 ## Server
 
