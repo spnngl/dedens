@@ -172,6 +172,10 @@ capture-dnssec:
 providers:
     cargo test -p dedens --test providers -- --ignored --nocapture
 
+# Download every list of docs/blocklists/blocklists.yaml and check its format (D87).
+blocklists:
+    cargo test -p dedensd --test blocklists -- --ignored --nocapture
+
 # Install the pinned RAPx and the nightly's rustc internals. Needs Z3: `brew install z3` or
 # `apt-get install libz3-dev`.
 rapx-install:

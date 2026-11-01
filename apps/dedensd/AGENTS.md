@@ -11,7 +11,8 @@ answering captured bytes (`tests/common/mod.rs`), reading its events as JSON, th
 (`Server::event`); `tests/end_to_end.yaml`, a `dedens` query file, holds what the replies must be.
 `tests/lists.rs` serves lists from a loopback HTTP server; `tests/encrypted.rs` asks upstream over TLS and QUIC,
 with the responder of `apps/dedens/tests/common` and its test certificates; `tests/listeners.rs` answers over TLS
-and QUIC with the certificates of `crates/dedens-net/tests/common`.
+and QUIC with the certificates of `crates/dedens-net/tests/common`; `tests/blocklists.rs` checks
+`docs/blocklists/blocklists.yaml` (D87).
 
 Measure a change to `src/serve.rs` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it
 in `docs/benchmarks.md`.

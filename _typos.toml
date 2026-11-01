@@ -18,6 +18,10 @@ extend-ignore-re = [
   '(?s)//\s*spellchecker:off.*?//\s*spellchecker:on',
 ]
 
+[default.extend-identifiers]
+# A GitHub user whose allowlist Phishing Army filters with (`docs/blocklists/blocklists.yaml`)
+anudeepND = "anudeepND"
+
 [default.extend-words]
 # Extended DNS Error (RFC 8914)
 ede = "ede"
