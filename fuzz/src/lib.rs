@@ -401,7 +401,7 @@ pub fn parse_query_file(data: &[u8]) {
         return;
     };
     for query in &file.queries {
-        let options = query.options.or(file.options);
+        let options = query.options.clone().or(file.options.clone());
         let _ = options.check();
         let _ = options.exchange();
         let message = options.query(Question::new(query.name.clone(), query.qtype));

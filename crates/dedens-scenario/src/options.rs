@@ -4,6 +4,7 @@ use std::num::NonZeroU8;
 use std::str::FromStr;
 use std::time::Duration;
 
+use dedens_net::doh::Method;
 use dedens_net::exchange::{self, Transport};
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::text::decode_hex;
@@ -12,7 +13,7 @@ use serde::Deserialize;
 
 /// How to ask a query, each option by its name in dig. Each field left out takes its value from the level above
 /// (the command line over the query, the query over its file), then dig's default.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "clap", derive(clap::Args))]
 #[serde(deny_unknown_fields)]
 pub struct Options {
@@ -25,6 +26,21 @@ pub struct Options {
     /// DNS over QUIC (RFC 9250), its server on UDP port 853 unless given another; over `tls` and `tcp`. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub quic: Option<bool>,
+    /// DNS over HTTPS (RFC 8484) over HTTP/3, its server on UDP port 443 unless given another: true, false, or the
+    /// path of its URI, which `https://HOST/PATH` as a server overrides. Default path: /dns-query. Not with `tcp`, `tls`
+    /// or `quic`. Default: off.
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_name = "PATH")
+    )]
+    #[serde(default, deserialize_with = "crate::parsed_some")]
+    pub https: Option<HttpsOption>,
+    /// DNS over HTTPS with the query in the URI of a GET, as `https` does by default. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub https_get: Option<bool>,
+    /// DNS over HTTPS with the query in the body of a POST. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub https_post: Option<bool>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub ignore: Option<bool>,
@@ -74,6 +90,9 @@ impl Options {
             tcp: self.tcp.or(fallback.tcp),
             tls: self.tls.or(fallback.tls),
             quic: self.quic.or(fallback.quic),
+            https: self.https.or(fallback.https),
+            https_get: self.https_get.or(fallback.https_get),
+            https_post: self.https_post.or(fallback.https_post),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
             cdflag: self.cdflag.or(fallback.cdflag),
@@ -92,18 +111,27 @@ impl Options {
     ///
     /// # Errors
     ///
-    /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS or QUIC, whose
-    /// queries are padded with EDNS (RFC 8467 §4.1).
+    /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
+    /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
             || self.nsid == Some(true)
             || matches!(self.cookie, Some(CookieOption::On | CookieOption::Fixed(_)))
-            || self.encrypted();
+            || self.encrypted()
+            || self.https();
         if self.edns == Some(false) && needs_edns {
             return Err(InvalidOption(
-                "bufsize, dnssec, nsid, cookie, tls and quic need EDNS, which noedns turns off",
+                "bufsize, dnssec, nsid, cookie, tls, quic and https need EDNS, which noedns turns off",
             ));
+        }
+        if self.https() && (self.tcp == Some(true) || self.encrypted()) {
+            return Err(InvalidOption(
+                "https goes with no tcp, tls or quic: it is HTTP/3, over QUIC",
+            ));
+        }
+        if self.https_get == Some(true) && self.https_post == Some(true) {
+            return Err(InvalidOption("https-get and https-post exclude each other"));
         }
         Ok(())
     }
@@ -148,11 +176,35 @@ impl Options {
         self.tls == Some(true) || self.quic == Some(true)
     }
 
-    /// The exchange options: transport, TCP fallback, cookies, timeout and tries.
+    /// Whether the server is asked over HTTPS: `https` on or with a path, else `https_get` or `https_post` on.
+    #[must_use]
+    pub fn https(&self) -> bool {
+        match self.https {
+            Some(HttpsOption::Off) => false,
+            Some(HttpsOption::On | HttpsOption::Path(_)) => true,
+            None => self.https_get == Some(true) || self.https_post == Some(true),
+        }
+    }
+
+    /// The path of the URI of the HTTPS server, when `https` gives one.
+    #[must_use]
+    pub fn https_path(&self) -> Option<&str> {
+        match &self.https {
+            Some(HttpsOption::Path(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The exchange options: transport, HTTP method, TCP fallback, cookies, timeout and tries.
     #[must_use]
     pub fn exchange(&self) -> exchange::Options {
         let mut options = exchange::Options::default();
-        if self.quic == Some(true) {
+        if self.https() {
+            options.transport = Transport::Https;
+            if self.https_post == Some(true) {
+                options.method = Method::Post;
+            }
+        } else if self.quic == Some(true) {
             options.transport = Transport::Quic;
         } else if self.tls == Some(true) {
             options.transport = Transport::Tls;
@@ -201,6 +253,32 @@ impl FromStr for CookieOption {
         let cookie =
             Cookie::new(*client, (!server.is_empty()).then_some(server)).map_err(|_| invalid)?;
         Ok(Self::Fixed(cookie))
+    }
+}
+
+/// The `https` option: written `true`, `false`, or the path of the server's URI, which starts with `/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpsOption {
+    /// The default path.
+    On,
+    /// Off.
+    Off,
+    /// This path.
+    Path(String),
+}
+
+impl FromStr for HttpsOption {
+    type Err = InvalidOption;
+
+    fn from_str(text: &str) -> Result<Self, InvalidOption> {
+        match text {
+            "true" => Ok(Self::On),
+            "false" => Ok(Self::Off),
+            path if path.starts_with('/') => Ok(Self::Path(path.to_owned())),
+            _ => Err(InvalidOption(
+                "https is true, false, or a path starting with /",
+            )),
+        }
     }
 }
 
@@ -287,27 +365,31 @@ mod tests {
         for needing in [
             Options {
                 nsid: Some(true),
-                ..noedns
+                ..noedns.clone()
             },
             Options {
                 dnssec: Some(true),
-                ..noedns
+                ..noedns.clone()
             },
             Options {
                 bufsize: Some(512),
-                ..noedns
+                ..noedns.clone()
             },
             Options {
                 cookie: Some(CookieOption::On),
-                ..noedns
+                ..noedns.clone()
             },
             Options {
                 tls: Some(true),
-                ..noedns
+                ..noedns.clone()
             },
             Options {
                 quic: Some(true),
-                ..noedns
+                ..noedns.clone()
+            },
+            Options {
+                https: Some(HttpsOption::On),
+                ..noedns.clone()
             },
         ] {
             assert!(needing.check().is_err(), "{needing:?}");
@@ -315,10 +397,94 @@ mod tests {
         assert_eq!(
             Options {
                 cookie: Some(CookieOption::Off),
-                ..noedns
+                ..noedns.clone()
             }
             .check(),
             Ok(())
         );
+    }
+
+    #[test]
+    fn https_reads_as_a_switch_or_a_path() {
+        assert_eq!("true".parse(), Ok(HttpsOption::On));
+        assert_eq!("false".parse(), Ok(HttpsOption::Off));
+        assert_eq!("/dns".parse(), Ok(HttpsOption::Path("/dns".to_owned())));
+        for text in ["", "dns", "dns-query", "1"] {
+            assert!(text.parse::<HttpsOption>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn https_is_on_with_a_path_or_either_method() {
+        let https = |https, get, post| Options {
+            https,
+            https_get: get,
+            https_post: post,
+            ..Options::default()
+        };
+        assert!(!Options::default().https());
+        assert!(https(Some(HttpsOption::On), None, None).https());
+        assert!(https(Some(HttpsOption::Path("/p".to_owned())), None, None).https());
+        assert!(!https(Some(HttpsOption::Off), Some(true), None).https());
+        assert!(https(None, Some(true), None).https());
+        assert!(https(None, None, Some(true)).https());
+        assert!(!https(None, None, Some(false)).https());
+        let path = https(Some(HttpsOption::Path("/p".to_owned())), None, None);
+        assert_eq!(path.https_path(), Some("/p"));
+        assert_eq!(Options::default().https_path(), None);
+    }
+
+    #[test]
+    fn https_picks_the_transport_and_the_method() {
+        let get = Options {
+            https_get: Some(true),
+            ..Options::default()
+        };
+        let options = get.exchange();
+        assert_eq!(options.transport, Transport::Https);
+        assert_eq!(options.method, Method::Get);
+        let post = Options {
+            https_post: Some(true),
+            ..Options::default()
+        };
+        let options = post.exchange();
+        assert_eq!(options.transport, Transport::Https);
+        assert_eq!(options.method, Method::Post);
+    }
+
+    #[test]
+    fn https_refuses_what_it_does_not_go_with() {
+        let on = Options {
+            https: Some(HttpsOption::On),
+            ..Options::default()
+        };
+        assert_eq!(on.check(), Ok(()));
+        for refused in [
+            Options {
+                tcp: Some(true),
+                ..on.clone()
+            },
+            Options {
+                tls: Some(true),
+                ..on.clone()
+            },
+            Options {
+                quic: Some(true),
+                ..on.clone()
+            },
+            Options {
+                https_get: Some(true),
+                https_post: Some(true),
+                ..on.clone()
+            },
+        ] {
+            assert!(refused.check().is_err(), "{refused:?}");
+        }
+        let off = Options {
+            https: Some(HttpsOption::Off),
+            tls: Some(true),
+            ..Options::default()
+        };
+        assert_eq!(off.check(), Ok(()));
     }
 }

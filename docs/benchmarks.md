@@ -141,6 +141,26 @@ not measured: the core only makes and reads `http` types.
 - A request or response costs about what decoding the message does (73/153/289, Codec above): the HTTP
   headers are a few hundred nanoseconds, so a DoH exchange is bound by the HTTP and TLS layers.
 
+## DoH over HTTP/3 and DoQ (D83)
+
+`cargo bench -p dedens-net --bench transports`: queries a second of one `Client` against loopback servers
+(`benches/transports.rs`), client and servers on one thread, 3 s a row, one run, the connection warm. Each query is
+`example.com. A`, padded to 128 bytes, and the response is that query echoed with QR and RA set. `in flight` loops ask
+one after another over one connection.
+
+| Transport | in flight | queries/s |
+|---|---|---|
+| DoQ | 1 | 9395 |
+| DoQ | 32 | 202875 |
+| DoH3, GET | 1 | 8598 |
+| DoH3, GET | 32 | 95376 |
+| DoH3, POST | 1 | 8769 |
+| DoH3, POST | 32 | 124747 |
+
+- One query at a time DoH3 is 8% slower than DoQ (QPACK and HTTP framing on top of the same QUIC stream); with 32
+  at once 0.47x (GET) and 0.61x (POST) of DoQ's rate, the one thread running both ends. A GET builds a URI with the
+  query in base64url and its server parses it; POST sends the query as a body.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on

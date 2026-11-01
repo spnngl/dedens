@@ -29,10 +29,10 @@ mod report;
 
 pub use expect::{Expect, Expected};
 pub use file::{Id, InvalidId, Query, QueryFile, server_text};
-pub use options::{CookieOption, InvalidOption, Options, Timeout};
+pub use options::{CookieOption, HttpsOption, InvalidOption, Options, Timeout};
 pub use report::{
-    EdnsReport, ExchangeReport, HeaderReport, Latency, OptionReport, QuestionReport, RecordReport,
-    Report, Transport,
+    EdnsReport, ExchangeReport, HeaderReport, HttpReport, Latency, OptionReport, QuestionReport,
+    RecordReport, Report, Transport,
 };
 
 /// A YAML scalar, which a field reads as text with its [`FromStr`](std::str::FromStr).

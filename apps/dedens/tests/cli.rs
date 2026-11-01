@@ -305,6 +305,111 @@ fn quic_servers_answer_once_their_certificate_verifies() {
     assert_eq!(transports, [Transport::Quic; 2]);
 }
 
+/// D83: DNS over HTTPS goes over HTTP/3, by GET unless `+https-post`, on the path given by the URL, else by
+/// `+https`, else `/dns-query`; the certificate must hold the host name or the `#NAME`.
+#[test]
+fn https_servers_answer_once_their_certificate_verifies() {
+    let (server, ca) = Responder::https(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let sets: [(Vec<String>, Transport); 5] = [
+        (
+            vec![format!("@https://127.0.0.1:{port}#{TLS_NAME}"), ca.clone()],
+            Transport::HttpsGet,
+        ),
+        (
+            vec![
+                format!("@https://127.0.0.1:{port}/other/path#{TLS_NAME}"),
+                ca.clone(),
+            ],
+            Transport::HttpsGet,
+        ),
+        (
+            vec![
+                "@127.0.0.1".to_owned(),
+                "+https=/dns".to_owned(),
+                "-p".to_owned(),
+                port.to_string(),
+                ca.clone(),
+            ],
+            Transport::HttpsGet,
+        ),
+        (
+            vec![
+                "@127.0.0.1".to_owned(),
+                "+https-get".to_owned(),
+                format!("--port={port}"),
+                ca.clone(),
+            ],
+            Transport::HttpsGet,
+        ),
+        (
+            vec![
+                "@127.0.0.1".to_owned(),
+                "+https-post".to_owned(),
+                format!("--port={port}"),
+                ca.clone(),
+            ],
+            Transport::HttpsPost,
+        ),
+    ];
+    for (args, _) in &sets {
+        let args: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .chain(["example.com"])
+            .collect();
+        let out = run(&args, 0);
+        assert!(out.contains("over DoH (HTTP/3 200)"), "{out}");
+    }
+    dedens()
+        .args([
+            &format!("@https://127.0.0.1:{port}#other.example"),
+            &ca,
+            "example.com",
+        ])
+        .assert()
+        .code(10)
+        .stderr(contains("QUIC"));
+    let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
+    let expected: Vec<_> = sets.iter().map(|(_, transport)| *transport).collect();
+    assert_eq!(transports, expected);
+    for (_, query) in queries(&server) {
+        assert_eq!(query.header.id, 0);
+    }
+}
+
+/// D83: `+https` in each format: the HTTP version and status come with the exchange.
+#[test]
+fn https_output_in_each_format() {
+    let (server, ca) = Responder::https(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let at = format!("@https://127.0.0.1:{}#{TLS_NAME}", server.addr.port());
+    for (name, flag) in [
+        ("https_human", "--format=human"),
+        ("https_json", "--json"),
+        ("https_yaml", "--yaml"),
+        ("https_short", "--short"),
+    ] {
+        let out = run(&[&at, &ca, "example.com", flag], 0);
+        insta::assert_snapshot!(name, redact(&out, server.addr.port()));
+    }
+}
+
+/// D38, D83: `https://` to one address is a server of its own, with its id.
+#[test]
+fn https_servers_have_their_own_ids() {
+    dedens()
+        .args(["@quic://127.0.0.1:1", "@https://127.0.0.1:1", "example.com"])
+        .args(["+tries=1", "+time=100ms"])
+        .assert()
+        .code(9)
+        .stderr(
+            contains("example.com_A@127.0.0.1:1+quic:")
+                .and(contains("example.com_A@127.0.0.1:1+https:")),
+        );
+}
+
 #[test]
 fn no_reply_exits_9_after_the_tries() {
     let server = Responder::start(&[]);
@@ -342,6 +447,16 @@ fn usage_errors_exit_2() {
         &["+trace", "+quic", "example.com"],
         &["+tls", "+noedns", "example.com"],
         &["@quic://127.0.0.1", "+noedns", "example.com"],
+        &["+https", "+tcp", "example.com"],
+        &["+https", "+tls", "example.com"],
+        &["+https", "+quic", "example.com"],
+        &["+https", "+noedns", "example.com"],
+        &["+https-post", "+noedns", "example.com"],
+        &["+https", "+trace", "example.com"],
+        &["+https-get", "+https-post", "example.com"],
+        &["+https=dns-query", "example.com"],
+        &["@https://127.0.0.1", "+tls", "example.com"],
+        &["@https://127.0.0.1", "+noedns", "example.com"],
     ] {
         dedens().args(args).assert().code(2);
     }

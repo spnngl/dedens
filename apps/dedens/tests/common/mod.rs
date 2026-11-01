@@ -1,4 +1,4 @@
-//! A loopback DNS server for the command's tests: it answers over UDP and TCP, or TLS, or QUIC, with the captured responses of
+//! A loopback DNS server for the command's tests: it answers over UDP and TCP, or TLS, QUIC or HTTP/3, with the captured responses of
 //! `crates/dedens-proto/tests/testdata`, their ID and question set to the query's, and keeps every query it gets.
 
 use std::io::{Read, Write};
@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use compio::BufResult;
+use compio::bytes::{Buf, Bytes};
 use compio::io::AsyncWriteExt as _;
-use compio::quic::ServerBuilder;
+use compio::quic::{ServerBuilder, h3};
 use compio::rustls::version::TLS13;
 use compio::rustls::{
     DEFAULT_VERSIONS, ServerConfig, ServerConnection, StreamOwned, SupportedProtocolVersion,
@@ -29,6 +30,10 @@ pub(crate) enum Transport {
     Tcp,
     Tls,
     Quic,
+    /// HTTP/3, a GET.
+    HttpsGet,
+    /// HTTP/3, a POST.
+    HttpsPost,
 }
 
 /// The queries received, in order, with their transport.
@@ -202,6 +207,87 @@ impl Responder {
                                     .await;
                                 let _ = send.finish();
                             }
+                        }
+                    })
+                    .detach();
+                }
+            });
+        });
+        let addr = addr.recv().expect("the server's address");
+        (Self { addr, queries }, pem)
+    }
+}
+
+impl Responder {
+    /// As [`Responder::start`], over HTTP/3 only (RFC 8484 over RFC 9114), on any path: each query on its request
+    /// stream, answered on it.
+    pub(crate) fn https(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+        let (config, pem) = certified(&[&TLS13], b"h3");
+        let (queries, canned): (Log, _) = (Arc::default(), canned(names));
+        let log = Arc::clone(&queries);
+        let (bound, addr) = mpsc::channel();
+        thread::spawn(move || {
+            let runtime = compio::runtime::Runtime::new().expect("a runtime");
+            runtime.block_on(async move {
+                let endpoint = ServerBuilder::new_with_rustls_server_config(config)
+                    .bind("127.0.0.1:0")
+                    .await
+                    .expect("a QUIC endpoint");
+                bound
+                    .send(endpoint.local_addr().expect("bound"))
+                    .expect("the test waits");
+                while let Some(incoming) = endpoint.wait_incoming().await {
+                    let (log, canned) = (Arc::clone(&log), Arc::clone(&canned));
+                    compio::runtime::spawn(async move {
+                        let Ok(connecting) = incoming.accept() else {
+                            return;
+                        };
+                        let Ok(connection) = connecting.await else {
+                            return;
+                        };
+                        let Ok(mut server) =
+                            h3::server::builder().build::<_, Bytes>(connection).await
+                        else {
+                            return;
+                        };
+                        while let Ok(Some(resolver)) = server.accept().await {
+                            let (log, canned) = (Arc::clone(&log), Arc::clone(&canned));
+                            compio::runtime::spawn(async move {
+                                let Ok((request, mut stream)) = resolver.resolve_request().await
+                                else {
+                                    return;
+                                };
+                                let mut body = Vec::new();
+                                while let Ok(Some(mut chunk)) = stream.recv_data().await {
+                                    body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+                                }
+                                let Ok(query) = dedens_net::doh::server_request(&request, &body)
+                                else {
+                                    return;
+                                };
+                                let transport = match *request.method() {
+                                    http::Method::POST => Transport::HttpsPost,
+                                    _ => Transport::HttpsGet,
+                                };
+                                log.lock()
+                                    .expect("unpoisoned")
+                                    .push((transport, query.clone()));
+                                let Some(wire) = answer(&canned, &query, Transport::Quic) else {
+                                    return;
+                                };
+                                let Ok(response) =
+                                    dedens_net::doh::server_response(wire, request.method())
+                                else {
+                                    return;
+                                };
+                                let (head, body) = response.into_parts();
+                                let _ = stream
+                                    .send_response(http::Response::from_parts(head, ()))
+                                    .await;
+                                let _ = stream.send_data(Bytes::from(body)).await;
+                                let _ = stream.finish().await;
+                            })
+                            .detach();
                         }
                     })
                     .detach();

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
+use dedens_net::doh::Template;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -93,9 +94,12 @@ struct Resolver {
     plain: Vec<IpAddr>,
     tls: Option<Encrypted>,
     quic: Option<Encrypted>,
-    /// `DoH` URLs, unchecked until `dedens` speaks `DoH` (D62).
+    /// `DoH` URLs (RFC 8484 §3), asked over HTTP/3 (D83).
     #[serde(default)]
     https: Vec<String>,
+    /// `DoH` URLs of servers where HTTP/3 does not answer: parsed, not asked until HTTP/2 (D83).
+    #[serde(default)]
+    https_h2: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,18 +163,18 @@ impl Block {
     }
 }
 
-/// One query of the run: its id, its server's address and the server as `dedens` reads it, whether over TCP
-/// and with a cookie.
+/// One query of the run: its id, its server's address (none for a `DoH` URL, whose host name the system resolves)
+/// and the server as `dedens` reads it, whether over TCP and with a cookie.
 struct Probe {
     id: String,
-    address: IpAddr,
+    address: Option<IpAddr>,
     server: String,
     tcp: bool,
     cookie: bool,
 }
 
 impl Resolver {
-    /// One probe per address and transport, plain addresses over UDP then TCP.
+    /// One probe per address and transport, plain addresses over UDP then TCP, then one per `DoH` URL.
     fn probes(&self, provider: &str) -> Vec<Probe> {
         let prefix = format!("{provider}.{}", self.id);
         let mut probes = Vec::new();
@@ -178,7 +182,7 @@ impl Resolver {
             for (transport, tcp) in [("udp", false), ("tcp", true)] {
                 probes.push(Probe {
                     id: format!("{prefix}.{transport}.{address}"),
-                    address,
+                    address: Some(address),
                     server: address.to_string(),
                     tcp,
                     cookie: !self.stale_cookies,
@@ -190,7 +194,7 @@ impl Resolver {
                 for &address in &encrypted.addresses {
                     probes.push(Probe {
                         id: format!("{prefix}.{scheme}.{address}"),
-                        address,
+                        address: Some(address),
                         server: format!(
                             "{scheme}://{}#{}",
                             SocketAddr::new(address, 853),
@@ -201,6 +205,15 @@ impl Resolver {
                     });
                 }
             }
+        }
+        for (number, url) in (1..).zip(&self.https) {
+            probes.push(Probe {
+                id: format!("{prefix}.https.{number}"),
+                address: None,
+                server: url.clone(),
+                tcp: false,
+                cookie: !self.stale_cookies,
+            });
         }
         probes
     }
@@ -304,13 +317,20 @@ fn catalog_is_well_formed() {
                     encrypted.name
                 );
             }
-            assert!(
-                r.https.iter().all(|url| url.starts_with("https://")),
-                "{at}: https"
-            );
+            for url in r.https.iter().chain(&r.https_h2) {
+                assert!(
+                    Template::parse(url).is_ok(),
+                    "{at}: {url} is no DoH URI template"
+                );
+            }
             assert!(unique(&r.https), "{at}: https URLs repeat");
+            assert!(unique(&r.https_h2), "{at}: https_h2 URLs repeat");
             assert!(
-                !r.probes(&p.id).is_empty() || !r.https.is_empty(),
+                r.https.iter().all(|url| !r.https_h2.contains(url)),
+                "{at}: a URL in https and https_h2"
+            );
+            assert!(
+                !r.probes(&p.id).is_empty() || !r.https_h2.is_empty(),
                 "{at}: no endpoint"
             );
         }
@@ -465,10 +485,14 @@ fn every_endpoint_answers() {
     let mut skipped = 0;
     for p in &catalog.providers {
         for r in &p.resolvers {
-            let (probes, unrouted): (Vec<_>, Vec<_>) = r
-                .probes(&p.id)
-                .into_iter()
-                .partition(|probe| if probe.address.is_ipv4() { v4 } else { v6 });
+            let (probes, unrouted): (Vec<_>, Vec<_>) =
+                r.probes(&p.id)
+                    .into_iter()
+                    .partition(|probe| match probe.address {
+                        Some(address) if address.is_ipv4() => v4,
+                        Some(_) => v6,
+                        None => true,
+                    });
             skipped += unrouted.len();
             for probe in &probes {
                 asks.push(Ask {
