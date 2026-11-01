@@ -1019,7 +1019,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the UDP servers of `apps/dedens/tests/common`, `apps/dedensd/tests/common` and `crates/dedens-net/tests/common`
   and the CoAP one of `rfc9953.rs` skip a datagram that is not a query, and closed-port tests use `127.0.0.1:1`,
   which the system never hands out. Rejected: a retry or a sleep (the stray is not late, it is not ours), a port
-  range per test (the stray's sender does not know it).
+  range per test (the stray's sender does not know it). On macOS a datagram is queued without the control data
+  (destination address, ECN) of the socket options set after it arrived, and `compio-quic` panics on one
+  (`compio-io` 0.10.1 `CMsgIter::new`: `buffer too short`). `dedensd` bound its sockets, logged `serving` and set the
+  options when its threads built the QUIC endpoints, so a client at once could kill the process (seen: 6 of 3840
+  runs of `s3_the_path_is_the_listeners` under load, `connected: TimedOut`); it now logs `serving` once every
+  thread has its endpoints. A datagram that reaches a socket before its owner set the options stays a risk, a
+  startup one on macOS only (a restart ends it), and for a client of a test too.
 
 ## Server
 
