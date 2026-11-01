@@ -121,11 +121,11 @@ fn every_signed_rrset_verifies_at_the_capture_time() {
             item.data.rtype()
         );
         match (item.capture.as_str(), item.data.rtype()) {
-            // Ed448: `ring` has none (D71).
-            ("alg16_a" | "ed448_nl_dnskey", _) => assert!(
-                matches!(result, Err(SigError::UnsupportedAlgorithm { .. })),
-                "{label}: {result:?}"
-            ),
+            // Ed448: `ring` has none (D71); the RRSIGs of an unsupported algorithm are disregarded, and the
+            // zone is insecure by its DS (`a_ds_of_an_unsupported_algorithm_is_insecure_not_bogus`).
+            ("alg16_a" | "ed448_nl_dnskey", _) => {
+                assert_eq!(result, Err(SigError::NoSignature), "{label}");
+            }
             // The signatures of `rhybar.cz` ended in October 2025.
             ("bogus_expired" | "rhybar_cz_dnskey", _) => assert!(
                 matches!(result, Err(SigError::Expired { .. })),

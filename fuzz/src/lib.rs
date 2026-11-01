@@ -15,7 +15,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
-use dedens_dnssec::crypto;
+use dedens_dnssec::crypto::{self, Budget};
+use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
@@ -55,6 +56,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("server_request", server_request),
     ("read_doh_response", read_doh_response),
     ("dnssec_crypto", dnssec_crypto),
+    ("rrsig_verify", rrsig_verify),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -823,4 +825,62 @@ fn digest_checked(digest: DigestType, owner: &Name<'_>, dnskey_rdata: &[u8]) {
         !crypto::supported_digest(digest),
         "{digest}"
     );
+}
+
+/// The `RRset` checks of `dedens_dnssec::rrsig` (D73) on the records of a message: every `RRset` against every
+/// RRSIG and DNSKEY the message holds, and every DNSKEY `RRset` against every DS `RRset`, at the time of the
+/// first RRSIG's inception (the captured zones verify) and at one taken from the input. Whatever the input, the
+/// canonical form is sorted without duplicates, an `RRset` kept for no longer than it came with, an error
+/// is never the "unsupported" of a DS (an RRSIG of an unknown algorithm must not make data insecure), and the
+/// Extended DNS Error has text.
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on an answer that breaks one of those rules.
+pub fn rrsig_verify(data: &[u8]) {
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let message = &decoded.message;
+    let sets: Vec<RrSet<'_>> = [&message.answer, &message.authority, &message.additional]
+        .into_iter()
+        .flat_map(|section| RrSet::group(section))
+        .collect();
+    let of_type = |rtype: RecordType| sets.iter().filter(move |set| set.rtype() == rtype);
+    let sigs: Vec<Signature<'_>> = of_type(RecordType::RRSIG)
+        .flat_map(|set| Signature::all(set))
+        .collect();
+    let keys: Vec<Key<'_>> = of_type(RecordType::DNSKEY)
+        .flat_map(|set| Key::all(set))
+        .collect();
+    let times = [
+        sigs.first().map_or(0, |sig| sig.rrsig().inception),
+        data.first_chunk()
+            .map_or(0, |bytes| u32::from_be_bytes(*bytes)),
+    ];
+    for set in &sets {
+        let canonical = set.canonical_rdatas();
+        assert!(
+            canonical.is_sorted_by(|a, b| a < b),
+            "canonical RDATA not strictly sorted"
+        );
+        assert!(canonical.len() <= set.rdatas().len(), "canonical form grew");
+        for now in times {
+            match rrsig::verify_any(set, &sigs, &keys, now, &mut Budget::default()) {
+                Ok(verified) => assert!(verified.ttl <= set.ttl(), "kept longer than it came"),
+                Err(error) => {
+                    assert!(
+                        !error.is_unsupported(),
+                        "an RRSIG made data insecure: {error}"
+                    );
+                    assert!(!error.ede(set).text.is_empty(), "no text for {error}");
+                }
+            }
+            if set.rtype() == RecordType::DNSKEY {
+                for ds in of_type(RecordType::DS) {
+                    let _ = rrsig::trusted_keys(set, &sigs, ds, now, &mut Budget::default());
+                }
+            }
+        }
+    }
 }
