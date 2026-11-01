@@ -48,7 +48,14 @@ async fn coap_server(serve: Serve) -> (SocketAddr, Rc<RefCell<Vec<Message>>>) {
         loop {
             let BufResult(received, buf) = socket.recv_from(Vec::with_capacity(2048)).await;
             let (len, peer) = received.expect("a request");
-            let request = Message::parse(&buf[..len]).expect("a CoAP message");
+            // A port is reused as soon as it closes: what comes may be meant for the socket before, such as the
+            // packets a QUIC server of another test keeps sending to the port of a client that is gone.
+            let Ok(request) = Message::parse(&buf[..len]) else {
+                continue;
+            };
+            if request.code != Code::FETCH {
+                continue;
+            }
             log.borrow_mut().push(request.clone());
             let mut reply = Message::piggybacked(&request, Code::CONTENT);
             match &serve {

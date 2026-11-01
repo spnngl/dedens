@@ -911,6 +911,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   answers with an earlier client's cookie (UncensoredDNS), which `dedens` drops as forged (RFC 7873 §5.3,
   D68), is marked `stale_cookies` and asked without a cookie. Rejected: a query file generated from it (a file
   to keep in step), a test per endpoint (a process each, hundreds).
+- D89 Loopback test servers count queries, not datagrams, and no test frees a port to get a closed one. The system
+  hands a port out again as soon as its socket closes, and tests run side by side (in one process, `just check`'s
+  other work, other worktrees): a QUIC server keeps sending, after its client exited, to the client's old port, which
+  another test's server then holds (seen: a log of three queries with a fourth that was 31 bytes of QUIC), and a
+  client of a port freed to be closed is answered by whoever took it (seen: `a_closed_port_exits_9` exit 0). So
+  the UDP servers of `apps/dedens/tests/common`, `apps/dedensd/tests/common` and `crates/dedens-net/tests/common`
+  and the CoAP one of `rfc9953.rs` skip a datagram that is not a query, and closed-port tests use `127.0.0.1:1`,
+  which the system never hands out. Rejected: a retry or a sleep (the stray is not late, it is not ours), a port
+  range per test (the stray's sender does not know it).
 
 ## Server
 

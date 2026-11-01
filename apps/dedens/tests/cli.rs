@@ -230,6 +230,25 @@ fn query_options_set_the_query() {
     assert_eq!(sent.client(), [1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
+/// A port is reused as soon as its socket closes, so a server may get what was meant for the socket before it: the
+/// packets a QUIC server of another test keeps sending to the port of a client that has exited. Captured, from the
+/// log of a server that held such a port.
+#[test]
+fn a_datagram_that_is_no_query_is_not_a_query_received() {
+    const STRAY: [u8; 42] = [
+        0x0f, 0x6f, 0x78, 0x67, 0xe6, 0xf3, 0xbb, 0x40, 0x73, 0xc0, 0x09, 0x45, 0x73, 0x3d, 0xac,
+        0xcf, 0x29, 0x4a, 0x64, 0x4b, 0x20, 0x1b, 0xe7, 0xf1, 0x79, 0xcb, 0x6e, 0xdf, 0x6e, 0x26,
+        0xcc, 0x22, 0x09, 0xf3, 0xef, 0xad, 0x08, 0xc9, 0xd9, 0xe0, 0x52, 0xb8,
+    ];
+    let server = Responder::start(&["a"]);
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .and_then(|socket| socket.send_to(&STRAY, server.addr))
+        .expect("sent");
+    // The server reads in order: the stray is behind it once this query is answered.
+    run(&[&server.at(), "example.com"], 0);
+    assert_eq!(queries(&server).len(), 1);
+}
+
 #[test]
 fn a_truncated_answer_is_asked_again_over_tcp_unless_ignored() {
     let server = Responder::start(&["truncated", "txt_large"]);
@@ -1120,17 +1139,9 @@ fn a_disagreement_follows_its_own_query() {
 
 #[test]
 fn a_closed_port_exits_9() {
-    let port = std::net::UdpSocket::bind("127.0.0.1:0")
-        .and_then(|socket| socket.local_addr())
-        .expect("a free port")
-        .port();
+    // Port 1, not a port just closed: that one is any test's to take, and its server would answer.
     dedens()
-        .args([
-            &format!("@127.0.0.1:{port}"),
-            "example.com",
-            "+tries=1",
-            "+time=2s",
-        ])
+        .args(["@127.0.0.1:1", "example.com", "+tries=1", "+time=2s"])
         .assert()
         .code(9);
 }

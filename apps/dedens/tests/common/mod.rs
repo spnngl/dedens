@@ -94,6 +94,9 @@ impl Responder {
             let mut buf = vec![0; 65535];
             while let Ok((len, from)) = udp.recv_from(&mut buf) {
                 let query = buf[..len].to_vec();
+                if !is_query(&query) {
+                    continue;
+                }
                 let mut log = queries.lock().expect("unpoisoned");
                 log.push((Transport::Udp, query.clone()));
                 let dropped = flaky && log.len() % 2 == 0;
@@ -509,6 +512,13 @@ fn answer(canned: &[Canned], query: &[u8], transport: Transport) -> Option<Vec<u
     response[..2].copy_from_slice(&query[..2]);
     response[12..end].copy_from_slice(&query[12..end]);
     Some(response)
+}
+
+/// Whether a datagram is a query: a header (RFC 1035 §4.1.1) of a message that is no response, with one question and
+/// no answer or authority record. A UDP port is reused as soon as it closes, so what a server gets may be meant for
+/// the socket before it: the packets a QUIC server keeps sending to the port of a client that has exited.
+fn is_query(wire: &[u8]) -> bool {
+    matches!(wire, [_, _, flags, _, 0, 1, 0, 0, 0, 0, _, _, ..] if flags & 0x80 == 0)
 }
 
 /// The question of a message, its name lowercased and its type, and where it ends; the name is not compressed.
