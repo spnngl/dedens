@@ -1086,8 +1086,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
   replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
-  it asks loses its connection). A query waiting upstream holds no reply buffer until a reply is made. Constants
-  for now; configuration with need. Client allow and block lists come later (`docs/TODECIDE.md`).
+  it asks loses its connection). A query waiting upstream holds no reply buffer until a reply is made. A QUIC
+  Initial from an address not yet validated is answered with a Retry (RFC 9000 §8.1.2) and takes no connection
+  slot, so forged sources cannot fill them; always on, at the cost of a round trip for a first connection (a
+  client holding a token from an earlier one skips it). Constants for now; configuration with need. Client allow and block lists come later (`docs/TODECIDE.md`).
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about

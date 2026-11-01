@@ -627,11 +627,18 @@ enum Service {
 const H3_UNI_STREAMS: u32 = 16;
 
 /// Accepts the connections of one QUIC endpoint, up to [`TCP_CONNECTIONS`] at once with those over TCP, and serves
-/// each as `service` says.
+/// each as `service` says. A client whose address is not validated gets a Retry (RFC 9000 §8.1.2) and no state or
+/// slot: a spoofed source never sees it, so forged Initials cannot fill the slots.
 async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
     let service = Rc::new(service);
     while let Some(incoming) = endpoint.wait_incoming().await {
         let peer = incoming.remote_address();
+        if !incoming.remote_address_validated() {
+            if let Err(error) = incoming.retry() {
+                tracing::debug!(%peer, %error, "QUIC retry failed");
+            }
+            continue;
+        }
         let Some(slot) = thread.connections.take() else {
             tracing::debug!(%peer, "too many connections: refused");
             incoming.refuse();
