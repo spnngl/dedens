@@ -82,6 +82,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   uncached query asks the chain again. Default: as is until 06b.
 - Validating forwarder (D77): Bogus and indeterminate counts are per query, not per zone; no `trust_anchors` reload
   without a configuration reload. Default: none.
+- Validating forwarder (D77): the cost of a query upstream. A bogus answer Response::build refuses to cache (a NODATA
+  without SOA, TTL 0) is validated again on each query; up to 64 questions hold one upstream slot until a verdict;
+  no deadline per query nor rate limit per client; the dead server is skipped for one query only. Default: as is
+  until the key cache (06b) cuts the questions; then a per-query deadline if a deployment shows the need.
+- Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a
+  bare SERVFAIL, with no EDE 22 (No Reachable Authority) or 23 (Network Error). Default: bare.
 
 ## Later
 
