@@ -14,13 +14,20 @@ use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use certificates::{Certificates, NAME, certificates, named};
-use common::{Responder, Server, captured, decode, query_for, write_config};
+use common::{Responder, Server, captured, decode, framed, query_for, write_config};
+use compio::io::AsyncWriteExt;
+use compio::quic::crypto::rustls::QuicClientConfig;
+use compio::quic::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig, VarInt};
 use compio::runtime::Runtime;
+use compio::rustls::crypto::ring;
+use compio::rustls::version::TLS13;
+use compio::rustls::{ClientConfig as TlsConfig, RootCertStore};
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Options, Transport};
+use dedens_net::quic::read_message;
 use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode};
 
@@ -167,4 +174,72 @@ fn an_unvalidated_quic_client_is_sent_a_retry() {
     // A long header (bit 7) of the type Retry, 0b11 in bits 5-4 (RFC 9000 §17.2): not an Initial, 0b00. The fixed
     // bit (6) may be greased (RFC 9287).
     assert_eq!(first & 0xB0, 0xB0, "the first byte {first:#04x}");
+}
+
+/// A `DoQ` connection to `addr` of a client that pings every second, so that only the server's own timers end it, with
+/// `window` bytes of flow control credit for what the server sends.
+async fn pinging(addr: SocketAddr, ca: &Certificates, window: u32) -> Connection {
+    let mut roots = RootCertStore::empty();
+    roots.add(ca.ca.clone()).expect("a root");
+    let mut tls = TlsConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_protocol_versions(&[&TLS13])
+        .expect("TLS 1.3")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    tls.alpn_protocols = vec![b"doq".to_vec()];
+    let tls = QuicClientConfig::try_from(tls).expect("QUIC's initial suite");
+    let mut transport = TransportConfig::default();
+    transport
+        .keep_alive_interval(Some(Duration::from_secs(1)))
+        .max_idle_timeout(IdleTimeout::try_from(Duration::from_secs(60)).ok())
+        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        .stream_receive_window(VarInt::from_u32(window))
+        .receive_window(VarInt::from_u32(window));
+    let mut config = ClientConfig::new(Arc::new(tls));
+    config.transport_config(Arc::new(transport));
+    let endpoint = Endpoint::client(("127.0.0.1", 0))
+        .await
+        .expect("an endpoint");
+    endpoint
+        .connect(addr, NAME, Some(config))
+        .expect("connecting")
+        .await
+        .expect("connected")
+}
+
+/// D47: a QUIC connection without a new stream for the idle time is closed, though its client keeps it alive with
+/// pings, as a TCP one without a query is.
+#[test]
+fn a_quic_connection_without_a_query_is_closed_though_pinged() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (server, ..) = listening(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        let start = Instant::now();
+        compio::time::timeout(Duration::from_secs(30), connection.closed())
+            .await
+            .expect("closed by the server");
+        let lasted = start.elapsed();
+        assert!(lasted < Duration::from_secs(15), "{lasted:?}");
+    });
+}
+
+/// D47: a reply that its client has no credit to receive is given up after the write time, as on TCP: the stream
+/// is reset and the connection closes.
+#[test]
+fn a_quic_reply_the_client_does_not_read_is_given_up() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (server, ..) = listening(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 0).await;
+        let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
+        let query = framed(&query_for(&captured("a"), 0));
+        send.write_all(query).await.0.expect("the query sent");
+        send.finish().expect("finished");
+        let read = compio::time::timeout(Duration::from_secs(30), read_message(&mut recv)).await;
+        assert!(read.expect("an end within 30 s").is_err(), "no reply came");
+        connection.close(VarInt::from_u32(0), b"");
+    });
 }
