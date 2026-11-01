@@ -1,0 +1,55 @@
+name: mutants
+
+# Mutation testing of the code a pull request changes (`just mutants-diff`): informational, outside the gate.
+# Whole-workspace runs stay local (D103).
+on:
+  pull_request:
+
+# A new push cancels the running check.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Each job grants only what it needs.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      # renovate: datasource=crate depName=cargo-mutants
+      CARGO_MUTANTS_VERSION: "27.1.0"
+      # renovate: datasource=crate depName=cargo-nextest
+      CARGO_NEXTEST_VERSION: "0.9.150"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The diff starts where the branch left its base.
+          fetch-depth: 0
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: just toolchains
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> target/mutants/target
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+      - env:
+          BASE_REF: ${{ github.base_ref }}
+        run: just mutants-diff "origin/$BASE_REF"
+      - name: Keep the outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutants-out
+          path: target/mutants/mutants.out
