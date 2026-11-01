@@ -39,5 +39,7 @@ Planned: `dedens-resolver`.
 - [`docs/benchmarks.md`](docs/benchmarks.md): measurements behind the performance decisions.
 - [`docs/providers/providers.yaml`](docs/providers/providers.yaml): public resolvers and their endpoints,
   checked by `just providers` (D67).
+- [`docs/blocklists/blocklists.yaml`](docs/blocklists/blocklists.yaml): published blocklists and their
+  formats, checked by `just blocklists` (D87).
 - [`docs/rfc/coverage.md`](docs/rfc/coverage.md): each RFC's status, code and tests; the RFC texts are in
   `docs/rfc/archive/`, the list in `docs/rfc/list.md`.

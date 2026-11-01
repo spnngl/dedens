@@ -625,6 +625,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
   sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
   slower to build).
+- D87 Published blocklists live in `docs/blocklists/blocklists.yaml`, as D67's resolvers: a source's facts
+  (maintainer, licence, how it is built) and its main lists, each with its URL, what it holds, how often it
+  changes and its `format`, measured: names, `*.name` and hosts lines, which `dedensd` reads (D56), adblock rules,
+  URLs, and addresses or networks (IP feeds, kept for their information: `dedensd` blocks names, not
+  addresses). `apps/dedensd/tests/blocklists.rs` reads it into typed structs: `cargo test` checks the file
+  offline; `just blocklists` (ignored, outside `just check`) downloads each list as `dedensd` does (D57; 120 s,
+  3 tries since oisd answers 503 now and then) and checks that most of its lines are of its format, and that a
+  list of a format `dedensd` reads reads as a downloaded list. Licences differ: several forbid commercial use or
+  redistribution (OpenPhish, Maltrail, Binary Defense), which the file quotes; none is a default of `dedensd`.
+  Rejected: list sizes in the file (they change daily; the test prints them).
 - D64 Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
