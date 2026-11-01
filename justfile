@@ -172,6 +172,14 @@ capture-dnssec:
 providers:
     cargo test -p dedens --test providers -- --ignored --nocapture
 
+# Oblivious DoH against public targets: a stale key gets the 401, one refetch and an answer (RFC 9230 §4.3, D79).
+odoh-live:
+    cargo test -p dedens-net --features odoh --test rfc9230 -- --ignored --nocapture
+
+# `dedensd` as an Oblivious DoH target for Cloudflare's odoh-rs over HTTP/3 (aioquic): needs uv and the network.
+odoh-interop:
+    uv run tests/interop/odoh.py
+
 # Download every list of docs/blocklists/blocklists.yaml and check its format and freshness (D87, D88).
 # GITHUB_TOKEN, when set, lifts GitHub's limit of 60 API requests an hour.
 blocklists:

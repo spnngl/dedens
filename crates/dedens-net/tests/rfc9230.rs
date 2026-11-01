@@ -7,8 +7,9 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
@@ -17,6 +18,7 @@ use common::loopback::answer;
 use common::query;
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ServerBuilder, h3};
+use compio::rustls::pki_types::ServerName;
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Template;
@@ -29,10 +31,10 @@ use dedens_net::odoh::{
 use dedens_net::tls::Trust;
 use dedens_odoh::rand_core::TryRng;
 use dedens_odoh::{
-    MEDIA_TYPE, MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, TargetKey, decrypt_query,
-    encrypt_query, encrypt_response, query_padding, response_padding,
+    MEDIA_TYPE, MessageType, ObliviousDoHConfigContents, ObliviousDoHConfigs, ObliviousDoHMessage,
+    TargetKey, decrypt_query, encrypt_query, encrypt_response, query_padding, response_padding,
 };
-use dedens_proto::Message;
+use dedens_proto::{Message, Rcode};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
@@ -648,6 +650,38 @@ async fn s4_3_a_401_fetches_the_configurations_again() {
     assert_eq!(target.queries.borrow().len(), 2);
 }
 
+/// RFC 9230 §4.3: configurations the caller gave to keep, under a key the target no longer holds, are fetched again
+/// after the 401, once, as fetched ones are: `keep_odoh_configs`, which the live check of that refetch relies on.
+#[compio::test]
+async fn s4_3_kept_configurations_given_are_fetched_again_after_a_401() {
+    let certificates = certificates();
+    let target = Target::new(15);
+    let handler = Rc::clone(&target);
+    let addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let client = trusting(certificates);
+    let stale = ObliviousDoHConfigs::new(vec![TargetKey::derive(&[16; 32]).config().clone()])
+        .encode()
+        .expect("configurations encode");
+    assert!(matches!(
+        client.keep_odoh_configs(named(addr, NAME), b"nonsense"),
+        Err(OdohError::Wire(_))
+    ));
+    client
+        .keep_odoh_configs(named(addr, NAME), &stale)
+        .expect("configurations");
+    let response = client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect("a response under the configurations fetched after the 401");
+    assert_eq!(response.http.map(|http| http.status), Some(StatusCode::OK));
+    assert_eq!(target.configs_asked.get(), 1);
+    assert_eq!(target.queries.borrow().len(), 1);
+}
+
 /// RFC 9230 §4.3: configurations that are fresh from the target and still get a 401 end the exchange: no second
 /// fetch, and the status is the error.
 #[compio::test]
@@ -965,4 +999,102 @@ async fn s5_pinned_configurations_are_not_fetched() {
         "{error:?}"
     );
     assert_eq!(target.configs_asked.get(), 0);
+}
+
+// Live targets: public Oblivious DoH targets of D79's list, asked over the network by `just odoh-live`.
+
+/// The targets: host and the path of the POST.
+const LIVE_TARGETS: [(&str, &str); 2] = [
+    ("odoh.cloudflare-dns.com", "/dns-query"),
+    ("doh.tiar.app", "/odoh"),
+];
+
+/// The configurations `host` serves, fetched by curl: the client has no way to hand them out.
+fn live_configs(host: &str) -> ObliviousDoHConfigs {
+    let output = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--max-time",
+            "20",
+            "--http2",
+        ])
+        .arg(format!("https://{host}{CONFIGS_PATH}"))
+        .output()
+        .expect("curl runs");
+    assert!(output.status.success(), "{host}: {output:?}");
+    ObliviousDoHConfigs::parse(&output.stdout).expect("the configurations of the target")
+}
+
+/// `configs` with the first key changed by one bit: a key the target does not hold, as one it rotated away.
+fn stale(configs: &ObliviousDoHConfigs) -> Vec<u8> {
+    let mut key = *configs.configs()[0].public_key();
+    key[0] ^= 1;
+    ObliviousDoHConfigs::new(vec![ObliviousDoHConfigContents::new(key)])
+        .encode()
+        .expect("configurations encode")
+}
+
+/// `host`, its address from the system's resolver, and the template of its POSTs at `path`.
+fn live_server(host: &str, path: &str) -> Server {
+    let addr = (host, 443)
+        .to_socket_addrs()
+        .expect("the host resolves")
+        .next()
+        .expect("an address");
+    Server {
+        addr,
+        name: Some(ServerName::try_from(host.to_owned()).expect("a server name")),
+        doh: Some(Template::parse(&format!("https://{host}{path}")).expect("a template")),
+        docpath: Vec::new(),
+    }
+}
+
+/// RFC 9230 §4.3 against each live target: configurations under a key it does not hold, kept as an earlier fetch
+/// (`keep_odoh_configs`), get its 401, then one fetch of the real ones, and an answer, which no stale key could
+/// yield; pinned, the same configurations end in the 401 with no fetch. Run by `just odoh-live`.
+#[compio::test]
+#[ignore = "asks public servers over the network: `just odoh-live`"]
+async fn s4_3_live_a_stale_key_is_refetched_after_the_401() {
+    for (host, path) in LIVE_TARGETS {
+        let stale = stale(&live_configs(host));
+
+        let pinned = Client::new();
+        pinned
+            .pin_odoh_configs(live_server(host, path), &stale)
+            .expect("configurations");
+        let error = pinned
+            .exchange_oblivious(query(), live_server(host, path), None, &Options::default())
+            .await
+            .expect_err("a 401");
+        assert!(
+            matches!(
+                error,
+                ClientError::Odoh(OdohError::Status(StatusCode::UNAUTHORIZED))
+            ),
+            "{host}: {error:?}"
+        );
+
+        let client = Client::new();
+        client
+            .keep_odoh_configs(live_server(host, path), &stale)
+            .expect("configurations");
+        let response = client
+            .exchange_oblivious(query(), live_server(host, path), None, &Options::default())
+            .await
+            .unwrap_or_else(|error| panic!("{host}: {error:?}"));
+        assert_eq!(
+            response.http.map(|http| http.status),
+            Some(StatusCode::OK),
+            "{host}"
+        );
+        let answered = Message::decode(&response.wire).expect("a response").message;
+        assert_eq!(answered.rcode(), Rcode::NOERROR, "{host}");
+        assert!(!answered.answer.is_empty(), "{host}: no answer");
+        println!(
+            "{host}: 401 under a stale key, refetched, {} answers",
+            answered.answer.len()
+        );
+    }
 }

@@ -566,6 +566,19 @@ impl Configs {
         Ok(())
     }
 
+    /// Keeps `bytes`, encoded configurations, for `target` as if it had served them: for [`MIN_KEPT`], and fetched
+    /// again after a 401 or when they expire, which pinned ones never are.
+    ///
+    /// # Errors
+    ///
+    /// [`OdohError::Template`] for a target with no template, [`OdohError::Wire`] for bytes that are no
+    /// configurations.
+    pub(crate) fn keep_given(&self, target: &Server, bytes: &[u8]) -> Result<(), OdohError> {
+        let key = (target.addr, target.template()?.authority().clone());
+        self.keep(&key, &ObliviousDoHConfigs::parse(bytes)?, MIN_KEPT);
+        Ok(())
+    }
+
     /// The notices since the last call.
     pub(crate) fn take_notices(&self) -> Vec<Notice> {
         std::mem::take(&mut *self.notices.borrow_mut())

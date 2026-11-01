@@ -371,6 +371,23 @@ impl Client {
         self.odoh.pin(&target.into(), configs)
     }
 
+    /// Keeps `configs`, the encoded key configurations of the Oblivious `DoH` `target`, as if it had served them: for
+    /// an hour, after which, or after a 401, they are fetched from it (RFC 9230 §4.3), as
+    /// [`Client::pin_odoh_configs`]' never are. For a caller that saved what a past run fetched, and for tests of
+    /// that refetch.
+    ///
+    /// # Errors
+    ///
+    /// [`OdohError`] for a target with no template, or bytes that are no configurations.
+    #[cfg(feature = "odoh")]
+    pub fn keep_odoh_configs(
+        &self,
+        target: impl Into<Server>,
+        configs: &[u8],
+    ) -> Result<(), OdohError> {
+        self.odoh.keep_given(&target.into(), configs)
+    }
+
     /// What the Oblivious `DoH` exchanges since the last call have to tell the user (D79).
     #[cfg(feature = "odoh")]
     #[must_use]

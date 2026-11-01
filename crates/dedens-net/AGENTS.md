@@ -33,7 +33,8 @@ crate that touches sockets and timers.
   `doh` on the RFC examples and on the responses of public servers in `tests/testdata/doh/` (`capture.nu` has
   the commands). `rfc7252.rs`, `rfc7959.rs` and `rfc8132.rs` drive `coap` on the RFC figures and on the
   datagrams of aiocoap in `tests/testdata/coap/` (`capture.nu` has the commands; `tests/coap_capture/` reads them).
-  `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP server on loopback.
+  `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP server on loopback. The one ignored test
+  of `rfc9230.rs` asks public ODoH targets (`just odoh-live`).
 
 `benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`).
 Measure a transport change with `just bench-dnsperf <base> forward` or `forward-tcp`.

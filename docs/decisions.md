@@ -807,12 +807,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     the exit is 10 with the 401 and no second fetch, as pinned configurations say. Pinned right ones
     (`+odoh-config=` on the file `curl` saved) fetch nothing and work through the relay, with or without EDNS.
     The responses decrypted every time; those of `odoh.crypto.sx`, `doh.tiar.app` and `doh.tiarap.org` carry their
-    own EDNS padding to 132 bytes, the other two none. Not checked live: the refetch after a 401 of cached
-    configurations (a key rotation cannot be provoked on a real target; loopback tests only), that a target
-    refuses a badly padded query, the size on the wire of our padded query, and our `dedensd` as a target for any
-    other client.
+    own EDNS padding to 132 bytes, the other two none. Checked live later, 2026-11-01 (`just odoh-live`): a key rotation
+    cannot be provoked on a real target, but a key it does not hold stands for one: `Client::keep_odoh_configs`
+    keeps such configurations as a fetch (pinned ones never refetch), and `odoh.cloudflare-dns.com` and
+    `doh.tiar.app` each answered 401, then the real ones were fetched once and the query was answered; pinned,
+    the same configurations ended in the 401. Our `dedensd` as a target for a client that is not ours: Cloudflare's
+    `odoh-rs` 1.0.5 sealed three captured queries at paddings 0, 17 and 400 to its configurations over HTTP/3
+    (`aioquic`) and opened every response; 401 for a key it does not hold, 400 for a damaged ciphertext
+    (`tests/interop/odoh.py`). Not checked live: that a target refuses a badly padded query (tests only), and the
+    size on the wire of our padded query.
   - Tests: `crates/dedens-net/tests/rfc9230.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
-    headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch),
+    headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch, and the
+    ignored live one), `tests/interop/odoh.py` (by hand: `odoh-rs` against `dedensd`),
     `apps/dedensd/tests/rfc9230.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
 
 - D80 (amends D69) CoAP is our own sans-IO codec, `dedens_net::coap` (RFC 7252, RFC 7959, RFC 8132), for DoC (RFC 9953):
