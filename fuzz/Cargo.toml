@@ -170,6 +170,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "parse_coap"
+path = "fuzz_targets/parse_coap.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 
 # The workspace's lint tables, copied: this crate is a workspace of its own.

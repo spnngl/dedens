@@ -16,6 +16,10 @@ crate that touches sockets and timers.
 - `src/doh.rs`: the sans-IO core of DoH (D82), for client, server and ODoH, on `http` types, no HTTP version: URI
   templates, requests and responses, the server's reading of a request and its response; fuzzed by
   `parse_doh_template`, `server_request` and `read_doh_response`.
+- `src/coap/`: the sans-IO CoAP codec and exchanges of DoC (D80): `message.rs` (RFC 7252 messages, options, codes),
+  `block.rs` (RFC 7959 Block options, reassembly, slicing), `exchange.rs` (client: retransmission, matching,
+  separate responses, block-wise transfers), `server.rs` (deduplication of confirmable requests), `doc.rs` (the
+  FETCH request of a query, the path of a `docpath`); no socket, no clock, no randomness; fuzzed by `parse_coap`.
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
 - `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs` and `rfc8484.rs` against loopback
@@ -23,7 +27,8 @@ crate that touches sockets and timers.
   `tests/client.rs`: the transports and the client against scripted servers on the loopback address
   (`tests/common/loopback.rs`); `tests/common/` builds messages and steps. `rfc8484.rs` and `rfc9461.rs` run
   `doh` on the RFC examples and on the responses of public servers in `tests/testdata/doh/` (`capture.nu` has
-  the commands).
+  the commands). `rfc7252.rs`, `rfc7959.rs` and `rfc8132.rs` drive `coap` on the RFC figures and on the
+  datagrams of aiocoap in `tests/testdata/coap/` (`capture.nu` has the commands; `tests/coap_capture/` reads them).
 
 `benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`).
 Measure a transport change with `just bench-dnsperf <base> forward` or `forward-tcp`.

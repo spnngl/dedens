@@ -1,0 +1,3 @@
+# uv run --with aiocoap==0.4.17 python capture.py get_piggybacked
+0 c2s 42014ef23967bb74656d7065726174757265
+0 s2c 62454ef23967ff32322e332043

@@ -28,6 +28,7 @@ macro_rules! trace {
 }
 
 pub mod client;
+pub mod coap;
 mod dial;
 pub mod doh;
 pub mod exchange;

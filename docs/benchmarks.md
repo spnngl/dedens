@@ -285,3 +285,15 @@ and the signature. Microseconds.
 The signature is the cost of the curves (P-256: 27.7 here, 27.3 for the bare check above), so the `Budget` of D71
 stands as sized. RSA with a short exponent is cheap enough for the rest of the work to show: canonical form,
 sorting and building the signed data take a few microseconds.
+
+## CoAP (D80)
+
+`benches/coap.rs`, medians in nanoseconds, one run, on the datagrams of `tests/testdata/coap/fetch_doc.txt`: aiocoap's
+FETCH for the quad9 MX query (38 B payload) and the real response (161 B payload). `exchange` starts the request
+and reads the response through `Exchange`, copying the request in.
+
+| Measure | ns |
+|---|---|
+| `parse`, request/response | 125/78 |
+| `write`, request/response | 50/36 |
+| `exchange` (start, receive) | 256 |

@@ -1,4 +1,4 @@
-//! SVCB and HTTPS: service binding (RFC 9460), with the `dohpath` key of RFC 9461.
+//! SVCB and HTTPS: service binding (RFC 9460), with the `dohpath` key of RFC 9461 and the `docpath` key of RFC 9953.
 //!
 //! The wire form is `priority, target (never compressed), (key, length, value)*` with keys strictly increasing
 //! (RFC 9460 §2.2). [`SvcParams`] only holds a list that is valid and consistent (RFC 9460 §2.4), so a decoded
@@ -38,6 +38,8 @@ code_type! {
     IPV6HINT = 6, "ipv6hint";
     /// URI template path of a `DoH` server (RFC 9461 §5).
     DOHPATH = 7, "dohpath";
+    /// URI path of a `DoC` server, as segments (RFC 9953 §3.2).
+    DOCPATH = 10, "docpath";
 }
 
 impl SvcParamKey {
@@ -51,14 +53,14 @@ impl SvcParamKey {
             let canonical = digits.first() != Some(&b'0') || digits == b"0";
             return canonical.then(|| text::number(digits).map(Self)).flatten();
         }
-        (0..=Self::DOHPATH.0)
+        (0..=Self::DOCPATH.0)
             .map(Self)
             .find(|key| key.mnemonic().is_some_and(|m| m.as_bytes() == text))
     }
 
-    /// Keys 0 to 7 have a typed [`SvcParam`] variant; they cannot be carried as [`SvcParam::Unknown`].
+    /// Keys 0 to 7 and 10 have a typed [`SvcParam`] variant; they cannot be carried as [`SvcParam::Unknown`].
     const fn is_known(self) -> bool {
-        self.0 <= Self::DOHPATH.0
+        self.0 <= Self::DOHPATH.0 || self.0 == Self::DOCPATH.0
     }
 }
 
@@ -82,7 +84,10 @@ pub enum SvcParam {
     Ipv6Hint(Vec<Ipv6Addr>),
     /// URI template path of a `DoH` server (RFC 9461 §5).
     DohPath(String),
-    /// A key without a typed variant; its key is above 7 (RFC 9460 §2.2).
+    /// The path segments of a `DoC` server, each 0 to 255 bytes; none is the root path (RFC 9953 §3.2). Laid out
+    /// as `alpn` is, but a segment may be empty.
+    DocPath(Vec<Box<[u8]>>),
+    /// A key without a typed variant; its key is 8, 9 or above 10 (RFC 9460 §2.2).
     Unknown {
         /// The key.
         key: SvcParamKey,
@@ -104,6 +109,7 @@ impl SvcParam {
             Self::Ech(_) => SvcParamKey::ECH,
             Self::Ipv6Hint(_) => SvcParamKey::IPV6HINT,
             Self::DohPath(_) => SvcParamKey::DOHPATH,
+            Self::DocPath(_) => SvcParamKey::DOCPATH,
             Self::Unknown { key, .. } => *key,
         }
     }
@@ -119,16 +125,7 @@ impl SvcParam {
                     .map(|k| SvcParamKey(u16::from_be_bytes(*k)))
                     .collect(),
             ),
-            SvcParamKey::ALPN => {
-                let mut ids = Vec::new();
-                let mut rest = value;
-                while let Some((&len, tail)) = rest.split_first() {
-                    let (id, tail) = tail.split_at_checked(usize::from(len))?;
-                    ids.push(id.into());
-                    rest = tail;
-                }
-                Self::Alpn(ids)
-            }
+            SvcParamKey::ALPN => Self::Alpn(length_prefixed(value)?),
             SvcParamKey::NO_DEFAULT_ALPN => Self::NoDefaultAlpn,
             SvcParamKey::PORT => Self::Port(u16::from_be_bytes(value.try_into().ok()?)),
             SvcParamKey::IPV4HINT => Self::Ipv4Hint(
@@ -149,6 +146,7 @@ impl SvcParam {
                     .collect(),
             ),
             SvcParamKey::DOHPATH => Self::DohPath(str::from_utf8(value).ok()?.into()),
+            SvcParamKey::DOCPATH => Self::DocPath(length_prefixed(value)?),
             _ => Self::Unknown {
                 key,
                 value: value.into(),
@@ -160,7 +158,7 @@ impl SvcParam {
     fn encode_value(&self, out: &mut Vec<u8>) -> Result<(), SvcParamsError> {
         match self {
             Self::Mandatory(keys) => keys.iter().for_each(|k| out.extend(k.0.to_be_bytes())),
-            Self::Alpn(ids) => {
+            Self::Alpn(ids) | Self::DocPath(ids) => {
                 for id in ids {
                     let len = u8::try_from(id.len()).map_err(|_| SvcParamsError::Malformed)?;
                     out.push(len);
@@ -177,6 +175,18 @@ impl SvcParam {
         }
         Ok(())
     }
+}
+
+/// The items of a value laid out as `alpn` is: each a length octet and that many bytes, exactly filling `value`.
+fn length_prefixed(value: &[u8]) -> Option<Vec<Box<[u8]>>> {
+    let mut items = Vec::new();
+    let mut rest = value;
+    while let Some((&len, tail)) = rest.split_first() {
+        let (item, tail) = tail.split_at_checked(usize::from(len))?;
+        items.push(item.into());
+        rest = tail;
+    }
+    Some(items)
 }
 
 /// A parameter list that breaks RFC 9460 (§2.2, §2.4.3, §7, §8).
@@ -372,6 +382,7 @@ fn check(wire: &[u8]) -> Result<(), SvcParamsError> {
             SvcParamKey::IPV4HINT => value.len() % 4 == 0,
             SvcParamKey::IPV6HINT => value.len() % 16 == 0,
             SvcParamKey::DOHPATH => str::from_utf8(value).is_ok(),
+            SvcParamKey::DOCPATH => length_prefixed(value).is_some(),
             _ => true,
         };
         if !valid {
@@ -552,7 +563,7 @@ impl SvcParam {
             SvcParamKey::MANDATORY => {
                 Self::Mandatory(items(&value, "mandatory key", SvcParamKey::from_text)?)
             }
-            SvcParamKey::ALPN => Self::Alpn(alpn_ids(&value)?),
+            SvcParamKey::ALPN => Self::Alpn(escaped_items(&value, false)?),
             SvcParamKey::NO_DEFAULT_ALPN if value.is_empty() => Self::NoDefaultAlpn,
             SvcParamKey::NO_DEFAULT_ALPN => {
                 return Err(TextErrorKind::Invalid(
@@ -573,6 +584,7 @@ impl SvcParam {
                 String::from_utf8(value)
                     .map_err(|_| TextErrorKind::Invalid("dohpath, not UTF-8"))?,
             ),
+            SvcParamKey::DOCPATH => Self::DocPath(escaped_items(&value, true)?),
             _ => Self::Unknown {
                 key,
                 value: value.into(),
@@ -615,10 +627,10 @@ fn address<T: core::str::FromStr>(text: &[u8]) -> Option<T> {
     str::from_utf8(text).ok()?.parse().ok()
 }
 
-/// Splits an `alpn` value on commas, `\,` and `\\` standing for a comma and a backslash in an identifier
-/// (RFC 9460 appendix A.1).
-fn alpn_ids(value: &[u8]) -> Result<Vec<Box<[u8]>>, TextErrorKind> {
-    let invalid = TextErrorKind::Invalid("alpn identifier");
+/// Splits an `alpn` or `docpath` value on commas, `\,` and `\\` standing for a comma and a backslash in an item
+/// (RFC 9460 appendix A.1). An empty value has no item; `docpath` allows empty ones (`empty_items`), as in `a,,b`.
+fn escaped_items(value: &[u8], empty_items: bool) -> Result<Vec<Box<[u8]>>, TextErrorKind> {
+    let invalid = TextErrorKind::Invalid("alpn identifier or docpath segment");
     let mut ids = Vec::new();
     if value.is_empty() {
         return Ok(ids);
@@ -631,12 +643,12 @@ fn alpn_ids(value: &[u8]) -> Result<Vec<Box<[u8]>>, TextErrorKind> {
                 Some(&escaped @ (b',' | b'\\')) => id.push(escaped),
                 _ => return Err(invalid),
             },
-            b',' if id.is_empty() => return Err(invalid),
+            b',' if id.is_empty() && !empty_items => return Err(invalid),
             b',' => ids.push(core::mem::take(&mut id).into()),
             _ => id.push(b),
         }
     }
-    if id.is_empty() {
+    if id.is_empty() && !empty_items {
         return Err(invalid);
     }
     ids.push(id.into());
@@ -646,23 +658,19 @@ fn alpn_ids(value: &[u8]) -> Result<Vec<Box<[u8]>>, TextErrorKind> {
 /// `key=value`, or `key` alone for `no-default-alpn`; lists comma-separated, free-form values quoted.
 impl fmt::Display for SvcParam {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // One empty segment reads as no segment in a list, so it goes in wire form (RFC 9460 §2.1).
+        if let Self::DocPath(segments) = self
+            && let [segment] = segments.as_slice()
+            && segment.is_empty()
+        {
+            return write!(f, "key{}={}", SvcParamKey::DOCPATH.0, Quoted(&[0]));
+        }
         write!(f, "{}", self.key())?;
         match self {
             Self::Mandatory(keys) => list(f, keys),
-            Self::Alpn(ids) => {
-                let mut value = Vec::new();
-                for (i, id) in ids.iter().enumerate() {
-                    if i > 0 {
-                        value.push(b',');
-                    }
-                    for &b in &**id {
-                        if matches!(b, b',' | b'\\') {
-                            value.push(b'\\');
-                        }
-                        value.push(b);
-                    }
-                }
-                write!(f, "={}", Quoted(&value))
+            Self::DocPath(items) if items.is_empty() => Ok(()),
+            Self::Alpn(items) | Self::DocPath(items) => {
+                write!(f, "={}", Quoted(&escape_items(items)))
             }
             Self::NoDefaultAlpn => Ok(()),
             Self::Port(port) => write!(f, "={port}"),
@@ -673,6 +681,23 @@ impl fmt::Display for SvcParam {
             Self::Unknown { value, .. } => write!(f, "={}", Quoted(value)),
         }
     }
+}
+
+/// The items of `alpn` or `docpath` as a comma-separated list, `,` and `\` in an item escaped by a `\`.
+fn escape_items(items: &[Box<[u8]>]) -> Vec<u8> {
+    let mut value = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            value.push(b',');
+        }
+        for &b in &**item {
+            if matches!(b, b',' | b'\\') {
+                value.push(b'\\');
+            }
+            value.push(b);
+        }
+    }
+    value
 }
 
 /// Writes `=` and the items separated by commas.

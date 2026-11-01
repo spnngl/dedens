@@ -64,5 +64,9 @@ harness = false
 name = "odoh"
 harness = false
 
+[[bench]]
+name = "coap"
+harness = false
+
 [lints]
 workspace = true

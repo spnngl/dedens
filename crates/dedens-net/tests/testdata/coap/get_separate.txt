@@ -1,0 +1,5 @@
+# uv run --with aiocoap==0.4.17 python capture.py get_separate
+0 c2s 420175cafebab4736c6f77
+102 s2c 600075ca
+600 s2c 4245d1b0febaff32322e332043
+600 c2s 6000d1b0

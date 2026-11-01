@@ -432,7 +432,6 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - `providers.yaml`: `https` URLs are asked over HTTP/3 by `just providers`; `https_h2` holds those of servers
     where HTTP/3 does not answer (November 2026: no `h3` in Alt-Svc, or a handshake that stalls), parsed only,
     until HTTP/2 (D67).
-
 - D78 (amends D69) ODoH crypto (RFC 9230) is `dedens-odoh`, sans-IO, for the one suite RFC 9230 §9 requires:
   DHKEM(X25519, HKDF-SHA256) (0x0020), HKDF-SHA256 (1), AES-128-GCM (1). HPKE (RFC 9180) is the `hpke` crate
   (0.15.1, MIT or Apache-2.0, RustCrypto primitives, features `aes`, `alloc`, `x25519` only, passes `cargo deny`);
@@ -479,6 +478,32 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     ciphertext shorter than the tag, non-zero padding in a response, bounds. Fuzz targets `parse_odoh_configs`,
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
+
+- D80 (amends D69) CoAP is our own sans-IO codec, `dedens_net::coap` (RFC 7252, RFC 7959, RFC 8132), for DoC (RFC 9953):
+  no crate of CoAP is pulled in, since DoC needs a small part of it and the rest would carry its own socket, clock
+  and randomness, which D26 keeps out of the exchanges. It is not behind the `doc` feature: the module has no
+  dependency, and the fuzz target and tests build it anyway. The socket is step 13's.
+  - `Message` parses and writes every datagram of the RFC, options kept in order whether known or not, so a message
+    of minimal encodings writes back byte for byte. An unknown critical option is reported (`unknown_critical`),
+    never dropped (RFC 7252 §5.4.1); the answer is the caller's.
+  - `exchange::Exchange` is the client of one request, confirmable only, fed time and datagrams like D26's: the
+    caller passes the first message ID, the token and a seed, the jitter between ACK_TIMEOUT and 1.5 times it
+    being a xorshift of that seed. Piggybacked and separate responses (empty ACK, then a confirmable response it
+    acknowledges), RST, duplicates and a response of an unknown token (RST) follow RFC 7252 §4-5. A separate
+    response is waited for `separate_timeout` (93 s, MAX_TRANSMIT_WAIT: the RFC gives none).
+  - Block-wise (RFC 7959): Block2 responses are reassembled up to 65535 bytes, a follow-up asking for the next
+    block in a new message ID and the same token, the ETag compared across blocks; the server's smaller block size
+    is followed. A request over `block1_size` goes in Block1 blocks, 2.31 answered by the next one, the server's
+    smaller size followed. A follow-up for a Block2 carries the request's payload when the request went whole, as
+    a FETCH body is part of the cache key (RFC 8132 §2) and a server keeping nothing needs the query again;
+    aiocoap's client sends none, and its server does not need it. Block1 requests' follow-ups carry none
+    (RFC 7959 Figure 10).
+  - `server::Dedup` remembers the reply to a confirmable request by (endpoint, message ID) for EXCHANGE_LIFETIME
+    (247 s), at most a given number of entries, the oldest dropped first; a duplicate gets the same reply.
+  - `docpath` is `SvcParam::DocPath(Vec<Box<[u8]>>)` (RFC 9953 §3.2, key 10): the wire is `alpn`'s with empty
+    segments allowed, the text a comma-separated list, no segment the root path. One empty segment prints in the
+    `key10="\000"` form, a single empty item being no different from the empty list in the text.
+  - Tests read datagrams captured from aiocoap (`tests/testdata/coap/`, `capture.nu`), libcoap not being here.
 
 ## Presentation format
 
