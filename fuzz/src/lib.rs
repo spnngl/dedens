@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
+use dedens_dnssec::crypto;
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
@@ -22,8 +23,8 @@ use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, EdnsView, EncodeError, Flags, Header, Message, Name, Query,
-    Question, Record, RecordType, Ttl, message,
+    DecodeErrorKind, DecodedRecord, DigestType, EdnsView, EncodeError, Flags, Header, Message,
+    Name, Nsec3HashAlgorithm, Query, Question, Record, RecordType, SecAlgorithm, Ttl, message,
 };
 use dedens_scenario::QueryFile;
 use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
@@ -53,6 +54,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_doh_template", parse_doh_template),
     ("server_request", server_request),
     ("read_doh_response", read_doh_response),
+    ("dnssec_crypto", dnssec_crypto),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -745,4 +747,80 @@ pub fn read_doh_response(data: &[u8]) {
         (Err(_), Err(_)) => {}
         (aged, fresh) => panic!("Age and Date change the result: {aged:?}, {fresh:?}"),
     }
+}
+
+/// The DNSSEC cryptography (D71) on bytes from outside: arbitrary keys, signatures, signed data, digests and
+/// salts through `verify`, `key_tag`, `ds_digest` and `nsec3_hash`; and the DNSKEY, RRSIG and DS records of a
+/// message, so the captured zones reach the key parsers as real keys. The functions answer with an error on any
+/// input, and the policy they state about each algorithm holds.
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on an answer that contradicts `supported` or `supported_digest`.
+pub fn dnssec_crypto(data: &[u8]) {
+    // Bytes as a key, a signature and signed data: the first three octets are the algorithm and two lengths.
+    if let [algorithm, key_len, sig_len, rest @ ..] = data {
+        let (key, rest) = rest.split_at(usize::from(*key_len).min(rest.len()));
+        let (signature, signed) = rest.split_at(usize::from(*sig_len).min(rest.len()));
+        verify_checked(SecAlgorithm(*algorithm), key, signed, signature);
+        let _ = crypto::key_tag(key);
+        let owner: Name<'_> = "Example.COM.".parse().expect("a name");
+        for digest in 0..=u8::MAX {
+            digest_checked(DigestType(digest), &owner, key);
+        }
+        let hash = crypto::nsec3_hash(Nsec3HashAlgorithm::SHA1, key, u16::from(*sig_len), &owner);
+        assert!(hash.is_ok(), "SHA-1 hashes any salt");
+    }
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let records: Vec<&Record<'_>> = [
+        &decoded.message.answer,
+        &decoded.message.authority,
+        &decoded.message.additional,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for key in &records {
+        let RData::Dnskey(dnskey) = key.data() else {
+            continue;
+        };
+        let mut rdata = dnskey.flags().to_be_bytes().to_vec();
+        rdata.extend([3, dnskey.algorithm().into()]);
+        rdata.extend(dnskey.public_key());
+        let _ = crypto::key_tag(&rdata);
+        for other in &records {
+            match other.data() {
+                RData::Rrsig(rrsig) => verify_checked(
+                    dnskey.algorithm(),
+                    dnskey.public_key(),
+                    &rrsig.signed_rdata(),
+                    rrsig.signature(),
+                ),
+                RData::Ds(ds) => digest_checked(ds.digest_type(), &key.name, &rdata),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// `verify`, whose `UnsupportedAlgorithm` answer is exactly `supported`'s refusal.
+fn verify_checked(algorithm: SecAlgorithm, key: &[u8], signed: &[u8], signature: &[u8]) {
+    let answer = crypto::verify(algorithm, key, signed, signature);
+    assert_eq!(
+        answer == Err(crypto::VerifyError::UnsupportedAlgorithm(algorithm)),
+        !crypto::supported(algorithm),
+        "{algorithm}"
+    );
+}
+
+/// `ds_digest`, whose `UnsupportedDigest` answer is exactly `supported_digest`'s refusal.
+fn digest_checked(digest: DigestType, owner: &Name<'_>, dnskey_rdata: &[u8]) {
+    let answer = crypto::ds_digest(digest, owner, dnskey_rdata);
+    assert_eq!(
+        answer.as_ref().err() == Some(&crypto::UnsupportedDigest(digest)),
+        !crypto::supported_digest(digest),
+        "{digest}"
+    );
 }

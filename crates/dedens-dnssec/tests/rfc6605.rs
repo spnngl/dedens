@@ -3,26 +3,19 @@
 
 mod common;
 
-use common::{Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data};
+use common::{
+    P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE, Rr, Rrsig, b64, dnskey_rdata, hex, name,
+    signed_data,
+};
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, verify};
 use dedens_proto::{DigestType, SecAlgorithm};
 
-const P256_KEY: &str = "GojIhhXUN/u4v54ZQqGSnyhWJwaubCvTmeexv7bR6edb
-    krSqQpF64cYbcB7wNcP+e+MAnLr+Wi9xMWyQLc8NAA==";
 const P256_DS: &str = "b4c8c1fe2e7477127b27115656ad6256f424625bf5c1
     e2770ce6d6e37df61d17";
-const P256_SIGNATURE: &str = "qx6wLYqmh+l9oCKTN6qIc+bw6ya+KJ8oMz0YP107epXA
-    yGmt+3SNruPFKG7tZoLBLlUzGGus7ZwmwWep666VCw==";
 
-const P384_KEY: &str = "xKYaNhWdGOfJ+nPrL8/arkwf2EY3MDJ+SErKivBVSum1
-    w/egsXvSADtNJhyem5RCOpgQ6K8X1DRSEkrbYQ+OB+v8
-    /uX45NBwY8rp65F6Glur8I/mlVNgF6W/qTI37m40";
 const P384_DS: &str = "72d7b62976ce06438e9c0bf319013cf801f09ecc84b8
     d7e9495f27e305c6a9b0563a9b5f4d288405c3008a94
     6df983d6";
-const P384_SIGNATURE: &str = "/L5hDKIvGDyI1fcARX3z65qrmPsVz73QD1Mr5CEqOiLP
-    95hxQouuroGCeZOvzFaxsT8Glr74hbavRKayJNuydCuz
-    WTSSPdz7wnqXL5bdcJzusdnI0RSMROxxwGipWcJm";
 
 /// `www.example.net. 3600 IN A 192.0.2.1` and its RRSIG's fields (`signature` windows of §6).
 fn signed(algorithm: u8, expiration: u32, inception: u32, key_tag: u16) -> Vec<u8> {
@@ -161,6 +154,36 @@ fn a_key_of_the_wrong_length_is_unusable() {
             &signature
         ),
         Err(VerifyError::UnusableKey)
+    );
+}
+
+#[test]
+fn a_point_off_the_curve_is_a_bad_signature() {
+    // `ring` reports an invalid point and a mismatch alike, so the error is `BadSignature`, not `UnusableKey`
+    // (D71): x = y = 1 is on neither curve, and the all-zero key is not a point.
+    let signature = b64(P256_SIGNATURE);
+    let mut one = vec![0_u8; 64];
+    one[31] = 1;
+    one[63] = 1;
+    for key in [one, vec![0_u8; 64]] {
+        assert_eq!(
+            verify(
+                SecAlgorithm::ECDSAP256SHA256,
+                &key,
+                &p256_signed(),
+                &signature
+            ),
+            Err(VerifyError::BadSignature)
+        );
+    }
+    assert_eq!(
+        verify(
+            SecAlgorithm::ECDSAP384SHA384,
+            &[0_u8; 96],
+            &p384_signed(),
+            &b64(P384_SIGNATURE)
+        ),
+        Err(VerifyError::BadSignature)
     );
 }
 

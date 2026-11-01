@@ -38,18 +38,25 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   tells implementations, though it tells operators to treat them as unsupported: too many signed zones still
   use them (README item 3); [`TODECIDE.md`](TODECIDE.md) holds the switch. RSA keys: RFC 3110 §2, modulus 1024
   to 4096 bits (`ring`'s `_1024_8192` variants, capped at RFC 3110 §2's 4096 where ring allows 8192), exponent
-  odd, 3 to 2^33 (`ring`'s bounds); anything else, the 512-bit keys of RFC 5155 Appendix A and RFC 5702 §6.1 included, is an unusable key, because `ring` does
-  not tell a refused key from a bad signature. An ECDSA point off the curve and an invalid Ed25519 key are
-  also reported as a bad signature, as `ring` returns no finer error. `Budget` bounds the work of one
+  odd, 3 to 2^33 (`ring`'s bounds); anything else, the 512-bit keys of RFC 5155 Appendix A and RFC 5702 §6.1
+  included, is an unusable key. Accepted deviation from RFC 3110 §2: the reader takes leading zeros in the
+  exponent and in the modulus, and a three-octet exponent length where the exponent is short, as the zones in
+  the wild publish such keys and `ring` takes the key all the same.
+  `ring` does not tell a refused key from a bad signature: an ECDSA point off the curve and an Ed25519 key that
+  is no curve point are reported as a bad signature (tested). A bad signature is therefore not proof of a
+  forged answer, and an unusable key is the verdict of the validator (step 04), not of `crypto`: a key no
+  signature can use is no key, so the algorithm counts as unsupported and the data as unsigned for it (RFC 6840
+  §5.2), and `supported` tells that case from a refusal of the algorithm. `Budget` bounds the work of one
   validation, spent before each `verify` and `nsec3_hash` by the caller: 64 signature verifications and 8192
   NSEC3 hashes (`iterations + 1` per name). Sized from `benchmarks.md`: 64 verifications cost at most 22 ms
   (P-384, the slowest) where a chain of five zones needs about 20; 8192 hashes are 0.75 ms and cover 54 names
   at 150 iterations, where a denial proof hashes about a dozen. An exhausted counter stays exhausted; the
-  answer is bogus, not retried. Signature examples are verified here from signed data built by hand from the
-  RFC text in `tests/common/mod.rs`, test-only. Rejected: aws-lc-rs (a C build, a second backend beside
-  rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone
-  would justify one, see TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed
-  in, D69).
+  caller picks the verdict (RFC 9276 §3.2: insecure or SERVFAIL for NSEC3; bogus for signatures, as the
+  KeyTrap guidance has it), `crypto` only refuses. Signature examples are verified here from signed data built
+  by hand from the RFC text in `tests/common/mod.rs`, test-only; `verify`, `key_tag`, `ds_digest` and
+  `nsec3_hash` have the fuzz target `dnssec_crypto`. Rejected: aws-lc-rs (a C build, a second backend beside
+  rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone would justify one, see
+  TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
 
 ## Wire format
 

@@ -3,27 +3,17 @@
 
 mod common;
 
-use common::{DSKEY, Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data};
+use common::{
+    DSKEY, RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data,
+};
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, supported, supported_digest, verify};
 use dedens_proto::{DigestType, SecAlgorithm};
 
-// RFC 4035 Appendix A: the zone signing key (tag 38519) and key signing key (tag 9465) of `example.`.
-const ZSK: &str = "AQOy1bZVvpPqhg4j7EJoM9rI3ZmyEx2OzDBV
-    rZy/lvI5CQePxXHZS4i8dANH4DX3tbHol61e
-    k8EFMcsGXxKciJFHyhl94C+NwILQdzsUlSFo
-    vBZsyl/NX6yEbtw/xN9ZNcrbYvgjjZ/UVPZI
-    ySFNsgEYvh0z2542lzMKR4Dh8uZffQ==";
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
     LnXwDzvqp4tZVKp1sZMepFb8MvxhhW3y/0QZ
     syCjczGJ1qk8vJe52iOhInKROVLRwxGpMfzP
     RLMlGybr51bOV/1se0ODacj3DomyB4QB5gKT
     Yot/K9alk5/j8vfd4jWCWD+E1Sze0Q==";
-// ns1.example. 3600 IN A 192.0.2.1, signed by the ZSK.
-const NS1_SIGNATURE: &str = "F1C9HVhIcs10cZU09G5yIVfKJy5yRQQ3qVet
-    5pGhp82pzhAOMZ3K22JnmK4c+IjUeFp/to06
-    im5FVpHtbFisdjyPq84bhTv8vrXt5AB1wNB+
-    +iAqvIfdgW4sFNC6oADb1hK8QNauw9VePJhK
-    v/iVXSYC0b7mPSU+EOlknFpVECs=";
 // The DNSKEY `RRset` of `example.`, signed by the KSK.
 const DNSKEY_SIGNATURE: &str = "ZxgauAuIj+k1YoVEOSlZfx41fcmKzTFHoweZ
     xYnz99JVQZJ33wFS0Q0jcP7VXKkaElXk9nYJ
@@ -59,7 +49,7 @@ fn ns1_signed(algorithm: u8) -> Vec<u8> {
 }
 
 fn dnskey_signed(algorithm: u8) -> Vec<u8> {
-    let rrset = [dnskey_rdata(256, 5, ZSK), dnskey_rdata(257, 5, KSK)]
+    let rrset = [dnskey_rdata(256, 5, RFC4034_ZSK), dnskey_rdata(257, 5, KSK)]
         .into_iter()
         .map(|rdata| Rr {
             owner: "example.",
@@ -73,7 +63,7 @@ fn dnskey_signed(algorithm: u8) -> Vec<u8> {
 fn key_tags_are_the_rfcs() {
     // §5.4: "key id = 60485"; RFC 4035 Appendix A: the tags in the RRSIGs.
     assert_eq!(key_tag(&dnskey_rdata(256, 5, DSKEY)), 60485);
-    assert_eq!(key_tag(&dnskey_rdata(256, 5, ZSK)), 38519);
+    assert_eq!(key_tag(&dnskey_rdata(256, 5, RFC4034_ZSK)), 38519);
     assert_eq!(key_tag(&dnskey_rdata(257, 5, KSK)), 9465);
 }
 
@@ -135,8 +125,8 @@ fn ds_digest_types_other_than_sha1_sha256_sha384_are_unsupported() {
 #[test]
 fn rsasha1_example_signature_verifies_under_algorithms_5_and_7() {
     // RFC 4035 Appendix A, signed under 5; 7 verifies as 5 does (RFC 5155 §2), whatever the RRSIG's field says.
-    let key = b64(ZSK);
-    let signature = b64(NS1_SIGNATURE);
+    let key = b64(RFC4034_ZSK);
+    let signature = b64(RFC4034_NS1_SIGNATURE);
     let signed = ns1_signed(5);
     for algorithm in [SecAlgorithm::RSASHA1, SecAlgorithm::RSASHA1_NSEC3_SHA1] {
         assert_eq!(
@@ -149,7 +139,7 @@ fn rsasha1_example_signature_verifies_under_algorithms_5_and_7() {
 
 #[test]
 fn rsasha1_dnskey_rrset_verifies_in_canonical_order() {
-    // The `RRset` sorts by RDATA (§6.3): the ZSK (flags 256) before the KSK (257).
+    // The `RRset` sorts by RDATA (§6.3): the RFC4034_ZSK (flags 256) before the KSK (257).
     let signed = dnskey_signed(5);
     assert_eq!(
         verify(
@@ -164,8 +154,8 @@ fn rsasha1_dnskey_rrset_verifies_in_canonical_order() {
 
 #[test]
 fn rsasha1_example_does_not_verify_after_a_change() {
-    let key = b64(ZSK);
-    let signature = b64(NS1_SIGNATURE);
+    let key = b64(RFC4034_ZSK);
+    let signature = b64(RFC4034_NS1_SIGNATURE);
     let mut signed = ns1_signed(5);
     // The TTL in the RRSIG RDATA, 3600 → 3601.
     *signed.get_mut(7).expect("TTL") ^= 1;

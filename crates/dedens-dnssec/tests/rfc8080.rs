@@ -7,15 +7,14 @@
 
 mod common;
 
-use common::{Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data};
+use common::{
+    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data,
+};
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, supported, verify};
 use dedens_proto::{DigestType, SecAlgorithm};
 
-const ED25519_KEY_1: &str = "l02Woi0iS8Aa25FQkUd9RMzZHJpBoRQwAQEX1SxZJA4=";
 const ED25519_DS_1: &str = "3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79
     a304b";
-const ED25519_SIGNATURE_1: &str = "Edk+IB9KNNWg0HAjm7FazXyrd5m3Rk8zNZbvNpAcM+eysqcUOMIjWoevFkj
-    H5GaMWeG96GUVZu6ECKOQmemHDg==";
 
 const ED25519_KEY_2: &str = "zPnZ/QwEe7S8C5SPz2OfS5RR40ATk2/rYnE9xHIEijs=";
 const ED25519_DS_2: &str = "401781b934e392de492ec77ae2e15d70f6575a1c0bc59c5275c04ebe80c
@@ -126,6 +125,27 @@ fn ed25519_key_is_32_octets() {
         verify(SecAlgorithm::ED25519, &b64(ED448_KEY), &signed, &signature),
         Err(VerifyError::UnusableKey)
     );
+}
+
+#[test]
+fn ed25519_key_that_is_no_point_is_a_bad_signature() {
+    // `ring` reports an undecodable or small-order point and a mismatch alike, so a 32-octet key that
+    // cannot be a public key is a `BadSignature`, not an `UnusableKey` (D71).
+    let signature = b64(ED25519_SIGNATURE_1);
+    // y = 2^255 - 1 is above the field prime; the zero key is a small-order point; 0x02... does not decode.
+    let mut two = [0_u8; 32];
+    two[0] = 2;
+    for key in [[0xFF_u8; 32], [0_u8; 32], two] {
+        assert_eq!(
+            verify(
+                SecAlgorithm::ED25519,
+                &key,
+                &mx_signed(15, 3613),
+                &signature
+            ),
+            Err(VerifyError::BadSignature)
+        );
+    }
 }
 
 #[test]

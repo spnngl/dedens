@@ -11,8 +11,12 @@ extend-exclude = [
   "crates/dedens-plugins/tests/testdata/",
 ]
 [default]
-# RFC 4648 §10 base64 and base32hex test vectors
-extend-ignore-re = ['\("fo", "(Zm8=|cpng)"\)']
+# RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:
+# the base64 keys and signatures of the RFC examples (`crates/dedens-dnssec/tests/common/mod.rs`).
+extend-ignore-re = [
+  '\("fo", "(Zm8=|cpng)"\)',
+  '(?s)//\s*spellchecker:off.*?//\s*spellchecker:on',
+]
 
 [default.extend-words]
 # Extended DNS Error (RFC 8914)

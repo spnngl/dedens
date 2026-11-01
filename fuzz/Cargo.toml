@@ -14,6 +14,7 @@ cargo-fuzz = true
 
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
+dedens-dnssec = { path = "../crates/dedens-dnssec" }
 dedens-net = { path = "../crates/dedens-net" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
@@ -114,6 +115,13 @@ bench = false
 [[bin]]
 name = "read_doh_response"
 path = "fuzz_targets/read_doh_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnssec_crypto"
+path = "fuzz_targets/dnssec_crypto.rs"
 test = false
 doc = false
 bench = false

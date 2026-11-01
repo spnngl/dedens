@@ -21,11 +21,13 @@ pub enum VerifyError {
     #[error("unsupported DNSSEC algorithm {0}")]
     UnsupportedAlgorithm(SecAlgorithm),
     /// The public key is malformed or `ring` refuses it (RSA below 1024 bits, an even exponent): the key
-    /// cannot validate anything.
+    /// cannot validate anything. Whether that makes the data insecure or bogus is 04's verdict (D71): a key of
+    /// a supported algorithm that no signature can use is, like an unsupported algorithm, no key at all
+    /// (RFC 6840 §5.2), and [`supported`] tells the two cases apart.
     #[error("unusable public key")]
     UnusableKey,
-    /// The key is usable and the signature does not match (EDE 6). `ring` reports a point off the curve and
-    /// a mismatch alike, so a key of the right length on no curve ends here too.
+    /// The key is usable and the signature does not match (EDE 6). `ring` reports a point off the curve, an
+    /// Ed25519 key that is no point and a mismatch alike, so such a key of the right length ends here too.
     #[error("bad signature")]
     BadSignature,
 }
@@ -128,6 +130,9 @@ pub fn verify(
 
 /// Parses an RFC 3110 §2 key (exponent length in one octet, or a zero octet and two more; exponent; modulus)
 /// and rejects what `ring` would, so that a refusal by `ring` afterwards means a bad signature.
+///
+/// Lenient where zones are (D71): the three-octet length is accepted for an exponent under 256 octets, and
+/// leading zero octets of the exponent and the modulus, which §2 forbids, are stripped.
 fn rsa_key(public_key: &[u8]) -> Option<RsaPublicKeyComponents<&[u8]>> {
     let (&first, rest) = public_key.split_first()?;
     let (exponent_len, rest) = if first == 0 {
