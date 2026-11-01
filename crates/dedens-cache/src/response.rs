@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dedens_proto::edns::EdnsOption;
+use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::name::MAX_NAME_LEN;
 use dedens_proto::{
@@ -56,6 +56,22 @@ impl From<EncodeError> for NotCached {
     }
 }
 
+/// What the caller found out about a response before storing it: the one fact of DNSSEC the cache keeps (D77),
+/// which sets the AD bit of every reply it serves, or makes it a bogus one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Checked {
+    /// Not validated: the AD bit is as stored.
+    #[default]
+    Unchecked,
+    /// Validated and secure: replies have AD (to a client that asked for it, RFC 6840 §5.7).
+    Secure,
+    /// Validated, or not to be, and not secure: replies have AD clear.
+    Insecure,
+    /// Validation failed, with this extended error (RFC 8914): kept for `Config::bogus_ttl` at most, never served
+    /// stale nor prefetched; the caller answers SERVFAIL with the error (RFC 4035 §5.5).
+    Bogus(InfoCode),
+}
+
 /// A cached response, without OPT record; serving writes the ID, flags and question case of the query, and one
 /// TTL in every record.
 #[derive(Debug)]
@@ -67,14 +83,24 @@ pub(crate) struct Response {
     pub(crate) expires: u32,
     /// When it stops being served stale.
     pub(crate) stale_until: u32,
+    /// Failed validation: never refreshed ahead of its end.
+    bad: bool,
 }
 
 impl Response {
+    /// What the caller found out about it.
+    pub(crate) const fn checked(&self) -> Checked {
+        self.shared.checked
+    }
+
     /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it.
+    /// `bad` data failed validation: it lives at most `Config::bogus_ttl`, never stale (RFC 4035 §4.7).
     pub(crate) fn build(
         key: &Key,
         decoded: &Decoded<'_>,
         now: u32,
+        checked: Checked,
+        bad: bool,
         config: &Config,
     ) -> Result<Self, NotCached> {
         if !decoded.violations.is_empty() {
@@ -101,7 +127,12 @@ impl Response {
         if for_subnet(message) {
             return Err(NotCached::ClientSubnet);
         }
-        let ttl = lifetime(message, question, rcode, config)?;
+        let mut ttl = lifetime(message, question, rcode, config)?;
+        let mut stale = config.max_stale;
+        if bad {
+            ttl = ttl.min(config.bogus_ttl);
+            stale = 0;
+        }
         // The caller adds its own OPT record to each response served.
         let wire = message.to_vec_without_edns()?;
         let len = u16::try_from(wire.len()).expect("a message is at most 65535 bytes");
@@ -114,10 +145,12 @@ impl Response {
             shared: Shared {
                 bytes: wire.iter().chain(&offsets).copied().collect(),
                 wire: len,
+                checked,
             },
             ttl,
             expires: now.saturating_add(ttl),
-            stale_until: now.saturating_add(ttl).saturating_add(config.max_stale),
+            stale_until: now.saturating_add(ttl).saturating_add(stale),
+            bad,
         })
     }
 
@@ -128,6 +161,9 @@ impl Response {
 
     /// Whether under `percent` of its lifetime is left at `now`.
     pub(crate) fn ending(&self, now: u32, percent: u8) -> bool {
+        if self.bad {
+            return false;
+        }
         let left = u64::from(self.expires.saturating_sub(now));
         left * 100 < u64::from(self.ttl) * u64::from(percent)
     }
@@ -160,6 +196,7 @@ pub(crate) struct Shared {
     bytes: Arc<[u8]>,
     /// Length of the response: the offsets follow, two bytes each.
     wire: u16,
+    checked: Checked,
 }
 
 impl Shared {
@@ -169,7 +206,7 @@ impl Shared {
 
     /// Sets the ID, flags and question case of `query`, and TTL `ttl`, in `out`, a copy of the response.
     fn patch(&self, out: &mut [u8], query: &Query<'_>, ttl: u32) {
-        patch(out, query);
+        patch(out, query, self.checked);
         set_ttls(out, ttl, offsets_in(&self.bytes[usize::from(self.wire)..]));
     }
 
@@ -275,8 +312,8 @@ fn set_ttls(out: &mut [u8], ttl: u32, ttl_offsets: impl Iterator<Item = usize>) 
     }
 }
 
-/// Sets the ID, flags and question case of `query`.
-fn patch(out: &mut [u8], query: &Query<'_>) {
+/// Sets the ID, flags and question case of `query`, and the AD bit `checked` gives.
+fn patch(out: &mut [u8], query: &Query<'_>, checked: Checked) {
     let asked = query.header().flags;
     out[..2].copy_from_slice(&query.header().id.to_be_bytes());
     let word = u16::from_be_bytes([out[2], out[3]]);
@@ -290,6 +327,11 @@ fn patch(out: &mut [u8], query: &Query<'_>) {
             flags.without(bit)
         };
     }
+    flags = match checked {
+        Checked::Unchecked => flags,
+        Checked::Secure => flags.with(Flags::AD),
+        Checked::Insecure | Checked::Bogus(_) => flags.without(Flags::AD),
+    };
     // AD only to a client that asked for it with AD or DO (RFC 6840 §5.8).
     let dnssec_ok = query
         .edns()

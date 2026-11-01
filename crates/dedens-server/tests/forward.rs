@@ -63,7 +63,7 @@ fn the_reply_has_the_question_in_the_clients_case() {
 
 #[test]
 fn a_forward_stage_has_a_server() {
-    assert_eq!(Forward::new(Vec::<SocketAddr>::new()), None);
+    assert!(Forward::new(Vec::<SocketAddr>::new()).is_none());
 }
 
 /// D65: each server is asked over its own transport, handed to the caller as configured, and printed so.

@@ -46,6 +46,9 @@ pub struct Config {
     /// the entry (RFC 8767 §5 client response timer: 1.8 seconds); 0 waits for resolution to end. The cache's
     /// user runs the timer and looks up with [`StalePolicy::Always`](crate::StalePolicy::Always) once it ends.
     pub stale_answer_after_ms: u32,
+    /// Seconds a response that failed DNSSEC validation is kept, so that a query repeated meanwhile is not
+    /// validated again (D77; Unbound's `val-bogus-ttl`: 60 seconds); at least 1.
+    pub bogus_ttl: u32,
 }
 
 impl Default for Config {
@@ -62,6 +65,7 @@ impl Default for Config {
             stale_recheck: 30,
             prefetch_percent: 10,
             stale_answer_after_ms: 1_800,
+            bogus_ttl: 60,
         }
     }
 }
@@ -87,6 +91,9 @@ pub enum ConfigError {
     /// Over 100 percent.
     #[error("the prefetch threshold is a percentage, not {0}")]
     PrefetchPercent(u8),
+    /// A bogus response kept for 0 seconds would not be kept.
+    #[error("the bogus TTL must be above 0")]
+    BogusTtl,
 }
 
 impl Config {
@@ -114,6 +121,9 @@ impl Config {
         }
         if self.prefetch_percent > 100 {
             return Err(ConfigError::PrefetchPercent(self.prefetch_percent));
+        }
+        if self.bogus_ttl == 0 {
+            return Err(ConfigError::BogusTtl);
         }
         Ok(())
     }

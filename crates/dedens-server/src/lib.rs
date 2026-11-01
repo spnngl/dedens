@@ -28,11 +28,14 @@
 
 mod cache;
 mod forward;
+mod metrics;
 mod pipeline;
 mod plugin;
 mod reply;
+mod validate;
 
 pub use dedens_proto::Transport;
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
 pub use plugin::{Answer, Plugin, Records};
+pub use validate::{Clock, Validating};

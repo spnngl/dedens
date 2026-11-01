@@ -4,14 +4,17 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_cache::{Cache, Key, StalePolicy};
+use dedens_cache::{Cache, Checked, Key, StalePolicy};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport};
+use dedens_proto::{
+    Class, Decoded, Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport, Ttl,
+};
 
 use crate::cache::{self, Looked, Read};
 use crate::forward::{self, Forward, Server};
 use crate::plugin::Plugin;
 use crate::reply::Client;
+use crate::validate::{Check, Outcome, Progress, present};
 
 /// A stage of the pipeline (D23).
 #[derive(Debug)]
@@ -76,6 +79,10 @@ pub struct Upstream {
     /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
     stale_after: Option<Duration>,
     purpose: Purpose,
+    /// Whether the response is validated (D77): the forward stage validates, and the client left it to us.
+    validate: bool,
+    /// The validation under way, while one of its questions is upstream.
+    check: Option<Box<Check>>,
 }
 
 impl Pipeline {
@@ -161,6 +168,7 @@ impl Pipeline {
                             }
                             return Step::Reply(len);
                         }
+                        Looked::Bogus(code) => return servfail(client, code, out),
                         Looked::Failed if recursion => {
                             return reply(client, Message::default(), Rcode::SERVFAIL, out);
                         }
@@ -219,7 +227,11 @@ impl Pipeline {
                     Stage::Forward(forward) => Some((index, forward)),
                     Stage::Cache(_) | Stage::Plugin(_) => None,
                 })?;
-        query.question()?;
+        let question = query.question()?;
+        // CD asks for the data as it is (RFC 4035 §3.2.2), and only class IN has DNSSEC (RFC 4033 §2).
+        let validate = forward.validation().is_some()
+            && !client.header.flags.contains(Flags::CD)
+            && question.qclass == Class::IN;
         Some(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
@@ -230,6 +242,8 @@ impl Pipeline {
             patience: forward.patience(),
             stale_after: None,
             purpose: Purpose::Reply,
+            validate,
+            check: None,
         }))
     }
 
@@ -277,6 +291,10 @@ impl Pipeline {
     /// keeps, or SERVFAIL (D41, D43). Returns [`Step::Reply`], [`Step::Drop`] or [`Step::Upstream`]; a refresh,
     /// or a query whose client [`Pipeline::stale`] answered, ends in [`Step::Drop`].
     ///
+    /// A validating forward stage (D77) answers with [`Step::Upstream`] again for each question its validator
+    /// asks, DS or DNSKEY, to be sent as any request. The reply comes with the verdict: AD set if secure; SERVFAIL
+    /// with an extended error if bogus or without a verdict; the response as it is otherwise.
+    ///
     /// `upstream` comes from this pipeline.
     pub fn receive(
         &self,
@@ -292,10 +310,73 @@ impl Pipeline {
         let client = Client::of(&query, upstream.transport);
         let cache = upstream.cache.and_then(|index| self.cache(index));
         let purpose = upstream.purpose;
-        if let Some(decoded) = response
+        let forward = match self.stages.get(upstream.forward) {
+            Some(Stage::Forward(forward)) => Some(forward),
+            _ => None,
+        };
+        let following = forward.and_then(|forward| forward.servers().get(upstream.next));
+        let finish = Finish {
+            query: &query,
+            client: &client,
+            cache,
+            purpose,
+            now,
+        };
+        let decoded = response
             .and_then(|wire| Message::decode(wire).ok())
-            .filter(forward::usable)
-        {
+            .filter(forward::usable);
+        if let Some(validating) = forward.and_then(Forward::validation) {
+            // The next question of the validator's, or its verdict: a response to a question of its own is
+            // untrusted input to it, and none is an answer too.
+            let check = if let Some(mut check) = upstream.check.take() {
+                if decoded.is_none()
+                    && let Some(server) = following
+                {
+                    upstream.server = server.clone();
+                    upstream.next += 1;
+                    upstream.check = Some(check);
+                    return Step::Upstream(upstream);
+                }
+                check.answer(validating, decoded.as_ref().map(|decoded| &decoded.message));
+                Some(check)
+            } else if upstream.validate {
+                match (decoded, query.question()) {
+                    (Some(decoded), Some(question)) => Some(Box::new(Check::new(
+                        validating,
+                        question,
+                        decoded.into_owned(),
+                    ))),
+                    _ => None,
+                }
+            } else if let Some(decoded) = decoded {
+                // Not validated: the client disabled checking, or the class has no DNSSEC. Never secure, whatever
+                // upstream's AD says (RFC 6840 §5.8).
+                return finish.deliver(Outcome::Insecure, decoded.into_owned(), None, out);
+            } else {
+                None
+            };
+            if let Some(mut check) = check {
+                match check.next() {
+                    Progress::Ask => {
+                        // Each question starts at the first server again.
+                        if let Some(server) = forward.and_then(|forward| forward.servers().first())
+                        {
+                            validating.metrics().question();
+                            upstream.server = server.clone();
+                            upstream.next = 1;
+                            upstream.check = Some(check);
+                            return Step::Upstream(upstream);
+                        }
+                        return Step::Drop;
+                    }
+                    Progress::Done(outcome) => {
+                        validating.metrics().outcome(outcome);
+                        let cap = check.cap();
+                        return finish.deliver(outcome, check.into_answer(), cap, out);
+                    }
+                }
+            }
+        } else if let Some(decoded) = decoded {
             // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
             // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
             // the same.
@@ -312,39 +393,12 @@ impl Pipeline {
             let rcode = decoded.message.rcode();
             return reply(&client, decoded.message, rcode, out);
         }
-        let next = match self.stages.get(upstream.forward) {
-            Some(Stage::Forward(forward)) => forward.servers().get(upstream.next).cloned(),
-            _ => None,
-        };
-        if let Some(server) = next {
-            upstream.server = server;
+        if let Some(server) = following {
+            upstream.server = server.clone();
             upstream.next += 1;
             return Step::Upstream(upstream);
         }
-        if purpose == Purpose::Prefetch {
-            return Step::Drop;
-        }
-        if let Some(cache) = cache
-            && let Some(key) = Key::of(&query)
-        {
-            cache.fail(&key, now);
-            if purpose == Purpose::Reply
-                && let Looked::Reply { len, .. } = cache::look(
-                    cache,
-                    &query,
-                    &client,
-                    now,
-                    Read::Lookup(StalePolicy::IfFailing),
-                    out,
-                )
-            {
-                return Step::Reply(len);
-            }
-        }
-        match purpose {
-            Purpose::Reply => reply(&client, Message::default(), Rcode::SERVFAIL, out),
-            Purpose::Prefetch | Purpose::Stale => Step::Drop,
-        }
+        finish.failed(None, out)
     }
 
     /// Gives `upstream` up after a failure of ours, such as no socket left, not of the server: no other server is
@@ -376,7 +430,10 @@ impl Upstream {
         let question = query
             .question()
             .expect("an upstream's query has a question");
-        forward::request(&Client::of(&query, self.transport), question)
+        match &self.check {
+            Some(check) => forward::probe(check.asking()),
+            None => forward::request(&Client::of(&query, self.transport), question, self.validate),
+        }
     }
 
     /// The server to send it to.
@@ -398,6 +455,93 @@ impl Upstream {
     pub const fn stale_after(&self) -> Option<Duration> {
         self.stale_after
     }
+}
+
+/// What a response is answered with, and where it goes, once known.
+struct Finish<'a> {
+    query: &'a Query<'a>,
+    client: &'a Client<'a>,
+    cache: Option<&'a Cache>,
+    purpose: Purpose,
+    now: u32,
+}
+
+impl Finish<'_> {
+    /// Ends the query with `outcome` for `decoded`, upstream's answer, its TTLs at most `cap` (D77): stored in the
+    /// cache stage with what the verdict made of it, and replied unless the client was answered already.
+    fn deliver(
+        &self,
+        outcome: Outcome,
+        mut decoded: Decoded<'static>,
+        cap: Option<Ttl>,
+        out: &mut [u8],
+    ) -> Step {
+        let checked = match outcome {
+            Outcome::Secure => Checked::Secure,
+            Outcome::Insecure => Checked::Insecure,
+            Outcome::Bogus(code) => Checked::Bogus(code),
+            Outcome::Indeterminate(code) => return self.failed(Some(code), out),
+        };
+        present(&mut decoded.message, outcome, cap, self.client.dnssec());
+        let rcode = decoded.message.rcode();
+        let stored = self.cache.filter(|cache| {
+            cache
+                .insert_checked(self.query, &decoded, self.now, checked)
+                .is_ok()
+        });
+        if self.purpose != Purpose::Reply {
+            return Step::Drop;
+        }
+        if let Checked::Bogus(code) = checked {
+            return servfail(self.client, code, out);
+        }
+        if let Some(cache) = stored
+            && let Looked::Reply { len, .. } =
+                cache::look(cache, self.query, self.client, self.now, Read::Stored, out)
+        {
+            return Step::Reply(len);
+        }
+        reply(self.client, decoded.message, rcode, out)
+    }
+
+    /// Ends the query after the last server failed, or without a verdict, `error` then the reason: the failure is
+    /// held in the cache (RFC 9520 §3.2), and the reply is the expired data it keeps, or SERVFAIL with `error`.
+    fn failed(&self, error: Option<InfoCode>, out: &mut [u8]) -> Step {
+        if self.purpose == Purpose::Prefetch {
+            return Step::Drop;
+        }
+        if let Some(cache) = self.cache
+            && let Some(key) = Key::of(self.query)
+        {
+            cache.fail(&key, self.now);
+            if self.purpose == Purpose::Reply
+                && let Looked::Reply { len, .. } = cache::look(
+                    cache,
+                    self.query,
+                    self.client,
+                    self.now,
+                    Read::Lookup(StalePolicy::IfFailing),
+                    out,
+                )
+            {
+                return Step::Reply(len);
+            }
+        }
+        match self.purpose {
+            Purpose::Reply => self
+                .client
+                .reply(Message::default(), Rcode::SERVFAIL, error, out)
+                .map_or(Step::Drop, Step::Reply),
+            Purpose::Prefetch | Purpose::Stale => Step::Drop,
+        }
+    }
+}
+
+/// SERVFAIL with the extended error `code` (RFC 8914).
+fn servfail(client: &Client<'_>, code: InfoCode, out: &mut [u8]) -> Step {
+    client
+        .reply(Message::default(), Rcode::SERVFAIL, Some(code), out)
+        .map_or(Step::Drop, Step::Reply)
 }
 
 /// The reply to `client`: `message` with `rcode`.

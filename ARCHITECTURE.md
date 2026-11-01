@@ -29,7 +29,9 @@ Planned: `dedens-resolver`.
 - `dedensd` listens on UDP, TCP, TLS, QUIC (D66), DoH over HTTP/3 (D84) and CoAP (DoC, D81), as an Oblivious DoH target with `odoh` (D79), and asks each upstream over its own transport (D65).
 - Server-side reading of responses: `Message::decode` (records keep RDATA as bytes, D28) → `forward::usable` →
   `Cache::insert`, which encodes it once with its TTL offsets (`message::ttl_offsets`); the reply is then
-  served from the entry as a hit (D43).
+  served from the entry as a hit (D43). A forward stage with `dnssec: validate` puts `dedens-dnssec`'s `Validation`
+  between `forward::usable` and `Cache::insert_checked`: each question it asks is one more upstream `Step`, the
+  verdict is kept with the entry and sets AD (D77, `crates/dedens-server/src/validate.rs`).
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents

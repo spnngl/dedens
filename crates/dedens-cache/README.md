@@ -33,7 +33,7 @@ O(1). `lookup` and `insert` build the key from the query, O(`n`); every operatio
 | `lookup`, `Miss`, `Failed`, `Expired` | O(`n` + `k`) | one probe, one key compare: O(`k`) | none |
 | `lookup`, hit that fits | O(`n` + `k` + `b`) | probe, copy O(`b`), patch O(`n` + `r`) | none |
 | `lookup`, hit too large | O(`k` + `b` + `r`·`n`) | probe, `Arc` clone O(1) | after the lock: a copy, the decoded message, nothing for the output |
-| `insert` | O(`b` + `r`·`n`) to check and encode, then expected amortized O(1) | probe, entry change O(`k`), eviction | encoded bytes (512 bytes, grown up to 4 times for larger responses), TTL offsets, the shared buffer; the key of a new entry |
+| `insert`, `insert_checked` | O(`b` + `r`·`n`) to check and encode, then expected amortized O(1) | probe, entry change O(`k`), eviction | encoded bytes (512 bytes, grown up to 4 times for larger responses), TTL offsets, the shared buffer; the key of a new entry |
 | `fail` | O(`k`), then expected amortized O(1) | probe, entry change, eviction | the key of a new entry |
 | `len`, `used`, `is_empty` | O(`s`) | each shard in turn, O(1) inside | none |
 

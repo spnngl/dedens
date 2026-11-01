@@ -197,7 +197,7 @@ impl<'q> Client<'q> {
     }
 
     /// Whether the client asked for DNSSEC records (RFC 3225 §3).
-    fn dnssec(&self) -> bool {
+    pub(crate) fn dnssec(&self) -> bool {
         self.edns
             .as_ref()
             .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO))

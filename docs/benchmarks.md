@@ -99,6 +99,10 @@ removed `MessageView` read every record in 178/505/1093 ns.
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
   into a 1232-byte buffer, a/mx/txt_large: 204/143/163 ns and one 192-byte allocation a hit (the stale option
   pushed to size the reply, the upstream query built for nothing) → 97/97/118 ns, none (same session).
+- `hit_secure` (D77): the same hit for a client with DO on a response stored as validated, AD set from the verdict,
+  against `hit_dnssec_ok`, stored unchecked: a/mx/txt_large 127/127/134 ns against 126/126/140 ns fastest of 100
+  samples (medians 132/131/139 against 131/131/145 ns), no allocation: within noise. A validating stage changes
+  only the miss path.
 - `miss`: the query sent upstream, then the response stored and answered: 0.8/1.7/2.0 µs and 15 allocations
   (8 kept by the cache entry, 7 temporary), sockets aside. The entry in one allocation (wire and TTL offsets)
   and the reply served from it as a hit, not encoded again: a/mx/txt_large 0.67-0.74 → 0.59-0.63, 1.53 →

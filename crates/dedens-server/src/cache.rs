@@ -1,7 +1,7 @@
 //! The cache stage: answers from `dedens-cache` before any later stage, stores what upstream answers, and holds
 //! failures (D43).
 
-use dedens_cache::{Cache, Freshness, Lookup, StalePolicy};
+use dedens_cache::{Cache, Checked, Freshness, Lookup, StalePolicy};
 use dedens_proto::edns::{EDE_LEN, InfoCode};
 use dedens_proto::{Edns, Header, Query, Rcode};
 
@@ -22,6 +22,9 @@ pub(crate) enum Looked {
     Reply { len: usize, refresh: bool },
     /// Resolution failed recently and the hold is on: SERVFAIL (RFC 9520 §3.2).
     Failed,
+    /// The entry is an answer that failed validation, for a client that did not disable checking: SERVFAIL with
+    /// this error (RFC 4035 §3.2.2, §4.7, D77).
+    Bogus(InfoCode),
     /// The next stages resolve.
     Miss,
     /// The next stages resolve; expired data is kept and may answer once the client's timer runs out (RFC 8767 §5).
@@ -65,6 +68,9 @@ pub(crate) fn look(
         Lookup::Miss => return Looked::Miss,
         Lookup::Expired => return Looked::Expired,
     };
+    if let Checked::Bogus(code) = hit.checked {
+        return Looked::Bogus(code);
+    }
     let refresh = match hit.freshness {
         Freshness::Fresh { prefetch } => prefetch,
         Freshness::Stale => false,

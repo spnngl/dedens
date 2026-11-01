@@ -8,8 +8,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dedens_bench::{CASES, wire};
-use dedens_cache::{Cache, Config};
-use dedens_proto::{Class, Edns, Message, Query, Question, RData, Record, RecordType, Ttl};
+use dedens_cache::{Cache, Checked, Config};
+use dedens_proto::{
+    Class, Edns, EdnsFlags, Message, Query, Question, RData, Record, RecordType, Ttl,
+};
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step, Transport};
 use divan::Bencher;
 
@@ -82,6 +84,53 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
         let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
         assert!(matches!(step, Step::Reply(_)));
     });
+}
+
+/// A query for the captured response `response` with DO set, then `response` stored in the cache of a forwarder as
+/// `checked`, the verdict of a validating stage (D77), and a hit on it: the hit path of a validating forwarder, whose
+/// stage only differs from the plain one when the cache misses.
+fn dnssec_hit(bencher: Bencher<'_, '_>, case: &str, checked: Checked) {
+    let response = wire(case);
+    let question = Message::decode(&response)
+        .expect("decodes")
+        .message
+        .questions[0]
+        .clone();
+    let mut query = Message::query(7, question);
+    query.edns = Some(Edns {
+        flags: EdnsFlags::DO,
+        ..Edns::default()
+    });
+    let query = query.to_vec().expect("a query fits");
+    let pipeline = forwarding();
+    let Some(Stage::Cache(cache)) = pipeline.stages().first() else {
+        unreachable!("the cache comes first");
+    };
+    cache
+        .insert_checked(
+            &Query::read(&query).expect("a query"),
+            &Message::decode(&response).expect("decodes"),
+            0,
+            checked,
+        )
+        .expect("cacheable");
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        assert!(matches!(step, Step::Reply(_)));
+    });
+}
+
+/// `hit` for a client with DO, the response stored without a verdict: what `hit_secure` is compared with.
+#[divan::bench(args = CASES)]
+fn hit_dnssec_ok(bencher: Bencher<'_, '_>, case: &str) {
+    dnssec_hit(bencher, case, Checked::Unchecked);
+}
+
+/// `hit` for a client with DO, the response stored as validated secure: the AD bit set from the verdict (D77).
+#[divan::bench(args = CASES)]
+fn hit_secure(bencher: Bencher<'_, '_>, case: &str) {
+    dnssec_hit(bencher, case, Checked::Secure);
 }
 
 /// Answers every query with the records of the captured response's answer section, as a hosts plugin would.

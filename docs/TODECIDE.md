@@ -74,6 +74,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
   window's edges inclusive; an option when a deployment shows it.
+- Validating forwarder (D77): the BAD-cache threshold of RFC 4035 §4.7 (answer from the bad cache only after N
+  failures). Default: none, a bogus verdict is cached at once for 60 s, as Unbound does.
+- Validating forwarder (D77): an EDE on an answer cached as insecure (the stored bytes carry no OPT), and the text of
+  an EDE (the reply's OPT holds the code only). Default: neither; the code is on a bogus or indeterminate SERVFAIL.
+- Validating forwarder (D77): the DS and DNSKEY answers are not cached until the key cache (step 06b), so each
+  uncached query asks the chain again. Default: as is until 06b.
+- Validating forwarder (D77): Bogus and indeterminate counts are per query, not per zone; no `trust_anchors` reload
+  without a configuration reload. Default: none.
 
 ## Later
 

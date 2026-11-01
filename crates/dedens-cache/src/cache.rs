@@ -11,7 +11,7 @@ use dedens_proto::{Decoded, Query};
 use crate::config::{Config, ConfigError};
 use crate::key::Key;
 use crate::metrics::Metrics;
-use crate::response::{NotCached, Response};
+use crate::response::{Checked, NotCached, Response};
 use crate::shard::Shard;
 
 /// When expired data may answer (RFC 8767 §5).
@@ -46,6 +46,9 @@ pub struct Hit {
     pub freshness: Freshness,
     /// The response did not fit the buffer and was truncated (TC set if answer or authority records were lost).
     pub truncated: bool,
+    /// What the caller found out about the response when it stored it (D77). A [`Checked::Bogus`] hit holds the
+    /// data it was stored with, which the caller does not serve.
+    pub checked: Checked,
 }
 
 /// Outcome of [`Cache::lookup`].
@@ -156,7 +159,7 @@ impl Cache {
         };
         let (hash, shard) = self.shard(&key);
         let mut end = out.len();
-        let (freshness, ttl, large) = {
+        let (freshness, ttl, large, checked) = {
             let mut shard = lock(shard);
             let Some(entry) = shard.get(hash, key.as_bytes()) else {
                 return Lookup::Miss;
@@ -194,6 +197,7 @@ impl Cache {
             if matches!(freshness, Freshness::Stale) {
                 end = end.saturating_sub(Self::STALE_ROOM);
             }
+            let checked = response.checked();
             let served = response.serve(query, ttl, &mut out[..end]);
             let large = served.is_none().then(|| response.share());
             if used {
@@ -204,9 +208,10 @@ impl Cache {
                     len,
                     freshness,
                     truncated: false,
+                    checked,
                 });
             }
-            (freshness, ttl, large)
+            (freshness, ttl, large, checked)
         };
         // Too large for the client: the slow path, outside the lock.
         match large.and_then(|large| large.serve_truncated(query, ttl, &mut out[..end])) {
@@ -214,6 +219,7 @@ impl Cache {
                 len: encoded.len,
                 freshness,
                 truncated: true,
+                checked,
             }),
             None => Lookup::Miss,
         }
@@ -235,9 +241,51 @@ impl Cache {
         response: &Decoded<'_>,
         now: u32,
     ) -> Result<(), NotCached> {
+        self.insert_checked(query, response, now, Checked::Unchecked)
+    }
+
+    /// [`Cache::insert`] of a response the caller validated (D77): `checked` is kept with it and sets the AD bit of
+    /// the replies served.
+    ///
+    /// A [`Checked::Bogus`] response lives at most `Config::bogus_ttl`, never stale, and is also stored for the
+    /// clients that check for themselves, as [`Checked::Insecure`] data they are served: the bogus response
+    /// answers them, not the others (RFC 4035 §3.2.2, §4.7).
+    ///
+    /// # Errors
+    ///
+    /// [`NotCached`] says why the response is not stored.
+    pub fn insert_checked(
+        &self,
+        query: &Query<'_>,
+        response: &Decoded<'_>,
+        now: u32,
+        checked: Checked,
+    ) -> Result<(), NotCached> {
         let key = Key::of(query).ok_or(NotCached::Query)?;
-        let response = Response::build(&key, response, now, &self.config)?;
-        let (hash, shard) = self.shard(&key);
+        let bad = matches!(checked, Checked::Bogus(_));
+        self.store(&key, response, now, checked, bad)?;
+        if bad {
+            self.store(
+                &key.with_checking_disabled(),
+                response,
+                now,
+                Checked::Insecure,
+                bad,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn store(
+        &self,
+        key: &Key,
+        response: &Decoded<'_>,
+        now: u32,
+        checked: Checked,
+        bad: bool,
+    ) -> Result<(), NotCached> {
+        let response = Response::build(key, response, now, checked, bad, &self.config)?;
+        let (hash, shard) = self.shard(key);
         let evicted = {
             let mut shard = lock(shard);
             if !shard.fits(key.as_bytes().len(), &response) {

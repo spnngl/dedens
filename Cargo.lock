@@ -1007,7 +1007,9 @@ name = "dedens-server"
 version = "0.1.0"
 dependencies = [
  "dedens-cache",
+ "dedens-dnssec",
  "dedens-proto",
+ "metrics",
 ]
 
 [[package]]
@@ -1018,6 +1020,7 @@ dependencies = [
  "clap",
  "compio",
  "dedens-cache",
+ "dedens-dnssec",
  "dedens-net",
  "dedens-odoh",
  "dedens-plugins",

@@ -13,11 +13,12 @@ anyhow.workspace = true
 clap.workspace = true
 compio.workspace = true
 dedens-cache = { workspace = true, features = ["serde"] }
+dedens-dnssec.workspace = true
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-odoh = { workspace = true, optional = true }
 dedens-plugins = { workspace = true, features = ["serde"] }
 dedens-proto.workspace = true
-dedens-server.workspace = true
+dedens-server = { workspace = true, features = ["metrics"] }
 flume.workspace = true
 futures-util.workspace = true
 getrandom = { workspace = true, optional = true }

@@ -31,6 +31,9 @@
 //!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
 //!     timeout_ms: 3000
 //!     tries: 2
+//!     dnssec: validate                 # off (default) or validate (D77)
+//!     trust_anchors: /etc/dedensd/anchors.zone   # DS or DNSKEY records; default: the root's, bundled
+//!     insecure: [corp.example]         # names not validated, with what is below them (RFC 7646)
 //! ```
 
 use std::collections::BTreeMap;
@@ -38,18 +41,20 @@ use std::net::{IpAddr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, fs, io};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use compio::rustls::pki_types::pem::PemObject as _;
 use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use dedens_cache::Cache;
+use dedens_dnssec::anchor::TrustAnchors;
+use dedens_dnssec::validator::{Limits, Validator};
 use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
-use dedens_proto::Ttl;
-use dedens_server::{Forward, Pipeline, Stage, Via};
+use dedens_proto::{Name, Ttl};
+use dedens_server::{Forward, Pipeline, Stage, Validating, Via};
 use http::uri::PathAndQuery;
 use serde::Deserialize;
 
@@ -224,10 +229,19 @@ enum StageFile {
     /// Settings of `dedens_cache::Config`, each defaulting to the RFCs' recommendation.
     Cache(dedens_cache::Config),
     /// Upstream servers, asked in order, each `tries` times waiting `timeout_ms` for a response.
+    ///
+    /// `dnssec: validate` (D77) validates what they answer: AD is set for authentic answers only, a bogus one is
+    /// SERVFAIL with an extended error. `trust_anchors` is a file of DS or DNSKEY records in zone file format, the
+    /// root's bundled ones unless set; `insecure` lists names answered as they are, with their subdomains (RFC 7646).
     Forward {
         servers: Vec<Server>,
         timeout_ms: Option<NonZeroU32>,
         tries: Option<NonZeroU8>,
+        #[serde(default)]
+        dnssec: Dnssec,
+        trust_anchors: Option<PathBuf>,
+        #[serde(default)]
+        insecure: Vec<Insecure>,
     },
     /// Names and addresses (D54): `entries`, lines in the format of `/etc/hosts`, then those of `file`, read
     /// at start and on reload; each record with `ttl` seconds, 3600 unless set; `fallthrough` passing a listed name's
@@ -439,23 +453,22 @@ pub(crate) fn read(
         };
         placed(name, &stage, &built)?;
         built.push(match stage {
-            StageFile::Cache(config) => {
-                let kept = previous.stages().iter().find_map(|stage| match stage {
-                    Stage::Cache(cache) if *cache.config() == config => Some(Arc::clone(cache)),
-                    _ => None,
-                });
-                match kept {
-                    Some(cache) => Stage::Cache(cache),
-                    None => Stage::Cache(Arc::new(
-                        Cache::new(config).with_context(|| format!("stage `{name}`"))?,
-                    )),
-                }
-            }
+            StageFile::Cache(config) => cache(name, config, previous)?,
             StageFile::Forward {
                 servers,
                 timeout_ms,
                 tries,
-            } => Stage::Forward(forward(name, servers, timeout_ms, tries)?),
+                dnssec,
+                trust_anchors,
+                insecure,
+            } => {
+                let validation = Validation {
+                    dnssec,
+                    trust_anchors,
+                    insecure,
+                };
+                Stage::Forward(forward(name, servers, timeout_ms, tries, validation)?)
+            }
             StageFile::Hosts {
                 entries,
                 file,
@@ -512,7 +525,26 @@ pub(crate) fn read(
     })
 }
 
-/// The forward stage `name` of `servers`, with the timeout and tries it sets.
+/// The cache stage `name` of `config`: the one of `previous` while its settings stay, so that a reload keeps the
+/// entries.
+///
+/// # Errors
+///
+/// Settings the cache refuses.
+fn cache(name: &str, config: dedens_cache::Config, previous: &Pipeline) -> anyhow::Result<Stage> {
+    let kept = previous.stages().iter().find_map(|stage| match stage {
+        Stage::Cache(cache) if *cache.config() == config => Some(Arc::clone(cache)),
+        _ => None,
+    });
+    Ok(match kept {
+        Some(cache) => Stage::Cache(cache),
+        None => Stage::Cache(Arc::new(
+            Cache::new(config).with_context(|| format!("stage `{name}`"))?,
+        )),
+    })
+}
+
+/// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says.
 ///
 /// # Errors
 ///
@@ -522,9 +554,20 @@ fn forward(
     servers: Vec<Server>,
     timeout_ms: Option<NonZeroU32>,
     tries: Option<NonZeroU8>,
+    validation: Validation,
 ) -> anyhow::Result<Forward> {
     let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
         .with_context(|| format!("stage `{name}` has no server"))?;
+    match validation.dnssec {
+        Dnssec::Off => ensure!(
+            validation.trust_anchors.is_none() && validation.insecure.is_empty(),
+            "stage `{name}`: `trust_anchors` and `insecure` need `dnssec: validate`"
+        ),
+        Dnssec::Validate => {
+            let validating = validating(validation.trust_anchors.as_deref(), validation.insecure)?;
+            forward = forward.validating(validating);
+        }
+    }
     if let Some(ms) = timeout_ms {
         forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
     }
@@ -532,6 +575,89 @@ fn forward(
         forward = forward.with_tries(tries);
     }
     Ok(forward)
+}
+
+/// A name `insecure` leaves unvalidated (RFC 7646): in presentation format, the root's `.` included.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "String")]
+struct Insecure(Name<'static>);
+
+impl TryFrom<String> for Insecure {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        text.parse()
+            .map(Self)
+            .map_err(|error| format!("`{text}` is not a name: {error}"))
+    }
+}
+
+/// What a forward stage says of validation (D77).
+struct Validation {
+    dnssec: Dnssec,
+    trust_anchors: Option<PathBuf>,
+    insecure: Vec<Insecure>,
+}
+
+/// Whether a forward stage validates (D77): `off` or `validate`. The YAML reader takes an unquoted `off` for the
+/// boolean `false` once the stage's fields are buffered for the `type` tag, so that is read as `off` too.
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(try_from = "DnssecText")]
+enum Dnssec {
+    #[default]
+    Off,
+    Validate,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DnssecText {
+    Flag(bool),
+    Name(String),
+}
+
+impl TryFrom<DnssecText> for Dnssec {
+    type Error = String;
+
+    fn try_from(text: DnssecText) -> Result<Self, String> {
+        match text {
+            DnssecText::Flag(false) => Ok(Self::Off),
+            DnssecText::Name(name) if name == "off" => Ok(Self::Off),
+            DnssecText::Name(name) if name == "validate" => Ok(Self::Validate),
+            DnssecText::Flag(true) => Err("`dnssec` is `off` or `validate`, not `true`".to_owned()),
+            DnssecText::Name(name) => Err(format!("`dnssec` is `off` or `validate`, not `{name}`")),
+        }
+    }
+}
+
+/// The validator of a forward stage: the anchors of `trust_anchors`, the root's unless set, and a negative anchor
+/// for each name of `insecure` (RFC 7646), checked against the clock of the system (D77).
+///
+/// # Errors
+///
+/// A `trust_anchors` file that does not read or holds no anchor.
+fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::Result<Validating> {
+    let mut anchors = match trust_anchors {
+        None => TrustAnchors::root(),
+        Some(path) => {
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("`trust_anchors`: cannot read {}", path.display()))?;
+            TrustAnchors::read(&text)
+                .with_context(|| format!("`trust_anchors`: {}", path.display()))?
+        }
+    };
+    for Insecure(name) in insecure {
+        anchors.add_negative(name);
+    }
+    let clock = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs())
+    };
+    Ok(Validating::new(
+        Validator::new(anchors, Limits::default()),
+        Arc::new(clock),
+    ))
 }
 
 /// The Oblivious `DoH` target settings of `odoh`, if any (D79). The key is not read: a reload builds this again, and
@@ -1183,6 +1309,67 @@ mod tests {
                 refresh: Duration::from_hours(24),
             }
         );
+    }
+
+    /// A forward stage validates with `dnssec: validate`, with the root's trust anchor or the file's, and `insecure`
+    /// names; by default it does not (D77).
+    #[test]
+    fn a_forward_stage_validates_when_asked() {
+        let validates = |text: &str| match read(text, env, &Pipeline::default())
+            .unwrap()
+            .pipeline
+            .stages()
+            .first()
+        {
+            Some(Stage::Forward(forward)) => forward.validates(),
+            stage => unreachable!("{stage:?}"),
+        };
+        assert!(!validates(MINIMAL));
+        assert!(!validates(&format!("{MINIMAL}    dnssec: off\n")));
+        assert!(validates(&format!("{MINIMAL}    dnssec: validate\n")));
+        assert!(validates(&format!(
+            "{MINIMAL}    dnssec: validate\n    insecure: [corp.example, internal]\n"
+        )));
+
+        let path = std::env::temp_dir().join(format!("dedensd-anchors-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            ". 172800 IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n",
+        )
+        .unwrap();
+        let text = format!(
+            "{MINIMAL}    dnssec: validate\n    trust_anchors: {}\n",
+            path.display()
+        );
+        assert!(validates(&text));
+        std::fs::write(&path, "").unwrap();
+        let message = error(&text);
+        assert!(message.contains("`trust_anchors`"), "{message}");
+        std::fs::remove_file(&path).unwrap();
+        let message = error(&text);
+        assert!(message.contains("cannot read"), "{message}");
+    }
+
+    #[test]
+    fn dnssec_settings_outside_the_model_are_refused() {
+        for (extra, needle) in [
+            ("dnssec: sometimes", "sometimes"),
+            ("dnssec: true", "not `true`"),
+            (
+                "dnssec: off\n    insecure: [a.example]",
+                "need `dnssec: validate`",
+            ),
+            ("insecure: [a.example]", "need `dnssec: validate`"),
+            ("trust_anchors: /nonexistent", "need `dnssec: validate`"),
+            ("dnssec: validate\n    insecure: ['bad..name']", "bad..name"),
+            (
+                "dnssec: validate\n    trust_anchors: /nonexistent/anchors",
+                "cannot read",
+            ),
+        ] {
+            let message = error(&format!("{MINIMAL}    {extra}\n"));
+            assert!(message.contains(needle), "{extra}: {message}");
+        }
     }
 
     #[test]
