@@ -185,3 +185,27 @@ Reading numbers and code mnemonics from the token bytes, instead of checking the
 IP addresses, whose byte parser (`parse_ascii`) is not stable yet. Scanning token text 8 bytes at a time in a
 `u64` (bit tricks, no `unsafe`) instead of the byte table was 9% slower (9.05 → 9.9 ms): most tokens are
 shorter than 8 bytes, so the word test only adds work before the byte loop.
+
+## DNSSEC crypto (D71)
+
+`benches/dnssec.rs`, one call on the RFC example each (`ring`; keys of 1024 bits where RSA's size is not said).
+Microseconds unless stated.
+
+| Measure | Median |
+|---|---|
+| Verify RSASHA1 (5), 1024 bits | 1.7 |
+| Verify RSASHA256 (8), 1024 bits | 3.3 |
+| Verify RSASHA256 (8), 2048 bits | 10.7 |
+| Verify RSASHA512 (10), 1024 bits | 3.4 |
+| Verify ECDSAP256SHA256 (13) | 27.3 |
+| Verify ECDSAP384SHA384 (14) | 341 |
+| Verify Ed25519 (15) | 19.6 |
+| DS digest SHA-1 / SHA-256 / SHA-384, ns | 334 / 125 / 173 |
+| NSEC3 hash at 0 / 12 / 150 iterations | 0.11 / 1.2 / 13.6 |
+
+RSA with a public exponent of 65537 is the cheapest to check and P-384 the dearest, 17 times Ed25519's cost.
+`Budget`'s defaults come from the worst: 64 verifications of P-384 are 22 ms, and 8192 NSEC3 hashes (about 90 ns
+each) 0.75 ms. A validation of a name five zones deep verifies about 20 signatures, and the denial proof of a
+name ten labels deep hashes about a dozen names, 1800 hashes at 150 iterations. Without a cap, a response that
+makes the validator check every signature against every key of one tag (KeyTrap, CVE-2023-50387) costs it
+seconds.

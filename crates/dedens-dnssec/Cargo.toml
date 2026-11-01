@@ -11,6 +11,10 @@ publish.workspace = true
 [dependencies]
 dedens-proto.workspace = true
 ring.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+data-encoding.workspace = true
 
 [lints]
 workspace = true

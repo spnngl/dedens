@@ -13,6 +13,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - ODoQ (Oblivious DNS over QUIC): no RFC exists. Default: dropped; revisit when the IETF publishes one.
 - Ed448 (algorithm 16, RFC 8080): `ring` has no Ed448. Default: unsupported, so a zone signed with it is
   insecure (RFC 6840 §5.2); a pure-Rust crate only if a signed zone in use needs it.
+- SHA-1 switch: RFC 9905 §2 tells operators of validating resolvers to treat RSASHA1, RSASHA1-NSEC3-SHA1 and their
+  DS records as unsupported (insecure), and implementations to keep validating them (D71 validates by default).
+  Default: validated; a setting of the validator marking algorithms 5 and 7 unsupported, added with 06.
 - Trust anchor rollover (RFC 5011): follow a root key roll while running. Default: bundled anchors and anchor
   files only, replaced by hand; automate in the recursive phase, when a daemon holds state.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.

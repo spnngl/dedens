@@ -775,7 +775,9 @@ dependencies = [
 name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "dedens-cache",
+ "dedens-dnssec",
  "dedens-net",
  "dedens-plugins",
  "dedens-proto",
@@ -803,8 +805,10 @@ dependencies = [
 name = "dedens-dnssec"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "dedens-proto",
  "ring",
+ "thiserror",
 ]
 
 [[package]]
