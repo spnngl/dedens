@@ -124,9 +124,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   load balancers or quinn cause it before giving each connection its own socket.
 - Renewing the pooled upstream UDP sockets (D50) now and then, for the port entropy of RFC 5452 §9.2 against
   an attacker who learned a kept port. Default: keep the sockets, relying on `0x20` and cookies.
-- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED.
-  Default: a stage or core setting, loopback and private ranges allowed when unset; networks in a
-  longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for blocking by answer address.
+- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED; a cap of
+  connections per address, over TCP, TLS, QUIC and HTTP/3 alike (D47 caps a thread's connections only, so one host
+  can take them all, for as long as it keeps asking). Default: a stage or core setting, loopback and private ranges
+  allowed when unset; networks in a longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for
+  blocking by answer address.
 - Steering each datagram to the socket of the CPU that received it: `SO_INCOMING_CPU` on each thread's socket
   (the kernel's `SO_REUSEPORT` choice prefers it: `reuseport_select_sock_by_hash`) and threads pinned to their CPUs, or a
   `SO_REUSEPORT_CBPF` program. Default: wait for a benchmark between two machines; on loopback the sender's

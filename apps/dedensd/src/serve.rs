@@ -30,7 +30,7 @@ use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Method;
 use dedens_net::exchange::{Options, Response};
-use dedens_net::https::{Exchange, Pending, Requests};
+use dedens_net::https::{Exchange, HttpsError, Pending, Requests};
 #[cfg(feature = "odoh")]
 use dedens_net::odoh::{Kind, MAX_BODY, classify};
 use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
@@ -622,6 +622,9 @@ enum Service {
     Https(Arc<str>),
 }
 
+/// `DOQ_EXCESSIVE_LOAD`: a stream given up because its client does not read the reply (RFC 9250 §4.3.2).
+const DOQ_EXCESSIVE_LOAD: u32 = 0x4;
+
 /// Uni streams an HTTP/3 client may open: its control stream and QPACK's two (RFC 9114 §6.2), with room for
 /// the reserved ones it may add (§6.2.3).
 const H3_UNI_STREAMS: u32 = 16;
@@ -670,7 +673,9 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
 /// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned, and a query breaking
 /// the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3).
 async fn streams(connection: &Connection, thread: &Rc<Thread>) {
-    while let Ok((send, mut recv)) = connection.accept_bi().await {
+    while let Ok(Ok((send, mut recv))) =
+        compio::time::timeout(TCP_IDLE, connection.accept_bi()).await
+    {
         let (connection, thread) = (connection.clone(), Rc::clone(thread));
         spawn(async move {
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
@@ -718,8 +723,8 @@ async fn stream(query: &[u8], send: SendStream, thread: &Thread) {
 }
 
 /// Answers the requests of one HTTP/3 connection (RFC 9114 §4), each alone on a stream the client opened, as
-/// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`]. Requests go through
-/// the pipeline as any query; the client is `peer`.
+/// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`], and a new request
+/// must come within it too, as [`streams`] says. Requests go through the pipeline as any query; the client is `peer`.
 async fn requests(connection: Connection, path: &Arc<str>, peer: SocketAddr, thread: &Rc<Thread>) {
     let mut requests = match compio::time::timeout(TCP_IDLE, Requests::new(connection)).await {
         Ok(Ok(requests)) => requests,
@@ -727,13 +732,14 @@ async fn requests(connection: Connection, path: &Arc<str>, peer: SocketAddr, thr
         Err(_) => return tracing::debug!(%peer, "HTTP/3 setup timed out"),
     };
     loop {
-        match requests.accept().await {
-            Ok(Some(pending)) => {
+        match compio::time::timeout(TCP_IDLE, requests.accept()).await {
+            Ok(Ok(Some(pending))) => {
                 let (path, thread) = (Arc::clone(path), Rc::clone(thread));
                 spawn(async move { request(pending, &path, peer, &thread).await }).detach();
             }
-            Ok(None) => return,
-            Err(error) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
+            Err(_) => return tracing::debug!(%peer, "HTTP/3 connection idle"),
         }
     }
 }
@@ -793,16 +799,12 @@ async fn oblivious(
     let (transport, mut context, query) = match (exchange.kind(), exchange.query()) {
         // Not `DoH` requests: not counted (D84).
         (Kind::Configs, Err(status)) => {
-            if let Err(error) = exchange.reject(status).await {
-                tracing::debug!(%peer, %error, "HTTP/3 response failed");
-            }
+            sent(exchange.reject(status), peer).await;
             return;
         }
         (_, Err(status)) => return reject(exchange, status, peer).await,
         (Kind::Configs, Ok(_)) => {
-            if let Err(error) = exchange.respond_with(target.configs()).await {
-                tracing::debug!(%peer, %error, "HTTP/3 response failed");
-            }
+            sent(exchange.respond_with(target.configs()), peer).await;
             return;
         }
         (Kind::Oblivious, Ok(body)) => match target.open(body) {
@@ -849,9 +851,7 @@ async fn respond_sealed(
     match odoh::seal(context, &wire) {
         Ok(response) => {
             count_doh(exchange.method(), StatusCode::OK);
-            if let Err(error) = exchange.respond_with(response).await {
-                tracing::debug!(%peer, %error, "HTTP/3 response failed");
-            }
+            sent(exchange.respond_with(response), peer).await;
         }
         Err(status) => reject(exchange, status, peer).await,
     }
@@ -861,17 +861,24 @@ async fn respond_sealed(
 async fn respond_http<K>(exchange: &mut Option<Exchange<K>>, wire: Vec<u8>, peer: SocketAddr) {
     if let Some(exchange) = exchange.take() {
         count_doh(exchange.method(), StatusCode::OK);
-        if let Err(error) = exchange.respond(wire).await {
-            tracing::debug!(%peer, %error, "HTTP/3 response failed");
-        }
+        sent(exchange.respond(wire), peer).await;
     }
 }
 
 /// Answers `status` without a message.
 async fn reject<K>(exchange: Exchange<K>, status: StatusCode, peer: SocketAddr) {
     count_doh(exchange.method(), status);
-    if let Err(error) = exchange.reject(status).await {
-        tracing::debug!(%peer, %error, "HTTP/3 response failed");
+    sent(exchange.reject(status), peer).await;
+}
+
+/// Waits for the response `write` to `peer` to go out, at most [`TCP_WRITE`]: a client that grants no credit to
+/// receive it loses the request, as a TCP one reading too slowly loses its connection (D47). The write is boxed: the
+/// futures of the HTTP/3 request tasks are large already.
+async fn sent(write: impl Future<Output = Result<(), HttpsError>>, peer: SocketAddr) {
+    match compio::time::timeout(TCP_WRITE, Box::pin(write)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%peer, %error, "HTTP/3 response failed"),
+        Err(_) => tracing::debug!(%peer, "HTTP/3 response timed out"),
     }
 }
 
@@ -898,12 +905,21 @@ fn count_doh(method: Option<Method>, status: StatusCode) {
 
 const DOH_QUERIES: &str = "dedensd_doh_queries_total";
 
-/// Writes `framed` on `send` and finishes it, unless it was answered already.
+/// Writes `framed` on `send` and finishes it, unless it was answered already; a write lasting [`TCP_WRITE`] is given
+/// up and the stream reset with `DOQ_EXCESSIVE_LOAD` (RFC 9250 §4.3.2), as a TCP client reading too slowly loses
+/// its connection (D47).
 async fn respond(send: &mut Option<SendStream>, framed: Vec<u8>) {
-    if let Some(mut stream) = send.take()
-        && let BufResult(Ok(()), _) = stream.write_all(framed).await
-    {
-        let _ = stream.finish();
+    let Some(mut stream) = send.take() else {
+        return;
+    };
+    match compio::time::timeout(TCP_WRITE, stream.write_all(framed)).await {
+        Ok(BufResult(Ok(()), _)) => {
+            let _ = stream.finish();
+        }
+        Ok(_) => {}
+        Err(_) => {
+            let _ = stream.reset(VarInt::from_u32(DOQ_EXCESSIVE_LOAD));
+        }
     }
 }
 
