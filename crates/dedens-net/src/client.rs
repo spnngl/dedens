@@ -551,8 +551,22 @@ impl Client {
         }
         if transport == Transport::Coap {
             let random = self.random.borrow_mut().take::<14>()?;
-            let bytes = coap(exchange.wire(), server, &target.docpath, random).await?;
-            return Ok(answered(exchange, transport, bytes, deadline));
+            // Boxed, as HTTPS is: with its deadline the CoAP exchange's future grows every caller's past 16 KiB.
+            let asked = Box::pin(coap(
+                exchange.wire(),
+                server,
+                &target.docpath,
+                random,
+                deadline,
+            ));
+            return match asked.await {
+                Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
+                #[cfg(feature = "doc")]
+                Err(ClientError::Doc(DocError::TimedOut)) => {
+                    Ok(exchange.time_out(Instant::now().max(deadline)))
+                }
+                Err(error) => Err(error),
+            };
         }
         if transport == Transport::Quic {
             return match self
@@ -690,6 +704,7 @@ async fn coap(
     _server: SocketAddr,
     _docpath: &[Box<[u8]>],
     _random: [u8; 14],
+    _deadline: Instant,
 ) -> Result<Vec<u8>, ClientError> {
     Err(ClientError::NotBuilt("CoAP"))
 }

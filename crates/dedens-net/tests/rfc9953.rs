@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::net::UdpSocket;
@@ -18,7 +19,7 @@ use dedens_net::coap::exchange::Failure;
 use dedens_net::coap::link::LinkError;
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Type};
 use dedens_net::doc::DocError;
-use dedens_net::exchange::{Options as DnsOptions, Transport};
+use dedens_net::exchange::{Failure as DnsFailure, Options as DnsOptions, Transport};
 use dedens_proto::Message as Dns;
 
 /// A query for gmail.com MX with ID 0, and the response of Quad9 to it (testdata/doh), whose TTLs are 1822, 1822,
@@ -45,6 +46,10 @@ enum Serve {
     Format(u16),
     /// 2.05 with a body that is no DNS message.
     Garbage,
+    /// No datagram back: a blackholed server.
+    Silent,
+    /// An empty ACK, the response to come separately (RFC 7252 §5.2.2), and never does.
+    EmptyAck,
 }
 
 /// A CoAP server answering each request as `serve` says; the requests it got.
@@ -68,6 +73,8 @@ async fn coap_server(serve: Serve) -> (SocketAddr, Rc<RefCell<Vec<Message>>>) {
             log.borrow_mut().push(request.clone());
             let mut reply = Message::piggybacked(&request, Code::CONTENT);
             match &serve {
+                Serve::Silent => continue,
+                Serve::EmptyAck => reply = Message::empty(Type::Acknowledgement, request.id),
                 Serve::Whole(max_age) => {
                     reply.options.set_content_format(Options::DNS_MESSAGE);
                     if let Some(max_age) = max_age {
@@ -303,6 +310,39 @@ async fn s4_3_1_an_error_code_is_an_error_not_a_response() {
             matches!(&error, Err(ClientError::Doc(DocError::Code(got))) if *got == code),
             "{code}: {error:?}"
         );
+    }
+}
+
+/// RFC 9953 §4.3, RFC 7252 §4.8, §5.2.2: the whole exchange ends at the query's timeout, whether the server never
+/// answers or only acknowledges and never sends the response, which CoAP alone waits 93 s for, and the caller gets the
+/// timeout of the exchange, as over the other transports (D109).
+#[compio::test]
+async fn s4_3_the_exchange_ends_at_the_timeout_of_the_query() {
+    let mut options = coap();
+    options.timeout = Duration::from_millis(300);
+    for serve in [Serve::Silent, Serve::EmptyAck] {
+        let (addr, seen) = coap_server(serve.clone()).await;
+        let started = Instant::now();
+        // Far past the timeout, so that a query that is not bounded fails here, not by hanging the suite.
+        let asked = compio::time::timeout(
+            Duration::from_secs(5),
+            Client::new().exchange(query(), server(addr, ""), &options),
+        )
+        .await;
+        let error = asked.expect("an answer before 5 s");
+        assert!(
+            matches!(
+                &error,
+                Err(ClientError::Exchange(DnsFailure::TimedOut { sends: 1 }))
+            ),
+            "{error:?}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= options.timeout && elapsed < options.timeout + Duration::from_millis(500),
+            "{elapsed:?}"
+        );
+        assert!(!seen.borrow().is_empty());
     }
 }
 

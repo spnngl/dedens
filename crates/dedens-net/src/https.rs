@@ -31,6 +31,11 @@ const SERVER_STREAMS: u32 = 16;
 /// fields (RFC 9114 §4.2.2, §7.2.4.1).
 const MAX_FIELD_SECTION: u64 = 80 << 10;
 
+/// The header section of a response a client reads, at most (RFC 9114 §4.2.2, §7.2.4.1), stated to the server in
+/// the settings and checked on receipt: ten times the largest of the responses captured from public `DoH` servers
+/// (797 bytes), and what servers commonly take of a request (D109).
+const MAX_RESPONSE_FIELD_SECTION: u64 = 8 << 10;
+
 /// Why an HTTPS exchange failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -202,7 +207,9 @@ impl HttpsPool {
             return Ok((open.clone(), true));
         }
         let connection = self.dialer.connect(server.0, &server.1).await?;
-        let (mut driver, requests) = client::new(connection.clone())
+        let (mut driver, requests) = client::builder()
+            .max_field_section_size(MAX_RESPONSE_FIELD_SECTION)
+            .build(connection.clone())
             .await
             .map_err(HttpsError::Connection)?;
         // The connection's control stream is read, and `GOAWAY` heeded, while this task runs: until the
