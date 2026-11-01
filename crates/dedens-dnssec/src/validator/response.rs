@@ -210,15 +210,18 @@ impl Validation {
                     Some(reason) => Delegation::Unsigned { reason },
                 },
             },
-            Cut::Inside(_) => Verdict::bogus(
+            Cut::Inside { .. } => Verdict::bogus(
                 InfoCode::DNSSEC_BOGUS,
                 format!("{child} is referred to but proven no delegation"),
             ),
-            Cut::Unusable(Unusable::Insecure { reason, .. }) => Verdict::Referral {
+            Cut::Unusable(Unusable::Insecure { reason, .. })
+            | Cut::Beneath(Unusable::Insecure { reason, .. }) => Verdict::Referral {
                 child: child.clone(),
                 delegation: Delegation::Unsigned { reason },
             },
-            Cut::Unusable(Unusable::Failed(failure)) => failure.into(),
+            Cut::Unusable(Unusable::Failed(failure)) | Cut::Beneath(Unusable::Failed(failure)) => {
+                failure.into()
+            }
         })
     }
 
@@ -420,7 +423,7 @@ impl Validation {
         ) {
             Ok(proof) if proof.opt_out => Err(Unusable::Insecure {
                 reason: InsecureReason::OptOut,
-                ttl: proof.ttl,
+                ttl: ttl.min(proof.ttl).min(evidence.limit),
             }),
             Ok(proof) => Ok(ttl.min(proof.ttl).min(evidence.limit)),
             Err(error) => Err(unproven(error, evidence.limit)),

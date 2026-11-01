@@ -24,6 +24,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   clock passed in when `dedensd` keeps state across reloads.
 - `+trace +validate` (D76 refuses it): validate each hop, a referral by `start_referral` and the answer by `start`,
   asking DS and DNSKEY of the servers the trace reached. Default: refused; `+validate @server` is the way to a verdict.
+- Key cache, bogus zones (D86): whoever answers a DNSKEY question under an authentic DS can make that zone bogus for
+  60 s, for every validation of the validator (Unbound's `val-bogus-ttl`). Default: kept, it is what the same
+  answerer forces on one validation anyway; a caller with several servers could instead retry the DNSKEY at another
+  before a bogus is stored, or the bogus entry could be dropped by a secure one from a different server.
+- Key cache, size and lock (D86): bounded by entries (4096 per table), not bytes, with one `Mutex`. Default: as is;
+  bytes, an `RwLock` or shards when `dedensd`'s load tests show a validator's keys cost more than a few MB or its
+  lock contended.
 - ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
   AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
   asks for it.

@@ -9,7 +9,8 @@ and its EDE code (D73). `denial/`: what verified NSEC and NSEC3 records prove (D
 `validator/`: the verdict on a response (D75): `Validator::start` gives a `Validation`; the caller loops on
 `step()`, sends each `Next::Ask` (DS or DNSKEY, with RD, DO, CD) and gives the response to `answer`, until
 `Next::Done(Verdict)`. `chain.rs` walks the zones top-down, `response.rs` checks the answer and its denial,
-`section.rs` groups records, `verdict.rs` has the verdict types. One module per concern; tests of RFC behaviour in
+`section.rs` groups records, `verdict.rs` has the verdict types, `cache.rs` the key cache the validator shares
+between its validations (D86): written by `settle`, read by `zone_of`, only what the data decided. One module per concern; tests of RFC behaviour in
 `tests/rfcNNNN.rs`.
 
 - `tests/testdata/`: real responses from `just capture-dnssec` (the queries of `capture.yaml`), `captured_at`

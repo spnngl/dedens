@@ -16,8 +16,8 @@ use crate::rrsig::{Key, RrSet, SigError, trusted_keys, verify_any};
 
 /// What is known of a zone: its keys, or why it has none that count.
 ///
-/// The one outcome 06b keeps in a cache: secure keys with the TTL of the signatures and DS records that vouch
-/// for them, an insecure zone with the TTL of the proof, or a failure.
+/// Secure keys carry the TTL of the signatures and DS records that vouch for them (RFC 4035 §5.3.3), an insecure
+/// zone the TTL of the proof; the key cache keeps them for that long (D86).
 #[derive(Debug, Clone)]
 pub(super) enum Settled {
     /// The DNSKEY `RRset` is authenticated; every key of it is trusted (RFC 4035 §5.2).
@@ -33,8 +33,56 @@ pub(super) enum Settled {
 pub(super) enum Zone {
     /// The name is the apex of a zone, or of a part of the tree no key covers.
     Apex(Settled),
-    /// The name is no zone cut: it belongs to the zone with this apex.
-    Inside(Name<'static>),
+    /// The name is no zone cut: it belongs to the zone with this apex, as far as `ttl` holds.
+    Inside { apex: Name<'static>, ttl: Ttl },
+    /// The name is below a zone that is unusable: the zone's outcome, which the key cache has under the
+    /// zone's name and the clock of that entry rules, so this one is never kept.
+    Beneath(Unusable),
+}
+
+/// How long a bogus zone is held: Unbound's `val-bogus-ttl` (D86).
+const BOGUS_TTL: Ttl = Ttl::from_wire(60);
+
+impl Zone {
+    /// How long the key cache may keep this outcome, or `None` for one it never keeps (D86): what is
+    /// indeterminate or transient, what a trust anchor setting decides (the cache dies with those), and what
+    /// is inherited from the zone above. Only a bogus zone of a failure decided by the data is held, for
+    /// [`BOGUS_TTL`].
+    pub(super) const fn lifetime(&self) -> Option<Ttl> {
+        match self {
+            Self::Apex(Settled::Secure { ttl, .. }) | Self::Inside { ttl, .. } => Some(*ttl),
+            Self::Apex(Settled::Unusable(Unusable::Insecure { reason, ttl })) => match reason {
+                InsecureReason::NoAnchor | InsecureReason::NegativeAnchor => None,
+                _ => Some(*ttl),
+            },
+            Self::Apex(Settled::Unusable(Unusable::Failed(Failure::Bogus(_)))) => Some(BOGUS_TTL),
+            Self::Apex(Settled::Unusable(Unusable::Failed(
+                Failure::Transient(_) | Failure::Indeterminate(_),
+            )))
+            | Self::Beneath(_) => None,
+        }
+    }
+
+    /// This outcome with the TTL of what is left of its lifetime: what is derived from it never outlives it.
+    pub(super) fn with_ttl(self, left: Ttl) -> Self {
+        match self {
+            Self::Apex(Settled::Secure { keys, ttl }) => Self::Apex(Settled::Secure {
+                keys,
+                ttl: ttl.min(left),
+            }),
+            Self::Inside { apex, ttl } => Self::Inside {
+                apex,
+                ttl: ttl.min(left),
+            },
+            Self::Apex(Settled::Unusable(Unusable::Insecure { reason, ttl })) => {
+                Self::Apex(Settled::Unusable(Unusable::Insecure {
+                    reason,
+                    ttl: ttl.min(left),
+                }))
+            }
+            other => other,
+        }
+    }
 }
 
 /// What the parent says of a name as a zone cut (RFC 4035 §5.2). Never kept: the zone it leads to is.
@@ -47,9 +95,14 @@ pub(super) enum Cut {
         ds: RrSet<'static>,
         ttl: Ttl,
     },
-    /// The name is no zone cut; it belongs to the zone with this apex.
-    Inside(Name<'static>),
+    /// The name is no zone cut; it belongs to the zone with this apex, as far as `ttl` holds.
+    Inside {
+        apex: Name<'static>,
+        ttl: Ttl,
+    },
     Unusable(Unusable),
+    /// The name is below a zone that is unusable, which says so for it too.
+    Beneath(Unusable),
 }
 
 /// Where a name stands to the trust anchors.
@@ -69,13 +122,15 @@ pub(super) fn parent(name: &Name<'_>) -> Option<Name<'static>> {
 
 /// What an error of a signature check makes of the data it was about: bogus, but for an exhausted budget, which
 /// says nothing of the data (the caller or an attacker spent it) and so is indeterminate, like a lame server
-/// (RFC 9276 §3.2, D71, D75).
+/// (RFC 9276 §3.2, D71, D75); and for the limit on failed checks, which refused to look further and so is
+/// transient (D73, D86).
 pub(super) fn sig_failure(error: &SigError, set: &RrSet<'_>) -> Failure {
     match error {
         SigError::BudgetExhausted(_) => Failure::indeterminate(
             InfoCode::DNSSEC_INDETERMINATE,
             format!("{} {}: {error}", set.owner(), set.rtype()),
         ),
+        SigError::TooManyFailures => Failure::Transient(error.ede(set)),
         _ => Failure::Bogus(error.ede(set)),
     }
 }
@@ -152,7 +207,9 @@ impl Validation {
 
     /// Records what is known of `name`: the one place a zone's outcome is written, and one that keeps nothing
     /// indeterminate: a question the caller could not answer, or a limit, says nothing of the zone, and the
-    /// next attempt may do better. Returns the zone, as given.
+    /// next attempt may do better. The key cache gets what [`Zone::lifetime`] lets it keep, from the walk's
+    /// own verified data only, never from a hit of the cache itself (that would renew it). Returns the zone,
+    /// as given.
     fn settle(&mut self, name: &Name<'static>, zone: Zone) -> Zone {
         let indeterminate = matches!(
             zone,
@@ -162,6 +219,7 @@ impl Validation {
         );
         if !indeterminate {
             self.zones.insert(name.clone(), zone.clone());
+            self.config.cache.put(name, &zone, self.at);
         }
         zone
     }
@@ -185,7 +243,9 @@ impl Validation {
     /// The zone `name` belongs to, as its apex and its keys, walking down from the trust anchor one label at a
     /// time (RFC 4035 §5.2): a name below an insecure zone is insecure, below a secure one it is in the zone
     /// unless its parent proves a delegation. The walk is by the labels of `name`, never by what a response
-    /// says of its signers. The one place a zone's outcome is read.
+    /// says of its signers. The one place a zone's outcome is read: what the validation settled, else what the
+    /// key cache holds (D86), which the validation then keeps, so that it sees one outcome whatever the cache
+    /// does meanwhile.
     ///
     /// # Errors
     ///
@@ -201,24 +261,30 @@ impl Validation {
             }
             let zone = if let Some(known) = self.zones.get(&at) {
                 known.clone()
+            } else if let Some(cached) = self.config.cache.get(&at, self.at) {
+                self.zones.insert(at.clone(), cached.clone());
+                cached
             } else {
                 let found = self.resolve(&at)?;
                 self.settle(&at, found)
             };
             match zone {
                 Zone::Apex(settled) => return Ok((at, settled)),
-                Zone::Inside(apex) => at = apex,
+                Zone::Inside { apex, .. } => at = apex,
+                Zone::Beneath(unusable) => return Ok((at, Settled::Unusable(unusable))),
             }
         }
     }
 
-    /// What `name` is: a zone with its keys, or a name in the zone above it.
+    /// What `name` is: a zone with its keys, or a name in the zone above it. A zone whose keys were not
+    /// reached is `undecided` if bogus: only a failure of the keys under authentic trust is the data's.
     fn resolve(&mut self, name: &Name<'static>) -> Result<Zone, Need> {
         Ok(match self.cut(name, true)? {
             Cut::Anchored => Zone::Apex(self.anchor_keys(name)?),
             Cut::Signed { ds, ttl } => Zone::Apex(self.keys_from_ds(name, &ds, ttl)?),
-            Cut::Inside(apex) => Zone::Inside(apex),
-            Cut::Unusable(unusable) => Zone::Apex(Settled::Unusable(unusable)),
+            Cut::Inside { apex, ttl } => Zone::Inside { apex, ttl },
+            Cut::Unusable(unusable) => Zone::Apex(Settled::Unusable(unusable.undecided())),
+            Cut::Beneath(unusable) => Zone::Beneath(unusable),
         })
     }
 
@@ -257,7 +323,7 @@ impl Validation {
         let (apex, settled) = self.zone_of(&parent)?;
         let (parent_keys, keys_ttl) = match settled {
             Settled::Secure { keys, ttl } => (keys, ttl),
-            Settled::Unusable(unusable) => return Ok(Cut::Unusable(unusable)),
+            Settled::Unusable(unusable) => return Ok(Cut::Beneath(unusable)),
         };
         let message = match self.fetch(name, RecordType::DS)? {
             Ok(message) => message,
@@ -309,7 +375,10 @@ impl Validation {
             .or_else(|| dname_of(answer, name));
         if let Some(set) = rewrite {
             return match self.verify_set(set, answer, authority, apex, keys, keys_ttl) {
-                Ok(_) => Cut::Inside(apex.clone()),
+                Ok(ttl) => Cut::Inside {
+                    apex: apex.clone(),
+                    ttl,
+                },
                 Err(unusable) => Cut::Unusable(unusable),
             };
         }
@@ -330,9 +399,10 @@ impl Validation {
                     reason: InsecureReason::OptOut,
                     ttl: proof.ttl,
                 }),
-                Fact::NameError { .. } | Fact::NoData | Fact::WildcardNoData => {
-                    Cut::Inside(apex.clone())
-                }
+                Fact::NameError { .. } | Fact::NoData | Fact::WildcardNoData => Cut::Inside {
+                    apex: apex.clone(),
+                    ttl: proof.ttl,
+                },
                 _ => Cut::Unusable(Unusable::Failed(Failure::bogus(
                     InfoCode::DNSSEC_BOGUS,
                     format!("{name} DS: the proof is of something else"),

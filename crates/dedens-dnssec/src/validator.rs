@@ -30,9 +30,12 @@
 //! The chain of trust runs top-down from the closest trust anchor to the owner of each `RRset`: the validator
 //! asks the DS of each label then, where there is a zone, its DNSKEY (RFC 4035 §5.2, §5.3.1). It walks to the
 //! owner, never to the signer the RRSIGs name, which a forger writes: an `RRset` is authentic when a key of the
-//! zone of its owner verifies it. The price is one DS question for each label below the last zone, that a cache
-//! of keys (06b) pays once. The outcome for each zone is written by one private function, `settle`, and read
-//! by one other, `zone_of`; an outcome that depends on the caller (indeterminate) is never written.
+//! zone of its owner verifies it. The price is one DS question for each label below the last zone, that the cache
+//! of keys pays once (D86). The outcome for each zone is written by one private function, `settle`, and read
+//! by one other, `zone_of`; an outcome that depends on the caller (indeterminate) is never written. The cache is
+//! the validator's, shared by all its validations, which is why anchors and limits are fixed for a validator:
+//! change them by building another, and its cache starts empty. What goes in is only what the data decided: keys
+//! and proofs that verified, for the TTL they carry, and a bogus zone for 60 s.
 //!
 //! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
 //! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
@@ -45,6 +48,7 @@
 //! otherwise) and does not take the names it chases for entropy (0x20): they come from the server. A referral is no answer: [`Validator::start_referral`]
 //! judges it by its delegation alone, and never gives Secure for it.
 
+mod cache;
 mod chain;
 mod response;
 mod section;
@@ -56,6 +60,7 @@ use std::sync::Arc;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Class, Flags, Message, Name, Question, RecordType};
 
+use self::cache::KeyCache;
 use self::chain::Zone;
 use self::response::Parsed;
 pub use self::verdict::{Delegation, InsecureReason, Verdict};
@@ -69,7 +74,7 @@ use crate::denial::MaxIterations;
 pub struct Limits {
     /// Questions one validation may ask the caller: 64 (D75). The walk asks the DS of each label below the
     /// last zone, so an IPv6 reverse name of 34 labels takes about 40 with the DNSKEY of each zone, and a few
-    /// CNAMEs more; the key cache of 06b answers the walk of a name seen before from memory. Past the limit the
+    /// CNAMEs more; the key cache answers the walk of a name seen before from memory (D86). Past the limit the
     /// verdict is [`Verdict::Indeterminate`].
     pub questions: usize,
     /// Labels of a name below its closest trust anchor: 127 (D75), the most a name has, so that the limit
@@ -83,6 +88,9 @@ pub struct Limits {
     pub budget: Budget,
     /// The NSEC3 iterations above which a zone's denials are insecure (RFC 9276 §3.2, D74).
     pub iterations: MaxIterations,
+    /// Entries of the validator's key cache, in each of its two tables, zones and names that are no zone
+    /// cut: 4096 (D86). Full, a table drops the entry that stops holding first. 0 turns the cache off.
+    pub key_cache: usize,
 }
 
 impl Default for Limits {
@@ -92,6 +100,7 @@ impl Default for Limits {
             depth: 127,
             budget: Budget::new(Verifications(128), Budget::DEFAULT_NSEC3_HASHES),
             iterations: MaxIterations::default(),
+            key_cache: 4096,
         }
     }
 }
@@ -100,9 +109,11 @@ impl Default for Limits {
 struct Config {
     anchors: TrustAnchors,
     limits: Limits,
+    cache: KeyCache,
 }
 
-/// The trust anchors and the limits, which validations share.
+/// The trust anchors, the limits and the cache of keys, which validations share: clones of a validator share
+/// them, and a validator with other anchors or limits is a new one, with a new cache (D86).
 #[derive(Debug, Clone)]
 pub struct Validator {
     config: Arc<Config>,
@@ -112,8 +123,13 @@ impl Validator {
     /// A validator whose chains of trust start at `anchors`, within `limits`.
     #[must_use]
     pub fn new(anchors: TrustAnchors, limits: Limits) -> Self {
+        let cache = KeyCache::new(limits.key_cache);
         Self {
-            config: Arc::new(Config { anchors, limits }),
+            config: Arc::new(Config {
+                anchors,
+                limits,
+                cache,
+            }),
         }
     }
 
@@ -174,6 +190,7 @@ impl Validator {
             question,
             response,
             now: u32::from_be_bytes([a, b, c, d]),
+            at: now,
             answers: HashMap::new(),
             asked: 0,
             pending: None,
@@ -274,13 +291,15 @@ pub struct Validation {
     mode: Mode,
     /// The time, in seconds modulo 2^32.
     now: u32,
+    /// The time as given, in Unix seconds: the key cache's.
+    at: u64,
     /// The responses given, by question; `None` for a question that got none.
     answers: HashMap<(Name<'static>, RecordType), Option<Arc<Message<'static>>>>,
     asked: usize,
     pending: Option<Question<'static>>,
     budget: Budget,
-    /// What the walk found of each name that is, or sits below, an apex: written by `settle` only, read by
-    /// `zone_of` only, never an outcome of a limit (06b caches these).
+    /// What the walk found of each name that is, or sits below, an apex: written by `settle` only (and
+    /// copied from the key cache by `zone_of`), read by `zone_of` only, never an outcome of a limit.
     zones: HashMap<Name<'static>, Zone>,
     done: Option<Verdict>,
 }
