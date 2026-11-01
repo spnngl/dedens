@@ -37,19 +37,19 @@ struct Catalog {
     providers: Vec<Provider>,
 }
 
-/// Per category, a name the resolvers blocking it block and the others answer.
+/// Per category, names a resolver blocking it blocks at least one of and the others answer.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Canaries {
-    ads: String,
-    malware: String,
-    adult: String,
-    gambling: String,
-    social: String,
+    ads: Vec<String>,
+    malware: Vec<String>,
+    adult: Vec<String>,
+    gambling: Vec<String>,
+    social: Vec<String>,
 }
 
 impl Canaries {
-    fn of(&self, block: Block) -> &str {
+    fn of(&self, block: Block) -> &[String] {
         match block {
             Block::Ads => &self.ads,
             Block::Malware => &self.malware,
@@ -241,10 +241,12 @@ fn unique<T: Eq + std::hash::Hash>(items: impl IntoIterator<Item = T>) -> bool {
 fn catalog_is_well_formed() {
     let catalog = catalog();
     for block in Block::ALL {
-        let name = catalog.canaries.of(block);
+        let names = catalog.canaries.of(block);
         assert!(
-            !name.is_empty() && !name.ends_with('.'),
-            "canary of {}: {name:?}",
+            !names.is_empty()
+                && unique(names)
+                && names.iter().all(|n| !n.is_empty() && !n.ends_with('.')),
+            "canaries of {}: {names:?}",
             block.name()
         );
     }
@@ -328,8 +330,13 @@ enum Outcome {
 enum Check {
     /// Its `expect`: the rcode.
     Expect,
-    /// Whether the resolver blocks the name (`blocked`) or answers it; `pages` are its block pages.
-    Blocks { blocked: bool, pages: Vec<Ipv4Addr> },
+    /// Whether the resolver blocks the name (`blocked`) or answers it; `pages` are its block pages. `category`
+    /// is the id of the resolver's category: one of its canaries blocked is enough.
+    Blocks {
+        blocked: bool,
+        pages: Vec<Ipv4Addr>,
+        category: String,
+    },
 }
 
 /// A query of the run and what it checks.
@@ -383,7 +390,7 @@ fn judge(report: &Value, check: &Check) -> Outcome {
                 (false, false) => Outcome::Failed(failures.join("; ")),
             }
         }
-        Check::Blocks { blocked, pages } => {
+        Check::Blocks { blocked, pages, .. } => {
             let addresses: Vec<Ipv4Addr> = report["answer"]
                 .as_array()
                 .into_iter()
@@ -481,14 +488,17 @@ fn every_endpoint_answers() {
                 });
             }
             for block in Block::ALL {
-                let id = format!("{}.{}.blocks.{}", p.id, r.id, block.name());
-                asks.push(Ask {
-                    query: query(&id, probe, catalog.canaries.of(block), None),
-                    check: Check::Blocks {
-                        blocked: r.blocks.contains(&block),
-                        pages: r.block_pages.clone(),
-                    },
-                });
+                let category = format!("{}.{}.blocks.{}", p.id, r.id, block.name());
+                for name in catalog.canaries.of(block) {
+                    asks.push(Ask {
+                        query: query(&format!("{category}.{name}"), probe, name, None),
+                        check: Check::Blocks {
+                            blocked: r.blocks.contains(&block),
+                            pages: r.block_pages.clone(),
+                            category: category.clone(),
+                        },
+                    });
+                }
             }
         }
     }
@@ -531,23 +541,7 @@ fn every_endpoint_answers() {
         })
         .collect();
 
-    let mut table = String::new();
-    let mut failures = 0;
-    for ask in &asks {
-        let id = ask.id();
-        let (status, detail) = match (outcomes.get(id), retried.get(id)) {
-            (Some(Outcome::Passed), _) => ("ok", ""),
-            (Some(Outcome::Censored), _) | (_, Some(Outcome::Censored)) => {
-                ("censored", "EDE 16, refused here by law")
-            }
-            (Some(Outcome::Failed(error)), Some(Outcome::Passed)) => ("retried", error.as_str()),
-            (None, Some(Outcome::Passed)) => ("retried", "no output"),
-            (_, Some(Outcome::Failed(error))) => ("FAILED", error.as_str()),
-            (_, None) => ("FAILED", "no output"),
-        };
-        failures += usize::from(status == "FAILED");
-        writeln!(table, "{status:8} {id} {detail}").expect("a String takes text");
-    }
+    let (table, failures) = report(&asks, &outcomes, &retried);
     println!("{table}");
     assert_eq!(
         failures,
@@ -555,4 +549,57 @@ fn every_endpoint_answers() {
         "{failures} of {} queries failed:\n{table}",
         asks.len()
     );
+}
+
+/// The table of `asks`, a line per query with its status, after the first run (`outcomes`) and the retries
+/// (`retried`), and how many failed.
+fn report(
+    asks: &[Ask],
+    outcomes: &BTreeMap<String, Outcome>,
+    retried: &BTreeMap<String, Outcome>,
+) -> (String, usize) {
+    let rows: Vec<(&Ask, &str, &str)> = asks
+        .iter()
+        .map(|ask| {
+            let (status, detail) = match (outcomes.get(ask.id()), retried.get(ask.id())) {
+                (Some(Outcome::Passed), _) => ("ok", ""),
+                (Some(Outcome::Censored), _) | (_, Some(Outcome::Censored)) => {
+                    ("censored", "EDE 16, refused here by law")
+                }
+                (Some(Outcome::Failed(error)), Some(Outcome::Passed)) => {
+                    ("retried", error.as_str())
+                }
+                (None, Some(Outcome::Passed)) => ("retried", "no output"),
+                (_, Some(Outcome::Failed(error))) => ("FAILED", error.as_str()),
+                (_, None) => ("FAILED", "no output"),
+            };
+            (ask, status, detail)
+        })
+        .collect();
+    // The categories blocked as claimed: one canary blocked is enough.
+    let blocking: HashSet<&str> = rows
+        .iter()
+        .filter_map(|(ask, status, _)| match &ask.check {
+            Check::Blocks {
+                blocked: true,
+                category,
+                ..
+            } if *status != "FAILED" => Some(category.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut table = String::new();
+    let mut failures = 0;
+    for (ask, mut status, mut detail) in rows {
+        if let Check::Blocks { category, .. } = &ask.check
+            && status == "FAILED"
+            && blocking.contains(category.as_str())
+        {
+            (status, detail) = ("ok", "answered, another canary blocked");
+        }
+        failures += usize::from(status == "FAILED");
+        writeln!(table, "{status:8} {} {detail}", ask.id()).expect("a String takes text");
+    }
+    (table, failures)
 }
