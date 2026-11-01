@@ -782,14 +782,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     is followed. A request over `block1_size` goes in Block1 blocks, 2.31 answered by the next one, the server's
     smaller size followed. A follow-up for a Block2 carries the request's payload when the request went whole, as
     a FETCH body is part of the cache key (RFC 8132 §2) and a server keeping nothing needs the query again;
-    aiocoap's client sends none, and its server does not need it. Block1 requests' follow-ups carry none
-    (RFC 7959 Figure 10).
+    aiocoap's and libcoap's clients send none, and their servers do not need it (libcoap's
+    `coap-server` answers our follow-ups with the body as well). Block1 requests' follow-ups carry none (RFC 7959
+    Figure 10).
   - `server::Dedup` remembers the reply to a confirmable request by (endpoint, message ID) for EXCHANGE_LIFETIME
     (247 s), at most a given number of entries, the oldest dropped first; a duplicate gets the same reply.
   - `docpath` is `SvcParam::DocPath(Vec<Box<[u8]>>)` (RFC 9953 §3.2, key 10): the wire is `alpn`'s with empty
     segments allowed, the text a comma-separated list, no segment the root path. One empty segment prints in the
     `key10="\000"` form, a single empty item being no different from the empty list in the text.
-  - Tests read datagrams captured from aiocoap (`tests/testdata/coap/`, `capture.nu`), libcoap not being here.
+  - Tests read datagrams captured from aiocoap (`capture.py`) and from libcoap 4.3.5b (`capture_libcoap.py`, its
+    `coap-server` and `coap-client` through a logging proxy, `tests/testdata/coap/`; the real DNS answers of 2808 and
+    1280 bytes it blocks are DoH captures). Checked live against libcoap: our client against `coap-server` (FETCH
+    of a stored DNS answer, Block2 in 3 blocks of 1024, Max-Age 60 by default), and `coap-client` against
+    `dedensd` (below, D81). Taken from the captures: libcoap's client sends an empty token, Uri-Port and Request-Tag
+    on every request; its server blocks at 1024 by itself with ETag and Size2, answers a Block1 PUT 2.31 per block
+    then 2.01, sends a separate response as an empty ACK then a CON, a NON request a NON response; a lost request or
+    ACK is sent again after 2.4 s. Not checked: DTLS, OSCORE (not built), Observe.
 - D81 (completes D80) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
   `dedensd` and `dedens-net` (D69): the client `Transport::Coap` (`dedens_net::doc`), the `dedens` options
   `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path unless given), the `dedensd` listener
@@ -808,12 +816,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     4.13 a body in Block1 blocks (a server keeps no request state, a query fits one datagram). A DNS failure
     upstream is the pipeline's SERVFAIL in a 2.05 (§4.3.1). The Max-Age is the least TTL, which is taken from every
     TTL (§4.3.2, the RECOMMENDED algorithm). A response over 1024 bytes goes in Block2 blocks of 1024, each cut
-    again from a new query (the follow-up carries it, D80), or of the size a request asks. CON requests are
+    again from a new query (the follow-up carries it, D80), or of the size a request asks. libcoap's and aiocoap's
+    clients send no body with the follow-ups, so a FETCH or POST with no body that asks for a Block2 past the first
+    (`doc::Query::Block`) is answered from the response sent in blocks, kept by (endpoint, Request-Tag, RFC 9175
+    §3.2; empty if none) for EXCHANGE_LIFETIME, 64 per socket (`server::Blocks`): found by libcoap's `coap-client`
+    getting 4.00 for the second block of a 2649-byte answer, as the RFCs do not say how a server finds the response
+    again. No such response kept is 4.00. CON requests are
     deduplicated (`Dedup`, 4096 entries, EXCHANGE_LIFETIME) and answered by a piggybacked ACK, never a separate
     response; a NON request gets a NON response; a ping gets a RST. The path is read as written, no
     percent-decoding; `?` and `#` in it are refused at configuration.
   - Unprotected: `dedensd` logs a warning at start for each `coap://` address, NOT RECOMMENDED (§6). DTLS and
     OSCORE are not built; the proxy parts (§9.2 redirects, §9.3 hop limit) are ignored: see `docs/TODECIDE.md`.
+  - Checked live: libcoap 4.3.5b's `coap-client` against `dedensd` (`listen: ['coap://127.0.0.1:56840/dns/query']`,
+    forwarding to 8.8.8.8): FETCH of a small query (`gmail.com MX`) 2.05 with the content format and a Max-Age;
+    a 2649-byte answer (`cloudflare.com TXT`) in 3 blocks of 1024 and with `-b 64`, whole; NON gets NON; a lost
+    request (`-l 60%`) is sent again and answered; 4.04 for another path or the root, 4.15 for another content
+    format, 4.06 for another accept, 4.05 for GET. A lost ACK (a duplicate) is checked by the test only.
   - Not done: GET with `?dns=`, which the RFC does not define; a `coap://` upstream of the `forward` stage; the
     discovery by SVCB `docpath` and `rt=core.dns` (§3).
 

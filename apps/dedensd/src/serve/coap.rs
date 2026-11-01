@@ -3,8 +3,9 @@
 //!
 //! A CON request is answered with an ACK carrying the response, at whatever time it is ready: the client goes on
 //! retransmitting until then, and a retransmission is not asked again (RFC 7252 §4.5). A NON request gets a NON
-//! response. There is no separate response, and no state for Block1: a request in blocks is refused 4.13, and a
-//! response in blocks is cut again from the response each request gets.
+//! response. There is no separate response, and no state for Block1: a request in blocks is refused 4.13. A
+//! response in blocks is cut again from the response each request gets, and kept to cut the next blocks from for the
+//! clients that ask for them without the query ([`Blocks`]).
 
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
@@ -16,8 +17,9 @@ use std::time::Instant;
 use compio::BufResult;
 use compio::net::UdpSocket;
 use compio::runtime::spawn;
-use dedens_net::coap::doc::{error, path_segments, query, response};
-use dedens_net::coap::server::{Dedup, EXCHANGE_LIFETIME, Seen};
+use dedens_net::coap::block::Block;
+use dedens_net::coap::doc::{Query, error, path_segments, query, response};
+use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, Type};
 use dedens_server::Transport;
 
@@ -29,12 +31,16 @@ const MAX_DATAGRAM: usize = 65535;
 /// CON requests remembered per socket to tell a retransmission from a new request.
 const DEDUP_CAPACITY: NonZeroUsize = NonZeroUsize::new(4096).expect("4096 is not zero");
 
+/// Responses in blocks remembered per socket for the requests of the next blocks.
+const BLOCKS_CAPACITY: NonZeroUsize = NonZeroUsize::new(64).expect("64 is not zero");
+
 /// What the tasks of one socket share.
 struct Coap {
     socket: UdpSocket,
     /// The path `DoC` is served at.
     path: Vec<Box<[u8]>>,
     dedup: RefCell<Dedup>,
+    blocks: RefCell<Blocks>,
     /// The message ID of the next NON message.
     ids: Cell<u16>,
 }
@@ -67,10 +73,25 @@ impl Coap {
         self.send(peer, datagram).await;
     }
 
-    /// Answers `request` with the DNS response `wire`.
+    /// Answers `request` with the DNS response `wire`, keeping it if the reply is its first block of several.
     async fn respond(&self, request: &Message, peer: SocketAddr, wire: Vec<u8>) {
+        let kept = wire.clone();
         let reply = response(request, self.next_id(), wire)
             .unwrap_or_else(|code| error(request, self.next_id(), code));
+        if reply
+            .options
+            .block2()
+            .ok()
+            .flatten()
+            .is_some_and(Block::more)
+        {
+            self.blocks.borrow_mut().keep(
+                peer,
+                request.options.request_tag(),
+                Instant::now(),
+                kept,
+            );
+        }
         self.reply(request, peer, reply).await;
     }
 }
@@ -81,6 +102,7 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
         socket,
         path: path_segments(&path),
         dedup: RefCell::new(Dedup::new(EXCHANGE_LIFETIME, DEDUP_CAPACITY)),
+        blocks: RefCell::new(Blocks::new(EXCHANGE_LIFETIME, BLOCKS_CAPACITY)),
         ids: Cell::new(0),
     });
     let mut buf = Vec::with_capacity(MAX_DATAGRAM);
@@ -140,10 +162,23 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
 }
 
 /// Answers one request: the error [`query`] finds in it, else the pipeline's reply, or 4.00 when the pipeline
-/// drops it, a body that is not a DNS message (RFC 9953 §4.3.1).
+/// drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a later block is answered from the
+/// response kept for it, or 4.00.
 async fn handle(coap: Rc<Coap>, thread: Rc<Thread>, request: Message, peer: SocketAddr) {
     let query = match query(&request, &coap.path) {
-        Ok(query) => query,
+        Ok(Query::Dns(query)) => query,
+        Ok(Query::Block) => {
+            let kept = coap
+                .blocks
+                .borrow_mut()
+                .get(peer, request.options.request_tag(), Instant::now())
+                .map(<[u8]>::to_vec);
+            if let Some(wire) = kept {
+                return coap.respond(&request, peer, wire).await;
+            }
+            let reply = error(&request, coap.next_id(), Code::BAD_REQUEST);
+            return coap.reply(&request, peer, reply).await;
+        }
         Err(code) => {
             let reply = error(&request, coap.next_id(), code);
             return coap.reply(&request, peer, reply).await;

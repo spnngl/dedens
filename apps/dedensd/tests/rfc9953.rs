@@ -45,12 +45,22 @@ fn fetch(id: u16, query: &[u8]) -> Message {
     }
 }
 
-/// The datagram `server` sends back for `request`, `None` after a second of silence.
-fn send(server: SocketAddr, request: &Message) -> Option<Message> {
+/// A UDP socket that waits a second for a datagram.
+fn client() -> UdpSocket {
     let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
     socket
         .set_read_timeout(Some(Duration::from_secs(1)))
         .expect("a timeout");
+    socket
+}
+
+/// The datagram `server` sends back for `request`, `None` after a second of silence.
+fn send(server: SocketAddr, request: &Message) -> Option<Message> {
+    send_from(&client(), server, request)
+}
+
+/// As [`send`], from `socket`: the server tells the clients by address.
+fn send_from(socket: &UdpSocket, server: SocketAddr, request: &Message) -> Option<Message> {
     socket
         .send_to(&request.to_vec().expect("it writes"), server)
         .expect("sent");
@@ -262,6 +272,49 @@ fn s4_3_a_large_response_goes_in_blocks() {
     // The body is the DNS response, a message of over 1024 bytes.
     assert!(whole.len() > 1024, "{} bytes", whole.len());
     assert_eq!(decode(&whole).questions.len(), 1);
+}
+
+/// RFC 8132 §2.5, RFC 7959 §2.4: a client that asks for the next blocks without the body of its FETCH (libcoap and
+/// aiocoap do, `tests/testdata/coap/libcoap_fetch_doc_block2.txt`) gets them, found by its `Request-Tag`; any other
+/// request of the kind has no body to answer.
+#[test]
+fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
+    let upstream = Responder::start(&["txt_large"]);
+    let server = serving(upstream.addr);
+    let query = query_for(&captured("txt_large"), 0);
+    let socket = client();
+    let ask = |request: &Message| send_from(&socket, server.addr, request).expect("a response");
+    let tagged = |id, tag: &[u8], block: Option<Block>| {
+        let mut request = fetch(id, if block.is_some() { &[] } else { &query });
+        request.options.insert(OptionNumber::REQUEST_TAG, tag);
+        if let Some(block) = block {
+            request.options.set_block2(block);
+        }
+        request
+    };
+    let next = |num| Block::new(num, false, BlockSize::MAX);
+    let first = ask(&tagged(1, &[1, 2], None));
+    let second = ask(&tagged(2, &[1, 2], next(1)));
+    assert_eq!(second.code, Code::CONTENT);
+    let block = second.options.block2().expect("a Block2").expect("one");
+    assert_eq!((block.num(), block.more()), (1, false));
+    let mut body = first.payload;
+    body.extend_from_slice(&second.payload);
+    assert_eq!(decode(&body).questions.len(), 1);
+    // Asked for again, and once more in smaller blocks.
+    assert_eq!(ask(&tagged(3, &[1, 2], next(1))).payload, second.payload);
+    let small = Block::new(3, false, BlockSize::new(2).expect("64 bytes"));
+    assert_eq!(ask(&tagged(4, &[1, 2], small)).code, Code::CONTENT);
+    // Another tag, or no tag, has no response kept; the first block is no follow-up.
+    for (id, tag, block) in [
+        (5, &[9][..], next(1)),
+        (6, &[][..], next(1)),
+        (7, &[1, 2][..], next(0)),
+    ] {
+        let response = ask(&tagged(id, tag, block));
+        assert_eq!(response.code, Code::BAD_REQUEST, "{id}");
+    }
+    assert_eq!(upstream.queries(), 1);
 }
 
 /// RFC 9953 §4.3.2: the TTLs in the response, less their least, and that least as the Max-Age, reach the client
