@@ -334,7 +334,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
   `dnssec-failed.org` bogus with EDE 9.
 
-- D86 (amends D75, D76) The key cache: what a `Validator`'s validations learn of zones is kept for the
+- D86 (amends D75, D76, D77) The key cache: what a `Validator`'s validations learn of zones is kept for the
   validations after them, in `validator/cache.rs`. It is written by `settle` and read by `zone_of` (D75), nothing
   else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
   `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
@@ -397,8 +397,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   slows 5x against the lock-free `validate_cold`'s 2.2x (`benchmarks.md`: in a tight loop of 4.6 µs validations the
   lock shows, which real validations, far fewer than one per cache miss, do not). Measured: a warm validation of
   `alg8_a` is 4.6 µs against 106 µs, asking no question (the first figures, 54 and 168 µs, counted a file read
-  of the bench). No
-  singleflight: concurrent misses on one zone each ask and verify, which costs work and nothing more (TODECIDE).
+  of the bench). Singleflight (`apps/dedensd/src/flights.rs`, the layer that sends): the questions of the validator
+  (`Upstream::probe`, not the client's own) in flight are keyed by server, UDP or not (a truncated UDP answer is
+  no TCP one) and question, in a map shared by the threads and kept across reloads (`Current`). The first query to
+  need one sends it; the others wait for its response and hand it to `Pipeline::receive` as their own. The sender
+  publishes after its own `receive`, which settles what the response proved in the key cache, so a query that
+  asks after finds the zone cached; one that was already walking the zone verifies it again (a pending zone in the
+  validator would make `step()` wait, which the sans-IO validator does not say: TODECIDE). A sender that fails
+  to send, or is cancelled, frees the others to ask; one whose server did not answer hands the others that
+  failure, as theirs. The validator crate is unchanged. Tests: `flights.rs` unit tests, `tests/flights.rs` of
+  `dedensd`: 8 clients make one DNSKEY question of the root, not 8.
   Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
   clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s
   and not renewed, a DNSKEY answer that proves nothing, or that `start` was given, is never kept, insecure and no-cut

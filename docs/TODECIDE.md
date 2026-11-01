@@ -31,10 +31,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   Default: kept (it is what the same answerer forces on one validation anyway); a `Next::Retry` asking the DNSKEY
   of another server or over TCP before a bogus is stored, or no bogus entry at all (the 60 s only spared repeated
   failed walks), when a caller has several servers.
-- Key cache, lock and singleflight (D86): one `Mutex` over three tables, which a hit takes too (it moves the entry in
-  the LRU order), and concurrent misses on one zone each ask and verify. Default: as is; shards by name, an `RwLock`
-  with a lazier LRU, or one in-flight lookup per zone when `dedensd`'s load tests show the lock contended or a cold
-  start's duplicate work costing.
+- Key cache, lock (D86): one `Mutex` over three tables, which a hit takes too (it moves the entry in the LRU
+  order). Default: as is; shards by name, or an `RwLock` with a lazier LRU, when `dedensd`'s load tests show the
+  lock contended.
+- Singleflight (D86): the validator's questions in flight are shared, but each query still verifies what it
+  learns, and the client's own question is each query's. A query walking a zone another walks verifies the zone
+  again. Default: as is; a `Next::Wait` (the validator asks the caller to park on a zone another validation
+  settles), or coalescing the client's question of a forwarder that has no cache stage, when a load test shows the
+  duplicate checks or upstream traffic costing.
 - ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
   AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
   asks for it.

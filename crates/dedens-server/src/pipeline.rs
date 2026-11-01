@@ -7,7 +7,8 @@ use std::time::Duration;
 use dedens_cache::{Cache, Checked, Key, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{
-    Class, Decoded, Flags, Header, Message, Opcode, Query, Rcode, RecordType, Transport, Ttl,
+    Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
+    Ttl,
 };
 
 use crate::cache::{self, Looked, Read};
@@ -442,6 +443,14 @@ impl Upstream {
             Some(check) => forward::probe(check.asking()),
             None => forward::request(&Client::of(&query, self.transport), question, self.validate),
         }
+    }
+
+    /// The question of the validator that [`Upstream::request`] asks, if it is one: not the client's own. Two
+    /// queries asking it of the same server are asking the same thing, whoever they validate for, and the answer
+    /// to one serves the other.
+    #[must_use]
+    pub fn probe(&self) -> Option<&Question<'static>> {
+        self.check.as_deref().map(Check::asking)
     }
 
     /// The server to send it to.
