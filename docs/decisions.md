@@ -785,8 +785,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     acknowledges), RST, duplicates and a response of an unknown token (RST) follow RFC 7252 §4-5. A separate
     response is waited for `separate_timeout` (93 s, MAX_TRANSMIT_WAIT: the RFC gives none).
   - Block-wise (RFC 7959): Block2 responses are reassembled up to 65535 bytes, a follow-up asking for the next
-    block in a new message ID and the same token, the ETag compared across blocks; the server's smaller block size
-    is followed. A request over `block1_size` goes in Block1 blocks, 2.31 answered by the next one, the server's
+    block in a new message ID and the same token; the server's smaller block size is followed. The ETag is
+    compared across blocks (a change is `Failure::ETagChanged`), and `Params::require_etag` (off by default, the
+    RFC only asks the server for one) makes a first block with More set and no ETag `Failure::MissingETag`: without
+    it two versions of a body would be put together unseen. A request over `block1_size` goes in Block1 blocks, 2.31 answered by the next one, the server's
     smaller size followed. A follow-up for a Block2 carries the request's payload when the request went whole, as
     a FETCH body is part of the cache key (RFC 8132 §2) and a server keeping nothing needs the query again;
     aiocoap's and libcoap's clients send none, and their servers do not need it (libcoap's
@@ -811,7 +813,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the client's `request`, the server's
   `query`, `response`, `error`.
   - Client: one confirmable FETCH per query on a UDP socket of its own, DNS ID 0 (§4.2.2), Content-Format and
-    Accept 553, no Uri-Host or Uri-Port (the server is the one named). The retransmission is CoAP's (RFC 7252
+    Accept 553, no Uri-Host or Uri-Port (the server is the one named). A response in blocks must carry an ETag
+    and keep it (`require_etag`, D80): a server that sends none is refused beyond the first block. The retransmission is CoAP's (RFC 7252
     §4.2), so the DNS tries are 1 (§4.2). The Max-Age of a 2.05, 60 s when absent, is added to each TTL, to at most
     2^31 - 1 (§4.3.2); a response in blocks is put together. A code other than 2.05, another content format and a
     body that is no DNS message are errors of the exchange (§4.3.1), not responses. Over `+trace`, `+tcp`, `+tls`,
@@ -823,7 +826,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     4.13 a body in Block1 blocks (a server keeps no request state, a query fits one datagram). A DNS failure
     upstream is the pipeline's SERVFAIL in a 2.05 (§4.3.1). The Max-Age is the least TTL, which is taken from every
     TTL (§4.3.2, the RECOMMENDED algorithm). A response over 1024 bytes goes in Block2 blocks of 1024, each cut
-    again from a new query (the follow-up carries it, D80), or of the size a request asks. libcoap's and aiocoap's
+    again from a new query (the follow-up carries it, D80), or of the size a request asks; each block carries
+    an ETag, the FNV-1a hash (8 bytes, written out so that servers of two versions agree) of the body as cut, so
+    TTLs less their least: an answer that changed between two blocks fails the client's transfer (RFC 7959 §2.4),
+    its Max-Age, which moves with the clock, not part of it. libcoap's and aiocoap's
     clients send no body with the follow-ups, so a FETCH or POST with no body that asks for a Block2 past the first
     (`doc::Query::Block`) is answered from the response sent in blocks, kept by (endpoint, Request-Tag, RFC 9175
     §3.2; empty if none) for EXCHANGE_LIFETIME, 64 per socket (`server::Blocks`): found by libcoap's `coap-client`

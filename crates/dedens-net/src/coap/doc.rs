@@ -123,8 +123,8 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, 
 /// The answer to `request` that carries the DNS response `dns` (RFC 9953 §4.3): 2.05 with the content format
 /// `application/dns-message`, its Max-Age the least TTL of `dns`, subtracted from each TTL of it (§4.3.2); the
 /// block the request asks for when `dns` is over [`BLOCK_SIZE`] or the request asks for blocks, Block2 (§4.3, RFC
-/// 7959 §2.4). A block is cut from `dns` as it stands now, so the same query asked block by block gets the same
-/// bodies as long as the answer does not change: the TTLs, less their least, do not.
+/// 7959 §2.4), with the [`etag`] of the body. A block is cut from `dns` as it stands now, so the same query asked
+/// block by block gets the same bodies as long as the answer does not change: the TTLs, less their least, do not.
 ///
 /// A CON request gets an ACK carrying the response, a NON one a NON response with message ID `id` (RFC 7252
 /// §5.2.3).
@@ -142,9 +142,26 @@ pub fn response(request: &Message, id: u16, mut dns: Vec<u8>) -> Result<Message,
     reply.options.set_max_age(max_age);
     if let Some(block) = slice.block {
         reply.options.set_block2(block);
+        reply.options.insert(OptionNumber::ETAG, etag(&dns));
     }
     reply.payload = slice.payload.to_vec();
     Ok(reply)
+}
+
+/// The `ETag` of the DNS response `dns`, as [`response`] cuts it into blocks (TTLs less their least, so not the
+/// Max-Age): the FNV-1a hash of it, 8 bytes. A client putting blocks together compares it (RFC 7959 §2.4, RFC 7252
+/// §5.10.6). It tells versions of a body apart, nothing more; an attacker who can forge it can forge the blocks.
+/// The hash is written out, not `DefaultHasher`, whose algorithm may change with the compiler, so that servers of
+/// two versions behind one address agree.
+#[must_use]
+pub fn etag(dns: &[u8]) -> [u8; 8] {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    dns.iter()
+        .fold(OFFSET, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+        })
+        .to_be_bytes()
 }
 
 /// The answer to `request` with the error `code` and no body (RFC 9953 §4.3.1), as [`response`] sends it.

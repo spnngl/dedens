@@ -94,14 +94,12 @@ async fn run(
         .await
         .map_err(DocError::Udp)?;
     socket.connect(server).await.map_err(DocError::Udp)?;
-    let step = Exchange::start(
-        request,
-        server,
-        Params::default(),
-        first_id,
-        seed,
-        Instant::now(),
-    );
+    // Blocks of two versions of the response must not be put together (D81).
+    let params = Params {
+        require_etag: true,
+        ..Params::default()
+    };
+    let step = Exchange::start(request, server, params, first_id, seed, Instant::now());
     let mut buf = Vec::with_capacity(MAX_DATAGRAM);
     let Step { mut send, mut next } = step;
     loop {
