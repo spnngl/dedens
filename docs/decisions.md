@@ -801,7 +801,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `coap-server` answers our follow-ups with the body as well). Block1 requests' follow-ups carry none (RFC 7959
     Figure 10).
   - `server::Dedup` remembers the reply to a confirmable request by (endpoint, message ID) for EXCHANGE_LIFETIME
-    (247 s), at most a given number of entries, the oldest dropped first; a duplicate gets the same reply.
+    (247 s), at most a given number of entries, the oldest dropped first, only for a message that is new; a duplicate
+    gets the same reply.
+  - Fuzz: `parse_coap` reads arbitrary datagrams; `coap_doc` is stateful, an `Exchange` against a model of the
+    listener (`doc::query` and `response`, a `Dedup`, the Block1 and Block2 sizes, a body that changes between two
+    blocks, retransmission, duplicates, time, bytes of any kind for a reply) holding that a body is one of the
+    server's, whole.
   - `docpath` is `SvcParam::DocPath(Vec<Box<[u8]>>)` (RFC 9953 §3.2, key 10): the wire is `alpn`'s with empty
     segments allowed, the text a comma-separated list, no segment the root path. One empty segment prints in the
     `key10="\000"` form, a single empty item being no different from the empty list in the text.

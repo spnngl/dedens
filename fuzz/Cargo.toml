@@ -184,6 +184,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "coap_doc"
+path = "fuzz_targets/coap_doc.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 
 # The workspace's lint tables, copied: this crate is a workspace of its own.
