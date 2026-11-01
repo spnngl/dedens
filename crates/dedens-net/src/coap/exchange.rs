@@ -58,6 +58,9 @@ pub struct Params {
     pub block2_size: Option<BlockSize>,
     /// The most a response body may hold, in bytes.
     pub max_body: usize,
+    /// Whether a response in blocks must carry an `ETag`: without one, blocks of two versions of the body cannot
+    /// be told apart (RFC 7959 §2.4 only asks the server to send one, and the client to compare when it is there).
+    pub require_etag: bool,
 }
 
 impl Default for Params {
@@ -70,6 +73,7 @@ impl Default for Params {
             block1_size: BlockSize::MAX,
             block2_size: None,
             max_body: Reassembly::DEFAULT_LIMIT,
+            require_etag: false,
         }
     }
 }
@@ -127,6 +131,9 @@ pub enum Failure {
     /// The `ETag` changed between blocks: the body changed meanwhile (RFC 7959 §2.4).
     #[error("the ETag changed between the blocks of the response")]
     ETagChanged,
+    /// A response in blocks without an `ETag`, which [`Params::require_etag`] asked for.
+    #[error("the response in blocks has no ETag")]
+    MissingETag,
     /// A message cannot be written.
     #[error("cannot write the request")]
     Encode(#[from] WriteError),
@@ -429,6 +436,9 @@ impl Exchange {
                 return finish(response.code, response.options, response.payload, send);
             }
             (None, Some(block)) if block.num() == 0 => {
+                if self.params.require_etag && block.more() && etag.is_none() {
+                    return Step::done(Err(Failure::MissingETag), send);
+                }
                 let mut options = response.options;
                 options.remove(OptionNumber::BLOCK2);
                 let first = Response {

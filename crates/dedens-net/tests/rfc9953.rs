@@ -12,8 +12,9 @@ use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::block::{Block, BlockSize, slice};
-use dedens_net::coap::doc::{add_max_age, path_segments, take_max_age};
-use dedens_net::coap::{Code, Message, Options, Type};
+use dedens_net::coap::doc::{add_max_age, etag, path_segments, response, take_max_age};
+use dedens_net::coap::exchange::Failure;
+use dedens_net::coap::{Code, Message, OptionNumber, Options, Type};
 use dedens_net::doc::DocError;
 use dedens_net::exchange::{Options as DnsOptions, Transport};
 use dedens_proto::Message as Dns;
@@ -22,14 +23,20 @@ use dedens_proto::Message as Dns;
 /// 1822, 1822 and 1822 for the answer and 0 for its OPT record.
 const QUERY: &[u8] = include_bytes!("testdata/doh/quad9_mx.query");
 const ANSWER: &[u8] = include_bytes!("testdata/doh/quad9_mx.body");
+/// Another response of 99 bytes, over a block of 64 as `ANSWER` is, for a server whose answer changes.
+const OTHER: &[u8] = include_bytes!("testdata/doh/google_aaaa.body");
 
 /// How the server answers.
 #[derive(Clone)]
 enum Serve {
     /// 2.05 with the whole response, and this Max-Age if any.
     Whole(Option<u32>),
-    /// 2.05 with the block of 64 bytes the request asks for, each block piggybacked.
+    /// 2.05 with the block of 64 bytes the request asks for, each block piggybacked, with the `ETag` of the body.
     Blocks,
+    /// As `Blocks`, without an `ETag`.
+    BlocksWithoutETag,
+    /// As `Blocks`, the first block of `ANSWER` and the others of `OTHER`, each with the `ETag` of its body.
+    BlocksChanging,
     /// This code, with no body.
     Fail(Code),
     /// 2.05 with this content format.
@@ -66,12 +73,19 @@ async fn coap_server(serve: Serve) -> (SocketAddr, Rc<RefCell<Vec<Message>>>) {
                     }
                     reply.payload = ANSWER.to_vec();
                 }
-                Serve::Blocks => {
+                Serve::Blocks | Serve::BlocksWithoutETag | Serve::BlocksChanging => {
                     let asked = request.options.block2().expect("a Block2 or none");
+                    let body = match (&serve, asked) {
+                        (Serve::BlocksChanging, Some(block)) if block.num() > 0 => OTHER,
+                        _ => ANSWER,
+                    };
                     let size = BlockSize::new(2).expect("64 bytes");
-                    let cut = slice(ANSWER, asked.or(Block::new(0, false, size)), size)
+                    let cut = slice(body, asked.or(Block::new(0, false, size)), size)
                         .expect("a block inside the body");
                     reply.options.set_content_format(Options::DNS_MESSAGE);
+                    if !matches!(serve, Serve::BlocksWithoutETag) {
+                        reply.options.insert(OptionNumber::ETAG, etag(body));
+                    }
                     reply.options.set_block2(cut.block.expect("a block"));
                     reply.payload = cut.payload.to_vec();
                 }
@@ -214,6 +228,60 @@ async fn s4_3_a_response_in_blocks_is_put_together() {
         seen.iter()
             .all(|request| request.payload == seen[0].payload)
     );
+}
+
+/// RFC 7959 §2.4: the blocks of a response are of one representation, which the `ETag` tells: a client refuses a response
+/// whose `ETag` changes, or whose blocks have none to compare.
+#[compio::test]
+async fn s4_3_blocks_of_two_responses_are_refused() {
+    let (addr, _) = coap_server(Serve::BlocksChanging).await;
+    let error = Client::new()
+        .exchange(query(), server(addr, "/"), &coap())
+        .await;
+    assert!(
+        matches!(
+            error,
+            Err(ClientError::Doc(DocError::Exchange(Failure::ETagChanged)))
+        ),
+        "{error:?}"
+    );
+    let (addr, _) = coap_server(Serve::BlocksWithoutETag).await;
+    let error = Client::new()
+        .exchange(query(), server(addr, "/"), &coap())
+        .await;
+    assert!(
+        matches!(
+            error,
+            Err(ClientError::Doc(DocError::Exchange(Failure::MissingETag)))
+        ),
+        "{error:?}"
+    );
+}
+
+/// RFC 7959 §2.4, RFC 7252 §5.10.6: a server sends an `ETag` with each block, the same for the blocks of one body and
+/// another for another body, of 1 to 8 bytes.
+#[test]
+fn s4_3_a_server_tags_the_blocks_of_a_response_with_its_etag() {
+    let block = |dns: &[u8], num| {
+        let size = BlockSize::new(2).expect("64 bytes");
+        let mut request = Message::empty(Type::Confirmable, 1);
+        request.code = Code::FETCH;
+        request
+            .options
+            .set_block2(Block::new(num, false, size).expect("a block"));
+        response(&request, 0, dns.to_vec()).expect("a response")
+    };
+    let tags: Vec<Vec<u8>> = [(ANSWER, 0), (ANSWER, 1), (OTHER, 0), (OTHER, 1)]
+        .iter()
+        .map(|&(dns, num)| {
+            let reply = block(dns, num);
+            reply.options.etag().expect("an ETag").to_vec()
+        })
+        .collect();
+    assert_eq!(tags[0], tags[1]);
+    assert_eq!(tags[2], tags[3]);
+    assert_ne!(tags[0], tags[2]);
+    assert!((1..=8).contains(&tags[0].len()));
 }
 
 /// RFC 9953 §4.3.1: a CoAP error is no DNS response: the client reports the code.
