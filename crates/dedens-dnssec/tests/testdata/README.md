@@ -1,0 +1,105 @@
+# DNSSEC captures
+
+Real responses from `1.1.1.1` for the tests of validation (RFC 4033-4035, 5155, 9824). `capture.yaml` lists the
+queries; `<id>.bin` is the response to the query `id`, as `just capture-dnssec` saved it (never edit by hand).
+Every query set DO and CD, so each response holds the records and proofs as the zone served them, whatever their
+signatures. `captured_at` is the Unix time of the run: the tests pass it as "now", or the signatures that were
+valid would be out of their window.
+
+Verdicts are those of RFC 4035 §4.3 for the response alone, given the chain files below it and the root KSK of
+`root_dnskey` as the only trust anchor. They were checked on 2026-11-01 against 8.8.8.8 and 9.9.9.9 without CD
+(`ad` set: Secure, no `ad`: Insecure, SERVFAIL: Bogus). A recapture keeps the coverage, not the bytes: names and
+types stay, keys, signatures and denial records change. To test the window alone, give a Secure capture a "now"
+before its inception or after its expiration: Bogus.
+
+`ids` below are file names; `<zone>` is the zone's name with `_` for `.`. `crates/dedens-dnssec/tests/captured.rs`
+reads the set.
+
+## Chain of trust
+
+`<zone>_ds` is the DS RRset in the parent (signed by the parent), `<zone>_dnskey` the DNSKEY RRset (signed by the
+zone). The link from a parent's DS to a zone's key is Secure unless the row says otherwise.
+
+| Zone | Algorithm | Shows |
+|---|---|---|
+| `root_dnskey` | 8 | Two KSKs and a ZSK, self-signed: the trust anchor |
+| `com`, `net`, `nl` | 13 | TLDs signed with ECDSA P-256; DS signed by the root (8) |
+| `org`, `dev`, `stream` | 8 | RSA/SHA-256 TLDs; `org_dnskey` is over 1232 bytes (read over TCP) |
+| `cat` | 10 | RSA/SHA-512 TLD |
+| `la` | 7 | RSASHA1-NSEC3-SHA1: DS digests 1 and 2, seven keys, over TCP; Secure (SHA-1 is validated, D71) |
+| `cr` | 13 | DS digests 2 and 4 (SHA-384): the only digest 4 |
+| `nlnetlabs_nl` | 8 | NSEC zone |
+| `cloudflare_com`, `sidnlabs_nl`, `example_nl`, `icann_org`, `cloudflare_net`, `ripe_net`, `verteiltesysteme_net` | 13 | Targets of the answers below |
+| `fedoraproject_org` | 14 | ECDSA P-384 |
+| `ed25519_nl` | 15 | Ed25519 |
+| `ed448_nl` | 16 | Ed448: `ring` lacks it, so the zone is Insecure (RFC 4035 §5.2, D71) |
+| `debian_org` | 8 and 13 | Two algorithms at once: either validating is Secure |
+| `rootcanary_net` | 8 | The only RootCanary zone served: no per-algorithm or bogus names in it |
+| `ippacket_stream`, `rsa2048_ippacket_stream` | 8 | `stream` → `ippacket.stream` → `rsa2048-sha256.ippacket.stream`: a chain three zones deep |
+| `dnssec_failed_org` | 13 | The DS matches no DNSKEY: Bogus. The DNSKEY set also holds an expired signature |
+| `rhybar_cz` | 5 and 7 | The DS (13) matches no DNSKEY, and every signature ended in October 2025: Bogus |
+
+## Unsigned delegations
+
+| Id | Shows | Verdict |
+|---|---|---|
+| `google_com_ds` | DS NODATA from `com`: NSEC3 opt-out, closest provable encloser (RFC 5155 §8.6, §8.9) | Secure proof that `google.com` is unsigned |
+| `google_com_a` | The unsigned answer below it: no RRSIG | Insecure |
+| `jm_ds` | DS NODATA from the root with NSEC (RFC 4035 §5.2) | Secure proof that `jm` is unsigned |
+| `edgekey_net_ds`, `akamaiedge_net_ds` | Same, from `net` (NSEC3 opt-out), for the zones of `cname_to_insecure` | Secure proof |
+
+## Signed answers
+
+| Id | Shows | Verdict |
+|---|---|---|
+| `alg8_a` | `nlnetlabs.nl` A, RSA/SHA-256 | Secure |
+| `alg13_a` | `cloudflare.com` A, ECDSA P-256 | Secure |
+| `alg10_soa` | `cat` SOA, RSA/SHA-512 | Secure |
+| `alg14_a` | `fedoraproject.org` A (11 addresses), ECDSA P-384 | Secure |
+| `alg15_a` | `ed25519.nl` A, Ed25519 | Secure |
+| `alg7_soa` | `la` SOA, RSASHA1-NSEC3-SHA1 | Secure |
+| `alg8_13_a` | `debian.org` A: one RRSIG per algorithm | Secure |
+| `alg16_a` | `ed448.nl` A, Ed448 | Insecure |
+| `rootcanary_soa` | `rootcanary.net` SOA | Secure |
+
+## Denial of existence
+
+Each needs the zone's DNSKEY (and the chain to it) above. The name that does not exist is in `capture.yaml`.
+
+| Id | Shows | Verdict |
+|---|---|---|
+| `nxdomain_root_nsec` | NXDOMAIN under the root: two NSEC, one covering the name, one the wildcard | Secure NXDOMAIN |
+| `nxdomain_nsec` | NXDOMAIN with NSEC in a non-root zone (`nlnetlabs.nl`) | Secure NXDOMAIN |
+| `nxdomain_nsec3` | NXDOMAIN with NSEC3 (`debian.org`: no opt-out, no salt, 0 iterations, two algorithms) | Secure NXDOMAIN |
+| `nxdomain_nsec3_optout` | NXDOMAIN with opt-out NSEC3 (`com`): the proof is the closest provable encloser (RFC 5155 §8.3) | Secure NXDOMAIN |
+| `nxdomain_nsec3_salt` | Opt-out and an 8-byte salt (`org`) | Secure NXDOMAIN |
+| `nxdomain_nsec3_iterations` | One extra iteration and an 8-byte salt (`dev`) | Secure NXDOMAIN |
+| `nxname_cloudflare` | Compact denial (RFC 9824 §3.1): NOERROR, empty answer, an NSEC of the name with `RRSIG NSEC NXNAME` | Secure NXDOMAIN, whatever the RCODE |
+| `nodata_compact` | Compact NODATA (RFC 9824 §3.2): the NSEC of the existing name lists its types | Secure NODATA |
+| `nodata_root_nsec` | NODATA at the root: NSEC of the apex | Secure NODATA |
+| `nodata_nsec` | NODATA with NSEC (`nlnetlabs.nl`) | Secure NODATA |
+| `nodata_nsec3` | NODATA with NSEC3 (`debian.org`): matching NSEC3 without the type | Secure NODATA |
+| `nodata_nsec3_optout` | NODATA at the apex of `com`: opt-out flag set | Secure NODATA |
+| `nodata_nsec3_iterations` | NODATA at `rootcanary.net`: one extra iteration | Secure NODATA |
+| `ent_nsec` | Empty non-terminal with NSEC: the NSEC that covers it (`_tcp.nlnetlabs.nl`) | Secure NODATA |
+| `ent_nsec3` | Empty non-terminal with NSEC3: a matching NSEC3 with an empty bitmap (`_tcp.sidnlabs.nl`) | Secure NODATA |
+| `wildcard_answer` | MX from `*.sidnlabs.nl`: RRSIG labels below the owner's, NSEC3 proving the next closer name absent (RFC 5155 §8.8) | Secure |
+| `wildcard_nodata` | Another type at the same name: the wildcard's NSEC3 and the proof of the next closer name (RFC 5155 §8.7) | Secure NODATA |
+
+## Answers across zones
+
+| Id | Shows | Verdict |
+|---|---|---|
+| `cname_cross_zone` | `www.icann.org` CNAME (org, 13) to `…cdn.cloudflare.net` A (net, 13) | Secure |
+| `cname_deep_zone` | `verteiltesysteme.net` CNAME (13) to `rsa2048-sha256.ippacket.stream` A (8) | Secure |
+| `cname_to_insecure` | Signed CNAME from `ripe.net` to an unsigned CNAME in `edgekey.net` and an unsigned A in `akamaiedge.net` (neither has a DS) | First CNAME Secure, the rest Insecure |
+| `dname_rr` | `dname.sidnlabs.nl` DNAME, signed | Secure |
+| `dname_answer` | The DNAME with its signature, the CNAME synthesized from it (unsigned, RFC 6672 §3.1) and the signed AAAA in `example.nl`. Asked of 8.8.8.8: 1.1.1.1 answers it NXDOMAIN half the time | Secure |
+
+## Bogus
+
+| Id | Shows | Verdict |
+|---|---|---|
+| `bogus_no_key` | `dnssec-failed.org` A: signed, but its DS matches no DNSKEY | Bogus |
+| `bogus_expired` | `rhybar.cz` A: RRSIGs (5 and 7) expired in October 2025, the DS matches no key | Bogus |
+| `bogus_signature` | `sigfail.verteiltesysteme.net` CNAME, then an A whose RRSIG does not verify; the chain is sound | Bogus |
