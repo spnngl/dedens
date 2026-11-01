@@ -1,4 +1,5 @@
-//! DNS transports (UDP, TCP, TLS, QUIC, HTTPS over HTTP/3) on the compio runtime, and the messages of DNS over HTTPS.
+//! DNS transports (UDP, TCP, TLS, QUIC, HTTPS over HTTP/3, CoAP) on the compio runtime, and the messages of DNS over
+//! HTTPS and over CoAP.
 //!
 //! The only crate of the workspace that touches sockets and timers; `dedens-proto` stays free of I/O.
 
@@ -30,6 +31,8 @@ macro_rules! trace {
 pub mod client;
 pub mod coap;
 mod dial;
+#[cfg(feature = "doc")]
+pub mod doc;
 pub mod doh;
 pub mod exchange;
 pub mod https;

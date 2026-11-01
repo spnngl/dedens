@@ -41,6 +41,10 @@ pub struct Options {
     /// DNS over HTTPS with the query in the body of a POST. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub https_post: Option<bool>,
+    /// DNS over CoAP (RFC 9953), unprotected, over UDP, its server on port 5683 unless given another: the `doc`
+    /// feature of the build. Not with `tcp`, `tls`, `quic` or `https`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub coap: Option<bool>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub ignore: Option<bool>,
@@ -93,6 +97,7 @@ impl Options {
             https: self.https.or(fallback.https),
             https_get: self.https_get.or(fallback.https_get),
             https_post: self.https_post.or(fallback.https_post),
+            coap: self.coap.or(fallback.coap),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
             cdflag: self.cdflag.or(fallback.cdflag),
@@ -112,7 +117,8 @@ impl Options {
     /// # Errors
     ///
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
-    /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`.
+    /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; CoAP
+    /// with `tcp`, `tls`, `quic` or HTTPS.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -132,6 +138,11 @@ impl Options {
         }
         if self.https_get == Some(true) && self.https_post == Some(true) {
             return Err(InvalidOption("https-get and https-post exclude each other"));
+        }
+        if self.coap == Some(true) && (self.tcp == Some(true) || self.encrypted() || self.https()) {
+            return Err(InvalidOption(
+                "coap goes with no tcp, tls, quic or https: it is CoAP over UDP",
+            ));
         }
         Ok(())
     }
@@ -204,6 +215,8 @@ impl Options {
             if self.https_post == Some(true) {
                 options.method = Method::Post;
             }
+        } else if self.coap == Some(true) {
+            options.transport = Transport::Coap;
         } else if self.quic == Some(true) {
             options.transport = Transport::Quic;
         } else if self.tls == Some(true) {
@@ -486,5 +499,42 @@ mod tests {
             ..Options::default()
         };
         assert_eq!(off.check(), Ok(()));
+    }
+
+    #[test]
+    fn coap_picks_the_transport_and_refuses_what_it_does_not_go_with() {
+        let on = Options {
+            coap: Some(true),
+            ..Options::default()
+        };
+        assert_eq!(on.check(), Ok(()));
+        assert_eq!(on.exchange().transport, Transport::Coap);
+        for refused in [
+            Options {
+                tcp: Some(true),
+                ..on.clone()
+            },
+            Options {
+                tls: Some(true),
+                ..on.clone()
+            },
+            Options {
+                quic: Some(true),
+                ..on.clone()
+            },
+            Options {
+                https: Some(HttpsOption::On),
+                ..on.clone()
+            },
+        ] {
+            assert!(refused.check().is_err(), "{refused:?}");
+        }
+        let off = Options {
+            coap: Some(false),
+            tcp: Some(true),
+            ..Options::default()
+        };
+        assert_eq!(off.check(), Ok(()));
+        assert_eq!(off.exchange().transport, Transport::Tcp);
     }
 }

@@ -29,11 +29,12 @@ pub(crate) struct Cli {
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
     /// A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before
-    /// it for DNS over TLS, QUIC or HTTPS. Each query is asked of each, side by side. Default: the first `nameserver`
-    /// of /etc/resolv.conf.
+    /// it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP. Each query is asked of each, side by
+    /// side. Default: the first `nameserver` of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
-    /// The port of a server given without one. Default: 443 over HTTPS, 853 over TLS or QUIC, else 53.
+    /// The port of a server given without one. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else
+    /// 53.
     #[arg(short, long, value_name = "PORT")]
     pub(crate) port: Option<u16>,
     /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.
@@ -120,11 +121,12 @@ impl Cli {
                 || cli.repeat > 1
                 || cli.search
                 || cli.options.encrypted()
-                || cli.options.https())
+                || cli.options.https()
+                || cli.options.coap == Some(true))
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic or +https"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https or +coap"
                     .to_owned(),
             );
         }
@@ -148,6 +150,18 @@ impl Cli {
             usage(
                 ErrorKind::ArgumentConflict,
                 "https:// goes with no +tcp, +tls or +quic".to_owned(),
+            );
+        }
+        // CoAP is over UDP: no other transport under it.
+        let coap = |server: &String| server.starts_with("coap://");
+        if (cli.server.iter().any(coap)
+            && (cli.options.tcp == Some(true) || cli.options.encrypted() || cli.options.https()))
+            || (cli.options.coap == Some(true) && cli.server.iter().any(scheme))
+        {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "coap:// and +coap go with no +tcp, +tls, +quic, +https, tls://, quic:// or https://"
+                    .to_owned(),
             );
         }
         let output = &cli.output;

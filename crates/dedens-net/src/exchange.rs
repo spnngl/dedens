@@ -494,10 +494,13 @@ const fn padded(transport: Transport) -> bool {
     )
 }
 
-/// Whether each query has a stream or an HTTP exchange of its own, which tells its response: the ID is 0 (RFC 9250
-/// §4.2.1, RFC 8484 §4.1).
+/// Whether each query has a stream, an HTTP exchange or a CoAP token of its own, which tells its response: the ID
+/// is 0 (RFC 9250 §4.2.1, RFC 8484 §4.1, RFC 9953 §4.2.2).
 const fn streamed(transport: Transport) -> bool {
-    matches!(transport, Transport::Quic | Transport::Https)
+    matches!(
+        transport,
+        Transport::Quic | Transport::Https | Transport::Coap
+    )
 }
 
 /// The cookie `query` sends, if any.

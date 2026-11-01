@@ -68,5 +68,6 @@ pub(crate) fn named(addr: SocketAddr, name: &'static str) -> Server {
         addr,
         name: Some(ServerName::try_from(name).expect("a server name")),
         doh: None,
+        docpath: Vec::new(),
     }
 }

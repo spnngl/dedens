@@ -31,6 +31,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   Default: as D74; bogus if a zone shows it.
 - CoAP (D80): non-confirmable requests by the client (RFC 7252 §4.3) and server-side Block1 reassembly (a DoC query
   fits one datagram, so a server needs neither). Default: not built until DoC meets a server that needs them.
+- DoC (D81): the proxy parts of RFC 9953, §9.2 redirects (a 3.xx or 5.03 with Location-*) and §9.3 hop limit
+  (RFC 8768), are ignored by the client and the server. Default: not built until DoC meets a CoAP proxy to forward to.
+- DoC (D81): DTLS (`coaps://`, RFC 9953 §6) and OSCORE (§5.2), needing a CoAP-level security stack. Default: not
+  before phase 4 asks for an encrypted DoC; the unprotected listener warns at start.
+- DoC (D81): a `coap://` upstream of the `forward` stage, the discovery of a server by SVCB `docpath` or
+  `rt=core.dns` (§3), GET with `?dns=` (RFC 9953 does not define it), server-side Block1 reassembly. Default: not
+  built.
 - CoAP: libcoap's `coap-client` as a second implementation of the captures (only aiocoap is here). Default: add
   its captures when libcoap is installable in CI.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.

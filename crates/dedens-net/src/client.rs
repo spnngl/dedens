@@ -1,4 +1,5 @@
-//! The client: the sans-IO [`Exchange`] run over the UDP, TCP, TLS, QUIC and HTTPS transports (D26, D27, D83).
+//! The client: the sans-IO [`Exchange`] run over the UDP, TCP, TLS, QUIC, HTTPS and CoAP transports (D26, D27, D81,
+//! D83).
 //!
 //! [`Client::exchange`] gives each query a random ID and, when it has EDNS and no cookie of the caller's, a cookie
 //! (RFC 7873 §4.1, §5.1): the client cookie is drawn at random for each pair of source and server addresses, so it
@@ -11,12 +12,15 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
 use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
+#[cfg(feature = "doc")]
+use crate::doc::{DocError, coap};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
 use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
 use crate::https::{HttpsError, HttpsPool};
@@ -60,6 +64,13 @@ pub enum ClientError {
     /// The server's name and port make no `DoH` template.
     #[error("no DoH template for the server")]
     Template(#[from] TemplateError),
+    /// The CoAP exchange failed, or its response holds no DNS response (D81).
+    #[cfg(feature = "doc")]
+    #[error("CoAP")]
+    Doc(#[from] DocError),
+    /// The transport is not built in: its Cargo feature is off (D69).
+    #[error("the {0} transport is not built in")]
+    NotBuilt(&'static str),
     /// The exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
@@ -75,6 +86,7 @@ impl ClientError {
             Self::Random(_)
             | Self::Encode(_)
             | Self::Template(_)
+            | Self::NotBuilt(_)
             | Self::Tcp(TcpError::Trust(_))
             | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
             | Self::Https(
@@ -86,6 +98,10 @@ impl ClientError {
             | Self::Tcp(TcpError::Connect(error))
             | Self::Quic(QuicError::Bind(error))
             | Self::Https(HttpsError::Quic(QuicError::Bind(error))) => error,
+            #[cfg(feature = "doc")]
+            Self::Doc(DocError::Udp(error)) => error,
+            #[cfg(feature = "doc")]
+            Self::Doc(_) => return false,
             Self::Tcp(_)
             | Self::Quic(_)
             | Self::Https(_)
@@ -117,6 +133,8 @@ pub struct Server {
     /// Over HTTPS, its URI template: the host and port of the `:authority` of the requests, and the path. Without
     /// one, `https://NAME/dns-query`, or its address for NAME, the port left out for 443 (D83).
     pub doh: Option<Template>,
+    /// Over CoAP, the segments of the path of its URI, none for the root path (D81).
+    pub docpath: Vec<Box<[u8]>>,
 }
 
 impl From<SocketAddr> for Server {
@@ -125,15 +143,16 @@ impl From<SocketAddr> for Server {
             addr,
             name: None,
             doh: None,
+            docpath: Vec::new(),
         }
     }
 }
 
 impl Server {
-    /// The TCP or TLS connection to it over `transport`, none over UDP, QUIC and HTTPS.
+    /// The TCP or TLS connection to it over `transport`, none over UDP, QUIC, HTTPS and CoAP.
     fn link(&self, transport: Transport) -> Option<Link> {
         match transport {
-            Transport::Udp | Transport::Quic | Transport::Https => None,
+            Transport::Udp | Transport::Quic | Transport::Https | Transport::Coap => None,
             Transport::Tcp => Some(Link::Tcp(self.addr)),
             Transport::Tls => Some(Link::Tls(self.addr, self.certified())),
         }
@@ -284,7 +303,13 @@ impl Client {
         // A connection slower than the try's timeout costs that try (D27).
         let mut slow = false;
         let source = match target.link(options.transport) {
-            None if matches!(options.transport, Transport::Quic | Transport::Https) => None,
+            None if matches!(
+                options.transport,
+                Transport::Quic | Transport::Https | Transport::Coap
+            ) =>
+            {
+                None
+            }
             None => {
                 let waiting = self
                     .udp
@@ -313,7 +338,12 @@ impl Client {
             }
             _ => None,
         };
-        let exchange = Exchange::start(query, server, *options, Instant::now())?;
+        // CoAP retransmits by itself, so DNS does not (D81).
+        let mut asked = *options;
+        if asked.transport == Transport::Coap {
+            asked.tries = NonZeroU8::MIN;
+        }
+        let exchange = Exchange::start(query, server, asked, Instant::now())?;
         let mut progress = if slow {
             exchange.lose(Instant::now())
         } else {
@@ -384,6 +414,11 @@ impl Client {
                 Err(HttpsError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
+        }
+        if transport == Transport::Coap {
+            let random = self.random.borrow_mut().take::<14>()?;
+            let bytes = coap(exchange.wire(), server, &target.docpath, random).await?;
+            return Ok(answered(exchange, transport, bytes, deadline));
         }
         if transport == Transport::Quic {
             return match self
@@ -465,6 +500,18 @@ impl Client {
         edns.options.push(EdnsOption::Cookie(cookie));
         Ok(Some(pair))
     }
+}
+
+/// Asks over CoAP without the `doc` feature: not built in (D69).
+#[cfg(not(feature = "doc"))]
+#[expect(clippy::unused_async, reason = "the signature of the `doc` one")]
+async fn coap(
+    _query: &[u8],
+    _server: SocketAddr,
+    _docpath: &[Box<[u8]>],
+    _random: [u8; 14],
+) -> Result<Vec<u8>, ClientError> {
+    Err(ClientError::NotBuilt("CoAP"))
 }
 
 /// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with its

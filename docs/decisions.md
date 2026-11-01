@@ -504,6 +504,32 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     segments allowed, the text a comma-separated list, no segment the root path. One empty segment prints in the
     `key10="\000"` form, a single empty item being no different from the empty list in the text.
   - Tests read datagrams captured from aiocoap (`tests/testdata/coap/`, `capture.nu`), libcoap not being here.
+- D81 (completes D80) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
+  `dedensd` and `dedens-net` (D69): the client `Transport::Coap` (`dedens_net::doc`), the `dedens` options
+  `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path unless given), the `dedensd` listener
+  `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the client's `request`, the server's
+  `query`, `response`, `error`.
+  - Client: one confirmable FETCH per query on a UDP socket of its own, DNS ID 0 (§4.2.2), Content-Format and
+    Accept 553, no Uri-Host or Uri-Port (the server is the one named). The retransmission is CoAP's (RFC 7252
+    §4.2), so the DNS tries are 1 (§4.2). The Max-Age of a 2.05, 60 s when absent, is added to each TTL, to at most
+    2^31 - 1 (§4.3.2); a response in blocks is put together. A code other than 2.05, another content format and a
+    body that is no DNS message are errors of the exchange (§4.3.1), not responses. Over `+trace`, `+tcp`, `+tls`,
+    `+quic`, `+https` it is a usage error. Built without `doc`, asking for CoAP is a local error. The report says
+    `CoAP`, JSON `coap`; `-v` logs the code, Max-Age and blocks (`tracing` debug).
+  - Server: a FETCH, or a POST (RFC 9953 defines FETCH only; accepted as the same query), to the listener's path.
+    Codes (§4.3.1): 4.04 another path, 4.05 another method (GET included), 4.15 a content format other than 553 or
+    none, 4.06 another one accepted, 4.02 a critical option unknown, a Uri-Query or a bad block, 4.00 no body,
+    4.13 a body in Block1 blocks (a server keeps no request state, a query fits one datagram). A DNS failure
+    upstream is the pipeline's SERVFAIL in a 2.05 (§4.3.1). The Max-Age is the least TTL, which is taken from every
+    TTL (§4.3.2, the RECOMMENDED algorithm). A response over 1024 bytes goes in Block2 blocks of 1024, each cut
+    again from a new query (the follow-up carries it, D80), or of the size a request asks. CON requests are
+    deduplicated (`Dedup`, 4096 entries, EXCHANGE_LIFETIME) and answered by a piggybacked ACK, never a separate
+    response; a NON request gets a NON response; a ping gets a RST. The path is read as written, no
+    percent-decoding; `?` and `#` in it are refused at configuration.
+  - Unprotected: `dedensd` logs a warning at start for each `coap://` address, NOT RECOMMENDED (§6). DTLS and
+    OSCORE are not built; the proxy parts (§9.2 redirects, §9.3 hop limit) are ignored: see `docs/TODECIDE.md`.
+  - Not done: GET with `?dns=`, which the RFC does not define; a `coap://` upstream of the `forward` stage; the
+    discovery by SVCB `docpath` and `rt=core.dns` (§3).
 
 ## Presentation format
 

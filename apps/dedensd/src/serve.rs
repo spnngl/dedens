@@ -73,6 +73,9 @@ const TCP_BACKLOG: i32 = 1024;
 /// receiving again after a UDP receive failed twice in a row: an error that repeats at once would spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(100);
 
+#[cfg(feature = "doc")]
+mod coap;
+
 /// The sockets of one thread for an address of `listen`, bound but not yet on its runtime.
 pub(crate) enum Bound {
     /// A UDP socket and a TCP listener.
@@ -83,6 +86,9 @@ pub(crate) enum Bound {
     Quic(Socket),
     /// A UDP socket for HTTP/3, serving `DoH` at the path (D84).
     Https(Socket, Arc<str>),
+    /// A UDP socket for CoAP, serving `DoC` at the path (D81).
+    #[cfg(feature = "doc")]
+    Coap(Socket, Arc<str>),
 }
 
 /// The sockets of one thread.
@@ -106,6 +112,10 @@ pub(crate) fn bind(listen: &[Listen]) -> anyhow::Result<Sockets> {
             Listen::Quic(addr) => udp(*addr).map(Bound::Quic),
             Listen::Https(addr, path) => {
                 udp(*addr).map(|socket| Bound::Https(socket, Arc::clone(path)))
+            }
+            #[cfg(feature = "doc")]
+            Listen::Coap(addr, path) => {
+                udp(*addr).map(|socket| Bound::Coap(socket, Arc::clone(path)))
             }
         })
         .collect()
@@ -285,6 +295,11 @@ pub(crate) async fn serve(
                 let config = tls::h3_server_config(certificate()?).map_err(io::Error::other)?;
                 let endpoint = endpoint(udp_socket, config, H3_UNI_STREAMS)?;
                 spawn(quic(endpoint, Service::Https(path), Rc::clone(&thread)))
+            }
+            #[cfg(feature = "doc")]
+            Bound::Coap(udp_socket, path) => {
+                let socket = UdpSocket::from_std(udp_socket.into())?;
+                spawn(coap::serve(socket, path, Rc::clone(&thread)))
             }
         };
         tasks.push(task);
@@ -889,6 +904,7 @@ fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transpo
         addr: server.addr,
         name,
         doh: None,
+        docpath: Vec::new(),
     };
     if let Via::Https { path, .. } = &server.via {
         target.doh = target.template_at(path).ok();
@@ -897,9 +913,12 @@ fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transpo
 }
 
 /// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length but
-/// over UDP and HTTPS. Only its bytes leave the buffer, never those of an earlier reply.
+/// over UDP, HTTPS and CoAP. Only its bytes leave the buffer, never those of an earlier reply.
 fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
-    if matches!(transport, Transport::Udp | Transport::Https) {
+    if matches!(
+        transport,
+        Transport::Udp | Transport::Https | Transport::Coap
+    ) {
         Some(wire.to_vec())
     } else {
         frame(wire)

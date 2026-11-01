@@ -163,6 +163,7 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
             Transport::Tls => "TLS",
             Transport::Quic => "QUIC",
             Transport::Https => "DoH",
+            Transport::Coap => "CoAP",
         };
         write!(out, "  {} ms from ", millis(exchange.rtt_us))?;
         write!(out, "{} over {transport}", server_text(exchange.server))?;

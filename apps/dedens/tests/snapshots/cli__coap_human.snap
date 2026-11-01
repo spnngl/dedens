@@ -1,0 +1,9 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, port)"
+---
+example.com. A  NOERROR  N ms from 127.0.0.1:PORT over CoAP
+answer
+  example.com.  29s  A  104.20.23.154
+                     A  172.66.147.243
+EDNS 1232 bytes · 40/72 bytes
