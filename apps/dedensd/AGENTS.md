@@ -1,11 +1,11 @@
 # dedensd
 
-The server binary (D42, D44-D57, D63-D66, D84, D81, D91, D107): `src/main.rs` parses flags, starts the threads (never
-dropping a runtime) and logs the driver, warning on Linux when it is `poll`, `src/config.rs` reads the YAML
+The server binary (D42, D44-D57, D63-D66, D84, D81, D91, D104, D107): `src/main.rs` parses flags, starts the threads
+(never dropping a runtime) and logs the driver, warning on Linux when it is `poll`, `src/config.rs` reads the YAML
 configuration into a pipeline (D44), `src/serve.rs` binds the sockets and runs the UDP, TCP, TLS, QUIC, DoH over
 HTTP/3, DoC (`src/serve/coap.rs`, feature `doc`) and upstream tasks around `dedens_server::Pipeline`,
 `src/reload.rs` swaps the pipeline and the TLS certificate on SIGHUP (D55, D66) and once the lists `src/download.rs`
-fetches (D57) changed, waking each thread to take it (D107).
+fetches (D57, D104) changed, waking each thread to take it (D107).
 `access` (D91) is read in `src/config.rs`; `Config::warn_access` warns at start (`src/main.rs`) and at each reload
 (`src/reload.rs`) of a public listen address with no `access`, and of an empty `allow`; the listeners in
 `src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot.

@@ -1367,7 +1367,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
-- D57 (amended by D64) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+- D57 (amended by D64, D104) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
   with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
   never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
   Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
@@ -1412,7 +1412,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   day, fails, so a list that stops or resumes shows. A list `dedensd` does not read is checked on its first
   MiB, its format being in every line. Dates are parsed by hand in the test, a date crate being a dependency for
   three formats.
-- D64 (amended by D107) Review fixes to D44, D47, D54, D55 and D57.
+- D64 (amended by D104, D107) Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
     connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
@@ -1433,6 +1433,41 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `http://` URLs stay for a server of one's own. A copy and its `ETag` never disagree: the old tag is removed,
     then the copy and the new tag are each written to a `.part` file, flushed, renamed and the directory flushed;
     the list counts as changed once its copy is renamed, a tag that cannot be written only logged.
+- D104 (amends D57, D64) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
+  - Size: `ureq` is built without `gzip` (`default-features = false`, keeping `rustls` and `platform-verifier`) and
+    asks for `Accept-Encoding: identity` (RFC 9110 §12.5.3: no header would let a server send gzip, which is no
+    list). The 256 MiB cap counted the compressed bytes, so a gzip body of that size could inflate about a
+    thousandfold in memory. Rejected: keeping gzip and capping the decoded body (`take(MAX + 1)` on the decoder).
+    Gzip saves bandwidth only, about 4× on a list; without it a 36 MB list within the 30 s timeout needs about
+    10 Mbit/s, and a bounded decoder is code to keep. Revisit if a list server needs it. `ureq`'s limit is
+    exclusive: a body of exactly 256 MiB is refused.
+  - Retry: a pipeline reload that fails after a list was saved is retried. The copy and its `ETag` are saved
+    before the reload (D64), so the next fetch is a 304 and nothing else would say the pipeline is behind. The reload
+    thread keeps a `pending` flag, set when a fetch changed a list and cleared by a reload that serves (a SIGHUP
+    one too, which reads the copies as well); while set, each fetch is followed by a reload, waiting as after a
+    failed download: 1 min, doubling up to the refresh interval. A fetch that panics counts as changed too: it may
+    have saved a copy, and a reload that finds nothing new is cheap.
+  - Logs: a list URL is logged as `scheme://host[:port]path`, parsed as the client parses it (`http::Uri`; a text
+    that does not parse shows as `(not a URL)`); credentials, query and fragment may be secrets. A secret in the
+    path stays logged. Each `scheme://` token of an error message is redacted the same way, up to the closing quote
+    or bracket around it, else to the end of the message: an error may quote a redirect target or a raw `Location`
+    header, which can hold spaces. The config error of a mistyped URL is redacted too, and a config error carries
+    no YAML snippet (`serde-saphyr`'s `with_snippet` is off), as a snippet could echo the `urls`: line and column
+    stay, the field name in the snippet is lost.
+  - Files: the `.part` file is created exclusively (`create_new`, by `tempfile`) in the copy's directory, named by
+    the copy's file name, a dot and a random part, mode `0o666` less the umask as any new file (a privilege drop,
+    S5, would make copies of 0600 unreadable), and removed on failure; the rename stays atomic. The old name, the
+    copy's plus `.part`, was predictable, and `File::create` followed a symlink left there. Once at start, before
+    the first fetch, the reload thread removes the `.part` files of the copies and tags of the configured URLs that
+    a killed process left, the old name included; those of a URL since removed stay.
+  - Concurrency: the lists are fetched four at a time, on named scoped threads, no `unsafe`. Four, as the lists in
+    memory at once stay within 4 × 256 MiB. One slow server delays the lists queued behind it, no longer all of
+    them. A SIGHUP still waits for the fetch in progress, up to ⌈n/4⌉ × 30 s for n lists; SIGHUPs queued meanwhile
+    are drained after the reload, as each asks for what it did. A download that panics is caught per URL, logged
+    with the redacted URL and counted as an error, and its worker goes on. The configuration keeps each URL once
+    (`urls` of `Downloads`): two downloads of one URL would save one copy at once.
+  - No draining on SIGTERM, by design: an in-flight download is dropped with the process, and its saved copy and
+    `ETag` stay consistent as both are replaced atomically (D64).
 - D65 (amends D42) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
   D61): `IP[:PORT]` over the client's (UDP for a query over UDP, TCP for one over a connection), `tls://` over TLS
   and `quic://` over QUIC, port 853 unless set, `#NAME` for the name the certificate must hold, else the address

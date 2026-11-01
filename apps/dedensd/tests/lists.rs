@@ -155,3 +155,33 @@ fn downloaded_lists_block_and_outlive_failures_and_restarts() {
     assert!(blocks(&server, "tracker.example."));
     std::fs::remove_dir_all(&dir).expect("removed");
 }
+
+/// S15.c: a list is logged by its scheme, host and path, never by the credentials or the query of its URL, and no
+/// line the server writes holds them, whether its list downloads, is unchanged or fails.
+#[test]
+fn logged_urls_carry_no_credentials_or_query() {
+    let http = Http::start();
+    http.serve(200, "ads.example\n", "v1");
+    let url = format!("http://user:secret@{}/list?token=t", http.addr);
+    let dir = tempfile::tempdir().expect("a directory");
+    let mut server = Server::configured(|listen| blocking(listen, &url, dir.path()));
+    let event = server.event("list downloaded").expect("the list downloads");
+    assert_eq!(event["fields"]["url"], format!("http://{}/list", http.addr));
+    server.hang_up();
+    assert!(server.event("list unchanged").is_some());
+    http.serve(200, "404: Not Found", "v2");
+    server.hang_up();
+    assert!(
+        server
+            .event("list download failed, keeping the saved copy")
+            .is_some()
+    );
+    let lines = server.stderr();
+    assert!(lines.len() > 3, "{lines:?}");
+    for line in lines {
+        assert!(
+            !line.contains("secret") && !line.contains("token"),
+            "{line}"
+        );
+    }
+}

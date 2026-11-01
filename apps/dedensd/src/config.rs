@@ -408,7 +408,11 @@ impl TryFrom<String> for Url {
         if text.starts_with("https://") || text.starts_with("http://") {
             Ok(Self(text))
         } else {
-            Err(format!("`{text}` is not an http:// or https:// URL"))
+            // Logged at start and on each reload, and a URL may hold credentials (D104).
+            Err(format!(
+                "`{}` is not an http:// or https:// URL",
+                download::redacted(&text)
+            ))
         }
     }
 }
@@ -559,7 +563,9 @@ pub(crate) fn read(
     previous: &Pipeline,
 ) -> anyhow::Result<Config> {
     let text = interpolate(text, env)?;
-    let file: File = serde_saphyr::from_str(&text)?;
+    // No snippet of the YAML in an error: it could echo the `urls` (D104). The line and column stay.
+    let file: File =
+        serde_saphyr::from_str_with_options(&text, serde_saphyr::options! { with_snippet: false })?;
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     let presented = presented(&file.listen, file.tls.as_ref())?;
     #[cfg(feature = "odoh")]
@@ -630,6 +636,7 @@ pub(crate) fn read(
                 let lists = lists(name, &block, &allow, &downloads.dir)
                     .with_context(|| format!("stage `{name}`"))?;
                 for Url(url) in block.urls.into_iter().chain(allow.urls) {
+                    // Once each: the downloads run together, two of one URL would save one copy at once (D104).
                     if !downloads.urls.contains(&url) {
                         downloads.urls.push(url);
                     }
@@ -1027,11 +1034,15 @@ fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::R
                         duplicates: dups, ..
                     }) => duplicates += dups,
                     Err(error) => {
-                        tracing::warn!(stage, url, %error, "the saved copy is not a list");
+                        tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
                     }
                 },
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    tracing::info!(stage, url, "list not downloaded yet");
+                    tracing::info!(
+                        stage,
+                        url = download::redacted(url),
+                        "list not downloaded yet"
+                    );
                 }
                 Err(error) => {
                     return Err(error).with_context(|| format!("reading `{}`", copy.display()));
@@ -1412,7 +1423,7 @@ mod tests {
                 "`nope` is not ADDRESS/LENGTH",
             ),
             ("action: Drop", "unknown variant `Drop`"),
-            ("allow: '10.0.0.0/8'", "allow"),
+            ("allow: '10.0.0.0/8'", "expected sequence"),
         ] {
             let refused = read(&with(access), env, &Pipeline::default()).unwrap_err();
             assert!(
@@ -1641,6 +1652,12 @@ mod tests {
         let allow = allow.replace(", 'bad..name'", "");
         assert!(read(&text(&allow), env, &Pipeline::default()).is_ok());
         assert!(error(&text("    allow:\n      urls: ['ftp://x']\n")).contains("ftp://x"));
+        // D104: a mistyped URL is echoed without its credentials and query, and no YAML snippet repeats them.
+        let typo = error(&text("    urls: ['ftp://user:secret@x/list?token=t']\n"));
+        assert!(
+            typo.contains("ftp://x/list") && !typo.contains("secret") && !typo.contains("token"),
+            "{typo}"
+        );
         let urls = "    urls: [https://a.example/list, http://b.example/list]\n    allow:\n      urls: [https://a.example/list]\n";
         let config = read(&text(urls), env, &Pipeline::default()).unwrap();
         assert_eq!(

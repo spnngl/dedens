@@ -428,26 +428,30 @@ async fn a_connect_error_goes_to_every_query_waiting() {
 }
 
 /// RFC 7766 §6.2.1: once all 65536 IDs of a connection wait for a response, the next query goes on a new one.
+///
+/// The deadlines and the idle time are far, so a loaded machine filling the connection (the peer reads nothing, its
+/// writes block) never has them expire before the new connection opens.
 #[compio::test]
 async fn a_query_finding_every_id_taken_opens_a_connection() {
+    let far = || Instant::now() + Duration::from_secs(60);
     let (listener, server) = listen().await;
-    let pool = pool();
+    let pool = Rc::new(TcpPool::new(Duration::from_secs(60)));
     let waiting: Vec<_> = (0..=u16::MAX)
         .map(|n| {
             let pool = Rc::clone(&pool);
-            compio::runtime::spawn(async move {
-                pool.exchange(server, &query_with_id(n), deadline()).await
-            })
+            compio::runtime::spawn(
+                async move { pool.exchange(server, &query_with_id(n), far()).await },
+            )
         })
         .collect();
     let _full = Peer::accept(&listener).await;
     let asked = {
         let pool = Rc::clone(&pool);
-        compio::runtime::spawn(async move {
-            pool.exchange(server, &query_with_id(18), deadline()).await
-        })
+        compio::runtime::spawn(
+            async move { pool.exchange(server, &query_with_id(18), far()).await },
+        )
     };
-    let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+    let mut fresh = compio::time::timeout(Duration::from_secs(10), Peer::accept(&listener))
         .await
         .expect("a new connection");
     let query = fresh.read().await.expect("the query on a new connection");
