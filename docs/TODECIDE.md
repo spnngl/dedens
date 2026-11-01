@@ -66,8 +66,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
   `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
   one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
-- ODoH over HTTP/2 (D79): public proxies speak HTTP/2 only (November 2026), so `+odoh-proxy` reaches no public proxy
-  until 23. Default: HTTP/3 only (D83).
+- ODoH over HTTP/2 (D79): `odoh-relay.edgecompute.app` speaks HTTP/3, but it refuses one target (403 for
+  `doh.tiarap.org`) and other public proxies may speak HTTP/2 only. Default: HTTP/3 only (D83); step 23 when a proxy
+  in use needs HTTP/2.
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
 - CoAP (D80): non-confirmable requests by the client (RFC 7252 §4.3) and server-side Block1 reassembly (a DoC query
@@ -160,11 +161,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the `base64-simd` crate and our table against a signed zone; `unsafe` only if it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
-- Order after the server forwarder: DoH over HTTP/3 and DNSSEC validation (`plan/4-dnssec-experimental`),
-  DoH over HTTP/2 once compio releases tokio's I/O traits (D62), kubernetes stage, recursive resolver (with an RRset cache, priming per
-  RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
-  then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option (RFC 9567) with the
-  server.
+- Order after phase 4 (DoH over HTTP/3, DNSSEC validation, ODoH and DoC, all merged): kubernetes stage, recursive
+  resolver (with an RRset cache, priming per RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones,
+  AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182); the error reporting option (RFC 9567) with the server; DoH over
+  HTTP/2 once compio releases tokio's I/O traits (D62).
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.
