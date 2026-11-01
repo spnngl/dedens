@@ -12,7 +12,7 @@ use dedens_net::tls::{Presented, Trust};
 use dedens_server::Pipeline;
 
 use crate::config::{Downloads, Listen};
-use crate::download::Fetcher;
+use crate::download::{Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
@@ -95,15 +95,68 @@ pub(crate) struct Fixed {
     pub(crate) odoh: Option<crate::odoh::Section>,
 }
 
-/// The first wait after a failed download; each failure in a row doubles it, up to the refresh interval.
+/// The first wait after a failed download or reload; each failure in a row doubles it, up to the refresh interval.
 const RETRY: Duration = Duration::from_secs(60);
+
+/// What the thread keeps from one fetch to the next (D104).
+#[derive(Debug)]
+struct Ticks {
+    /// The wait after the next failure.
+    retry: Duration,
+    /// A downloaded list changed and no reload served it yet. The list and its `ETag` are saved before the reload,
+    /// so the next fetch finds it unchanged (304): only this remembers that the pipeline is behind the lists.
+    pending: bool,
+}
+
+impl Ticks {
+    const fn new() -> Self {
+        Self {
+            retry: RETRY,
+            pending: false,
+        }
+    }
+
+    /// A reload built from the lists on disk served, a SIGHUP's included: nothing is pending, and a failure waits
+    /// the first time again.
+    const fn served(&mut self) {
+        self.pending = false;
+        self.retry = RETRY;
+    }
+
+    /// How long to wait after a fetch that found `fetched`, `refresh` being the interval of the downloads in use.
+    /// `reload` builds the pipeline again from the lists on disk, returning the interval of the downloads it built,
+    /// `None` when it failed: it runs when a list changed, and again after each fetch until it succeeds.
+    fn wait(
+        &mut self,
+        fetched: Fetched,
+        mut refresh: Duration,
+        reload: impl FnOnce() -> Option<Duration>,
+    ) -> Duration {
+        self.pending |= fetched.changed;
+        if self.pending
+            && let Some(new) = reload()
+        {
+            self.pending = false;
+            refresh = new;
+        }
+        if fetched.failed || self.pending {
+            let wait = self.retry.min(refresh);
+            self.retry = self.retry.saturating_mul(2);
+            wait
+        } else {
+            self.retry = RETRY;
+            refresh
+        }
+    }
+}
 
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
 /// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
 /// configuration last loaded, again without reading `file`. One thread for both, so a refresh never replaces the
 /// pipeline of a reload with an older one. A panic while fetching or reloading is logged and counts as a failure;
-/// the thread goes on. The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that
-/// it serves never ends the process.
+/// the thread goes on, and a reload that failed after the lists changed is tried again on the next tick (D104). The
+/// SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it serves never ends the
+/// process.
 ///
 /// # Errors
 ///
@@ -130,33 +183,36 @@ pub(crate) fn control(
         // Held here, so `hangups` is never disconnected, SIGHUP or not.
         let _hangup = hangup;
         let client = Fetcher::new();
-        let mut retry = RETRY;
+        guarded("leftover sweep", || sweep(&downloads.urls, &downloads.dir));
+        let mut ticks = Ticks::new();
         loop {
             let wait = if downloads.urls.is_empty() {
                 Duration::MAX
             } else {
                 let fetched = guarded("list download", || {
                     client.fetch(&downloads.urls, &downloads.dir)
+                })
+                // A panic may have come after a list was saved: reload, which costs little when nothing changed.
+                .unwrap_or(Fetched {
+                    changed: true,
+                    failed: true,
                 });
-                if fetched.is_some_and(|fetched| fetched.changed)
-                    && let Some(new) = reload(&file, Read::Last, &mut text, &current, &fixed)
-                {
+                ticks.wait(fetched, downloads.refresh, || {
+                    let new = reload(&file, Read::Last, &mut text, &current, &fixed)?;
+                    let refresh = new.refresh;
                     downloads = new;
-                }
-                if fetched.is_none_or(|fetched| fetched.failed) {
-                    let next = retry.min(downloads.refresh);
-                    retry = retry.saturating_mul(2);
-                    next
-                } else {
-                    retry = RETRY;
-                    downloads.refresh
-                }
+                    Some(refresh)
+                })
             };
             // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
-            if hangups.recv_timeout(wait).is_ok()
-                && let Some(new) = reload(&file, Read::File, &mut text, &current, &fixed)
-            {
-                downloads = new;
+            if hangups.recv_timeout(wait).is_ok() {
+                // Those queued meanwhile ask for what this one does (D104).
+                while hangups.try_recv().is_ok() {}
+                if let Some(new) = reload(&file, Read::File, &mut text, &current, &fixed) {
+                    downloads = new;
+                    // Built from the lists on disk, the pending reload included.
+                    ticks.served();
+                }
             }
         }
     });
@@ -233,12 +289,73 @@ const RELOADS: &str = "dedensd_reloads_total";
 
 #[cfg(test)]
 mod tests {
-    use super::guarded;
+    use std::time::Duration;
+
+    use super::{RETRY, Ticks, guarded};
+    use crate::download::Fetched;
 
     /// D64: a panic in a reload or a download is logged, and the reload thread goes on.
     #[test]
     fn a_panic_is_contained() {
         assert_eq!(guarded("work", || 7), Some(7));
         assert_eq!(guarded("work", || -> u8 { panic!("a bug") }), None);
+    }
+
+    /// S15.a: a reload that failed after the list was saved is tried again, though the next fetch finds the list
+    /// unchanged.
+    #[test]
+    fn a_failed_reload_is_retried_on_the_next_tick() {
+        let refresh = Duration::from_hours(24);
+        let mut ticks = Ticks::new();
+        let changed = Fetched {
+            changed: true,
+            failed: false,
+        };
+        assert_eq!(ticks.wait(changed, refresh, || None), RETRY);
+        // Still failing: the wait doubles, as after a failed download.
+        assert_eq!(ticks.wait(Fetched::default(), refresh, || None), RETRY * 2);
+        // The fetch finds the list unchanged (304), the reload serves it.
+        let mut reloads = 0;
+        let wait = ticks.wait(Fetched::default(), refresh, || {
+            reloads += 1;
+            Some(refresh)
+        });
+        assert_eq!((reloads, wait), (1, refresh));
+        // Nothing is pending any more: no reload, and the next failure waits the first time again.
+        let wait = ticks.wait(Fetched::default(), refresh, || panic!("reloaded"));
+        assert_eq!(wait, refresh);
+        let failed = Fetched {
+            changed: false,
+            failed: true,
+        };
+        assert_eq!(ticks.wait(failed, refresh, || panic!("reloaded")), RETRY);
+    }
+
+    /// A SIGHUP's reload serves the lists on disk: nothing stays pending and the backoff starts again.
+    #[test]
+    fn a_served_reload_clears_the_backoff() {
+        let refresh = Duration::from_hours(24);
+        let mut ticks = Ticks::new();
+        let changed = Fetched {
+            changed: true,
+            failed: false,
+        };
+        ticks.wait(changed, refresh, || None);
+        ticks.wait(Fetched::default(), refresh, || None);
+        ticks.served();
+        assert_eq!(ticks.wait(changed, refresh, || None), RETRY);
+    }
+
+    /// The interval of the downloads a reload built is the next wait.
+    #[test]
+    fn a_reload_gives_the_new_refresh_interval() {
+        let mut ticks = Ticks::new();
+        let changed = Fetched {
+            changed: true,
+            failed: false,
+        };
+        let new = Duration::from_hours(1);
+        let wait = ticks.wait(changed, Duration::from_hours(24), || Some(new));
+        assert_eq!(wait, new);
     }
 }

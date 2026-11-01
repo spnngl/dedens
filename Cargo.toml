@@ -43,6 +43,10 @@ dedens-scenario = { path = "crates/dedens-scenario" }
 dedens-server = { path = "crates/dedens-server" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
+# D104: dedensd's tests compress a list to serve it with `Content-Encoding: gzip`, which its downloads do not decode.
+flate2 = { version = "1.1.10", default-features = false, features = [
+  "rust_backend",
+] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 # dedensd: the lock its tasks take turns with on a UDP socket's stream of datagrams; D60: a TLS stream split in
 # halves locked only while polled. compio depends on it already.
@@ -105,8 +109,12 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
   "std",
 ] }
 unicode-script = "0.5.8"
-# D57: dedensd's list downloads, blocking on a thread of their own; the OS trust store ("platform-verifier").
-ureq = { version = "3.5.0", features = ["platform-verifier"] }
+# D57: dedensd's list downloads, blocking on a thread of their own; the OS trust store ("platform-verifier"). No
+# "gzip", see D104.
+ureq = { version = "3.5.0", default-features = false, features = [
+  "platform-verifier",
+  "rustls",
+] }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
 # D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.

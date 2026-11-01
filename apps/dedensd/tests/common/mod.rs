@@ -229,6 +229,8 @@ pub(crate) struct Server {
     events: mpsc::Receiver<Value>,
     /// The "serving" event that announced it.
     pub(crate) serving: Value,
+    /// Every line it wrote to stderr so far, as written.
+    log: Arc<Mutex<Vec<String>>>,
 }
 
 impl Drop for Server {
@@ -264,10 +266,17 @@ impl Server {
                 .expect("dedensd starts");
             let stderr = child.stderr.take().expect("its piped stderr");
             let (send, events) = mpsc::channel();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let written = Arc::clone(&log);
             // Reads to the end of stderr, when the server exits, so a full pipe never blocks it.
             thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    if let Ok(event) = serde_json::from_str(&line) {
+                    let event = serde_json::from_str(&line);
+                    written
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(line);
+                    if let Ok(event) = event {
                         let _ = send.send(event);
                     }
                 }
@@ -278,6 +287,7 @@ impl Server {
                 config,
                 events,
                 serving: Value::Null,
+                log,
             };
             if let Some(serving) = server.event("serving") {
                 server.serving = serving;
@@ -294,6 +304,14 @@ impl Server {
         self.events
             .iter()
             .find(|event| event["fields"]["message"] == message)
+    }
+
+    /// Every line the server wrote to stderr so far, events or not.
+    pub(crate) fn stderr(&self) -> Vec<String> {
+        self.log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Sends SIGHUP, asking for a reload (D55).

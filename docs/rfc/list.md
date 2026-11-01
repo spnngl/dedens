@@ -82,7 +82,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 8613](https://datatracker.ietf.org/doc/html/rfc8613):** Object Security for Constrained RESTful Environments (OSCORE), to protect DoC later
 * **[RFC 8932](https://datatracker.ietf.org/doc/html/rfc8932):** Recommendations for DNS Privacy Service Operators
 * **[RFC 9103](https://datatracker.ietf.org/doc/html/rfc9103):** DNS Zone Transfer over TLS (XoT)
-* **[RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110):** HTTP Semantics, for DoH
+* **[RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110):** HTTP Semantics, for DoH and the list downloads
 * **[RFC 9111](https://datatracker.ietf.org/doc/html/rfc9111):** HTTP Caching, the freshness of a DoH response
 * **[RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113):** HTTP/2, the minimum DoH is recommended to run on
 * **[RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114):** HTTP/3, DoH over QUIC
