@@ -281,6 +281,9 @@ impl Options {
     /// The content format of a DNS message, `application/dns-message` (RFC 9953 §4.1).
     pub const DNS_MESSAGE: u16 = 553;
 
+    /// The content format of links, `application/link-format` (RFC 6690 §7.3; RFC 7252 §12.3).
+    pub const LINK_FORMAT: u16 = 40;
+
     /// No options.
     #[must_use]
     pub const fn new() -> Self {

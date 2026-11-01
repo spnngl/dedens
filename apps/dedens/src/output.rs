@@ -174,6 +174,9 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
         if let Some(http) = exchange.http {
             write!(out, " ({} {})", http.version, http.status)?;
         }
+        if let Some(path) = &exchange.doc_path {
+            write!(out, " (discovered {path})")?;
+        }
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
         }

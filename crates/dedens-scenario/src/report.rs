@@ -109,6 +109,7 @@ impl Report {
                     version: http.version_name(),
                     status: http.status.as_u16(),
                 }),
+                doc_path: None,
             }),
             ..Self::new(id, decoded, response.wire.len())
         }
@@ -193,7 +194,7 @@ impl EdeReport {
 }
 
 /// How a response came.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExchangeReport {
     /// The server asked.
     pub server: SocketAddr,
@@ -208,6 +209,10 @@ pub struct ExchangeReport {
     /// Over HTTPS, the HTTP response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpReport>,
+    /// Over CoAP, the path the server's `/.well-known/core` gave for the query (`+doc-discover`, D95), written as a
+    /// URI path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_path: Option<String>,
 }
 
 /// The HTTP response a DNS response came in (RFC 8484 §4.2.1).

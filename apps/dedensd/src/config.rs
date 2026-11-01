@@ -195,7 +195,8 @@ fn split_path(text: &str) -> Result<(&str, Arc<str>), String> {
 }
 
 /// `ADDR[/PATH]` split in `ADDR` and the path of a CoAP URI, `/` unless set (RFC 9953 §3.2): without query, fragment
-/// or percent-encoding, which segments are read as written.
+/// or percent-encoding, which segments are read as written;
+/// no `.` or `..` segment, and not `/.well-known/core`, which lists the resource (D95).
 #[cfg(feature = "doc")]
 fn split_coap_path(text: &str) -> Result<(&str, Arc<str>), String> {
     let Some(start) = text.find('/') else {
@@ -206,6 +207,11 @@ fn split_coap_path(text: &str) -> Result<(&str, Arc<str>), String> {
         Err(format!(
             "`{path}` is not a path without query, fragment or %"
         ))
+    } else if path == "/.well-known/core" {
+        Err(format!("`{path}` is where the resources are listed"))
+    } else if path.split('/').any(|segment| matches!(segment, "." | "..")) {
+        // A Uri-Path is never one (RFC 7252 §5.10.1): no request could reach it.
+        Err(format!("`{path}` has a segment `.` or `..`"))
     } else {
         Ok((rest, Arc::from(path)))
     }
@@ -1140,7 +1146,8 @@ mod tests {
         }
     }
 
-    /// `coap://` takes port 5683 and the path `/` unless set, a path without query, fragment or `%`.
+    /// `coap://` takes port 5683 and the path `/` unless set, a path without query, fragment or `%`, with no `.` or
+    /// `..` segment, and not the one where the resources are listed (D95).
     #[cfg(feature = "doc")]
     #[test]
     fn coap_listen_addresses_take_port_5683_and_the_root_path() {
@@ -1161,6 +1168,9 @@ mod tests {
             "coap://127.0.0.1/dns?dns=",
             "coap://127.0.0.1/a#b",
             "coap://127.0.0.1/a%20b",
+            "coap://127.0.0.1/.well-known/core",
+            "coap://127.0.0.1/a/./b",
+            "coap://127.0.0.1/a/..",
         ] {
             assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
         }

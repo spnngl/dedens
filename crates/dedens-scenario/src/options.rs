@@ -51,6 +51,12 @@ pub struct Options {
     /// feature of the build. Not with `tcp`, `tls`, `quic`, `https` or `odoh_proxy`. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub coap: Option<bool>,
+    /// Ask the CoAP server for its `DoC` resource, GET `/.well-known/core?rt=core.dns`, and query the first it lists,
+    /// instead of the path of the URI (RFC 9953 §3.1; D95). The server is the one named, never found: the
+    /// list is as trusted as the server is. Needs CoAP (`coap`, or a `coap://` server) with no path in the server's URI.
+    /// Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub doc_discover: Option<bool>,
     /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
     /// are not fetched from the target, which would give it the client's address, and no query is linked to it.
     /// Default: fetched from the target.
@@ -122,6 +128,7 @@ impl Options {
             https_post: self.https_post.or(fallback.https_post),
             odoh_proxy: self.odoh_proxy.or(fallback.odoh_proxy),
             coap: self.coap.or(fallback.coap),
+            doc_discover: self.doc_discover.or(fallback.doc_discover),
             odoh_config: self.odoh_config.or(fallback.odoh_config),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
@@ -608,5 +615,22 @@ mod tests {
         };
         assert_eq!(off.check(), Ok(()));
         assert_eq!(off.exchange().transport, Transport::Tcp);
+    }
+
+    /// D95: `doc_discover` is set in a file's `options` or on the command line, which wins; whether a server is there
+    /// to ask is the caller's to check (`@coap://` is CoAP with no `coap` set).
+    #[test]
+    fn doc_discover_is_merged_with_the_command_line_first() {
+        let line = Options {
+            doc_discover: Some(false),
+            ..Options::default()
+        };
+        let file = Options {
+            doc_discover: Some(true),
+            ..Options::default()
+        };
+        assert_eq!(line.or(file.clone()).doc_discover, Some(false));
+        assert_eq!(Options::default().or(file.clone()).doc_discover, Some(true));
+        assert_eq!(file.check(), Ok(()));
     }
 }

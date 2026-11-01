@@ -1,6 +1,6 @@
 //! DNS over CoAP, the part before the transport: the request a DNS query makes, the path an SVCB record gives,
-//! what a server makes of a request and of the DNS response it answers with, and the TTLs against Max-Age
-//! (RFC 9953 §3.2, §4.2, §4.3).
+//! what a server makes of a request and of the DNS response it answers with, the TTLs against Max-Age, and the
+//! discovery of the resource by its resource type, both sides (RFC 9953 §3.1, §3.2, §4.2, §4.3; D95).
 
 use dedens_proto::DecodeError;
 use dedens_proto::message::ttl_offsets;
@@ -12,6 +12,12 @@ use super::message::{Code, Message, OptionNumber, Options, Token, Type};
 
 /// The longest TTL, 2^31 - 1 seconds (RFC 2181 §8).
 const MAX_TTL: u32 = 0x7FFF_FFFF;
+
+/// The resource type, `rt`, of a `DoC` resource (RFC 9953 §3.1, §8.3).
+pub const RESOURCE_TYPE: &str = "core.dns";
+
+/// The segments of the path `/.well-known/core`, where the links of a server are (RFC 6690 §4).
+const WELL_KNOWN: [&[u8]; 2] = [b".well-known", b"core"];
 
 /// The largest block of a response, which a request may ask to be smaller.
 pub const BLOCK_SIZE: BlockSize = BlockSize::MAX;
@@ -43,6 +49,26 @@ pub fn request(docpath: &[Box<[u8]>], query: Vec<u8>, token: Token) -> Request {
         code: Code::FETCH,
         options,
         payload: query,
+        token,
+    }
+}
+
+/// The request for the `DoC` resources of a server: GET `/.well-known/core?rt=core.dns`, asking for the link format
+/// (RFC 9953 §3.1, RFC 6690 §4.1). A server that does not filter answers with every link: the client reads the
+/// `rt` of each (see [`super::link`]).
+#[must_use]
+pub fn discovery_request(token: Token) -> Request {
+    let mut options = Options::new();
+    options.push_uri_path(WELL_KNOWN);
+    options.insert(
+        OptionNumber::URI_QUERY,
+        format!("rt={RESOURCE_TYPE}").into_bytes(),
+    );
+    options.set_accept(Options::LINK_FORMAT);
+    Request {
+        code: Code::GET,
+        options,
+        payload: Vec::new(),
         token,
     }
 }
@@ -87,9 +113,7 @@ pub enum Query<'a> {
 /// resource tree, as for any authority (§5.10.1).
 pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, Code> {
     let options = &request.options;
-    if options.get(OptionNumber::PROXY_URI).is_some()
-        || options.get(OptionNumber::PROXY_SCHEME).is_some()
-    {
+    if proxied(options) {
         return Err(Code::PROXYING_NOT_SUPPORTED);
     }
     if !options.uri_path().eq(path.iter().map(|segment| &**segment)) {
@@ -129,8 +153,22 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, 
     } else {
         Query::Dns(&request.payload)
     };
-    // A response has no tag to match but a block's, which a query does not name, and the resource exists.
-    if options
+    if precondition_failed(options) {
+        return Err(Code::PRECONDITION_FAILED);
+    }
+    Ok(query)
+}
+
+/// Whether `options` ask for a proxy: a Proxy-Uri or a Proxy-Scheme (RFC 7252 §5.7.2).
+fn proxied(options: &Options) -> bool {
+    options.get(OptionNumber::PROXY_URI).is_some()
+        || options.get(OptionNumber::PROXY_SCHEME).is_some()
+}
+
+/// Whether the If-Match or If-None-Match of `options` fails (RFC 7252 §5.10.8). A response has no tag to match but a
+/// block's, which a request does not name, and the resource exists.
+fn precondition_failed(options: &Options) -> bool {
+    options
         .get_all(OptionNumber::IF_NONE_MATCH)
         .next()
         .is_some()
@@ -138,10 +176,90 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, 
             && options
                 .get_all(OptionNumber::IF_MATCH)
                 .all(|tag| !tag.is_empty()))
-    {
-        return Err(Code::PRECONDITION_FAILED);
+}
+
+/// The answer to `request` when it is for `/.well-known/core`, whose one link is the `DoC` resource at `path`:
+/// `</dns/query>;rt=core.dns;ct=553`; none for another resource, which [`query`] answers (RFC 9953 §3.1, RFC 6690
+/// §4, §4.1; D95).
+///
+/// The answer is 2.05 with the content format `application/link-format`, 40. A filter on `rt`, a Uri-Query
+/// `rt=VALUE` (a complete value, or a prefix ending in `*`), keeps the link when `core.dns` matches and gives the
+/// empty payload otherwise; every other Uri-Query is ignored. The link has no Block2: it is a few bytes. A CON
+/// request gets an ACK carrying it, a NON one a NON response with message ID `id`.
+///
+/// The codes are those of [`query`] where they apply: 5.05 for a Proxy-Uri or Proxy-Scheme (answered by [`query`],
+/// which this returns none for), 4.05 for a method other than GET, 4.02 for an unknown critical option, 4.06 for
+/// another format accepted than 40, 4.12 for an If-Match or an If-None-Match the resource does not fulfil. Bytes
+/// of a segment that a path cannot hold are percent-encoded in the link (RFC 3986 §3.3), and a path that begins with an
+/// empty segment is written after `/.`. A segment `.` or `..` is none the server can serve: a Uri-Path is never one
+/// (RFC 7252 §5.10.1), and `dedensd` refuses it in its address.
+#[must_use]
+pub fn discovery(request: &Message, id: u16, path: &[Box<[u8]>]) -> Option<Message> {
+    let options = &request.options;
+    if proxied(options) || !options.uri_path().eq(WELL_KNOWN) {
+        return None;
     }
-    Ok(query)
+    let refused = if request.code != Code::GET {
+        Some(Code::METHOD_NOT_ALLOWED)
+    } else if request.unknown_critical().next().is_some() {
+        Some(Code::BAD_OPTION)
+    } else if options
+        .accept()
+        .is_some_and(|accepted| accepted != Options::LINK_FORMAT)
+    {
+        Some(Code::NOT_ACCEPTABLE)
+    } else if precondition_failed(options) {
+        Some(Code::PRECONDITION_FAILED)
+    } else {
+        None
+    };
+    if let Some(code) = refused {
+        return Some(error(request, id, code));
+    }
+    let mut reply = answer(request, id, Code::CONTENT);
+    reply.options.set_content_format(Options::LINK_FORMAT);
+    // Only `rt` is a filter here; a query on another attribute is ignored, as one on none (RFC 6690 §4.1).
+    let matching = options
+        .get_all(OptionNumber::URI_QUERY)
+        .filter_map(|query| std::str::from_utf8(query).ok()?.strip_prefix("rt="))
+        .all(|wanted| match wanted.strip_suffix('*') {
+            Some(prefix) => RESOURCE_TYPE.starts_with(prefix),
+            None => wanted == RESOURCE_TYPE,
+        });
+    if matching {
+        reply.payload = link(path).into_bytes();
+    }
+    Some(reply)
+}
+
+/// The link of the `DoC` resource at `path`.
+fn link(path: &[Box<[u8]>]) -> String {
+    let mut link = String::from("<");
+    if path.is_empty() {
+        link.push('/');
+    }
+    // A path of `//` first would read as an authority: a dot segment, which the client removes, keeps it a path
+    // (RFC 3986 §4.2, §5.2.4).
+    if path.first().is_some_and(|segment| segment.is_empty()) {
+        link.push_str("/.");
+    }
+    for segment in path {
+        link.push('/');
+        for &byte in &**segment {
+            // The `pchar` of RFC 3986 §3.3 but the `%`.
+            if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@".contains(&byte) {
+                link.push(char::from(byte));
+            } else {
+                link.push('%');
+                link.extend([byte >> 4, byte & 0xF].map(|nibble| {
+                    char::from_digit(nibble.into(), 16)
+                        .expect("a nibble is a digit")
+                        .to_ascii_uppercase()
+                }));
+            }
+        }
+    }
+    link + ">;rt=" + RESOURCE_TYPE + ";ct=" + &Options::DNS_MESSAGE.to_string()
 }
 
 /// The answer to `request` that carries the DNS response `dns` (RFC 9953 §4.3): 2.05 with the content format

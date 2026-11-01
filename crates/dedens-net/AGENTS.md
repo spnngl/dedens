@@ -19,11 +19,14 @@ crate that touches sockets and timers.
 - `src/coap/`: the sans-IO CoAP codec and exchanges of DoC (D80): `message.rs` (RFC 7252 messages, options, codes),
   `block.rs` (RFC 7959 Block options, reassembly, slicing), `exchange.rs` (client: retransmission, matching,
   separate responses, block-wise transfers), `server.rs` (deduplication of confirmable requests, responses kept for the next blocks), `doc.rs` (the
-  FETCH request of a query, the path of a `docpath`); no socket, no clock, no randomness; fuzzed by `parse_coap`.
+  FETCH request of a query, the path of a `docpath`, the `/.well-known/core` request and the server's list of its
+  resource, D95), `link.rs` (RFC 6690 link lists, and the path a link names on a server); no socket, no clock, no
+  randomness; fuzzed by `parse_coap` and `parse_link_format`.
 - `src/odoh.rs`, feature `odoh`: Oblivious DoH over `https.rs` (D79): the sans-IO requests, responses and target
   classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
   `Client::exchange_oblivious`.
-- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs.
+- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs;
+  the discovery of the resource by `/.well-known/core` (D95).
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
 - `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc8484.rs` and `rfc9230.rs`
@@ -33,8 +36,8 @@ crate that touches sockets and timers.
   `doh` on the RFC examples and on the responses of public servers in `tests/testdata/doh/` (`capture.nu` has
   the commands). `rfc7252.rs`, `rfc7959.rs` and `rfc8132.rs` drive `coap` on the RFC figures and on the
   datagrams of aiocoap in `tests/testdata/coap/` (`capture.nu` has the commands; `tests/coap_capture/` reads them).
-  `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP server on loopback. The one ignored test
-  of `rfc9230.rs` asks public ODoH targets (`just odoh-live`).
+  `rfc6690.rs` reads the link lists of the RFC. `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP
+  server on loopback. The one ignored test of `rfc9230.rs` asks public ODoH targets (`just odoh-live`).
 
 `benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`).
 Measure a transport change with `just bench-dnsperf <base> forward` or `forward-tcp`.

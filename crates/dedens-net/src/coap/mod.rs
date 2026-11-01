@@ -5,13 +5,15 @@
 //! - [`exchange`]: one request and its response over an unreliable transport: retransmission, separate
 //!   responses, block-wise transfer. The client side.
 //! - [`server`]: the CON messages a server has seen, to answer a duplicate without processing it again.
-//! - [`doc`]: the `DoC` request and the `docpath` of an SVCB record.
+//! - [`doc`]: the `DoC` request and the `docpath` of an SVCB record, and the discovery of a `DoC` resource.
+//! - [`link`]: the `CoRE` Link Format of that discovery (RFC 6690).
 //!
 //! Nothing here opens a socket, reads a clock or draws a random number.
 
 pub mod block;
 pub mod doc;
 pub mod exchange;
+pub mod link;
 mod message;
 pub mod server;
 

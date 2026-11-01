@@ -177,6 +177,12 @@ impl Cli {
                     .to_owned(),
             );
         }
+        if !cli.discovers_where_it_can() {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "+doc-discover needs a CoAP server (+coap or coap://) with no path".to_owned(),
+            );
+        }
         let output = &cli.output;
         if [
             output.format.is_some(),
@@ -198,6 +204,24 @@ impl Cli {
             usage(ErrorKind::ArgumentConflict, error.to_string());
         }
         cli
+    }
+
+    /// Whether `+doc-discover`, if given, has a CoAP server to ask with no path of its own: the resource is found at
+    /// the server (D95). A query file names its own servers, which the run checks.
+    fn discovers_where_it_can(&self) -> bool {
+        if self.options.doc_discover != Some(true) || self.file.is_some() {
+            return true;
+        }
+        let coap_on = self.options.coap == Some(true);
+        let discoverable = |server: &String| match server.strip_prefix("coap://") {
+            Some(host) => !host.contains('/'),
+            None => coap_on && !server.contains("://"),
+        };
+        if self.server.is_empty() {
+            coap_on
+        } else {
+            self.server.iter().all(discoverable)
+        }
     }
 
     /// The servers given, in order.

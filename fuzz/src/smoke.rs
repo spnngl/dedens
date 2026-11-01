@@ -112,6 +112,14 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "long name".into(),
             [header([0, 1, 0, 0, 0, 0, 0, 0]), vec![63; 300]].concat(),
         ),
+        // CoAP discovery: the listing of RFC 6690 §5.5, and the paths a `DoC` server may hold (D95).
+        (
+            "link format".into(),
+            b"</sensors>;ct=40;title=\"Sensor Index\",\n</sensors/temp>;rt=\"temperature-c\";if=\"sensor\",\n</sensors/light>;rt=\"light-lux\";if=\"sensor\",\n<http://www.example.com/sensors/t123>;anchor=\"/sensors/temp\"\n;rel=\"describedby\",\n</t>;anchor=\"/sensors/temp\";rel=\"alternate\""
+                .to_vec(),
+        ),
+        ("link path".into(), b"dns/query".to_vec()),
+        ("link path with empty segments".into(), b"/a//b/".to_vec()),
         // DoH: a template, a GET (RFC 8484 §4.1.1) and an aged response around a captured message.
         (
             "doh template".into(),

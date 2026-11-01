@@ -14,8 +14,9 @@ use compio::net::UdpSocket;
 use compio::time::timeout_at;
 
 use crate::client::ClientError;
-use crate::coap::doc::{add_max_age, request};
+use crate::coap::doc::{RESOURCE_TYPE, add_max_age, discovery_request, request};
 use crate::coap::exchange::{Exchange, Failure, Next, Params, Response, Step};
+use crate::coap::link::{self, LinkError};
 use crate::coap::{Code, Options, Token};
 use crate::udp::unspecified;
 
@@ -41,6 +42,12 @@ pub enum DocError {
     /// A 2.05 response whose body is not a DNS message.
     #[error("the response is not a DNS message")]
     NotDns,
+    /// A content format other than `application/link-format`, 40, for the links of a discovery (RFC 6690 §4).
+    #[error("the response has the content format {0}, not 40 (application/link-format)")]
+    NotLinks(u16),
+    /// The links of a discovery are not in the link format, or none names a resource of the server.
+    #[error("the links are refused")]
+    Links(#[from] LinkError),
 }
 
 /// Asks `server` for the DNS response to `query` at the path `docpath`, with the `random` bytes for the token (8),
@@ -81,6 +88,59 @@ pub(crate) async fn coap(
     let mut body = response.payload;
     add_max_age(&mut body, response.options.max_age()).map_err(|_| DocError::NotDns)?;
     Ok(body)
+}
+
+/// Asks `server` for its `DoC` resources, GET `/.well-known/core?rt=core.dns`, with the `random` bytes of [`coap`]:
+/// the path segments of each link that is hosted, has the resource type `core.dns` and, when it says what it returns,
+/// `application/dns-message`, and names a path on the server itself (RFC 9953 §3.1; RFC 6690 §2.2, §4.1;
+/// [`crate::coap::link`]). A server that does not filter lists other links too: they are not kept.
+///
+/// # Errors
+///
+/// [`ClientError::Doc`]: a socket failure, no response, a CoAP error code, a content format other than 40, a body
+/// outside the link format, or links with the resource type that all name a resource elsewhere. No such link is no
+/// error: no paths.
+pub(crate) async fn discover(
+    server: SocketAddr,
+    random: [u8; 14],
+) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
+    let [token @ .., id_high, id_low, s0, s1, s2, s3] = random;
+    let token = Token::new(&token).expect("8 bytes fit a token");
+    let first_id = u16::from_be_bytes([id_high, id_low]);
+    let seed = u32::from_be_bytes([s0, s1, s2, s3]).max(1);
+    let response = run(discovery_request(token), server, first_id, seed).await?;
+    debug!(
+        %server,
+        code = %response.code,
+        bytes = response.payload.len(),
+        "CoAP discovery response"
+    );
+    if response.code != Code::CONTENT {
+        return Err(DocError::Code(response.code).into());
+    }
+    // No Content-Format is the one asked for, as for a DNS response.
+    if let Some(format) = response.options.content_format()
+        && format != Options::LINK_FORMAT
+    {
+        return Err(DocError::NotLinks(format).into());
+    }
+    let links = link::parse(&response.payload).map_err(DocError::Links)?;
+    let mut paths = Vec::new();
+    let mut refused = None;
+    for link in links.iter().filter(|link| {
+        link.hosted()
+            && link.rt.iter().any(|rt| rt == RESOURCE_TYPE)
+            && (link.ct.is_empty() || link.ct.contains(&Options::DNS_MESSAGE))
+    }) {
+        match link.path(server) {
+            Ok(path) => paths.push(path),
+            Err(error) => refused = refused.or(Some(error)),
+        }
+    }
+    match refused {
+        Some(error) if paths.is_empty() => Err(DocError::Links(error).into()),
+        _ => Ok(paths),
+    }
 }
 
 /// The CoAP exchange of `request` over a socket of its own.
