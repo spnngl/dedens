@@ -411,6 +411,22 @@ pub(crate) struct Config {
     pub(crate) trust: Trust,
 }
 
+/// The stage of a hosts file and entries (`file` is read at start, `entries` are inline).
+fn hosts(
+    name: &str,
+    entries: &[String],
+    file: Option<&Path>,
+    ttl: Option<u32>,
+    fallthrough: bool,
+) -> anyhow::Result<Stage> {
+    let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
+    let hosts = local(entries, file, |text| {
+        Ok(Hosts::new(text, ttl, fallthrough)?)
+    })
+    .with_context(|| format!("stage `{name}`"))?;
+    Ok(Stage::Plugin(Box::new(hosts)))
+}
+
 /// Reads `text`, a configuration file, taking `${VAR}` from `env`. The cache stage of `previous`, the pipeline a
 /// reload replaces, is kept when its settings are unchanged, so its answers stay.
 ///
@@ -467,21 +483,16 @@ pub(crate) fn read(
                     trust_anchors,
                     insecure,
                 };
-                Stage::Forward(forward(name, servers, timeout_ms, tries, validation)?)
+                Stage::Forward(forward(
+                    name, servers, timeout_ms, tries, validation, previous,
+                )?)
             }
             StageFile::Hosts {
                 entries,
                 file,
                 ttl,
                 fallthrough,
-            } => {
-                let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
-                let hosts = local(&entries, file.as_deref(), |text| {
-                    Ok(Hosts::new(text, ttl, fallthrough)?)
-                })
-                .with_context(|| format!("stage `{name}`"))?;
-                Stage::Plugin(Box::new(hosts))
-            }
+            } => hosts(name, &entries, file.as_deref(), ttl, fallthrough)?,
             StageFile::Blocklist {
                 entries,
                 file,
@@ -578,7 +589,9 @@ fn cache(name: &str, config: dedens_cache::Config, previous: &Pipeline) -> anyho
     })
 }
 
-/// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says.
+/// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says; with the
+/// validator of `previous` when a forward stage of it validated the same way, so that a reload keeps the keys it
+/// cached (D86).
 ///
 /// # Errors
 ///
@@ -589,6 +602,7 @@ fn forward(
     timeout_ms: Option<NonZeroU32>,
     tries: Option<NonZeroU8>,
     validation: Validation,
+    previous: &Pipeline,
 ) -> anyhow::Result<Forward> {
     let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
         .with_context(|| format!("stage `{name}` has no server"))?;
@@ -599,7 +613,11 @@ fn forward(
         ),
         Dnssec::Validate => {
             let validating = validating(validation.trust_anchors.as_deref(), validation.insecure)?;
-            forward = forward.validating(validating);
+            let kept = previous.stages().iter().find_map(|stage| match stage {
+                Stage::Forward(old) => old.validation().filter(|old| old.tag() == validating.tag()),
+                _ => None,
+            });
+            forward = forward.validating(kept.cloned().unwrap_or(validating));
         }
     }
     if let Some(ms) = timeout_ms {
@@ -1354,6 +1372,38 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&cache(&insecure), &cache(&back)),
             "validate to off"
+        );
+    }
+
+    /// D86: the keys a validator cached stay valid across a reload while its trust anchors and negative anchors
+    /// stay; another set starts a new cache.
+    #[test]
+    fn a_reload_keeps_the_key_cache_while_validation_stays() {
+        let text = |forward: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n{forward}"
+            )
+        };
+        let validator = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Forward(forward)) => forward
+                .validation()
+                .expect("a validating stage")
+                .validator()
+                .clone(),
+            stage => unreachable!("{stage:?}"),
+        };
+        let first = read(&text(""), env, &Pipeline::default()).unwrap().pipeline;
+        let same = read(&text(""), env, &first).unwrap().pipeline;
+        assert!(
+            validator(&first).shares_cache(&validator(&same)),
+            "unchanged"
+        );
+        let insecure = read(&text("    insecure: [corp.example]\n"), env, &same)
+            .unwrap()
+            .pipeline;
+        assert!(
+            !validator(&same).shares_cache(&validator(&insecure)),
+            "negative anchor added"
         );
     }
 

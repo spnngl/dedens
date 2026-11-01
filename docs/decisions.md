@@ -248,7 +248,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D77 (amends D41, D43, D45; builds on D75) A forward stage validates with `dnssec: validate` (default `off`; `off` is
   read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else the bundled
   root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused. One
-  `Validator` per stage, built by `config.rs` at each read, so a reload builds a new one (D55). The wall clock is
+  `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
+  unchanged, the tag of its anchors file text and negative anchors the same (D55, D86). The wall clock is
   the caller's (`Validating::new(validator, clock)`, Unix seconds): the pipeline's `now` is a monotonic `u32`.
   The glue is `dedens-server`'s `validate.rs`: `Check` owns a `Validation` and the client's answer, and the
   pipeline turns each `Next::Ask` into a `Step::Upstream` whose `Upstream::request()` is the validator's question
@@ -346,7 +347,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
   `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
   validator, so a change of trust anchors or negative anchors is a new `Validator` with an empty cache, and nothing
-  stale outlives it. API, additive fields only: `Limits::key_cache` (`usize`, entries per table, default 4096; 0
+  stale outlives it; a reload that changes neither keeps the `Validator`, so the keys stay (`config.rs` compares the
+  tag it gives `Validating`, as it does for the answer cache, D77). API, additive fields only: `Limits::key_cache` (`usize`, entries per table, default 4096; 0
   turns the cache off) and `Limits::key_cache_bytes` (`usize`, default 4 MiB); `Limits { .., ..Limits::default() }`
   as before. `Limits` is not `#[non_exhaustive]`: the integration tests and the callers of steps 07 and 08 build it
   as a struct literal with `..Limits::default()`, which `#[non_exhaustive]` forbids outside the crate; a literal

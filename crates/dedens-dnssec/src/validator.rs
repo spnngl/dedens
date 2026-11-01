@@ -141,6 +141,12 @@ impl Validator {
         }
     }
 
+    /// Whether `other` is a clone of this validator, which shares its anchors, limits and cache of keys.
+    #[must_use]
+    pub fn shares_cache(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.config, &other.config)
+    }
+
     /// Starts validating `response`, the final answer to `question`, at the time `now` (Unix seconds).
     ///
     /// The validation keeps what it needs of `response`. A response that is no answer to `question` (another
