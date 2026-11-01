@@ -3,7 +3,7 @@
 use crate::error::WireError;
 use crate::kdf;
 use crate::suite::{AEAD_ID, KDF_ID, KEM_ID};
-use crate::wire::{Reader, check_vec16, put_vec16};
+use crate::wire::{Field, Reader};
 
 /// The only `ObliviousDoHConfig.version` there is (RFC 9230 §5).
 pub const VERSION: u16 = 0x0001;
@@ -13,6 +13,14 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 
 /// The size of a key ID, `Nh` of HKDF-SHA256 (RFC 9180 §7.2).
 pub const KEY_ID_LEN: usize = 32;
+
+/// `len(public_key)` as `ObliviousDoHConfigContents` writes it.
+const PUBLIC_KEY_PREFIX: [u8; 2] = [0, 32];
+
+/// `len(contents)` as `ObliviousDoHConfig` writes it: three identifiers, the prefix and the key.
+const CONTENTS_PREFIX: [u8; 2] = [0, 40];
+
+const _: () = assert!(PUBLIC_KEY_LEN == 32 && 3 * 2 + 2 + PUBLIC_KEY_LEN == 40);
 
 /// `ObliviousDoHConfigContents` (RFC 9230 §5) of the one suite this crate speaks: a target's X25519 public
 /// key, for DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
@@ -41,24 +49,24 @@ impl ObliviousDoHConfigContents {
         };
         // `Expand(Extract("", config), "odoh key id", Nh)`, RFC 9230 §6.1.
         let prk = kdf::extract(&[], &contents.encode());
-        contents.key_id = kdf::expand(&prk, b"odoh key id");
+        contents.key_id = *kdf::expand(&prk, b"odoh key id");
         contents
     }
 
-    /// Reads the contents of a config; `None` for a suite other than ours, which RFC 9230 §5 has clients
-    /// ignore. The structure is checked all the same.
-    fn parse(bytes: &[u8]) -> Result<Option<Self>, WireError> {
+    /// Reads the contents of a config; `None` for one this crate cannot use: another suite, which RFC 9230
+    /// §5 has clients ignore, or a malformed one (a field past its config, bytes after it, a key that is not
+    /// 32 bytes). One bad config must not hide the others a target publishes.
+    fn parse(bytes: &[u8]) -> Option<Self> {
         let mut reader = Reader::new(bytes);
-        let suite = (reader.u16()?, reader.u16()?, reader.u16()?);
-        let public_key = reader.vec16()?;
-        reader.finish()?;
-        check_vec16("public_key", public_key, 1)?;
+        let suite = (reader.u16().ok()?, reader.u16().ok()?, reader.u16().ok()?);
+        let public_key = reader.vec16().ok()?;
+        reader.finish().ok()?;
         if suite != (KEM_ID, KDF_ID, AEAD_ID) {
-            return Ok(None);
+            return None;
         }
         <[u8; PUBLIC_KEY_LEN]>::try_from(public_key)
-            .map(|key| Some(Self::new(key)))
-            .map_err(|_| WireError::PublicKeyLength(public_key.len()))
+            .ok()
+            .map(Self::new)
     }
 
     /// The bytes of the structure, which the key ID hashes.
@@ -68,7 +76,8 @@ impl ObliviousDoHConfigContents {
         for id in [KEM_ID, KDF_ID, AEAD_ID] {
             out.extend_from_slice(&id.to_be_bytes());
         }
-        put_vec16(&mut out, &self.public_key);
+        out.extend_from_slice(&PUBLIC_KEY_PREFIX);
+        out.extend_from_slice(&self.public_key);
         out
     }
 
@@ -86,7 +95,7 @@ impl ObliviousDoHConfigContents {
 }
 
 /// `ObliviousDoHConfigs` (RFC 9230 §5): the configs a target publishes, in decreasing order of preference,
-/// reduced to those this crate can use.
+/// reduced to those this crate can use, and never empty when read.
 ///
 /// ```text
 /// struct {
@@ -101,8 +110,9 @@ impl ObliviousDoHConfigContents {
 /// ```
 ///
 /// A config of another version, or of another KEM, KDF or AEAD, is skipped when reading, as §5 tells
-/// clients: the list may then be empty. Skipped configs are not kept, so [`encode`](Self::encode) writes
-/// the ones this crate can use, not a copy of the input.
+/// clients, and so is a malformed one while the list itself is well framed. Skipped configs are not kept:
+/// [`encode`](Self::encode) of what [`parse`](Self::parse) read writes the configs this crate can use, not a
+/// copy of the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObliviousDoHConfigs {
     configs: Vec<ObliviousDoHConfigContents>,
@@ -115,33 +125,38 @@ impl ObliviousDoHConfigs {
         Self { configs }
     }
 
-    /// Reads the body of `/.well-known/odohconfigs` or the value of an `odohconfig` `SvcParam`.
+    /// Reads a list of configs, as a target publishes it. How a client finds the list is out of scope of
+    /// RFC 9230 (§5).
     ///
     /// # Errors
     ///
     /// A [`WireError`] when the list is empty, truncated, longer than its length or followed by other
-    /// bytes, or when a config is: a field running past its config, a config using our suite whose key is
-    /// not 32 bytes.
+    /// bytes, or when none of its configs is usable ([`WireError::NoUsableConfig`]).
     pub fn parse(bytes: &[u8]) -> Result<Self, WireError> {
         let mut outer = Reader::new(bytes);
         let list = outer.vec16()?;
         outer.finish()?;
-        check_vec16("ObliviousDoHConfigs", list, 1)?;
+        if list.is_empty() {
+            return Err(WireError::EmptyField("ObliviousDoHConfigs"));
+        }
         let mut reader = Reader::new(list);
         let mut configs = Vec::new();
         while !reader.is_empty() {
             let version = reader.u16()?;
             let contents = reader.vec16()?;
             if version == VERSION
-                && let Some(contents) = ObliviousDoHConfigContents::parse(contents)?
+                && let Some(contents) = ObliviousDoHConfigContents::parse(contents)
             {
                 configs.push(contents);
             }
         }
+        if configs.is_empty() {
+            return Err(WireError::NoUsableConfig);
+        }
         Ok(Self { configs })
     }
 
-    /// The bytes of the list, version 1 configs only.
+    /// The bytes of the list.
     ///
     /// # Errors
     ///
@@ -151,15 +166,15 @@ impl ObliviousDoHConfigs {
         let mut list = Vec::new();
         for contents in &self.configs {
             list.extend_from_slice(&VERSION.to_be_bytes());
-            put_vec16(&mut list, &contents.encode());
+            list.extend_from_slice(&CONTENTS_PREFIX);
+            list.extend_from_slice(&contents.encode());
         }
-        check_vec16("ObliviousDoHConfigs", &list, 1)?;
-        let mut out = Vec::with_capacity(2 + list.len());
-        put_vec16(&mut out, &list);
+        let mut out = Vec::new();
+        Field::new("ObliviousDoHConfigs", list, 1)?.put(&mut out);
         Ok(out)
     }
 
-    /// The usable configs, most preferred first; empty when the target offers none this crate speaks.
+    /// The usable configs, most preferred first.
     #[must_use]
     pub fn configs(&self) -> &[ObliviousDoHConfigContents] {
         &self.configs

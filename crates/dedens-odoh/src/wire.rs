@@ -2,9 +2,6 @@
 
 use crate::error::WireError;
 
-/// The largest field a two-byte length carries.
-pub(crate) const MAX_FIELD: usize = 0xFFFF;
-
 /// A cursor over the bytes of a structure; every read is bounds-checked.
 pub(crate) struct Reader<'a> {
     rest: &'a [u8],
@@ -56,23 +53,35 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Checks `bytes` against the bounds `<min..2^16-1>` of the field `name`.
-pub(crate) fn check_vec16(name: &'static str, bytes: &[u8], min: usize) -> Result<(), WireError> {
-    if bytes.len() < min {
-        Err(WireError::EmptyField(name))
-    } else if bytes.len() > MAX_FIELD {
-        Err(WireError::FieldTooLong(name))
-    } else {
-        Ok(())
-    }
+/// A byte string of a `<min..2^16-1>` field. Its length fits the two-byte prefix, checked when it is built, so
+/// writing cannot fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Field {
+    len: u16,
+    bytes: Vec<u8>,
 }
 
-/// Writes `bytes` behind their two-byte length.
-///
-/// The bound is checked when the structure is built ([`check_vec16`]), so writing cannot fail.
-pub(crate) fn put_vec16(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len =
-        u16::try_from(bytes.len()).expect("field length checked when the structure was built");
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
+impl Field {
+    /// The field `name` of `bytes`, which are at least `min` and at most 65535.
+    pub(crate) fn new(name: &'static str, bytes: Vec<u8>, min: usize) -> Result<Self, WireError> {
+        if bytes.len() < min {
+            return Err(WireError::EmptyField(name));
+        }
+        let len = u16::try_from(bytes.len()).map_err(|_| WireError::FieldTooLong(name))?;
+        Ok(Self { len, bytes })
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// Writes the length prefix, then the bytes.
+    pub(crate) fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.len.to_be_bytes());
+        out.extend_from_slice(&self.bytes);
+    }
 }

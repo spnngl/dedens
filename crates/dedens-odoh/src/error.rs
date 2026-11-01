@@ -23,9 +23,9 @@ pub enum WireError {
     /// The padding of a plaintext holds a byte other than zero (RFC 9230 §6.1).
     #[error("padding is not all zeros")]
     NonZeroPadding,
-    /// The public key of a config using the suite of RFC 9230 §9 is not 32 bytes (RFC 9180 §7.1).
-    #[error("X25519 public key of {0} bytes, expected 32")]
-    PublicKeyLength(usize),
+    /// No config of a list is of version 1 with the suite of RFC 9230 §9 and a well-formed key.
+    #[error("no usable config in the list")]
+    NoUsableConfig,
 }
 
 /// A query or a response that cannot be encrypted or decrypted.

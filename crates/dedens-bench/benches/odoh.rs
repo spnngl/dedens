@@ -121,7 +121,7 @@ fn encrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench(args = ["a", "mx", "txt_large"])]
 fn decrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
     let (key, query, response) = (key(), query(), wire(case));
-    let (message, _) = sealed_query(&key, &query);
+    let (message, client) = sealed_query(&key, &query);
     let (_, context) = decrypt_query(&key, &message).expect("decrypts");
     let sealed = encrypt_response(
         context,
@@ -130,9 +130,5 @@ fn decrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
         &mut Fixed,
     )
     .expect("encrypts");
-    bencher
-        .with_inputs(|| sealed_query(&key, &query).1)
-        .bench_local_values(|context| {
-            decrypt_response(context, black_box(&sealed)).expect("decrypts")
-        });
+    bencher.bench_local(|| decrypt_response(&client, black_box(&sealed)).expect("decrypts"));
 }

@@ -436,15 +436,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D78 (amends D69) ODoH crypto (RFC 9230) is `dedens-odoh`, sans-IO, for the one suite RFC 9230 §9 requires:
   DHKEM(X25519, HKDF-SHA256) (0x0020), HKDF-SHA256 (1), AES-128-GCM (1). HPKE (RFC 9180) is the `hpke` crate
   (0.15.1, MIT or Apache-2.0, RustCrypto primitives, features `aes`, `alloc`, `x25519` only, passes `cargo deny`);
-  the response's HKDF and AES-GCM (RFC 9230 §6.2 `derive_secrets`) and the key ID are `ring`'s, which D71 has
-  already. Rejected: HPKE on `ring` (its agreement API holds no static X25519 key and has no `DeriveKeyPair`: a
+  the response's AES-GCM (RFC 9230 §6.2 `derive_secrets`) is `ring`'s, which D71 has already, so two AES-GCM
+  implementations are in the tree (`hpke`'s for HPKE, which `ring` cannot serve; `ring`'s for the response).
+  Accepted: each has one job, and a second `ring` AES-GCM inside HPKE is the thing `ring` cannot offer. HKDF is
+  ours, one HMAC of `ring` per `Extract` or `Expand` of at most one block (RFC 5869, tested on its A.1 vector):
+  `ring`'s `Prk` cannot be wiped and its `expand` returns a `Result` that an infallible length would only
+  `expect`. Rejected: HPKE on `ring` (its agreement API holds no static X25519 key and has no `DeriveKeyPair`: a
   target could not keep a key), our own HPKE (a key schedule to keep right for no gain; the crate passes RFC 9180
   Appendix A.1.1 here), the `odoh-rs` crate (D3: protocol code is ours; its code was read for the scheme only),
   `aws-lc-rs` (a second native crypto library next to `ring`; not evaluated further).
-  - Configs: `ObliviousDoHConfigs::parse` keeps the configs of version 1 with that suite and skips the rest, as §5
-    tells clients, so its list may be empty and `encode` writes only what was kept. Every config is still checked
-    as a structure (a field past its config, an empty key, trailing bytes are errors), and a key of our suite that
-    is not 32 bytes is an error. The key ID (§6.1) is computed once, with the config.
+  - Configs: `ObliviousDoHConfigs::parse` keeps the configs of version 1 with that suite and skips every other, as
+    §5 tells clients and `odoh-rs` does: another version, KEM, KDF or AEAD, and one of ours that is malformed (a
+    field past its config, bytes after its fields, an empty key or one that is not 32 bytes). A list whose own
+    framing is broken (truncated, trailing bytes, empty) is an error, as is a list with no usable config
+    (`WireError::NoUsableConfig`), so a caller never holds an empty list. `parse` then `encode` drops what was
+    skipped. The key ID (§6.1) is computed once, with the config. How a client finds the list is out of scope of
+    RFC 9230 §5; it is not specified here.
   - Messages: the bounds of §6.1 are checked when a message is built, so writing cannot fail. A plaintext holds
     the padding as a length: non-zero padding cannot be built, and one received is refused (§7, §8), as are
     trailing bytes and any message type but 1 and 2.
@@ -452,13 +459,25 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     bytes (RFC 8467 §4.1, as D60 for DoH), as §11 tells implementations. Inside the encryption, so messages of
     one block have one size on the wire (tested). The live target of Cloudflare answers without padding.
   - Randomness comes in as an argument (`CryptoRng`), so tests replay RFC 9180's ephemeral key and odoh-go's
-    response nonces; a target key is derived from a secret the caller keeps (`DeriveKeyPair`), so no key
-    generation or storage lives here. A context of a query is consumed by its response.
+    response nonces; a target key is derived from a 32-byte secret the caller keeps (`DeriveKeyPair`), so no key
+    generation or storage lives here. The docs of `encrypt_query` and `encrypt_response` warn that a replayed
+    generator repeats the ephemeral key or the response nonce. `ResponseContext` is consumed by its response
+    (`encrypt_response` is the one call that encrypts under the secrets, so a second would reuse the nonce
+    input). `QueryContext` is borrowed by `decrypt_response`: opening encrypts nothing, and a proxy's forged
+    answer must not cost the client the context of a query still waiting for the target's.
+  - Secrets: the exporter secret, the retained query plaintext (it salts the response keys), the HKDF output,
+    the AEAD key bytes, nonce and salt are `Zeroizing`, wiped when dropped. `hpke` wipes its own (shared
+    secret, exporter secret, AEAD key and nonce, private key). Not wiped: `ring`'s HMAC keys, its `LessSafeKey`
+    schedule and the HMAC tag buffer, the plaintext DNS messages, the serialized query before it is sealed
+    (`seal` copies it), and copies the allocator moved. Best effort, not a guarantee. No `unwrap`, `expect` or `as` in non-test code:
+    the lengths are typed (`Field`, constant prefixes).
   - `ExchangeError::UnknownKey` is the 401 of §4.3 and every other failure of `decrypt_query` the 400. HTTP (the
     media type, §4.1's ban on caching, discovery) belongs to `dedens-net`.
   - Tests: RFC 9180 A.1.1, the vectors of `cloudflare/odoh-go` (the target side, byte for byte), the config
-    Cloudflare serves, and round trips (`tests/rfc9230.rs`); fuzz targets `parse_odoh_configs`,
-    `parse_odoh_message`, `odoh_decrypt`. A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
+    Cloudflare serves, and round trips (`tests/rfc9230.rs`); the client side reads the odoh-go responses through
+    the target's secrets (the vectors hold no ephemeral key). Failure paths are tested: small-order keys,
+    ciphertext shorter than the tag, non-zero padding in a response, bounds. Fuzz targets `parse_odoh_configs`,
+    `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
 ## Presentation format

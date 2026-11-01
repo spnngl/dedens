@@ -24,8 +24,8 @@ use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
-    MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext, TargetKey,
-    decrypt_query, decrypt_response, encrypt_query,
+    MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext,
+    QueryContext, TargetKey, decrypt_query, decrypt_response, encrypt_query,
 };
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
 use dedens_proto::rdata::{RData, SvcParam};
@@ -899,13 +899,32 @@ impl TryRng for Fixed {
 
 impl TryCryptoRng for Fixed {}
 
-/// The target key of [`odoh_decrypt`]: derived once, X25519 is slow unoptimized.
-static ODOH_KEY: LazyLock<TargetKey> = LazyLock::new(|| TargetKey::derive(&[7; 32]));
+/// The target of the `odoh-go` vector (`crates/dedens-odoh/tests/testdata/README.md`): its `public_key_seed`, so
+/// that the captured query below decrypts.
+static ODOH_KEY: LazyLock<TargetKey> = LazyLock::new(|| {
+    TargetKey::derive(&[
+        0xc9, 0xd8, 0x4d, 0x04, 0xe6, 0x36, 0x9f, 0xcc, 0xb8, 0xa4, 0xd5, 0xa2, 0x64, 0x00, 0x14,
+        0x91, 0x22, 0x1f, 0x1b, 0x97, 0xd9, 0xb8, 0x0d, 0xd3, 0x2c, 0x35, 0x83, 0x4b, 0xb4, 0x46,
+        0x23, 0x83,
+    ])
+});
+
+/// A query `odoh-go` encrypted for [`ODOH_KEY`].
+const ODOH_QUERY: &[u8] =
+    include_bytes!("../../crates/dedens-odoh/tests/testdata/odoh-go-query.bin");
+
+/// The context of a query of our own: no response of the fuzzer can authenticate under it. Made once, since
+/// the key exchange is slow unoptimized.
+static ODOH_CLIENT: LazyLock<QueryContext> = LazyLock::new(|| {
+    encrypt_query(ODOH_KEY.config(), b"q", 0, &mut Fixed(1))
+        .expect("the key of a target is a good public key")
+        .1
+});
 
 /// Arbitrary bytes as an `ODoH` query and as a response (RFC 9230 §7, §8): a forged message is refused, never a
-/// panic. A parsed message is also given the target key ID, so that it reaches the key exchange. The exchange
-/// of well-formed messages is tested in `crates/dedens-odoh/tests/rfc9230.rs`; here it would cost thousands of
-/// X25519 runs a smoke test.
+/// panic. A parsed query is also given the target key ID, so that it reaches the key exchange; only the
+/// ciphertext of `odoh-go` may authenticate. The exchange of well-formed messages is tested in
+/// `crates/dedens-odoh/tests/rfc9230.rs`.
 ///
 /// # Panics
 ///
@@ -922,13 +941,12 @@ pub fn odoh_decrypt(data: &[u8]) {
             key.config().key_id().to_vec(),
             message.encrypted_message().to_vec(),
         )
+        && decrypt_query(key, &grafted).is_ok()
     {
-        // Forged ciphertext: it must not authenticate.
-        assert!(decrypt_query(key, &grafted).is_err());
+        let known = ObliviousDoHMessage::parse(ODOH_QUERY).expect("the captured query parses");
+        assert_eq!(message.encrypted_message(), known.encrypted_message());
     }
-    if let Ok((_, context)) = encrypt_query(key.config(), b"q", 0, &mut Fixed(1)) {
-        assert!(decrypt_response(context, &message).is_err());
-    }
+    assert!(decrypt_response(&ODOH_CLIENT, &message).is_err());
 }
 /// The `RRset` checks of `dedens_dnssec::rrsig` (D73) on the records of a message: every `RRset` against every
 /// RRSIG and DNSKEY the message holds, and every DNSKEY `RRset` against every DS `RRset`, at the time of the

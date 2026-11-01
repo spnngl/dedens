@@ -123,7 +123,7 @@ fuzz target="decode_message" seconds="300":
     # A target with a token dictionary in dicts/ gets it.
     dict=""
     if [[ -f "dicts/{{target}}.dict" ]]; then dict="-dict=dicts/{{target}}.dict"; fi
-    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones -- -max_total_time={{seconds}} $dict
+    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} $dict
 
 # Every fuzz target for `seconds` each, as the scheduled CI job runs them.
 fuzz-all seconds="60":
@@ -136,7 +136,7 @@ fuzz-all seconds="60":
         mkdir -p "corpus/$target"
         dict=""
         if [[ -f "dicts/$target.dict" ]]; then dict="-dict=dicts/$target.dict"; fi
-        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones -- -max_total_time={{seconds}} $dict
+        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} $dict
     done
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
