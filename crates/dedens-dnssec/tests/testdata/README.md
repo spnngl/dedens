@@ -7,8 +7,10 @@ signatures. `captured_at` is the Unix time of the run: the tests pass it as "now
 valid would be out of their window.
 
 Verdicts are those of RFC 4035 §4.3 for the response alone, given the chain files below it and the root KSK of
-`root_dnskey` as the only trust anchor. They were checked on 2026-11-01 against 8.8.8.8 and 9.9.9.9 without CD
-(`ad` set: Secure, no `ad`: Insecure, SERVFAIL: Bogus). A recapture keeps the coverage, not the bytes: names and
+`root_dnskey` as the only trust anchor; `dedens_dnssec::validator` (D75) gives them, `tests/validator.rs` checks them.
+They were checked on 2026-11-01 against 8.8.8.8 and 9.9.9.9 without CD (`ad` set: Secure, no `ad`: Insecure,
+SERVFAIL: Bogus). One difference: those resolvers set `ad` on an answer an opt-out NSEC3 leaves open, and the
+validator does not (RFC 5155 §9.2): the rows say Insecure (opt-out) where it is so. A recapture keeps the coverage, not the bytes: names and
 types stay, keys, signatures and denial records change. To test the window alone, give a Secure capture a "now"
 before its inception or after its expiration: Bogus.
 
@@ -38,15 +40,18 @@ zone). The link from a parent's DS to a zone's key is Secure unless the row says
 | `ippacket_stream`, `rsa2048_ippacket_stream` | 8 | `stream` → `ippacket.stream` → `rsa2048-sha256.ippacket.stream`: a chain three zones deep |
 | `dnssec_failed_org` | 13 | The DS matches no DNSKEY: Bogus. The DNSKEY set also holds an expired signature |
 | `rhybar_cz` | 5 and 7 | The DS (13) matches no DNSKEY, and every signature ended in October 2025: Bogus |
+| `cz` | 13 | Parent of `rhybar.cz`, DS signed by the root |
+| `wb_sidnlabs_nl`, `bad_dnssec_wb_sidnlabs_nl`, `sigexpired_wb_sidnlabs_nl` | 8 | SIDN Labs' test zones, `sidnlabs.nl` → `wb` → `bad-dnssec.wb` → `sigexpired.bad-dnssec.wb`: a sound chain down to the last zone, whose DNSKEY signature and A ended in December 2019: Bogus (signature expired) |
 
 ## Unsigned delegations
 
 | Id | Shows | Verdict |
 |---|---|---|
-| `google_com_ds` | DS NODATA from `com`: NSEC3 opt-out, closest provable encloser (RFC 5155 §8.6, §8.9) | Secure proof that `google.com` is unsigned |
+| `google_com_ds` | DS NODATA from `com`: NSEC3 opt-out, closest provable encloser (RFC 5155 §8.6, §8.9) | Insecure (opt-out): `google.com` is unsigned |
 | `google_com_a` | The unsigned answer below it: no RRSIG | Insecure |
-| `jm_ds` | DS NODATA from the root with NSEC (RFC 4035 §5.2) | Secure proof that `jm` is unsigned |
-| `edgekey_net_ds`, `akamaiedge_net_ds` | Same, from `net` (NSEC3 opt-out), for the zones of `cname_to_insecure` | Secure proof |
+| `referral_signed`, `referral_unsigned` | Referrals as an authoritative server of the parent gives them, without recursion (asked of a `nl` server for `www.nlnetlabs.nl`, and of a `com` server for `www.google.com`): the DS of the signed child, and the proof that the unsigned one has none (opt-out) | Referral to a secure zone; referral to an insecure one |
+| `jm_ds` | DS NODATA from the root with NSEC (RFC 4035 §5.2) | Insecure (no DS proven): `jm` is unsigned |
+| `edgekey_net_ds`, `akamaiedge_net_ds` | Same, from `net` (NSEC3 opt-out), for the zones of `cname_to_insecure` | Insecure (opt-out) |
 
 ## Signed answers
 
@@ -71,8 +76,8 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 | `nxdomain_root_nsec` | NXDOMAIN under the root: two NSEC, one covering the name, one the wildcard | Secure NXDOMAIN |
 | `nxdomain_nsec` | NXDOMAIN with NSEC in a non-root zone (`nlnetlabs.nl`) | Secure NXDOMAIN |
 | `nxdomain_nsec3` | NXDOMAIN with NSEC3 (`debian.org`: no opt-out, no salt, 0 iterations, two algorithms) | Secure NXDOMAIN |
-| `nxdomain_nsec3_optout` | NXDOMAIN with opt-out NSEC3 (`com`): the proof is the closest provable encloser (RFC 5155 §8.3) | Secure NXDOMAIN |
-| `nxdomain_nsec3_salt` | Opt-out and an 8-byte salt (`org`) | Secure NXDOMAIN |
+| `nxdomain_nsec3_optout` | NXDOMAIN with opt-out NSEC3 (`com`): the proof is the closest provable encloser (RFC 5155 §8.3) | Insecure (opt-out): the name may be an unsigned delegation (RFC 5155 §9.2) |
+| `nxdomain_nsec3_salt` | Opt-out and an 8-byte salt (`org`) | Insecure (opt-out) |
 | `nxdomain_nsec3_iterations` | One extra iteration and an 8-byte salt (`dev`) | Secure NXDOMAIN |
 | `nxname_cloudflare` | Compact denial (RFC 9824 §3.1): NOERROR, empty answer, an NSEC of the name with `RRSIG NSEC NXNAME` | Secure NXDOMAIN, whatever the RCODE |
 | `nodata_compact` | Compact NODATA (RFC 9824 §3.2): the NSEC of the existing name lists its types | Secure NODATA |
@@ -103,3 +108,8 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 | `bogus_no_key` | `dnssec-failed.org` A: signed, but its DS matches no DNSKEY | Bogus |
 | `bogus_expired` | `rhybar.cz` A: RRSIGs (5 and 7) expired in October 2025, the DS matches no key | Bogus |
 | `bogus_signature` | `sigfail.verteiltesysteme.net` CNAME, then an A whose RRSIG does not verify; the chain is sound | Bogus |
+| `bogus_sigexpired` | `sigexpired.bad-dnssec.wb.sidnlabs.nl` A: the zone's signatures, its DNSKEY set's included, expired in 2019; the chain down to its DS is sound | Bogus (signature expired) |
+
+## Leaves of the chain of trust
+
+`leaf_*_ds` are the DS queries a validator asks for the owner of each `RRset` of the answers above: the owner's own zone cut, or none. What the resolver returns depends on the name: NODATA or a name error with the parent's proof; the signed CNAME where the name is a CNAME (`www.icann.org`, `www.ripe.net`, the two `sigok` and `sigfail` names), which a DS query reaches as any type; a wildcard no data (`leaf_wildcard_sidnlabs_ds`); a name error under an opt-out span (`leaf_nxdomain_com_ds`, `leaf_nxdomain_org_ds`) proving a delegation without DS: insecure, opt-out.

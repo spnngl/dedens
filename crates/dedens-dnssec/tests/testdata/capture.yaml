@@ -59,12 +59,43 @@ queries:
   - {id: dnssec_failed_org_dnskey, name: dnssec-failed.org, type: DNSKEY, expect: {rcode: NOERROR}}
   - {id: rhybar_cz_ds, name: rhybar.cz, type: DS, expect: {rcode: NOERROR}}
   - {id: rhybar_cz_dnskey, name: rhybar.cz, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: cz_ds, name: cz, type: DS, expect: {rcode: NOERROR}}
+  - {id: cz_dnskey, name: cz, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: wb_sidnlabs_nl_ds, name: wb.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: wb_sidnlabs_nl_dnskey, name: wb.sidnlabs.nl, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: bad_dnssec_wb_sidnlabs_nl_ds, name: bad-dnssec.wb.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: bad_dnssec_wb_sidnlabs_nl_dnskey, name: bad-dnssec.wb.sidnlabs.nl, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: sigexpired_wb_sidnlabs_nl_ds, name: sigexpired.bad-dnssec.wb.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: sigexpired_wb_sidnlabs_nl_dnskey, name: sigexpired.bad-dnssec.wb.sidnlabs.nl, type: DNSKEY, expect: {rcode: NOERROR}}
   # Unsigned delegations: the parent proves there is no DS (RFC 4035 §5.2, RFC 5155 §8.6, §8.9).
   - {id: google_com_ds, name: google.com, type: DS, expect: {rcode: NOERROR}}
   - {id: google_com_a, name: google.com, type: A, expect: {rcode: NOERROR}}
   - {id: jm_ds, name: jm, type: DS, expect: {rcode: NOERROR}}
   - {id: edgekey_net_ds, name: edgekey.net, type: DS, expect: {rcode: NOERROR}}
   - {id: akamaiedge_net_ds, name: akamaiedge.net, type: DS, expect: {rcode: NOERROR}}
+  # What the chain of trust asks for each owner of an answer: the DS of the owner itself, which the zone answers
+  # with a name error, a NODATA (the name exists or a wildcard matched), or the CNAME it holds (RFC 4035 §5.2).
+  - {id: leaf_xyzzy_ds, name: xyzzy-nonexistent-tld, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxdomain_nlnetlabs_ds, name: nonexistent.nlnetlabs.nl, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxdomain_debian_ds, name: nonexistent.debian.org, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxdomain_com_ds, name: nonexistent-xyz123.com, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxdomain_org_ds, name: nonexistent-xyz123.org, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxdomain_dev_ds, name: nonexistent-xyz123.dev, type: DS, expect: {rcode: NXDOMAIN}}
+  - {id: leaf_nxname_cloudflare_ds, name: nonexistent.cloudflare.com, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_ent_nlnetlabs_ds, name: _tcp.nlnetlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_ent_sidnlabs_ds, name: _tcp.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_wildcard_sidnlabs_ds, name: wildcard-test.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_www_icann_org_ds, name: www.icann.org, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_cdn_cloudflare_net_ds, name: cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_icann_cdn_mid_ds, name: icann.org.cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_icann_cdn_ds, name: www.icann.org.cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_sigok_vs_ds, name: sigok.verteiltesysteme.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_sigok_ippacket_ds, name: sigok.rsa2048-sha256.ippacket.stream, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_sigfail_vs_ds, name: sigfail.verteiltesysteme.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_sigfail_ippacket_ds, name: sigfail.rsa2048-sha256.ippacket.stream, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_www_ripe_net_ds, name: www.ripe.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_dname_sidnlabs_ds, name: dname.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_www_example_nl_ds, name: www.example.nl, type: DS, expect: {rcode: NOERROR}}
   # Signed answers, one per signing algorithm of RFC 8624 §3.1 (8, 10, 13, 14, 15), the SHA-1 one a zone still
   # uses (7), two algorithms at once (8 and 13), and Ed448 (16, which `ring` lacks).
   - {id: alg8_a, name: nlnetlabs.nl, type: A, expect: {rcode: NOERROR}}
@@ -114,3 +145,10 @@ queries:
   - {id: bogus_no_key, name: dnssec-failed.org, type: A, expect: {rcode: NOERROR}}
   - {id: bogus_expired, name: rhybar.cz, type: A, expect: {rcode: NOERROR}}
   - {id: bogus_signature, name: sigfail.verteiltesysteme.net, type: A, expect: {rcode: NOERROR}}
+  # An expired signature under a sound chain (nl, sidnlabs.nl, wb.sidnlabs.nl, bad-dnssec.wb.sidnlabs.nl and the zone
+  # itself, whose key the last DS names): the A of the zone ended in December 2019.
+  - {id: bogus_sigexpired, name: sigexpired.bad-dnssec.wb.sidnlabs.nl, type: A, expect: {rcode: NOERROR}}
+  # Referrals, as an authoritative server answers without recursion (RFC 4035 §3.1.4.1): to a signed zone, with its
+  # DS, and to an unsigned one, with the proof that it has none.
+  - {id: referral_signed, name: www.nlnetlabs.nl, type: A, server: 194.0.28.53, options: {recurse: false}, expect: {rcode: NOERROR}}
+  - {id: referral_unsigned, name: www.google.com, type: A, server: 192.5.6.30, options: {recurse: false}, expect: {rcode: NOERROR}}

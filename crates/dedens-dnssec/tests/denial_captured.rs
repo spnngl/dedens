@@ -19,7 +19,7 @@ const NAME_ERROR: Fact = Fact::NameError { compact: false };
 const COMPACT_NAME_ERROR: Fact = Fact::NameError { compact: true };
 
 /// What each capture proves, by id, and whether the NSEC3 over its next closer name has the opt-out flag.
-const EXPECTED: [(&str, Fact, bool); 20] = [
+const EXPECTED: [(&str, Fact, bool); 35] = [
     ("nxdomain_root_nsec", NAME_ERROR, false),
     ("nxdomain_nsec", NAME_ERROR, false),
     ("nxdomain_nsec3", NAME_ERROR, false),
@@ -40,10 +40,33 @@ const EXPECTED: [(&str, Fact, bool); 20] = [
     ("jm_ds", Fact::InsecureDelegation, false),
     ("edgekey_net_ds", Fact::InsecureDelegation, true),
     ("akamaiedge_net_ds", Fact::InsecureDelegation, true),
+    // The DS of each owner of an answer, which the chain of trust asks for.
+    ("leaf_xyzzy_ds", NAME_ERROR, false),
+    ("leaf_nxdomain_nlnetlabs_ds", NAME_ERROR, false),
+    ("leaf_nxdomain_debian_ds", NAME_ERROR, false),
+    ("leaf_nxdomain_dev_ds", NAME_ERROR, false),
+    ("leaf_nxname_cloudflare_ds", COMPACT_NAME_ERROR, false),
+    ("leaf_ent_nlnetlabs_ds", Fact::NoData, false),
+    ("leaf_ent_sidnlabs_ds", Fact::NoData, false),
+    ("leaf_wildcard_sidnlabs_ds", Fact::WildcardNoData, false),
+    ("leaf_dname_sidnlabs_ds", Fact::NoData, false),
+    ("leaf_www_example_nl_ds", Fact::NoData, false),
+    ("leaf_cdn_cloudflare_net_ds", Fact::NoData, false),
+    ("leaf_icann_cdn_ds", Fact::NoData, false),
+    ("leaf_icann_cdn_mid_ds", Fact::NoData, false),
+    ("leaf_sigok_ippacket_ds", Fact::NoData, false),
+    ("leaf_sigfail_ippacket_ds", Fact::NoData, false),
 ];
 
-/// The captured responses that are not in [`EXPECTED`]: the wildcard expansion is tested below.
-const OTHERS: [&str; 1] = ["wildcard_answer"];
+/// The captured responses that are not in [`EXPECTED`]: the wildcard expansion is tested below; the DS of a name
+/// under an opt-out span is an NXDOMAIN with the proof of an insecure delegation, and a referral's DS is proven for
+/// the child, not for the name asked.
+const OTHERS: [&str; 4] = [
+    "wildcard_answer",
+    "leaf_nxdomain_com_ds",
+    "leaf_nxdomain_org_ds",
+    "referral_unsigned",
+];
 
 fn is_denial(record: &Record<'_>) -> bool {
     matches!(record.rtype(), RecordType::NSEC | RecordType::NSEC3)
