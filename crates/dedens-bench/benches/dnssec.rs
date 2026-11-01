@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::hint::black_box;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
 use dedens_dnssec::anchor::TrustAnchors;
@@ -414,7 +414,7 @@ fn client_query() -> Vec<u8> {
 /// What `dedensd` does for one uncached query of a validating forward stage: the captures answer each question
 /// the pipeline sends upstream, the client's and the validator's.
 fn serve(pipeline: &Pipeline, query: &[u8], out: &mut [u8]) -> Step {
-    let mut step = pipeline.query(query, Transport::Udp, 0, out);
+    let mut step = pipeline.query(query, Transport::Udp, Ipv4Addr::LOCALHOST.into(), 0, out);
     while let Step::Upstream(upstream) = step {
         let request = upstream.request();
         let question = request.questions.first().expect("a question");

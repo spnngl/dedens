@@ -367,3 +367,17 @@ and reads the response through `Exchange`, copying the request in.
 | `parse`, request/response | 125/78 |
 | `write`, request/response | 50/36 |
 | `exchange` (start, receive) | 256 |
+
+## Access lists (D91)
+
+`benches/access.rs`, medians of one run, in a table of 10 000 networks (8 000 IPv4 `/24` of `10.0.0.0/8`, 2 000 IPv6 `/48` of
+`2001:db8::/32`, every tenth denied), `prefix-trie`'s `JointPrefixMap`. `permits` is the verdict on an address; `denied_query` is
+`Pipeline::query` for a denied client, REFUSED with EDE 18 (an EDNS query) built before any stage, from the query in place: no allocation. Before, through `Client::reply` and a `Message`, it took 161 ns and 2 allocations (320 B).
+
+| Measure | ns |
+|---|---|
+| `permits`, IPv4 allowed / denied in the table | 4.3 / 4.4 |
+| `permits`, IPv4 in no network | 1.4 |
+| `permits`, IPv6 in the table | 24.0 |
+| `permits`, IPv4-mapped IPv6 in the table | 5.4 |
+| `denied_query` | 42 |

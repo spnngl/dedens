@@ -4,7 +4,7 @@
 //! paths allocate nothing.
 
 use std::hint::black_box;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_bench::{CASES, wire};
@@ -45,7 +45,13 @@ fn forwarding() -> Pipeline {
 fn caching(query: &[u8], response: &[u8]) -> Pipeline {
     let pipeline = forwarding();
     let mut out = vec![0; 65535];
-    let Step::Upstream(upstream) = pipeline.query(query, Transport::Udp, 0, &mut out) else {
+    let Step::Upstream(upstream) = pipeline.query(
+        query,
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        0,
+        &mut out,
+    ) else {
         unreachable!("an empty cache sends the query upstream");
     };
     let step = pipeline.receive(upstream, Some(response), 0, &mut out);
@@ -62,9 +68,13 @@ fn miss(bencher: Bencher<'_, '_>, case: &str) {
     bencher
         .with_inputs(forwarding)
         .bench_local_refs(|pipeline| {
-            let Step::Upstream(upstream) =
-                pipeline.query(black_box(&query), Transport::Udp, 0, &mut out)
-            else {
+            let Step::Upstream(upstream) = pipeline.query(
+                black_box(&query),
+                Transport::Udp,
+                Ipv4Addr::LOCALHOST.into(),
+                0,
+                &mut out,
+            ) else {
                 unreachable!("an empty cache sends the query upstream");
             };
             black_box(upstream.request());
@@ -81,7 +91,13 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let pipeline = caching(&query, &response);
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
-        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
         assert!(matches!(step, Step::Reply(_)));
     });
 }
@@ -116,7 +132,13 @@ fn dnssec_hit(bencher: Bencher<'_, '_>, case: &str, checked: Checked) {
         .expect("cacheable");
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
-        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
         assert!(matches!(step, Step::Reply(_)));
     });
 }
@@ -170,7 +192,13 @@ fn plugin(bencher: Bencher<'_, '_>) {
     let query = query.to_vec().expect("a query fits");
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
-        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
         assert!(matches!(step, Step::Reply(_)));
     });
 }

@@ -68,5 +68,9 @@ harness = false
 name = "coap"
 harness = false
 
+[[bench]]
+name = "access"
+harness = false
+
 [lints]
 workspace = true

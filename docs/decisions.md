@@ -1162,7 +1162,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84, D91) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1191,7 +1191,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
-- D47 (amended by D64) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
+- D47 (amended by D64, D91) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
   replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
@@ -1426,6 +1426,51 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   above `max_ttl`. Rejected: capping in `dedens-server`
   (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
   `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
+
+- D91 (amends D44, D90) Client access lists: `dedensd` answers the networks it is told to, so it is no open
+  resolver (RFC 5358 §4). The client's address enters `Pipeline::query` with the transport, from every listener
+  (UDP, TCP, TLS, QUIC, DoH, DoC, and ODoH where `dedensd` is the target, the proxy's address being the client's
+  there), an IPv4-mapped IPv6 address read as its IPv4 one. A `Pipeline` holds an optional `Access`: the library
+  and its tests, benches and fuzz targets build none and answer everyone; `dedensd` always builds one, so a reload
+  (D55), which rebuilds the pipeline, changes the lists with it. Top-level `access: {allow: [networks], deny:
+  [networks], action: refuse|drop}`, `refuse` by default. The longest network holding the address decides, `deny`
+  wins a tie, an address in no network is denied. Unset `access` is the loopback (`127.0.0.0/8`, `::1/128`),
+  RFC 1918, RFC 4193 (`fc00::/7`) and link-local (`169.254.0.0/16`, `fe80::/10`) networks allowed, so a fresh
+  install on a public address answers nobody; `dedensd` warns at start for each listen address outside them. A
+  network is `ADDRESS/LENGTH`; the config is refused for text that is none, for bits past the length
+  (`192.0.2.1/24`, the error names `192.0.2.0/24`), for an IPv4-mapped IPv6 network (`::ffff:10.0.0.0/104`, the
+  error names `10.0.0.0/8`, since clients are read as IPv4), for an IPv6 network that starts in
+  `::ffff:0:0/96` and is shorter than /96 (`::ffff:0:0/95`; `::/0` stays valid and holds IPv6 clients only) and for
+  an unknown action. A denied query is answered before any stage, from the query in place: `refuse` writes REFUSED
+  with EDE 18 (Prohibited, RFC 8914 §4.19) carrying the query's ID and question with `Client::answer`, with no
+  `Message` and no allocation (FORMERR's rule: a response, or under 12 bytes, gets nothing; a query with no
+  readable question gets the `Client::reply` fallback), `drop` sends nothing. Over DoH a refused query is still 200
+  with the REFUSED message (RFC 8484 §4.2.1); a dropped one gets no connection (below), or, on a connection a
+  reload found open, 400 without a message, as any query the pipeline does not answer. `Pipeline::drops(from)`
+  tells a denial that sends nothing from a protocol drop, and `Pipeline::denial(from)` is the verdict alone,
+  uncounted. The transports use them:
+  - `drop`: TCP and TLS close the connection at accept, before a connection slot (D47) and the handshake; QUIC
+    calls `Incoming::ignore`, before Retry and a slot, so a forged source gets nothing; DoC sends nothing, not
+    the 4.00 a protocol drop gets (RFC 9953 §4.3.1).
+  - `refuse`: the connection is accepted and every query on it is answered REFUSED, so a denied client costs a
+    slot and a handshake. Accepted, because a client that is told it is refused does not retry, and checking
+    before the handshake would be `drop` in effect; the deployment's firewall (D90) is what keeps denied clients
+    off the slots.
+  - DoC Block2 follow-ups (RFC 7959) are served from the kept response only to a client the lists still allow,
+    so a reload takes effect on a transfer under way; a confirmable request the duplicate filter replays a reply to
+    is not checked, as the filter keeps it for the exchange lifetime only. `breaks_doq` runs before the check: breaking DoQ ends the connection and
+    answers nothing, so a denied client gains nothing.
+
+  Warnings: at start and at each reload that succeeds, `dedensd` warns for each listen address outside the local
+  networks when `access` is unset, and when `access` is set with an empty `allow` (it answers nobody). Stats
+  (D30): `dedensd_access_denied_total{action}`, counted in `dedens-server` behind its `metrics` feature, where the
+  verdict is made. The lookup is a longest-prefix tree, never a scanned list: `prefix-trie` 0.10 (`JointPrefixMap`
+  over `ipnet::IpNet`; MIT OR Apache-2.0, in `deny.toml`'s list; updated July 2026, 19M downloads in 90 days)
+  over `ip_network_table` 0.2 (BSD-2-Clause, which `deny.toml` does not allow; last release in 2021; a forked
+  treebitmap underneath). It pulls `array-const-fn-init` (a proc-macro, with the legacy licence `MIT/Apache-2.0`,
+  read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
+  table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
+  `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
 
 ## Observability
 

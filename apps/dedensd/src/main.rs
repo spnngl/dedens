@@ -84,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
     }
+    config.warn_access(&config.listen);
     let current = Arc::new(Current::new(config.pipeline));
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..threads())

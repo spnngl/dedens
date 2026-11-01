@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::net::Ipv4Addr;
+
 use common::{caching, captured, decode, forwarder, query_for, reply, run, wire};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Edns, Message, Rcode};
@@ -88,7 +90,13 @@ fn cache_hits_are_padded_with_zeros() {
             .is_some()
     );
     let mut out = vec![0xFF; 65535];
-    let Step::Reply(len) = pipeline.query(&query, Transport::Tls, 0, &mut out) else {
+    let Step::Reply(len) = pipeline.query(
+        &query,
+        Transport::Tls,
+        Ipv4Addr::LOCALHOST.into(),
+        0,
+        &mut out,
+    ) else {
         unreachable!("a cache hit");
     };
     assert_eq!(len % 468, 0);

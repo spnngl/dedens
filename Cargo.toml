@@ -64,9 +64,13 @@ hpke = { version = "0.15.1", default-features = false, features = [
 # D32: Unicode names to A-labels (UTS 46), and the scripts of their labels.
 idna = "1.1.0"
 insta = "1.49"
+# D91: IP networks (`prefix-trie`'s key type) of the client access lists.
+ipnet = "2.12.2"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
+# D91: the longest-prefix tree of the client access lists.
+prefix-trie = "0.10.1"
 proptest = "1.12"
 # D71: DNSSEC signature checks and digests; compio's TLS already builds it (the "ring" feature above).
 ring = "0.17.14"

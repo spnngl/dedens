@@ -183,6 +183,7 @@ fn reload(
             if new.odoh != fixed.odoh {
                 tracing::warn!(%config, "changes to `odoh` take a restart");
             }
+            new.warn_access(&fixed.listen);
             if let (Some(presented), Some(new)) = (&fixed.presented, new.presented) {
                 presented.replace(new);
             }

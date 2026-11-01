@@ -8,6 +8,10 @@
 //!   key: /etc/dedensd/tls/key.pem
 //! odoh:                              # Oblivious DoH target on the https:// addresses (D79); needs the odoh feature
 //!   key: /etc/dedensd/odoh.key         # 64 hex digits; default: a key made at each start
+//! access:                           # who is answered (D91); default: loopback, private and link-local networks
+//!   allow: ["10.0.0.0/8", "2001:db8::/32"]
+//!   deny: ["10.9.0.0/16"]            # the longest network holding the client decides; deny wins a tie
+//!   action: refuse                   # refuse (default) answers REFUSED with EDE 18, drop answers nothing
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
@@ -54,7 +58,7 @@ use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::{Name, Ttl};
-use dedens_server::{Forward, Pipeline, Stage, Validating, Via};
+use dedens_server::{Access, Denial, Forward, Network, Pipeline, Stage, Validating, Via};
 use http::uri::PathAndQuery;
 use serde::Deserialize;
 
@@ -70,6 +74,8 @@ struct File {
     tls: Option<TlsFile>,
     /// Serving as an Oblivious `DoH` target at the paths of the `https://` addresses (D79).
     odoh: Option<OdohFile>,
+    /// The clients answered (D91). Default: those of loopback, private and link-local networks.
+    access: Option<AccessFile>,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
@@ -80,6 +86,72 @@ struct File {
     pipeline: Vec<String>,
     /// The stages, by name.
     stages: BTreeMap<String, StageFile>,
+}
+
+/// The access lists, as written (D91).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessFile {
+    /// Networks answered; none answers nobody.
+    #[serde(default)]
+    allow: Vec<Network>,
+    /// Networks refused, inside an allowed one or not.
+    #[serde(default)]
+    deny: Vec<Network>,
+    /// What a denied client gets.
+    #[serde(default)]
+    action: Denial,
+}
+
+impl AccessFile {
+    fn into_access(self) -> Access {
+        Access::new(self.allow, self.deny, self.action)
+    }
+}
+
+/// Where the access lists of a configuration come from (D91).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessSource {
+    /// `access` is left out: only the local networks are answered.
+    Unset,
+    /// `access` allows some networks.
+    Written,
+    /// `access` allows no network: nobody is answered.
+    NoAllow,
+}
+
+impl AccessSource {
+    /// Where `access`, as written or left out, comes from.
+    fn of(access: Option<&AccessFile>) -> Self {
+        match access {
+            None => Self::Unset,
+            Some(access) if access.allow.is_empty() => Self::NoAllow,
+            Some(_) => Self::Written,
+        }
+    }
+}
+
+impl Config {
+    /// Warns of access lists that answer little or nothing, for a server on `listen`: unset lists on a listen
+    /// address outside the local networks (a wildcard address listens on every interface, public ones included),
+    /// and written ones allowing nothing.
+    pub(crate) fn warn_access(&self, listen: &[Listen]) {
+        match self.access {
+            AccessSource::Unset => {
+                let local = Access::local(Denial::default());
+                for listen in listen.iter().filter(|l| !local.permits(l.addr().ip())) {
+                    tracing::warn!(
+                        ?listen,
+                        "no `access` configured: only loopback, private and link-local clients are answered (D91)"
+                    );
+                }
+            }
+            AccessSource::NoAllow => {
+                tracing::warn!("`access` allows no network: no client is answered (D91)");
+            }
+            AccessSource::Written => {}
+        }
+    }
 }
 
 /// The certificate `dedensd` presents, as written: PEM files, read again on each reload.
@@ -121,6 +193,15 @@ pub(crate) enum Listen {
 }
 
 impl Listen {
+    /// The address listened on.
+    pub(crate) const fn addr(&self) -> SocketAddr {
+        match self {
+            Self::Plain(addr) | Self::Tls(addr) | Self::Quic(addr) | Self::Https(addr, _) => *addr,
+            #[cfg(feature = "doc")]
+            Self::Coap(addr, _) => *addr,
+        }
+    }
+
     /// Whether queries come encrypted, with the certificate of `tls`.
     const fn encrypted(&self) -> bool {
         match self {
@@ -412,6 +493,8 @@ pub(crate) struct Config {
     #[cfg(feature = "odoh")]
     pub(crate) odoh: Option<crate::odoh::Section>,
     pub(crate) pipeline: Pipeline,
+    /// Where the access lists come from (D91).
+    pub(crate) access: AccessSource,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
     pub(crate) trust: Trust,
@@ -441,7 +524,8 @@ fn hosts(
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
 /// query on; a second cache stage, which would never be filled; a hosts or blocklist stage after a cache stage,
-/// whose answers a reload keeps; `refresh_minutes` above a year; settings a stage refuses.
+/// whose answers a reload keeps; `refresh_minutes` above a year; settings a stage refuses; an `access` network that is
+/// malformed or has bits set past its length, an unknown `action`.
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -459,6 +543,10 @@ pub(crate) fn read(
         "`odoh` needs a dedensd built with the odoh feature"
     );
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
+    let source = AccessSource::of(file.access.as_ref());
+    let access = file
+        .access
+        .map_or_else(|| Access::local(Denial::default()), AccessFile::into_access);
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
     let mut downloads = Downloads {
@@ -539,7 +627,8 @@ pub(crate) fn read(
         presented,
         #[cfg(feature = "odoh")]
         odoh,
-        pipeline: Pipeline::new(built),
+        pipeline: Pipeline::new(built).with_access(access),
+        access: source,
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
@@ -1227,6 +1316,44 @@ mod tests {
         };
         assert_eq!(cache.config().max_insecure_ttl, Some(600));
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
+    }
+
+    /// D91: `access` is optional, and its lists and action read; what does not read is refused with the network
+    /// meant.
+    #[test]
+    fn access_reads() {
+        let with = |access: &str| format!("access:\n  {access}\n{MINIMAL}");
+        let source = |text: &str| read(text, env, &Pipeline::default()).unwrap().access;
+        assert_eq!(source(MINIMAL), AccessSource::Unset);
+        for (access, expected) in [
+            (
+                "allow: ['10.0.0.0/8', '2001:db8::/32']",
+                AccessSource::Written,
+            ),
+            ("allow: ['::/0']", AccessSource::Written),
+            (
+                "allow: []\n  deny: ['10.9.0.0/16']\n  action: drop",
+                AccessSource::NoAllow,
+            ),
+            ("{}", AccessSource::NoAllow),
+        ] {
+            assert_eq!(source(&with(access)), expected, "{access}");
+        }
+        for (access, error) in [
+            ("allow: ['192.0.2.1/24']", "`192.0.2.0/24`"),
+            (
+                "deny: ['192.0.2.0/24', 'nope']",
+                "`nope` is not ADDRESS/LENGTH",
+            ),
+            ("action: Drop", "unknown variant `Drop`"),
+            ("allow: '10.0.0.0/8'", "allow"),
+        ] {
+            let refused = read(&with(access), env, &Pipeline::default()).unwrap_err();
+            assert!(
+                format!("{refused:#}").contains(error),
+                "{access}: {refused:#}"
+            );
+        }
     }
 
     #[test]

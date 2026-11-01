@@ -5,6 +5,7 @@
 mod common;
 
 use std::borrow::Cow;
+use std::net::Ipv4Addr;
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
@@ -201,7 +202,13 @@ fn entries_near_their_end_are_refreshed_once() {
 /// The upstream query `query` gets at `now`.
 fn upstream_of(pipeline: &Pipeline, query: &Message<'_>, now: u32) -> Box<Upstream> {
     let mut out = vec![0; 65535];
-    match pipeline.query(&wire(query), Transport::Udp, now, &mut out) {
+    match pipeline.query(
+        &wire(query),
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        now,
+        &mut out,
+    ) {
         Step::Upstream(upstream) => upstream,
         step => unreachable!("an upstream query, not {step:?}"),
     }
