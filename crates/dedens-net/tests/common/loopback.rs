@@ -1,13 +1,17 @@
 //! A scripted server on the loopback address: each test drives its side by hand.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use compio::BufResult;
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use dedens_net::tcp::frame;
 use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Flags, Message, Rcode};
+
+/// A port nothing listens on, over UDP or TCP, and nothing can take: below the ports the system hands out. One that
+/// was open a moment ago is any test's to take, and its server would answer.
+pub(crate) const CLOSED: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
 
 /// The response to `query`, with these EDNS options when it has EDNS.
 pub(crate) fn answer(query: &[u8], options: Vec<EdnsOption<'static>>) -> Vec<u8> {
@@ -132,7 +136,14 @@ fn serve_udp(
             buf.clear();
             let BufResult(received, back) = socket.recv_from(buf).await;
             buf = back;
-            let Ok((_, from)) = received else { return };
+            let Ok((len, from)) = received else { return };
+            // A port is reused as soon as it closes: what comes may be meant for the socket before, such as the
+            // packets a QUIC server of another test keeps sending to the port of a client that is gone.
+            let is_query = Message::decode(&buf[..len])
+                .is_ok_and(|decoded| !decoded.message.header.flags.contains(Flags::QR));
+            if !is_query {
+                continue;
+            }
             if let Some(response) = respond(&buf) {
                 let _ = socket.send_to(response, from).await;
             }

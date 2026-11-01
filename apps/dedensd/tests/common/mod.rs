@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use dedens_net::tcp::frame;
-use dedens_proto::{Message, Name, RecordType, Ttl};
+use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
 use serde_json::Value;
 
 /// A captured response of `dedens-proto`'s test data.
@@ -79,6 +79,11 @@ impl Responder {
         let reply = {
             let queries = Arc::clone(&queries);
             move |query: &[u8]| {
+                // A port is reused as soon as it closes: what comes may be meant for the socket before, such as
+                // the packets a QUIC server of another test keeps sending to the port of a client that is gone.
+                if !is_query(query) {
+                    return None;
+                }
                 if queries.fetch_add(1, Ordering::Relaxed) > 0 {
                     thread::sleep(delay);
                 }
@@ -127,6 +132,11 @@ impl Responder {
     pub(crate) fn queries(&self) -> usize {
         self.queries.load(Ordering::Relaxed)
     }
+}
+
+/// Whether `wire` is a query: a message that reads, and is no response.
+fn is_query(wire: &[u8]) -> bool {
+    Message::decode(wire).is_ok_and(|decoded| !decoded.message.header.flags.contains(Flags::QR))
 }
 
 /// A loopback upstream that never answers.
