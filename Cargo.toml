@@ -30,7 +30,9 @@ compio = { version = "0.19.2", default-features = false, features = [
   "time",
 ] }
 dedens-cache = { path = "crates/dedens-cache" }
+dedens-dnssec = { path = "crates/dedens-dnssec" }
 dedens-net = { path = "crates/dedens-net" }
+dedens-odoh = { path = "crates/dedens-odoh" }
 dedens-plugins = { path = "crates/dedens-plugins" }
 dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }
@@ -54,6 +56,8 @@ metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
 proptest = "1.12"
+# D71: DNSSEC signature checks and digests; compio's TLS already builds it (the "ring" feature above).
+ring = "0.17.14"
 # D60: certificates made by the DNS over TLS tests, none checked in.
 rcgen = { version = "0.14.10", default-features = false, features = [
   "pem",

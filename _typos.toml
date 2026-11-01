@@ -17,3 +17,7 @@ extend-ignore-re = ['\("fo", "Zm8="\)']
 ede = "ede"
 Ede = "Ede"
 EDE = "EDE"
+# GOST, the Russian standard of DNSSEC algorithm 12 and DS digest 3 (RFC 5933)
+gost = "gost"
+Gost = "Gost"
+GOST = "GOST"

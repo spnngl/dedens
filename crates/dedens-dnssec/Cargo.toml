@@ -1,0 +1,16 @@
+[package]
+name = "dedens-dnssec"
+description = "DNSSEC validation (RFC 4033-4035, 5155, 6840, 9824): signatures, denial of existence, chain of trust."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dedens-proto.workspace = true
+ring.workspace = true
+
+[lints]
+workspace = true
