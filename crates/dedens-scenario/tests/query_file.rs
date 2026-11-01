@@ -61,11 +61,14 @@ fn yaml_and_json_read_the_same() {
         "example.com.".parse::<Name<'_>>().expect("valid")
     );
     assert_eq!(first.qtype, RecordType::A);
-    let options = first.options.or(yaml.options);
+    let options = first.options.clone().or(yaml.options.clone());
     assert_eq!(options.recurse, Some(false));
     assert_eq!(options.time, Some(Timeout(Duration::from_secs(2))));
     assert!(matches!(options.cookie, Some(CookieOption::Fixed(_))));
-    assert_eq!(nx.options.or(yaml.options).cookie, Some(CookieOption::Off));
+    assert_eq!(
+        nx.options.clone().or(yaml.options.clone()).cookie,
+        Some(CookieOption::Off)
+    );
 }
 
 #[test]

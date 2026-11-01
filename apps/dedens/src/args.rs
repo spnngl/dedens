@@ -28,11 +28,12 @@ pub(crate) struct Cli {
     /// name is asked the types after it, else those before the first name, else A; no name asks NS of the root.
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
-    /// A server: an address, with or without a port, or a host name; each query is asked of each, side by side.
-    /// Default: the first `nameserver` of /etc/resolv.conf.
+    /// A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before
+    /// it for DNS over TLS, QUIC or HTTPS. Each query is asked of each, side by side. Default: the first `nameserver`
+    /// of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
-    /// The port of a server given without one. Default: 853 over TLS, else 53.
+    /// The port of a server given without one. Default: 443 over HTTPS, 853 over TLS or QUIC, else 53.
     #[arg(short, long, value_name = "PORT")]
     pub(crate) port: Option<u16>,
     /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.
@@ -118,19 +119,35 @@ impl Cli {
                 || cli.file.is_some()
                 || cli.repeat > 1
                 || cli.search
-                || cli.options.encrypted())
+                || cli.options.encrypted()
+                || cli.options.https())
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls or +quic".to_owned(),
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic or +https"
+                    .to_owned(),
             );
         }
-        // Over TLS and QUIC a query is padded with EDNS (RFC 8467 §4.1).
-        let scheme = |server: &String| ["tls://", "quic://"].iter().any(|s| server.starts_with(s));
+        // Over TLS, QUIC and HTTPS a query is padded with EDNS (RFC 8467 §4.1).
+        let scheme = |server: &String| {
+            ["tls://", "quic://", "https://"]
+                .iter()
+                .any(|s| server.starts_with(s))
+        };
         if cli.options.edns == Some(false) && cli.server.iter().any(scheme) {
             usage(
                 ErrorKind::ArgumentConflict,
-                "tls:// and quic:// need EDNS, which noedns turns off".to_owned(),
+                "tls://, quic:// and https:// need EDNS, which noedns turns off".to_owned(),
+            );
+        }
+        // HTTPS is HTTP/3, over QUIC: no other transport under it.
+        let https = |server: &String| server.starts_with("https://");
+        if cli.server.iter().any(https)
+            && (cli.options.tcp == Some(true) || cli.options.encrypted())
+        {
+            usage(
+                ErrorKind::ArgumentConflict,
+                "https:// goes with no +tcp, +tls or +quic".to_owned(),
             );
         }
         let output = &cli.output;

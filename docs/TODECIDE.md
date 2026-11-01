@@ -28,6 +28,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
+- DoH servers where HTTP/3 does not answer (21 of the 44 URLs of `providers.yaml`, November 2026): 19 do not
+  advertise `h3`; the two of UncensoredDNS do, but the QUIC handshake stalls after their first flight. They sit
+  under `https_h2`, parsed but not asked, until HTTP/2 (step 23). Default: find whether our client or their
+  server is at fault for UncensoredDNS.
+- `dedens -f` aborts the whole run when one server's host name does not resolve (`failed to lookup address
+  information`, macOS for `doh.dns.sb`, a CNAME chain), where one query should fail alone. Default: resolve per
+  query, as the exchange errors are.
+
 - QUIC connections sharing the client's one UDP socket per address family (`crates/dedens-net/src/quic.rs`):
   over IPv6, two at once to NextDNS (`2a07:a8c0::`, `2a07:a8c1::`) or to Control D (`2606:1a40::11` under two
   names) often time out, one per process never does; IPv4 does not show it. Default: find whether the servers'

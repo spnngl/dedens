@@ -3,18 +3,31 @@
 
 mod common;
 
+use std::cell::{Cell, RefCell};
+use std::net::SocketAddr;
+use std::num::NonZero;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use common::certificates::{Certificates, NAME, certificates, named};
+use common::loopback::answer;
 use common::{query, sent, start, t0};
+use compio::bytes::{Buf, Bytes};
+use compio::quic::{ServerBuilder, VarInt, h3};
+use compio::rustls::version::TLS13;
+use dedens_net::client::{Client, ClientError};
 use dedens_net::doh::{
     DohError, MEDIA_TYPE, Method, Template, TemplateError, request, response, server_request,
-    server_response,
+    server_response, wire,
 };
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::{Failure, Http, Options, Transport};
+use dedens_net::https::HttpsError;
+use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, RData, Rcode, RecordType};
+use futures_util::future::join_all;
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, DATE};
-use http::{Response, StatusCode};
+use http::{Response, StatusCode, Version};
 
 /// The server of the RFC's examples.
 const TEMPLATE: &str = "https://dnsserver.example.net/dns-query{?dns}";
@@ -740,4 +753,352 @@ fn captured_queries_go_through_the_request() {
         .expect(id);
         assert_eq!(reply.body(), &captured.body);
     }
+}
+
+// --- §5.2: over HTTP/3, against a loopback server
+
+/// How the HTTP/3 server answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Serve {
+    /// Each query answered, whatever the method.
+    Answer,
+    /// This status, without a DNS message.
+    Status(u16),
+    /// Each query answered, then a `GOAWAY`: no more requests on that connection.
+    GoingAway,
+    /// The first query of a connection answered, then the connection closed.
+    ClosingAfterFirst,
+    /// Never an answer.
+    Silent,
+}
+
+/// What the server saw.
+#[derive(Default)]
+struct Seen {
+    connections: Cell<u32>,
+    /// Each request's head and body.
+    requests: RefCell<Vec<(http::request::Parts, Vec<u8>)>>,
+}
+
+/// The bytes of `buf`.
+fn bytes_of(mut buf: impl Buf) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while buf.has_remaining() {
+        let part = buf.chunk();
+        bytes.extend_from_slice(part);
+        let taken = part.len();
+        buf.advance(taken);
+    }
+    bytes
+}
+
+/// An HTTP/3 server on the loopback address answering as `serve` says.
+async fn h3_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, Rc<Seen>) {
+    let config = certificates.config(&[&TLS13], b"h3");
+    let endpoint = ServerBuilder::new_with_rustls_server_config(config)
+        .bind("127.0.0.1:0")
+        .await
+        .expect("a QUIC endpoint");
+    let addr = endpoint.local_addr().expect("its address");
+    let seen = Rc::new(Seen::default());
+    let log = Rc::clone(&seen);
+    compio::runtime::spawn(async move {
+        while let Some(incoming) = endpoint.wait_incoming().await {
+            let log = Rc::clone(&log);
+            compio::runtime::spawn(async move {
+                let Ok(connecting) = incoming.accept() else {
+                    return;
+                };
+                let Ok(connection) = connecting.await else {
+                    return;
+                };
+                log.connections.set(log.connections.get() + 1);
+                let Ok(mut server) = h3::server::builder()
+                    .build::<_, Bytes>(connection.clone())
+                    .await
+                else {
+                    return;
+                };
+                while let Ok(Some(resolver)) = server.accept().await {
+                    let log = Rc::clone(&log);
+                    let handled = async move {
+                        let Ok((request, mut stream)) = resolver.resolve_request().await else {
+                            return;
+                        };
+                        let mut body = Vec::new();
+                        while let Ok(Some(chunk)) = stream.recv_data().await {
+                            body.extend(bytes_of(chunk));
+                        }
+                        let (head, ()) = request.into_parts();
+                        let request = http::Request::from_parts(head.clone(), ());
+                        log.requests.borrow_mut().push((head, body.clone()));
+                        let reply = match serve {
+                            Serve::Silent => {
+                                compio::time::sleep(Duration::from_secs(10)).await;
+                                return;
+                            }
+                            Serve::Status(status) => Response::builder()
+                                .status(status)
+                                .body(Vec::new())
+                                .expect("a response"),
+                            _ => {
+                                let query = server_request(&request, &body).expect("a query");
+                                server_response(answer(&query, Vec::new()), request.method())
+                                    .expect("a response")
+                            }
+                        };
+                        let (head, body) = reply.into_parts();
+                        stream
+                            .send_response(Response::from_parts(head, ()))
+                            .await
+                            .expect("the client reads");
+                        stream
+                            .send_data(Bytes::from(body))
+                            .await
+                            .expect("the client reads");
+                        stream.finish().await.expect("an open stream");
+                    };
+                    match serve {
+                        Serve::GoingAway => {
+                            handled.await;
+                            server.shutdown(0).await.expect("a GOAWAY");
+                        }
+                        Serve::ClosingAfterFirst => {
+                            handled.await;
+                            // What was sent gets out before the close.
+                            compio::time::sleep(Duration::from_millis(100)).await;
+                            connection.close(VarInt::from_u32(0), b"done");
+                            return;
+                        }
+                        _ => compio::runtime::spawn(handled).detach(),
+                    }
+                }
+            })
+            .detach();
+        }
+    })
+    .detach();
+    (addr, seen)
+}
+
+fn https(method: Method) -> Options {
+    let mut options = Options::default();
+    options.transport = Transport::Https;
+    options.method = method;
+    options
+}
+
+fn trusting(certificates: Certificates) -> Client {
+    Client::new().trusting(Trust::Roots(vec![certificates.ca]))
+}
+
+/// RFC 8484 §4.1, §5.2, RFC 9114: the query goes by GET over HTTP/3, as the `dns` parameter of the URI of the
+/// default path on the server's name and port, with ID 0 and padding; the response says its version and status.
+#[compio::test]
+async fn s4_1_a_get_over_http3() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Answer).await;
+    let client = trusting(certificates);
+    let response = client
+        .exchange(query(), named(addr, NAME), &https(Method::Get))
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Https);
+    assert_eq!(
+        response.http,
+        Some(Http {
+            version: Version::HTTP_3,
+            status: StatusCode::OK
+        })
+    );
+    let answered = Message::decode(&response.wire).expect("a response").message;
+    assert_eq!(answered.questions, query().questions);
+    let requests = seen.requests.borrow();
+    let [(head, body)] = requests.as_slice() else {
+        panic!("one request, not {}", requests.len());
+    };
+    assert_eq!(head.method, http::Method::GET);
+    assert_eq!(head.uri.path(), "/dns-query");
+    assert_eq!(
+        head.uri.authority().map(http::uri::Authority::as_str),
+        Some(format!("{NAME}:{}", addr.port()).as_str())
+    );
+    assert_eq!(head.headers[ACCEPT], MEDIA_TYPE);
+    assert_eq!(body, &Vec::<u8>::new());
+    let asked =
+        server_request(&http::Request::from_parts(head.clone(), ()), body).expect("a query");
+    assert_eq!(asked.len() % 128, 0);
+    assert_eq!(
+        Message::decode(&asked).expect("a query").message.header.id,
+        0
+    );
+}
+
+/// RFC 8484 §4.1: by POST, the query is the body, of the DNS media type.
+#[compio::test]
+async fn s4_1_a_post_over_http3() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Answer).await;
+    let client = trusting(certificates);
+    let response = client
+        .exchange(query(), named(addr, NAME), &https(Method::Post))
+        .await
+        .expect("a response");
+    assert_eq!(response.http.map(|http| http.status), Some(StatusCode::OK));
+    let requests = seen.requests.borrow();
+    let [(head, body)] = requests.as_slice() else {
+        panic!("one request, not {}", requests.len());
+    };
+    assert_eq!(head.method, http::Method::POST);
+    assert_eq!(head.uri.query(), None);
+    assert_eq!(head.headers[CONTENT_TYPE], MEDIA_TYPE);
+    assert_eq!(Message::decode(body).expect("a query").message.header.id, 0);
+}
+
+/// RFC 8484 §3: the path of the server's template is the path asked, whatever it is.
+#[compio::test]
+async fn s3_the_path_of_the_template_is_asked() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Answer).await;
+    let client = trusting(certificates);
+    let mut server = named(addr, NAME);
+    server.doh =
+        Some(Template::parse("https://dns.example/provider/filter?mode=a").expect("a template"));
+    client
+        .exchange(query(), server, &https(Method::Get))
+        .await
+        .expect("a response");
+    let requests = seen.requests.borrow();
+    let uri = &requests[0].0.uri;
+    assert_eq!(uri.path(), "/provider/filter");
+    assert!(
+        uri.query()
+            .is_some_and(|query| query.starts_with("mode=a&dns=")),
+        "{uri}"
+    );
+}
+
+/// RFC 8484 §4.2.1: a status other than 2xx holds no DNS response: the query is not asked again.
+#[compio::test]
+async fn s4_2_1_a_4xx_is_no_response() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Status(404)).await;
+    let client = trusting(certificates);
+    let error = client
+        .exchange(query(), named(addr, NAME), &https(Method::Get))
+        .await;
+    assert!(
+        matches!(
+            error,
+            Err(ClientError::Https(HttpsError::Response(DohError::Status(
+                StatusCode::NOT_FOUND
+            ))))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(seen.requests.borrow().len(), 1);
+}
+
+/// RFC 9114 §4.1: concurrent queries share the connection, each on its own request stream.
+#[compio::test]
+async fn s5_2_concurrent_queries_share_one_connection() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Answer).await;
+    let client = trusting(certificates);
+    let options = https(Method::Get);
+    let responses =
+        join_all((0..8).map(|_| client.exchange(query(), named(addr, NAME), &options))).await;
+    for response in responses {
+        assert_eq!(response.expect("a response").transport, Transport::Https);
+    }
+    assert_eq!(seen.connections.get(), 1);
+    assert_eq!(seen.requests.borrow().len(), 8);
+    // The connection stays for the next query.
+    client
+        .exchange(query(), named(addr, NAME), &options)
+        .await
+        .expect("a response");
+    assert_eq!(seen.connections.get(), 1);
+}
+
+/// RFC 9114 §5.2: after a `GOAWAY` the client sends no request on the connection: it opens another, and the
+/// query is answered.
+#[compio::test]
+async fn s5_2_a_goaway_moves_queries_to_a_new_connection() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::GoingAway).await;
+    let client = trusting(certificates);
+    for _ in 0..3 {
+        client
+            .exchange(query(), named(addr, NAME), &https(Method::Get))
+            .await
+            .expect("a response");
+    }
+    assert_eq!(seen.connections.get(), 3);
+    assert_eq!(seen.requests.borrow().len(), 3);
+}
+
+/// D83: a connection the server closed is opened again for the next query.
+#[compio::test]
+async fn s5_2_a_closed_connection_is_opened_again() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::ClosingAfterFirst).await;
+    let client = trusting(certificates);
+    let options = https(Method::Get);
+    for _ in 0..2 {
+        client
+            .exchange(query(), named(addr, NAME), &options)
+            .await
+            .expect("a response");
+        compio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert_eq!(seen.connections.get(), 2);
+}
+
+/// RFC 8310 §6.6: the strict profile holds over HTTP/3: a certificate for another name is not trusted.
+#[compio::test]
+async fn s5_2_a_certificate_for_another_name_is_refused() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Answer).await;
+    let client = trusting(certificates);
+    let error = client
+        .exchange(query(), named(addr, "other.example"), &https(Method::Get))
+        .await;
+    assert!(
+        matches!(error, Err(ClientError::Https(HttpsError::Quic(_)))),
+        "{error:?}"
+    );
+    assert!(seen.requests.borrow().is_empty());
+}
+
+/// D27: a server that never answers ends the exchange after its tries.
+#[compio::test]
+async fn s5_2_no_answer_times_out() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::Silent).await;
+    let client = trusting(certificates);
+    let mut options = https(Method::Get);
+    options.timeout = Duration::from_millis(300);
+    options.tries = NonZero::new(2).expect("two");
+    let error = client.exchange(query(), named(addr, NAME), &options).await;
+    assert!(
+        matches!(
+            error,
+            Err(ClientError::Exchange(Failure::TimedOut { sends: 2 }))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(seen.requests.borrow().len(), 2);
+    assert_eq!(seen.connections.get(), 1);
+}
+
+/// RFC 8484 §5.1: a response with an `Age` reaches the caller with its TTLs reduced, one without it unchanged.
+#[test]
+fn s5_1_wire_has_the_reduced_ttls() {
+    let body = hex(WWW_RESPONSE);
+    let unchanged = wire(&http_response(&[]), &body, at(0)).expect("a response");
+    assert_eq!(unchanged, body);
+    let aged = wire(&http_response(&[("age", "9")]), &body, at(0)).expect("a response");
+    let message = Message::decode(&aged).expect("a response").message;
+    assert_eq!(message.answer[0].ttl.get(), 3709 - 9);
 }

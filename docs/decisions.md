@@ -297,7 +297,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Queries are padded as over TLS (§5.4), and carry no edns-tcp-keepalive (§5.5.2).
   - The CLI writes a QUIC server `quic://HOST[:PORT][#NAME]`, or any server with `+quic`; UDP port 853 unless
     given.
-- D62 (amended by D82) DoH (RFC 8484) waits for compio to release tokio's I/O traits on its streams (the `h2`
+- D62 (amended by D82, D83) DoH (RFC 8484) waits for compio to release tokio's I/O traits on its streams (the `h2`
   crate needs them; draft on branch `feat/io-tokio-compat` of compio); no adapter of our own meanwhile.
   ~~HTTP/3 waits for compio too.~~ Queries go by GET by default, ID 0 so HTTP caches can keep them (§4.1), and
   by POST with `+https-post`, as dig.
@@ -326,6 +326,24 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
     §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
     Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
+- D83 (completes D82) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
+  QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
+  - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
+    request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
+    (GOAWAY, `H3_REQUEST_REJECTED`, closed) goes once more on a new one, as D61. The endpoints and dialing are
+    `dial.rs`, shared with DoQ; HTTP/3 lets the server open 16 unidirectional streams (control, QPACK), DoQ none.
+  - No retry of its own: D27's rules for stream transports, ID 0, timeouts as QUIC. A status other than 2xx, a
+    wrong content type or a body that is no DNS message is an error of the exchange, not a response (D82).
+  - The CLI writes `https://HOST[:PORT][/PATH][#NAME]`, port 443; the path is that of the URL, else of
+    `+https=PATH`, else `/dns-query`. `+https`, `+https-get` (default) and `+https-post` turn it on for any
+    server, as `+tls` does. `+https` is refused with `+tcp`, `+tls`, `+quic` (one transport each), `+trace` (D40)
+    and `+noedns` (the padding, D60); `+https-get` with `+https-post`.
+  - HTTP/3 is the one version: there is no `+http3` option yet. HTTP/2 (phase 4, step 23) adds the version
+    choice and may make HTTP/2 the default of `https://` (RFC 8484 §5.2), HTTP/3 on `+http3`.
+  - A response reports transport `DoH`, `-v` and JSON `exchange.http` the HTTP version and status.
+  - `providers.yaml`: `https` URLs are asked over HTTP/3 by `just providers`; `https_h2` holds those of servers
+    where HTTP/3 does not answer (November 2026: no `h3` in Alt-Svc, or a handshake that stalls), parsed only,
+    until HTTP/2 (D67).
 
 ## Presentation format
 
@@ -458,9 +476,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
   privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
   measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
-  nothing, DNS4EU's child variants block gambling), and its endpoints per transport, DoH URLs kept as data
-  until D62. `apps/dedens/tests/providers.rs` reads it into typed structs: `cargo test` checks the file
-  offline; `just providers` (an ignored test, outside `just check`, which stays offline) asks, through one
+  nothing, DNS4EU's child variants block gambling), and its endpoints per transport, DoH URLs asked over HTTP/3
+  (D83), those of servers without it kept as data until HTTP/2. `apps/dedens/tests/providers.rs` reads it into
+  typed structs: `cargo test` checks the file offline; `just providers` (an ignored test, outside `just check`, which stays offline) asks, through one
   `dedens -f -` run (2 tries), `example.com` of every endpoint, `dnssec-failed.org` of each resolver, and
   each resolver the canaries of each category: one blocked if `blocks` lists the category, all answered if not.
   Blocked is NXDOMAIN, EDE 15 to 17, no address, `0.0.0.0`, loopback or a listed block page. No provider

@@ -3,27 +3,18 @@
 //! (RFC 9250 §4.2). No 0-RTT: queries wait for the handshake (RFC 9250 §4.5). The server may open no stream
 //! (RFC 9250 §4.3.3).
 
-use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::AsyncWriteExt as _;
-use compio::quic::crypto::rustls::QuicClientConfig;
-use compio::quic::{
-    ClientConfig, ConnectError, Connection, ConnectionError, Endpoint, IdleTimeout, RecvStream,
-    SendStream, TransportConfig, VarInt,
-};
+use compio::quic::{ConnectError, Connection, ConnectionError, RecvStream, SendStream, VarInt};
 use compio::rustls::pki_types::ServerName;
-use futures_util::lock::Mutex;
 
+use crate::dial::{Dialer, Peer, Slots};
 use crate::tcp::frame;
 use crate::tls::{self, Trust};
-use crate::udp::unspecified;
 
 /// `DOQ_PROTOCOL_ERROR`: the peer broke the protocol, and the connection is closed (RFC 9250 §4.3, §4.3.3).
 pub const DOQ_PROTOCOL_ERROR: u32 = 0x2;
@@ -68,35 +59,28 @@ pub enum QuicError {
 /// QUIC connections, one per server and name, closed by the QUIC idle timeout (RFC 9250 §4.4).
 #[derive(Debug)]
 pub struct QuicPool {
-    idle: Duration,
-    trust: Trust,
-    config: OnceCell<ClientConfig>,
-    /// The endpoints of IPv4 and IPv6 servers, each on its own UDP socket.
-    endpoints: RefCell<[Option<Endpoint>; 2]>,
-    /// Each server's connection, locked while it opens so that queries meanwhile wait for it, not open another.
-    connections: RefCell<HashMap<(SocketAddr, ServerName<'static>), Slot>>,
+    dialer: Dialer,
+    connections: Slots<Connection>,
 }
-
-/// The connection to a server, none before the first or after a failed one.
-type Slot = Rc<Mutex<Option<Connection>>>;
 
 impl QuicPool {
     /// No connection yet; those opened close after `idle` without a packet, unless the server asks for less.
     #[must_use]
     pub fn new(idle: Duration) -> Self {
         Self {
-            idle,
-            trust: Trust::default(),
-            config: OnceCell::new(),
-            endpoints: RefCell::default(),
-            connections: RefCell::default(),
+            // The server may open no stream (RFC 9250 §4.3.3).
+            dialer: Dialer::new(tls::ALPN_DOQ, 0, idle),
+            connections: Slots::default(),
         }
     }
 
     /// The pool, its connections trusting `trust`.
     #[must_use]
     pub fn trusting(self, trust: Trust) -> Self {
-        Self { trust, ..self }
+        Self {
+            dialer: self.dialer.trusting(trust),
+            ..self
+        }
     }
 
     /// Sends `wire` to `addr`, whose certificate must hold `name`, and returns the response.
@@ -132,69 +116,17 @@ impl QuicPool {
             .unwrap_or(Err(QuicError::TimedOut))
     }
 
-    /// The open connection to the server at `addr` for `name`, reused, or a new one.
-    async fn connection(
-        &self,
-        server: &(SocketAddr, ServerName<'static>),
-    ) -> Result<(Connection, bool), QuicError> {
-        let (addr, name) = (server.0, &server.1);
-        let known = self.connections.borrow().get(server).cloned();
-        // The key is copied for a new server only.
-        let slot = known.unwrap_or_else(|| {
-            Rc::clone(
-                self.connections
-                    .borrow_mut()
-                    .entry(server.clone())
-                    .or_default(),
-            )
-        });
+    /// The open connection to `server`, reused, or a new one.
+    async fn connection(&self, server: &Peer) -> Result<(Connection, bool), QuicError> {
+        let slot = self.connections.slot(server);
         let mut slot = slot.lock().await;
         if let Some(open) = slot.as_ref()
             && open.close_reason().is_none()
         {
             return Ok((open.clone(), true));
         }
-        let endpoint = self.endpoint(addr).await?;
-        let connection = endpoint
-            .connect(addr, &name.to_str(), Some(self.config()?))
-            .map_err(QuicError::Connect)?
-            .await
-            .map_err(QuicError::Connection)?;
+        let connection = self.dialer.connect(server.0, &server.1).await?;
         Ok((slot.insert(connection).clone(), false))
-    }
-
-    /// The endpoint of `addr`'s address family, bound to any address on first use.
-    async fn endpoint(&self, addr: SocketAddr) -> Result<Endpoint, QuicError> {
-        let family = usize::from(addr.is_ipv6());
-        if let Some(endpoint) = &self.endpoints.borrow()[family] {
-            return Ok(endpoint.clone());
-        }
-        let endpoint = Endpoint::client(unspecified(addr))
-            .await
-            .map_err(QuicError::Bind)?;
-        // Another query may have bound one meanwhile: the first stays.
-        Ok(self.endpoints.borrow_mut()[family]
-            .get_or_insert(endpoint)
-            .clone())
-    }
-
-    /// The configuration of new connections, built on first use.
-    fn config(&self) -> Result<ClientConfig, QuicError> {
-        if let Some(config) = self.config.get() {
-            return Ok(config.clone());
-        }
-        // rustls leaves early data off: no 0-RTT (D61).
-        let tls = tls::quic_config(&self.trust).map_err(QuicError::Trust)?;
-        let tls = QuicClientConfig::try_from(tls)
-            .expect("TLS 1.3 with ring's cipher suites has QUIC's initial suite");
-        let mut config = ClientConfig::new(Arc::new(tls));
-        let mut transport = TransportConfig::default();
-        transport
-            .max_idle_timeout(IdleTimeout::try_from(self.idle).ok())
-            .max_concurrent_bidi_streams(VarInt::from_u32(0))
-            .max_concurrent_uni_streams(VarInt::from_u32(0));
-        config.transport_config(Arc::new(transport));
-        Ok(self.config.get_or_init(|| config).clone())
     }
 }
 

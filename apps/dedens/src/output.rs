@@ -162,10 +162,13 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
             Transport::Tcp => "TCP",
             Transport::Tls => "TLS",
             Transport::Quic => "QUIC",
-            Transport::Https => "HTTPS",
+            Transport::Https => "DoH",
         };
         write!(out, "  {} ms from ", millis(exchange.rtt_us))?;
         write!(out, "{} over {transport}", server_text(exchange.server))?;
+        if let Some(http) = exchange.http {
+            write!(out, " ({} {})", http.version, http.status)?;
+        }
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
         }

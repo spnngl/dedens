@@ -9,13 +9,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dedens_proto::text::{decode_base64url, encode_base64url};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_proto::{DecodeError, Decoded, Message, RData, RecordType, Ttl};
+use dedens_proto::{DecodeError, Decoded, EncodeError, Message, RData, RecordType, Ttl};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE};
 use http::uri::{Authority, InvalidUri, PathAndQuery};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 
 /// The media type of a DNS message in an HTTP body (RFC 8484 §6): the message of RFC 1035 §4.2.1, without a length.
 pub const MEDIA_TYPE: &str = "application/dns-message";
+
+/// The path of a `DoH` server that gives none: `/dns-query`, as RFC 8484 §3 writes its examples and servers use it.
+pub const DEFAULT_PATH: &str = "/dns-query";
 
 /// How a query goes in the HTTP request (RFC 8484 §4.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +212,9 @@ pub enum DohError {
     /// The body is not a DNS message.
     #[error("not a DNS message")]
     Decode(#[from] DecodeError),
+    /// The message, its TTLs reduced, cannot be written again.
+    #[error("cannot write the message again")]
+    Encode(#[from] EncodeError),
 }
 
 /// The DNS response in an HTTP `response` with body `body`, as received at `now`.
@@ -251,6 +257,23 @@ pub fn response<'b, T>(
         }
     }
     Ok(decoded)
+}
+
+/// The DNS message in an HTTP `response` with body `body`, as [`response`] reads it, as wire: `body` itself, or,
+/// when its TTLs are reduced by the response's age, the message written again.
+///
+/// # Errors
+///
+/// As [`response`], and [`DohError::Encode`] for a message that grew past 65535 bytes.
+pub fn wire<T>(http: &Response<T>, body: &[u8], now: SystemTime) -> Result<Vec<u8>, DohError> {
+    let decoded = response(http, body, now)?;
+    if age(http.headers(), now) == 0 {
+        return Ok(body.to_vec());
+    }
+    let mut wire = vec![0; MAX_MESSAGE_LEN];
+    let len = decoded.message.encode(&mut wire)?;
+    wire.truncate(len);
+    Ok(wire)
 }
 
 /// Whether `headers` say the body is [`MEDIA_TYPE`], whatever the case and the parameters.

@@ -1,6 +1,6 @@
 [package]
 name = "dedens-net"
-description = "DNS transports (UDP, TCP, TLS, QUIC) on the compio runtime, and the sans-IO core of DoH."
+description = "DNS transports (UDP, TCP, TLS, QUIC, HTTPS over HTTP/3) on the compio runtime, and the sans-IO core of DoH."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,10 @@ tracing = ["dep:tracing"]
 compio = { workspace = true, features = ["macros"] }
 proptest.workspace = true
 rcgen.workspace = true
+
+[[bench]]
+name = "transports"
+harness = false
 
 [lints]
 workspace = true

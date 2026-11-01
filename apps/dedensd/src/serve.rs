@@ -764,6 +764,7 @@ fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transpo
         Server {
             addr: server.addr,
             name,
+            doh: None,
         },
         transport,
     )

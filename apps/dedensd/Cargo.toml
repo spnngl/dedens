@@ -37,6 +37,7 @@ doc = ["dedens-net/doc"]
 
 [dev-dependencies]
 dedens-scenario.workspace = true
+http.workspace = true
 rcgen.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

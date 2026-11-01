@@ -10,9 +10,12 @@ use std::rc::Rc;
 
 use anyhow::{Context, anyhow, bail};
 use compio::quic::ConnectionError;
+use compio::quic::h3::error::ConnectionError as H3Error;
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{Client, ClientError, Server};
+use dedens_net::doh::{DEFAULT_PATH, Template};
 use dedens_net::exchange::{Failure, Transport};
+use dedens_net::https::HttpsError;
 use dedens_net::quic::QuicError;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
@@ -52,18 +55,19 @@ enum Route {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Endpoint {
     server: Server,
-    /// The transport whatever the options say: given as `tls://` or `quic://`.
+    /// The transport whatever the options say: given as `tls://`, `quic://` or `https://`.
     forced: Option<Transport>,
 }
 
 impl Endpoint {
-    /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, `+tls` or `+quic` after
-    /// it when forced, so `tls://` and `quic://` to one address stay apart.
+    /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, `+tls`, `+quic` or
+    /// `+https` after it when forced, so `tls://`, `quic://` and `https://` to one address stay apart.
     fn id(&self, id: &Id) -> Id {
         let id = id.at(self.server.addr);
         let over = match self.forced {
             Some(Transport::Tls) => "tls",
             Some(Transport::Quic) => "quic",
+            Some(Transport::Https) => "https",
             _ => return id,
         };
         Id::try_from(format!("{id}+{over}")).expect("an id with letters after it stays an id")
@@ -229,7 +233,7 @@ async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: 
                 qtype: job.qtype,
                 qclass: job.qclass,
             };
-            return trace::trace(&client, job.options, question, &id, &roots).await;
+            return trace::trace(&client, job.options.clone(), question, &id, &roots).await;
         }
     };
     match repeat(&client, &job, &endpoint, id, times).await {
@@ -318,6 +322,13 @@ fn no_reply(error: &anyhow::Error) -> bool {
             | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed)
             | ClientError::Quic(
                 QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
+            )
+            | ClientError::Https(
+                HttpsError::TimedOut
+                | HttpsError::Connection(H3Error::Timeout)
+                | HttpsError::Quic(
+                    QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
+                ),
             ),
         ) => true,
         Some(
@@ -335,12 +346,9 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         .transpose()?;
     let route = match servers(cli, conf.as_ref())? {
         _ if cli.trace => Route::Trace(roots()?),
-        servers if servers.is_empty() => Route::Servers(vec![server(
-            None,
-            conf.as_ref(),
-            cli.port,
-            cli.options.encrypted(),
-        )?]),
+        servers if servers.is_empty() => {
+            Route::Servers(vec![server(None, conf.as_ref(), cli.port, &cli.options)?])
+        }
         servers => Route::Servers(servers),
     };
     let job = |names: Vec<Name<'static>>, qtype| Job {
@@ -349,7 +357,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         qtype,
         qclass,
         route: route.clone(),
-        options: cli.options,
+        options: cli.options.clone(),
         expect: None,
     };
     let mut jobs = Vec::new();
@@ -403,13 +411,17 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
         .filter(|q| cli.only.is_empty() || cli.only.contains(&q.id()))
         .map(|query| {
             let id = query.id();
-            let options = cli.options.or(query.options).or(file.options);
+            let options = cli
+                .options
+                .clone()
+                .or(query.options)
+                .or(file.options.clone());
             options.check().with_context(|| format!("{id}"))?;
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
                 route: Route::Servers(match &servers {
                     servers if servers.is_empty() => {
-                        vec![server(named, conf.as_ref(), cli.port, options.encrypted())?]
+                        vec![server(named, conf.as_ref(), cli.port, &options)?]
                     }
                     servers => servers.clone(),
                 }),
@@ -437,7 +449,7 @@ fn resolv_conf() -> anyhow::Result<ResolvConf> {
 fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>> {
     let mut servers = Vec::new();
     for named in cli.servers() {
-        let address = server(Some(named), conf, cli.port, cli.options.encrypted())?;
+        let address = server(Some(named), conf, cli.port, &cli.options)?;
         if !servers.contains(&address) {
             servers.push(address);
         }
@@ -448,15 +460,19 @@ fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>
 /// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
 const ENCRYPTED_PORT: u16 = 853;
 
+/// The port of DNS over HTTPS (RFC 8484 §3, RFC 9110 §4.2.2).
+const HTTPS_PORT: u16 = 443;
+
 /// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
-/// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, and `#NAME` after it
-/// for the name the server's certificate must hold, else its host name, else its address. Without a port, `port`,
-/// else 853 over TLS or QUIC (`encrypted` on, or a scheme), else 53.
+/// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
+/// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), and `#NAME` after it for the name the
+/// server's certificate must hold, else its host name, else its address. Without a port, `port`, else 443 over
+/// HTTPS, else 853 over TLS or QUIC (`options` or a scheme), else 53.
 fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
     port: Option<u16>,
-    encrypted: bool,
+    options: &Options,
 ) -> anyhow::Result<Endpoint> {
     let text = match named {
         Some(text) => text,
@@ -467,15 +483,25 @@ fn server(
             })?,
     };
     let given = text;
-    let (text, forced) = [("tls://", Transport::Tls), ("quic://", Transport::Quic)]
-        .into_iter()
-        .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
-        .unwrap_or((text, None));
+    let (text, forced) = [
+        ("tls://", Transport::Tls),
+        ("quic://", Transport::Quic),
+        ("https://", Transport::Https),
+    ]
+    .into_iter()
+    .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
+    .unwrap_or((text, None));
     let (text, name) = match text.rsplit_once('#') {
         Some((text, name)) => (text, Some(name)),
         None => (text, None),
     };
-    let encrypted = forced.is_some() || encrypted;
+    let https = forced == Some(Transport::Https);
+    let (text, url_path) = match text.split_once('/') {
+        Some((host, path)) if https => (host, Some(format!("/{path}"))),
+        _ => (text, None),
+    };
+    let doh = https || options.https();
+    let encrypted = forced.is_some() || options.encrypted() || doh;
     // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
     let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
         Some((host, "")) => (host, None),
@@ -489,7 +515,11 @@ fn server(
         Some(written) => written
             .parse()
             .with_context(|| format!("server {given}: not a port"))?,
-        None => port.unwrap_or(if encrypted { ENCRYPTED_PORT } else { 53 }),
+        None => port.unwrap_or(match (doh, encrypted) {
+            (true, _) => HTTPS_PORT,
+            (_, true) => ENCRYPTED_PORT,
+            _ => 53,
+        }),
     };
     // An address, its zone aside, has no name to check.
     let literal = host
@@ -512,8 +542,35 @@ fn server(
         .map(|name| ServerName::try_from(name.to_owned()))
         .transpose()
         .with_context(|| format!("server {given}: not a name for TLS"))?;
+    let template = doh
+        .then(|| {
+            let path = url_path
+                .as_deref()
+                .or(options.https_path())
+                .unwrap_or(DEFAULT_PATH);
+            let brackets = if host.contains(':') {
+                ("[", "]")
+            } else {
+                ("", "")
+            };
+            let port = if port == HTTPS_PORT {
+                String::new()
+            } else {
+                format!(":{port}")
+            };
+            Template::parse(&format!(
+                "https://{}{host}{}{port}{path}",
+                brackets.0, brackets.1
+            ))
+            .with_context(|| format!("server {given}"))
+        })
+        .transpose()?;
     Ok(Endpoint {
-        server: Server { addr, name },
+        server: Server {
+            addr,
+            name,
+            doh: template,
+        },
         forced,
     })
 }

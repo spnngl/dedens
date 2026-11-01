@@ -4,7 +4,7 @@
 //! The strict privacy profile of RFC 8310 §6.6: a server whose certificate does not verify for the name expected,
 //! or the address when there is none, is not queried, short of [`Trust::Anyone`]. rustls with ring, TLS 1.2 and
 //! 1.3 (RFC 8310 §9: no older version) over TCP, TLS 1.3 alone over QUIC (RFC 9001 §4.2), session resumption on
-//! (RFC 7858 §3.4), ALPN `dot` or `doq` (RFC 9461 §4.1, RFC 9250 §4.1.1).
+//! (RFC 7858 §3.4), ALPN `dot`, `doq` or `h3` (RFC 9461 §4.1, RFC 9250 §4.1.1, RFC 9114 §3.1).
 
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -44,7 +44,10 @@ pub enum Trust {
 const ALPN_DOT: &[u8] = b"dot";
 
 /// The ALPN protocol of DNS over QUIC (RFC 9250 §4.1.1).
-const ALPN_DOQ: &[u8] = b"doq";
+pub(crate) const ALPN_DOQ: &[u8] = b"doq";
+
+/// The ALPN protocol of HTTP/3, which DNS over HTTPS goes over (RFC 9114 §3.1, RFC 8484 §5.2).
+pub(crate) const ALPN_H3: &[u8] = b"h3";
 
 /// The certificate a server presents, which may be replaced while it serves: each handshake takes the one
 /// current then.
@@ -129,13 +132,13 @@ pub(crate) fn connector(trust: &Trust) -> Result<TlsConnector, Error> {
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
-/// The TLS configuration of QUIC connections trusting `trust`.
+/// The TLS configuration of QUIC connections trusting `trust`, asking for `alpn`.
 ///
 /// # Errors
 ///
 /// As [`connector`].
-pub(crate) fn quic_config(trust: &Trust) -> Result<ClientConfig, Error> {
-    client_config(trust, &[&TLS13], ALPN_DOQ)
+pub(crate) fn quic_config(trust: &Trust, alpn: &[u8]) -> Result<ClientConfig, Error> {
+    client_config(trust, &[&TLS13], alpn)
 }
 
 /// The configuration of clients trusting `trust`, over `versions`, asking for `alpn`.

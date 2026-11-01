@@ -29,6 +29,8 @@ pub use dedens_proto::Transport;
 use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
 use dedens_proto::{EncodeError, Flags, Message, Name, Query, Question, Rcode, Violation};
 
+use crate::doh::Method;
+
 /// How an exchange behaves; the default is dig's (D27).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -51,6 +53,9 @@ pub struct Options {
     /// Whether [`Client::exchange`](crate::client::Client::exchange) adds a client cookie to a query with EDNS
     /// and none of its own (RFC 7873 §5.1). Default: on.
     pub cookies: bool,
+    /// How a query goes over [`Transport::Https`]: by GET, which HTTP caches can keep, or by POST (RFC 8484 §4.1).
+    /// Default: GET.
+    pub method: Method,
 }
 
 impl Default for Options {
@@ -63,6 +68,7 @@ impl Default for Options {
             edns_fallback: true,
             random_case: None,
             cookies: true,
+            method: Method::Get,
         }
     }
 }
@@ -95,6 +101,35 @@ pub struct Response {
     /// The cookie the server returned, its client cookie checked: send it in the next query to this server
     /// (RFC 7873 §5.3). Absent when the query had no cookie.
     pub cookie: Option<Cookie>,
+    /// Over [`Transport::Https`], the HTTP response the DNS response came in; [`Client::exchange`](crate::client::Client::exchange)
+    /// sets it.
+    pub http: Option<Http>,
+}
+
+/// The HTTP response a DNS response came in (RFC 8484 §4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Http {
+    /// The HTTP version: HTTP/3, the one version there is (D83).
+    pub version: http::Version,
+    /// The status, 2xx for a DNS response.
+    pub status: http::StatusCode,
+}
+
+impl Http {
+    /// The version as HTTP names it: `HTTP/3`, `HTTP/1.1`.
+    #[must_use]
+    pub fn version_name(&self) -> &'static str {
+        [
+            (http::Version::HTTP_09, "HTTP/0.9"),
+            (http::Version::HTTP_10, "HTTP/1.0"),
+            (http::Version::HTTP_11, "HTTP/1.1"),
+            (http::Version::HTTP_2, "HTTP/2"),
+            (http::Version::HTTP_3, "HTTP/3"),
+        ]
+        .into_iter()
+        .find_map(|(version, name)| (version == self.version).then_some(name))
+        .unwrap_or("HTTP")
+    }
 }
 
 /// Why an exchange ended without a response.
@@ -292,6 +327,7 @@ impl Exchange {
             rtt: now.saturating_duration_since(self.sent_at),
             sends: self.sends,
             cookie,
+            http: None,
         }))
     }
 

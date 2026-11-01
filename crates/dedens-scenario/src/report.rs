@@ -97,6 +97,10 @@ impl Report {
                 rtt_us: u64::try_from(response.rtt.as_micros()).unwrap_or(u64::MAX),
                 sends: response.sends,
                 query_size: response.query.len(),
+                http: response.http.map(|http| HttpReport {
+                    version: http.version_name(),
+                    status: http.status.as_u16(),
+                }),
             }),
             ..Self::new(id, decoded, response.wire.len())
         }
@@ -116,6 +120,18 @@ pub struct ExchangeReport {
     pub sends: u16,
     /// The size of the last query, in bytes.
     pub query_size: usize,
+    /// Over HTTPS, the HTTP response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpReport>,
+}
+
+/// The HTTP response a DNS response came in (RFC 8484 §4.2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HttpReport {
+    /// The HTTP version, such as `HTTP/3`.
+    pub version: &'static str,
+    /// The status code.
+    pub status: u16,
 }
 
 /// The round trips of a query asked `sent` times, in microseconds: those answered, by nearest rank.
@@ -176,7 +192,8 @@ pub enum Transport {
     Tls,
     /// QUIC (RFC 9250).
     Quic,
-    /// HTTPS (RFC 8484).
+    /// DNS over HTTPS (RFC 8484).
+    #[serde(rename = "doh")]
     Https,
 }
 

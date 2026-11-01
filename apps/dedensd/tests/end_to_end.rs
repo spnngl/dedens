@@ -15,7 +15,7 @@ fn replies_meet_the_query_file() {
     let server = Server::start(upstream.addr, "");
     let mut failures = Vec::new();
     for (id, query) in (1..).zip(&file.queries) {
-        let options = query.options.or(file.options);
+        let options = query.options.clone().or(file.options.clone());
         let mut message = options.query(Question::new(query.name.clone(), query.qtype));
         message.header.id = id;
         let wire = message.to_vec().expect("a query fits");

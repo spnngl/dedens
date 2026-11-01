@@ -1,4 +1,4 @@
-//! The client: the sans-IO [`Exchange`] run over the UDP and TCP transports (D26, D27).
+//! The client: the sans-IO [`Exchange`] run over the UDP, TCP, TLS, QUIC and HTTPS transports (D26, D27, D83).
 //!
 //! [`Client::exchange`] gives each query a random ID and, when it has EDNS and no cookie of the caller's, a cookie
 //! (RFC 7873 §4.1, §5.1): the client cookie is drawn at random for each pair of source and server addresses, so it
@@ -17,7 +17,9 @@ use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
-use crate::exchange::{Exchange, Failure, Options, Progress, Response, Transport, after};
+use crate::doh::{DEFAULT_PATH, Template, TemplateError};
+use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
+use crate::https::{HttpsError, HttpsPool};
 use crate::quic::{QuicError, QuicPool};
 use crate::tcp::{Link, TcpError, TcpPool};
 use crate::tls::Trust;
@@ -26,6 +28,9 @@ use crate::udp::{UdpPool, UdpQuery};
 /// How long a TCP connection stays open without a query waiting, unless the server asks for less (RFC 7766
 /// §6.2.3, RFC 7828 §3.2.2).
 const TCP_IDLE: Duration = Duration::from_secs(10);
+
+/// The port of HTTPS, which a template leaves out (RFC 9110 §4.2.2).
+const HTTPS_PORT: u16 = 443;
 
 /// UDP sockets per server, each muxing queries by ID (D50).
 const UDP_SOCKETS: usize = 256;
@@ -49,10 +54,12 @@ pub enum ClientError {
     /// The QUIC connection or stream failed.
     #[error("QUIC")]
     Quic(#[from] QuicError),
-    /// The client does not run this transport: HTTPS has its request and response in [`crate::doh`], and no
-    /// connection yet.
-    #[error("{0:?} is not run by this client")]
-    Unsupported(Transport),
+    /// The HTTPS connection or request failed, or its response holds no DNS response.
+    #[error("HTTPS")]
+    Https(#[from] HttpsError),
+    /// The server's name and port make no `DoH` template.
+    #[error("no DoH template for the server")]
+    Template(#[from] TemplateError),
     /// The exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
@@ -67,15 +74,21 @@ impl ClientError {
         let io = match self {
             Self::Random(_)
             | Self::Encode(_)
-            | Self::Unsupported(_)
+            | Self::Template(_)
             | Self::Tcp(TcpError::Trust(_))
             | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
+            | Self::Https(
+                HttpsError::Quic(QuicError::Trust(_) | QuicError::Connect(_))
+                | HttpsError::Request(_),
+            )
             | Self::Exchange(Failure::Encode(_)) => return true,
             Self::Udp(error)
             | Self::Tcp(TcpError::Connect(error))
-            | Self::Quic(QuicError::Bind(error)) => error,
+            | Self::Quic(QuicError::Bind(error))
+            | Self::Https(HttpsError::Quic(QuicError::Bind(error))) => error,
             Self::Tcp(_)
             | Self::Quic(_)
+            | Self::Https(_)
             | Self::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. }) => {
                 return false;
             }
@@ -101,11 +114,18 @@ pub struct Server {
     /// Over TLS, the name its certificate must hold, sent as SNI; without one, the certificate must hold its address
     /// (RFC 8310 §8.1).
     pub name: Option<ServerName<'static>>,
+    /// Over HTTPS, its URI template: the host and port of the `:authority` of the requests, and the path. Without
+    /// one, `https://NAME/dns-query`, or its address for NAME, the port left out for 443 (D83).
+    pub doh: Option<Template>,
 }
 
 impl From<SocketAddr> for Server {
     fn from(addr: SocketAddr) -> Self {
-        Self { addr, name: None }
+        Self {
+            addr,
+            name: None,
+            doh: None,
+        }
     }
 }
 
@@ -119,6 +139,23 @@ impl Server {
         }
     }
 
+    /// The URI template of its `DoH` service: the one given, else the default one.
+    fn template(&self) -> Result<Template, TemplateError> {
+        if let Some(template) = &self.doh {
+            return Ok(template.clone());
+        }
+        let host = match (&self.name, self.addr.ip()) {
+            (Some(ServerName::DnsName(name)), _) => name.as_ref().to_owned(),
+            (_, IpAddr::V4(ip)) => ip.to_string(),
+            (_, IpAddr::V6(ip)) => format!("[{ip}]"),
+        };
+        let port = match self.addr.port() {
+            HTTPS_PORT => String::new(),
+            port => format!(":{port}"),
+        };
+        Template::parse(&format!("https://{host}{port}{DEFAULT_PATH}"))
+    }
+
     /// The name its certificate must hold: the one given, else its address.
     fn certified(&self) -> ServerName<'static> {
         self.name
@@ -127,12 +164,13 @@ impl Server {
     }
 }
 
-/// Sends queries and returns their responses, keeping TCP, TLS and QUIC connections and cookies per server.
+/// Sends queries and returns their responses, keeping TCP, TLS, QUIC and HTTP/3 connections and cookies per server.
 #[derive(Debug)]
 pub struct Client {
     udp: UdpPool,
     tcp: TcpPool,
     quic: QuicPool,
+    https: HttpsPool,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
     random: RefCell<Random>,
@@ -185,6 +223,7 @@ impl Client {
             udp: UdpPool::new(UDP_SOCKETS),
             tcp: TcpPool::new(TCP_IDLE),
             quic: QuicPool::new(TCP_IDLE),
+            https: HttpsPool::new(TCP_IDLE),
             cookies: RefCell::default(),
             random: RefCell::new(Random {
                 bytes: [0; RANDOM_BATCH],
@@ -193,12 +232,13 @@ impl Client {
         }
     }
 
-    /// The client, its TLS and QUIC connections trusting `trust`.
+    /// The client, its TLS, QUIC and HTTPS connections trusting `trust`.
     #[must_use]
     pub fn trusting(self, trust: Trust) -> Self {
         Self {
             tcp: self.tcp.trusting(trust.clone()),
-            quic: self.quic.trusting(trust),
+            quic: self.quic.trusting(trust.clone()),
+            https: self.https.trusting(trust),
             ..self
         }
     }
@@ -207,7 +247,7 @@ impl Client {
     ///
     /// The query goes with a random ID, and a cookie when it has EDNS and none of its own, unless
     /// [`Options::cookies`] is off. Over QUIC, with ID 0 and no cookie: QUIC checks the client's address itself
-    /// (RFC 9000 §8).
+    /// (RFC 9000 §8), and over HTTPS, where the response's HTTP version and status come in [`Response::http`].
     ///
     /// # Errors
     ///
@@ -219,9 +259,6 @@ impl Client {
         server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
-        if options.transport == Transport::Https {
-            return Err(ClientError::Unsupported(Transport::Https));
-        }
         let target = server.into();
         let server = target.addr;
         // The ID, then the UDP socket of the pool.
@@ -234,7 +271,7 @@ impl Client {
         // A connection slower than the try's timeout costs that try (D27).
         let mut slow = false;
         let source = match target.link(options.transport) {
-            None if options.transport == Transport::Quic => None,
+            None if matches!(options.transport, Transport::Quic | Transport::Https) => None,
             None => {
                 let waiting = self
                     .udp
@@ -269,16 +306,23 @@ impl Client {
         } else {
             Progress::Send(exchange)
         };
-        let response = loop {
+        // The HTTP response of the last query, over HTTPS.
+        let mut http = None;
+        let mut response = loop {
             progress = match progress {
                 Progress::Send(next) => {
                     self.keep_cookie(pair, next.cookie());
-                    self.step(next, &target, udp.as_mut()).await?
+                    self.step(next, &target, udp.as_mut(), options, &mut http)
+                        .await?
                 }
-                Progress::Wait(next) => self.step(next, &target, udp.as_mut()).await?,
+                Progress::Wait(next) => {
+                    self.step(next, &target, udp.as_mut(), options, &mut http)
+                        .await?
+                }
                 Progress::Done(done) => break done?,
             };
         };
+        response.http = http;
         self.keep_cookie(pair, response.cookie);
         Ok(response)
     }
@@ -300,11 +344,34 @@ impl Client {
         exchange: Exchange,
         target: &Server,
         udp: Option<&mut UdpQuery>,
+        options: &Options,
+        http: &mut Option<Http>,
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
         let transport = exchange.transport();
         trace!(%server, transport = ?exchange.transport(), len = exchange.wire().len(), "sending");
         let deadline = exchange.deadline();
+        if transport == Transport::Https {
+            let template = target.template()?;
+            // Boxed: the HTTP/3 exchange's future is large, and it would grow every caller's.
+            let asked = Box::pin(self.https.exchange(
+                server,
+                target.certified(),
+                &template,
+                options.method,
+                exchange.wire(),
+                deadline,
+            ));
+            return match asked.await {
+                Ok(reply) => {
+                    debug!(%server, version = ?reply.http.version, status = %reply.http.status, "HTTP response");
+                    *http = Some(reply.http);
+                    Ok(answered(exchange, transport, reply.wire, deadline))
+                }
+                Err(HttpsError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+                Err(error) => Err(error.into()),
+            };
+        }
         if transport == Transport::Quic {
             return match self
                 .quic

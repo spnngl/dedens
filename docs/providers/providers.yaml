@@ -12,7 +12,8 @@
 #   plain: addresses answering DNS over UDP and TCP, port 53;
 #   tls: {name, addresses}: DNS over TLS (RFC 7858), port 853, `name` the one its certificate holds;
 #   quic: {name, addresses}: DNS over QUIC (RFC 9250), UDP port 853;
-#   https: DNS over HTTPS (RFC 8484) URLs, listed only until `dedens` speaks DoH (D62).
+#   https: DNS over HTTPS (RFC 8484) URLs, asked over HTTP/3 (D83); the host name is resolved by the system;
+#   https_h2: URLs of servers where HTTP/3 does not answer (November 2026), asked once HTTP/2 is there (D83).
 # IPv6 addresses are quoted: a plain YAML scalar cannot end with `:`. Anchors (`&x`, `*x`) share a list.
 
 # Per category, names a resolver blocking it blocks at least one of and the others answer (measured November
@@ -230,7 +231,7 @@ providers:
           - "2a0d:2a00:1::2"
           - "2a0d:2a00:2::2"
         tls: {name: security-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-security}
-        https:
+        https_h2:
           - https://doh.cleanbrowsing.org/doh/security-filter/
       - id: adult
         description: Also enforces safe search.
@@ -244,7 +245,7 @@ providers:
           - "2a0d:2a00:1::1"
           - "2a0d:2a00:2::1"
         tls: {name: adult-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-adult}
-        https:
+        https_h2:
           - https://doh.cleanbrowsing.org/doh/adult-filter/
       - id: family
         description: Also blocks VPNs and proxies, and enforces safe search.
@@ -258,7 +259,7 @@ providers:
           - "2a0d:2a00:1::"
           - "2a0d:2a00:2::"
         tls: {name: family-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-family}
-        https:
+        https_h2:
           - https://doh.cleanbrowsing.org/doh/family-filter/
 
   - id: opendns
@@ -281,7 +282,7 @@ providers:
           - "2620:119:35::35"
           - "2620:119:53::53"
         tls: {name: dns.opendns.com, addresses: *opendns}
-        https:
+        https_h2:
           - https://doh.opendns.com/dns-query
       - id: familyshield
         blocks:
@@ -294,7 +295,7 @@ providers:
           - "2620:119:35::123"
           - "2620:119:53::123"
         tls: {name: familyshield.opendns.com, addresses: *opendns-familyshield}
-        https:
+        https_h2:
           - https://doh.familyshield.opendns.com/dns-query
 
   - id: nextdns
@@ -455,7 +456,7 @@ providers:
           - "2a13:1001::86:54:11:1"
           - "2a13:1001::86:54:11:201"
         tls: {name: protective.joindns4.eu, addresses: *dns4eu-protective}
-        https:
+        https_h2:
           - https://protective.joindns4.eu/dns-query
       - id: child
         blocks:
@@ -470,7 +471,7 @@ providers:
           - "2a13:1001::86:54:11:12"
           - "2a13:1001::86:54:11:212"
         tls: {name: child.joindns4.eu, addresses: *dns4eu-child}
-        https:
+        https_h2:
           - https://child.joindns4.eu/dns-query
       - id: noads
         blocks:
@@ -484,7 +485,7 @@ providers:
           - "2a13:1001::86:54:11:13"
           - "2a13:1001::86:54:11:213"
         tls: {name: noads.joindns4.eu, addresses: *dns4eu-noads}
-        https:
+        https_h2:
           - https://noads.joindns4.eu/dns-query
       - id: child-noads
         blocks:
@@ -500,7 +501,7 @@ providers:
           - "2a13:1001::86:54:11:11"
           - "2a13:1001::86:54:11:211"
         tls: {name: child-noads.joindns4.eu, addresses: *dns4eu-child-noads}
-        https:
+        https_h2:
           - https://child-noads.joindns4.eu/dns-query
       - id: unfiltered
         blocks: []
@@ -511,7 +512,7 @@ providers:
           - "2a13:1001::86:54:11:100"
           - "2a13:1001::86:54:11:200"
         tls: {name: unfiltered.joindns4.eu, addresses: *dns4eu-unfiltered}
-        https:
+        https_h2:
           - https://unfiltered.joindns4.eu/dns-query
 
   - id: wikimedia
@@ -527,7 +528,7 @@ providers:
         blocks: []
         dnssec: validates
         tls: {name: wikimedia-dns.org, addresses: [185.71.138.138, "2001:67c:930::1"]}
-        https:
+        https_h2:
           - https://wikimedia-dns.org/dns-query
 
   - id: applied-privacy
@@ -543,7 +544,7 @@ providers:
         blocks: []
         dnssec: validates
         tls: {name: dot1.applied-privacy.net, addresses: [146.255.56.98, "2a02:1b8:10:234::2"]}
-        https:
+        https_h2:
           - https://doh.applied-privacy.net/query
 
   - id: cira
@@ -564,7 +565,7 @@ providers:
           - "2620:10a:80bb::10"
           - "2620:10a:80bc::10"
         tls: {name: private.canadianshield.cira.ca, addresses: *cira-private}
-        https:
+        https_h2:
           - https://private.canadianshield.cira.ca/dns-query
       - id: protected
         blocks:
@@ -576,7 +577,7 @@ providers:
           - "2620:10a:80bb::20"
           - "2620:10a:80bc::20"
         tls: {name: protected.canadianshield.cira.ca, addresses: *cira-protected}
-        https:
+        https_h2:
           - https://protected.canadianshield.cira.ca/dns-query
       - id: family
         blocks:
@@ -589,7 +590,7 @@ providers:
           - "2620:10a:80bb::30"
           - "2620:10a:80bc::30"
         tls: {name: family.canadianshield.cira.ca, addresses: *cira-family}
-        https:
+        https_h2:
           - https://family.canadianshield.cira.ca/dns-query
 
   - id: dnssb
@@ -611,7 +612,7 @@ providers:
           - "2a11::"
         tls: {name: dot.sb, addresses: *dnssb}
         https:
-          - https://doh.dns.sb/dns-query
+          - https://doh.sb/dns-query
 
   - id: ffmuc
     name: FFMUC DNS
@@ -651,14 +652,14 @@ providers:
         dnssec: validates
         stale_cookies: true
         tls: {name: anycast.uncensoreddns.org, addresses: [91.239.100.100, "2001:67c:28a4::"]}
-        https:
+        https_h2:
           - https://anycast.uncensoreddns.org/dns-query
       - id: unicast
         blocks: []
         dnssec: validates
         stale_cookies: true
         tls: {name: unicast.uncensoreddns.org, addresses: [89.233.43.71, "2a01:3a0:53:53::"]}
-        https:
+        https_h2:
           - https://unicast.uncensoreddns.org/dns-query
 
   - id: dnsforge
@@ -687,7 +688,7 @@ providers:
           - "2a01:4f8:141:316d::117"
         tls: {name: dnsforge.de, addresses: *dnsforge}
         quic: {name: dnsforge.de, addresses: *dnsforge}
-        https:
+        https_h2:
           - https://dnsforge.de/dns-query
       - id: clean
         description: Normal plus adult content and gambling blocked, SafeSearch enforced.
@@ -704,7 +705,7 @@ providers:
           - "2a01:4f8:c012:ed89::208"
         tls: {name: clean.dnsforge.de, addresses: *dnsforge-clean}
         quic: {name: clean.dnsforge.de, addresses: *dnsforge-clean}
-        https:
+        https_h2:
           - https://clean.dnsforge.de/dns-query
       - id: hard
         description: Stricter lists than normal, without an allowlist; may break some sites.
@@ -719,7 +720,7 @@ providers:
           - "2a01:4f8:c013:5ec0::154"
         tls: {name: hard.dnsforge.de, addresses: *dnsforge-hard}
         quic: {name: hard.dnsforge.de, addresses: *dnsforge-hard}
-        https:
+        https_h2:
           - https://hard.dnsforge.de/dns-query
       - id: blank
         description: No filtering.
@@ -732,7 +733,7 @@ providers:
           - "2a01:4f8:c013:aae9::194"
         tls: {name: blank.dnsforge.de, addresses: *dnsforge-blank}
         quic: {name: blank.dnsforge.de, addresses: *dnsforge-blank}
-        https:
+        https_h2:
           - https://blank.dnsforge.de/dns-query
 
   - id: digitale-gesellschaft
