@@ -13,7 +13,10 @@ use compio::quic::ConnectionError;
 use compio::quic::h3::error::ConnectionError as H3Error;
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{Client, ClientError, Server};
-use dedens_net::doh::{DEFAULT_PATH, Template};
+use dedens_net::coap::doc::path_segments;
+#[cfg(feature = "doc")]
+use dedens_net::doc::DocError;
+use dedens_net::doh::{DEFAULT_PATH, Template, TemplateError};
 use dedens_net::exchange::{Failure, Transport};
 use dedens_net::https::HttpsError;
 use dedens_net::quic::QuicError;
@@ -61,13 +64,14 @@ struct Endpoint {
 
 impl Endpoint {
     /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, `+tls`, `+quic` or
-    /// `+https` after it when forced, so `tls://`, `quic://` and `https://` to one address stay apart.
+    /// `+https` or `+coap` after it when forced, so `tls://`, `quic://`, `https://` and `coap://` to one address stay apart.
     fn id(&self, id: &Id) -> Id {
         let id = id.at(self.server.addr);
         let over = match self.forced {
             Some(Transport::Tls) => "tls",
             Some(Transport::Quic) => "quic",
             Some(Transport::Https) => "https",
+            Some(Transport::Coap) => "coap",
             _ => return id,
         };
         Id::try_from(format!("{id}+{over}")).expect("an id with letters after it stays an id")
@@ -331,6 +335,12 @@ fn no_reply(error: &anyhow::Error) -> bool {
                 ),
             ),
         ) => true,
+        #[cfg(feature = "doc")]
+        Some(ClientError::Doc(DocError::Exchange(
+            dedens_net::coap::exchange::Failure::TimedOut,
+        ))) => true,
+        #[cfg(feature = "doc")]
+        Some(ClientError::Doc(DocError::Udp(e))) => refused(e),
         Some(
             ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e) | TcpError::Handshake(e)),
         ) => refused(e),
@@ -463,11 +473,33 @@ const ENCRYPTED_PORT: u16 = 853;
 /// The port of DNS over HTTPS (RFC 8484 §3, RFC 9110 §4.2.2).
 const HTTPS_PORT: u16 = 443;
 
+/// The port of CoAP (RFC 7252 §6.1; RFC 9953 §3).
+const COAP_PORT: u16 = 5683;
+
+/// The URI template of the `DoH` server `host` (an IPv6 address without brackets) at `port` and `path`.
+fn template(host: &str, port: u16, path: &str) -> Result<Template, TemplateError> {
+    let brackets = if host.contains(':') {
+        ("[", "]")
+    } else {
+        ("", "")
+    };
+    let port = if port == HTTPS_PORT {
+        String::new()
+    } else {
+        format!(":{port}")
+    };
+    Template::parse(&format!(
+        "https://{}{host}{}{port}{path}",
+        brackets.0, brackets.1
+    ))
+}
+
 /// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
 /// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
-/// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), and `#NAME` after it for the name the
-/// server's certificate must hold, else its host name, else its address. Without a port, `port`, else 443 over
-/// HTTPS, else 853 over TLS or QUIC (`options` or a scheme), else 53.
+/// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), `coap://` and a path after it for
+/// DNS over CoAP (D81), and `#NAME` after it for the name the server's certificate must hold, else its host name,
+/// else its address. Without a port, `port`, else 443 over HTTPS, else 5683 over CoAP, else 853 over TLS or QUIC
+/// (`options` or a scheme), else 53.
 fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
@@ -487,6 +519,7 @@ fn server(
         ("tls://", Transport::Tls),
         ("quic://", Transport::Quic),
         ("https://", Transport::Https),
+        ("coap://", Transport::Coap),
     ]
     .into_iter()
     .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
@@ -496,12 +529,24 @@ fn server(
         None => (text, None),
     };
     let https = forced == Some(Transport::Https);
+    let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
+    // CoAP is over UDP and unprotected: no other transport under it.
+    if coap
+        && (forced.is_some_and(|transport| transport != Transport::Coap)
+            || options.tcp == Some(true)
+            || options.encrypted()
+            || options.https())
+    {
+        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC or HTTPS");
+    }
     let (text, url_path) = match text.split_once('/') {
-        Some((host, path)) if https => (host, Some(format!("/{path}"))),
+        Some((host, path)) if https || forced == Some(Transport::Coap) => {
+            (host, Some(format!("/{path}")))
+        }
         _ => (text, None),
     };
     let doh = https || options.https();
-    let encrypted = forced.is_some() || options.encrypted() || doh;
+    let encrypted = (forced.is_some() && !coap) || options.encrypted() || doh;
     // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
     let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
         Some((host, "")) => (host, None),
@@ -515,9 +560,10 @@ fn server(
         Some(written) => written
             .parse()
             .with_context(|| format!("server {given}: not a port"))?,
-        None => port.unwrap_or(match (doh, encrypted) {
-            (true, _) => HTTPS_PORT,
-            (_, true) => ENCRYPTED_PORT,
+        None => port.unwrap_or(match (doh, coap, encrypted) {
+            (true, ..) => HTTPS_PORT,
+            (_, true, _) => COAP_PORT,
+            (.., true) => ENCRYPTED_PORT,
             _ => 53,
         }),
     };
@@ -548,28 +594,17 @@ fn server(
                 .as_deref()
                 .or(options.https_path())
                 .unwrap_or(DEFAULT_PATH);
-            let brackets = if host.contains(':') {
-                ("[", "]")
-            } else {
-                ("", "")
-            };
-            let port = if port == HTTPS_PORT {
-                String::new()
-            } else {
-                format!(":{port}")
-            };
-            Template::parse(&format!(
-                "https://{}{host}{}{port}{path}",
-                brackets.0, brackets.1
-            ))
-            .with_context(|| format!("server {given}"))
+            template(host, port, path).with_context(|| format!("server {given}"))
         })
         .transpose()?;
+    // The segments of the path of a `coap://` URI (RFC 7252 §6.4), the root path having none.
+    let docpath = path_segments(url_path.as_deref().filter(|_| coap).unwrap_or_default());
     Ok(Endpoint {
         server: Server {
             addr,
             name,
             doh: template,
+            docpath,
         },
         forced,
     })

@@ -452,6 +452,7 @@ impl Exchange {
         match download.reassembly.push(block, &response.payload) {
             Err(e) => Step::done(Err(e.into()), send),
             Ok(None) => {
+                debug!(server = %self.server, blocks = block.num() + 1, "block-wise response complete");
                 let Download {
                     reassembly, first, ..
                 } = download;
@@ -464,6 +465,7 @@ impl Exchange {
                 )
             }
             Ok(Some(next)) => {
+                debug!(server = %self.server, block = next.num(), "asking for the next block");
                 self.download = Some(download);
                 // A body sent whole goes with each request, which a server without state needs to answer it
                 // (RFC 8132 §2: the body is part of the cache key); one sent in blocks is the server's.

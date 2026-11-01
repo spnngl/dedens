@@ -1,0 +1,38 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: "redact(&out, port)"
+---
+---
+id: example.com_A
+exchange:
+  server: 127.0.0.1:PORT
+  transport: coap
+  rtt_us: N
+  sends: 1
+  query_size: 40
+size: 72
+header:
+  id: N
+  opcode: QUERY
+  rcode: NOERROR
+  flags:
+  - qr
+  - rd
+  - ra
+question:
+- name: example.com.
+  class: IN
+  type: A
+answer:
+- name: example.com.
+  ttl: 29
+  class: IN
+  type: A
+  data: "104.20.23.154"
+- name: example.com.
+  ttl: 29
+  class: IN
+  type: A
+  data: "172.66.147.243"
+edns:
+  payload: 1232

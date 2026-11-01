@@ -34,6 +34,9 @@ pub(crate) enum Transport {
     HttpsGet,
     /// HTTP/3, a POST.
     HttpsPost,
+    /// CoAP, a FETCH (RFC 9953).
+    #[cfg(feature = "doc")]
+    Coap,
 }
 
 /// The queries received, in order, with their transport.
@@ -296,6 +299,50 @@ impl Responder {
         });
         let addr = addr.recv().expect("the server's address");
         (Self { addr, queries }, pem)
+    }
+}
+
+#[cfg(feature = "doc")]
+impl Responder {
+    /// As [`Responder::start`], over CoAP only (RFC 9953), at `path`: the answers of the library's own server side
+    /// ([`dedens_net::coap::doc`]), the same `dedensd` serves with. Any other path gets 4.04.
+    pub(crate) fn coap(names: &[&str], path: &str) -> Self {
+        use dedens_net::coap::Message;
+        use dedens_net::coap::doc::{error, path_segments, query, response};
+
+        let (canned, path) = (canned(names), path_segments(path));
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+        let responder = Self {
+            addr: socket.local_addr().expect("bound"),
+            queries: Arc::default(),
+        };
+        let queries = Arc::clone(&responder.queries);
+        thread::spawn(move || {
+            let mut buf = vec![0; 65535];
+            while let Ok((len, from)) = socket.recv_from(&mut buf) {
+                let Ok(request) = Message::parse(&buf[..len]) else {
+                    continue;
+                };
+                let reply = match query(&request, &path) {
+                    Err(code) => error(&request, 1, code),
+                    Ok(dns) => {
+                        queries
+                            .lock()
+                            .expect("unpoisoned")
+                            .push((Transport::Coap, dns.to_vec()));
+                        match answer(&canned, dns, Transport::Tcp) {
+                            Some(wire) => response(&request, 1, wire)
+                                .unwrap_or_else(|code| error(&request, 1, code)),
+                            None => continue,
+                        }
+                    }
+                };
+                socket
+                    .send_to(&reply.to_vec().expect("it writes"), from)
+                    .expect("sent");
+            }
+        });
+        responder
     }
 }
 

@@ -1,0 +1,269 @@
+//! DNS over CoAP (RFC 9953), against a scripted CoAP server on the loopback address: the request a query makes (§4.1,
+//! §4.2), the response and its Max-Age (§4.3), and what the client does with an error (§4.3.1). The server's side of
+//! the protocol, and the requests as aiocoap sends them, are tested with RFC 8132 and RFC 7959 (`rfc8132.rs`,
+//! `rfc7959.rs`).
+#![cfg(feature = "doc")]
+
+use std::cell::RefCell;
+use std::net::SocketAddr;
+use std::rc::Rc;
+
+use compio::BufResult;
+use compio::net::UdpSocket;
+use dedens_net::client::{Client, ClientError, Server};
+use dedens_net::coap::block::{Block, BlockSize, slice};
+use dedens_net::coap::doc::{add_max_age, path_segments, take_max_age};
+use dedens_net::coap::{Code, Message, Options, Type};
+use dedens_net::doc::DocError;
+use dedens_net::exchange::{Options as DnsOptions, Transport};
+use dedens_proto::Message as Dns;
+
+/// A query for gmail.com MX with ID 0, and the response of Quad9 to it (testdata/doh), whose TTLs are 1822, 1822,
+/// 1822, 1822 and 1822 for the answer and 0 for its OPT record.
+const QUERY: &[u8] = include_bytes!("testdata/doh/quad9_mx.query");
+const ANSWER: &[u8] = include_bytes!("testdata/doh/quad9_mx.body");
+
+/// How the server answers.
+#[derive(Clone)]
+enum Serve {
+    /// 2.05 with the whole response, and this Max-Age if any.
+    Whole(Option<u32>),
+    /// 2.05 with the block of 64 bytes the request asks for, each block piggybacked.
+    Blocks,
+    /// This code, with no body.
+    Fail(Code),
+    /// 2.05 with this content format.
+    Format(u16),
+    /// 2.05 with a body that is no DNS message.
+    Garbage,
+}
+
+/// A CoAP server answering each request as `serve` says; the requests it got.
+async fn coap_server(serve: Serve) -> (SocketAddr, Rc<RefCell<Vec<Message>>>) {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
+    let addr = socket.local_addr().expect("an address");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&seen);
+    compio::runtime::spawn(async move {
+        loop {
+            let BufResult(received, buf) = socket.recv_from(Vec::with_capacity(2048)).await;
+            let (len, peer) = received.expect("a request");
+            let request = Message::parse(&buf[..len]).expect("a CoAP message");
+            log.borrow_mut().push(request.clone());
+            let mut reply = Message::piggybacked(&request, Code::CONTENT);
+            match &serve {
+                Serve::Whole(max_age) => {
+                    reply.options.set_content_format(Options::DNS_MESSAGE);
+                    if let Some(max_age) = max_age {
+                        reply.options.set_max_age(*max_age);
+                    }
+                    reply.payload = ANSWER.to_vec();
+                }
+                Serve::Blocks => {
+                    let asked = request.options.block2().expect("a Block2 or none");
+                    let size = BlockSize::new(2).expect("64 bytes");
+                    let cut = slice(ANSWER, asked.or(Block::new(0, false, size)), size)
+                        .expect("a block inside the body");
+                    reply.options.set_content_format(Options::DNS_MESSAGE);
+                    reply.options.set_block2(cut.block.expect("a block"));
+                    reply.payload = cut.payload.to_vec();
+                }
+                Serve::Fail(code) => reply.code = *code,
+                Serve::Format(format) => {
+                    reply.options.set_content_format(*format);
+                    reply.payload = ANSWER.to_vec();
+                }
+                Serve::Garbage => {
+                    reply.options.set_content_format(Options::DNS_MESSAGE);
+                    reply.payload = b"not a DNS message".to_vec();
+                }
+            }
+            let BufResult(sent, _) = socket
+                .send_to(reply.to_vec().expect("a reply that writes"), peer)
+                .await;
+            sent.expect("sent");
+        }
+    })
+    .detach();
+    (addr, seen)
+}
+
+fn server(addr: SocketAddr, path: &str) -> Server {
+    Server {
+        addr,
+        name: None,
+        doh: None,
+        docpath: path_segments(path),
+    }
+}
+
+fn coap() -> DnsOptions {
+    let mut options = DnsOptions::default();
+    options.transport = Transport::Coap;
+    options
+}
+
+fn query() -> Dns<'static> {
+    Dns::decode(QUERY).expect("a query").message.into_owned()
+}
+
+fn ttls(wire: &[u8]) -> Vec<u32> {
+    let message = Dns::decode(wire).expect("a response").message;
+    message
+        .answer
+        .iter()
+        .map(|record| record.ttl.get())
+        .collect()
+}
+
+/// RFC 9953 §4.1, §4.2: a query is a FETCH to the path, the DNS query as its body, in the content format
+/// `application/dns-message` and asking for it, its DNS ID 0.
+#[compio::test]
+async fn s4_2_a_query_is_a_fetch_with_id_0_and_content_format_553() {
+    let (addr, seen) = coap_server(Serve::Whole(None)).await;
+    let response = Client::new()
+        .exchange(query(), server(addr, "/dns/query"), &coap())
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Coap);
+    let seen = seen.borrow();
+    let [request] = seen.as_slice() else {
+        panic!("one request, not {}", seen.len());
+    };
+    assert_eq!(request.kind, Type::Confirmable);
+    assert_eq!(request.code, Code::FETCH);
+    assert_eq!(
+        request.options.uri_path().collect::<Vec<_>>(),
+        [b"dns".as_slice(), b"query"]
+    );
+    assert_eq!(request.options.content_format(), Some(553));
+    assert_eq!(request.options.accept(), Some(553));
+    let sent = Dns::decode(&request.payload).expect("a query").message;
+    assert_eq!(sent.header.id, 0);
+    assert_eq!(sent.questions, query().questions);
+}
+
+/// RFC 9953 §4.3.2: the Max-Age of the response, 60 seconds when it has none (RFC 7252 §5.10.5), is added to each TTL.
+#[compio::test]
+async fn s4_3_2_max_age_is_added_to_each_ttl() {
+    let sent = ttls(ANSWER);
+    for (max_age, added) in [(Some(30), 30), (None, 60), (Some(0), 0)] {
+        let (addr, _) = coap_server(Serve::Whole(max_age)).await;
+        let response = Client::new()
+            .exchange(query(), server(addr, ""), &coap())
+            .await
+            .expect("a response");
+        let expected: Vec<u32> = sent.iter().map(|ttl| ttl + added).collect();
+        assert_eq!(ttls(&response.wire), expected, "Max-Age {max_age:?}");
+    }
+}
+
+/// RFC 9953 §4.3.2: the TTLs stay below 2^31 whatever the Max-Age.
+#[test]
+fn s4_3_2_the_sum_stops_at_the_largest_ttl() {
+    let mut wire = ANSWER.to_vec();
+    add_max_age(&mut wire, u32::MAX).expect("a DNS message");
+    assert_eq!(ttls(&wire), vec![0x7FFF_FFFF; 5]);
+}
+
+/// RFC 9953 §4.3.2: a server sends the least TTL as Max-Age and subtracts it from each TTL, so the client's sum is
+/// the TTLs the server had.
+#[test]
+fn s4_3_2_the_least_ttl_is_the_max_age_and_adding_it_back_restores_the_response() {
+    let mut wire = ANSWER.to_vec();
+    let max_age = take_max_age(&mut wire).expect("a DNS message");
+    assert_eq!(max_age, 1822);
+    assert_eq!(ttls(&wire), vec![0; 5]);
+    add_max_age(&mut wire, max_age).expect("a DNS message");
+    assert_eq!(wire, ANSWER);
+}
+
+/// RFC 9953 §4.3: the least TTL of the records is the Max-Age, so the TTLs are not all taken down to 0.
+#[test]
+fn s4_3_2_the_ttls_differing_keep_their_difference() {
+    let mut wire = ANSWER.to_vec();
+    let at = wire.windows(4).position(|w| w == 1822_u32.to_be_bytes());
+    let at = at.expect("a TTL of 1822");
+    wire[at..at + 4].copy_from_slice(&1900_u32.to_be_bytes());
+    let max_age = take_max_age(&mut wire).expect("a DNS message");
+    assert_eq!(max_age, 1822);
+    let mut taken = ttls(&wire);
+    taken.sort_unstable();
+    assert_eq!(taken, [0, 0, 0, 0, 78]);
+}
+
+/// RFC 9953 §4.3, RFC 7959 §2.4: a response in blocks is put together, each block asked for with the query again.
+#[compio::test]
+async fn s4_3_a_response_in_blocks_is_put_together() {
+    let (addr, seen) = coap_server(Serve::Blocks).await;
+    let response = Client::new()
+        .exchange(query(), server(addr, "/"), &coap())
+        .await
+        .expect("a response");
+    assert_eq!(ttls(&response.wire).len(), 5);
+    let seen = seen.borrow();
+    assert!(seen.len() > 1, "{} request", seen.len());
+    assert!(
+        seen.iter()
+            .all(|request| request.payload == seen[0].payload)
+    );
+}
+
+/// RFC 9953 §4.3.1: a CoAP error is no DNS response: the client reports the code.
+#[compio::test]
+async fn s4_3_1_an_error_code_is_an_error_not_a_response() {
+    for code in [
+        Code::NOT_FOUND,
+        Code::BAD_REQUEST,
+        Code::UNSUPPORTED_CONTENT_FORMAT,
+        Code::INTERNAL_SERVER_ERROR,
+    ] {
+        let (addr, _) = coap_server(Serve::Fail(code)).await;
+        let error = Client::new()
+            .exchange(query(), server(addr, ""), &coap())
+            .await;
+        assert!(
+            matches!(&error, Err(ClientError::Doc(DocError::Code(got))) if *got == code),
+            "{code}: {error:?}"
+        );
+    }
+}
+
+/// RFC 9953 §4.3: a content format other than `application/dns-message`, and a body that is no DNS message, are
+/// refused.
+#[compio::test]
+async fn s4_3_another_content_format_or_a_body_that_is_no_dns_message_is_refused() {
+    let (addr, _) = coap_server(Serve::Format(50)).await;
+    let error = Client::new()
+        .exchange(query(), server(addr, ""), &coap())
+        .await;
+    assert!(
+        matches!(error, Err(ClientError::Doc(DocError::Format(50)))),
+        "{error:?}"
+    );
+    let (addr, _) = coap_server(Serve::Garbage).await;
+    let error = Client::new()
+        .exchange(query(), server(addr, ""), &coap())
+        .await;
+    assert!(
+        matches!(error, Err(ClientError::Doc(DocError::NotDns))),
+        "{error:?}"
+    );
+}
+
+/// RFC 7252 §6.4: the path of a URI is its segments, as written: none for the root, an empty one for each `//`.
+#[test]
+fn the_path_of_a_uri_is_its_segments() {
+    let segments = |path| {
+        path_segments(path)
+            .iter()
+            .map(|segment| String::from_utf8_lossy(segment).into_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(segments(""), Vec::<String>::new());
+    assert_eq!(segments("/"), Vec::<String>::new());
+    assert_eq!(segments("/dns"), ["dns"]);
+    assert_eq!(segments("/a/b"), ["a", "b"]);
+    assert_eq!(segments("/a//b"), ["a", "", "b"]);
+    assert_eq!(segments("/a/"), ["a", ""]);
+}

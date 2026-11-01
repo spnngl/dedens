@@ -1,6 +1,6 @@
 //! The transports a message goes over, which bound its size.
 
-/// UDP, TCP, TLS, QUIC or HTTPS: the client's and the server's.
+/// UDP, TCP, TLS, QUIC, HTTPS or `CoAP`: the client's and the server's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// UDP: a message fits the EDNS payload size, at most 1232 bytes asked (D10), or 512 without EDNS; TC says
@@ -16,4 +16,8 @@ pub enum Transport {
     /// no length prefix (RFC 8484 §6). TC says the server could not get a full answer, not to retry over TCP
     /// (RFC 8484 §9).
     Https,
+    /// `CoAP` (`DoC`, RFC 9953): each message whole as the body of one CoAP exchange, in blocks when it is over the
+    /// block size (RFC 7959), over UDP and without protection, the DNS ID 0 (RFC 9953 §4.2.2). A message may be as
+    /// long as over HTTPS: the blocks are what keep a datagram small. TC does not ask for TCP.
+    Coap,
 }

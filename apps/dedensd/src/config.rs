@@ -85,7 +85,9 @@ struct TlsFile {
 
 /// An address `dedensd` answers on (D66, D84): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
 /// over QUIC, on port 853 unless `:PORT` follows (RFC 7858 §3.1, RFC 9250 §4.1.1); behind `https://` over HTTP/3, on
-/// port 443 unless `:PORT` follows, at `/PATH` (`/dns-query` unless set; RFC 8484 §3, RFC 9114 §3.1).
+/// port 443 unless `:PORT` follows, at `/PATH` (`/dns-query` unless set; RFC 8484 §3, RFC 9114 §3.1); behind `coap://`
+/// over CoAP, unprotected, on UDP port 5683 unless `:PORT` follows, at `/PATH` (`/` unless set; RFC 9953, D81; the `doc`
+/// feature).
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
 pub(crate) enum Listen {
@@ -93,12 +95,19 @@ pub(crate) enum Listen {
     Tls(SocketAddr),
     Quic(SocketAddr),
     Https(SocketAddr, Arc<str>),
+    #[cfg(feature = "doc")]
+    Coap(SocketAddr, Arc<str>),
 }
 
 impl Listen {
     /// Whether queries come encrypted, with the certificate of `tls`.
     const fn encrypted(&self) -> bool {
-        !matches!(self, Self::Plain(_))
+        match self {
+            Self::Plain(_) => false,
+            #[cfg(feature = "doc")]
+            Self::Coap(..) => false,
+            Self::Tls(_) | Self::Quic(_) | Self::Https(..) => true,
+        }
     }
 }
 
@@ -110,6 +119,8 @@ impl fmt::Debug for Listen {
             Self::Tls(addr) => write!(f, "tls://{addr}"),
             Self::Quic(addr) => write!(f, "quic://{addr}"),
             Self::Https(addr, path) => write!(f, "https://{addr}{path}"),
+            #[cfg(feature = "doc")]
+            Self::Coap(addr, path) => write!(f, "coap://{addr}{path}"),
         }
     }
 }
@@ -128,10 +139,18 @@ impl TryFrom<String> for Listen {
                     split_path(rest).map_err(|error| format!("`{text}`: {error}"))?;
                 address(rest, HTTPS_PORT).map(|addr| Self::Https(addr, path))
             }
+            #[cfg(feature = "doc")]
+            Some(("coap", rest)) => {
+                let (rest, path) =
+                    split_coap_path(rest).map_err(|error| format!("`{text}`: {error}"))?;
+                address(rest, COAP_PORT).map(|addr| Self::Coap(addr, path))
+            }
             Some(_) => None,
         };
         listen.ok_or_else(|| {
-            format!("`{text}` is neither IP:PORT nor tls://, quic:// or https:// before IP[:PORT]")
+            format!(
+                "`{text}` is neither IP:PORT nor tls://, quic://, https:// or coap:// (built with the `doc` feature) before IP[:PORT]"
+            )
         })
     }
 }
@@ -151,6 +170,23 @@ fn split_path(text: &str) -> Result<(&str, Arc<str>), String> {
         Ok((rest, Arc::from(path)))
     } else {
         Err(format!("`{path}` is not a path without query"))
+    }
+}
+
+/// `ADDR[/PATH]` split in `ADDR` and the path of a CoAP URI, `/` unless set (RFC 9953 §3.2): without query, fragment
+/// or percent-encoding, which segments are read as written.
+#[cfg(feature = "doc")]
+fn split_coap_path(text: &str) -> Result<(&str, Arc<str>), String> {
+    let Some(start) = text.find('/') else {
+        return Ok((text, Arc::from("/")));
+    };
+    let (rest, path) = text.split_at(start);
+    if path.contains(['?', '#', '%']) {
+        Err(format!(
+            "`{path}` is not a path without query, fragment or %"
+        ))
+    } else {
+        Ok((rest, Arc::from(path)))
     }
 }
 
@@ -263,6 +299,10 @@ const ENCRYPTED_PORT: u16 = 853;
 /// The port of DNS over HTTPS (RFC 8484 §3, RFC 9110 §4.2.2).
 const HTTPS_PORT: u16 = 443;
 
+/// The port of CoAP (RFC 7252 §6.1; RFC 9953 §3).
+#[cfg(feature = "doc")]
+const COAP_PORT: u16 = 5683;
+
 impl TryFrom<String> for Server {
     type Error = String;
 
@@ -301,6 +341,7 @@ impl TryFrom<String> for Server {
                 name: name
                     .and_then(|name| ServerName::try_from(name).ok().map(|name| name.to_owned())),
                 doh: None,
+                docpath: Vec::new(),
             };
             probe
                 .template_at(path)
@@ -846,6 +887,32 @@ mod tests {
             "https://127.0.0.1:0x1",
             "tls://dns.example",
             "tls://127.0.0.1#dns.example",
+        ] {
+            assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
+        }
+    }
+
+    /// `coap://` takes port 5683 and the path `/` unless set, a path without query, fragment or `%`.
+    #[cfg(feature = "doc")]
+    #[test]
+    fn coap_listen_addresses_take_port_5683_and_the_root_path() {
+        for (text, listen) in [
+            (
+                "coap://127.0.0.1",
+                Listen::Coap("127.0.0.1:5683".parse().unwrap(), "/".into()),
+            ),
+            (
+                "coap://[::1]:5684/dns/query",
+                Listen::Coap("[::1]:5684".parse().unwrap(), "/dns/query".into()),
+            ),
+        ] {
+            assert_eq!(Listen::try_from(text.to_owned()), Ok(listen), "{text}");
+        }
+        for text in [
+            "coap://dns.example",
+            "coap://127.0.0.1/dns?dns=",
+            "coap://127.0.0.1/a#b",
+            "coap://127.0.0.1/a%20b",
         ] {
             assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
         }

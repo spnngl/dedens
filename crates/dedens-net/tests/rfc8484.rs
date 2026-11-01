@@ -211,6 +211,7 @@ fn s3_a_servers_template_is_at_its_path() {
         addr: addr.parse().expect("an address"),
         name,
         doh: None,
+        docpath: Vec::new(),
     };
     let name = || Some(ServerName::try_from(NAME).expect("a name"));
     for (server, expected) in [

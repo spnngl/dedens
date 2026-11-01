@@ -93,6 +93,16 @@ fn main() -> anyhow::Result<()> {
         config.downloads,
     )
     .context("cannot handle SIGHUP")?;
+    #[cfg(feature = "doc")]
+    for listen in listen
+        .iter()
+        .filter(|l| matches!(l, config::Listen::Coap(..)))
+    {
+        tracing::warn!(
+            ?listen,
+            "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
+        );
+    }
     tracing::info!(config = %path, ?listen, threads = sockets.len(), "serving");
     let (ended, end) = mpsc::channel();
     for sockets in sockets {

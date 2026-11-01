@@ -396,6 +396,115 @@ fn https_output_in_each_format() {
     }
 }
 
+/// D81: DNS over CoAP goes by FETCH with the DNS ID 0, to the path of the URL, by `+coap` to the root; an answer's
+/// TTLs are its Max-Age added back.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_servers_answer_by_fetch_at_the_path_given() {
+    let server = Responder::coap(&["a"], "/dns/query");
+    let port = server.addr.port();
+    let out = run(
+        &[
+            &format!("@coap://127.0.0.1:{port}/dns/query"),
+            "example.com",
+        ],
+        0,
+    );
+    assert!(out.contains("over CoAP") && out.contains("29s"), "{out}");
+    // No path is the root: the server of /dns/query has no such resource.
+    dedens()
+        .args([&format!("@coap://127.0.0.1:{port}"), "example.com"])
+        .assert()
+        .code(10)
+        .stderr(contains("4.04"));
+    dedens()
+        .args([
+            "@127.0.0.1",
+            "+coap",
+            &format!("--port={port}"),
+            "example.com",
+        ])
+        .assert()
+        .code(10)
+        .stderr(contains("4.04"));
+    let transports: Vec<_> = server.queries().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(transports, [Transport::Coap]);
+    for (_, query) in queries(&server) {
+        assert_eq!(query.header.id, 0);
+    }
+}
+
+/// D81: `+coap` to the root path, `coap://` with no port to 5683, and the report of each format.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_output_in_each_format() {
+    let server = Responder::coap(&["a"], "/");
+    let port = server.addr.port();
+    let at = format!("@coap://127.0.0.1:{port}");
+    for (name, flag) in [
+        ("coap_human", "--format=human"),
+        ("coap_json", "--json"),
+        ("coap_yaml", "--yaml"),
+        ("coap_short", "--short"),
+    ] {
+        let out = run(&[&at, "example.com", flag], 0);
+        insta::assert_snapshot!(name, redact(&out, port));
+    }
+    let out = run(
+        &["@127.0.0.1", "+coap", &format!("-p{port}"), "example.com"],
+        0,
+    );
+    assert!(out.contains("over CoAP"), "{out}");
+}
+
+/// D81: `-v` shows the CoAP exchange: the code, the Max-Age and the blocks.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_verbose_shows_the_response_code_and_max_age() {
+    let server = Responder::coap(&["a"], "/");
+    dedens()
+        .args([
+            &format!("@coap://127.0.0.1:{}", server.addr.port()),
+            "example.com",
+            "+short",
+            "-v",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("2.05").and(contains("max_age")));
+}
+
+/// D81: a response in blocks is put together.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_responses_in_blocks_are_put_together() {
+    let server = Responder::coap(&["txt_large"], "/");
+    let out = run(
+        &[
+            &format!("@coap://127.0.0.1:{}", server.addr.port()),
+            "google.com",
+            "TXT",
+            "+noedns",
+            "--color=never",
+        ],
+        0,
+    );
+    assert!(out.contains("over CoAP"), "{out}");
+    assert_eq!(server.queries().len(), 2);
+}
+
+/// D81: CoAP is a server of its own, with its id.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_servers_have_their_own_ids() {
+    dedens()
+        .args(["@127.0.0.1:1", "@coap://127.0.0.1:1", "example.com"])
+        .args(["+tries=1", "+time=100ms"])
+        .assert()
+        .code(9)
+        .stderr(contains("example.com_A@127.0.0.1:1+coap:"));
+}
+
 /// D38, D83: `https://` to one address is a server of its own, with its id.
 #[test]
 fn https_servers_have_their_own_ids() {
@@ -457,6 +566,15 @@ fn usage_errors_exit_2() {
         &["+https=dns-query", "example.com"],
         &["@https://127.0.0.1", "+tls", "example.com"],
         &["@https://127.0.0.1", "+noedns", "example.com"],
+        &["+coap", "+tcp", "example.com"],
+        &["+coap", "+tls", "example.com"],
+        &["+coap", "+quic", "example.com"],
+        &["+coap", "+https", "example.com"],
+        &["+coap", "+trace", "example.com"],
+        &["@coap://127.0.0.1", "+tcp", "example.com"],
+        &["@coap://127.0.0.1", "+quic", "example.com"],
+        &["@coap://127.0.0.1", "+https", "example.com"],
+        &["+coap", "@https://127.0.0.1", "example.com"],
     ] {
         dedens().args(args).assert().code(2);
     }

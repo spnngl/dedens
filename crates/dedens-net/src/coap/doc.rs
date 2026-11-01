@@ -1,10 +1,20 @@
-//! DNS over CoAP, the part before the transport: the request a DNS query makes and the path an SVCB record
-//! gives (RFC 9953 §3.2, §4.2).
+//! DNS over CoAP, the part before the transport: the request a DNS query makes, the path an SVCB record gives,
+//! what a server makes of a request and of the DNS response it answers with, and the TTLs against Max-Age
+//! (RFC 9953 §3.2, §4.2, §4.3).
 
+use dedens_proto::DecodeError;
+use dedens_proto::message::ttl_offsets;
 use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams};
 
+use super::block::{self, BlockSize};
 use super::exchange::Request;
-use super::message::{Code, Options, Token};
+use super::message::{Code, Message, OptionNumber, Options, Token, Type};
+
+/// The longest TTL, 2^31 - 1 seconds (RFC 2181 §8).
+const MAX_TTL: u32 = 0x7FFF_FFFF;
+
+/// The largest block of a response, which a request may ask to be smaller.
+pub const BLOCK_SIZE: BlockSize = BlockSize::MAX;
 
 /// The path segments of the `docpath` parameter: none for the root path. None if there is no `docpath`: the
 /// record does not describe a `DoC` server (RFC 9953 §3.2).
@@ -34,5 +44,160 @@ pub fn request(docpath: &[Box<[u8]>], query: Vec<u8>, token: Token) -> Request {
         options,
         payload: query,
         token,
+    }
+}
+
+/// The segments of the URI path `path`, read as written without percent-decoding: none for `""` and `/`, an empty
+/// one for each `//` and a trailing `/` after another segment (RFC 7252 §6.4).
+#[must_use]
+pub fn path_segments(path: &str) -> Vec<Box<[u8]>> {
+    match path.strip_prefix('/') {
+        None | Some("") => Vec::new(),
+        Some(rest) => rest
+            .split('/')
+            .map(|segment| segment.as_bytes().into())
+            .collect(),
+    }
+}
+
+/// The DNS query a server at the path `path` takes from `request`: the body of a FETCH or a POST with the content
+/// format `application/dns-message` (RFC 9953 §4.2.1). A GET, which RFC 9953 does not define, is refused with the
+/// other methods.
+///
+/// # Errors
+///
+/// The response code of the CoAP error (RFC 9953 §4.3.1), to answer with [`error`]: 4.04 for another path, 4.05
+/// for another method, 4.02 for an unknown critical option, a query option or a bad block option, 4.15 for another
+/// content format, 4.06 for another one accepted, 4.13 for a body sent in blocks, and 4.00 for no body.
+pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<&'a [u8], Code> {
+    let options = &request.options;
+    if !options.uri_path().eq(path.iter().map(|segment| &**segment)) {
+        return Err(Code::NOT_FOUND);
+    }
+    if request.code != Code::FETCH && request.code != Code::POST {
+        return Err(Code::METHOD_NOT_ALLOWED);
+    }
+    // The query is never in a Uri-Query option, which the server does not read.
+    if request.unknown_critical().next().is_some()
+        || options.get_all(OptionNumber::URI_QUERY).next().is_some()
+    {
+        return Err(Code::BAD_OPTION);
+    }
+    if options.content_format() != Some(Options::DNS_MESSAGE) {
+        return Err(Code::UNSUPPORTED_CONTENT_FORMAT);
+    }
+    if options
+        .accept()
+        .is_some_and(|accepted| accepted != Options::DNS_MESSAGE)
+    {
+        return Err(Code::NOT_ACCEPTABLE);
+    }
+    match options.block1() {
+        // A body in blocks is put together by a server keeping state (D81).
+        Ok(Some(block)) if block.num() != 0 || block.more() => {
+            return Err(Code::REQUEST_ENTITY_TOO_LARGE);
+        }
+        Ok(_) => {}
+        Err(_) => return Err(Code::BAD_OPTION),
+    }
+    if request.payload.is_empty() {
+        return Err(Code::BAD_REQUEST);
+    }
+    Ok(&request.payload)
+}
+
+/// The answer to `request` that carries the DNS response `dns` (RFC 9953 §4.3): 2.05 with the content format
+/// `application/dns-message`, its Max-Age the least TTL of `dns`, subtracted from each TTL of it (§4.3.2); the
+/// block the request asks for when `dns` is over [`BLOCK_SIZE`] or the request asks for blocks, Block2 (§4.3, RFC
+/// 7959 §2.4). A block is cut from `dns` as it stands now, so the same query asked block by block gets the same
+/// bodies as long as the answer does not change: the TTLs, less their least, do not.
+///
+/// A CON request gets an ACK carrying the response, a NON one a NON response with message ID `id` (RFC 7252
+/// §5.2.3).
+///
+/// # Errors
+///
+/// 4.02 for a block past the end of the response, to answer with [`error`]; 5.00 for a `dns` that is not a DNS
+/// message.
+pub fn response(request: &Message, id: u16, mut dns: Vec<u8>) -> Result<Message, Code> {
+    let max_age = take_max_age(&mut dns).map_err(|_| Code::INTERNAL_SERVER_ERROR)?;
+    let requested = request.options.block2().map_err(|_| Code::BAD_OPTION)?;
+    let slice = block::slice(&dns, requested, BLOCK_SIZE).map_err(|_| Code::BAD_OPTION)?;
+    let mut reply = answer(request, id, Code::CONTENT);
+    reply.options.set_content_format(Options::DNS_MESSAGE);
+    reply.options.set_max_age(max_age);
+    if let Some(block) = slice.block {
+        reply.options.set_block2(block);
+    }
+    reply.payload = slice.payload.to_vec();
+    Ok(reply)
+}
+
+/// The answer to `request` with the error `code` and no body (RFC 9953 §4.3.1), as [`response`] sends it.
+#[must_use]
+pub fn error(request: &Message, id: u16, code: Code) -> Message {
+    answer(request, id, code)
+}
+
+/// A message answering `request` with `code`: an ACK of a CON, else a NON with message ID `id`.
+fn answer(request: &Message, id: u16, code: Code) -> Message {
+    let mut reply = Message::piggybacked(request, code);
+    if request.kind != Type::Confirmable {
+        reply.kind = Type::NonConfirmable;
+        reply.id = id;
+    }
+    reply
+}
+
+/// Subtracts the least TTL of the DNS message `wire` from every TTL of it, and returns it: the Max-Age to send
+/// (RFC 9953 §4.3.2). Without a record, 0, the answer being cached for no time. The OPT record has none.
+///
+/// # Errors
+///
+/// [`DecodeError`] when `wire` is not a DNS message.
+pub fn take_max_age(wire: &mut [u8]) -> Result<u32, DecodeError> {
+    let offsets = ttl_offsets_of(wire)?;
+    let least = offsets
+        .iter()
+        .filter_map(|&at| ttl_at(wire, at))
+        .min()
+        .unwrap_or(0);
+    map_ttls(wire, &offsets, |ttl| ttl.saturating_sub(least));
+    Ok(least)
+}
+
+/// Adds `max_age` to every TTL of the DNS message `wire`, to a ceiling of 2^31 - 1: what a client does with the
+/// Max-Age of a response (RFC 9953 §4.3.2).
+///
+/// # Errors
+///
+/// [`DecodeError`] when `wire` is not a DNS message.
+pub fn add_max_age(wire: &mut [u8], max_age: u32) -> Result<(), DecodeError> {
+    let offsets = ttl_offsets_of(wire)?;
+    map_ttls(wire, &offsets, |ttl| {
+        ttl.saturating_add(max_age).min(MAX_TTL)
+    });
+    Ok(())
+}
+
+/// The offsets of the TTLs of `wire`.
+fn ttl_offsets_of(wire: &[u8]) -> Result<Vec<usize>, DecodeError> {
+    let mut offsets = Vec::new();
+    ttl_offsets(wire, |at| offsets.push(usize::from(at)))?;
+    Ok(offsets)
+}
+
+/// The TTL at `at` in `wire`.
+fn ttl_at(wire: &[u8], at: usize) -> Option<u32> {
+    let bytes = wire.get(at..at + 4)?;
+    Some(u32::from_be_bytes(bytes.try_into().ok()?))
+}
+
+/// Sets each TTL of `offsets` to `new` of its value.
+fn map_ttls(wire: &mut [u8], offsets: &[usize], new: impl Fn(u32) -> u32) {
+    for &at in offsets {
+        if let (Some(ttl), Some(bytes)) = (ttl_at(wire, at), wire.get_mut(at..at + 4)) {
+            bytes.copy_from_slice(&new(ttl).to_be_bytes());
+        }
     }
 }
