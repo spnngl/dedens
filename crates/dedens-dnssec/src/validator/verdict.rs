@@ -1,7 +1,9 @@
 //! What a validation ends in (RFC 4035 §4.3, RFC 4033 §5).
 
-use dedens_proto::Ttl;
+use core::fmt;
+
 use dedens_proto::edns::{ExtendedError, InfoCode};
+use dedens_proto::{Name, Ttl};
 
 /// Why data is insecure: not covered by a chain of trust, which is not a failure (RFC 4033 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,20 @@ pub enum InsecureReason {
     Nsec3Iterations,
 }
 
+impl fmt::Display for InsecureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoAnchor => "no trust anchor at or above the name",
+            Self::NegativeAnchor => "a negative trust anchor covers the name",
+            Self::UnsignedDelegation => "the delegation has no DS record",
+            Self::OptOut => "the proof is an opt-out NSEC3 span, the name may be unsigned",
+            Self::UnsupportedAlgorithm => "the zone is signed with an unsupported algorithm",
+            Self::UnsupportedDigest => "the DS records are of an unsupported digest type",
+            Self::Nsec3Iterations => "the NSEC3 records use too many iterations",
+        })
+    }
+}
+
 impl InsecureReason {
     /// The extended error to attach to an insecure answer, when the reason has one (RFC 8914 §4).
     #[must_use]
@@ -37,14 +53,51 @@ impl InsecureReason {
     }
 }
 
+/// What a referral says of the delegation it refers to (RFC 4035 §5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delegation {
+    /// The parent has an authenticated DS record for the child, or the child holds a trust anchor: the child is
+    /// signed.
+    Signed,
+    /// The child is not covered by a chain of trust, for `reason`.
+    Unsigned {
+        /// Why.
+        reason: InsecureReason,
+    },
+}
+
 /// The outcome of a validation: what the caller does with the response (RFC 4035 §4.3, RFC 4033 §5).
+///
+/// What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is
+/// authenticated, and so is the denial of what the answer lacks, if any. What it leaves to the caller, who
+/// must not present it as authenticated: the additional section (RFC 4035 §3.2.3), records of other classes,
+/// and the CNAME a server synthesizes from a DNAME, which is covered by the DNAME that is verified (RFC 6672
+/// §5.3.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// Every `RRset` and denial of the response is authenticated: the answer may carry AD (RFC 4035 §3.2.3).
+    /// What the response holds, as far as the above, is authenticated and complete for its question: the answer
+    /// may carry AD (RFC 4035 §3.2.3).
     Secure {
         /// How long the authenticated data may be kept: the least TTL of what was verified, of the keys it was
         /// verified with, and at most three hours for a denial (RFC 9077 §3.4).
         ttl: Ttl,
+    },
+    /// What the response holds is authenticated, but the CNAME chain it follows ends before the type asked:
+    /// ask for it at `next`. The answer is incomplete, so it never carries AD; the caller that chases the
+    /// chain validates each response.
+    Incomplete {
+        /// The name the chain leads to and the response does not answer.
+        next: Name<'static>,
+        /// As for [`Verdict::Secure`].
+        ttl: Ttl,
+    },
+    /// The response is a referral (RFC 1034 §4.3.2) to `child`, judged by `Validator::start_referral`: what the
+    /// parent says of the delegation. A referral is no answer: never AD, never kept as data.
+    Referral {
+        /// The zone referred to.
+        child: Name<'static>,
+        /// Whether the parent proves the child signed or not.
+        delegation: Delegation,
     },
     /// Some of the response is not covered by a chain of trust and nothing in it fails: answer without AD.
     Insecure {
@@ -84,8 +137,16 @@ impl Verdict {
     #[must_use]
     pub fn ede(&self) -> Option<ExtendedError<'static>> {
         match self {
-            Self::Secure { .. } => None,
-            Self::Insecure { reason } => reason.info_code().map(|code| ede(code, "")),
+            Self::Insecure { reason } => reason
+                .info_code()
+                .map(|code| ede(code, reason.to_string())),
+            Self::Referral {
+                delegation: Delegation::Unsigned { reason },
+                ..
+            } => reason
+                .info_code()
+                .map(|code| ede(code, reason.to_string())),
+            Self::Secure { .. } | Self::Incomplete { .. } | Self::Referral { .. } => None,
             Self::Bogus { ede } | Self::Indeterminate { ede } => Some(ede.clone()),
         }
     }
@@ -94,10 +155,11 @@ impl Verdict {
     /// secure one.
     const fn rank(&self) -> u8 {
         match self {
-            Self::Secure { .. } => 0,
-            Self::Insecure { .. } => 1,
-            Self::Indeterminate { .. } => 2,
-            Self::Bogus { .. } => 3,
+            Self::Secure { .. } | Self::Referral { .. } => 0,
+            Self::Incomplete { .. } => 1,
+            Self::Insecure { .. } => 2,
+            Self::Indeterminate { .. } => 3,
+            Self::Bogus { .. } => 4,
         }
     }
 
@@ -106,6 +168,11 @@ impl Verdict {
     pub(super) fn worse(self, other: Self) -> Self {
         match (&self, &other) {
             (Self::Secure { ttl: a }, Self::Secure { ttl: b }) => Self::Secure { ttl: *a.min(b) },
+            (Self::Incomplete { next, ttl: a }, Self::Secure { ttl: b })
+            | (Self::Secure { ttl: b }, Self::Incomplete { next, ttl: a }) => Self::Incomplete {
+                next: next.clone(),
+                ttl: *a.min(b),
+            },
             _ if other.rank() > self.rank() => other,
             _ => self,
         }

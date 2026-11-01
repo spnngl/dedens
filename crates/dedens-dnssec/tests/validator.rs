@@ -172,10 +172,13 @@ const SECURE: &[&str] = &[
 #[test]
 fn every_secure_capture_is_secure() {
     let script = Script::new();
-    for id in SECURE {
-        let verdict = script.verdict(id);
-        assert!(secure(&verdict), "{id}: {verdict:?}");
-    }
+    let failed: Vec<String> = SECURE
+        .iter()
+        .map(|id| (id, script.verdict(id)))
+        .filter(|(_, verdict)| !secure(verdict))
+        .map(|(id, verdict)| format!("{id}: {verdict:?}"))
+        .collect();
+    assert_eq!(failed, Vec::<String>::new());
 }
 
 #[test]

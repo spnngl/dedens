@@ -1,45 +1,78 @@
-//! The verdict on a response: each `RRset` of its answer against the keys of its signer, and what it lacks
-//! against the proof of denial (RFC 4035 §5.3, §5.4).
+//! The verdict on a response: each `RRset` of its answer and authority sections against the keys of the zone its
+//! owner is in, and what it lacks against the proof of denial (RFC 4035 §5.3, §5.4).
+//!
+//! The zone of an `RRset` is found by walking the chain of trust to its owner (RFC 4035 §5.3.1), never from the
+//! signer its RRSIGs name: those are the forger's.
 
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Message, Name, Question, RData, Rcode, Record, RecordType, Ttl};
+use dedens_proto::{Name, Question, RData, Rcode, Record, RecordType, Ttl};
 
-use super::chain::{Delegation, Settled, parent};
-use super::section::{Chain, Section, Signer, synthesized};
-use super::verdict::{Failure, InsecureReason, Unusable, Verdict, ede};
-use super::{Need, Validation};
+use super::chain::{Cut, Settled, parent};
+use super::section::{Chain, Section, is_denial, synthesized};
+use super::verdict::{Delegation, Failure, InsecureReason, Unusable, Verdict};
+use super::{Mode, Need, Validation};
 use crate::denial::{self, Fact, Proof, Unproven};
 use crate::rrsig::{Key, RrSet, verify_any};
 
 /// The longest a negative response is relied on: three hours (RFC 9077 §3.4, RFC 2308 §5).
 const DENIAL_TTL_CAP: Ttl = Ttl::from_wire(3 * 60 * 60);
 
-/// A name and the zone it was found to belong to.
-struct Located {
-    /// The name the walk of the chain of trust ended on.
-    name: Name<'static>,
-    apex: Name<'static>,
-    settled: Settled,
-    /// Whether `name` is the signer of the data: it must then be the apex of a zone.
-    signed: bool,
+/// The sections of the response being validated, read once, and where its answer leads.
+#[derive(Debug)]
+pub(super) struct Parsed {
+    pub(super) answer: Section,
+    pub(super) authority: Section,
+    pub(super) chain: Chain,
 }
 
-/// An `RRset` of the answer and where its signer is.
-struct Item {
-    set: RrSet<'static>,
+impl Parsed {
+    pub(super) fn new(question: &Question<'_>, answer: &[Record<'static>], authority: &[Record<'static>]) -> Self {
+        let answer = Section::new(answer);
+        let chain = Chain::follow(question, &answer);
+        Self {
+            answer,
+            authority: Section::new(authority),
+            chain,
+        }
+    }
+}
+
+/// The zone a name was found to be in.
+struct Located {
+    apex: Name<'static>,
+    settled: Settled,
+}
+
+/// An `RRset` to check and the zone of its owner.
+struct Item<'p> {
+    set: &'p RrSet<'static>,
+    section: &'p Section,
     zone: Located,
 }
 
 /// The NSEC, NSEC3 and SOA records of a response that verified, as the records `denial` reads.
+#[derive(Debug)]
 struct Evidence {
     records: Vec<Record<'static>>,
     /// The longest the proof may be relied on (RFC 9077 §3.4).
     limit: Ttl,
 }
 
-/// What the records prove, when they prove nothing, as the verdict of the chain that depends on it.
+/// The evidence of each zone a response has been checked in, once.
+type Evidences = Vec<(Name<'static>, Result<Arc<Evidence>, Unusable>)>;
+
+/// The zone that holds the data of `name` and `rtype`: for a DS, the parent's.
+fn home(name: &Name<'_>, rtype: RecordType) -> Name<'static> {
+    if rtype == RecordType::DS {
+        parent(name).unwrap_or_else(|| name.clone().into_owned())
+    } else {
+        name.clone().into_owned()
+    }
+}
+
+/// What the records prove, when they prove nothing, as the verdict of what depends on it.
 fn unproven(error: Unproven, ttl: Ttl) -> Unusable {
     match error {
         Unproven::IterationsAboveLimit { .. } => Unusable::Insecure {
@@ -57,6 +90,14 @@ fn unproven(error: Unproven, ttl: Ttl) -> Unusable {
             Unusable::Failed(Failure::bogus(InfoCode::NSEC_MISSING, error.to_string()))
         }
         _ => Unusable::Failed(Failure::bogus(InfoCode::DNSSEC_BOGUS, error.to_string())),
+    }
+}
+
+/// The keys of a zone found secure, or the verdict of its being anything else.
+fn secure_keys(zone: &Located) -> Result<(Arc<RrSet<'static>>, Ttl), Unusable> {
+    match &zone.settled {
+        Settled::Unusable(unusable) => Err(unusable.clone()),
+        Settled::Secure { keys, ttl } => Ok((Arc::clone(keys), *ttl)),
     }
 }
 
@@ -79,201 +120,251 @@ impl Validation {
                 format!("the response is {}", response.rcode()),
             ));
         }
-        if let Some(child) = response
-            .referral()
-            .filter(|child| question.name.is_within(child))
-            .map(|child| child.clone().into_owned())
-        {
+        if let Mode::Referral(child) = self.mode.clone() {
             return self.referral(&child);
         }
-        self.answer_verdict(&question, &response)
+        let parsed = Arc::clone(&self.parsed);
+        self.answer_verdict(&question, response.rcode(), &parsed)
     }
 
-    /// A referral to `child` is as secure as its delegation: the DS records or their proven absence are in the
-    /// response (RFC 4035 §5.2).
+    /// What the DS records of `child`, or their proven absence, in the referral say of the delegation (RFC 4035
+    /// §5.2). Nothing else of the referral is read: its NS records and glue are not signed by the parent.
     fn referral(&mut self, child: &Name<'static>) -> Result<Verdict, Need> {
-        Ok(match self.cut(child, 0)? {
-            Delegation::Anchored => Verdict::Secure { ttl: Ttl::MAX },
-            Delegation::Signed { ttl, .. } => Verdict::Secure { ttl },
-            Delegation::Inside(_) => Verdict::bogus(
+        Ok(match self.cut(child, false)? {
+            Cut::Anchored | Cut::Signed { .. } => Verdict::Referral {
+                child: child.clone(),
+                delegation: Delegation::Signed,
+            },
+            Cut::Inside(_) => Verdict::bogus(
                 InfoCode::DNSSEC_BOGUS,
                 format!("{child} is referred to but proven no delegation"),
             ),
-            Delegation::Unusable(unusable) => unusable.into(),
+            Cut::Unusable(Unusable::Insecure { reason, .. }) => Verdict::Referral {
+                child: child.clone(),
+                delegation: Delegation::Unsigned { reason },
+            },
+            Cut::Unusable(Unusable::Failed(failure)) => failure.into(),
         })
     }
 
     /// The zone `name` belongs to, with the keys to check what is signed in it.
-    fn locate(&mut self, name: &Name<'static>, signed: bool) -> Result<Located, Need> {
-        let (apex, settled) = self.zone_of(name, 0)?;
-        Ok(Located {
-            name: name.clone(),
-            apex,
-            settled,
-            signed,
-        })
+    fn locate(&mut self, name: &Name<'static>) -> Result<Located, Need> {
+        let (apex, settled) = self.zone_of(name)?;
+        Ok(Located { apex, settled })
     }
 
+    /// The verdict on an answer: its `RRsets`, those of its authority section, and the denial of what it lacks.
     fn answer_verdict(
         &mut self,
         question: &Question<'static>,
-        response: &Message<'static>,
+        rcode: Rcode,
+        parsed: &Parsed,
     ) -> Result<Verdict, Need> {
-        let answer = Section::new(&response.answer);
-        let authority = Section::new(&response.authority);
-        let chain = Chain::follow(question, &answer);
-
-        // What is asked of the chain of trust, before anything is checked.
-        let mut items = Vec::new();
-        for set in &answer.sets {
-            if synthesized(set, &answer) {
-                continue;
-            }
-            let (name, signed) = match answer.signer(set, set.owner()) {
-                Signer::Zone(signer) => (signer, true),
-                Signer::Unsigned if set.rtype() == RecordType::DS => (
-                    parent(set.owner()).unwrap_or_else(|| set.owner().clone().into_owned()),
-                    false,
-                ),
-                Signer::Unsigned => (set.owner().clone().into_owned(), false),
-                Signer::Misplaced => {
-                    return Ok(Verdict::bogus(
-                        InfoCode::DNSSEC_BOGUS,
-                        format!(
-                            "{} {} is signed by no zone at or above it",
-                            set.owner(),
-                            set.rtype()
-                        ),
-                    ));
-                }
-            };
-            let zone = self.locate(&name, signed)?;
-            items.push(Item {
-                set: set.clone(),
-                zone,
-            });
+        let Parsed {
+            answer,
+            authority,
+            chain,
+        } = parsed;
+        if chain.found && rcode == Rcode::NXDOMAIN {
+            return Ok(Verdict::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                format!("{} has an answer and the rcode is NXDOMAIN", chain.end),
+            ));
         }
         // A CNAME chain that stops before the type asked has no denial to make: the caller asks on.
         let partial = !chain.found
             && chain.links > 0
-            && response.rcode() == Rcode::NOERROR
+            && rcode == Rcode::NOERROR
             && !authority.has_denial();
-        let denial = if chain.found || partial {
-            None
+        let needs_denial = !chain.found && !partial;
+
+        // What is asked of the chain of trust, before anything is checked.
+        let mut items = Vec::new();
+        let sets = answer
+            .sets
+            .iter()
+            .filter(|set| !synthesized(set, answer))
+            .map(|set| (set, answer))
+            .chain(
+                authority
+                    .sets
+                    .iter()
+                    .filter(|set| !is_denial(set.rtype()))
+                    .map(|set| (set, authority)),
+            );
+        for (set, section) in sets {
+            let zone = self.locate(&home(set.owner(), set.rtype()))?;
+            items.push(Item { set, section, zone });
+        }
+        let denial_zone = if needs_denial || authority.has_denial() {
+            Some(self.locate(&home(&chain.end, question.qtype))?)
         } else {
-            let signer = authority
-                .sets
-                .iter()
-                .filter(|set| matches!(set.rtype(), RecordType::NSEC | RecordType::NSEC3))
-                .find_map(|set| match authority.signer(set, &chain.end) {
-                    Signer::Zone(signer) => Some(signer),
-                    Signer::Unsigned | Signer::Misplaced => None,
-                });
-            let by_zone = signer.is_some();
-            let name = signer.unwrap_or_else(|| chain.end.clone());
-            Some(self.locate(&name, by_zone)?)
+            None
         };
 
+        let mut evidences = Evidences::new();
         let mut verdict = Verdict::Secure { ttl: Ttl::MAX };
         for item in &items {
-            verdict = verdict.worse(self.item_verdict(&answer, &authority, item));
+            verdict = verdict.worse(self.item_verdict(item, authority, &mut evidences));
         }
-        if let Some(zone) = denial {
+        if let Some(zone) = denial_zone {
             let asked = Question::new(chain.end.clone(), question.qtype);
-            verdict =
-                verdict.worse(self.denial_verdict(&authority, &zone, &asked, response.rcode()));
+            verdict = verdict.worse(self.denial_verdict(
+                authority,
+                &zone,
+                needs_denial.then_some(&asked),
+                rcode,
+                &mut evidences,
+            ));
         }
-        Ok(verdict)
+        Ok(match verdict {
+            Verdict::Secure { ttl } if partial => Verdict::Incomplete {
+                next: chain.end.clone(),
+                ttl,
+            },
+            other => other,
+        })
     }
 
-    /// The keys of a zone found secure, or the verdict of its being anything else.
-    fn secure_keys(zone: &Located) -> Result<(Arc<RrSet<'static>>, Ttl), Verdict> {
-        match &zone.settled {
-            Settled::Unusable(unusable) => Err(unusable.clone().into()),
-            Settled::Secure { keys, ttl } => {
-                if zone.signed && zone.apex != zone.name {
-                    Err(Verdict::bogus(
-                        InfoCode::DNSSEC_BOGUS,
-                        format!("{} signs but is no zone apex", zone.name),
-                    ))
-                } else {
-                    Ok((Arc::clone(keys), *ttl))
-                }
-            }
-        }
-    }
-
-    /// The verdict on one `RRset` of the answer (RFC 4035 §5.3), a wildcard expansion included (§5.3.4).
-    fn item_verdict(&mut self, answer: &Section, authority: &Section, item: &Item) -> Verdict {
-        let (keys, keys_ttl) = match Self::secure_keys(&item.zone) {
+    /// The verdict on one `RRset` (RFC 4035 §5.3), a wildcard expansion included (§5.3.4).
+    fn item_verdict(
+        &mut self,
+        item: &Item<'_>,
+        authority: &Section,
+        evidences: &mut Evidences,
+    ) -> Verdict {
+        let (keys, keys_ttl) = match secure_keys(&item.zone) {
             Ok(secure) => secure,
-            Err(verdict) => return verdict,
+            Err(unusable) => return unusable.into(),
         };
-        let set = &item.set;
-        if !item.zone.signed {
-            return Verdict::bogus(
-                InfoCode::RRSIGS_MISSING,
-                format!(
-                    "{} {} is unsigned in the secure zone {}",
-                    set.owner(),
-                    set.rtype(),
-                    item.zone.apex
-                ),
-            );
-        }
-        let sigs = answer.signatures(set);
-        let verified = match verify_any(set, &sigs, &Key::all(&keys), self.now, &mut self.budget) {
-            Ok(verified) => verified,
-            Err(error) => {
-                return Verdict::Bogus {
-                    ede: error.ede(set),
-                };
-            }
-        };
-        let ttl = verified.ttl.min(keys_ttl);
-        let Some(encloser) = verified.wildcard else {
+        let apex = &item.zone.apex;
+        let (ttl, wildcard) =
+            match self.authentic(item.set, item.section, apex, &keys, keys_ttl) {
+                Ok(authentic) => authentic,
+                Err(unusable) => return unusable.into(),
+            };
+        let Some(encloser) = wildcard else {
             return Verdict::Secure { ttl };
         };
-        // The signature says the name is an expansion: no closer name may exist (RFC 4035 §5.3.4).
-        let Ok(labels) = u8::try_from(encloser.label_count()) else {
-            return Verdict::bogus(InfoCode::DNSSEC_BOGUS, "a wildcard of too many labels");
-        };
-        let evidence = match self.evidence(&keys, keys_ttl, authority) {
+        let evidence = match self.evidence_in(evidences, apex, &keys, keys_ttl, authority) {
             Ok(evidence) => evidence,
             Err(unusable) => return unusable.into(),
         };
+        match self.no_closer(item.set, &encloser, apex, &evidence, ttl) {
+            Ok(ttl) => Verdict::Secure { ttl },
+            Err(unusable) => unusable.into(),
+        }
+    }
+
+    /// The TTL of `set` and the encloser of the wildcard that made it, once a signature of the zone `apex`
+    /// verifies it (RFC 4035 §5.3.1): every RRSIG is tried, and a key is the zone's by being in its DNSKEY
+    /// `RRset`, whose owner the RRSIG's signer must be.
+    fn authentic(
+        &mut self,
+        set: &RrSet<'static>,
+        section: &Section,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Result<(Ttl, Option<Name<'static>>), Unusable> {
+        let owner = set.owner();
+        if !owner.is_within(apex) || (set.rtype() == RecordType::DNSKEY && owner != apex) {
+            return Err(Unusable::Failed(Failure::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                format!("{owner} {} is in no zone with keys: the zone is {apex}", set.rtype()),
+            )));
+        }
+        let sigs = section.signatures(set);
+        if sigs.is_empty() {
+            return Err(Unusable::Failed(Failure::bogus(
+                InfoCode::RRSIGS_MISSING,
+                format!("{owner} {} is unsigned in the secure zone {apex}", set.rtype()),
+            )));
+        }
+        match verify_any(set, &sigs, &Key::all(keys), self.now, &mut self.budget) {
+            Ok(verified) => Ok((verified.ttl.min(keys_ttl), verified.wildcard)),
+            Err(error) => Err(Unusable::Failed(Failure::Bogus(error.ede(set)))),
+        }
+    }
+
+    /// That no name closer than the wildcard `encloser` made `set` exists: the signature says `set` is an
+    /// expansion, and the proof must say it was not for a name that is there (RFC 4035 §5.3.4, RFC 5155 §8.8).
+    fn no_closer(
+        &mut self,
+        set: &RrSet<'static>,
+        encloser: &Name<'static>,
+        apex: &Name<'static>,
+        evidence: &Evidence,
+        ttl: Ttl,
+    ) -> Result<Ttl, Unusable> {
+        let Ok(labels) = u8::try_from(encloser.label_count()) else {
+            return Err(Unusable::Failed(Failure::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                "a wildcard of too many labels",
+            )));
+        };
         let max = self.config.limits.iterations;
         match denial::prove_wildcard_answer(
-            &item.zone.apex,
+            apex,
             set.owner(),
             labels,
             &evidence.records,
             max,
             &mut self.budget,
         ) {
-            Ok(proof) if proof.opt_out => Verdict::Insecure {
+            Ok(proof) if proof.opt_out => Err(Unusable::Insecure {
                 reason: InsecureReason::OptOut,
-            },
-            Ok(proof) => Verdict::Secure {
-                ttl: ttl.min(proof.ttl).min(evidence.limit),
-            },
-            Err(error) => unproven(error, evidence.limit).into(),
+                ttl: proof.ttl,
+            }),
+            Ok(proof) => Ok(ttl.min(proof.ttl).min(evidence.limit)),
+            Err(error) => Err(unproven(error, evidence.limit)),
         }
     }
 
-    /// The verdict on what a response says does not exist (RFC 4035 §5.4).
+    /// `set` checked as `authentic` does, a wildcard expansion's proof included, with the response's own
+    /// `authority`: the TTL it may be relied on for.
+    pub(super) fn verify_set(
+        &mut self,
+        set: &RrSet<'static>,
+        section: &Section,
+        authority: &Section,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Result<Ttl, Unusable> {
+        let (ttl, wildcard) = self.authentic(set, section, apex, keys, keys_ttl)?;
+        let Some(encloser) = wildcard else {
+            return Ok(ttl);
+        };
+        let evidence = self.evidence(apex, keys, keys_ttl, authority)?;
+        self.no_closer(set, &encloser, apex, &evidence, ttl)
+    }
+
+    /// The verdict on what a response says does not exist (RFC 4035 §5.4), when `asked` is the name and type
+    /// it left without an answer; the NSEC, NSEC3 and SOA records of an answer are only checked, `asked` being
+    /// none.
     fn denial_verdict(
         &mut self,
         authority: &Section,
         zone: &Located,
-        question: &Question<'static>,
+        asked: Option<&Question<'static>>,
         rcode: Rcode,
+        evidences: &mut Evidences,
     ) -> Verdict {
-        let (keys, keys_ttl) = match Self::secure_keys(zone) {
+        let (keys, keys_ttl) = match secure_keys(zone) {
             Ok(secure) => secure,
-            Err(verdict) => return verdict,
+            Err(unusable) => return unusable.into(),
         };
-        let proof = match self.prove_denial(&zone.apex, &keys, keys_ttl, authority, question) {
+        let evidence = match self.evidence_in(evidences, &zone.apex, &keys, keys_ttl, authority) {
+            Ok(evidence) => evidence,
+            Err(unusable) => return unusable.into(),
+        };
+        let Some(asked) = asked else {
+            return Verdict::Secure {
+                ttl: evidence.limit,
+            };
+        };
+        let proof = match self.prove(&zone.apex, asked, &evidence) {
             Ok(proof) => proof,
             Err(unusable) => return unusable.into(),
         };
@@ -299,61 +390,78 @@ impl Validation {
         Verdict::Secure { ttl: proof.ttl }
     }
 
-    /// The NSEC, NSEC3 and SOA `RRsets` of `authority` that `keys` verify.
-    ///
-    /// Only these reach [`denial`], which trusts its records (D74). Of a SOA only the limits of its TTL and
-    /// MINIMUM are kept (RFC 9077 §3.4); one that fails proves nothing and costs nothing else.
+    /// The evidence of the zone `apex`, checked once for a response.
+    fn evidence_in(
+        &mut self,
+        evidences: &mut Evidences,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+        authority: &Section,
+    ) -> Result<Arc<Evidence>, Unusable> {
+        if let Some((_, known)) = evidences.iter().find(|(name, _)| name == apex) {
+            return known.clone();
+        }
+        let evidence = self
+            .evidence(apex, keys, keys_ttl, authority)
+            .map(Arc::new);
+        evidences.push((apex.clone(), evidence.clone()));
+        evidence
+    }
+
+    /// The NSEC, NSEC3 and SOA `RRsets` of `authority`, all of which `keys` of the zone `apex` must verify
+    /// (RFC 4035 §5.5): an unsigned or forged one among them makes the response bogus, not just the proof
+    /// lesser. Only these reach [`denial`], which trusts its records (D74). Of a SOA only the limits of its TTL
+    /// and MINIMUM are kept (RFC 9077 §3.4).
     fn evidence(
         &mut self,
+        apex: &Name<'static>,
         keys: &RrSet<'static>,
         keys_ttl: Ttl,
         authority: &Section,
     ) -> Result<Evidence, Unusable> {
         let mut records = Vec::new();
         let mut limit = keys_ttl.min(DENIAL_TTL_CAP);
-        let mut first_error = None;
-        for set in &authority.sets {
-            let proof = matches!(set.rtype(), RecordType::NSEC | RecordType::NSEC3);
-            if !proof && set.rtype() != RecordType::SOA {
-                continue;
+        for set in authority.sets.iter().filter(|set| is_denial(set.rtype())) {
+            let (ttl, wildcard) = self.authentic(set, authority, apex, keys, keys_ttl)?;
+            if wildcard.is_some() {
+                return Err(Unusable::Failed(Failure::bogus(
+                    InfoCode::DNSSEC_BOGUS,
+                    format!("{} {} is a wildcard expansion", set.owner(), set.rtype()),
+                )));
             }
-            let sigs = authority.signatures(set);
-            match verify_any(set, &sigs, &Key::all(keys), self.now, &mut self.budget) {
-                Ok(verified) if proof && verified.wildcard.is_none() => {
-                    records.extend(set.rdatas().iter().map(|rdata| Record {
-                        name: set.owner().clone(),
-                        class: set.class(),
-                        ttl: verified.ttl,
-                        rdata: rdata.clone(),
-                    }));
+            limit = limit.min(ttl);
+            if set.rtype() == RecordType::SOA {
+                if let Some(RData::Soa(soa)) = set.rdatas().first().map(|rdata| rdata.data()) {
+                    limit = limit.min(Ttl::from_wire(soa.minimum));
                 }
-                Ok(verified) if !proof => {
-                    limit = limit.min(verified.ttl);
-                    if let Some(RData::Soa(soa)) = set.rdatas().first().map(|rdata| rdata.data()) {
-                        limit = limit.min(Ttl::from_wire(soa.minimum));
-                    }
-                }
-                Ok(_) => {
-                    first_error.get_or_insert_with(|| {
-                        ede(
-                            InfoCode::DNSSEC_BOGUS,
-                            format!("{} {} is a wildcard expansion", set.owner(), set.rtype()),
-                        )
-                    });
-                }
-                Err(error) if proof => {
-                    first_error.get_or_insert_with(|| error.ede(set));
-                }
-                Err(_) => {}
+            } else {
+                records.extend(set.rdatas().iter().map(|rdata| Record {
+                    name: set.owner().clone(),
+                    class: set.class(),
+                    ttl,
+                    rdata: rdata.clone(),
+                }));
             }
-        }
-        if records.is_empty() {
-            return Err(Unusable::Failed(Failure::Bogus(
-                first_error
-                    .unwrap_or_else(|| ede(InfoCode::NSEC_MISSING, "no NSEC or NSEC3 record")),
-            )));
         }
         Ok(Evidence { records, limit })
+    }
+
+    /// What `evidence` proves about `question` in the zone `apex` (RFC 4035 §5.4, RFC 5155 §8, RFC 9077 §3.4).
+    fn prove(
+        &mut self,
+        apex: &Name<'static>,
+        question: &Question<'_>,
+        evidence: &Evidence,
+    ) -> Result<Proof, Unusable> {
+        let max = self.config.limits.iterations;
+        match denial::prove(apex, question, &evidence.records, max, &mut self.budget) {
+            Ok(proof) => Ok(Proof {
+                ttl: proof.ttl.min(evidence.limit),
+                ..proof
+            }),
+            Err(error) => Err(unproven(error, evidence.limit)),
+        }
     }
 
     /// What the verified NSEC and NSEC3 records of `authority` prove about `question` in the zone `apex`, which
@@ -366,14 +474,7 @@ impl Validation {
         authority: &Section,
         question: &Question<'_>,
     ) -> Result<Proof, Unusable> {
-        let evidence = self.evidence(keys, keys_ttl, authority)?;
-        let max = self.config.limits.iterations;
-        match denial::prove(apex, question, &evidence.records, max, &mut self.budget) {
-            Ok(proof) => Ok(Proof {
-                ttl: proof.ttl.min(evidence.limit),
-                ..proof
-            }),
-            Err(error) => Err(unproven(error, evidence.limit)),
-        }
+        let evidence = self.evidence(apex, keys, keys_ttl, authority)?;
+        self.prove(apex, question, &evidence)
     }
 }

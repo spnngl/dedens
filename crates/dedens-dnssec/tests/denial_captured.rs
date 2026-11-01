@@ -19,7 +19,7 @@ const NAME_ERROR: Fact = Fact::NameError { compact: false };
 const COMPACT_NAME_ERROR: Fact = Fact::NameError { compact: true };
 
 /// What each capture proves, by id, and whether the NSEC3 over its next closer name has the opt-out flag.
-const EXPECTED: [(&str, Fact, bool); 35] = [
+const EXPECTED: [(&str, Fact, bool); 36] = [
     ("nxdomain_root_nsec", NAME_ERROR, false),
     ("nxdomain_nsec", NAME_ERROR, false),
     ("nxdomain_nsec3", NAME_ERROR, false),
@@ -52,6 +52,7 @@ const EXPECTED: [(&str, Fact, bool); 35] = [
     ("leaf_dname_sidnlabs_ds", Fact::NoData, false),
     ("leaf_www_example_nl_ds", Fact::NoData, false),
     ("leaf_cdn_cloudflare_net_ds", Fact::NoData, false),
+    ("leaf_org_cdn_ds", Fact::NoData, false),
     ("leaf_icann_cdn_ds", Fact::NoData, false),
     ("leaf_icann_cdn_mid_ds", Fact::NoData, false),
     ("leaf_sigok_ippacket_ds", Fact::NoData, false),
