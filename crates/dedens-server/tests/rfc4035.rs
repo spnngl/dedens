@@ -317,10 +317,10 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
     }
 }
 
-/// RFC 6672 §3.1, D75: the validator takes a CNAME set whose first record is what the DNAME makes for the
-/// synthesized one and does not verify the others: they are not served under AD.
+/// RFC 6672 §3.1, D75: only the CNAME a DNAME makes goes unverified, so a set of it with another record is
+/// checked as any CNAME, unsigned in a secure zone: bogus, never served under AD.
 #[test]
-fn only_the_cname_a_dname_makes_is_served_under_ad() {
+fn a_second_record_in_the_cname_a_dname_makes_is_bogus() {
     let mut message = decode(&Captures::get("dname_answer")).into_owned();
     let at = message
         .answer
@@ -344,17 +344,10 @@ fn only_the_cname_a_dname_makes_is_served_under_ad() {
     let done = run_captured(&validating(), &query, 0, &captures);
     let wire = done.reply.expect("a reply");
     let reply = decode(&wire);
-    assert!(reply.header.flags.contains(Flags::AD));
-    let cnames: Vec<_> = reply
-        .answer
-        .iter()
-        .filter(|record| record.rtype() == RecordType::CNAME)
-        .collect();
-    assert_eq!(cnames.len(), 1, "{cnames:?}");
-    assert_ne!(
-        cnames[0].data(),
-        dedens_proto::RData::Cname(common::dns("evil.example."))
-    );
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert_eq!(reply.answer, []);
+    assert_eq!(error(&reply), Some(InfoCode::RRSIGS_MISSING));
 }
 
 /// §4.3: no verdict, for lack of an answer to a question of the validator's: SERVFAIL, held for the next query.
