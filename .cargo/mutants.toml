@@ -1,4 +1,36 @@
-# cargo-mutants: test with every feature, so the tests behind `metrics` and `serde` see their mutants.
+# cargo-mutants (D103): run with `just mutants` or `just mutants-diff`, never bare.
+# Test with every feature, so the tests behind `metrics` and `serde` see their mutants.
 all_features = true
-# `Debug` output is for logs and failing tests: no test reads it.
-exclude_re = ["<impl (fmt::)?Debug for "]
+# nextest: dedensd's suite takes half the time; it runs no doctests (D103).
+test_tool = "nextest"
+# Mutants no test can observe, or that hang the tests (a timeout costs 240 s each). Matched by file, change and
+# function, never by line, so an edit elsewhere keeps them matching. Checked 2026-11-01 at 149bb3b.
+exclude_re = [
+  # `Debug` output is for logs and failing tests: no test reads it.
+  '<impl (fmt::)?Debug for ',
+  # The local address is read but used for the cookie only; reading it without cookies changes nothing seen.
+  'replace match guard options\.cookies with true in Client::run',
+  # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
+  'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
+  # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
+  'replace \|\| with && in ResolvConf::candidates',
+  # Equal `Instant`s, an idle timeout equal to the current one: neither happens in a test.
+  'replace < with <= in State::stalled',
+  'tcp\.rs:\d+:\d+: replace < with <= in read$',
+  # Dropping the stream closes it too.
+  'replace <impl Outbound for TcpStream>::close with \(\)',
+  # How queries are batched into one write is not seen by the server; equal `Instant`s never happen.
+  'tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
+  # An inbox of 65 datagrams instead of 64.
+  'replace < with <= in Waiting::deliver',
+  # `Same` hashes `u64` keys through `write_u64`; `write` is never called.
+  '<impl Hasher for Same>::write( with |$)',
+  # The root (a suffix of one byte) is never listed; the other changes hang the walk.
+  'blocklist\.rs:\d+:\d+: replace (> with >=|\+= with \*=|\+ with -) in parents$',
+  # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
+  'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
+  # Read by dedensd only, whose tests do not run for a mutant of dedens-server.
+  'replace Pipeline::stages -> &\[Stage\] with ',
+  # The records were filtered to fit already; the flag, opcode and rcode bits are disjoint.
+  'reply\.rs:\d+:\d+: replace (\+ with -|\| with \^) in Client<.q>::answer$',
+]

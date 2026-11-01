@@ -976,6 +976,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, fuzzing with the
   first fuzz target. RAPx weekly, outside the gate: it builds on rustc internals and breaks on unrelated
   nightly changes.
+- D103 Mutation testing (cargo-mutants), outside the gate: `just mutants` for whole packages, local, as it takes
+  hours (5510 mutants in the workspace, about 10 s of build each); `just mutants-diff` for what a branch changes,
+  also run on each pull request by the `mutants` workflow, informational: the `gate` job does not need it.
+  Both test the committed HEAD in a worktree of their own with `--in-place`: the build stays warm from one
+  mutant to the next, and a killed run's leftover mutant never reaches the working tree. `--iterate` tests again
+  only what the last run did not catch. Tests run under nextest: a warm run of `dedensd`'s took 11.4 s against
+  24.2 s with `cargo test`, the other packages within 0.8 s (2026-11-01); nextest runs no doctest, so a mutant
+  only a doctest catches shows as missed, the safe direction. A missed mutant no test can observe, or one that
+  hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
+  change, never by line. Rejected: a
+  scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
 - D22 Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves

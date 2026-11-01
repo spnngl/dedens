@@ -108,6 +108,44 @@ cov:
     export PATH="$(dirname "$rustc"):$PATH"
     cargo llvm-cov --workspace --all-features --summary-only
 
+# Mutation testing (cargo-mutants, settings in .cargo/mutants.toml, needs cargo-nextest), outside the gate. `args`
+# go to cargo-mutants: `just mutants -p dedens-net`; add `--iterate` to test only what the last run did not catch.
+# Tests the committed HEAD in its own worktree, target/mutants/tree, one run at a time: `--in-place` edits files,
+# and a killed run can leave a mutant applied, so the tree is reset first. Builds in target/mutants/target, results in
+# target/mutants/mutants.out.
+[positional-arguments]
+mutants *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(pwd)/target/mutants"
+    tree="$out/tree"
+    mkdir -p "$out"
+    if ! mkdir "$out/lock" 2>/dev/null; then
+        echo "another run holds $out/lock: wait for it, or remove the lock if none runs" >&2
+        exit 1
+    fi
+    trap 'rmdir "$out/lock"' EXIT
+    head="$(git rev-parse HEAD)"
+    git worktree prune
+    if [[ -e "$tree/.git" ]]; then
+        git -C "$tree" checkout --quiet --force --detach "$head"
+    else
+        git worktree add --quiet --detach "$tree" "$head"
+    fi
+    cd "$tree"
+    CARGO_TARGET_DIR="$out/target" cargo mutants --in-place --timeout 240 --output "$out" "$@"
+
+# Mutation testing of the code changed since the branch left `base` (`--in-diff`): minutes, where `just mutants`
+# takes hours. `args` as for `just mutants`: just mutants-diff origin/main --iterate
+[positional-arguments]
+mutants-diff base="origin/main" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shift
+    mkdir -p target/mutants
+    git diff "{{base}}...HEAD" > target/mutants/branch.diff
+    {{just_executable()}} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
+
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default: just fuzz decode_message 60
 fuzz target="decode_message" seconds="300":
