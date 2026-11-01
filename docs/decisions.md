@@ -158,46 +158,64 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
 - D75 (amends D69) The validator is `dedens_dnssec::validator`, sans-IO: `Validator::new(TrustAnchors, Limits)` (shared,
-  `Clone`, `Send + Sync`) and `start(question, response, now) -> Validation`, which the caller drives: `step()` is
-  `Next::Ask(question)`, to send with RD, DO and CD set (RFC 6840 §5.9) and give back with `answer(Some(response))`
-  or `answer(None)` (a failed query), or `Next::Done(Verdict)`. `step`, not `next`, and `now` once at `start`, not
-  per call (the plan's sketch): a validation is one instant, so a chain cannot straddle a signature's expiry, and
-  `Iterator::next` would mislead. `now` is `u64` Unix seconds, as the cache and the pipeline count seconds from any
-  origin; the signatures take it modulo 2^32 (RFC 4034 §3.1.5, serial arithmetic, D73). `Verdict` is RFC 4035 §4.3:
-  `Secure { ttl }`, `Insecure { reason }`, `Bogus { ede }`, `Indeterminate { ede }`, `ede()` the code to attach
-  (RFC 8914). The chain of trust is walked top-down, one label at a time from the closest anchor, DS then DNSKEY
-  of each name, not by the signer names and SOA owners of the response: those are the forger's, and a walk by
-  them skips the cuts between (RFC 4035 §5.2). A DS RRset is verified by the parent's keys and then vouches for
-  the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure delegation
-  (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). Data below an insecure zone, or
-  at or below a negative anchor (D72, RFC 7646 §2, no question asked), or with no anchor above it, is insecure.
-  Every RRset of the answer is checked against the zone of its signer; unsigned in a secure zone, or signed by a
-  name that is no zone apex or not above the owner, is bogus (EDE 10, 6; RFC 4035 §5.3.1); the synthesized CNAME
-  of a DNAME is unsigned by rule and not checked (RFC 6672 §5.3.3). The record types of an answer after a CNAME
-  chain are checked; a chain that stops short is secure as far as it goes. An answer without the type is checked
-  as a denial of the name the chain ends on, and its rcode must agree with the proof (a name error is NXDOMAIN, or
-  NOERROR when compact, RFC 9824; no data is NOERROR), else bogus. A wildcard expansion also needs the no-closer
-  proof of `prove_wildcard_answer`, else bogus (RFC 4035 §5.3.4). An opt-out proof, in a denial, a wildcard answer
-  or the DS of a delegation, is insecure, `OptOut`, never secure (RFC 5155 §9.2): the README of `tests/testdata/`
-  calls `google_com_ds`, `edgekey_net_ds`, `nxdomain_nsec3_optout` and `nxdomain_nsec3_salt` secure, which holds
-  only for what they prove, not for the names they leave open. A referral is secure by its DS (or its proof of no
-  DS) alone. Only verified NSEC, NSEC3 records signed by the zone reach `denial`; a failing SOA costs only its
-  TTL limit. A negative proof lasts at most three hours and the SOA's TTL and MINIMUM (RFC 9077 §3.4), and the
-  keys' TTL. Verdicts of the failures: a signature or DS that fails is bogus with `SigError::ede`; a DS no key
-  matches, bogus with EDE 9; an unsupported algorithm or digest in a DS is insecure with EDE 1 or 2 (D71, RFC 6840
-  §5.2; RRSIGs of unknown algorithms are disregarded, D73); NSEC3 iterations above `Limits::iterations`
-  (`MaxIterations`, default 150, D74) are insecure with EDE 27; `ConflictingNsec3Parameters`, a missing or
-  contradictory proof and any other `Unproven` are bogus (EDE 12, 6); an exhausted `Budget` (D71, shared by the
-  whole validation) is bogus, not insecure, since insecure would let a forger downgrade by spending it. Other
-  limits are `Indeterminate`: more than `Limits::questions` (32: ten labels of DS and DNSKEY and a few CNAME
-  chains) questions or a name deeper than `Limits::depth` (32, EDE 5), a question the caller could not answer
-  (EDE 22), a response with an rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). The `AD` bit and
-  the additional section of the response are not read, and a response to another question is no answer. Each
-  zone's outcome (secure keys with their TTL, insecure, bogus) is written by one private function, `settle`,
-  and read by one other, where 06b's cache goes. Not done: the SHA-1 switch (TODECIDE: it needs a filter in
-  `rrsig`). Tests: `tests/validator.rs`, a scripted caller that answers from the captures at `captured_at`; the
-  zones of `rhybar.cz` need `cz`, which the set lacks, so it is indeterminate there instead of the README's bogus.
-  Fuzz target `validate`: arbitrary bytes as the response and as every answer asked.
+  `Clone`, `Send + Sync`) and `start(question, response, now) -> Validation` for the final answer to a question,
+  `start_referral` for a referral. The caller drives a `Validation`: `step()` is `Next::Ask(question)`, to send with
+  RD, DO and CD set (RFC 6840 §5.9) and give back with `answer(Some(response))` or `answer(None)` (a failed query),
+  or `Next::Done(Verdict)`. `step`, not `next`, and `now` once at `start`, not per call (the plan's sketch): a
+  validation is one instant, so a chain cannot straddle a signature's expiry, and `Iterator::next` would mislead.
+  `now` is `u64` Unix seconds, as the cache and the pipeline count seconds from any origin; the signatures take it
+  modulo 2^32 (RFC 4034 §3.1.5, serial arithmetic, D73). A response that is no complete answer to the question (not
+  its one question, in class IN, TC set) is `Indeterminate` at once, as an answer to one of the validator's own
+  questions is, which also makes a truncated DS or DNSKEY answer indeterminate, never bogus (RFC 1035 §4.1.1).
+  `Verdict` is RFC 4035 §4.3 with two more: `Secure { ttl }`, `Incomplete { next, ttl }`, `Referral { child,
+  delegation }`, `Insecure { reason }`, `Bogus { ede }`, `Indeterminate { ede }`; `ede()` the code and text to attach
+  (RFC 8914), the text of an insecure reason included.
+  What Secure covers: every `RRset` of class IN in the answer and the authority section is authentic (RFC 4035
+  §3.2.3, RFC 6840 §5.8), what the response lacks is proven absent, and the rcode agrees with the proof (a name error
+  is NXDOMAIN, or NOERROR when compact, RFC 9824; no data is NOERROR; NXDOMAIN with an answer is bogus). It does not
+  cover the additional section, other classes, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3), which the
+  caller strips or never relies on, and it is not the AD bit: the upstream's AD is never read, and the caller sets AD
+  from `Secure` alone. A CNAME chain that stops before the type asked, with no denial, is authentic as far as it
+  goes: `Incomplete`, the caller chases `next`, and it is never AD. A referral is no answer: judged as the final
+  answer it is bogus (its NS records are unsigned, nothing denies the type) or insecure, so a forged referral has
+  no way to secure; `start_referral` judges only the delegation, by the DS records of the child or their proven
+  absence, and says `Referral` with `Signed` or `Unsigned { reason }`, never `Secure`, so no TTL and no AD come of
+  it. A referral that answers one of the validator's DS questions is read as any DS answer: its DS or its
+  proof, else bogus.
+  The chain of trust is walked top-down from the closest anchor to the owner of each `RRset` (the name asked for a
+  DS, the parent's apex): the DS of each label, then where there is a zone its DNSKEY (RFC 4035 §5.2). The walk
+  goes to the owner (RFC 4035 §5.3.1), never to the signer a signature names, so a rewritten signer cannot pick
+  the keys, an `RRset` signed by an ancestor's keys is bogus, every RRSIG is tried (a junk one first costs
+  nothing) and a forged signer cannot turn bogus into insecure. It costs one DS question per label
+  below the last zone, which the key cache of 06b pays once. A DS RRset is verified by the parent's keys and then
+  vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
+  delegation (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). A DS question at a
+  name that is a CNAME (or below a DNAME, or a wildcard CNAME) gets the CNAME: if it verifies, the name is no cut.
+  Data below an insecure zone, at or below a negative anchor (D72, RFC 7646 §2, nothing asked), or with no anchor
+  above it, is insecure. Unsigned in a secure zone, or in a zone the keys of which are not its owner's, is bogus
+  (EDE 10, 6); every NSEC, NSEC3 and SOA of the authority section must verify, or the response is bogus. A wildcard
+  expansion also needs the no-closer proof of `prove_wildcard_answer`, else bogus (RFC 4035 §5.3.4). An opt-out
+  proof, in a denial, a wildcard answer or the DS of a delegation, is insecure, `OptOut`, never secure (RFC 5155
+  §9.2): `tests/testdata/README.md` says so of `google_com_ds`, `edgekey_net_ds`, `nxdomain_nsec3_optout` and
+  `nxdomain_nsec3_salt`. Only verified NSEC and NSEC3 records signed by the zone reach `denial`. A negative proof
+  lasts at most three hours and the SOA's TTL and MINIMUM (RFC 9077 §3.4), and the keys' TTL. Failures: a
+  signature or DS that fails is bogus with `SigError::ede`; a DS no key matches, bogus with EDE 9; an unsupported
+  algorithm or digest in a DS is insecure with EDE 1 or 2 (D71, RFC 6840 §5.2; RRSIGs of unknown algorithms are
+  disregarded, D73); NSEC3 iterations above `Limits::iterations` (`MaxIterations`, default 150, D74) are insecure
+  with EDE 27; `ConflictingNsec3Parameters`, a missing or contradictory proof and any other `Unproven` are bogus
+  (EDE 12, 6); an exhausted `Budget` (D71, shared by the whole validation) is bogus, not insecure, since insecure
+  would let a forger downgrade by spending it. Other limits are `Indeterminate`: more than `Limits::questions` (32)
+  questions, a name more than `Limits::depth` (32) labels below its anchor (counted from the anchor, so the order of
+  the questions changes nothing; EDE 5), a question the caller could not answer (EDE 22), a response with an
+  rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). Each zone's outcome (secure keys with their TTL,
+  insecure, bogus) is written by one private function, `settle`, and read by one other, `zone_of`; delegations are
+  not cached apart from them and an indeterminate outcome is never written, so 06b's cache goes there and holds
+  only what the data decides. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
+  wildcard answer is untested against a capture, none exists. Tests: `tests/validator.rs`, a scripted caller that
+  answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
+  signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
+  `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
+  flipped; seeded by the captures.
 
 ## Wire format
 

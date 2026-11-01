@@ -27,10 +27,19 @@
 //! `now` is the time in Unix seconds, given once per validation: the caches and the pipeline count seconds
 //! from any origin, signatures from 1970, so the time of day is the caller's to read (D75).
 //!
-//! The chain of trust runs top-down: for the zone of each name the validator asks the parent's DS then the
-//! zone's DNSKEY, one label at a time from the closest trust anchor, however the response names its signers
-//! (RFC 4035 §5.2). The outcome for each zone is written by one private function and read by one other, where
-//! a cache of keys goes (06b).
+//! The chain of trust runs top-down from the closest trust anchor to the owner of each `RRset`: the validator
+//! asks the DS of each label then, where there is a zone, its DNSKEY (RFC 4035 §5.2, §5.3.1). It walks to the
+//! owner, never to the signer the RRSIGs name, which a forger writes: an `RRset` is authentic when a key of the
+//! zone of its owner verifies it. The price is one DS question for each label below the last zone, that a cache
+//! of keys (06b) pays once. The outcome for each zone is written by one private function, `settle`, and read
+//! by one other, `zone_of`; an outcome that depends on the caller (indeterminate) is never written.
+//!
+//! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
+//! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
+//! additional section, records of another class, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3),
+//! which the caller strips or never relies on. [`Verdict::Incomplete`] is the same for a CNAME chain that
+//! stops before the type asked: the caller follows it to `next`. A referral is no answer: [`Validator::start_referral`]
+//! judges it by its delegation alone, and never gives Secure for it.
 
 mod chain;
 mod response;
@@ -57,8 +66,8 @@ pub struct Limits {
     /// Questions one validation may ask the caller: 32 (D75), the DS and DNSKEY of ten labels and the
     /// chains of a few CNAMEs. Past it the verdict is [`Verdict::Indeterminate`].
     pub questions: usize,
-    /// Labels of a name the chain of trust may be walked down: 32 (D75). Past it the verdict is
-    /// [`Verdict::Indeterminate`].
+    /// Labels of a name below its closest trust anchor: 32 (D75). A name deeper is walked no further, and the
+    /// verdict is [`Verdict::Indeterminate`], whatever the order of the questions.
     pub depth: usize,
     /// The signature checks and NSEC3 hashes of the validation, its chain of trust included (D71). Past it the
     /// verdict is [`Verdict::Bogus`], as an attacker could cause it, and insecure would let one downgrade.
@@ -145,7 +154,11 @@ impl Validator {
         let [_, _, _, _, a, b, c, d] = now.to_be_bytes();
         let mut validation = Validation {
             config: Arc::clone(&self.config),
-            parsed: Arc::new(Parsed::new(&question, &response.answer, &response.authority)),
+            parsed: Arc::new(Parsed::new(
+                &question,
+                &response.answer,
+                &response.authority,
+            )),
             mode: Mode::Final,
             question,
             response,
@@ -172,7 +185,10 @@ impl Validator {
             Entry::Referral(None) => {
                 validation.done = Some(Verdict::indeterminate(
                     InfoCode::DNSSEC_INDETERMINATE,
-                    format!("the response is no referral for {}", validation.question.name),
+                    format!(
+                        "the response is no referral for {}",
+                        validation.question.name
+                    ),
                 ));
                 return validation;
             }
@@ -184,12 +200,12 @@ impl Validator {
                 validation.mode = Mode::Referral(child);
             }
         }
-        if matches!(validation.question.qtype, RecordType::DS | RecordType::DNSKEY) {
+        if matches!(
+            validation.question.qtype,
+            RecordType::DS | RecordType::DNSKEY
+        ) {
             validation.answers.insert(
-                (
-                    validation.question.name.clone(),
-                    validation.question.qtype,
-                ),
+                (validation.question.name.clone(), validation.question.qtype),
                 Some(Arc::clone(&validation.response)),
             );
         }

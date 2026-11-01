@@ -43,7 +43,10 @@ pub(super) enum Cut {
     /// The name holds a trust anchor.
     Anchored,
     /// The parent's authenticated DS `RRset`.
-    Signed { ds: RrSet<'static>, ttl: Ttl },
+    Signed {
+        ds: RrSet<'static>,
+        ttl: Ttl,
+    },
     /// The name is no zone cut; it belongs to the zone with this apex.
     Inside(Name<'static>),
     Unusable(Unusable),
@@ -140,7 +143,9 @@ impl Validation {
     fn settle(&mut self, name: &Name<'static>, zone: Zone) -> Zone {
         let indeterminate = matches!(
             zone,
-            Zone::Apex(Settled::Unusable(Unusable::Failed(Failure::Indeterminate(_))))
+            Zone::Apex(Settled::Unusable(Unusable::Failed(Failure::Indeterminate(
+                _
+            ))))
         );
         if !indeterminate {
             self.zones.insert(name.clone(), zone.clone());

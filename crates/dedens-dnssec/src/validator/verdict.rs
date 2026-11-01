@@ -137,15 +137,13 @@ impl Verdict {
     #[must_use]
     pub fn ede(&self) -> Option<ExtendedError<'static>> {
         match self {
-            Self::Insecure { reason } => reason
-                .info_code()
-                .map(|code| ede(code, reason.to_string())),
+            Self::Insecure { reason } => {
+                reason.info_code().map(|code| ede(code, reason.to_string()))
+            }
             Self::Referral {
                 delegation: Delegation::Unsigned { reason },
                 ..
-            } => reason
-                .info_code()
-                .map(|code| ede(code, reason.to_string())),
+            } => reason.info_code().map(|code| ede(code, reason.to_string())),
             Self::Secure { .. } | Self::Incomplete { .. } | Self::Referral { .. } => None,
             Self::Bogus { ede } | Self::Indeterminate { ede } => Some(ede.clone()),
         }

@@ -337,7 +337,10 @@ fn a_zone_whose_keys_signatures_expired_is_not_vouched_for() {
     // `sigexpired.bad-dnssec.wb.sidnlabs.nl`: the DS matches, the DNSKEY set's signature ended in December 2019.
     let (dnskey, ds) = zone("sigexpired_wb_sidnlabs_nl");
     let result = trusted(&dnskey, &ds, captured_at());
-    assert!(matches!(result, Err(SigError::Expired { .. })), "{result:?}");
+    assert!(
+        matches!(result, Err(SigError::Expired { .. })),
+        "{result:?}"
+    );
 }
 
 #[test]

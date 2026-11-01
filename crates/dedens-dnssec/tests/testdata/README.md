@@ -50,7 +50,7 @@ zone). The link from a parent's DS to a zone's key is Secure unless the row says
 | `google_com_ds` | DS NODATA from `com`: NSEC3 opt-out, closest provable encloser (RFC 5155 §8.6, §8.9) | Insecure (opt-out): `google.com` is unsigned |
 | `google_com_a` | The unsigned answer below it: no RRSIG | Insecure |
 | `referral_signed`, `referral_unsigned` | Referrals as an authoritative server of the parent gives them, without recursion (asked of a `nl` server for `www.nlnetlabs.nl`, and of a `com` server for `www.google.com`): the DS of the signed child, and the proof that the unsigned one has none (opt-out) | Referral to a secure zone; referral to an insecure one |
-| `jm_ds` | DS NODATA from the root with NSEC (RFC 4035 §5.2) | Insecure (no DS proven): `jm` is unsigned |
+| `jm_ds` | DS NODATA from the root with NSEC (RFC 4035 §5.2) | Secure proof that `jm` has no DS: the delegation is insecure |
 | `edgekey_net_ds`, `akamaiedge_net_ds` | Same, from `net` (NSEC3 opt-out), for the zones of `cname_to_insecure` | Insecure (opt-out) |
 
 ## Signed answers
