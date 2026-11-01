@@ -1,0 +1,39 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: out
+---
+---
+id: google.com_A
+exchange:
+  server: 127.0.0.1:PORT
+  transport: udp
+  rtt_us: N
+  sends: 1
+  query_size: 51
+size: 55
+header:
+  id: N
+  opcode: QUERY
+  rcode: NOERROR
+  flags:
+  - qr
+  - rd
+  - ra
+  - cd
+question:
+- name: google.com.
+  class: IN
+  type: A
+answer:
+- name: google.com.
+  ttl: 156
+  class: IN
+  type: A
+  data: "172.217.18.110"
+edns:
+  payload: 1232
+  flags:
+  - do
+dnssec:
+  status: insecure
+  reason: the proof is an opt-out NSEC3 span, the name may be unsigned

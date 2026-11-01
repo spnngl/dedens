@@ -7,7 +7,10 @@ use std::net::SocketAddr;
 
 use anstyle::{AnsiColor, Style};
 use dedens_proto::{Message, Name};
-use dedens_scenario::{EdnsReport, OptionReport, RecordReport, Report, Transport, server_text};
+use dedens_scenario::{
+    DnssecReport, DnssecStatus, EdeReport, EdnsReport, OptionReport, RecordReport, Report,
+    Transport, server_text,
+};
 
 /// How responses are printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -186,7 +189,15 @@ fn footer(out: &mut impl Write, report: &Report) -> io::Result<()> {
         (set("aa"), "authoritative"),
         (set("tc"), "truncated"),
         (set("rd") && !set("ra"), "recursion unavailable"),
-        (set("ad"), "DNSSEC-validated"),
+        // With our own verdict on its own line, the server's flag is the server's claim, never ours.
+        (
+            set("ad"),
+            if report.dnssec.is_some() {
+                "AD set by the server"
+            } else {
+                "DNSSEC-validated"
+            },
+        ),
         (set("cd"), "checking disabled"),
         (set("z"), "Z bit set"),
     ]
@@ -219,7 +230,47 @@ fn footer(out: &mut impl Write, report: &Report) -> io::Result<()> {
             writeln!(out)?;
         }
     }
+    if let Some(dnssec) = &report.dnssec {
+        verdict(out, dnssec)?;
+    }
     Ok(())
+}
+
+/// The line of our verdict (D76): green when secure, red with the extended error when it fails.
+fn verdict(out: &mut impl Write, dnssec: &DnssecReport) -> io::Result<()> {
+    let style = match dnssec.status {
+        DnssecStatus::Secure => GOOD,
+        DnssecStatus::Insecure => QUIET,
+        DnssecStatus::Bogus | DnssecStatus::Indeterminate => BAD,
+    };
+    write!(out, "{style}dnssec {}{style:#}", dnssec.status)?;
+    match (&dnssec.reason, &dnssec.ede) {
+        // The reason is the text of the error: say it once.
+        (Some(reason), ede) => {
+            write!(out, ": {reason}")?;
+            if let Some(EdeReport { code, .. }) = ede {
+                write!(out, " (EDE {code})")?;
+            }
+        }
+        (
+            None,
+            Some(EdeReport {
+                code,
+                purpose,
+                text,
+            }),
+        ) => {
+            write!(out, ": EDE {code}")?;
+            if let Some(purpose) = purpose {
+                write!(out, " {purpose}")?;
+            }
+            if !text.is_empty() {
+                write!(out, ": {text}")?;
+            }
+        }
+        (None, None) => {}
+    }
+    writeln!(out)
 }
 
 fn edns_words(edns: &EdnsReport, words: &mut Vec<String>) {

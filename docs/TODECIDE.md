@@ -22,6 +22,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
   (D72). Default: none, the caller drops it (`--insecure NAME`, `insecure:` in the configuration); an `until` with the
   clock passed in when `dedensd` keeps state across reloads.
+- `+trace +validate` (D76 refuses it): validate each hop, a referral by `start_referral` and the answer by `start`,
+  asking DS and DNSKEY of the servers the trace reached. Default: refused; `+validate @server` is the way to a verdict.
 - ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
   AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
   asks for it.

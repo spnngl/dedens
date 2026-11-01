@@ -14,6 +14,7 @@ anstyle.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 compio.workspace = true
+dedens-dnssec.workspace = true
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-proto.workspace = true
 dedens-scenario = { workspace = true, features = ["clap"] }

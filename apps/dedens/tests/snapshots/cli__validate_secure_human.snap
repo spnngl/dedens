@@ -1,0 +1,11 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: out
+---
+cloudflare.com. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
+answer
+  cloudflare.com.  5m  A      104.16.132.229
+                       A      104.16.133.229
+                       RRSIG  A 13 2 300 20261102121044 20261031101044 34505 cloudflare.com. 8qV8fGMYDUY8IUgJTevrxFxQ+QbHr0KSZuR4n2vBdJ3HqspUUjKAOFvVYvTjWq/CIOUEBfJjHvvJOBIkRApusg==
+checking disabled · EDNS 1232 bytes · DNSSEC OK · 55/185 bytes
+dnssec secure

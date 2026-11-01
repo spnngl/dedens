@@ -4,6 +4,8 @@ use dedens_proto::text::{TextError, TextErrorKind};
 use dedens_proto::{Flags, Message, Rcode, Record};
 use serde::Deserialize;
 
+use crate::DnssecStatus;
+
 /// The expectations of a query; each one left out is not checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +22,8 @@ pub struct Expect {
     pub authority: Option<Vec<Expected>>,
     /// The additional section without the OPT record, in any order.
     pub additional: Option<Vec<Expected>>,
+    /// What validation must make of the response: needs the `validate` option (D76).
+    pub dnssec: Option<DnssecStatus>,
 }
 
 impl Expect {
@@ -57,6 +61,20 @@ impl Expect {
             }
         }
         failures
+    }
+}
+
+impl Expect {
+    /// What the verdict `actual` breaks of the `dnssec` expectation, in words; `None` when it is met or not
+    /// expected, `actual` being `None` for a response that was not validated.
+    #[must_use]
+    pub fn check_dnssec(&self, actual: Option<DnssecStatus>) -> Option<String> {
+        let expected = self.dnssec?;
+        match actual {
+            Some(actual) if actual == expected => None,
+            Some(actual) => Some(format!("dnssec {actual} instead of {expected}")),
+            None => Some(format!("dnssec {expected} expected, but not validated")),
+        }
     }
 }
 

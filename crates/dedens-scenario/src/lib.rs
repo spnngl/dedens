@@ -31,8 +31,8 @@ pub use expect::{Expect, Expected};
 pub use file::{Id, InvalidId, Query, QueryFile, server_text};
 pub use options::{CookieOption, HttpsOption, InvalidOption, Options, Timeout};
 pub use report::{
-    EdnsReport, ExchangeReport, HeaderReport, HttpReport, Latency, OptionReport, QuestionReport,
-    RecordReport, Report, Transport,
+    DnssecReport, DnssecStatus, EdeReport, EdnsReport, ExchangeReport, HeaderReport, HttpReport,
+    Latency, OptionReport, QuestionReport, RecordReport, Report, Transport,
 };
 
 /// A YAML scalar, which a field reads as text with its [`FromStr`](std::str::FromStr).
@@ -57,6 +57,25 @@ where
         Scalar::Text(text) => text,
     };
     text.parse().map_err(serde::de::Error::custom)
+}
+
+/// A value read with [`parsed`], so that a list of them reads.
+struct Parsed<T>(T);
+
+impl<'de, T: std::str::FromStr<Err: std::fmt::Display>> serde::Deserialize<'de> for Parsed<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        parsed(deserializer).map(Self)
+    }
+}
+
+/// [`parsed`] for each item of an optional list, which also needs `#[serde(default)]`.
+fn parsed_list<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr<Err: std::fmt::Display>,
+{
+    let items = <Vec<Parsed<T>> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(Some(items.into_iter().map(|Parsed(item)| item).collect()))
 }
 
 /// [`parsed`] for an optional field, which also needs `#[serde(default)]`.

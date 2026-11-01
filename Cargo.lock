@@ -877,6 +877,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "compio",
+ "dedens-dnssec",
  "dedens-net",
  "dedens-odoh",
  "dedens-proto",

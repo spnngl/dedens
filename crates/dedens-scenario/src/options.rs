@@ -1,6 +1,7 @@
 //! Query options: dig's `+` options, one set for query files and the command line (D32, D34).
 
 use std::num::NonZeroU8;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use dedens_net::doh::Method;
 use dedens_net::exchange::{self, Transport};
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::text::decode_hex;
-use dedens_proto::{Edns, EdnsFlags, Flags, Message, Question};
+use dedens_proto::{Edns, EdnsFlags, Flags, Message, Name, Question};
 use serde::Deserialize;
 
 /// How to ask a query, each option by its name in dig. Each field left out takes its value from the level above
@@ -94,6 +95,18 @@ pub struct Options {
     /// Queries sent before giving up when no response comes. Default: 3.
     #[cfg_attr(feature = "clap", arg(long, value_name = "N"))]
     pub tries: Option<NonZeroU8>,
+    /// Validate the response as a validating stub resolver (RFC 4035 §4.9): DO and CD set, the chain of trust asked
+    /// of the same server, a verdict beside the response (D76). The server is the transport, not trusted: its AD flag is
+    /// never read. Not with `noedns`, `nodnssec` or `nocdflag`. Default: off, unless `trust_anchor` or `insecure` is given.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub validate: Option<bool>,
+    /// A file of DS or DNSKEY records in zone text, the trust anchors of validation instead of the root's (RFC 4035 §4.4).
+    #[cfg_attr(feature = "clap", arg(long, value_name = "FILE"))]
+    pub trust_anchor: Option<PathBuf>,
+    /// A negative trust anchor (RFC 7646): names at or below it are insecure, not validated. The command line repeats it.
+    #[cfg_attr(feature = "clap", arg(long, value_name = "NAME"))]
+    #[serde(default, deserialize_with = "crate::parsed_list")]
+    pub insecure: Option<Vec<Name<'static>>>,
 }
 
 impl Options {
@@ -121,6 +134,9 @@ impl Options {
             cookie: self.cookie.or(fallback.cookie),
             time: self.time.or(fallback.time),
             tries: self.tries.or(fallback.tries),
+            validate: self.validate.or(fallback.validate),
+            trust_anchor: self.trust_anchor.or(fallback.trust_anchor),
+            insecure: self.insecure.or(fallback.insecure),
         }
     }
 
@@ -138,10 +154,16 @@ impl Options {
             || self.nsid == Some(true)
             || matches!(self.cookie, Some(CookieOption::On | CookieOption::Fixed(_)))
             || self.encrypted()
-            || self.https();
+            || self.https()
+            || self.validating();
         if self.edns == Some(false) && needs_edns {
             return Err(InvalidOption(
-                "bufsize, dnssec, nsid, cookie, tls, quic and https need EDNS, which noedns turns off",
+                "bufsize, dnssec, nsid, cookie, tls, quic, https and validate need EDNS, which noedns turns off",
+            ));
+        }
+        if self.validating() && (self.dnssec == Some(false) || self.cdflag == Some(false)) {
+            return Err(InvalidOption(
+                "validate sets DO and CD: no nodnssec or nocdflag",
             ));
         }
         if self.https() && (self.tcp == Some(true) || self.encrypted()) {
@@ -181,7 +203,7 @@ impl Options {
         for (flag, option, default) in [
             (Flags::RD, self.recurse, true),
             (Flags::AD, self.adflag, true),
-            (Flags::CD, self.cdflag, false),
+            (Flags::CD, self.cdflag, self.validating()),
         ] {
             if option.unwrap_or(default) {
                 flags = flags.with(flag);
@@ -193,7 +215,7 @@ impl Options {
             if let Some(size) = self.bufsize {
                 edns.udp_payload = size;
             }
-            if self.dnssec == Some(true) {
+            if self.dnssec.unwrap_or_else(|| self.validating()) {
                 edns.flags = edns.flags.with(EdnsFlags::DO);
             }
             if self.nsid == Some(true) {
@@ -205,6 +227,18 @@ impl Options {
             edns
         });
         query
+    }
+
+    /// Whether responses are validated: `validate` on, or unset with a trust anchor or a negative one given.
+    #[must_use]
+    pub fn validating(&self) -> bool {
+        self.validate.unwrap_or_else(|| {
+            self.trust_anchor.is_some()
+                || self
+                    .insecure
+                    .as_ref()
+                    .is_some_and(|names| !names.is_empty())
+        })
     }
 
     /// Whether the server is asked over TLS or QUIC, whose port is 853.

@@ -10,6 +10,7 @@ mod idn;
 mod output;
 mod run;
 mod trace;
+mod validate;
 
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
