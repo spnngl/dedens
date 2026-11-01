@@ -8,9 +8,9 @@
 //! slots in [`Check::answer`].
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use dedens_dnssec::validator::{Next, Validation, Validator, Verdict, covered};
+use dedens_dnssec::validator::{Cost, Next, Validation, Validator, Verdict, covered};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Decoded, Flags, Message, Question, RecordType, Ttl};
 
@@ -28,11 +28,99 @@ const MAX_QUESTIONS: u16 = 64;
 /// untrusted input.
 const MAX_CHASES: u8 = 8;
 
-/// The validator and the clock of a forward stage (D77).
+/// NSEC3 hashes that cost one unit of [`Allowance`]: 4096 hashes take about as long as a signature check of the
+/// slowest key (`docs/benchmarks.md`).
+const HASHES_PER_UNIT: u32 = 4096;
+
+/// What the queries of all clients may cost a validating forward stage, in units (D77): a client's question
+/// upstream, a question of the validator's, a signature verification, or 4096 NSEC3 hashes. A unit takes about 10
+/// µs of a core on the checks of the common algorithms and up to 340 µs on a P-384 one (`docs/benchmarks.md`).
+/// A response from the cache costs none, a validation that finds the zone's keys in the validator's key cache
+/// (D86) two units.
+///
+/// A token bucket: `burst` units, refilled `per_second`. A query that finds none left is answered SERVFAIL without
+/// being validated. A query started with one left may run into debt, so that the bucket does not tell what a query
+/// will cost before it runs: the debt is at most that of the queries running together, each bounded by
+/// `per_query`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowance {
+    /// Units refilled each second: the sustained rate of validation work.
+    pub per_second: u32,
+    /// Units the bucket holds at most: the work a flood after a quiet time may cost.
+    pub burst: u32,
+    /// Units one client query may cost, its CNAME chain included: past it the verdict is indeterminate.
+    pub per_query: u32,
+}
+
+impl Default for Allowance {
+    /// A tenth of a core on the common algorithms, a few cores on P-384 alone, and two seconds of burst.
+    fn default() -> Self {
+        Self {
+            per_second: 10_000,
+            burst: 20_000,
+            per_query: 256,
+        }
+    }
+}
+
+/// The units left of an [`Allowance`], shared by the clones of a [`Validating`].
+#[derive(Debug)]
+struct Bucket {
+    allowance: Allowance,
+    state: Mutex<Tokens>,
+}
+
+#[derive(Debug)]
+struct Tokens {
+    /// Negative in debt.
+    units: i64,
+    /// The latest time the clock read, in seconds: it never goes back, and the bucket is not refilled by it going
+    /// forward again.
+    at: Option<u64>,
+}
+
+impl Bucket {
+    fn new(allowance: Allowance) -> Self {
+        Self {
+            allowance,
+            state: Mutex::new(Tokens {
+                units: i64::from(allowance.burst),
+                at: None,
+            }),
+        }
+    }
+
+    /// Whether a query may start at `now`: some unit is left, after the refill, and is taken.
+    fn admit(&self, now: u64) -> bool {
+        let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = tokens.at.filter(|at| *at < now) {
+            let refill = u64::from(self.allowance.per_second).saturating_mul(now - at);
+            let burst = i64::from(self.allowance.burst);
+            tokens.units = tokens
+                .units
+                .saturating_add(i64::try_from(refill).unwrap_or(i64::MAX))
+                .min(burst);
+        }
+        tokens.at = tokens.at.max(Some(now));
+        let admitted = tokens.units > 0;
+        if admitted {
+            tokens.units = tokens.units.saturating_sub(1);
+        }
+        admitted
+    }
+
+    fn charge(&self, units: u32) {
+        let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        tokens.units = tokens.units.saturating_sub(i64::from(units));
+    }
+}
+
+/// The validator, the clock and the allowance of a forward stage (D77).
 #[derive(Clone)]
 pub struct Validating {
     validator: Validator,
     clock: Clock,
+    bucket: Arc<Bucket>,
     metrics: Metrics,
     tag: Arc<str>,
 }
@@ -52,9 +140,18 @@ impl Validating {
         Self {
             validator,
             clock,
+            bucket: Arc::new(Bucket::new(Allowance::default())),
             metrics: Metrics::new(),
             tag: Arc::from(""),
         }
+    }
+
+    /// Bounds what the queries cost to `allowance` instead of [`Allowance::default`]: the clones of the result
+    /// share one bucket.
+    #[must_use]
+    pub fn allowing(mut self, allowance: Allowance) -> Self {
+        self.bucket = Arc::new(Bucket::new(allowance));
+        self
     }
 
     /// Names the settings of the validator, the trust anchors and what else it was built from, which it cannot
@@ -72,6 +169,16 @@ impl Validating {
 
     pub(crate) const fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    /// Whether a query to validate may start: the allowance has units left, one of which the client's question
+    /// costs. Counted when not (D77).
+    pub(crate) fn admit(&self) -> bool {
+        let admitted = self.bucket.admit((self.clock)());
+        if !admitted {
+            self.metrics.shed();
+        }
+        admitted
     }
 
     fn start(&self, question: &Question<'_>, response: &Message<'_>) -> Validation {
@@ -118,6 +225,10 @@ pub(crate) struct Check {
     sent: u16,
     /// The names chased so far, at most [`MAX_CHASES`].
     chases: u8,
+    /// The work of the validations of the names chased before, in units.
+    done: u32,
+    /// What the allowance was charged so far, in units.
+    charged: u32,
 }
 
 impl Check {
@@ -137,6 +248,8 @@ impl Check {
             cap: None,
             sent: 0,
             chases: 0,
+            done: 0,
+            charged: 0,
         }
     }
 
@@ -155,13 +268,33 @@ impl Check {
         self.answer
     }
 
-    /// What to do next: ask [`Check::asking`], or the outcome.
+    /// What to do next: ask [`Check::asking`], or the outcome. What the query has cost since the last time is
+    /// charged to `validating`'s allowance, and a query past [`Allowance::per_query`] gets no more questions.
+    pub(crate) fn next(&mut self, validating: &Validating) -> Progress {
+        let progress = self.advance();
+        let spent = self.spent();
+        validating.bucket.charge(spent.saturating_sub(self.charged));
+        self.charged = spent;
+        if matches!(progress, Progress::Ask) && spent > validating.bucket.allowance.per_query {
+            return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
+        }
+        progress
+    }
+
+    /// What the query has cost so far, in units: the questions sent and the work of its validations.
+    fn spent(&self) -> u32 {
+        u32::from(self.sent)
+            .saturating_add(self.done)
+            .saturating_add(work(self.validation.cost()))
+    }
+
+    /// The next step of the validation, without the allowance.
     ///
     /// An incomplete verdict is a CNAME chain that stops short of the type asked: the name it goes on at is asked,
     /// and the response validated as one of its own. The answer to the client stays the first response and is
     /// never secure: AD says all of an answer is authentic (RFC 6840 §5.8), and the rest of the chain was left
     /// out of it.
-    pub(crate) fn next(&mut self) -> Progress {
+    fn advance(&mut self) -> Progress {
         if self.chasing {
             return self.ask();
         }
@@ -217,6 +350,7 @@ impl Check {
     pub(crate) fn answer(&mut self, validating: &Validating, response: Option<&Message<'_>>) {
         if self.chasing {
             self.chasing = false;
+            self.done = self.done.saturating_add(work(self.validation.cost()));
             // No response is no answer to the name: indeterminate, never the first response alone.
             self.validation =
                 validating.start(&self.asking, response.unwrap_or(&Message::default()));
@@ -224,6 +358,12 @@ impl Check {
             self.validation.answer(response);
         }
     }
+}
+
+/// The units a validation's work cost: its signature verifications and NSEC3 hashes.
+fn work(cost: Cost) -> u32 {
+    cost.verifications
+        .saturating_add(cost.nsec3_hashes.div_ceil(HASHES_PER_UNIT))
 }
 
 /// Makes `message`, upstream's response, what the client of `outcome` gets (RFC 4035 §3.2): AD set for a secure

@@ -1,8 +1,8 @@
 //! Validation counters through the `metrics` facade (D30, D77), compiled in by the `metrics` feature; without it
 //! every method is empty and compiles away.
 //!
-//! - `dedens_validations_total{verdict}`: responses validated, by `secure`, `insecure`, `bogus` or
-//!   `indeterminate`.
+//! - `dedens_validations_total{verdict}`: responses validated, by `secure`, `insecure`, `bogus`,
+//!   `indeterminate` or `shed` (the allowance of D77 was spent: not validated).
 //! - `dedens_validation_questions_total`: DS and DNSKEY questions sent upstream for validation, chased names too.
 //!
 //! Handles are taken once, when the forward stage's validator is built, from the recorder installed then.
@@ -17,6 +17,7 @@ pub(crate) struct Metrics {
     insecure: metrics::Counter,
     bogus: metrics::Counter,
     indeterminate: metrics::Counter,
+    shed: metrics::Counter,
     questions: metrics::Counter,
 }
 
@@ -32,7 +33,7 @@ impl Metrics {
         const QUESTIONS: &str = "dedens_validation_questions_total";
         metrics::describe_counter!(
             VALIDATIONS,
-            "Responses validated, by verdict: secure, insecure, bogus or indeterminate."
+            "Responses validated, by verdict: secure, insecure, bogus, indeterminate or shed."
         );
         metrics::describe_counter!(
             QUESTIONS,
@@ -43,6 +44,7 @@ impl Metrics {
             insecure: metrics::counter!(VALIDATIONS, "verdict" => "insecure"),
             bogus: metrics::counter!(VALIDATIONS, "verdict" => "bogus"),
             indeterminate: metrics::counter!(VALIDATIONS, "verdict" => "indeterminate"),
+            shed: metrics::counter!(VALIDATIONS, "verdict" => "shed"),
             questions: metrics::counter!(QUESTIONS),
         }
     }
@@ -59,6 +61,10 @@ impl Metrics {
 
     pub(crate) fn question(&self) {
         self.questions.increment(1);
+    }
+
+    pub(crate) fn shed(&self) {
+        self.shed.increment(1);
     }
 }
 
@@ -79,4 +85,10 @@ impl Metrics {
         reason = "the same calls with and without the feature"
     )]
     pub(crate) const fn question(&self) {}
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn shed(&self) {}
 }

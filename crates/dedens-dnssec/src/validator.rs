@@ -255,6 +255,20 @@ fn answers_question(response: &Message<'_>, question: &Question<'_>) -> bool {
         )
 }
 
+/// What a [`Validation`] spent so far: the questions it asked the caller and the work it did, the units of
+/// [`Limits::questions`] and [`Limits::budget`] (D75). A caller bounding what a client's query costs across
+/// validations (a CNAME chain starts one for each name) or what all clients cost adds these up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Cost {
+    /// Questions asked.
+    pub questions: usize,
+    /// Signature verifications done.
+    pub verifications: u32,
+    /// NSEC3 hashes computed (SHA-1 computations: `iterations + 1` for each name).
+    pub nsec3_hashes: u32,
+}
+
 /// What a [`Validation`] wants next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
@@ -316,6 +330,23 @@ impl Validation {
         self.answers
             .insert((name.clone(), rtype), Some(Arc::clone(&self.response)));
         self.seeded.insert((name, rtype));
+    }
+
+    /// What the validation has cost so far.
+    #[must_use]
+    pub fn cost(&self) -> Cost {
+        let start = &self.config.limits.budget;
+        Cost {
+            questions: self.asked,
+            verifications: start
+                .verifications_left()
+                .0
+                .saturating_sub(self.budget.verifications_left().0),
+            nsec3_hashes: start
+                .nsec3_hashes_left()
+                .0
+                .saturating_sub(self.budget.nsec3_hashes_left().0),
+        }
     }
 
     /// What the validation needs: a question to ask, or the verdict.

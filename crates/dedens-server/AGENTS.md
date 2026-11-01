@@ -9,5 +9,6 @@ A forward stage may validate (D77, `src/validate.rs`): the pipeline turns each q
 `dedens_dnssec::Validation` into a `Step::Upstream`, so `apps/dedensd` needs no change per question. Only `Secure`
 sets AD, the upstream's AD is never read, and a secure response is cut by `dedens_dnssec::validator::covered`
 to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
-captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. Feature `metrics` (D30): the validation
+captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. `Allowance` bounds what queries cost
+the validator (D77, `tests/limits.rs`): a query past it is shed in `Pipeline::query`, before any question. Feature `metrics` (D30): the validation
 counters, `src/metrics.rs`.

@@ -230,7 +230,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). Each zone's outcome (secure keys with their TTL,
   insecure, bogus) is written by one private function, `settle`, and read by one other, `zone_of`; delegations are
   not cached apart from them and an indeterminate outcome is never written, so D86's cache goes there and holds
-  only what the data decides. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
+  only what the data decides. `Validation::cost() -> Cost { questions, verifications, nsec3_hashes }` (additive,
+  `#[non_exhaustive]`) is what the validation spent so far of those limits, for a caller that bounds what a
+  client's query costs across validations, as D77 does. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
   wildcard answer is untested against a capture, none exists (TODECIDE). Tests: `tests/validator.rs`, a scripted caller that
   answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
@@ -261,7 +263,26 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
   incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
   indeterminate. All the questions of a query, the chase included, are at most 64 (`MAX_QUESTIONS`; the
-  validator's `Limits` bound each validation separately): past it the verdict is indeterminate. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
+  validator's `Limits` bound each validation separately): past it the verdict is indeterminate.
+  Cost (`validate.rs`, `Allowance`): D75 bounds one validation, but a client can send many cheap queries that each
+  walk a chain, and a chase starts a validation for each name (up to 9 × 128 signature checks). A unit is a question
+  upstream (the client's too), a signature check, or 4096 NSEC3 hashes (`Validation::cost`): about 10 µs on the
+  common algorithms, 340 µs on a P-384 one, the worst a unit stands for (`benches/dnssec.rs`, `benchmarks.md`). One
+  query costs at most `Allowance::per_query` (256), the sum over its chase: past it the verdict is indeterminate
+  (EDE 5, validation ran, failure held as any). All the queries share a token bucket in `Validating` (clones share
+  it; `Validating::allowing`; defaults: `per_second` 10 000, `burst` 20 000): `Pipeline::query`, before the client's
+  question is sent, takes a unit if the bucket has one left, and the query that finds none is answered SERVFAIL
+  with EDE 14 (Not Ready) and nothing is asked, decoded or validated (`dedens_validations_total{verdict="shed"}`);
+  the work of the validations is charged to it as it runs, so it can go into debt (at most the in-flight queries'
+  `per_query` each) and is refilled by the clock of `Validating` (a clock gone back refills nothing). Shed is not
+  failed: nothing is held in the cache, or a flood would fail the names it asks for, and the client may ask
+  again; a refresh that finds the bucket empty is not made, the reply stands. EDE 14, not 22/23 (those claim an
+  upstream or network failure, none was tried, and a client's resolver retries elsewhere and moves the flood), nor
+  5/6 (no DNSSEC verdict was reached). The bucket is global, not per client: the pipeline sees no client address
+  (TODECIDE), so one client can spend what all share. A hit in the cache stage costs no unit, a client with CD
+  none; a warm validation (D86) two. Measured: `serve_shed` 0.11 µs, `serve_warm` 6.2 µs, `serve_cold` 110 µs, no
+  slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/limits.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
+  in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
   (RFC 8914; the code only: the OPT of a reply carries no text), and the response cached for `Config::bogus_ttl`
   (60 s, Unbound's `val-bogus-ttl`; RFC 4035 §4.7: small, assigned), never served stale; a hit answers
   SERVFAIL+EDE without validating, a client with CD gets the data (RFC 4035 §3.2.2: the cache stores it under the CD
@@ -276,8 +297,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
   §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
-  validation deadline and a rate limit per client (a query holds its upstream slot for up to 64 questions until the
-  key cache of 06b), aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
+  validation deadline and a rate limit per client, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
   holds the validator's closure. Tests: `tests/rfc4035.rs` and
   `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
   `dedens-cache/tests/checked.rs`, the configuration tests of `config.rs`; bench `hit_secure` of `benches/server.rs`.
@@ -374,8 +394,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   removed, a zone made insecure) waits for the keys' TTL, at most a day, as for any cache of keys.
   A `Mutex`, not an `RwLock` or shards: a validation runs only for a response the response cache lacked, the lock is
   held for one lookup or insert, never across a signature check, and `validate_warm` at 8 threads
-  slows 2.1x against the lock-free `validate_cold`'s 1.8x (`benchmarks.md`, with a review's 2.8x against 1.9x:
-  some contention shows). Measured: a warm validation of `alg8_a` is 54 µs against 168 µs, asking no question. No
+  slows 5x against the lock-free `validate_cold`'s 2.2x (`benchmarks.md`: in a tight loop of 4.6 µs validations the
+  lock shows, which real validations, far fewer than one per cache miss, do not). Measured: a warm validation of
+  `alg8_a` is 4.6 µs against 106 µs, asking no question (the first figures, 54 and 168 µs, counted a file read
+  of the bench). No
   singleflight: concurrent misses on one zone each ask and verify, which costs work and nothing more (TODECIDE).
   Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
   clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s

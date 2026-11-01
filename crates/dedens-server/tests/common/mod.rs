@@ -234,6 +234,11 @@ pub(crate) fn validating() -> Pipeline {
 pub(crate) fn validating_with(anchors: TrustAnchors) -> Pipeline {
     let validator = Validator::new(anchors, Limits::default());
     let clock = std::sync::Arc::new(captured_at);
+    validating_under(Validating::new(validator, clock))
+}
+
+/// A pipeline with a cache, then forwarding to [`servers`] and validating as `validating` does.
+pub(crate) fn validating_under(validating: Validating) -> Pipeline {
     Pipeline::new(vec![
         Stage::Cache(Arc::new(
             Cache::new(Config::default()).expect("the default settings"),
@@ -241,7 +246,7 @@ pub(crate) fn validating_with(anchors: TrustAnchors) -> Pipeline {
         Stage::Forward(
             Forward::new(servers())
                 .expect("servers")
-                .validating(Validating::new(validator, clock)),
+                .validating(validating),
         ),
     ])
 }
