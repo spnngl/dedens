@@ -483,5 +483,5 @@ proptest! {
 fn the_fuzzing_seed_reads() {
     let text = zone_file("every_type.zone");
     let records = read(&mut ZoneReader::new(&text, None), &[]).expect("reads");
-    assert_eq!(records.len(), 29);
+    assert_eq!(records.len(), 40);
 }

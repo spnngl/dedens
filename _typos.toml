@@ -5,12 +5,14 @@ extend-exclude = [
   "docs/rfc/archive/",
   "apps/dedens/src/named.root",
   "apps/dedensd/tests/end_to_end.yaml",
+  # RFC 5155 appendix A, as published.
+  "crates/dedens-proto/tests/zones/rfc5155_appendix_a.zone",
   # Blocklists and hosts files, as published.
   "crates/dedens-plugins/tests/testdata/",
 ]
 [default]
-# RFC 4648 §10 base64 test vector
-extend-ignore-re = ['\("fo", "Zm8="\)']
+# RFC 4648 §10 base64 and base32hex test vectors
+extend-ignore-re = ['\("fo", "(Zm8=|cpng)"\)']
 
 [default.extend-words]
 # Extended DNS Error (RFC 8914)

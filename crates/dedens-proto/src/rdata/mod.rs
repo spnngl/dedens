@@ -10,6 +10,11 @@ mod rfc1035_txt;
 mod rfc2782_srv;
 mod rfc3596_aaaa;
 mod rfc3597_opaque;
+mod rfc4034_dnskey;
+mod rfc4034_ds;
+mod rfc4034_nsec;
+mod rfc4034_rrsig;
+mod rfc5155_nsec3;
 mod rfc8659_caa;
 mod rfc9460_svcb;
 
@@ -21,6 +26,11 @@ pub use rfc1035_soa::Soa;
 pub use rfc1035_txt::{CharacterStrings, Txt, TxtError};
 pub use rfc2782_srv::Srv;
 pub use rfc3597_opaque::Opaque;
+pub use rfc4034_dnskey::{Dnskey, DnskeyError};
+pub use rfc4034_ds::{Ds, DsError};
+pub use rfc4034_nsec::{Nsec, TypeBitmap, TypeBitmapError};
+pub use rfc4034_rrsig::{Rrsig, RrsigError};
+pub use rfc5155_nsec3::{Nsec3, Nsec3Error, Nsec3Param};
 pub use rfc8659_caa::{Caa, CaaError};
 pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
 
@@ -62,6 +72,22 @@ pub enum RData<'a> {
     Svcb(Svcb<'a>),
     /// Service binding for HTTPS (RFC 9460 §9); same format as [`RData::Svcb`].
     Https(Svcb<'a>),
+    /// Delegation signer (RFC 4034 §5).
+    Ds(Ds<'a>),
+    /// Child copy of the delegation signer (RFC 7344 §3.1); same format as [`RData::Ds`].
+    Cds(Ds<'a>),
+    /// Public key of a zone (RFC 4034 §2).
+    Dnskey(Dnskey<'a>),
+    /// Child copy of the public key (RFC 7344 §3.2); same format as [`RData::Dnskey`].
+    Cdnskey(Dnskey<'a>),
+    /// Signature of an `RRset` (RFC 4034 §3).
+    Rrsig(Rrsig<'a>),
+    /// Next name and types of a name in a zone (RFC 4034 §4).
+    Nsec(Nsec<'a>),
+    /// Hashed denial of existence (RFC 5155 §3).
+    Nsec3(Nsec3<'a>),
+    /// Parameters of a zone's NSEC3 records (RFC 5155 §4).
+    Nsec3Param(Nsec3Param<'a>),
     /// Any other type, or content invalid for its type (D9).
     Opaque(Opaque<'a>),
 }
@@ -83,6 +109,14 @@ impl<'a> RData<'a> {
             Self::Caa(caa) => RData::Caa(caa.into_owned()),
             Self::Svcb(svcb) => RData::Svcb(svcb.into_owned()),
             Self::Https(svcb) => RData::Https(svcb.into_owned()),
+            Self::Ds(ds) => RData::Ds(ds.into_owned()),
+            Self::Cds(ds) => RData::Cds(ds.into_owned()),
+            Self::Dnskey(key) => RData::Dnskey(key.into_owned()),
+            Self::Cdnskey(key) => RData::Cdnskey(key.into_owned()),
+            Self::Rrsig(rrsig) => RData::Rrsig(rrsig.into_owned()),
+            Self::Nsec(nsec) => RData::Nsec(nsec.into_owned()),
+            Self::Nsec3(nsec3) => RData::Nsec3(nsec3.into_owned()),
+            Self::Nsec3Param(param) => RData::Nsec3Param(param.into_owned()),
             Self::Opaque(o) => RData::Opaque(o.into_owned()),
         }
     }
@@ -103,6 +137,14 @@ impl<'a> RData<'a> {
             Self::Caa(_) => RecordType::CAA,
             Self::Svcb(_) => RecordType::SVCB,
             Self::Https(_) => RecordType::HTTPS,
+            Self::Ds(_) => RecordType::DS,
+            Self::Cds(_) => RecordType::CDS,
+            Self::Dnskey(_) => RecordType::DNSKEY,
+            Self::Cdnskey(_) => RecordType::CDNSKEY,
+            Self::Rrsig(_) => RecordType::RRSIG,
+            Self::Nsec(_) => RecordType::NSEC,
+            Self::Nsec3(_) => RecordType::NSEC3,
+            Self::Nsec3Param(_) => RecordType::NSEC3PARAM,
             Self::Opaque(o) => o.rtype(),
         }
     }
@@ -189,6 +231,14 @@ impl<'a> RData<'a> {
             RecordType::CAA => Self::Caa(Caa::decode(r)?),
             RecordType::SVCB => Self::Svcb(Svcb::decode(r)?),
             RecordType::HTTPS => Self::Https(Svcb::decode(r)?),
+            RecordType::DS => Self::Ds(Ds::decode(r)?),
+            RecordType::CDS => Self::Cds(Ds::decode(r)?),
+            RecordType::DNSKEY => Self::Dnskey(Dnskey::decode(r)?),
+            RecordType::CDNSKEY => Self::Cdnskey(Dnskey::decode(r)?),
+            RecordType::RRSIG => Self::Rrsig(Rrsig::decode(r)?),
+            RecordType::NSEC => Self::Nsec(Nsec::decode(r)?),
+            RecordType::NSEC3 => Self::Nsec3(Nsec3::decode(r)?),
+            RecordType::NSEC3PARAM => Self::Nsec3Param(Nsec3Param::decode(r)?),
             _ => Self::Opaque(Opaque::decode(rtype, r)?),
         })
     }
@@ -209,6 +259,12 @@ impl<'a> RData<'a> {
             Self::Srv(srv) => srv.encode(w),
             Self::Caa(caa) => caa.encode(w),
             Self::Svcb(svcb) | Self::Https(svcb) => svcb.encode(w),
+            Self::Ds(ds) | Self::Cds(ds) => ds.encode(w),
+            Self::Dnskey(key) | Self::Cdnskey(key) => key.encode(w),
+            Self::Rrsig(rrsig) => rrsig.encode(w),
+            Self::Nsec(nsec) => nsec.encode(w),
+            Self::Nsec3(nsec3) => nsec3.encode(w),
+            Self::Nsec3Param(param) => param.encode(w),
             Self::Opaque(o) => o.encode(w),
         }
     }
@@ -238,6 +294,14 @@ impl RData<'static> {
             RecordType::CAA => Self::Caa(Caa::from_text(f)?),
             RecordType::SVCB => Self::Svcb(Svcb::from_text(f)?),
             RecordType::HTTPS => Self::Https(Svcb::from_text(f)?),
+            RecordType::DS => Self::Ds(Ds::from_text(f)?),
+            RecordType::CDS => Self::Cds(Ds::from_text(f)?),
+            RecordType::DNSKEY => Self::Dnskey(Dnskey::from_text(f)?),
+            RecordType::CDNSKEY => Self::Cdnskey(Dnskey::from_text(f)?),
+            RecordType::RRSIG => Self::Rrsig(Rrsig::from_text(f)?),
+            RecordType::NSEC => Self::Nsec(Nsec::from_text(f)?),
+            RecordType::NSEC3 => Self::Nsec3(Nsec3::from_text(f)?),
+            RecordType::NSEC3PARAM => Self::Nsec3Param(Nsec3Param::from_text(f)?),
             _ => {
                 if let Some(opaque) = Opaque::from_text(rtype, f) {
                     Self::Opaque(opaque?)
@@ -313,6 +377,12 @@ impl fmt::Display for RData<'_> {
             Self::Srv(srv) => write!(f, "{srv}"),
             Self::Caa(caa) => write!(f, "{caa}"),
             Self::Svcb(svcb) | Self::Https(svcb) => write!(f, "{svcb}"),
+            Self::Ds(ds) | Self::Cds(ds) => write!(f, "{ds}"),
+            Self::Dnskey(key) | Self::Cdnskey(key) => write!(f, "{key}"),
+            Self::Rrsig(rrsig) => write!(f, "{rrsig}"),
+            Self::Nsec(nsec) => write!(f, "{nsec}"),
+            Self::Nsec3(nsec3) => write!(f, "{nsec3}"),
+            Self::Nsec3Param(param) => write!(f, "{param}"),
             Self::Opaque(o) => write!(f, "{o}"),
         }
     }

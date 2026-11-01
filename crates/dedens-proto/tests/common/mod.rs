@@ -8,10 +8,14 @@ use dedens_proto::edns::{
     ClientSubnet, Cookie, Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode, OptionCode,
     UnknownOption,
 };
-use dedens_proto::rdata::{Caa, Mx, Opaque, Soa, Srv, SvcParam, SvcParamKey, SvcParams, Svcb, Txt};
+use dedens_proto::rdata::{
+    Caa, Dnskey, Ds, Mx, Nsec, Nsec3, Nsec3Param, Opaque, Rrsig, Soa, Srv, SvcParam, SvcParamKey,
+    SvcParams, Svcb, Txt, TypeBitmap,
+};
 use dedens_proto::{
-    Class, DecodeError, Decoded, DecodedRecord, Flags, Header, Message, Name, Opcode, Question,
-    RData, Rcode, Record, RecordType, Ttl, Violation,
+    Class, DecodeError, Decoded, DecodedRecord, DigestType, Flags, Header, Message, Name,
+    Nsec3HashAlgorithm, Opcode, Question, RData, Rcode, Record, RecordType, SecAlgorithm, Ttl,
+    Violation,
 };
 use proptest::prelude::*;
 
@@ -135,6 +139,108 @@ fn svcb() -> impl Strategy<Value = Svcb<'static>> {
     })
 }
 
+fn ds() -> impl Strategy<Value = Ds<'static>> {
+    (
+        any::<u16>(),
+        any::<u8>(),
+        any::<u8>(),
+        prop::collection::vec(any::<u8>(), 1..=64),
+    )
+        .prop_map(|(tag, algorithm, digest_type, digest)| {
+            Ds::new(
+                tag,
+                SecAlgorithm(algorithm),
+                DigestType(digest_type),
+                &digest,
+            )
+            .expect("a digest of 1 to 64 bytes")
+            .into_owned()
+        })
+}
+
+fn dnskey() -> impl Strategy<Value = Dnskey<'static>> {
+    (
+        any::<u16>(),
+        any::<u8>(),
+        prop::collection::vec(any::<u8>(), 1..=300),
+    )
+        .prop_map(|(flags, algorithm, key)| {
+            Dnskey::new(flags, SecAlgorithm(algorithm), &key)
+                .expect("a key of 1 to 300 bytes")
+                .into_owned()
+        })
+}
+
+fn rrsig() -> impl Strategy<Value = Rrsig<'static>> {
+    (
+        (any::<u16>(), any::<u8>(), any::<u8>(), any::<u32>()),
+        (any::<u32>(), any::<u32>(), any::<u16>(), name()),
+        prop::collection::vec(any::<u8>(), 1..=300),
+    )
+        .prop_map(
+            |(
+                (covered, algorithm, labels, ttl),
+                (expiration, inception, key_tag, signer),
+                signature,
+            )| {
+                Rrsig::new(
+                    RecordType(covered),
+                    SecAlgorithm(algorithm),
+                    labels,
+                    ttl,
+                    expiration,
+                    inception,
+                    key_tag,
+                    signer,
+                    &signature,
+                )
+                .expect("a signature of 1 to 300 bytes")
+                .into_owned()
+            },
+        )
+}
+
+/// A set of types, among them some of the first window, where the common ones are.
+pub(crate) fn type_bitmap() -> impl Strategy<Value = TypeBitmap<'static>> {
+    prop::collection::vec(prop_oneof![0u16..64, any::<u16>()], 0..=10)
+        .prop_map(|types| TypeBitmap::from_types(types.into_iter().map(RecordType)))
+}
+
+fn nsec() -> impl Strategy<Value = Nsec<'static>> {
+    (name(), type_bitmap()).prop_map(|(next, types)| Nsec { next, types })
+}
+
+fn nsec3() -> impl Strategy<Value = Nsec3<'static>> {
+    (
+        (any::<u8>(), any::<u8>(), any::<u16>()),
+        bytes(255),
+        prop::collection::vec(any::<u8>(), 1..=255),
+        type_bitmap(),
+    )
+        .prop_map(|((algorithm, flags, iterations), salt, hash, types)| {
+            Nsec3::new(
+                Nsec3HashAlgorithm(algorithm),
+                flags,
+                iterations,
+                &salt,
+                &hash,
+                types,
+            )
+            .expect("a salt and a hash within the limits")
+            .into_owned()
+        })
+}
+
+fn nsec3_param() -> impl Strategy<Value = Nsec3Param<'static>> {
+    (any::<u8>(), any::<u8>(), any::<u16>(), bytes(255)).prop_map(
+        |(algorithm, flags, iterations, salt)| {
+            Nsec3Param::new(Nsec3HashAlgorithm(algorithm), flags, iterations, &salt)
+                .expect("a salt of at most 255 bytes")
+                .into_owned()
+        },
+    )
+}
+
 /// RDATA of every supported type, and of unknown ones.
 pub(crate) fn rdata() -> impl Strategy<Value = RData<'static>> {
     prop_oneof![
@@ -160,6 +266,14 @@ pub(crate) fn rdata() -> impl Strategy<Value = RData<'static>> {
         caa().prop_map(RData::Caa),
         svcb().prop_map(RData::Svcb),
         svcb().prop_map(RData::Https),
+        ds().prop_map(RData::Ds),
+        ds().prop_map(RData::Cds),
+        dnskey().prop_map(RData::Dnskey),
+        dnskey().prop_map(RData::Cdnskey),
+        rrsig().prop_map(RData::Rrsig),
+        nsec().prop_map(RData::Nsec),
+        nsec3().prop_map(RData::Nsec3),
+        nsec3_param().prop_map(RData::Nsec3Param),
         (300u16..60000, bytes(40)).prop_map(|(rtype, data)| RData::Opaque(
             Opaque::new(RecordType(rtype), &data)
                 .expect("a type without names")
@@ -303,6 +417,12 @@ pub(crate) fn record_wire(rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
     );
     wire.extend_from_slice(rdata);
     wire
+}
+
+/// The RDATA of `rec` on the wire.
+pub(crate) fn rdata_wire(rec: &Record<'_>) -> Vec<u8> {
+    // The owner name, then type, class, TTL and RDLENGTH.
+    encode_record(rec)[rec.name.wire_len() + 10..].to_vec()
 }
 
 /// Decodes `wire` as the one answer of a message, after a header at offset 0.

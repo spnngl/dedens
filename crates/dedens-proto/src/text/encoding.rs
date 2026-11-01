@@ -1,6 +1,9 @@
-//! Hex (RFC 3597 §5) and base64 (RFC 4648 §4, for the SVCB `ech` value) in presentation format.
+//! Hex (RFC 3597 §5), base64 (RFC 4648 §4: the SVCB `ech` value, DNSSEC keys and signatures) and base32hex (RFC
+//! 4648 §7: NSEC3 hashes, RFC 5155 §3.3) in presentation format.
 
 use core::fmt;
+
+const BASE32HEX: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -105,6 +108,50 @@ pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Writes bytes as lowercase base32hex without padding (RFC 4648 §7, RFC 5155 §3.3).
+pub(crate) struct Base32Hex<'b>(pub(crate) &'b [u8]);
+
+impl fmt::Display for Base32Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `acc` holds the `bits` bits not written yet.
+        let (mut acc, mut bits) = (0_u32, 0_u32);
+        let digit = |f: &mut fmt::Formatter<'_>, value: u32| {
+            let index = usize::try_from(value & 0x1F).unwrap_or_default();
+            write!(f, "{}", char::from(BASE32HEX[index]))
+        };
+        for &b in self.0 {
+            acc = acc << 8 | u32::from(b);
+            bits += 8;
+            while bits >= 5 {
+                bits -= 5;
+                digit(f, acc >> bits)?;
+            }
+            acc &= (1 << bits) - 1;
+        }
+        if bits > 0 {
+            digit(f, acc << (5 - bits))?;
+        }
+        Ok(())
+    }
+}
+
+/// Decodes unpadded base32hex, any case; `None` for a byte outside the alphabet, a length no byte string has, or
+/// unused bits that are not zero, so that each byte string has one text.
+pub(crate) fn decode_base32hex(text: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 5 / 8);
+    let (mut acc, mut bits) = (0_u32, 0_u32);
+    for &c in text {
+        acc = acc << 5 | char::from(c).to_digit(32)?;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from(acc >> bits).ok()?);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    (bits < 5 && acc == 0).then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +187,34 @@ mod tests {
         assert_eq!(decode_base64(b"Zg!="), None);
         assert_eq!(decode_base64(b"Zh=="), None);
         assert_eq!(decode_base64(b"Zm9="), None);
+    }
+
+    #[test]
+    fn base32hex_matches_rfc4648_vectors() {
+        // RFC 4648 §10, without padding and in lowercase, as RFC 5155 §3.3 writes it.
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "co"),
+            ("fo", "cpng"),
+            ("foo", "cpnmu"),
+            ("foob", "cpnmuog"),
+            ("fooba", "cpnmuoj1"),
+            ("foobar", "cpnmuoj1e8"),
+        ] {
+            assert_eq!(Base32Hex(plain.as_bytes()).to_string(), encoded);
+            assert_eq!(
+                decode_base32hex(encoded.as_bytes()).unwrap(),
+                plain.as_bytes()
+            );
+            let upper = encoded.to_ascii_uppercase();
+            assert_eq!(
+                decode_base32hex(upper.as_bytes()).unwrap(),
+                plain.as_bytes()
+            );
+        }
+        // Padding, a length no byte string has, a byte outside the alphabet, and unused bits that are not zero.
+        for bad in ["CO======", "c", "cpn", "cpnmuo", "cw", "c!", "cp"] {
+            assert_eq!(decode_base32hex(bad.as_bytes()), None, "{bad}");
+        }
     }
 }
