@@ -8,7 +8,8 @@ valid would be out of their window.
 
 Verdicts are those of RFC 4035 §4.3 for the response alone, given the chain files below it and the root KSK of
 `root_dnskey` as the only trust anchor; `dedens_dnssec::validator` (D75) gives them, `tests/validator.rs` checks them.
-They were checked on 2026-11-01 against 8.8.8.8 and 9.9.9.9 without CD (`ad` set: Secure, no `ad`: Insecure,
+They were checked on 2026-11-01 (the wildcard rows, `delv` of BIND included, and the captures of `ph`, `ws`, `internet.nl` and
+`nist.gov`, on 2026-11-01 too) against 8.8.8.8 and 9.9.9.9 without CD (`ad` set: Secure, no `ad`: Insecure,
 SERVFAIL: Bogus). One difference: those resolvers set `ad` on an answer an opt-out NSEC3 leaves open, and the
 validator does not (RFC 5155 §9.2): the rows say Insecure (opt-out) where it is so. A recapture keeps the coverage, not the bytes: names and
 types stay, keys, signatures and denial records change. To test the window alone, give a Secure capture a "now"
@@ -31,6 +32,9 @@ zone). The link from a parent's DS to a zone's key is Secure unless the row says
 | `la` | 7 | RSASHA1-NSEC3-SHA1: DS digests 1 and 2, seven keys, over TCP; Secure (SHA-1 is validated, D71) |
 | `cr` | 13 | DS digests 2 and 4 (SHA-384): the only digest 4 |
 | `nlnetlabs_nl` | 8 | NSEC zone |
+| `internet_nl` | 13 | NSEC zone with a wildcard (`*.internet.nl`) |
+| `gov`, `nist_gov` | 8 | `nist.gov` (NSEC) signs every name it answers on demand: no wildcard expansion |
+| `ph`, `ws` | 13, 8 | TLDs with an opt-out NSEC3 and a wildcard of their own (`ws`: 10 iterations) |
 | `cloudflare_com`, `sidnlabs_nl`, `example_nl`, `icann_org`, `cloudflare_net`, `ripe_net`, `verteiltesysteme_net` | 13 | Targets of the answers below |
 | `fedoraproject_org` | 14 | ECDSA P-384 |
 | `ed25519_nl` | 15 | Ed25519 |
@@ -90,6 +94,11 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 | `ent_nsec3` | Empty non-terminal with NSEC3: a matching NSEC3 with an empty bitmap (`_tcp.sidnlabs.nl`) | Secure NODATA |
 | `wildcard_answer` | MX from `*.sidnlabs.nl`: RRSIG labels below the owner's, NSEC3 proving the next closer name absent (RFC 5155 §8.8) | Secure |
 | `wildcard_nodata` | Another type at the same name: the wildcard's NSEC3 and the proof of the next closer name (RFC 5155 §8.7) | Secure NODATA |
+| `wildcard_answer_nsec` | TXT from `*.internet.nl`: RRSIG labels below the owner's, an NSEC covering the name and one proving the wildcard's own name (RFC 4035 §3.1.3.3, §5.3.4) | Secure |
+| `wildcard_nodata_nsec` | A at the same name: the wildcard's NSEC without the type | Secure NODATA |
+| `synthesized_nist_gov_txt` | TXT of `wildcard-test.nist.gov`: signed for the name itself (labels equal, no proof sent, no expansion) | Secure |
+| `wildcard_answer_optout`, `wildcard_answer_optout_ws` | A from the wildcards of the TLDs `ph` (labels 1) and `ws`: the proof of the next closer name is an opt-out NSEC3, so the name may exist unsigned (RFC 5155 §9.2) | Insecure (opt-out) |
+| `wildcard_nodata_optout` | MX at the same name in `ph`: the wildcard's no data, the same proof | Insecure (opt-out) |
 
 ## Answers across zones
 
@@ -112,7 +121,7 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 
 ## Leaves of the chain of trust
 
-`leaf_*_ds` are the DS queries a validator asks for the owner of each `RRset` of the answers above: the owner's own zone cut, or none. What the resolver returns depends on the name: NODATA or a name error with the parent's proof; the signed CNAME where the name is a CNAME (`www.icann.org`, `www.ripe.net`, the two `sigok` and `sigfail` names), which a DS query reaches as any type; a wildcard no data (`leaf_wildcard_sidnlabs_ds`); a name error under an opt-out span (`leaf_nxdomain_com_ds`, `leaf_nxdomain_org_ds`) proving a delegation without DS: insecure, opt-out.
+`leaf_*_ds` are the DS queries a validator asks for the owner of each `RRset` of the answers above: the owner's own zone cut, or none. What the resolver returns depends on the name: NODATA or a name error with the parent's proof; the signed CNAME where the name is a CNAME (`www.icann.org`, `www.ripe.net`, the two `sigok` and `sigfail` names), which a DS query reaches as any type; a wildcard no data (`leaf_wildcard_sidnlabs_ds`); a name error under an opt-out span (`leaf_nxdomain_com_ds`, `leaf_nxdomain_org_ds`) proving a delegation without DS: insecure, opt-out; `leaf_wildcard_internet_nl_ds` is the wildcard's no data, `leaf_synthesized_nist_gov_ds` a plain no data, and `leaf_wildcard_ph_ds` and `leaf_wildcard_ws_ds` an insecure delegation by opt-out.
 
 ## A name of 34 labels
 

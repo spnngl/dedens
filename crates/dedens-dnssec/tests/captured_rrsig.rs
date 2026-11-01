@@ -269,6 +269,41 @@ fn a_wildcard_answer_names_its_closest_encloser() {
     assert_ne!(wildcard.data.owner(), &encloser);
 }
 
+/// The expansions of the wildcards of `internet.nl` (NSEC), `ph` and `ws` (opt-out NSEC3) name their zone as the
+/// encloser, and `nist.gov`, which signs each name on demand, is no expansion.
+#[test]
+fn the_wildcards_of_other_zones_name_their_closest_encloser() {
+    let zones = zone_keys();
+    for (id, rtype, encloser) in [
+        (
+            "wildcard_answer_nsec",
+            RecordType::TXT,
+            Some("internet.nl."),
+        ),
+        ("wildcard_answer_optout", RecordType::A, Some("ph.")),
+        ("wildcard_answer_optout_ws", RecordType::A, Some("ws.")),
+        ("synthesized_nist_gov_txt", RecordType::TXT, None),
+    ] {
+        let item = signed(id)
+            .into_iter()
+            .find(|item| item.data.rtype() == rtype)
+            .unwrap_or_else(|| panic!("{id}: no {rtype} RRset"));
+        let verified = rrsig::verify_any(
+            &item.data,
+            &item.covering(),
+            &Key::all(keys_of(&zones, &item)),
+            captured_at(),
+            &mut Budget::default(),
+        )
+        .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+        assert_eq!(
+            verified.wildcard.map(|name| name.to_string()).as_deref(),
+            encloser,
+            "{id}"
+        );
+    }
+}
+
 /// The signed DNSKEY `RRset` of a zone and its DS `RRset` from the parent.
 fn zone(id: &str) -> (Signed, RrSet<'static>) {
     let dnskey = signed(&format!("{id}_dnskey"))
@@ -322,6 +357,10 @@ const ZONES: &[&str] = &[
     "cz",
     "wb_sidnlabs_nl",
     "bad_dnssec_wb_sidnlabs_nl",
+    "internet_nl",
+    "nist_gov",
+    "ph",
+    "ws",
 ];
 
 #[test]

@@ -232,8 +232,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   not cached apart from them and an indeterminate outcome is never written, so D86's cache goes there and holds
   only what the data decides. `Validation::cost() -> Cost { questions, verifications, nsec3_hashes }` (additive,
   `#[non_exhaustive]`) is what the validation spent so far of those limits, for a caller that bounds what a
-  client's query costs across validations, as D77 does. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
-  wildcard answer is untested against a capture, none exists (TODECIDE). Tests: `tests/validator.rs`, a scripted caller that
+  client's query costs across validations, as D77 does. Not done: the SHA-1 switch (TODECIDE: it needs a filter in
+  `rrsig`). Opt-out wildcards: the TLDs `ph` and `ws`
+  serve a wildcard whose proof of the next closer name is an opt-out NSEC3, and their wildcard answer and no data are
+  insecure (RFC 5155 §9.2), as 8.8.8.8, 9.9.9.9 and 1.1.1.1 (no `ad`) and BIND's `delv` (unsigned answer) say; a
+  wildcard under NSEC (`internet.nl`) is secure, as they and `delv` say. Found by the captures: the DS of a name that
+  does not exist under an opt-out span is an NXDOMAIN with the proof of an insecure delegation (RFC 5155 §8.6), which
+  was bogus and is insecure now (an NSEC proof of one stays bogus under NXDOMAIN: the name is there). Not
+  agreeing: 8.8.8.8 answers SERVFAIL (EDE 12) for the DS of `wildcard-test.internet.nl`, whose proof `delv` and
+  1.1.1.1 and 9.9.9.9 (`ad`) accept, as the validator does (RFC 4035 §3.1.3.4). Tests: `tests/validator.rs`, a scripted caller that
   answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit

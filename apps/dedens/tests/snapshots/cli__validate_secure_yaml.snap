@@ -40,8 +40,8 @@ answer:
   class: IN
   type: RRSIG
   data: >-
-    A 13 2 300 20261102121044 20261031101044 34505 cloudflare.com.
-    8qV8fGMYDUY8IUgJTevrxFxQ+QbHr0KSZuR4n2vBdJ3HqspUUjKAOFvVYvTjWq/CIOUEBfJjHvvJOBIkRApusg==
+    A 13 2 300 20261102174735 20261031154735 34505 cloudflare.com.
+    KdP4qK6T+Hvax9fNQpnapquxVaQXnidR0rdOESX4S5HXKUBSiUS8PxENlur5lAgjoa/dnoLSQzKF8GwNgBPYQg==
 edns:
   payload: 1232
   flags:

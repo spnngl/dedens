@@ -4,6 +4,6 @@ expression: out
 ---
 google.com. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
 answer
-  google.com.  2m36s  A  172.217.18.110
+  google.com.  2m32s  A  142.251.209.110
 checking disabled · EDNS 1232 bytes · DNSSEC OK · 51/55 bytes
 dnssec insecure: the proof is an opt-out NSEC3 span, the name may be unsigned
