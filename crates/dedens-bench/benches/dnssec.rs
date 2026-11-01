@@ -4,13 +4,17 @@
 
 use std::collections::HashMap;
 use std::hint::black_box;
-use std::sync::LazyLock;
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock};
 
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
-use dedens_proto::{DigestType, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm};
+use dedens_proto::{
+    DigestType, Edns, EdnsFlags, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm,
+};
+use dedens_server::{Allowance, Forward, Pipeline, Stage, Step, Transport, Validating};
 
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]
 mod common;
@@ -336,7 +340,7 @@ static CAPTURES: LazyLock<HashMap<(Name<'static>, RecordType), Message<'static>>
 /// knows no zone.
 fn validate(validator: &Validator, response: &Message<'static>) -> Verdict {
     let question = response.questions.first().expect("a question").clone();
-    let mut validation = validator.start(&question, response, u64::from(captured_at()));
+    let mut validation = validator.start(&question, response, *CAPTURED_AT);
     loop {
         match validation.step() {
             Next::Ask(ask) => {
@@ -346,6 +350,9 @@ fn validate(validator: &Validator, response: &Message<'static>) -> Verdict {
         }
     }
 }
+
+/// The time of the capture, read once: `captured_at` reads a file.
+static CAPTURED_AT: LazyLock<u64> = LazyLock::new(|| u64::from(captured_at()));
 
 /// The validator of the warm benches: the chain of `alg8_a` is in its cache.
 static WARM: LazyLock<Validator> = LazyLock::new(|| {
@@ -372,4 +379,111 @@ fn validate_warm(bencher: divan::Bencher<'_, '_>) {
     let response = capture("alg8_a");
     let validator = &*WARM;
     bencher.bench(|| validate(validator, black_box(&response)));
+}
+
+/// The captures as the upstream of a pipeline sends them.
+static WIRES: LazyLock<HashMap<(Name<'static>, RecordType), Vec<u8>>> = LazyLock::new(|| {
+    CAPTURES
+        .iter()
+        .map(|(question, message)| (question.clone(), message.to_vec().expect("a capture fits")))
+        .collect()
+});
+
+/// A validating forward stage with no cache stage, under `allowance`.
+fn validating_pipeline(validator: Validator, allowance: Allowance) -> Pipeline {
+    let clock = Arc::new(|| *CAPTURED_AT);
+    let server = SocketAddr::from(([192, 0, 2, 53], 53));
+    Pipeline::new(vec![Stage::Forward(
+        Forward::new([server])
+            .expect("a server")
+            .validating(Validating::new(validator, clock).allowing(allowance)),
+    )])
+}
+
+/// A client query for the question of `alg8_a`, with DO.
+fn client_query() -> Vec<u8> {
+    let question = capture("alg8_a").questions[0].clone();
+    let mut query = Message::query(7, question);
+    query.edns = Some(Edns {
+        flags: EdnsFlags::DO,
+        ..Edns::default()
+    });
+    query.to_vec().expect("a query fits")
+}
+
+/// What `dedensd` does for one uncached query of a validating forward stage: the captures answer each question
+/// the pipeline sends upstream, the client's and the validator's.
+fn serve(pipeline: &Pipeline, query: &[u8], out: &mut [u8]) -> Step {
+    let mut step = pipeline.query(query, Transport::Udp, 0, out);
+    while let Step::Upstream(upstream) = step {
+        let request = upstream.request();
+        let question = request.questions.first().expect("a question");
+        let wire = WIRES.get(&(question.name.clone().into_owned(), question.qtype));
+        step = pipeline.receive(upstream, wire.map(Vec::as_slice), 0, out);
+    }
+    step
+}
+
+/// An allowance no bench spends.
+const ENDLESS: Allowance = Allowance {
+    per_second: u32::MAX,
+    burst: u32::MAX,
+    per_query: u32::MAX,
+};
+
+/// The whole pipeline for a query whose zone keys are in no cache: the client's question, then the five of the
+/// validator, the allowance admitting and charging it (D77). No cache stage: each run validates.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn serve_cold(bencher: divan::Bencher<'_, '_>) {
+    let query = client_query();
+    let mut out = vec![0; 1232];
+    bencher
+        .with_inputs(|| {
+            validating_pipeline(
+                Validator::new(TrustAnchors::root(), Limits::default()),
+                ENDLESS,
+            )
+        })
+        .bench_local_refs(|pipeline| {
+            assert!(matches!(
+                serve(pipeline, black_box(&query), &mut out),
+                Step::Reply(_)
+            ));
+        });
+}
+
+/// The same with the chain in the validator's key cache: no question but the client's. The threads share one
+/// allowance, as the clients of `dedensd` do: its lock is what the scaling shows.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn serve_warm(bencher: divan::Bencher<'_, '_>) {
+    static PIPELINE: LazyLock<Pipeline> =
+        LazyLock::new(|| validating_pipeline(WARM.clone(), ENDLESS));
+    let query = client_query();
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        assert!(matches!(
+            serve(&PIPELINE, black_box(&query), &mut out),
+            Step::Reply(_)
+        ));
+    });
+}
+
+/// A query the spent allowance sheds (D77): SERVFAIL after the client's question, nothing validated.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn serve_shed(bencher: divan::Bencher<'_, '_>) {
+    static PIPELINE: LazyLock<Pipeline> = LazyLock::new(|| {
+        let spent = Allowance {
+            burst: 0,
+            ..Allowance::default()
+        };
+        validating_pipeline(WARM.clone(), spent)
+    });
+    let query = client_query();
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        assert!(matches!(
+            serve(&PIPELINE, black_box(&query), &mut out),
+            Step::Reply(_)
+        ));
+    });
 }

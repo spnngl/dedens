@@ -160,7 +160,7 @@ impl Pipeline {
                     match cache::look(stored, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh } => {
                             if refresh
-                                && let Some(mut upstream) =
+                                && let Ok(mut upstream) =
                                     self.upstream(index, query, client, Some(index))
                             {
                                 upstream.purpose = Purpose::Prefetch;
@@ -194,8 +194,11 @@ impl Pipeline {
                         .map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
-                    let Some(mut upstream) = self.upstream(index, query, client, cache) else {
-                        return Step::Drop;
+                    let mut upstream = match self.upstream(index, query, client, cache) {
+                        Ok(upstream) => upstream,
+                        Err(Refused::NoServer) => return Step::Drop,
+                        // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
+                        Err(Refused::Shed) => return servfail(client, InfoCode::NOT_READY, out),
                     };
                     // The client response timer, only when expired data could answer once it runs out.
                     upstream.stale_after = cache
@@ -210,32 +213,42 @@ impl Pipeline {
         reply(client, Message::default(), Rcode::REFUSED, out)
     }
 
-    /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`.
+    /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`; none if
+    /// the stage has no server, or validates the query and has its allowance spent (D77), before any question
+    /// is sent or response decoded.
     fn upstream(
         &self,
         from: usize,
         query: &Query<'_>,
         client: &Client<'_>,
         cache: Option<usize>,
-    ) -> Option<Box<Upstream>> {
-        let (index, forward) =
-            self.stages
-                .iter()
-                .enumerate()
-                .skip(from)
-                .find_map(|(index, stage)| match stage {
-                    Stage::Forward(forward) => Some((index, forward)),
-                    Stage::Cache(_) | Stage::Plugin(_) => None,
-                })?;
-        let question = query.question()?;
+    ) -> Result<Box<Upstream>, Refused> {
+        let (index, forward) = self
+            .stages
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find_map(|(index, stage)| match stage {
+                Stage::Forward(forward) => Some((index, forward)),
+                Stage::Cache(_) | Stage::Plugin(_) => None,
+            })
+            .ok_or(Refused::NoServer)?;
+        let question = query.question().ok_or(Refused::NoServer)?;
         // CD asks for the data as it is (RFC 4035 §3.2.2), and only class IN has DNSSEC (RFC 4033 §2).
         let validate = forward.validation().is_some()
             && !client.header.flags.contains(Flags::CD)
             && question.qclass == Class::IN;
-        Some(Box::new(Upstream {
+        if validate
+            && forward
+                .validation()
+                .is_some_and(|validating| !validating.admit())
+        {
+            return Err(Refused::Shed);
+        }
+        Ok(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
-            server: forward.servers().first()?.clone(),
+            server: forward.servers().first().ok_or(Refused::NoServer)?.clone(),
             forward: index,
             next: 1,
             cache,
@@ -356,7 +369,7 @@ impl Pipeline {
                 None
             };
             if let Some(mut check) = check {
-                match check.next() {
+                match check.next(validating) {
                     Progress::Ask => {
                         // The next question goes to the server that answered the last: one that failed is not
                         // tried again, so a dead server costs one query's patience, not each question's.
@@ -450,6 +463,14 @@ impl Upstream {
     pub const fn stale_after(&self) -> Option<Duration> {
         self.stale_after
     }
+}
+
+/// Why no upstream query was made for a client's.
+enum Refused {
+    /// The forward stage has no server, or the query no question.
+    NoServer,
+    /// The allowance of the validating forward stage is spent (D77): SERVFAIL "not ready", nothing held.
+    Shed,
 }
 
 /// What a response is answered with, and where it goes, once known.
