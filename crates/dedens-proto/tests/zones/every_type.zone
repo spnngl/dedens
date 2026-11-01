@@ -30,6 +30,27 @@ d8	SVCB	16 foo.example.org. ( alpn=h2,h3-19 mandatory=ipv4hint,alpn ipv4hint=192
 d9	SVCB	16 foo.example.org. alpn="f\\\\oo\\,bar,h2"
 d10	SVCB	16 foo.example.org. alpn=f\\\092oo\092,bar,h2
 
+; RFC 4034 sections 2.3, 3.3, 4.3 and 5.4, RFC 5155 appendix A, RFC 7344 and RFC 8078 section 4
+dnskey	86400	DNSKEY	256 3 5 (
+		AQPSKmynfzW4kyBv015MUG2DeIQ3 Cbl+BBZH4b/0PY1kxkmvHjcZc8no
+		kfzj31GajIQKY+5CptLr3buXA10h WqTkF7H6RfoRqXQeogmMHfpftf6z
+		Mv1LyBUgia7za6ZEzOJBOztyvhjL 742iU/TpPSEDhm2SNKLijfUppn1U
+		aNvv4w== )
+dskey	86400	DS	60485 5 1 ( 2BB183AF5F22588179A53B0A 98631FAD1A292118 )
+host	86400	RRSIG	A 5 3 86400 20030322173103 (
+		20030220173103 2642 example. oJB1W6WNGv+ldvQ3WDG0MQkg5IEhjRip8WTr
+		PYGv07h108dUKGMeDPKijVCHX3DDKdfb+v6o B9wfuh3DTJXUAfI/M0zmO/zz8bW0Rznl8O3t
+		GNazPwQKkRN20XPXV6nwwfoXmJQbsLNrLfkG J5D6fwFm8nN+6pBzeDQfsS3Ap3o= )
+alfa	86400	NSEC	host.example. ( A MX RRSIG NSEC TYPE1234 )
+0p9mhaveqvm6t7vbl5lop2u3t2rp3tom	3600	NSEC3	1 1 12 aabbccdd (
+		2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG )
+	3600	NSEC3PARAM	1 0 12 aabbccdd
+unsalted	3600	NSEC3	1 0 0 - 2T7B4G4VSA5SMI47K61MV5BV1A22BOJR
+cdnskey	60	CDNSKEY	257 3 13 AQIDBAUG
+cds	60	CDS	60485 5 1 2bb183af5f22588179a53b0a98631fad1a292118
+delete1	60	CDS	0 0 0 0
+delete2	60	CDNSKEY	0 3 0 0
+
 ; RFC 3597 section 5
 a	CLASS32	TYPE731	\# 6 abcd (
 		ef 01 23 45 )

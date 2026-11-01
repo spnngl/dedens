@@ -34,6 +34,14 @@ _sip._udp.example.	300	IN	SRV	10 60 5060 sip.example.
 example.	300	IN	CAA	128 issue "ca.example; account=1"
 _dns.example.	300	IN	SVCB	1 dns.example. alpn="dot,h2" port=853 dohpath="/q{?dns}"
 example.	300	IN	HTTPS	1 . alpn="h3,h2" ipv4hint=192.0.2.1,192.0.2.2 ech=AQID ipv6hint=2001:db8::1
+example.	86400	IN	DNSKEY	256 3 5 AQPSKmynfzW4kyBv015MUG2DeIQ3Cbl+BBZH4b/0PY1kxkmvHjcZc8nokfzj31GajIQKY+5CptLr3buXA10hWqTkF7H6RfoRqXQeogmMHfpftf6zMv1LyBUgia7za6ZEzOJBOztyvhjL742iU/TpPSEDhm2SNKLijfUppn1UaNvv4w==
+example.	300	IN	CDNSKEY	0 3 0 AA==
+dskey.example.	86400	IN	DS	60485 5 1 2bb183af5f22588179a53b0a98631fad1a292118
+example.	300	IN	CDS	0 0 0 00
+host.example.	86400	IN	RRSIG	A 5 3 86400 20030322173103 20030220173103 2642 example. oJB1W6WNGv+ldvQ3WDG0MQkg5IEhjRip8WTrPYGv07h108dUKGMeDPKijVCHX3DDKdfb+v6oB9wfuh3DTJXUAfI/M0zmO/zz8bW0RznlGNazPwQKkRN20XPXV6nwwfoXmJQbsLNrLfkGJ5D6fwFm8nN+6pBzeDQfsS3Ap3o=
+alfa.example.	86400	IN	NSEC	host.example. A MX RRSIG NSEC TYPE1234
+0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.	3600	IN	NSEC3	1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr NS SOA MX RRSIG DNSKEY NSEC3PARAM
+example.	3600	IN	NSEC3PARAM	1 0 12 aabbccdd
 example.	300	IN	TYPE65280	\# 3 abcdef
 "#;
 

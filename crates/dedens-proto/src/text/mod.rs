@@ -200,6 +200,36 @@ impl<'f, 't> Fields<'f, 't> {
         unescape(token.raw).map_err(|kind| token.error(kind))
     }
 
+    /// The rest of the entry as base64, its tokens joined: blanks are allowed within the text (RFC 4034 §2.2).
+    /// At least one byte.
+    pub(crate) fn base64_rest(&mut self, what: &'static str) -> Result<Vec<u8>, TextError> {
+        self.joined_rest(what, encoding::decode_base64)
+    }
+
+    /// The rest of the entry as hex, its tokens joined: blanks are allowed within the text (RFC 4034 §5.3). At
+    /// least one byte.
+    pub(crate) fn hex_rest(&mut self, what: &'static str) -> Result<Vec<u8>, TextError> {
+        self.joined_rest(what, |text| {
+            let mut out = Vec::with_capacity(text.len() / 2);
+            decode_hex(text, &mut out).map(|()| out)
+        })
+    }
+
+    fn joined_rest(
+        &mut self,
+        what: &'static str,
+        decode: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, TextError> {
+        let first = self.next(what)?;
+        let mut joined = first.raw.to_vec();
+        while let Some(token) = self.next_opt()? {
+            joined.extend_from_slice(token.raw);
+        }
+        decode(&joined)
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or(first.error(TextErrorKind::Invalid(what)))
+    }
+
     /// Checks that no field is left.
     pub(crate) fn finish(&mut self) -> Result<(), TextError> {
         match self.next_opt()? {

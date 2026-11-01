@@ -59,10 +59,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   without TC a partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC 6891
   §7). Header fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day
   2020).
-- D11 Typed RDATA: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT; others opaque until
-  added. The other types with compressible names (RFC 3597 §4: MD MF MB MG MR MINFO, RP AFSDB RT SIG PX NXT
-  NAPTR) are parsed by a field layout and kept opaque with their names expanded, so opaque data never holds a
-  pointer.
+- D11 Typed RDATA: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT, and the DNSSEC types of
+  D70; others opaque until added. The other types with compressible names (RFC 3597 §4: MD MF MB MG MR
+  MINFO, RP AFSDB RT SIG PX NXT NAPTR) are parsed by a field layout and kept opaque with their names
+  expanded, so opaque data never holds a pointer.
 - D12 Typed EDNS options: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client subnet
   (RFC 7871), TCP keepalive (RFC 7828), NSID (RFC 5001). Typed SVCB keys: RFC 9460 keys 0-6 and dohpath (RFC
   9461). Others opaque. An opaque option (`UnknownOption::new`) refuses data that reads as its typed option, so
@@ -101,6 +101,30 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   check without the crate: not measured, as the gains above are against the former six reads of one field each,
   so zerocopy is kept by owner decision, not by a measured gain over it. Names stay hand-parsed: their length
   varies and they may point elsewhere.
+- D70 DNSSEC RDATA, typed: DS and CDS (`Ds`), DNSKEY and CDNSKEY (`Dnskey`), RRSIG, NSEC, NSEC3, NSEC3PARAM
+  (RFC 4034, 5155, 7344, 8078), one file per format (D13); a CDS is a `Ds` under its own `RData` arm, so the
+  two cannot be mixed up. Types only: the validator's checks (digest length, key format, times, hash order)
+  and canonical form are `dedens-dnssec`'s. Rules:
+  - Invalid RDATA is kept opaque with a violation (D9), so a type has one form: a DNSKEY protocol other than
+    3 (RFC 4034 §2.1.2); an empty DS digest, DNSKEY key, RRSIG signature or NSEC3 hash, which no text could
+    write; a type bitmap that breaks RFC 4034 §4.1.2 (windows out of order, a window of 0 or over 32 bytes, a
+    trailing zero byte). `TypeBitmap` holds the checked wire bytes, so a set of types has one value. The
+    protocol is not stored: it is 3.
+  - The RRSIG signer and the NSEC next name are read with `Name::decode_uncompressed`: a pointer makes the
+    RDATA invalid and opaque (as the SVCB target, RFC 9460 §2.2), so `may_hold_compressed_names` stays false
+    for them. Rejected: expanding the pointer (the signed bytes would change) and failing the message (one
+    bad record would drop an answer; the validator reads an opaque RRSIG or NSEC as unusable).
+  - `Rrsig::signed_rdata` is the RDATA without the signature, the signer as on the wire, case kept (RFC 4034
+    §3.1.8.1); lowercasing for the canonical form is the validator's.
+  - Text: algorithm, digest type and hash are bare numbers (D69), read as numbers or mnemonics. Digest in hex
+    (any case read, lowercase written), key and signature in base64 (padded and canonical, as D12's `ech`),
+    blanks allowed within both (RFC 4034 §5.3); NSEC3 salt in hex or `-`, next hashed owner in base32hex
+    without padding (RFC 4648 §7, any case read, lowercase written, hand-written in `text/encoding.rs`);
+    types as mnemonics or `TYPEn` in numeric order, read in any order. RRSIG times are written
+    `YYYYMMDDHHmmSS` in UTC and read as that or as up to 10 digits (RFC 4034 §3.2), kept as the `u32` of the
+    wire (a date past 2106-02-07 wraps, RFC 4034 §3.1.5; one before 1970 is refused). The delete forms
+    (RFC 8078 §4) are read as the RFC writes them, `0 0 0 0` and `0 3 0 0`, and written `0 0 0 00` and
+    `0 3 0 AA==`: the payload is one zero byte (`is_delete`), and a lone `0` means that nowhere else.
 
 ## Transports
 
