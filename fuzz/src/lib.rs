@@ -22,6 +22,11 @@ use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::validator::{Limits, Next, Validator};
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
+use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
+use dedens_odoh::{
+    MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext, TargetKey,
+    decrypt_query, decrypt_response, encrypt_query,
+};
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
@@ -59,6 +64,9 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("server_request", server_request),
     ("read_doh_response", read_doh_response),
     ("dnssec_crypto", dnssec_crypto),
+    ("parse_odoh_configs", parse_odoh_configs),
+    ("parse_odoh_message", parse_odoh_message),
+    ("odoh_decrypt", odoh_decrypt),
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
     ("validate", validate),
@@ -832,6 +840,96 @@ fn digest_checked(digest: DigestType, owner: &Name<'_>, dnskey_rdata: &[u8]) {
     );
 }
 
+/// `ObliviousDoHConfigs` read from arbitrary bytes (RFC 9230 §5): the configs written back read as the same
+/// configs, and every key ID is the length RFC 9230 §6.1 gives.
+///
+/// # Panics
+///
+/// When a list does not read back as itself.
+pub fn parse_odoh_configs(data: &[u8]) {
+    let Ok(configs) = ObliviousDoHConfigs::parse(data) else {
+        return;
+    };
+    assert!(
+        configs
+            .configs()
+            .iter()
+            .all(|config| config.key_id().len() == dedens_odoh::KEY_ID_LEN)
+    );
+    // A list of configs this crate cannot use has nothing to write (D78).
+    if let Ok(written) = configs.encode() {
+        assert_eq!(ObliviousDoHConfigs::parse(&written), Ok(configs));
+    }
+}
+
+/// `ObliviousDoHMessage` and `ObliviousDoHMessagePlaintext` read from arbitrary bytes (RFC 9230 §6.1): what
+/// reads writes back to the same bytes.
+///
+/// # Panics
+///
+/// When a structure does not write back to the bytes it was read from.
+pub fn parse_odoh_message(data: &[u8]) {
+    if let Ok(message) = ObliviousDoHMessage::parse(data) {
+        assert_eq!(message.encode(), data);
+    }
+    if let Ok(plaintext) = ObliviousDoHMessagePlaintext::parse(data) {
+        assert_eq!(plaintext.encode(), data);
+    }
+}
+
+/// Bytes the "randomness" of a fuzz run repeats: the exchange stays deterministic.
+struct Fixed(u8);
+
+impl TryRng for Fixed {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(u32::from_ne_bytes([self.0; 4]))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(u64::from_ne_bytes([self.0; 8]))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        dst.fill(self.0);
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for Fixed {}
+
+/// The target key of [`odoh_decrypt`]: derived once, X25519 is slow unoptimized.
+static ODOH_KEY: LazyLock<TargetKey> = LazyLock::new(|| TargetKey::derive(&[7; 32]));
+
+/// Arbitrary bytes as an `ODoH` query and as a response (RFC 9230 §7, §8): a forged message is refused, never a
+/// panic. A parsed message is also given the target key ID, so that it reaches the key exchange. The exchange
+/// of well-formed messages is tested in `crates/dedens-odoh/tests/rfc9230.rs`; here it would cost thousands of
+/// X25519 runs a smoke test.
+///
+/// # Panics
+///
+/// When a forged message is accepted.
+pub fn odoh_decrypt(data: &[u8]) {
+    let Ok(message) = ObliviousDoHMessage::parse(data) else {
+        return;
+    };
+    let key = &*ODOH_KEY;
+    let _ = decrypt_query(key, &message);
+    if message.message_type() == MessageType::Query
+        && let Ok(grafted) = ObliviousDoHMessage::new(
+            MessageType::Query,
+            key.config().key_id().to_vec(),
+            message.encrypted_message().to_vec(),
+        )
+    {
+        // Forged ciphertext: it must not authenticate.
+        assert!(decrypt_query(key, &grafted).is_err());
+    }
+    if let Ok((_, context)) = encrypt_query(key.config(), b"q", 0, &mut Fixed(1)) {
+        assert!(decrypt_response(context, &message).is_err());
+    }
+}
 /// The `RRset` checks of `dedens_dnssec::rrsig` (D73) on the records of a message: every `RRset` against every
 /// RRSIG and DNSKEY the message holds, and every DNSKEY `RRset` against every DS `RRset`, at the time of the
 /// first RRSIG's inception (the captured zones verify) and at one taken from the input. Whatever the input, the

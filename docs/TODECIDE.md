@@ -22,6 +22,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
   (D72). Default: none, the caller drops it (`--insecure NAME`, `insecure:` in the configuration); an `until` with the
   clock passed in when `dedensd` keeps state across reloads.
+- ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
+  AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
+  asks for it.
+- ODoH target keys (D78): `TargetKey` derives from a secret the caller keeps. Default: one key, replaced by hand;
+  several keys served at once and rotation come with the target in `dedensd`.
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.

@@ -10,12 +10,13 @@ cargo-fuzz = true
 
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
 # function in `src/lib.rs`, which `cargo test --lib` also drives on stable with the captured responses in
-# `crates/dedens-proto/tests/testdata/` and `crates/dedens-dnssec/tests/testdata/` as seeds (`just fuzz-smoke`).
+# `crates/dedens-proto/tests/testdata/`, `crates/dedens-dnssec/tests/testdata/` and `crates/dedens-odoh/tests/testdata/` as seeds (`just fuzz-smoke`).
 
 [dependencies]
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-dnssec = { path = "../crates/dedens-dnssec" }
 dedens-net = { path = "../crates/dedens-net" }
+dedens-odoh = { path = "../crates/dedens-odoh" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
@@ -127,8 +128,29 @@ doc = false
 bench = false
 
 [[bin]]
+name = "parse_odoh_configs"
+path = "fuzz_targets/parse_odoh_configs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rrsig_verify"
 path = "fuzz_targets/rrsig_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_odoh_message"
+path = "fuzz_targets/parse_odoh_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "odoh_decrypt"
+path = "fuzz_targets/odoh_decrypt.rs"
 test = false
 doc = false
 bench = false

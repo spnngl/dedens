@@ -1,0 +1,249 @@
+//! `ObliviousDoHMessage` and `ObliviousDoHMessagePlaintext` (RFC 9230 §6.1), and the padding of §11.
+
+use crate::error::WireError;
+use crate::wire::{MAX_FIELD, Reader, check_vec16, put_vec16};
+
+/// The `message_type` of an [`ObliviousDoHMessage`] (RFC 9230 §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageType {
+    /// A query, `0x01`.
+    Query = 1,
+    /// A response, `0x02`.
+    Response = 2,
+}
+
+impl MessageType {
+    fn from_byte(byte: u8) -> Result<Self, WireError> {
+        match byte {
+            1 => Ok(Self::Query),
+            2 => Ok(Self::Response),
+            other => Err(WireError::UnknownMessageType(other)),
+        }
+    }
+}
+
+/// An encrypted query or response as it travels between client and target (RFC 9230 §6.1).
+///
+/// ```text
+/// struct {
+///    uint8  message_type;
+///    opaque key_id<0..2^16-1>;
+///    opaque encrypted_message<1..2^16-1>;
+/// } ObliviousDoHMessage;
+/// ```
+///
+/// In a response, `key_id` carries the response nonce (§8 step 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObliviousDoHMessage {
+    message_type: MessageType,
+    key_id: Vec<u8>,
+    encrypted_message: Vec<u8>,
+}
+
+impl ObliviousDoHMessage {
+    /// A message of the given parts.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::FieldTooLong`] when `key_id` or `encrypted_message` exceeds 65535 bytes,
+    /// [`WireError::EmptyField`] when `encrypted_message` is empty.
+    pub fn new(
+        message_type: MessageType,
+        key_id: Vec<u8>,
+        encrypted_message: Vec<u8>,
+    ) -> Result<Self, WireError> {
+        check_vec16("key_id", &key_id, 0)?;
+        check_vec16("encrypted_message", &encrypted_message, 1)?;
+        Ok(Self {
+            message_type,
+            key_id,
+            encrypted_message,
+        })
+    }
+
+    /// Reads a message, as the body of an HTTP request or response carries it (RFC 9230 §4.1, §4.3).
+    ///
+    /// # Errors
+    ///
+    /// A [`WireError`] when the input is truncated, has bytes after the message, an unknown type or an
+    /// empty `encrypted_message`.
+    pub fn parse(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+        let message_type = MessageType::from_byte(reader.u8()?)?;
+        let key_id = reader.vec16()?.to_vec();
+        let encrypted_message = reader.vec16()?.to_vec();
+        reader.finish()?;
+        Self::new(message_type, key_id, encrypted_message)
+    }
+
+    /// The bytes of the message.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + self.key_id.len() + self.encrypted_message.len());
+        out.push(self.message_type as u8);
+        put_vec16(&mut out, &self.key_id);
+        put_vec16(&mut out, &self.encrypted_message);
+        out
+    }
+
+    /// Query or response.
+    #[must_use]
+    pub const fn message_type(&self) -> MessageType {
+        self.message_type
+    }
+
+    /// The identifier of the target's key (query), or the response nonce (response).
+    #[must_use]
+    pub fn key_id(&self) -> &[u8] {
+        &self.key_id
+    }
+
+    /// The HPKE encapsulated key and ciphertext (query), or the ciphertext (response).
+    #[must_use]
+    pub fn encrypted_message(&self) -> &[u8] {
+        &self.encrypted_message
+    }
+}
+
+/// The plaintext of a query or response: a DNS message and zero padding (RFC 9230 §6.1).
+///
+/// ```text
+/// struct {
+///    opaque dns_message<1..2^16-1>;
+///    opaque padding<0..2^16-1>;
+/// } ObliviousDoHMessagePlaintext;
+/// ```
+///
+/// The padding is its length alone, so a padding that is not all zeros cannot be built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObliviousDoHMessagePlaintext {
+    dns_message: Vec<u8>,
+    padding: usize,
+}
+
+impl ObliviousDoHMessagePlaintext {
+    /// A plaintext of `dns_message` followed by `padding` zero bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::EmptyField`] for an empty message, [`WireError::FieldTooLong`] when the message or
+    /// the padding exceeds 65535 bytes.
+    pub fn new(dns_message: Vec<u8>, padding: usize) -> Result<Self, WireError> {
+        check_vec16("dns_message", &dns_message, 1)?;
+        if padding > MAX_FIELD {
+            return Err(WireError::FieldTooLong("padding"));
+        }
+        Ok(Self {
+            dns_message,
+            padding,
+        })
+    }
+
+    /// Reads a plaintext.
+    ///
+    /// # Errors
+    ///
+    /// A [`WireError`] when the input is truncated, has bytes after the plaintext, an empty message, or
+    /// padding that is not all zeros (RFC 9230 §7 and §8 step 4 refuse it).
+    pub fn parse(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+        let dns_message = reader.vec16()?.to_vec();
+        let padding = reader.vec16()?;
+        reader.finish()?;
+        if padding.iter().any(|&byte| byte != 0) {
+            return Err(WireError::NonZeroPadding);
+        }
+        Self::new(dns_message, padding.len())
+    }
+
+    /// The bytes of the plaintext.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.dns_message.len() + self.padding);
+        put_vec16(&mut out, &self.dns_message);
+        put_vec16(&mut out, &vec![0; self.padding]);
+        out
+    }
+
+    /// The DNS message.
+    #[must_use]
+    pub fn dns_message(&self) -> &[u8] {
+        &self.dns_message
+    }
+
+    /// The DNS message, taken out.
+    #[must_use]
+    pub fn into_dns_message(self) -> Vec<u8> {
+        self.dns_message
+    }
+
+    /// The number of padding bytes.
+    #[must_use]
+    pub const fn padding(&self) -> usize {
+        self.padding
+    }
+}
+
+/// The block a query is padded to (RFC 8467 §4.1).
+pub const QUERY_BLOCK: usize = 128;
+
+/// The block a response is padded to (RFC 8467 §4.1).
+pub const RESPONSE_BLOCK: usize = 468;
+
+/// The padding that brings a DNS query of `dns_len` bytes to a multiple of [`QUERY_BLOCK`].
+///
+/// RFC 9230 §11 prescribes no length and tells implementations to follow RFC 8467, which pads queries to
+/// 128 bytes. The block counts the DNS message alone: the plaintext adds 4 bytes of lengths and the
+/// ciphertext a constant 48, so every query of a block has one size on the wire.
+#[must_use]
+pub const fn query_padding(dns_len: usize) -> usize {
+    block_padding(dns_len, QUERY_BLOCK)
+}
+
+/// The padding that brings a DNS response of `dns_len` bytes to a multiple of [`RESPONSE_BLOCK`], as
+/// [`query_padding`] does for queries (RFC 8467 §4.1 pads responses to 468 bytes).
+#[must_use]
+pub const fn response_padding(dns_len: usize) -> usize {
+    block_padding(dns_len, RESPONSE_BLOCK)
+}
+
+const fn block_padding(len: usize, block: usize) -> usize {
+    (block - len % block) % block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padding_rounds_up_to_the_block() {
+        assert_eq!(query_padding(1), 127);
+        assert_eq!(query_padding(127), 1);
+        assert_eq!(query_padding(128), 0);
+        assert_eq!(query_padding(129), 127);
+        assert_eq!(response_padding(468), 0);
+        assert_eq!(response_padding(469), 467);
+        assert_eq!((response_padding(100) + 100) % RESPONSE_BLOCK, 0);
+    }
+
+    #[test]
+    fn message_round_trips() {
+        let message =
+            ObliviousDoHMessage::new(MessageType::Response, vec![1; 16], vec![2, 3]).expect("fits");
+        assert_eq!(
+            message.encode(),
+            [&[2, 0, 16][..], &[1; 16], &[0, 2, 2, 3]].concat()
+        );
+        assert_eq!(ObliviousDoHMessage::parse(&message.encode()), Ok(message));
+    }
+
+    #[test]
+    fn plaintext_round_trips() {
+        let plaintext = ObliviousDoHMessagePlaintext::new(vec![7, 8], 3).expect("fits");
+        assert_eq!(plaintext.encode(), [0, 2, 7, 8, 0, 3, 0, 0, 0]);
+        assert_eq!(
+            ObliviousDoHMessagePlaintext::parse(&plaintext.encode()),
+            Ok(plaintext)
+        );
+    }
+}

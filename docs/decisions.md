@@ -433,6 +433,34 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     where HTTP/3 does not answer (November 2026: no `h3` in Alt-Svc, or a handshake that stalls), parsed only,
     until HTTP/2 (D67).
 
+- D78 (amends D69) ODoH crypto (RFC 9230) is `dedens-odoh`, sans-IO, for the one suite RFC 9230 §9 requires:
+  DHKEM(X25519, HKDF-SHA256) (0x0020), HKDF-SHA256 (1), AES-128-GCM (1). HPKE (RFC 9180) is the `hpke` crate
+  (0.15.1, MIT or Apache-2.0, RustCrypto primitives, features `aes`, `alloc`, `x25519` only, passes `cargo deny`);
+  the response's HKDF and AES-GCM (RFC 9230 §6.2 `derive_secrets`) and the key ID are `ring`'s, which D71 has
+  already. Rejected: HPKE on `ring` (its agreement API holds no static X25519 key and has no `DeriveKeyPair`: a
+  target could not keep a key), our own HPKE (a key schedule to keep right for no gain; the crate passes RFC 9180
+  Appendix A.1.1 here), the `odoh-rs` crate (D3: protocol code is ours; its code was read for the scheme only),
+  `aws-lc-rs` (a second native crypto library next to `ring`; not evaluated further).
+  - Configs: `ObliviousDoHConfigs::parse` keeps the configs of version 1 with that suite and skips the rest, as §5
+    tells clients, so its list may be empty and `encode` writes only what was kept. Every config is still checked
+    as a structure (a field past its config, an empty key, trailing bytes are errors), and a key of our suite that
+    is not 32 bytes is an error. The key ID (§6.1) is computed once, with the config.
+  - Messages: the bounds of §6.1 are checked when a message is built, so writing cannot fail. A plaintext holds
+    the padding as a length: non-zero padding cannot be built, and one received is refused (§7, §8), as are
+    trailing bytes and any message type but 1 and 2.
+  - Padding: the caller chooses it; `query_padding` and `response_padding` round the DNS message to 128 and 468
+    bytes (RFC 8467 §4.1, as D60 for DoH), as §11 tells implementations. Inside the encryption, so messages of
+    one block have one size on the wire (tested). The live target of Cloudflare answers without padding.
+  - Randomness comes in as an argument (`CryptoRng`), so tests replay RFC 9180's ephemeral key and odoh-go's
+    response nonces; a target key is derived from a secret the caller keeps (`DeriveKeyPair`), so no key
+    generation or storage lives here. A context of a query is consumed by its response.
+  - `ExchangeError::UnknownKey` is the 401 of §4.3 and every other failure of `decrypt_query` the 400. HTTP (the
+    media type, §4.1's ban on caching, discovery) belongs to `dedens-net`.
+  - Tests: RFC 9180 A.1.1, the vectors of `cloudflare/odoh-go` (the target side, byte for byte), the config
+    Cloudflare serves, and round trips (`tests/rfc9230.rs`); fuzz targets `parse_odoh_configs`,
+    `parse_odoh_message`, `odoh_decrypt`. A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
+    response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
+
 ## Presentation format
 
 - D25 Zone text (`dedens-proto::text`, RFC 1035 §5, RFC 2308 §4, RFC 3597 §5): own lexer, base64 and hex.

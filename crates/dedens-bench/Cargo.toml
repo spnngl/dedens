@@ -20,6 +20,8 @@ data-encoding.workspace = true
 dedens-cache.workspace = true
 dedens-dnssec.workspace = true
 dedens-net.workspace = true
+# The exchange of `benches/odoh.rs`.
+dedens-odoh.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
@@ -56,6 +58,10 @@ harness = false
 
 [[bench]]
 name = "dnssec"
+harness = false
+
+[[bench]]
+name = "odoh"
 harness = false
 
 [lints]
