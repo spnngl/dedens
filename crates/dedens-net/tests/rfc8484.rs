@@ -27,7 +27,7 @@ use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, RData, Rcode, RecordType};
 use futures_util::future::join_all;
-use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, DATE};
+use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE};
 use http::{Response, StatusCode, Version};
 
 /// The server of the RFC's examples.
@@ -128,6 +128,20 @@ fn s4_1_1_post_example() {
     );
     assert_eq!(request.body().len(), 33);
     assert_eq!(request.body(), &hex(WWW_QUERY));
+}
+
+/// A POST states its body's length: Cloudflare's HTTP/3 front end answers 405 to one without it (2026-11-01,
+/// `cloudflare-dns.com`; `content-length: 29` alone made it 200), where HTTP/2 clients always send it.
+#[test]
+fn s4_1_a_post_states_its_length() {
+    let request = request(&template(), &hex(WWW_QUERY), Method::Post).expect("a request");
+    assert_eq!(
+        request
+            .headers()
+            .get(CONTENT_LENGTH)
+            .expect("content length"),
+        "33"
+    );
 }
 
 /// §4.1.1: the third example, whose base64url differs from base64 by its alphabet and the padding it omits.
