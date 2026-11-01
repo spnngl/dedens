@@ -44,7 +44,7 @@ jobs:
       # The pinned stable and nightly, before rust-cache: its key includes the rustc version.
       - run: just toolchains
       # `just check` also builds fuzz/, a workspace of its own.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             . -> target
@@ -79,7 +79,7 @@ jobs:
           just-version: "1.59.0"
       # The pinned nightly also serves `-Z direct-minimal-versions`.
       - run: just toolchains
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.recipe }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
@@ -107,7 +107,7 @@ jobs:
           # renovate: datasource=github-releases depName=casey/just
           just-version: "1.59.0"
       - run: just toolchains
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
