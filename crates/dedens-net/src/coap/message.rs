@@ -195,7 +195,7 @@ impl fmt::Debug for Token {
 
 /// The number of an option (RFC 7252 §5.4.6, §5.10).
 ///
-/// The registered options of RFC 7252, RFC 7959 and RFC 8132 have a constant.
+/// The registered options of RFC 7252, RFC 7959, RFC 8132 and Request-Tag of RFC 9175 have a constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OptionNumber(pub u16);
 
@@ -236,6 +236,8 @@ impl OptionNumber {
     pub const PROXY_SCHEME: Self = Self(39);
     /// Size1, the size of a request body (RFC 7959 §4).
     pub const SIZE1: Self = Self(60);
+    /// Request-Tag, opaque of up to 8 bytes, repeatable: what the blocks of one request share (RFC 9175 §3.2).
+    pub const REQUEST_TAG: Self = Self(292);
 
     /// Whether a recipient that does not know the option must reject the message (RFC 7252 §5.4.1).
     #[must_use]
@@ -260,7 +262,7 @@ impl OptionNumber {
     pub const fn is_known(self) -> bool {
         matches!(
             self.0,
-            1 | 3 | 4 | 5 | 7 | 8 | 11 | 12 | 14 | 15 | 17 | 20 | 23 | 27 | 28 | 35 | 39 | 60
+            1 | 3 | 4 | 5 | 7 | 8 | 11 | 12 | 14 | 15 | 17 | 20 | 23 | 27 | 28 | 35 | 39 | 60 | 292
         )
     }
 }
@@ -423,6 +425,12 @@ impl Options {
         self.get(OptionNumber::BLOCK2)
             .map(Block::from_value)
             .transpose()
+    }
+
+    /// The value of the first Request-Tag option, empty if there is none (RFC 9175 §3.2).
+    #[must_use]
+    pub fn request_tag(&self) -> &[u8] {
+        self.get(OptionNumber::REQUEST_TAG).unwrap_or_default()
     }
 
     /// Sets the Block1 option.

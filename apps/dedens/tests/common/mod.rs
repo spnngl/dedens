@@ -349,7 +349,7 @@ impl Responder {
     /// ([`dedens_net::coap::doc`]), the same `dedensd` serves with. Any other path gets 4.04.
     pub(crate) fn coap(names: &[&str], path: &str) -> Self {
         use dedens_net::coap::Message;
-        use dedens_net::coap::doc::{error, path_segments, query, response};
+        use dedens_net::coap::doc::{Query, error, path_segments, query, response};
 
         let (canned, path) = (canned(names), path_segments(path));
         let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
@@ -366,7 +366,9 @@ impl Responder {
                 };
                 let reply = match query(&request, &path) {
                     Err(code) => error(&request, 1, code),
-                    Ok(dns) => {
+                    // Nothing is kept here for the blocks past the first.
+                    Ok(Query::Block) => error(&request, 1, dedens_net::coap::Code::BAD_REQUEST),
+                    Ok(Query::Dns(dns)) => {
                         queries
                             .lock()
                             .expect("unpoisoned")

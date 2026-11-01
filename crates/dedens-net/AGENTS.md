@@ -18,7 +18,7 @@ crate that touches sockets and timers.
   `parse_doh_template`, `server_request` and `read_doh_response`.
 - `src/coap/`: the sans-IO CoAP codec and exchanges of DoC (D80): `message.rs` (RFC 7252 messages, options, codes),
   `block.rs` (RFC 7959 Block options, reassembly, slicing), `exchange.rs` (client: retransmission, matching,
-  separate responses, block-wise transfers), `server.rs` (deduplication of confirmable requests), `doc.rs` (the
+  separate responses, block-wise transfers), `server.rs` (deduplication of confirmable requests, responses kept for the next blocks), `doc.rs` (the
   FETCH request of a query, the path of a `docpath`); no socket, no clock, no randomness; fuzzed by `parse_coap`.
 - `src/odoh.rs`, feature `odoh`: Oblivious DoH over `https.rs` (D79): the sans-IO requests, responses and target
   classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
