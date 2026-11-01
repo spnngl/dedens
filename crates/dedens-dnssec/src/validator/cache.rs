@@ -2,14 +2,15 @@
 //!
 //! It holds what [`Zone::lifetime`] lets it hold, written by `Validation::settle` and read by
 //! `Validation::zone_of`, and nothing else: secure keys, insecure zones and names that are no zone cut for the
-//! TTL of the proof, and a bogus zone for 60 s, none for more than a day. What a validation could not decide (a
-//! question left unanswered, a limit, the budget) never gets here.
+//! TTL of the proof, none for more than a day. A failure never gets here: not what a validation could not decide
+//! (a question left unanswered, a limit, the budget), nor a bogus zone, which whoever answers a DNSKEY question
+//! could make for every validation (D92).
 //!
 //! Time is the caller's: every call is given `now` in Unix seconds. An entry is a hit while
 //! `at <= now < at + ttl`; a `now` before `at`, the clock gone back, is a miss, so that no entry lives longer
 //! than its TTL.
 //!
-//! Three tables by kind, each with its own bounds in entries and bytes and its own least-recently-used order, so
+//! Two tables by kind, each with its own bounds in entries and bytes and its own least-recently-used order, so
 //! that an attacker's flood of cheap entries (names under a zone of its own, each with a proof of no DS) evicts
 //! entries of its kind and never the keys of the zones everyone asks about; and an entry of a weaker kind never
 //! replaces a live one of a stronger.
@@ -21,7 +22,6 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use dedens_proto::{Name, Ttl};
 
 use super::chain::{Settled, Zone};
-use super::verdict::Unusable;
 
 /// The longest an entry is kept, whatever its proof says: Unbound's `cache-max-ttl` (D86). A signature may be
 /// valid for months; a key rolled over or a DS removed should not wait for it.
@@ -42,8 +42,6 @@ const MAX_ENTRY_BYTES: usize = 16 * 1024;
 /// What an entry is, which sets the table it is in and what may replace it: from the weakest to the strongest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
-    /// A bogus zone: 60 s, from a failure anyone can cause.
-    Bogus,
     /// A name that is no zone cut, or an insecure zone: a proof anyone can replay while its signatures last.
     Names,
     /// The keys of a secure zone.
@@ -51,15 +49,13 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Self; 3] = [Self::Bogus, Self::Names, Self::Keys];
+    const ALL: [Self; 2] = [Self::Names, Self::Keys];
 
+    /// The kind of a `zone` with a [`Zone::lifetime`], the one gate of what is kept: keys, or names.
     const fn of(zone: &Zone) -> Self {
         match zone {
             Zone::Apex(Settled::Secure { .. }) => Self::Keys,
-            Zone::Inside { .. } | Zone::Apex(Settled::Unusable(Unusable::Insecure { .. })) => {
-                Self::Names
-            }
-            Zone::Apex(Settled::Unusable(Unusable::Failed(_))) | Zone::Beneath(_) => Self::Bogus,
+            _ => Self::Names,
         }
     }
 }
@@ -203,12 +199,11 @@ impl Table {
     }
 }
 
-/// The three tables.
+/// The two tables.
 #[derive(Debug)]
 struct Tables {
     keys: Table,
     names: Table,
-    bogus: Table,
 }
 
 impl Tables {
@@ -216,7 +211,6 @@ impl Tables {
         match kind {
             Kind::Keys => &mut self.keys,
             Kind::Names => &mut self.names,
-            Kind::Bogus => &mut self.bogus,
         }
     }
 }
@@ -241,8 +235,8 @@ impl fmt::Debug for KeyCache {
 }
 
 impl KeyCache {
-    /// An empty cache of at most `entries` in each of its tables, and `bytes` in all: half for keys, a quarter
-    /// each for names and bogus zones. 0 entries keeps nothing.
+    /// An empty cache of at most `entries` in each of its tables, and `bytes` in all: half for keys, half
+    /// for names. 0 entries keeps nothing.
     pub(super) fn new(entries: usize, bytes: usize) -> Self {
         let table = |share: usize| Table::new(entries, bytes / share);
         Self {
@@ -250,8 +244,7 @@ impl KeyCache {
             bytes,
             tables: Mutex::new(Tables {
                 keys: table(2),
-                names: table(4),
-                bogus: table(4),
+                names: table(2),
             }),
         }
     }
@@ -273,8 +266,8 @@ impl KeyCache {
 
     /// Keeps `zone`, learned of `name` at `now`, for [`Zone::lifetime`] and at most a day; what has no lifetime,
     /// or costs more than an entry may, is not kept, and nor is what a live entry of a stronger kind outranks:
-    /// keys over names and insecure zones over a bogus one, so that an answer that can be forged or replayed
-    /// never takes the place of the keys.
+    /// keys over names and insecure zones, so that an answer that can be replayed never takes the place of the
+    /// keys.
     pub(super) fn put(&self, name: &Name<'static>, zone: &Zone, now: u64) {
         let Some(ttl) = zone.lifetime().filter(|ttl| *ttl != Ttl::ZERO) else {
             return;
@@ -317,7 +310,7 @@ mod tests {
 
     use super::*;
     use crate::rrsig::RrSet;
-    use crate::validator::verdict::{Failure, InsecureReason};
+    use crate::validator::verdict::{Failure, InsecureReason, Unusable};
 
     fn name(text: &str) -> Name<'static> {
         text.parse().expect("a name")
@@ -370,6 +363,13 @@ mod tests {
         ))))
     }
 
+    fn indeterminate() -> Zone {
+        Zone::Apex(Settled::Unusable(Unusable::Failed(Failure::indeterminate(
+            InfoCode::DNSSEC_INDETERMINATE,
+            "indeterminate",
+        ))))
+    }
+
     fn is_keys(cache: &KeyCache, name: &Name<'static>, now: u64) -> bool {
         matches!(
             cache.get(name, now),
@@ -386,11 +386,27 @@ mod tests {
             // The longest TTLs an attacker can have, to outlast anything.
             cache.put(&name(&format!("n{index}.evil")), &inside(10_800), 1000);
             cache.put(&name(&format!("i{index}.evil")), &insecure(10_800), 1000);
-            cache.put(&name(&format!("b{index}.evil")), &bogus(), 1000);
         }
         assert!(is_keys(&cache, &hot, 1100));
+        assert!(cache.lock().names.slots.len() <= 64);
+    }
+
+    #[test]
+    fn a_failure_is_never_kept() {
+        // D92: a bogus zone is whatever the last answerer made of it, so the next walk asks again.
+        let cache = KeyCache::new(64, 1 << 20);
+        let zone = name("zone");
+        for failed in [bogus(), indeterminate()] {
+            cache.put(&zone, &failed, 1000);
+            assert!(cache.get(&zone, 1000).is_none());
+        }
+        let beneath = Zone::Beneath(Unusable::Failed(Failure::bogus(
+            InfoCode::DNSSEC_BOGUS,
+            "bogus",
+        )));
+        cache.put(&name("below.zone"), &beneath, 1000);
         let tables = cache.lock();
-        assert!(tables.names.slots.len() <= 64 && tables.bogus.slots.len() <= 64);
+        assert!(tables.keys.slots.is_empty() && tables.names.slots.is_empty());
     }
 
     #[test]
@@ -434,7 +450,7 @@ mod tests {
         let cache = KeyCache::new(8, 1 << 20);
         let zone = name("zone");
         cache.put(&zone, &keys("zone", 1, 300), 0);
-        for weaker in [bogus(), insecure(300), inside(300)] {
+        for weaker in [insecure(300), inside(300)] {
             cache.put(&zone, &weaker, 10);
             assert!(is_keys(&cache, &zone, 11));
         }
@@ -447,14 +463,6 @@ mod tests {
         cache.put(&zone, &keys("zone", 1, 300), 301);
         assert!(is_keys(&cache, &zone, 302));
         assert_eq!(cache.lock().names.slots.len(), 0);
-        // A bogus zone gives way to a proof of insecurity.
-        let other = name("other");
-        cache.put(&other, &bogus(), 0);
-        cache.put(&other, &insecure(300), 1);
-        assert!(!matches!(
-            cache.get(&other, 2),
-            Some(Zone::Apex(Settled::Unusable(Unusable::Failed(_))))
-        ));
     }
 
     #[test]

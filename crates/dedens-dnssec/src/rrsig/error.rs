@@ -117,15 +117,6 @@ impl SigError {
         )
     }
 
-    /// Whether the error is a fact about the keys that a caller may remember (D86): no DNSKEY is the one a DS
-    /// record digests, or a signature of a key that DS vouches for does not check. Not an absence (no RRSIG, no
-    /// key of a tag), a clock's verdict (expired, not yet valid: a replay says so too) or a limit: any answer
-    /// can lack or repeat those, and none proves the zone's keys wrong.
-    #[must_use]
-    pub(crate) const fn is_proven(&self) -> bool {
-        matches!(self, Self::NoKeyForDs | Self::BadSignature { .. })
-    }
-
     /// The Extended DNS Error for `rrset`: the code of RFC 8914 §4 and a text naming the `RRset` and the key tag.
     #[must_use]
     pub fn ede(&self, rrset: &RrSet<'_>) -> ExtendedError<'static> {

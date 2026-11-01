@@ -32,10 +32,11 @@
 //! owner, never to the signer the RRSIGs name, which a forger writes: an `RRset` is authentic when a key of the
 //! zone of its owner verifies it. The price is one DS question for each label below the last zone, that the cache
 //! of keys pays once (D86). The outcome for each zone is written by one private function, `settle`, and read
-//! by one other, `zone_of`; an outcome that depends on the caller (indeterminate) is never written. The cache is
+//! by one other, `zone_of`; a failure (bogus, or indeterminate) is never written to the cache. The cache is
 //! the validator's, shared by all its validations, which is why anchors and limits are fixed for a validator:
 //! change them by building another, and its cache starts empty. What goes in is only what the data decided: keys
-//! and proofs that verified, for the TTL they carry, and a bogus zone for 60 s.
+//! and proofs that verified, for the TTL they carry, never a bogus zone: whoever answers a DNSKEY question could
+//! make one for every validation (D92), so the next validation walks it again.
 //!
 //! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
 //! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
@@ -55,7 +56,7 @@ mod response;
 mod section;
 mod verdict;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
@@ -90,13 +91,13 @@ pub struct Limits {
     pub budget: Budget,
     /// The NSEC3 iterations above which a zone's denials are insecure (RFC 9276 §3.2, D74).
     pub iterations: MaxIterations,
-    /// Entries of the validator's key cache, in each of its three tables, keys of secure zones, names and
-    /// insecure zones, and bogus zones: 4096 (D86). Full, a table drops its least recently used entry. 0 turns
-    /// the cache off.
+    /// Entries of the validator's key cache, in each of its two tables, keys of secure zones, and names and
+    /// insecure zones: 4096 (D86, D92). Full, a table drops its least recently used entry. 0 turns the cache
+    /// off.
     pub key_cache: usize,
     /// Bytes of the validator's key cache, all tables: 4 MiB, Unbound's `key-cache-size` (D86). Half is for
-    /// keys, a quarter for names and insecure zones and a quarter for bogus zones, so that none of them can
-    /// push out another. A set of keys of more than 16 KiB is never kept.
+    /// keys and half for names and insecure zones, so that neither can push out the other. A set of keys of more
+    /// than 16 KiB is never kept.
     pub key_cache_bytes: usize,
 }
 
@@ -206,7 +207,6 @@ impl Validator {
             now: u32::from_be_bytes([a, b, c, d]),
             at: now,
             answers: HashMap::new(),
-            seeded: HashSet::new(),
             asked: 0,
             pending: None,
             budget: self.config.limits.budget.clone(),
@@ -316,9 +316,6 @@ pub struct Validation {
     now: u32,
     /// The time as given, in Unix seconds: the key cache's.
     at: u64,
-    /// The questions the response `start` was given answers: given before the walk asked anything, so the
-    /// caller's, whatever it was fetched with, and no proof of what is bogus (D86).
-    seeded: HashSet<(Name<'static>, RecordType)>,
     /// The responses given, by question; `None` for a question that got none.
     answers: HashMap<(Name<'static>, RecordType), Option<Arc<Message<'static>>>>,
     asked: usize,
@@ -334,8 +331,7 @@ impl Validation {
     /// Takes the response `start` was given as the answer to `name` and `rtype`.
     fn seed(&mut self, name: Name<'static>, rtype: RecordType) {
         self.answers
-            .insert((name.clone(), rtype), Some(Arc::clone(&self.response)));
-        self.seeded.insert((name, rtype));
+            .insert((name, rtype), Some(Arc::clone(&self.response)));
     }
 
     /// What the validation has cost so far.

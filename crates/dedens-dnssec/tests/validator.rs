@@ -1577,24 +1577,47 @@ fn an_exhausted_budget_is_never_kept_and_the_verified_part_is() {
 }
 
 #[test]
-fn a_bogus_zone_is_held_sixty_seconds_and_not_renewed_by_being_read() {
-    // `rhybar.cz`: the DS matches none of its keys, and `cz` is sound.
+fn a_bogus_zone_is_never_kept() {
+    // `rhybar.cz`: the DS matches none of its keys, and `cz` is sound (D92).
     let (script, validator) = cached();
     let at = captured_at();
     let (first, asked) = drive_capture(&script, &validator, "bogus_expired", at);
     assert!(bogus(&first, InfoCode::DNSKEY_MISSING), "{first:?}");
     assert_ne!(asked.len(), 0);
-    let (again, asked) = drive_capture(&script, &validator, "bogus_expired", at + 59);
-    assert_eq!(again, first);
-    assert_eq!(asked, Vec::<String>::new());
-    // The read at 59 s did not renew it.
-    let (again, asked) = drive_capture(&script, &validator, "bogus_expired", at + 60);
-    assert!(bogus(&again, InfoCode::DNSKEY_MISSING), "{again:?}");
-    assert_eq!(asked.len(), 2, "{asked:?}");
-    // The sound zones around it do not suffer, and what is not asked is the keys of `cz`.
+    // Each validation after it walks the zone again: its DS and its DNSKEY, the keys of `cz` being kept.
+    for later in [at, at + 1, at + 60] {
+        let (again, asked) = drive_capture(&script, &validator, "bogus_expired", later);
+        assert!(bogus(&again, InfoCode::DNSKEY_MISSING), "{again:?}");
+        assert_eq!(asked, ["rhybar.cz. DS", "rhybar.cz. DNSKEY"]);
+    }
+    // The sound zones around it do not suffer, and what is not asked is the keys of the root.
     let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 61);
     assert!(secure(&verdict), "{verdict:?}");
     assert!(!asked.contains(&". DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn the_cost_limits_still_bound_a_validation_under_a_bogus_zone() {
+    // Each validation under a zone that is bogus to everyone repeats the failed walk (D92): its DS and its
+    // DNSKEY, one signature check, the same every time and far from the limits of one validation.
+    let (script, validator) = cached();
+    // The first fills the cache with the keys of `cz`, which the others find.
+    drive_capture(&script, &validator, "bogus_expired", captured_at());
+    let response = capture("bogus_expired");
+    let question = response.questions.first().expect("a question").clone();
+    for _ in 0..5 {
+        let mut validation = validator.start(&question, &response, u64::from(captured_at()));
+        let verdict = loop {
+            match validation.step() {
+                Next::Ask(ask) => validation.answer(script.answer(&ask)),
+                Next::Done(verdict) => break verdict,
+            }
+        };
+        assert!(bogus(&verdict, InfoCode::DNSKEY_MISSING), "{verdict:?}");
+        let cost = validation.cost();
+        assert_eq!((cost.questions, cost.verifications), (2, 1), "{cost:?}");
+        assert!(cost.questions < Limits::default().questions, "{cost:?}");
+    }
 }
 
 #[test]
@@ -1665,7 +1688,7 @@ fn bad_signature_of_nl_keys() -> Message<'static> {
 #[test]
 fn a_dnskey_answer_without_signatures_given_to_start_is_never_kept() {
     // `start` takes its response as the answer to its own question: a DNSKEY answer fetched without DO is no
-    // proof about `nl`, and must not make `nl` bogus for the validations after it (D86).
+    // proof about `nl`, and must not make `nl` bogus for the validations after it (D86, D92).
     let (script, validator) = cached();
     let mut seeded = capture("nl_dnskey");
     seeded
@@ -1693,7 +1716,7 @@ fn a_dnskey_answer_that_fails_given_to_start_is_never_kept() {
 #[test]
 fn a_dnskey_answer_that_proves_nothing_is_never_kept() {
     // An empty answer, a lame server or a replay says nothing lasting of the zone: bogus for this validation,
-    // asked again by the next (D86).
+    // asked again by the next (D86, D92).
     let (script, validator) = cached();
     let mut empty = capture("nl_dnskey");
     empty.answer.clear();
@@ -1721,7 +1744,9 @@ fn a_dnskey_answer_that_proves_nothing_is_never_kept() {
 }
 
 #[test]
-fn a_signature_that_fails_under_the_keys_a_ds_names_is_held_sixty_seconds() {
+fn a_failure_an_answerer_can_force_is_the_validation_it_lied_to_and_no_other() {
+    // A signature that fails under the key the DS names, the failure an answerer can force on a sound zone:
+    // bogus for the validation it lied to, and for no other, so secure once it stops lying (D92).
     let (script, validator) = cached();
     let at = captured_at();
     let forged = bad_signature_of_nl_keys();
@@ -1732,10 +1757,7 @@ fn a_signature_that_fails_under_the_keys_a_ds_names_is_held_sixty_seconds() {
         with_nl_keys(&script, &forged),
     );
     assert!(matches!(first, Verdict::Bogus { .. }), "{first:?}");
-    let (again, asked) = drive_capture(&script, &validator, "alg8_a", at + 59);
-    assert_eq!(again, first);
-    assert_eq!(asked, Vec::<String>::new());
-    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 60);
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at);
     assert!(secure(&verdict), "{verdict:?}");
     assert!(asked.contains(&"nl. DNSKEY".to_owned()), "{asked:?}");
 }
