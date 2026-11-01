@@ -35,7 +35,7 @@ use dedens_proto::name::{Name, NameError};
 use dedens_proto::rdata::TypeBitmap;
 use dedens_proto::record::{Record, Ttl};
 
-use crate::crypto::{Budget, BudgetExhausted, UnsupportedNsec3Hash};
+use crate::crypto::{Budget, BudgetExhausted};
 
 /// What a set of records proves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,9 +123,6 @@ pub enum Unproven {
     /// The hashes of the proof would cost more than the budget has left (D71); the caller picks the verdict.
     #[error(transparent)]
     Budget(#[from] BudgetExhausted),
-    /// An NSEC3 hash algorithm [`crate::crypto::nsec3_hash`] does not do.
-    #[error(transparent)]
-    UnsupportedHash(#[from] UnsupportedNsec3Hash),
     /// A name the proof builds is not a valid name.
     #[error(transparent)]
     Name(#[from] NameError),

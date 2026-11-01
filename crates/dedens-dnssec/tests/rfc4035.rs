@@ -191,7 +191,7 @@ fn the_budget_of_the_whole_validation_stops_the_checks() {
     let (a, sigs, keys) = keytrap();
     let mut budget = Budget::new(
         dedens_dnssec::crypto::Verifications(3),
-        Budget::DEFAULT_NSEC3_HASHES,
+        Budget::DEFAULT_NSEC3_BLOCKS,
     );
     let result = rrsig::verify_any(
         &a,

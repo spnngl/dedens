@@ -243,13 +243,19 @@ Microseconds unless stated.
 | Verify Ed25519 (15) | 19.6 |
 | DS digest SHA-1 / SHA-256 / SHA-384, ns | 334 / 125 / 173 |
 | NSEC3 hash at 0 / 12 / 150 iterations | 0.11 / 1.2 / 13.6 |
+| NSEC3 hash at 150 iterations, salt of 0 / 64 / 255 octets (151 / 302 / 755 SHA-1 blocks) | 14.9 / 27.0 / 61.6 |
 
 RSA with a public exponent of 65537 is the cheapest to check and P-384 the dearest, 17 times Ed25519's cost.
-`Budget`'s defaults come from the worst: 64 verifications of P-384 are 22 ms, and 8192 NSEC3 hashes (about 90 ns
-each) 0.75 ms. A validation of a name five zones deep verifies about 20 signatures, and the denial proof of a
-name ten labels deep hashes about a dozen names, 1800 hashes at 150 iterations. Without a cap, a response that
-makes the validator check every signature against every key of one tag (KeyTrap, CVE-2023-50387) costs it
-seconds.
+`Budget`'s defaults come from the worst: 64 verifications of P-384 are 22 ms, and 8192 SHA-1 blocks of NSEC3
+hashing 0.8 ms. The budget counts blocks, not hashes (D106). A block takes 99 / 89 / 82 ns at a salt of 0 / 64 /
+255 octets (the medians above over the blocks; the fastest of 2000 samples, which repeats to 1% across runs, gives
+93 / 86 / 77 ns): above the 90 ns the defaults were sized with at no salt, below it with a long one, as each hash has
+a fixed part a block has not. So a long salt is charged at least what it costs. The medians are the
+lowest of six runs on a machine at a load of 48 (other jobs running), the others of an earlier, quieter one: read
+the ratios, not the digits. A validation of a name five zones deep verifies about 20 signatures, and the denial
+proof of a name ten labels deep hashes about a dozen names, 1800 blocks at 150 iterations and no salt. Without a
+cap, a response that makes the validator check every signature against every key of one tag (KeyTrap,
+CVE-2023-50387) costs it seconds.
 
 ## Oblivious DoH (D78)
 

@@ -106,7 +106,7 @@ impl Default for Limits {
         Self {
             questions: 64,
             depth: 127,
-            budget: Budget::new(Verifications(128), Budget::DEFAULT_NSEC3_HASHES),
+            budget: Budget::new(Verifications(128), Budget::DEFAULT_NSEC3_BLOCKS),
             iterations: MaxIterations::default(),
             key_cache: 4096,
             key_cache_bytes: 4 << 20,
@@ -271,8 +271,9 @@ pub struct Cost {
     pub questions: usize,
     /// Signature verifications done.
     pub verifications: u32,
-    /// NSEC3 hashes computed (SHA-1 computations: `iterations + 1` for each name).
-    pub nsec3_hashes: u32,
+    /// SHA-1 blocks of NSEC3 hashing computed (D106): one per iteration for a short name and no salt, more for a
+    /// longer name or a salt (RFC 5155 §5).
+    pub nsec3_blocks: u32,
 }
 
 /// What a [`Validation`] wants next.
@@ -344,10 +345,10 @@ impl Validation {
                 .verifications_left()
                 .0
                 .saturating_sub(self.budget.verifications_left().0),
-            nsec3_hashes: start
-                .nsec3_hashes_left()
+            nsec3_blocks: start
+                .nsec3_blocks_left()
                 .0
-                .saturating_sub(self.budget.nsec3_hashes_left().0),
+                .saturating_sub(self.budget.nsec3_blocks_left().0),
         }
     }
 

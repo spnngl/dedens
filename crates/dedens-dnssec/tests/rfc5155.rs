@@ -7,9 +7,11 @@ mod support;
 
 use common::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, name, signed_data};
 use data_encoding::BASE32HEX_NOPAD;
-use dedens_dnssec::crypto::{UnsupportedNsec3Hash, VerifyError, key_tag, nsec3_hash, verify};
-use dedens_dnssec::denial::{Fact, Proof, Unproven};
-use dedens_proto::{Nsec3HashAlgorithm, Record, RecordType, SecAlgorithm, Ttl};
+use dedens_dnssec::crypto::{
+    Budget, UnsupportedNsec3Hash, VerifyError, key_tag, nsec3_hash, verify,
+};
+use dedens_dnssec::denial::{self, Fact, MaxIterations, Proof, Unproven};
+use dedens_proto::{Nsec3HashAlgorithm, Question, Record, RecordType, SecAlgorithm, Ttl};
 use support::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard, zone};
 
 const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
@@ -440,4 +442,36 @@ fn a_ds_question_under_opt_out_is_an_insecure_delegation() {
     let closed = prove(APEX, "a.c.x.w.example.", RecordType::DS, &closed).expect("a proof");
     assert_eq!(closed.fact, NAME_ERROR);
     assert!(!closed.opt_out);
+}
+
+/// §5: each of the `iterations + 1` hashes is SHA-1 of its input and the salt, and a SHA-1 block holds 55 octets
+/// of message: a salt of 255 octets makes each one 5 blocks, where no salt makes it 1. The `Budget` counts
+/// blocks (D106), so the proof of `a.c.x.w.example.` (5 hashes at 150 iterations) costs 5 times as much with the
+/// long salt. Derived: Appendix A's records, their iterations and salt rewritten (the hashes no longer match, so
+/// the proof ends at the closest encloser).
+#[test]
+fn a_long_salt_costs_the_blocks_it_makes() {
+    let spent = |salt: &[u8]| {
+        let records: Vec<_> = nsec3s(&[EXAMPLE, X_W, A])
+            .iter()
+            .map(|r| nsec3_salted(&nsec3_with(r, Nsec3HashAlgorithm::SHA1, 0, 150), salt))
+            .collect();
+        let mut budget = Budget::default();
+        let before = budget.nsec3_blocks_left().0;
+        let question = Question::new(name("a.c.x.w.example."), RecordType::A);
+        let proof = denial::prove(
+            &name(APEX),
+            &question,
+            &records,
+            MaxIterations::default(),
+            &mut budget,
+        );
+        assert_eq!(proof, Err(Unproven::NoClosestEncloser));
+        before - budget.nsec3_blocks_left().0
+    };
+    let none = spent(&[]);
+    let long = spent(&[0x5a; 255]);
+    assert_eq!(none, 5 * 151);
+    assert_eq!(long, 5 * (5 + 150 * 5));
+    assert!(long >= 4 * none, "{long} against {none}");
 }

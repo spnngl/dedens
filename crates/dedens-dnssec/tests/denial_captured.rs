@@ -206,13 +206,14 @@ fn wildcard_expansion_is_proven() {
     assert!(!proof.opt_out);
 }
 
-/// The proof of one capture needs about one hash per label of the name, three at most beside the question's.
+/// The proof of one capture needs about one hash per label of the name, three at most beside the question's: a few
+/// SHA-1 blocks, as many as the iterations make of each.
 #[test]
 fn proofs_cost_a_few_hashes() {
     let message = capture("nxdomain_nsec3_iterations");
     let question = &message.questions[0];
     let mut budget = Budget::default();
-    let before = budget.nsec3_hashes_left();
+    let before = budget.nsec3_blocks_left();
     denial::prove(
         &apex(&message),
         question,
@@ -221,7 +222,7 @@ fn proofs_cost_a_few_hashes() {
         &mut budget,
     )
     .expect("a proof");
-    let spent = before.0 - budget.nsec3_hashes_left().0;
-    // One iteration: two rounds per hash; the name, its parent, the closest encloser's wildcard.
+    let spent = before.0 - budget.nsec3_blocks_left().0;
+    // One iteration: two blocks per hash; the name, its parent, the closest encloser's wildcard.
     assert!(spent > 0 && spent <= 3 * 2 * 3, "{spent}");
 }
