@@ -360,9 +360,11 @@ impl Pipeline {
     }
 
     /// Takes the server's `response` to `upstream`, received at `now` and matched to the request by the transport
-    /// (`dedens_net` checks its ID and question), or `None` when none came. A usable one is stored in the cache
-    /// stage before, if any, and is the reply, written into `out` as [`Pipeline::query`] writes; otherwise the
-    /// next server is asked. After the last, the failure is held in the cache, and the reply is the expired data it
+    /// (`dedens_net` checks its ID, which only it knows), or `None` when none came. A usable one is stored in the
+    /// cache stage before, if any, and is the reply, written into `out` as [`Pipeline::query`] writes; otherwise
+    /// the next server is asked, as for none. Not usable is a response that is no response to the question sent
+    /// (D111): QR clear, an opcode other than QUERY, or another question, its name compared in any case (RFC 5452
+    /// §9.1, RFC 4343 §4); the checks of the transport are not relied on. After the last, the failure is held in the cache, and the reply is the expired data it
     /// keeps, or SERVFAIL (D41, D43). Returns [`Step::Reply`], [`Step::Drop`] or [`Step::Upstream`]; a refresh,
     /// or a query whose client [`Pipeline::stale`] answered, ends in [`Step::Drop`].
     ///
@@ -397,9 +399,16 @@ impl Pipeline {
             purpose,
             now,
         };
+        // The question this server was sent: the validator's while one is upstream, else the client's. A response
+        // to another is as none (D111).
+        let asked = upstream
+            .check
+            .as_deref()
+            .map(Check::asking)
+            .or_else(|| query.question());
         let decoded = response
             .and_then(|wire| Message::decode(wire).ok())
-            .filter(forward::usable);
+            .filter(|decoded| asked.is_some_and(|asked| forward::usable(decoded, asked)));
         if let Some(validating) = forward.and_then(Forward::validation) {
             // The next question of the validator's, or its verdict: a response to a question of its own is
             // untrusted input to it, and none is an answer too.

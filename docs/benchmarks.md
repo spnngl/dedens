@@ -111,6 +111,9 @@ removed `MessageView` read every record in 178/505/1093 ns.
   when the query goes upstream, then copied by `Client::exchange`, 17 allocations → built for each server and
   taken by `Client::exchange`, 15; a/mx/txt_large 0.62/1.09-1.17/1.67-1.75 → 0.63/1.10-1.13/1.71-1.80 µs
   (fastest of 5000 samples, before and after alternated, same session; medians 0.71-0.75 → 0.71 µs).
+  `Pipeline::receive` checking QR, opcode and question of the response (D111), on the message it decodes anyway:
+  a/mx/txt_large 0.71/1.26/2.00 µs before, 0.72/1.25/1.88 and 0.67/1.30/1.92 µs after (fastest of 100 samples,
+  before between two runs after, same session), 15 allocations before and after: within noise.
 - `plugin` (D54): a plugin stage answering two A records it holds, into a 1232-byte buffer: the reply built
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
