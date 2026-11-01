@@ -6,6 +6,6 @@ cloudflare.com. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
 answer
   cloudflare.com.  5m  A      104.16.132.229
                        A      104.16.133.229
-                       RRSIG  A 13 2 300 20261102121044 20261031101044 34505 cloudflare.com. 8qV8fGMYDUY8IUgJTevrxFxQ+QbHr0KSZuR4n2vBdJ3HqspUUjKAOFvVYvTjWq/CIOUEBfJjHvvJOBIkRApusg==
+                       RRSIG  A 13 2 300 20261102174735 20261031154735 34505 cloudflare.com. KdP4qK6T+Hvax9fNQpnapquxVaQXnidR0rdOESX4S5HXKUBSiUS8PxENlur5lAgjoa/dnoLSQzKF8GwNgBPYQg==
 checking disabled · EDNS 1232 bytes · DNSSEC OK · 55/185 bytes
 dnssec secure

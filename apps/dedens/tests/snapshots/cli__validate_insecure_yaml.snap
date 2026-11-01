@@ -26,10 +26,10 @@ question:
   type: A
 answer:
 - name: google.com.
-  ttl: 156
+  ttl: 152
   class: IN
   type: A
-  data: "172.217.18.110"
+  data: "142.251.209.110"
 edns:
   payload: 1232
   flags:

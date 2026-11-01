@@ -182,6 +182,9 @@ const SECURE: &[&str] = &[
     "ent_nsec3",
     "wildcard_answer",
     "wildcard_nodata",
+    "wildcard_answer_nsec",
+    "wildcard_nodata_nsec",
+    "synthesized_nist_gov_txt",
     "cname_cross_zone",
     "cname_deep_zone",
     "dname_rr",
@@ -338,6 +341,13 @@ const INSECURE: &[(&str, InsecureReason)] = &[
     ("nxdomain_nsec3_salt", InsecureReason::OptOut),
     ("google_com_ds", InsecureReason::OptOut),
     ("google_com_a", InsecureReason::OptOut),
+    ("leaf_nxdomain_com_ds", InsecureReason::OptOut),
+    ("leaf_nxdomain_org_ds", InsecureReason::OptOut),
+    ("wildcard_answer_optout", InsecureReason::OptOut),
+    ("wildcard_answer_optout_ws", InsecureReason::OptOut),
+    ("wildcard_nodata_optout", InsecureReason::OptOut),
+    ("leaf_wildcard_ph_ds", InsecureReason::OptOut),
+    ("leaf_wildcard_ws_ds", InsecureReason::OptOut),
     ("edgekey_net_ds", InsecureReason::OptOut),
     ("akamaiedge_net_ds", InsecureReason::OptOut),
     ("cname_to_insecure", InsecureReason::OptOut),
@@ -546,10 +556,12 @@ fn an_unsigned_answer_below_a_secure_zone_is_bogus() {
 fn a_wildcard_answer_without_its_proof_is_bogus() {
     // RFC 4035 §5.3.4: the signature alone does not say that no closer name exists.
     let script = Script::new();
-    let mut response = capture("wildcard_answer");
-    response.authority.clear();
-    let verdict = script.run(&Script::validator(), &response, captured_at());
-    assert!(bogus(&verdict, InfoCode::NSEC_MISSING), "{verdict:?}");
+    for id in ["wildcard_answer", "wildcard_answer_nsec"] {
+        let mut response = capture(id);
+        response.authority.clear();
+        let verdict = script.run(&Script::validator(), &response, captured_at());
+        assert!(bogus(&verdict, InfoCode::NSEC_MISSING), "{id}: {verdict:?}");
+    }
 }
 
 #[test]
@@ -576,6 +588,17 @@ fn a_name_error_in_a_noerror_response_is_bogus() {
 fn a_no_data_in_an_nxdomain_response_is_bogus() {
     let script = Script::new();
     let mut response = capture("nodata_nsec");
+    response.header.rcode = Rcode::NXDOMAIN;
+    let verdict = script.run(&Script::validator(), &response, captured_at());
+    assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+}
+
+/// An insecure delegation proven by NSEC says the name is there: NXDOMAIN is a lie. Under an opt-out span the proof
+/// does not say, and the DS of a name that does not exist is an NXDOMAIN (`leaf_nxdomain_com_ds`, insecure).
+#[test]
+fn an_insecure_delegation_in_an_nxdomain_response_is_bogus_unless_it_is_opt_out() {
+    let script = Script::new();
+    let mut response = capture("jm_ds");
     response.header.rcode = Rcode::NXDOMAIN;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
@@ -1301,6 +1324,7 @@ fn the_walk_asks_the_ds_of_an_empty_non_terminal_a_cname_and_a_wildcard() {
         ("ent_nsec", "_tcp.nlnetlabs.nl. DS"),
         ("cname_cross_zone", "www.icann.org. DS"),
         ("wildcard_answer", "wildcard-test.sidnlabs.nl. DS"),
+        ("wildcard_answer_nsec", "wildcard-test.internet.nl. DS"),
     ] {
         let (verdict, asked) =
             Script::drive(&Script::validator(), &capture(id), captured_at(), |ask| {

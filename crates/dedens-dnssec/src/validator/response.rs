@@ -479,8 +479,11 @@ impl Validation {
         };
         let consistent = match proof.fact {
             Fact::NameError { compact } => compact || rcode == Rcode::NXDOMAIN,
-            Fact::NoData | Fact::WildcardNoData | Fact::InsecureDelegation => {
-                rcode == Rcode::NOERROR
+            Fact::NoData | Fact::WildcardNoData => rcode == Rcode::NOERROR,
+            // The DS of a name that does not exist, under an opt-out span: the proof is the closest provable
+            // encloser's, as for a name error (RFC 5155 §7.2.2, §8.6), and a server answers NXDOMAIN.
+            Fact::InsecureDelegation => {
+                rcode == Rcode::NOERROR || (proof.opt_out && rcode == Rcode::NXDOMAIN)
             }
             _ => false,
         };
