@@ -118,3 +118,16 @@ fn the_data_of_a_bogus_response_answers_clients_that_disabled_checking() {
     let (found, _) = lookup(&cache, &query, T0 + 61, StalePolicy::Always);
     assert!(!matches!(found, Lookup::Hit(_)), "{found:?}");
 }
+
+/// RFC 8767 §4: expired data answers without the signatures' time to vouch for it: a secure entry served stale
+/// has no AD, whatever the client asked.
+#[test]
+fn a_secure_response_served_stale_has_no_ad() {
+    let cache = small_cache();
+    store(&cache, false, Checked::Secure);
+    let query = query_with(2, "www.example", RecordType::A, Flags::RD | Flags::AD, true);
+    let (found, served) = lookup(&cache, &query, T0 + 3601, StalePolicy::Always);
+    assert!(matches!(found, Lookup::Hit(_)), "{found:?}");
+    let served = served.expect("a served response");
+    assert!(!served.header.flags.contains(Flags::AD));
+}

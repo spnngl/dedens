@@ -198,7 +198,12 @@ impl Cache {
                 end = end.saturating_sub(Self::STALE_ROOM);
             }
             let checked = response.checked();
-            let served = response.serve(query, ttl, &mut out[..end]);
+            let served = response.serve(
+                query,
+                ttl,
+                matches!(freshness, Freshness::Stale),
+                &mut out[..end],
+            );
             let large = served.is_none().then(|| response.share());
             if used {
                 entry.hit();
@@ -214,7 +219,14 @@ impl Cache {
             (freshness, ttl, large, checked)
         };
         // Too large for the client: the slow path, outside the lock.
-        match large.and_then(|large| large.serve_truncated(query, ttl, &mut out[..end])) {
+        match large.and_then(|large| {
+            large.serve_truncated(
+                query,
+                ttl,
+                matches!(freshness, Freshness::Stale),
+                &mut out[..end],
+            )
+        }) {
             Some(encoded) => Lookup::Hit(Hit {
                 len: encoded.len,
                 freshness,

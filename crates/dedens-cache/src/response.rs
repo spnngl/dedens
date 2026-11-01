@@ -173,13 +173,19 @@ impl Response {
         self.expires.saturating_sub(now).min(self.ttl)
     }
 
-    /// Copies the response into `out` patched for `query`, every record with TTL `ttl`; `None` when it does not
-    /// fit.
-    pub(crate) fn serve(&self, query: &Query<'_>, ttl: u32, out: &mut [u8]) -> Option<usize> {
+    /// Copies the response into `out` patched for `query`, every record with TTL `ttl`, `stale` if it expired;
+    /// `None` when it does not fit.
+    pub(crate) fn serve(
+        &self,
+        query: &Query<'_>,
+        ttl: u32,
+        stale: bool,
+        out: &mut [u8],
+    ) -> Option<usize> {
         let wire = self.shared.wire();
         let out = out.get_mut(..wire.len())?;
         out.copy_from_slice(wire);
-        self.shared.patch(out, query, ttl);
+        self.shared.patch(out, query, ttl, stale);
         Some(out.len())
     }
 
@@ -204,9 +210,14 @@ impl Shared {
         &self.bytes[..usize::from(self.wire)]
     }
 
-    /// Sets the ID, flags and question case of `query`, and TTL `ttl`, in `out`, a copy of the response.
-    fn patch(&self, out: &mut [u8], query: &Query<'_>, ttl: u32) {
-        patch(out, query, self.checked);
+    /// Sets the ID, flags and question case of `query`, and TTL `ttl`, in `out`, a copy of the response. A secure
+    /// one that is `stale` is no longer vouched for: AD is clear (D77).
+    fn patch(&self, out: &mut [u8], query: &Query<'_>, ttl: u32, stale: bool) {
+        let checked = match self.checked {
+            Checked::Secure if stale => Checked::Insecure,
+            checked => checked,
+        };
+        patch(out, query, checked);
         set_ttls(out, ttl, offsets_in(&self.bytes[usize::from(self.wire)..]));
     }
 
@@ -216,10 +227,11 @@ impl Shared {
         &self,
         query: &Query<'_>,
         ttl: u32,
+        stale: bool,
         out: &mut [u8],
     ) -> Option<message::Encoded> {
         let mut full = self.wire().to_vec();
-        self.patch(&mut full, query, ttl);
+        self.patch(&mut full, query, ttl, stale);
         let decoded = Message::decode(&full).ok()?;
         decoded.message.encode_truncated(out).ok()
     }
