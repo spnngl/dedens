@@ -290,7 +290,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (TODECIDE), so one client can spend what all share. A hit in the cache stage costs no unit, a client with CD
   none; a warm validation (D86) two. Measured: `serve_shed` 0.11 µs, `serve_warm` 6.2 µs, `serve_cold` 110 µs, no
   slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/limits.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
-  in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
+  in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came, for at most `max_insecure_ttl` (D93). `Bogus`: SERVFAIL with the EDE code
   (RFC 8914; the code only: the OPT of a reply carries no text), and the response cached for `Config::bogus_ttl`
   (60 s, Unbound's `val-bogus-ttl`; RFC 4035 §4.7: small, assigned), never served stale; a hit answers
   SERVFAIL+EDE without validating, a client with CD gets the data (RFC 4035 §3.2.2: the cache stores it under the CD
@@ -1370,6 +1370,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   per-address connection cap in `dedensd`. RRL (response rate limiting, a defence against reflection) belongs to
   the authoritative phase, where the server answers from its own data; a stub or forwarder has nothing to
   amplify. The client's address enters the pipeline only for the allow and block lists (`docs/TODECIDE.md`).
+- D93 (amends D77) An answer a validating stage proved insecure is cached a day at most, as keys are (D86), not for
+  `max_ttl`'s 7 days: a zone that turns secure gets AD on its answers within a day, as its keys do. The cap is
+  `dedens_cache::Config::max_insecure_ttl`, applied by `Response::build` to what `Checked::Insecure` stores, on top
+  of `max_ttl` and `max_negative_ttl` (a negative answer is under three hours anyway); `Unchecked` and `Secure`
+  keep `max_ttl`, so a secure answer, which the signatures bound, is not shortened. Serve-stale and prefetch see
+  the capped TTL as any other. The CD copy of a bogus response is stored `Insecure` and so under the cap too, within
+  `bogus_ttl`. The setting is an `Option<u32>`, not a `u32` defaulting to 86400 beside a refusal above `max_ttl`:
+  that pair would refuse every configuration with a `max_ttl` under a day that does not also lower the new key
+  (`max_ttl: 3600` is a configuration the tests read). `None`, the default, is a day or `max_ttl` if less
+  (`Config::insecure_ttl`); a value is refused as `ConfigError::InsecureTtl` when 0 (a response kept for no time) or
+  above `max_ttl`. Rejected: capping in `dedens-server`
+  (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
+  `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
 
 ## Observability
 

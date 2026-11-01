@@ -4,8 +4,8 @@
 
 mod common;
 
-use common::{T0, a, dns, lookup, query_with, response, small_cache};
-use dedens_cache::{Cache, Checked, Hit, Lookup, StalePolicy};
+use common::{T0, a, dns, lookup, query_with, response, small_cache, ttls};
+use dedens_cache::{Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Message, Query, Rcode, RecordType};
 
@@ -16,11 +16,16 @@ fn store(cache: &Cache, upstream_ad: bool, checked: Checked) {
 
 /// [`store`] for the clients that set DO as `dnssec_ok` says.
 fn store_for(cache: &Cache, upstream_ad: bool, dnssec_ok: bool, checked: Checked) {
+    store_ttl(cache, 3600, upstream_ad, dnssec_ok, checked);
+}
+
+/// [`store_for`] of a record with TTL `ttl`.
+fn store_ttl(cache: &Cache, ttl: u32, upstream_ad: bool, dnssec_ok: bool, checked: Checked) {
     let mut wire = response(
         "www.example",
         RecordType::A,
         Rcode::NOERROR,
-        vec![a("www.example", 3600, 1)],
+        vec![a("www.example", ttl, 1)],
         vec![],
     );
     if upstream_ad {
@@ -130,4 +135,97 @@ fn a_secure_response_served_stale_has_no_ad() {
     assert!(matches!(found, Lookup::Hit(_)), "{found:?}");
     let served = served.expect("a served response");
     assert!(!served.header.flags.contains(Flags::AD));
+}
+
+const WEEK: u32 = 7 * 86_400;
+const DAY: u32 = 86_400;
+
+/// The TTL served for `www.example` A at `at`, `None` when the cache has no hit.
+fn served_ttl(cache: &Cache, at: u32, stale: StalePolicy) -> Option<(u32, Freshness)> {
+    let query = query_with(2, "www.example", RecordType::A, Flags::RD, true);
+    let (found, served) = lookup(cache, &query, at, stale);
+    let Lookup::Hit(hit) = found else { return None };
+    Some((ttls(&served.expect("a served response"))[0], hit.freshness))
+}
+
+fn cache_with(max_ttl: u32, max_insecure_ttl: Option<u32>) -> Cache {
+    Cache::new(Config {
+        capacity: 1 << 20,
+        shards: 4,
+        max_ttl,
+        max_insecure_ttl,
+        ..Config::default()
+    })
+    .expect("a valid config")
+}
+
+/// D93: an answer proved insecure is kept a day at most, where `max_ttl` is a week; serve-stale works on that.
+#[test]
+fn an_insecure_response_is_kept_a_day_not_a_week() {
+    let cache = small_cache();
+    store_ttl(&cache, WEEK, false, true, Checked::Insecure);
+    assert_eq!(
+        served_ttl(&cache, T0 + 1, StalePolicy::Never),
+        Some((DAY - 1, Freshness::Fresh { prefetch: false }))
+    );
+    assert!(served_ttl(&cache, T0 + DAY, StalePolicy::Never).is_none());
+    assert_eq!(
+        served_ttl(&cache, T0 + DAY, StalePolicy::Always).map(|(_, freshness)| freshness),
+        Some(Freshness::Stale)
+    );
+}
+
+#[test]
+fn a_secure_or_unchecked_response_keeps_max_ttl() {
+    for checked in [Checked::Secure, Checked::Unchecked] {
+        let cache = small_cache();
+        store_ttl(&cache, WEEK, false, true, checked);
+        assert_eq!(
+            served_ttl(&cache, T0 + 1, StalePolicy::Never),
+            Some((WEEK - 1, Freshness::Fresh { prefetch: false })),
+            "{checked:?}"
+        );
+    }
+}
+
+#[test]
+fn an_insecure_response_with_a_short_ttl_is_kept_as_is() {
+    let cache = small_cache();
+    store_ttl(&cache, 3600, false, true, Checked::Insecure);
+    assert_eq!(
+        served_ttl(&cache, T0 + 1, StalePolicy::Never).map(|(ttl, _)| ttl),
+        Some(3599)
+    );
+}
+
+#[test]
+fn the_insecure_cap_is_set_and_never_above_max_ttl() {
+    let set = cache_with(WEEK, Some(600));
+    store_ttl(&set, WEEK, false, true, Checked::Insecure);
+    assert_eq!(
+        served_ttl(&set, T0 + 1, StalePolicy::Never).map(|(ttl, _)| ttl),
+        Some(599)
+    );
+    // Left unset, the day yields to a lower `max_ttl`.
+    let low = cache_with(3600, None);
+    assert_eq!(low.config().insecure_ttl(), 3600);
+    store_ttl(&low, WEEK, false, true, Checked::Insecure);
+    assert_eq!(
+        served_ttl(&low, T0 + 1, StalePolicy::Never).map(|(ttl, _)| ttl),
+        Some(3599)
+    );
+}
+
+#[test]
+fn the_insecure_cap_is_refused_above_max_ttl_or_at_zero() {
+    let with = |max_insecure_ttl| Config {
+        max_ttl: 3600,
+        max_insecure_ttl: Some(max_insecure_ttl),
+        ..Config::default()
+    };
+    assert_eq!(with(3601).validate(), Err(ConfigError::InsecureTtl));
+    assert_eq!(with(0).validate(), Err(ConfigError::InsecureTtl));
+    assert_eq!(with(3600).validate(), Ok(()));
+    assert_eq!(with(1).validate(), Ok(()));
+    assert_eq!(Config::default().validate(), Ok(()));
 }
