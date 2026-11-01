@@ -9,9 +9,12 @@
 mod certificates;
 mod common;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, captured, decode, query_for, write_config};
@@ -115,4 +118,53 @@ fn a_reload_replaces_the_certificate() {
         assert!(ask(server.addr, transport, &new).is_ok(), "{transport:?}");
         assert!(ask(server.addr, transport, &old).is_err(), "{transport:?}");
     }
+}
+
+/// A UDP relay in front of `server`, and the first byte of each datagram the server sends through it.
+fn relay(server: SocketAddr) -> (SocketAddr, mpsc::Receiver<u8>) {
+    let front = Arc::new(UdpSocket::bind("127.0.0.1:0").expect("a UDP port"));
+    let back = Arc::new(UdpSocket::bind("127.0.0.1:0").expect("a UDP port"));
+    back.connect(server).expect("connected");
+    let addr = front.local_addr().expect("its address");
+    let client = Arc::new(Mutex::new(None));
+    let (first, bytes) = mpsc::channel();
+    // The relay lives as long as the test process: both threads block on their sockets.
+    thread::spawn({
+        let (front, back, client) = (Arc::clone(&front), Arc::clone(&back), Arc::clone(&client));
+        move || {
+            let mut buf = vec![0; 65535];
+            while let Ok((len, from)) = front.recv_from(&mut buf) {
+                *client.lock().expect("not poisoned") = Some(from);
+                let _ = back.send(&buf[..len]);
+            }
+        }
+    });
+    thread::spawn(move || {
+        let mut buf = vec![0; 65535];
+        while let Ok(len) = back.recv(&mut buf) {
+            let _ = first.send(buf[0]);
+            let to = *client.lock().expect("not poisoned");
+            if let Some(to) = to {
+                let _ = front.send_to(&buf[..len], to);
+            }
+        }
+    });
+    (addr, bytes)
+}
+
+/// D27, D84: a QUIC client at an address not yet validated is sent a Retry (RFC 9000 §8.1.2) before the server
+/// keeps any state or takes a connection slot, and connects once it answers it: spoofed Initials cost a packet.
+#[test]
+fn an_unvalidated_quic_client_is_sent_a_retry() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (server, ..) = listening(&ca, upstream.addr);
+    let (addr, first_bytes) = relay(server.addr);
+    ask(addr, Transport::Quic, &ca).expect("an answer after the retry");
+    let first = first_bytes
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a datagram from the server");
+    // A long header (bit 7) of the type Retry, 0b11 in bits 5-4 (RFC 9000 §17.2): not an Initial, 0b00. The fixed
+    // bit (6) may be greased (RFC 9287).
+    assert_eq!(first & 0xB0, 0xB0, "the first byte {first:#04x}");
 }
