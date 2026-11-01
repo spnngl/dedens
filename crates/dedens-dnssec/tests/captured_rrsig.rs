@@ -126,8 +126,15 @@ fn every_signed_rrset_verifies_at_the_capture_time() {
             ("alg16_a" | "ed448_nl_dnskey", _) => {
                 assert_eq!(result, Err(SigError::NoSignature), "{label}");
             }
-            // The signatures of `rhybar.cz` ended in October 2025.
-            ("bogus_expired" | "rhybar_cz_dnskey", _) => assert!(
+            // The signatures of `rhybar.cz` ended in October 2025, the A of `sigexpired.bad-dnssec.wb.sidnlabs.nl` in
+            // December 2019.
+            (
+                "bogus_expired"
+                | "bogus_sigexpired"
+                | "sigexpired_wb_sidnlabs_nl_dnskey"
+                | "rhybar_cz_dnskey",
+                _,
+            ) => assert!(
                 matches!(result, Err(SigError::Expired { .. })),
                 "{label}: {result:?}"
             ),
@@ -312,6 +319,9 @@ const ZONES: &[&str] = &[
     "rootcanary_net",
     "ippacket_stream",
     "rsa2048_ippacket_stream",
+    "cz",
+    "wb_sidnlabs_nl",
+    "bad_dnssec_wb_sidnlabs_nl",
 ];
 
 #[test]
@@ -320,6 +330,14 @@ fn every_dnskey_rrset_is_vouched_for_by_its_ds() {
         let (dnskey, ds) = zone(id);
         assert_eq!(trusted(&dnskey, &ds, captured_at()), Ok(()), "{id}");
     }
+}
+
+#[test]
+fn a_zone_whose_keys_signatures_expired_is_not_vouched_for() {
+    // `sigexpired.bad-dnssec.wb.sidnlabs.nl`: the DS matches, the DNSKEY set's signature ended in December 2019.
+    let (dnskey, ds) = zone("sigexpired_wb_sidnlabs_nl");
+    let result = trusted(&dnskey, &ds, captured_at());
+    assert!(matches!(result, Err(SigError::Expired { .. })), "{result:?}");
 }
 
 #[test]

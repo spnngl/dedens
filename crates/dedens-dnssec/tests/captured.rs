@@ -92,10 +92,13 @@ fn every_capture_decodes_and_round_trips() {
     assert_eq!(names.len(), queries);
 }
 
-/// The captures with a signature out of its window: rhybar.cz's all ended in October 2025, and the DNSKEY set of
-/// dnssec-failed.org carries an old one next to its current one.
-const EXPIRED: [&str; 3] = [
+/// The captures with a signature out of its window: rhybar.cz's all ended in October 2025, the A of
+/// `sigexpired.bad-dnssec.wb.sidnlabs.nl` and its DNSKEY set in December 2019, and the DNSKEY set of dnssec-failed.org carries an old
+/// one next to its current one.
+const EXPIRED: [&str; 5] = [
     "bogus_expired",
+    "bogus_sigexpired",
+    "sigexpired_wb_sidnlabs_nl_dnskey",
     "rhybar_cz_dnskey",
     "dnssec_failed_org_dnskey",
 ];
@@ -241,7 +244,7 @@ const SHAPES: [Shape; 10] = [
         &[],
     ),
     (
-        &["alg8_a", "alg16_a", "bogus_expired"],
+        &["alg8_a", "alg16_a", "bogus_expired", "bogus_sigexpired"],
         Rcode::NOERROR,
         SIGNED_A,
         &[],
