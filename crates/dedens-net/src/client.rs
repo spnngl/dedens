@@ -82,7 +82,7 @@ pub enum ClientError {
     #[error("the {0} transport is not built in")]
     NotBuilt(&'static str),
     /// [`Client::exchange`] was asked for [`Transport::Odoh`], which is oblivious through a proxy only: it is
-    /// [`Client::exchange_oblivious`]'s (D79).
+    /// `Client::exchange_oblivious`'s (feature `odoh`, D79): no link, the method is not built without it.
     #[error("Oblivious DoH goes through Client::exchange_oblivious")]
     OdohWithoutProxy,
     /// The exchange ended without a response.
