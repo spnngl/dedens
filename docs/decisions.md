@@ -173,8 +173,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   What Secure covers: every `RRset` of class IN in the answer and the authority section is authentic (RFC 4035
   §3.2.3, RFC 6840 §5.8), what the response lacks is proven absent, and the rcode agrees with the proof (a name error
   is NXDOMAIN, or NOERROR when compact, RFC 9824; no data is NOERROR; NXDOMAIN with an answer is bogus). It does not
-  cover the additional section, other classes, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3), which the
-  caller strips or never relies on, and it is not the AD bit: the upstream's AD is never read, and the caller sets AD
+  cover the additional section, other classes, the sets off the name path (Bailiwick, below), or the unsigned CNAME a
+  DNAME synthesizes (RFC 6672 §5.3.3). `validator::covered(&Message)` is the one definition of what Secure covers:
+  the response cut to the records it is about, computed with the validator's own predicates (the same `Parsed` and
+  `synthesized`), so the two cannot drift; a caller hands out or shows `covered` of a secure response, never the
+  response. It drops the additional section, other classes, the sets off the path, the RRSIGs that sign nothing,
+  and the RRSIG of the CNAME a DNAME makes, which stays: the validator skips verifying that CNAME set only when
+  every record of it is the one the DNAME makes (RFC 4035 §4.8 lets the resolver return it; a client that does not
+  synthesize it would otherwise lose the answer), so another record in it is checked as any CNAME: unsigned,
+  bogus. Secure is not the AD bit: the upstream's AD is never read, and the caller sets AD
   from `Secure` alone. A CNAME chain that stops before the type asked, with no denial, is authentic as far as it
   goes: `Incomplete`, the caller chases `next`, and it is never AD. A referral is no answer: judged as the final
   answer it is bogus (its NS records are unsigned, nothing denies the type) or insecure, so a forged referral has
@@ -188,8 +195,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   no 0x20 entropy from it.
   Bailiwick: only the `RRsets` of the answer section at a name the answer passes through (the question's name and
   the targets of its CNAME and DNAME chain, or the owner of a DNAME above one) and those of the authority section
-  at or above such a name are walked and verified; the others are out of bailiwick, change no verdict, and are the
-  caller's to strip, as the additional section is. The chain of trust is walked top-down from the closest anchor to the owner of each `RRset` (the name asked for a
+  at or above such a name are walked and verified; the others are out of bailiwick, change no verdict, and are
+  cut by `covered`, as the additional section is. The chain of trust is walked top-down from the closest anchor to the owner of each `RRset` (the name asked for a
   DS, the parent's apex): the DS of each label, then where there is a zone its DNSKEY (RFC 4035 §5.2). The walk
   goes to the owner (RFC 4035 §5.3.1), never to the signer a signature names, so a rewritten signer cannot pick
   the keys, an `RRset` signed by an ancestor's keys is bogus, every RRSIG is tried (a junk one first costs
@@ -246,15 +253,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   is read from or written to the answer cache, and each answer is untrusted input to the validator. A key cache
   (06b) slots into `Validating`, not the pipeline. Prefetch and stale refresh validate as any query.
   Verdicts (`dedens_validations_total{verdict}`): AD is set by `Secure` alone, never from the upstream's bit, and
-  only for a client with DO or AD (RFC 6840 §5.8). A secure response is cut (`bailiwick.rs`) to what the verdict
-  covers before it is served or cached: the validator ignores, neither verifying nor walking to them, the answer
-  sets whose owner is not on the name path of the question (CNAME and DNAME links) and the non-denial authority
-  sets not at or above a name of it, and says nothing of the additional section or of other classes, so those are
-  dropped (RFC 4035 §3.2.3), with the RRSIGs that sign nothing left; NSEC, NSEC3 and SOA of the authority section
-  stay, the validator verified them. Every TTL is capped at the verdict's. The CNAME a DNAME makes is kept as the
-  one record the DNAME makes of its owner (RFC 4035 §4.8 lets the resolver return it; a client that does not
-  synthesize it would otherwise lose the answer): the validator skips verifying that CNAME set only when every
-  record of it is the expected one, so another record in it is checked as any CNAME: unsigned, bogus. `Incomplete`: the answer of
+  only for a client with DO or AD (RFC 6840 §5.8). A secure response is cut by `validator::covered` (D75) to
+  what the verdict covers before it is served or cached: the additional section, other classes, the sets the
+  validator ignores and the RRSIGs that sign nothing are dropped (RFC 4035 §3.2.3); the CNAME a DNAME makes stays.
+  Every TTL is capped at the verdict's. `Incomplete`: the answer of
   `next` is validated apart, at most 8 names a query (as `dedens`; `next` is the upstream's, not 0x20 entropy, and
   dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
   incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
@@ -291,8 +293,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   question). The
   upstream's AD bit is never read: the human report names it `AD set by the server` once a verdict is shown, apart
   from the verdict. Only `Secure` is shown as validated, and then only what it covers (D75): the report of a
-  secure response drops the additional section, records not of class IN and the CNAME synthesized from a DNAME
-  (`validate::covered`); `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
+  secure response is `validator::covered` of it, as dedensd serves it; `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
   asked of the same server and validated on its own, at most 8 times, then indeterminate; the verdict is that of
   the last answer, never an AD of the first. `Referral` cannot come of `start`; a `Referral` or `Incomplete`
   that reaches the report is indeterminate. `--trust-anchor FILE` (DS or DNSKEY records in zone text,

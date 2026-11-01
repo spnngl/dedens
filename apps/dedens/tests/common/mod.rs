@@ -63,16 +63,22 @@ impl Responder {
     /// Serves the captured responses named, `"a"` for `a.bin`: a query whose name (in any case) and type are
     /// those of one gets it, the truncated one over UDP when there are two; any other query gets no answer.
     pub(crate) fn start(names: &[&str]) -> Self {
-        Self::serve(names, false)
+        Self::serve(names, &[], false)
+    }
+
+    /// As [`Responder::start`], with more responses, as their wire: a forged one answers a question instead of
+    /// the capture of it, which is then not named.
+    pub(crate) fn start_with(names: &[&str], wires: &[Vec<u8>]) -> Self {
+        Self::serve(names, wires, false)
     }
 
     /// As [`Responder::start`], but every second UDP query gets no answer.
     pub(crate) fn flaky(names: &[&str]) -> Self {
-        Self::serve(names, true)
+        Self::serve(names, &[], true)
     }
 
-    fn serve(names: &[&str], flaky: bool) -> Self {
-        let canned = canned(names);
+    fn serve(names: &[&str], wires: &[Vec<u8>], flaky: bool) -> Self {
+        let canned = canned_with(names, wires);
         let (udp, tcp) = loop {
             let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
             if let Ok(tcp) = TcpListener::bind(udp.local_addr().expect("bound")) {
@@ -463,6 +469,11 @@ fn certified(
 /// The captured responses named, `"a"` for `a.bin`, from the captures of the protocol or of DNSSEC (no name is in
 /// both).
 fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
+    canned_with(names, &[])
+}
+
+/// As [`canned`], and the responses in `wires`.
+fn canned_with(names: &[&str], wires: &[Vec<u8>]) -> Arc<Vec<Canned>> {
     let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates");
     let dirs =
         ["dedens-proto", "dedens-dnssec"].map(|krate| crates.join(krate).join("tests/testdata"));
@@ -472,7 +483,9 @@ fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
             .iter()
             .find(|dir| dir.join(&file).exists())
             .expect("a captured response");
-        let wire = std::fs::read(dir.join(file)).expect("captured response");
+        std::fs::read(dir.join(file)).expect("captured response")
+    });
+    let canned = canned.chain(wires.iter().cloned()).map(|wire| {
         let (key, _) = question(&wire).expect("a question");
         Canned {
             key,

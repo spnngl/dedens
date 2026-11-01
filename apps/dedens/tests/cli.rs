@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use assert_cmd::Command;
 use common::{Responder, TLS_NAME, Transport};
 use dedens_proto::edns::{EdnsOption, OptionCode};
-use dedens_proto::{EdnsFlags, Flags, Message, RecordType};
+use dedens_proto::{Class, EdnsFlags, Flags, Message, Name, Record, RecordType};
 use predicates::prelude::*;
 use predicates::str::contains;
 
@@ -1264,6 +1264,59 @@ fn a_secure_response_is_shown_with_its_verdict_in_every_format() {
     ] {
         let out = validated(&server, "cloudflare.com", &["+validate", flag], 0);
         insta::assert_snapshot!(snapshot, out);
+    }
+}
+
+const ALG13_A: &[u8] = include_bytes!("../../../crates/dedens-dnssec/tests/testdata/alg13_a.bin");
+
+/// D76: a secure response is shown as the validator covers it (`dedens_dnssec::validator::covered`): the answer
+/// of a real capture with what the verdict is not about added, an upstream's injection, is not shown under it:
+/// unrelated sets, signatures that sign nothing, other classes, authority sets off the names, the additional
+/// section.
+#[test]
+fn a_secure_response_is_shown_as_far_as_it_was_verified() {
+    let decoded = Message::decode(ALG13_A).expect("a capture");
+    let mut forged = decoded.message.into_owned();
+    let a = forged.answer[0].clone();
+    let signature = forged
+        .answer
+        .iter()
+        .find(|record| record.rtype() == RecordType::RRSIG)
+        .expect("a signature")
+        .clone();
+    let at = |owner: &str, record: &Record<'static>| Record {
+        name: owner.parse::<Name<'static>>().expect("a name"),
+        ..record.clone()
+    };
+    forged.answer.push(at("other.example.", &a));
+    forged.answer.push(at("other.example.", &signature));
+    forged.answer.push(at("orphan.cloudflare.com.", &signature));
+    forged.answer.push(Record {
+        class: Class::CH,
+        ..a.clone()
+    });
+    forged.authority.push(at("cloudflare.net.", &a));
+    forged.additional.push(at("cloudflare.com.", &a));
+    let wire = forged.to_vec().expect("the message fits");
+    let genuine = Responder::start(&SECURE);
+    let injected = Responder::start_with(&SECURE[1..], &[wire]);
+    let shown = |server: &Responder| -> serde_json::Value {
+        let output = validating(server, "cloudflare.com", &["+validate", "--json"])
+            .assert()
+            .code(0)
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&output).expect("one JSON object")
+    };
+    let (genuine, injected) = (shown(&genuine), shown(&injected));
+    assert_eq!(injected["dnssec"]["status"], "secure", "{injected}");
+    assert_eq!(injected["answer"], genuine["answer"], "{injected}");
+    for section in ["authority", "additional"] {
+        assert!(
+            injected[section].as_array().is_none_or(Vec::is_empty),
+            "{section}: {injected}"
+        );
     }
 }
 

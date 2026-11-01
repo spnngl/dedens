@@ -8,7 +8,7 @@ The dig-like CLI (D18, D32, D33): a thin binary over `dedens-net` and `dedens-sc
 - `src/output.rs`: `Format`: human (default), short, JSON and YAML outputs of a `dedens_scenario::Report` (D37).
 - `src/idn.rs`: Unicode names to A-labels, mixed-script warnings.
 - `src/validate.rs`: `+validate` (D76), the glue over `dedens_dnssec::validator`: asks each question it wants of the
-  server of the query, chases a CNAME chain, builds the report's `dnssec`; `DEDENS_NOW` is its clock.
+  server of the query, chases a CNAME chain, builds the report's `dnssec` (a secure response is shown as `validator::covered`); `DEDENS_NOW` is its clock.
 - `src/trace.rs`: `+trace` (D40), from the bundled `src/named.root`, which `just root-hints` refreshes.
 - `tests/odoh.rs`: `+odoh-proxy` (D79) against the loopback target of `tests/common`, with the `odoh` feature.
 - `tests/cli.rs`: the binary against `tests/common`, a UDP and TCP (or TLS, QUIC, HTTP/3 or CoAP) loopback server answering

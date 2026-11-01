@@ -10,7 +10,7 @@ use anyhow::Context;
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
 use dedens_proto::edns::{ExtendedError, InfoCode};
-use dedens_proto::{Class, Decoded, Message, Name, Question, RecordType};
+use dedens_proto::{Message, Name, Question};
 use dedens_scenario::{DnssecReport, DnssecStatus, Options};
 
 /// The CNAME chains one query follows past its first response, as far as a resolver follows one.
@@ -156,29 +156,6 @@ impl Judge {
     }
 }
 
-/// `decoded` as far as a secure verdict covers it: the answer and authority sections in class IN, without the
-/// CNAME a server makes of a DNAME (RFC 6672 §3.1), and without the additional section (D75, RFC 4035 §3.2.3).
-pub(crate) fn covered<'a>(decoded: &Decoded<'a>) -> Decoded<'a> {
-    let mut covered = decoded.clone();
-    let message = &mut covered.message;
-    message.additional.clear();
-    message.authority.retain(|record| record.class == Class::IN);
-    let dnames: Vec<_> = message
-        .answer
-        .iter()
-        .filter(|record| record.rtype() == RecordType::DNAME)
-        .map(|record| record.name.clone())
-        .collect();
-    message.answer.retain(|record| {
-        record.class == Class::IN
-            && !(record.rtype() == RecordType::CNAME
-                && dnames
-                    .iter()
-                    .any(|dname| record.name != *dname && record.name.is_within(dname)))
-    });
-    covered
-}
-
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -210,26 +187,4 @@ fn report(verdict: &Verdict) -> DnssecReport {
         }
     };
     DnssecReport::new(status, ede.as_ref(), reason)
-}
-
-#[cfg(test)]
-mod tests {
-    use dedens_proto::Record;
-
-    use super::*;
-
-    /// A DNAME and the CNAME the server synthesizes from it (RFC 6672 §3.1).
-    #[test]
-    fn what_a_secure_verdict_covers_is_the_signed_data_only() {
-        let wire = include_bytes!("../../../crates/dedens-dnssec/tests/testdata/dname_answer.bin");
-        let decoded = Message::decode(wire).expect("captured");
-        let types = |message: &Message<'_>| -> Vec<RecordType> {
-            message.answer.iter().map(Record::rtype).collect()
-        };
-        assert!(types(&decoded.message).contains(&RecordType::CNAME));
-        let covered = covered(&decoded);
-        assert!(!types(&covered.message).contains(&RecordType::CNAME));
-        assert!(types(&covered.message).contains(&RecordType::DNAME));
-        assert_eq!(covered.message.additional.len(), 0);
-    }
 }
