@@ -1,12 +1,13 @@
 //! The `coap_doc` target: a client `Exchange` against a model of the `dedensd` listener, driven by the input.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
-use dedens_net::coap::block::BlockSize;
+use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::doc::Query;
-use dedens_net::coap::exchange::{Exchange, Failure, Next, Params, Response, Step};
+use dedens_net::coap::exchange::{Exchange, Failure, MAX_RETRANSMIT, Next, Params, Response, Step};
 use dedens_net::coap::server::{Dedup, EXCHANGE_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, OptionNumber, Token, Type, doc};
 
@@ -62,9 +63,11 @@ fn served(body: &[u8]) -> Vec<u8> {
 }
 
 /// The listener's answer to `datagram` with `body` as its DNS answer, as `apps/dedensd/src/serve/coap.rs` makes
-/// it: a CON message seen again is not answered again but from the `Dedup`.
+/// it: a CON message seen again is not answered again but from the `Dedup`, and at most `MAX_RETRANSMIT` times
+/// while it remembers it (`replays` counts them by message ID).
 fn serve(
     dedup: &mut Dedup,
+    replays: &mut HashMap<u16, u8>,
     datagram: &[u8],
     body: &[u8],
     id: &mut u16,
@@ -74,15 +77,39 @@ fn serve(
     let confirmable = request.kind == Type::Confirmable;
     if confirmable {
         match dedup.check(CLIENT, request.id, now) {
-            Seen::Duplicate(reply) => return reply.map(<[u8]>::to_vec),
-            Seen::New => {}
+            Seen::Duplicate(reply) => {
+                let again = reply.map(<[u8]>::to_vec);
+                if again.is_some() {
+                    let count = replays.entry(request.id).or_default();
+                    *count += 1;
+                    assert!(*count <= MAX_RETRANSMIT, "a reply sent again too often");
+                }
+                return again;
+            }
+            Seen::New => {
+                replays.insert(request.id, 0);
+            }
         }
     }
     *id = id.wrapping_add(1);
     let path = doc::path_segments("/dns");
     let reply = match doc::query(&request, &path) {
-        Ok(_) => doc::response(&request, *id, body.to_vec())
-            .unwrap_or_else(|code| doc::error(&request, *id, code)),
+        Ok(_) => {
+            let reply = doc::response(&request, *id, body.to_vec())
+                .unwrap_or_else(|code| doc::error(&request, *id, code));
+            let more = reply
+                .options
+                .block2()
+                .ok()
+                .flatten()
+                .is_some_and(Block::more);
+            assert_eq!(
+                doc::more_blocks(&request, body),
+                reply.code == Code::CONTENT && more,
+                "the blocks kept are not the ones that go on"
+            );
+            reply
+        }
         Err(code) => doc::error(&request, *id, code),
     };
     if reply.code == Code::CONTENT && reply.options.block2().ok().flatten().is_some() {
@@ -121,7 +148,7 @@ fn stateless(bytes: &[u8]) {
     let path = doc::path_segments("/dns");
     match doc::query(&request, &path) {
         Ok(Query::Dns(query)) => assert!(!query.is_empty(), "a query with no body"),
-        Ok(Query::Block) => {}
+        Ok(Query::Block(_)) => {}
         Err(code) => assert!(!code.is_request(), "{code:?} is no answer"),
     }
     if let Ok(reply) = doc::response(&request, 1, SMALL.to_vec()) {
@@ -164,6 +191,8 @@ impl Session {
 /// The model server: what it holds, and the clock.
 struct Model {
     dedup: Dedup,
+    /// The replies sent again for each CON message ID since it was last new.
+    replays: HashMap<u16, u8>,
     bodies: [Vec<u8>; 3],
     current: usize,
     id: u16,
@@ -200,6 +229,7 @@ pub fn coap_doc(data: &[u8]) {
     let request = doc::request(&doc::path_segments("/dns"), query, token);
     let mut model = Model {
         dedup: Dedup::new(EXCHANGE_LIFETIME, capacity),
+        replays: HashMap::new(),
         bodies: versions(),
         current: 0,
         id: script.word(),
@@ -233,6 +263,7 @@ pub fn coap_doc(data: &[u8]) {
                     for _ in 0..times {
                         let reply = serve(
                             &mut model.dedup,
+                            &mut model.replays,
                             &datagram,
                             &model.bodies[model.current],
                             &mut model.id,

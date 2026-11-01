@@ -373,7 +373,7 @@ impl Responder {
                 let reply = match query(&request, &path) {
                     Err(code) => error(&request, 1, code),
                     // Nothing is kept here for the blocks past the first.
-                    Ok(Query::Block) => error(&request, 1, dedens_net::coap::Code::BAD_REQUEST),
+                    Ok(Query::Block(_)) => error(&request, 1, dedens_net::coap::Code::BAD_REQUEST),
                     Ok(Query::Dns(dns)) => {
                         queries
                             .lock()

@@ -8,11 +8,12 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, UdpSocket};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{Responder, Server, captured, decode, query_for, write_config};
 use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
+use dedens_proto::{Message as ProtoMessage, Question, RecordType};
 
 /// The path `dedensd` serves `DoC` at in these tests.
 const PATH: &[&[u8]] = &[b"dns", b"query"];
@@ -261,6 +262,155 @@ fn s4_5_a_retransmitted_request_is_not_asked_again() {
     assert_eq!(upstream.queries(), 1);
 }
 
+/// RFC 7252 §4.5, §4.8: the same CON request sent 100 times is answered 5 times at most: by the processing, then by
+/// `MAX_RETRANSMIT` (4) copies of that reply; the rest is silence (D105), no amplifier for a spoofed source.
+#[test]
+fn s4_8_a_request_sent_again_and_again_is_answered_again_at_most_max_retransmit_times() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let datagram = fetch(0x4242, &query_for(&captured("a"), 0))
+        .to_vec()
+        .expect("it writes");
+    let socket = client();
+    let mut buf = vec![0; 65535];
+    socket.send_to(&datagram, server.addr).expect("sent");
+    socket.recv(&mut buf).expect("a reply");
+    for _ in 1..100 {
+        socket.send_to(&datagram, server.addr).expect("sent");
+    }
+    let mut replays = 0;
+    while socket.recv(&mut buf).is_ok() {
+        replays += 1;
+    }
+    assert_eq!(replays, 4);
+    assert_eq!(upstream.queries(), 1);
+}
+
+/// `bytes` sent as they are: the datagram `server` sends back, `None` after a second of silence.
+fn send_raw(server: SocketAddr, bytes: &[u8]) -> Option<Message> {
+    let socket = client();
+    socket.send_to(bytes, server).expect("sent");
+    let mut buf = vec![0; 65535];
+    let len = socket.recv(&mut buf).ok()?;
+    Some(Message::parse(&buf[..len]).expect("a CoAP message"))
+}
+
+/// RFC 7252 §3, §4.2: a CON message of 1000 options, each 1 byte, is a format error: a RST, not a list of a thousand
+/// entries (D105). The trigger is the audit's, a datagram of zeros after the header, by hand: no DNS data in it.
+#[test]
+fn s3_a_message_of_a_thousand_options_is_rejected_with_a_reset() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    // A CON POST of message ID 0x0bad, then 1000 options of delta 0 and length 0.
+    let mut wire = vec![0x40, 0x02, 0x0b, 0xad];
+    wire.resize(wire.len() + 1000, 0x00);
+    assert_eq!(
+        send_raw(server.addr, &wire),
+        Some(Message::empty(Type::Reset, 0x0bad))
+    );
+    assert_eq!(upstream.queries(), 0);
+}
+
+/// RFC 7252 §4.6, D105: the server reads 2048 bytes of a datagram, which hold a query of 1024 (the largest block, RFC
+/// 7959 §2.2) with its options. Of a larger one it reads the start and answers a request 4.13 with the Size1 of 1024
+/// (RFC 7959 §2.9.3, §4): a CON request with an ACK, a NON one with a NON message; what is no request is dropped.
+#[test]
+fn d105_a_datagram_over_2048_bytes_is_refused_4_13() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let sized = |len: usize, kind: Type| {
+        let mut request = fetch(0x0bad, &[]);
+        request.kind = kind;
+        let header = request.to_vec().expect("it writes").len();
+        request.payload = vec![0; len - header - 1];
+        request.to_vec().expect("it writes")
+    };
+    // What fills 2048 bytes is read whole, and answered: not refused as too large.
+    let read = send_raw(server.addr, &sized(2048, Type::Confirmable)).expect("a response");
+    assert_ne!(read.code, Code::REQUEST_ENTITY_TOO_LARGE);
+    for len in [2049, 8000] {
+        let refused = send_raw(server.addr, &sized(len, Type::Confirmable)).expect("a response");
+        assert_eq!(refused.kind, Type::Acknowledgement, "{len}");
+        assert_eq!(
+            (refused.id, refused.code),
+            (0x0bad, Code::REQUEST_ENTITY_TOO_LARGE)
+        );
+        assert_eq!(refused.token, Token::new(&[7, 7]).expect("a token"));
+        assert_eq!(refused.options.size1(), Some(1024));
+        assert_eq!(refused.payload.len(), 0);
+        let refused = send_raw(server.addr, &sized(len, Type::NonConfirmable)).expect("a response");
+        assert_eq!(refused.kind, Type::NonConfirmable, "{len}");
+        assert_eq!(refused.code, Code::REQUEST_ENTITY_TOO_LARGE);
+        // An ACK of that size is no request.
+        assert_eq!(
+            send_raw(server.addr, &sized(len, Type::Acknowledgement)),
+            None
+        );
+    }
+    assert!(upstream.queries() <= 1);
+}
+
+/// D105: 256 requests are answered at once per socket and the others dropped, though a thread holds 1024 upstream
+/// queries (D47): 600 requests for 600 names, which the upstream does not answer, reach it 256 times. A request
+/// answered before is still answered again when the table is full (RFC 7252 §4.5): a duplicate needs no task.
+#[test]
+fn d105_requests_waiting_for_the_upstream_are_bounded() {
+    let upstream = Responder::start(&["a"]);
+    // A long timeout: the 256 requests wait the whole test, whatever the speed of the machine.
+    let server = Server::configured(|listen| {
+        format!(
+            "listen: ['coap://{listen}/dns/query']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 30000\n    tries: 1\n",
+            upstream.addr
+        )
+    });
+    let socket = client();
+    let answered = fetch(0xfffe, &query_for(&captured("a"), 0));
+    let reply = send_from(&socket, server.addr, &answered).expect("a response");
+    assert_eq!(reply.code, Code::CONTENT);
+    for id in 0..600u16 {
+        let name = format!("n{id}.example.com.").parse().expect("a name");
+        let query = ProtoMessage::query(0, Question::new(name, RecordType::A))
+            .to_vec()
+            .expect("a query fits");
+        let request = fetch(id, &query).to_vec().expect("it writes");
+        socket.send_to(&request, server.addr).expect("sent");
+    }
+    // The upstream was asked once for the answered request and once for each request that had a task.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while upstream.queries() < 1 + 256 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        upstream.queries(),
+        1 + 256,
+        "queries that reached the upstream"
+    );
+    // The table is full, and the request answered before is answered again.
+    let again = send_from(&socket, server.addr, &answered).expect("the reply sent again");
+    assert_eq!(again, reply);
+}
+
+/// RFC 7252 §4.5, §4.8.2: a NON request sent again within `NON_LIFETIME` is a duplicate, ignored: it is not asked
+/// again, and gets no reply (a NON message is not retransmitted, so there is none to answer) (D105).
+#[test]
+fn s4_5_a_non_request_sent_again_is_ignored() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let mut request = fetch(0x0101, &query_for(&captured("a"), 0));
+    request.kind = Type::NonConfirmable;
+    let datagram = request.to_vec().expect("it writes");
+    let socket = client();
+    let mut buf = vec![0; 65535];
+    socket.send_to(&datagram, server.addr).expect("sent");
+    socket.recv(&mut buf).expect("a reply");
+    for _ in 0..10 {
+        socket.send_to(&datagram, server.addr).expect("sent");
+    }
+    assert!(socket.recv(&mut buf).is_err(), "a reply to a duplicate");
+    assert_eq!(upstream.queries(), 1);
+}
+
 /// RFC 7252 §4.3: a ping, a CON message that is empty, is answered with a RST.
 #[test]
 fn s4_3_a_ping_is_answered_with_a_reset() {
@@ -387,6 +537,42 @@ fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
         let response = ask(&tagged(id, tag, block));
         assert_eq!(response.code, Code::BAD_REQUEST, "{id}");
     }
+    assert_eq!(upstream.queries(), 1);
+}
+
+/// D105: a response kept for the next blocks is served `1 + MAX_RETRANSMIT` times its size in bytes of blocks, then
+/// not at all: a client asking for the same block with a new message ID each time (a spoofed source does, for it
+/// costs it no more than a datagram) gets about five readings of the response, then silence.
+#[test]
+fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
+    let upstream = Responder::start(&["txt_large"]);
+    let server = serving(upstream.addr);
+    let query = query_for(&captured("txt_large"), 0);
+    let socket = client();
+    let mut first = fetch(1, &query);
+    first.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
+    let first = send_from(&socket, server.addr, &first).expect("a response");
+    let follow = |id| {
+        let mut request = fetch(id, &[]);
+        request.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
+        request
+            .options
+            .set_block2(Block::new(1, false, BlockSize::MAX).expect("a block"));
+        request
+    };
+    let second = send_from(&socket, server.addr, &follow(2)).expect("a response");
+    assert_eq!(second.code, Code::CONTENT);
+    let (head, tail) = (first.payload.len(), second.payload.len());
+    assert_eq!(head, 1024);
+    let mut replies = 1;
+    for id in 3..100 {
+        if send_from(&socket, server.addr, &follow(id)).is_none() {
+            break;
+        }
+        replies += 1;
+    }
+    // The response is `head + tail` bytes, and every request takes `tail` off five times that.
+    assert_eq!(replies, 5 * (head + tail) / tail);
     assert_eq!(upstream.queries(), 1);
 }
 

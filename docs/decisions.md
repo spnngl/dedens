@@ -845,7 +845,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     Figure 10).
   - `server::Dedup` remembers the reply to a confirmable request by (endpoint, message ID) for EXCHANGE_LIFETIME
     (247 s), at most a given number of entries, the oldest dropped first, only for a message that is new; a duplicate
-    gets the same reply.
+    gets the same reply, at most `MAX_RETRANSMIT` times (D105).
   - Fuzz: `parse_coap` reads arbitrary datagrams; `coap_doc` is stateful, an `Exchange` against a model of the
     listener (`doc::query` and `response`, a `Dedup`, the Block1 and Block2 sizes, a body that changes between two
     blocks, retransmission, duplicates, time, bytes of any kind for a reply) holding that a body is one of the
@@ -861,11 +861,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     on every request; its server blocks at 1024 by itself with ETag and Size2, answers a Block1 PUT 2.31 per block
     then 2.01, sends a separate response as an empty ACK then a CON, a NON request a NON response; a lost request or
     ACK is sent again after 2.4 s. Not checked: DTLS, OSCORE (not built), Observe.
-- D81 (completes D80; amended by D95, D109) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
-  `dedensd` and `dedens-net` (D69): the client `Transport::Coap` (`dedens_net::doc`), the `dedens` options
-  `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path unless given), the `dedensd` listener
-  `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the client's `request`, the server's
-  `query`, `response`, `error`.
+- D81 (completes D80; amended by D95, D105, D109) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind
+  the `doc` feature of `dedens`, `dedensd` and `dedens-net` (D69): the client `Transport::Coap`
+  (`dedens_net::doc`), the `dedens` options `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path
+  unless given), the `dedensd` listener `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the
+  client's `request`, the server's `query`, `response`, `error`.
   - Client: one confirmable FETCH per query on a UDP socket of its own, DNS ID 0 (§4.2.2), Content-Format and
     Accept 553, no Uri-Host or Uri-Port (the server is the one named). A response in blocks must carry an ETag
     and keep it (`require_etag`, D80): a server that sends none is refused beyond the first block. The retransmission is CoAP's (RFC 7252
@@ -890,10 +890,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     its Max-Age, which moves with the clock, not part of it. libcoap's and aiocoap's
     clients send no body with the follow-ups, so a FETCH or POST with no body that asks for a Block2 past the first
     (`doc::Query::Block`) is answered from the response sent in blocks, kept by (endpoint, Request-Tag, RFC 9175
-    §3.2; empty if none) for EXCHANGE_LIFETIME, 64 per socket (`server::Blocks`): found by libcoap's `coap-client`
+    §3.2; empty if none), 64 per socket (`server::Blocks`), from the first block and not moved by the follow-ups, for
+    `EXCHANGE_LIFETIME` at most, and served a bounded number of times (D105): found by libcoap's `coap-client`
     getting 4.00 for the second block of a 2649-byte answer, as the RFCs do not say how a server finds the response
     again. No such response kept is 4.00. CON requests are
-    deduplicated (`Dedup`, 4096 entries, EXCHANGE_LIFETIME) and answered by a piggybacked ACK, never a separate
+    deduplicated (`Dedup`, 4096 entries, `EXCHANGE_LIFETIME`; the NON ones for `NON_LIFETIME`, D105) and answered
+    by a piggybacked ACK, never a separate
     response; a NON request gets a NON response, its message ID from a counter that starts at random (RFC 7252
     §4.4); a ping, and a CON message with a format error whose ID can be read (`Message::reject`, §4.2), get a RST;
     a NON one, or one of another version, is dropped. The path is read as written, no
@@ -944,6 +946,46 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
+- D105 (amends D81) `dedensd` CoAP server limits (audit S7, S9, L10, E7), as D47 bounds the other listeners:
+  - Replays (RFC 7252 §4.5, §4.8): `Dedup` sends the kept reply again at most `MAX_RETRANSMIT` = 4 times per entry
+    (`coap::MAX_RETRANSMIT`, shared with the client's `Params`), the retransmissions a client makes, so every one of a
+    client's is answered; then the message is still a duplicate (never processed again) but gets silence, until the
+    entry expires. A duplicate arriving before the reply is kept is silent and costs none. Without it a spoofed source
+    got a ~1 KB reply for each ~40-byte datagram repeated for `EXCHANGE_LIFETIME`; the same CON sent 100 times is now
+    answered 5 times at most. NON requests are deduplicated too, for `NON_LIFETIME` (145 s; §4.5 SHOULD, §4.8.2), with
+    no reply kept: a duplicate is dropped. Not covered: a message with a new ID, CON or NON, is a new request, so a
+    spoofed source is amplified as with plain UDP DNS; the rate of a source is D90's, left to the RRL step (audit S1).
+  - Block2 follow-ups (D81): the response kept in `Blocks` is served at most `(1 + MAX_RETRANSMIT)` times its size in
+    bytes (`Found::Spent`, then silence), whatever the message IDs, and a follow-up neither stores it again nor moves its
+    clock. Bytes, not blocks: the client picks the block size, a 64-byte client of a 2649-byte answer needs 42 requests,
+    which a count of blocks at 1024 would cut off. By design (audit L10): a follow-up replays the TTLs of the
+    response as it was cut at first, not re-resolved, so the data a client reads may be up to `EXCHANGE_LIFETIME` (247 s)
+    old, the time the entry is kept from the first block; the ETag of the blocks stays the same.
+  - Parsing: `Message::parse` reads at most `MAX_OPTIONS` = 64 options, past it `ParseError::TooManyOptions`, a format
+    error like the others (a CON gets the RST of §4.2). The RFC sets no limit; a DoC request has about ten options. A
+    datagram of zeros made ~65 K empty options, a list of 32-byte entries of ~2 MB per datagram (an empty option
+    allocates nothing). The client reads responses with the same limit. Not done: the audit's other idea, option
+    values as ranges into the datagram.
+  - Receive buffer: 2048 bytes (`MAX_REQUEST`), plus one to tell a datagram over it from one that fits. A datagram over
+    it is parsed from its first 2048 bytes: a CON or NON request gets 4.13 with Size1 = 1024 (RFC 7959 §2.9.3, §4),
+    anything else is dropped. The largest legitimate request is a query of 1024 bytes (`BLOCK_SIZE`; a DNS query is far
+    under, EDNS padding included) with 4 bytes of header, 8 of token and options of a few dozen bytes: the other 1024 are
+    slack. The server also takes a body of 1025 to ~2030 bytes with no Block1; it advertises 1024. RFC 7252 §4.6 says a
+    message SHOULD fit one IP packet, and suggests 1152 bytes for a path of unknown MTU: a bound the 2048 is over.
+  - Tasks: 256 requests are answered at once per socket (`Slots`, as D47's TCP connections), so a thread answers at
+    most n listeners × 256 (four `coap://` listeners reach its 1024 upstream queries; one is the usual case). The
+    `Dedup` is looked up first, so a duplicate is answered from what was kept even with the slots full; a new request
+    takes a slot and is noted only then: past 256, it is dropped silently, not noted, and its retransmission is asked.
+    Silent, with no 5.03 (a deviation from §4.2, in `coverage.md`), as D47 drops past its limits: answering under
+    overload costs more than the request, and a 5.03 still costs a send.
+  - E7: the first response is sent, then the buffer `send_to` gives back is kept in `Dedup`: no copy for it. A copy
+    of the DNS response goes to `Blocks` only when its block has more after it (`doc::more_blocks`, which reads the
+    request as `response` does: a malformed Block2 is no block); the follow-up path copies the kept response once, as
+    `response` needs a `Vec` to take the TTLs off.
+  - Tests: the trigger datagrams are built by hand from the audit's (zeros after a header, a bare FETCH), not captured:
+    they hold no DNS data, and what they check is the server's count and bounds (AGENTS.md's real-data rule is for
+    the DNS content, which the existing captures keep). Fuzz: `parse_coap` asserts the options cap, and `coap_doc` the
+    replays per message ID and `more_blocks` against the reply.
 - D109 (amends D61, D81, D83) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
   by the query's deadline (audit step 06):
   - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
