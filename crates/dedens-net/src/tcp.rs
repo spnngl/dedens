@@ -261,14 +261,19 @@ struct Connection {
     _task: Rc<JoinHandle<()>>,
 }
 
+/// Messages a connection queues for its writer: those past them go on another connection. A query is small, so
+/// this holds the memory of a server that stopped reading to a few hundred KiB, not the 4 GiB of 65536 queries of
+/// 64 KiB (D108).
+const QUEUE: usize = 1024;
+
 /// What the tasks and the queries share.
 #[derive(Debug)]
 struct State {
     /// The queries sent and not answered, by the ID they went with. The sender of a query that stopped waiting is
     /// disconnected, and stays so that its ID is not reused before the response comes (RFC 7766 §6.2.1).
     waiting: HashMap<u16, flume::Sender<Vec<u8>>>,
-    /// Framed messages for the writer, until the connection closes: dropping it ends the writer. An empty message
-    /// only wakes the writer to look at a shorter idle timeout.
+    /// Framed messages for the writer, at most [`QUEUE`], until the connection closes: dropping it ends the writer.
+    /// An empty message only wakes the writer to look at a shorter idle timeout.
     outgoing: Option<flume::Sender<Vec<u8>>>,
     /// The local address, once open.
     local: Option<SocketAddr>,
@@ -276,7 +281,7 @@ struct State {
     failure: Option<TcpError>,
     /// The last query sent or response received.
     last: Instant,
-    /// The last message read.
+    /// The last response read: a frame no query waits for is not one (D108).
     read: Instant,
     /// The idle timeout; zero once the server asked for no more queries (RFC 7828 §3.2.2).
     idle: Duration,
@@ -313,7 +318,7 @@ impl Connection {
     /// Starts connecting over `link`, with TLS by `tls`; queries queue meanwhile.
     fn open(link: Link, tls: Option<TlsConnector>, idle: Duration) -> Self {
         let (opened, opening) = flume::bounded(0);
-        let (outgoing, queue) = flume::unbounded();
+        let (outgoing, queue) = flume::bounded(QUEUE);
         let now = Instant::now();
         let state = Rc::new(RefCell::new(State {
             waiting: HashMap::new(),
@@ -324,7 +329,7 @@ impl Connection {
             read: now,
             idle,
         }));
-        let task = compio::runtime::spawn(run(link, tls, Rc::clone(&state), queue, opened));
+        let task = compio::runtime::spawn(run(link, tls, Rc::clone(&state), queue, opened, idle));
         Self {
             state,
             opening,
@@ -352,7 +357,15 @@ impl Connection {
         };
         framed[2..4].copy_from_slice(&id.to_be_bytes());
         // The task holds the receiver until the connection closes.
-        outgoing.send(framed).map_err(|_| TcpError::Closed)?;
+        match outgoing.try_send(framed) {
+            Ok(()) => {}
+            Err(flume::TrySendError::Full(_)) => {
+                // As with every ID taken: the writer drains what is queued, and the next query opens a connection.
+                state.idle = Duration::ZERO;
+                return Err(TcpError::Closed);
+            }
+            Err(flume::TrySendError::Disconnected(_)) => return Err(TcpError::Closed),
+        }
         let (sender, response) = flume::bounded(1);
         state.waiting.insert(id, sender);
         state.last = Instant::now();
@@ -361,15 +374,16 @@ impl Connection {
 }
 
 /// Connects, and shakes hands with `tls` over a TLS link, within the idle timeout; then reads and writes until
-/// the connection closes, each write within the idle timeout too.
+/// the connection closes, each write within the idle timeout too. The `idle` timeout is the pool's: the state's is
+/// zero already once the queue filled before the connection opened.
 async fn run(
     link: Link,
     tls: Option<TlsConnector>,
     state: Rc<RefCell<State>>,
     queue: flume::Receiver<Vec<u8>>,
     opened: flume::Sender<()>,
+    idle: Duration,
 ) {
-    let idle = state.borrow().idle;
     let deadline = after(Instant::now(), idle);
     let connected = async {
         let stream = TcpStream::connect(link.addr())
@@ -574,10 +588,16 @@ async fn write(
     let _ = compio::time::timeout_at(after(Instant::now(), limit), stream.close()).await;
 }
 
-/// Reads messages and hands each to the query waiting for its ID; the rest are dropped. Closes on end or error.
+/// Reads messages and hands each to the query waiting for its ID. A message no query waits for is dropped, and
+/// proves nothing of the server: it neither keeps the connection from idling nor from being found stalled (D108).
+/// Closes on end or error.
 async fn read(mut stream: impl Inbound, state: Rc<RefCell<State>>) {
     while let Ok(message) = stream.message().await {
         let mut state = state.borrow_mut();
+        let Some(id) = id_of(&message) else { continue };
+        let Some(waiting) = state.waiting.remove(&id) else {
+            continue;
+        };
         state.last = Instant::now();
         state.read = state.last;
         if let Some(timeout) = keepalive(&message)
@@ -585,15 +605,12 @@ async fn read(mut stream: impl Inbound, state: Rc<RefCell<State>>) {
         {
             state.idle = timeout;
             if let Some(outgoing) = &state.outgoing {
-                let _ = outgoing.send(Vec::new());
+                // Full: the writer wakes for what is queued, and looks again then.
+                let _ = outgoing.try_send(Vec::new());
             }
         }
-        if let Some(id) = id_of(&message)
-            && let Some(waiting) = state.waiting.remove(&id)
-        {
-            // The query may have stopped waiting; then the response goes nowhere.
-            let _ = waiting.try_send(message);
-        }
+        // The query may have stopped waiting; then the response goes nowhere.
+        let _ = waiting.try_send(message);
     }
     state.borrow_mut().close();
 }

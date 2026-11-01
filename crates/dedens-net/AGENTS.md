@@ -6,8 +6,8 @@ crate that touches sockets and timers.
 - `src/exchange.rs`: the sans-IO exchange of one query (D26, D27, D31), fed bytes and time; no socket, no clock,
   no randomness.
 - `src/udp.rs`, `src/tcp.rs`: the transports, thin over compio; `udp.rs` muxes queries on a pool of sockets
-  per server (D50), `tcp.rs` keeps one connection per server, TCP or TLS, writing the queries queued meanwhile
-  together.
+  per server (D50), a few datagrams kept per query (D108); `tcp.rs` keeps one connection per server, TCP or TLS,
+  writing the queries queued meanwhile together, a bounded queue (D108).
 - `src/tls.rs`: the certificates trusted and the TLS configurations (D60).
 - `src/dial.rs`: the QUIC endpoints and connections of DoQ and DoH, and the per-server slots holding them.
 - `src/quic.rs`: one QUIC connection per server, a stream per query, closed on a response not framed (D61, D109).

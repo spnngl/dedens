@@ -68,11 +68,17 @@ impl Peer {
 
     /// Writes `messages`, each framed, in one write.
     pub(crate) async fn write(&mut self, messages: &[Vec<u8>]) {
+        assert!(self.offer(messages).await, "the client reads");
+    }
+
+    /// Writes `messages` as [`Peer::write`] does, unless the client closed its side meanwhile: whether it was open.
+    pub(crate) async fn offer(&mut self, messages: &[Vec<u8>]) -> bool {
         let bytes: Vec<u8> = messages
             .iter()
             .flat_map(|m| frame(m).expect("a message under 64 KiB"))
             .collect();
-        self.write_bytes(bytes).await;
+        let BufResult(written, _) = self.stream.write_all(bytes).await;
+        written.is_ok()
     }
 
     /// Writes `bytes` as they are.

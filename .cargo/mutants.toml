@@ -21,8 +21,6 @@ exclude_re = [
   'replace <impl Outbound for TcpStream>::close with \(\)',
   # How queries are batched into one write is not seen by the server; equal `Instant`s never happen.
   'tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
-  # An inbox of 65 datagrams instead of 64.
-  'replace < with <= in Waiting::deliver',
   # `Same` hashes `u64` keys through `write_u64`; `write` is never called.
   '<impl Hasher for Same>::write( with |$)',
   # The root (a suffix of one byte) is never listed; the other changes hang the walk.

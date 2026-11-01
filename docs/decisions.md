@@ -569,7 +569,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
-- D27 (amended by D50, D53) Client behaviour:
+- D27 (amended by D50, D53, D108) Client behaviour:
   - UDP: a pool of sockets per server (D50); a random ID from `getrandom`, drawn 256 bytes at a time: a call costs
     846 ns on macOS, 14 ns on Linux (vDSO).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
@@ -588,8 +588,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     and its timeout honoured when shorter, 0 taking no new query (RFC 7828); a closed
     connection retried once on a new one, as is one whose IDs are all taken. Queries are written whole by a task of
     the connection, so a query that stops waiting never cuts a message short; those queued meanwhile go in one
-    write (D53). A write lasts the idle time at most, and a query that times out with nothing read on its
-    connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
+    write (D53), at most 1024 (D108). A write lasts the idle time at most, and a query that times out with no
+    response read on its connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
     that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
     the source address of a cookie, costs that try, not the exchange.
 - D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
@@ -1289,12 +1289,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
   cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
   asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
-- D50 Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
+- D50 (amended by D108) Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
   on first use on port 0 and connected, then kept: a query takes one at random and waits for datagrams with its
   ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
   socket: 16 + 8 bits (RFC 5452 §9.2), against about 32 with a socket per query; cookies (RFC 7873) and `0x20`
-  stay the way to win more. Matching stays D27's: a datagram goes to each query waiting for its ID, and the
-  exchange drops those of another question. A datagram is received whole, up to 65535 bytes, into
+  stay the way to win more. Matching stays D27's: a datagram goes to each query waiting for its ID (four kept for
+  each, D108), and the exchange drops those of another question. A datagram is received whole, up to 65535 bytes, into
   one buffer per socket, whatever size the queries advertised. A socket error goes to the queries that sent on
   it, each counting it as a lost try; errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
@@ -1323,6 +1323,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
   as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
   (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
+- D108 (amends D27, D50) Bounds on the client's queues and the evidence of a live server. UDP: a query keeps four
+  datagrams with its ID until it reads them, a response and the late ones of its tries, and drops the next; the
+  socket's one shared inbox of 64 let a query flooded, or slow to read, take the room of the others: the 65th
+  concurrent query on a socket lost its response. TCP: a connection queues 1024 messages for its writer, where a
+  server that stopped reading held up to 65536 (4 GiB of 64 KiB queries); the query that finds it full goes on a new
+  connection, as one that finds every ID taken (D27), and the full one drains and closes. Only a message with the
+  ID of a query sent counts as a response read: frames for IDs nobody waits for neither kept the connection from
+  idling nor hid a stalled one (D27), so a server could trickle them and never answer. Not done: freeing the ID
+  of a query that stopped waiting (RFC 7766 §6.2.1: no reuse of the ID of a query in flight, which a late response
+  may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
+  Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
+  per-query lookup replaces the scan of the shared inbox.
 - D54 (amended by D64) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core

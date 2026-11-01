@@ -8,7 +8,7 @@
 //! an earlier try still counts.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -20,8 +20,9 @@ use compio::BufResult;
 use compio::net::UdpSocket;
 use compio::runtime::{JoinHandle, spawn};
 
-/// Datagrams a socket keeps for its queries before they read them; past them, the next are dropped.
-const INBOX: usize = 64;
+/// Datagrams kept for a query before it reads them; past them, the next for it are dropped. Per query, so one
+/// flooded or slow does not take the room of the others on its socket (D108).
+const INBOX: usize = 4;
 
 /// Sockets per server, opened on first use and kept for the life of the pool.
 #[derive(Debug)]
@@ -143,8 +144,6 @@ async fn receive(socket: Rc<UdpSocket>, waiting: Rc<RefCell<Waiting>>) {
 #[derive(Debug, Default)]
 struct Waiting {
     queries: Vec<Waiter>,
-    /// Datagrams not read yet, by the token of their query.
-    inbox: Vec<(u64, Vec<u8>)>,
     next: u64,
 }
 
@@ -153,6 +152,8 @@ struct Waiting {
 struct Waiter {
     token: u64,
     id: u16,
+    /// Datagrams with its ID not read yet, at most [`INBOX`].
+    inbox: VecDeque<Vec<u8>>,
     /// Whether it sent a datagram: only then may an error be its.
     sent: bool,
     error: Option<io::ErrorKind>,
@@ -167,6 +168,7 @@ impl Waiting {
         self.queries.push(Waiter {
             token,
             id,
+            inbox: VecDeque::new(),
             sent: false,
             error: None,
             waker: None,
@@ -185,8 +187,8 @@ impl Waiting {
         };
         let id = u16::from_be_bytes([high, low]);
         for waiter in self.queries.iter_mut().filter(|waiter| waiter.id == id) {
-            if self.inbox.len() < INBOX {
-                self.inbox.push((waiter.token, datagram.to_vec()));
+            if waiter.inbox.len() < INBOX {
+                waiter.inbox.push_back(datagram.to_vec());
             }
             if let Some(waker) = waiter.waker.take() {
                 waker.wake();
@@ -258,15 +260,11 @@ impl UdpQuery {
     pub async fn recv(&mut self, deadline: Instant) -> io::Result<Option<Vec<u8>>> {
         let next = poll_fn(|cx| {
             let mut waiting = self.mux.waiting.borrow_mut();
-            if let Some(at) = waiting
-                .inbox
-                .iter()
-                .position(|(token, _)| *token == self.token)
-            {
-                return Poll::Ready(Ok(waiting.inbox.remove(at).1));
-            }
             // The query waits until dropped.
             if let Some(waiter) = waiting.waiter(self.token) {
+                if let Some(datagram) = waiter.inbox.pop_front() {
+                    return Poll::Ready(Ok(datagram));
+                }
                 if let Some(error) = waiter.error.take() {
                     return Poll::Ready(Err(io::Error::from(error)));
                 }
@@ -282,9 +280,30 @@ impl UdpQuery {
 
 impl Drop for UdpQuery {
     fn drop(&mut self) {
-        let mut waiting = self.mux.waiting.borrow_mut();
         let token = self.token;
-        waiting.queries.retain(|waiter| waiter.token != token);
-        waiting.inbox.retain(|(of, _)| *of != token);
+        self.mux
+            .waiting
+            .borrow_mut()
+            .queries
+            .retain(|waiter| waiter.token != token);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{INBOX, Waiting};
+
+    /// A query keeps [`INBOX`] datagrams, no more, and what is sent to one takes no room from another.
+    #[test]
+    fn a_query_keeps_at_most_its_inbox() {
+        let mut waiting = Waiting::default();
+        let (flooded, other) = (waiting.add(1), waiting.add(2));
+        for _ in 0..=INBOX {
+            waiting.deliver(&[0, 1]);
+        }
+        waiting.deliver(&[0, 2]);
+        let mut kept = |token| waiting.waiter(token).map(|waiter| waiter.inbox.len());
+        assert_eq!(kept(flooded), Some(INBOX));
+        assert_eq!(kept(other), Some(1));
     }
 }
