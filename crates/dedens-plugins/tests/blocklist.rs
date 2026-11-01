@@ -178,6 +178,73 @@ fn null_records_answer_in_and_any_only() {
     }
 }
 
+/// A name of the 127 labels the longest has (255 bytes on the wire) blocks itself, and a listed parent blocks a
+/// name 126 labels deep: the walk by suffixes reaches the first label, and no more (D110).
+#[test]
+fn the_deepest_names_are_looked_up() {
+    let deepest = "a.".repeat(127);
+    let parent = "a.".repeat(126);
+    let pipeline = pipeline(&format!("{deepest}\ncom\n"), Action::Nxdomain);
+    assert!(blocked(&pipeline, &deepest));
+    assert!(!blocked(&pipeline, &parent));
+    let below = format!("{}com.", "a.".repeat(125));
+    assert!(blocked(&pipeline, &below));
+    let other = format!("{}org.", "a.".repeat(125));
+    assert!(!blocked(&pipeline, &other));
+}
+
+/// Suffixes are looked up whole labels at a time: the same bytes split in other labels, or listed with other
+/// labels in front, are other names.
+#[test]
+fn label_boundaries_count() {
+    let pipeline = pipeline("a.bc.example\nx.y.z.example.net\n", Action::Nxdomain);
+    for name in ["a.bc.example.", "q.a.bc.example.", "A.BC.Example."] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+    for name in [
+        "ab.c.example.",
+        "abc.example.",
+        "bc.example.",
+        "a.b.c.example.",
+        "y.z.example.net.",
+        "z.example.net.",
+        "x.y.z.example.org.",
+        "w.y.z.example.net.",
+    ] {
+        assert!(!blocked(&pipeline, name), "{name}");
+    }
+    for name in ["x.y.z.example.net.", "w.x.y.z.example.net."] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+}
+
+/// An allowed name deeper than any blocked one still lets its subdomains through, and one shallower than the
+/// blocked ones does not matter to names outside it: the walk goes on as far as the allowlist needs (D110).
+#[test]
+fn an_allowed_name_deeper_than_the_blocked_ones_wins() {
+    let mut lists = lists("com\n");
+    lists
+        .read(List::Allow, Origin::Local, "a.b.c.d.example.com\n")
+        .expect("the allowlist reads");
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    assert!(!blocked(&pipeline, "a.b.c.d.example.com."));
+    assert!(!blocked(&pipeline, "x.a.b.c.d.example.com."));
+    assert!(blocked(&pipeline, "b.c.d.example.com."));
+    assert!(blocked(&pipeline, "z.a.b.c.d.example.net.com."));
+}
+
+/// An allowed name of a few labels lets a name 123 labels under it through.
+#[test]
+fn a_deep_name_under_an_allowed_parent_is_not_blocked() {
+    let mut lists = lists("com\n");
+    lists
+        .read(List::Allow, Origin::Local, "ok.com\n")
+        .expect("the allowlist reads");
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    assert!(!blocked(&pipeline, &format!("{}ok.com.", "a.".repeat(123))));
+    assert!(blocked(&pipeline, &format!("{}no.com.", "a.".repeat(123))));
+}
+
 #[test]
 fn fields_that_are_not_names_are_errors() {
     let text = format!("ads.example\n0.0.0.0 {}.example", "a".repeat(64));
@@ -269,6 +336,29 @@ fn allowed_names_are_not_blocked() {
     }
 }
 
+/// Texts read into one list add up, names of the same number of labels in both included: each is
+/// blocked, and the allowlist of each text lets its own names through.
+#[test]
+fn texts_add_up() {
+    let mut lists = lists("a.example\n");
+    lists
+        .read(List::Block, Origin::Local, "b.example\nc.d.example\n")
+        .expect("the second text reads");
+    lists
+        .read(List::Allow, Origin::Local, "x.b.example\n")
+        .expect("the allowlist reads");
+    lists
+        .read(List::Allow, Origin::Local, "y.c.d.example\n")
+        .expect("the second allowlist reads");
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    for name in ["a.example.", "b.example.", "z.c.d.example.", "c.d.example."] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+    for name in ["x.b.example.", "w.x.b.example.", "y.c.d.example."] {
+        assert!(!blocked(&pipeline, name), "{name}");
+    }
+}
+
 /// Names listed twice, in any case or as `*.name`, are counted once.
 #[test]
 fn duplicates_are_counted_once() {
@@ -288,6 +378,12 @@ fn duplicates_are_counted_once() {
         .expect("the names read");
     assert_eq!((read.names, read.duplicates), (2, 1));
     assert_eq!(lists.names(List::Block), 2);
+    // A name listed twice stays listed.
+    let mut twice = Lists::new();
+    twice
+        .read(List::Block, Origin::Local, "x.example\nX.EXAMPLE.\n")
+        .expect("the names read");
+    assert!(blocked(&with_lists(twice, Action::Nxdomain), "x.example."));
     assert!(blocked(
         &with_lists(lists, Action::Nxdomain),
         "a.b.ad-assets.futurecdn.net."

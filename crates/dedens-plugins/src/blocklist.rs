@@ -6,7 +6,7 @@ use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::name::MAX_NAME_LEN;
+use dedens_proto::name::{MAX_LABELS, MAX_NAME_LEN};
 use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, TextErrorKind, Ttl};
 use dedens_server::{Answer, Plugin, Records};
 
@@ -84,10 +84,12 @@ pub enum ListError {
 /// The names of a blocklist and of its allowlist, each matching itself and its subdomains without regard to case
 /// (RFC 4343 §3).
 ///
-/// Each name is held as a 64-bit hash of its lowercase wire form under a key drawn for these lists (`SipHash`, as
-/// std's `HashMap`), 8 bytes instead of the name and its allocation (D58). Two names share a hash with a chance
-/// of 2⁻⁶⁴ per pair: a query of a few labels against 2M names hits a name it does not hold once in 10¹² queries,
-/// and the key, unknown outside the process, keeps a client from aiming at one.
+/// Each name is held as a 64-bit hash, 8 bytes instead of the name and its allocation (D58), chained from the
+/// root: `h = SipHash(parent ‖ label)`, the label with its length byte, under a key drawn for these lists (as
+/// std's `HashMap`), so that hashing a name hashes each of its suffixes on the way (D110). The key, unknown outside
+/// the process, keeps a client from aiming at a collision. A collision at a label carries to the names below it,
+/// so two names share a hash with a chance of at most 2⁻⁶⁴ per label: a query of a few labels against 2M names
+/// hits a name it does not hold about once in 10¹¹ queries.
 #[derive(Default)]
 pub struct Lists {
     block: Set,
@@ -95,8 +97,72 @@ pub struct Lists {
     keys: RandomState,
 }
 
-/// The hashes of the names of a list.
-type Set = HashSet<u64, BuildHasherDefault<Same>>;
+/// How many labels a name of a list has: from 1, the root being no name, to [`MAX_LABELS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabelCount(u8);
+
+impl LabelCount {
+    fn new(labels: u8) -> Option<Self> {
+        (1..=MAX_LABELS)
+            .contains(&usize::from(labels))
+            .then_some(Self(labels))
+    }
+
+    const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+/// The label counts of a set of names, a bit each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LabelCounts(u128);
+
+impl LabelCounts {
+    const fn with(self, count: LabelCount) -> Self {
+        Self(self.0 | 1 << count.get())
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    const fn holds(self, count: LabelCount) -> bool {
+        self.0 >> count.get() & 1 == 1
+    }
+
+    /// The fewest labels of a name, none for no names.
+    const fn shortest(self) -> Option<u32> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(self.0.trailing_zeros())
+        }
+    }
+
+    /// The most labels of a name, 0 for no names.
+    fn longest(self) -> u32 {
+        self.0.checked_ilog2().unwrap_or(0)
+    }
+}
+
+/// The hashes of the names of a list, and which label counts they have: a suffix of another count is not looked
+/// up, and none longer than the longest name is hashed (D110).
+#[derive(Default)]
+struct Set {
+    hashes: HashSet<u64, BuildHasherDefault<Same>>,
+    counts: LabelCounts,
+}
+
+impl Set {
+    fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    /// Whether a name of `count` labels hashing to `hash` is held.
+    fn holds(&self, count: LabelCount, hash: u64) -> bool {
+        self.counts.holds(count) && self.hashes.contains(&hash)
+    }
+}
 
 /// The hasher of [`Set`]: its keys are hashes already, uniform, so a key is its own hash.
 #[derive(Default)]
@@ -147,22 +213,32 @@ impl Lists {
     ///
     /// [`ListError::Line`] for a line of a [`Origin::Local`] text that is not a name, [`ListError::NotAList`] for a
     /// [`Origin::Downloaded`] text with no lines or fewer than half of them read; `list` is unchanged then.
+    ///
+    /// # Panics
+    ///
+    /// Never: a name read has a label.
     pub fn read(&mut self, list: List, origin: Origin, text: &str) -> Result<Read, ListError> {
+        let mut counts = LabelCounts::default();
         let (hashes, skipped) = scan(origin, text, |name| {
             let mut buf = [0; MAX_NAME_LEN];
-            self.keys.hash_one(text::key(name, &mut buf))
+            let (count, hash) = suffixes(&self.keys, text::key(name, &mut buf))
+                .last()
+                .expect("a name read has a label");
+            counts = counts.with(count);
+            hash
         })?;
         let set = match list {
             List::Block => &mut self.block,
             List::Allow => &mut self.allow,
         };
+        set.counts = set.counts.union(counts);
         let mut read = Read {
             skipped,
             ..Read::default()
         };
-        set.reserve(hashes.len());
+        set.hashes.reserve(hashes.len());
         for hash in hashes {
-            if set.insert(hash) {
+            if set.hashes.insert(hash) {
                 read.names += 1;
             } else {
                 read.duplicates += 1;
@@ -196,15 +272,97 @@ impl Lists {
         }
     }
 
-    /// Whether the name `key` is blocked: it or a parent is listed, and neither is allowed.
-    fn blocks(&self, key: &[u8]) -> bool {
-        let listed = |set: &Set| {
-            // Most names are in neither list: the allowlist is looked at only on a hit.
-            std::iter::once(key)
-                .chain(parents(key))
-                .any(|key| set.contains(&self.keys.hash_one(key)))
+    /// Whether the name `key` is blocked: it or a parent is listed, and neither is allowed. Its suffixes are
+    /// hashed from the root, once, as far as the longest name of either list that could still decide.
+    fn blocks(&self, key: text::Key<'_>) -> bool {
+        // Nothing to block: not even the labels are counted.
+        let Some(shortest) = self.block.counts.shortest() else {
+            return false;
         };
-        listed(&self.block) && !listed(&self.allow)
+        let walk = suffixes(&self.keys, key);
+        if u32::from(walk.labels()) < shortest {
+            return false;
+        }
+        let mut blocked = false;
+        for (count, hash) in walk {
+            if self.allow.holds(count, hash) {
+                return false;
+            }
+            blocked |= self.block.holds(count, hash);
+            // Once blocked, only an allowed parent matters; before, only a blocked one.
+            let limit = if blocked {
+                self.allow.counts.longest()
+            } else {
+                self.block.counts.longest()
+            };
+            if u32::from(count.get()) >= limit {
+                break;
+            }
+        }
+        blocked
+    }
+}
+
+/// The suffixes of a name, from the root out, the root left out: a root entry would block every name, and the
+/// root name reads as no name.
+fn suffixes<'k>(keys: &'k RandomState, key: text::Key<'k>) -> Suffixes<'k> {
+    let key = key.as_bytes();
+    // Where each label starts: suffixes are found from the end, but labels only from the front.
+    let mut starts = [0; MAX_LABELS];
+    let mut total = 0;
+    let mut at = 0;
+    while let Some(&len) = key.get(at).filter(|&&len| len != 0)
+        && let Some(slot) = starts.get_mut(usize::from(total))
+        && let Ok(start) = u8::try_from(at)
+    {
+        *slot = start;
+        total += 1;
+        at += 1 + usize::from(len);
+    }
+    Suffixes {
+        keys,
+        key,
+        starts,
+        total,
+        visited: 0,
+        hash: 0,
+    }
+}
+
+/// The suffixes of a name with their label counts and hashes, nearest to the root first (see [`suffixes`]): each
+/// hash chains the one before it, so the walk costs one short hash per suffix.
+struct Suffixes<'k> {
+    keys: &'k RandomState,
+    key: &'k [u8],
+    starts: [u8; MAX_LABELS],
+    total: u8,
+    visited: u8,
+    hash: u64,
+}
+
+impl Suffixes<'_> {
+    /// How many labels the name has.
+    const fn labels(&self) -> u8 {
+        self.total
+    }
+}
+
+impl Iterator for Suffixes<'_> {
+    type Item = (LabelCount, u64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let visited = self.visited.checked_add(1)?;
+        let start = *self
+            .starts
+            .get(usize::from(self.total.checked_sub(visited)?))?;
+        let rest = self.key.get(usize::from(start)..)?;
+        let label = rest.get(..=usize::from(*rest.first()?))?;
+        let mut hasher = self.keys.build_hasher();
+        hasher.write_u64(self.hash);
+        hasher.write(label);
+        self.hash = hasher.finish();
+        self.visited = visited;
+        Some((LabelCount::new(visited)?, self.hash))
     }
 }
 
@@ -310,17 +468,6 @@ fn name(line: usize, field: &str) -> Result<Name<'static>, LineError> {
         return Err(error(TextErrorKind::Invalid("host name")));
     }
     Name::from_labels(host.split('.').map(str::as_bytes)).map_err(|e| error(TextErrorKind::Name(e)))
-}
-
-/// The keys of the parents of the name `key`, nearest first, the root left out: a root entry would block every
-/// name, and the root name reads as no name.
-fn parents(key: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut at = 0;
-    std::iter::from_fn(move || {
-        let len = *key.get(at)?;
-        at += 1 + usize::from(len);
-        key.get(at..).filter(|suffix| suffix.len() > 1)
-    })
 }
 
 /// A plugin answering queries for blocked names as its [`Action`] says, whatever their class (D110); other names go

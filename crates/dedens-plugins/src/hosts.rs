@@ -104,7 +104,7 @@ fn pending_of<'p>(
     line: usize,
     buf: &mut [u8; MAX_NAME_LEN],
 ) -> &'p mut Pending {
-    match pending.entry(text::key(name, buf).into()) {
+    match pending.entry(text::key(name, buf).as_bytes().into()) {
         Slot::Occupied(slot) => {
             let at = slot.into_mut();
             at.line = line;
@@ -153,7 +153,9 @@ impl Plugin for Hosts {
             return None;
         }
         let mut buf = [0; MAX_NAME_LEN];
-        let entry = self.names.get(text::key(&question.name, &mut buf))?;
+        let entry = self
+            .names
+            .get(text::key(&question.name, &mut buf).as_bytes())?;
         let records = match question.qtype {
             RecordType::A => entry.a.as_ref(),
             RecordType::AAAA => entry.aaaa.as_ref(),

@@ -1,12 +1,13 @@
-//! The blocklist plugin (D56, D58) on the heads of published lists: reading them, and `Pipeline::query` for a
-//! blocked name, an allowed one under a blocked parent, and one in no list, which goes upstream.
+//! The blocklist plugin (D56, D58, D110) on the heads of published lists: reading them, `Pipeline::query` for a
+//! blocked name, an allowed one under a blocked parent, and one in no list, which goes upstream, and the lookup
+//! alone (`Plugin::answer`) for names of 1 to 127 labels.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use dedens_plugins::{Action, Blocklist, List, Lists, Origin};
-use dedens_proto::{Message, Question, RecordType, Ttl};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_proto::{Message, Query, Question, RecordType, Ttl};
+use dedens_server::{Forward, Pipeline, Plugin, Stage, Step, Transport};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -54,6 +55,10 @@ const NAMES: [&str; 3] = ["x.b.adform.net.", "x.track.adform.net.", "www.example
 
 #[divan::bench(args = NAMES)]
 fn query(bencher: divan::Bencher<'_, '_>, name: &str) {
+    query_pipeline(bencher, name);
+}
+
+fn query_pipeline(bencher: divan::Bencher<'_, '_>, name: &str) {
     let upstream = SocketAddr::from(([192, 0, 2, 53], 53));
     let pipeline = Pipeline::new(vec![
         Stage::Plugin(Box::new(Blocklist::new(
@@ -78,5 +83,45 @@ fn query(bencher: divan::Bencher<'_, '_>, name: &str) {
             &mut out,
         );
         assert_eq!(matches!(step, Step::Reply(_)), blocked);
+    });
+}
+
+/// A name in no list of `labels` one-byte labels (127 of them are the longest name, 255 bytes on the wire), the
+/// whole `Pipeline::query`: decoding the query and the name is in the cost, as is the lookup.
+#[divan::bench(args = [1, 3, 10, 127])]
+fn query_labels(bencher: divan::Bencher<'_, '_>, labels: usize) {
+    query_pipeline(bencher, &"a.".repeat(labels));
+}
+
+/// The lookup alone (D110): `Plugin::answer` on a query read once, for a name in no list of `labels` labels:
+/// the lowercase key, the label walk and the hashes of the labels up to the longest listed name.
+#[divan::bench(args = [1, 3, 10, 127])]
+fn lookup(bencher: divan::Bencher<'_, '_>, labels: usize) {
+    lookup_answer(bencher, &"a.".repeat(labels), lists(), false);
+}
+
+/// The lookup alone for a name `labels` labels deep under the listed `adform.net.`, so that the allowlist is
+/// looked up too: 123 labels, two of them `adform.net`, are the longest name.
+#[divan::bench(args = [10, 123])]
+fn lookup_blocked(bencher: divan::Bencher<'_, '_>, labels: usize) {
+    let name = format!("{}adform.net.", "a.".repeat(labels - 2));
+    lookup_answer(bencher, &name, lists(), true);
+}
+
+/// The lookup alone against lists that hold nothing: what the walk costs by itself.
+#[divan::bench(args = [1, 3, 10, 127])]
+fn lookup_empty(bencher: divan::Bencher<'_, '_>, labels: usize) {
+    lookup_answer(bencher, &"a.".repeat(labels), Lists::new(), false);
+}
+
+fn lookup_answer(bencher: divan::Bencher<'_, '_>, name: &str, lists: Lists, blocked: bool) {
+    let blocklist = Blocklist::new(lists, Action::Nxdomain, Ttl::ZERO);
+    let name = name.parse().expect("a name");
+    let wire = Message::query(7, Question::new(name, RecordType::A))
+        .to_vec()
+        .expect("a query fits");
+    let query = Query::read(&wire).expect("a query");
+    bencher.bench_local(|| {
+        assert_eq!(blocklist.answer(black_box(&query)).is_some(), blocked);
     });
 }
