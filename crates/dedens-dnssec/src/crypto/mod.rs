@@ -10,7 +10,7 @@ mod digest;
 mod key_tag;
 mod verify;
 
-pub use budget::{Budget, BudgetExhausted};
+pub use budget::{Budget, BudgetExhausted, Nsec3Hashes, Verifications};
 pub use digest::{
     Digest, UnsupportedDigest, UnsupportedNsec3Hash, ds_digest, nsec3_hash, supported_digest,
 };

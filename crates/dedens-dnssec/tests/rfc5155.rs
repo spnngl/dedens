@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Rr, Rrsig, b64, dnskey_rdata, name, signed_data};
+use common::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, name, signed_data};
 use data_encoding::BASE32HEX_NOPAD;
 use dedens_dnssec::crypto::{UnsupportedNsec3Hash, VerifyError, key_tag, nsec3_hash, verify};
 use dedens_proto::{Nsec3HashAlgorithm, SecAlgorithm};
@@ -112,16 +112,22 @@ fn the_512_bit_zone_key_of_appendix_a_is_unusable() {
         algorithm: 7,
         labels: 1,
         original_ttl: 3600,
-        expiration: 1_429_573_199,
+        expiration: 1_429_574_399,
         inception: 1_129_852_800,
         key_tag: 40430,
         signer: "example.",
     };
+    // `example. 3600 IN SOA ns1.example. bugs.x.w.example. 1 3600 300 3600000 3600`.
+    let mut soa = canonical_name("ns1.example.");
+    soa.extend(canonical_name("bugs.x.w.example."));
+    for field in [1_u32, 3600, 300, 3_600_000, 3600] {
+        soa.extend(field.to_be_bytes());
+    }
     let signed = signed_data(
         &rrsig,
         &[Rr {
             owner: "example.",
-            rdata: vec![],
+            rdata: soa,
         }],
     );
     let signature = b64("Hu25UIyNPmvPIVBrldN+9Mlp9Zql39qaUd8i

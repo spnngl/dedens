@@ -50,13 +50,30 @@ pub fn supported_digest(digest: DigestType) -> bool {
 
 /// The owner name in canonical wire form (RFC 4034 §6.2): uncompressed, ASCII letters lowercased. Length
 /// octets are at most 63, below `A`, so lowercasing the whole wire form is exact.
-fn canonical_owner<'b>(owner: &Name<'_>, buf: &'b mut [u8; MAX_NAME_LEN]) -> &'b [u8] {
-    let mut scratch = [0_u8; MAX_NAME_LEN];
-    let wire = owner.to_wire(&mut scratch);
-    let (copy, _) = buf.split_at_mut(wire.len());
-    copy.copy_from_slice(wire);
-    copy.make_ascii_lowercase();
-    copy
+struct CanonicalOwner {
+    bytes: [u8; MAX_NAME_LEN],
+    len: usize,
+}
+
+impl CanonicalOwner {
+    fn new(owner: &Name<'_>) -> Self {
+        let mut scratch = [0_u8; MAX_NAME_LEN];
+        let wire = owner.to_wire(&mut scratch);
+        let mut bytes = [0_u8; MAX_NAME_LEN];
+        for (to, from) in bytes.iter_mut().zip(wire) {
+            *to = from.to_ascii_lowercase();
+        }
+        Self {
+            bytes,
+            len: wire.len(),
+        }
+    }
+}
+
+impl AsRef<[u8]> for CanonicalOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
 }
 
 /// The digest of a DNSKEY a DS record carries (RFC 4034 §5.1.4): `digest(owner | DNSKEY RDATA)`, the owner
@@ -71,9 +88,8 @@ pub fn ds_digest(
     dnskey_rdata: &[u8],
 ) -> Result<Digest, UnsupportedDigest> {
     let algorithm = digest_algorithm(digest).ok_or(UnsupportedDigest(digest))?;
-    let mut buf = [0_u8; MAX_NAME_LEN];
     let mut context = Context::new(algorithm);
-    context.update(canonical_owner(owner, &mut buf));
+    context.update(CanonicalOwner::new(owner).as_ref());
     context.update(dnskey_rdata);
     let hash = context.finish();
     let mut out = Digest {
@@ -102,8 +118,7 @@ pub fn nsec3_hash(
     if algorithm != Nsec3HashAlgorithm::SHA1 {
         return Err(UnsupportedNsec3Hash(algorithm));
     }
-    let mut buf = [0_u8; MAX_NAME_LEN];
-    let mut hash = sha1_of(canonical_owner(owner, &mut buf), salt);
+    let mut hash = sha1_of(CanonicalOwner::new(owner).as_ref(), salt);
     for _ in 0..iterations {
         hash = sha1_of(&hash, salt);
     }
@@ -115,5 +130,9 @@ fn sha1_of(input: &[u8], salt: &[u8]) -> [u8; 20] {
     let mut context = Context::new(&SHA1_FOR_LEGACY_USE_ONLY);
     context.update(input);
     context.update(salt);
-    <[u8; 20]>::try_from(context.finish().as_ref()).expect("SHA-1 digests are 20 octets")
+    let mut out = [0_u8; 20];
+    for (to, from) in out.iter_mut().zip(context.finish().as_ref()) {
+        *to = *from;
+    }
+    out
 }

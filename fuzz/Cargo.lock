@@ -453,10 +453,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-dnssec"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "ring",
+ "thiserror",
+]
+
+[[package]]
 name = "dedens-fuzz"
 version = "0.0.0"
 dependencies = [
  "dedens-cache",
+ "dedens-dnssec",
  "dedens-net",
  "dedens-plugins",
  "dedens-proto",

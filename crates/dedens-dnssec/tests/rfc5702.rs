@@ -6,7 +6,10 @@
 
 mod common;
 
-use common::{Rr, Rrsig, b64, dnskey_rdata, signed_data};
+use common::{
+    Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE, URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2,
+    URI_MX_SIGNATURE, URI_ZSK, b64, dnskey_rdata, signed_data,
+};
 use dedens_dnssec::crypto::{VerifyError, key_tag, supported, verify};
 use dedens_proto::SecAlgorithm;
 
@@ -23,45 +26,6 @@ const SHA256_KEY: &str = "AwEAAcFcGsaxxdgiuuGmCkVI
 const SHA256_SIGNATURE: &str = "kRCOH6u7l0QGy9qpC9
     l1sLncJcOKFLJ7GhiUOibu4teYp5VE9RncriShZNz85mwlMgNEa
     cFYK/lPtPiVYP4bwg==";
-
-// RFC 5702 §6.2: 1024 bits.
-const SHA512_KEY: &str = "AwEAAdHoNTOW+et86KuJOWRD
-    p1pndvwb6Y83nSVXXyLA3DLroROUkN6X0O6pnWnjJQujX/AyhqFD
-    xj13tOnD9u/1kTg7cV6rklMrZDtJCQ5PCl/D7QNPsgVsMu1J2Q8g
-    pMpztNFLpPBz1bWXjDtaR7ZQBlZ3PFY12ZTSncorffcGmhOL";
-const SHA512_SIGNATURE: &str = "tsb4wnjRUDnB1BUi+t
-    6TMTXThjVnG+eCkWqjvvjhzQL1d0YRoOe0CbxrVDYd0xDtsuJRa
-    eUw1ep94PzEWzr0iGYgZBWm/zpq+9fOuagYJRfDqfReKBzMweOL
-    DiNa8iP5g9vMhpuv6OPlvpXwm9Sa9ZXIbNl1MBGk0fthPgxdDLw
-    =";
-
-// RFC 8976 §A.4, uri.arpa. zone: the ZSK (1024 bits) and its signature over the MX `RRset`.
-const URI_ZSK: &str = "AwEAAbMxuFuLeVDuOwIMzYOTD/bTREjLflo7wOi6ieIJhqltEzgjNzmWJf
-    9kGwwDmzxU7kbthMEhBNBZNn84zmcyRSCMzuStWveL7xmqqUlE3swL8kLO
-    vdZvc75XnmpHrk3ndTyEb6eZM7slh2C63Oh6K8VR5VkiZAkEGg0uZIT3Nj
-    sF";
-const URI_MX_SIGNATURE: &str = "kQAJQivmv6A5hqYBK8h6Z13ESY69gmosXwKI6WE09I8RFetfrxr24ecdnY
-    d0lpnDtgNNSoHkYRSOoB+C4+zuJsoyAAzGo9uoWMWj97/2xeGhf3PTC9me
-    Q9Ohi6hul9By7OR76XYmGhdWX8PBi60RUmZ1guslFBfQ8izwPqzuphs=";
-// The two KSKs (2048 bits) and the signature of key 12670 over the DNSKEY `RRset`.
-const URI_KSK_1: &str = "AwEAAdkTaWkZtZuRh7/OobBUFxM+ytTst+bCu0r9w+rEwXD7GbDs0pIMhM
-    enrZzoAvmv1fQxw2MGs6Ri6yPKfNULcFOSt9l8i6BVBLI+SKTY6XXeDUQp
-    SEmSaxohHeRPMQFzpysfjxINp/L2rGtZ7yPmxY/XRiFPSO0myqwGJa9r06
-    Zw9CHM5UDHKWV/E+zxPFq/I7CfPbrrzbUotBX7Z6Vh3Sarllbe8cGUB2UF
-    NaTRgwB0TwDBPRD5ER3w2Dzbry9NhbElTr7vVfhaGWeOGuqAUXwlXEg6Cr
-    NkmJXJ2F1Rzr9WHUzhp7uWxhAbmJREGfi2dEyPAbUAyCjBqhFaqglknvc=";
-const URI_KSK_2: &str = "AwEAAenQaBoFmDmvRT+/H5oNbm0Tr5FmNRNDEun0Jpj/ELkzeUrTWhNpQm
-    ZeIMC8I0kZ185tEvOnRvn8OvV39B17QIdrvvKGIh2HlgeDRCLolhaojfn2
-    QM0DStjF/WWHpxJOmE6CIuvhqYEU37yoJscGAPpPVPzNvnL1HhYTaao1VR
-    YWQ/maMrJ+bfHg+YX1N6M/8MnRjIKBif1FWjbCKvsn6dnuGGL9oCWYUFJ3
-    DwofXuhgPyZMkzPc88YkJj5EMvbMH4wtelbCwC+ivx732l0w/rXJn0ciQS
-    OgoeVvDio8dIJmWQITWQAuP+q/ZHFEFHPlrP3gvQh5mcVS48eLX71Bq7c=";
-const URI_DNSKEY_SIGNATURE: &str = "DBE2gkKAoxJCfz47KKxzoImN/0AKArhIVHE7TyTwy0DdRPo44V5R+vL6th
-    UxlQ1CJi2Rw0jwAXymx5Y3Q873pOEllH+4bJoIT4dmoBmPXfYWW7Clvw9U
-    PKHRP0igKHmCVwIeBYDTU3gfLcMTbR4nEWPDN0GxlL1Mf7ITaC2Ioabo79
-    Ip3M/MR8I3Vx/xZ4ZKKPHtLn3xUuJluPNanqJrED2gTslL2xWZ1tqjsAjJ
-    v7JnJo2HJ8XVRB5zBto0IaJ2oBlqcjdcQ/0VlyoM8uOy1pDwHQ2BJl7322
-    gNMHBP9HSiUPIOaIDNUCwW8eUcW6DIUk+s9u3GN1uTqwWzsYB/rA==";
 
 fn example_net_a_signed(algorithm: u8, key_tag: u16) -> Vec<u8> {
     let rrsig = Rrsig {
@@ -242,7 +206,8 @@ fn rsasha256_key_signing_key_of_2048_bits_verifies_the_dnskey_rrset() {
 
 #[test]
 fn rsa_key_with_a_three_octet_exponent_length_is_the_same_key() {
-    // RFC 3110 §2: a zero octet and two octets of length, though the exponent is short.
+    // RFC 3110 §2 reserves a zero octet and two octets of length for exponents over 255 octets; a short one in
+    // that form is accepted (D71).
     let key = public_key(URI_ZSK);
     let (&exponent_len, rest) = key.split_first().expect("a key");
     let (exponent, modulus) = rest.split_at(usize::from(exponent_len));
@@ -256,6 +221,28 @@ fn rsa_key_with_a_three_octet_exponent_length_is_the_same_key() {
             &long_form,
             &uri_mx_signed(),
             &signature
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn rsa_key_with_leading_zeros_is_the_same_key() {
+    // RFC 3110 §2 forbids leading zero octets in the exponent and the modulus; zones carry them, so they are
+    // stripped (D71).
+    let key = public_key(URI_ZSK);
+    let (&exponent_len, rest) = key.split_first().expect("a key");
+    let (exponent, modulus) = rest.split_at(usize::from(exponent_len));
+    let mut padded = vec![exponent_len + 1, 0];
+    padded.extend(exponent);
+    padded.push(0);
+    padded.extend(modulus);
+    assert_eq!(
+        verify(
+            SecAlgorithm::RSASHA256,
+            &padded,
+            &uri_mx_signed(),
+            &b64(URI_MX_SIGNATURE)
         ),
         Ok(())
     );

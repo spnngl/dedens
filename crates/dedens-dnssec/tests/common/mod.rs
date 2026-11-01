@@ -11,6 +11,7 @@ use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
 use dedens_proto::Name;
 use dedens_proto::name::MAX_NAME_LEN;
 
+// spellchecker:off
 /// RFC 4034 §5.4: the key of `dskey.example.com.` (algorithm 5, key tag 60485), the DNSKEY that RFC 4034 and
 /// RFC 4509 give a DS for.
 pub const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
@@ -21,6 +22,7 @@ pub const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
     Uh6DhweJBjEVv5f2wwjM9Xzc
     nOf+EPbtG9DMBmADjFDc2w/r
     ljwvFw==";
+// spellchecker:on
 
 /// Base64 as the RFCs print it: split over lines and spaces.
 pub fn b64(text: &str) -> Vec<u8> {
@@ -101,3 +103,82 @@ pub fn signed_data(rrsig: &Rrsig<'_>, rrset: &[Rr<'_>]) -> Vec<u8> {
     }
     data
 }
+
+// spellchecker:off
+// RFC 4035 Appendix A: the zone signing key (tag 38519) and key signing key (tag 9465) of `example.`.
+pub const RFC4034_ZSK: &str = "AQOy1bZVvpPqhg4j7EJoM9rI3ZmyEx2OzDBV
+    rZy/lvI5CQePxXHZS4i8dANH4DX3tbHol61e
+    k8EFMcsGXxKciJFHyhl94C+NwILQdzsUlSFo
+    vBZsyl/NX6yEbtw/xN9ZNcrbYvgjjZ/UVPZI
+    ySFNsgEYvh0z2542lzMKR4Dh8uZffQ==";
+
+// ns1.example. 3600 IN A 192.0.2.1, signed by the RFC4034_ZSK.
+pub const RFC4034_NS1_SIGNATURE: &str = "F1C9HVhIcs10cZU09G5yIVfKJy5yRQQ3qVet
+    5pGhp82pzhAOMZ3K22JnmK4c+IjUeFp/to06
+    im5FVpHtbFisdjyPq84bhTv8vrXt5AB1wNB+
+    +iAqvIfdgW4sFNC6oADb1hK8QNauw9VePJhK
+    v/iVXSYC0b7mPSU+EOlknFpVECs=";
+
+// RFC 5702 §6.2: 1024 bits.
+pub const SHA512_KEY: &str = "AwEAAdHoNTOW+et86KuJOWRD
+    p1pndvwb6Y83nSVXXyLA3DLroROUkN6X0O6pnWnjJQujX/AyhqFD
+    xj13tOnD9u/1kTg7cV6rklMrZDtJCQ5PCl/D7QNPsgVsMu1J2Q8g
+    pMpztNFLpPBz1bWXjDtaR7ZQBlZ3PFY12ZTSncorffcGmhOL";
+
+pub const SHA512_SIGNATURE: &str = "tsb4wnjRUDnB1BUi+t
+    6TMTXThjVnG+eCkWqjvvjhzQL1d0YRoOe0CbxrVDYd0xDtsuJRa
+    eUw1ep94PzEWzr0iGYgZBWm/zpq+9fOuagYJRfDqfReKBzMweOL
+    DiNa8iP5g9vMhpuv6OPlvpXwm9Sa9ZXIbNl1MBGk0fthPgxdDLw
+    =";
+
+// RFC 8976 §A.4, uri.arpa. zone: the ZSK (1024 bits) and its signature over the MX `RRset`.
+pub const URI_ZSK: &str = "AwEAAbMxuFuLeVDuOwIMzYOTD/bTREjLflo7wOi6ieIJhqltEzgjNzmWJf
+    9kGwwDmzxU7kbthMEhBNBZNn84zmcyRSCMzuStWveL7xmqqUlE3swL8kLO
+    vdZvc75XnmpHrk3ndTyEb6eZM7slh2C63Oh6K8VR5VkiZAkEGg0uZIT3Nj
+    sF";
+
+pub const URI_MX_SIGNATURE: &str = "kQAJQivmv6A5hqYBK8h6Z13ESY69gmosXwKI6WE09I8RFetfrxr24ecdnY
+    d0lpnDtgNNSoHkYRSOoB+C4+zuJsoyAAzGo9uoWMWj97/2xeGhf3PTC9me
+    Q9Ohi6hul9By7OR76XYmGhdWX8PBi60RUmZ1guslFBfQ8izwPqzuphs=";
+
+// The two KSKs (2048 bits) and the signature of key 12670 over the DNSKEY `RRset`.
+pub const URI_KSK_1: &str = "AwEAAdkTaWkZtZuRh7/OobBUFxM+ytTst+bCu0r9w+rEwXD7GbDs0pIMhM
+    enrZzoAvmv1fQxw2MGs6Ri6yPKfNULcFOSt9l8i6BVBLI+SKTY6XXeDUQp
+    SEmSaxohHeRPMQFzpysfjxINp/L2rGtZ7yPmxY/XRiFPSO0myqwGJa9r06
+    Zw9CHM5UDHKWV/E+zxPFq/I7CfPbrrzbUotBX7Z6Vh3Sarllbe8cGUB2UF
+    NaTRgwB0TwDBPRD5ER3w2Dzbry9NhbElTr7vVfhaGWeOGuqAUXwlXEg6Cr
+    NkmJXJ2F1Rzr9WHUzhp7uWxhAbmJREGfi2dEyPAbUAyCjBqhFaqglknvc=";
+
+pub const URI_KSK_2: &str = "AwEAAenQaBoFmDmvRT+/H5oNbm0Tr5FmNRNDEun0Jpj/ELkzeUrTWhNpQm
+    ZeIMC8I0kZ185tEvOnRvn8OvV39B17QIdrvvKGIh2HlgeDRCLolhaojfn2
+    QM0DStjF/WWHpxJOmE6CIuvhqYEU37yoJscGAPpPVPzNvnL1HhYTaao1VR
+    YWQ/maMrJ+bfHg+YX1N6M/8MnRjIKBif1FWjbCKvsn6dnuGGL9oCWYUFJ3
+    DwofXuhgPyZMkzPc88YkJj5EMvbMH4wtelbCwC+ivx732l0w/rXJn0ciQS
+    OgoeVvDio8dIJmWQITWQAuP+q/ZHFEFHPlrP3gvQh5mcVS48eLX71Bq7c=";
+
+pub const URI_DNSKEY_SIGNATURE: &str = "DBE2gkKAoxJCfz47KKxzoImN/0AKArhIVHE7TyTwy0DdRPo44V5R+vL6th
+    UxlQ1CJi2Rw0jwAXymx5Y3Q873pOEllH+4bJoIT4dmoBmPXfYWW7Clvw9U
+    PKHRP0igKHmCVwIeBYDTU3gfLcMTbR4nEWPDN0GxlL1Mf7ITaC2Ioabo79
+    Ip3M/MR8I3Vx/xZ4ZKKPHtLn3xUuJluPNanqJrED2gTslL2xWZ1tqjsAjJ
+    v7JnJo2HJ8XVRB5zBto0IaJ2oBlqcjdcQ/0VlyoM8uOy1pDwHQ2BJl7322
+    gNMHBP9HSiUPIOaIDNUCwW8eUcW6DIUk+s9u3GN1uTqwWzsYB/rA==";
+
+pub const P256_KEY: &str = "GojIhhXUN/u4v54ZQqGSnyhWJwaubCvTmeexv7bR6edb
+    krSqQpF64cYbcB7wNcP+e+MAnLr+Wi9xMWyQLc8NAA==";
+
+pub const P256_SIGNATURE: &str = "qx6wLYqmh+l9oCKTN6qIc+bw6ya+KJ8oMz0YP107epXA
+    yGmt+3SNruPFKG7tZoLBLlUzGGus7ZwmwWep666VCw==";
+
+pub const P384_KEY: &str = "xKYaNhWdGOfJ+nPrL8/arkwf2EY3MDJ+SErKivBVSum1
+    w/egsXvSADtNJhyem5RCOpgQ6K8X1DRSEkrbYQ+OB+v8
+    /uX45NBwY8rp65F6Glur8I/mlVNgF6W/qTI37m40";
+
+pub const P384_SIGNATURE: &str = "/L5hDKIvGDyI1fcARX3z65qrmPsVz73QD1Mr5CEqOiLP
+    95hxQouuroGCeZOvzFaxsT8Glr74hbavRKayJNuydCuz
+    WTSSPdz7wnqXL5bdcJzusdnI0RSMROxxwGipWcJm";
+
+pub const ED25519_KEY_1: &str = "l02Woi0iS8Aa25FQkUd9RMzZHJpBoRQwAQEX1SxZJA4=";
+
+pub const ED25519_SIGNATURE_1: &str = "Edk+IB9KNNWg0HAjm7FazXyrd5m3Rk8zNZbvNpAcM+eysqcUOMIjWoevFkj
+    H5GaMWeG96GUVZu6ECKOQmemHDg==";
+// spellchecker:on

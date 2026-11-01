@@ -1,5 +1,5 @@
 //! DNSSEC crypto (D71): one signature verification per validated algorithm and key size, on the RFC examples the
-//! tests verify (`crates/dedens-dnssec/tests/rfcNNNN.rs`; the strings below are copied from them), the DS digests
+//! tests verify (their keys and signatures are in `crates/dedens-dnssec/tests/common/mod.rs`), the DS digests
 //! and the NSEC3 hash. The numbers size `Budget`'s defaults (`docs/benchmarks.md`).
 
 use std::hint::black_box;
@@ -10,74 +10,16 @@ use dedens_proto::{DigestType, Nsec3HashAlgorithm, SecAlgorithm};
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]
 mod common;
 
-use common::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, name, signed_data};
+use common::{
+    ED25519_KEY_1, ED25519_SIGNATURE_1, P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE,
+    RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE,
+    URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2, URI_MX_SIGNATURE, URI_ZSK, b64, canonical_name,
+    dnskey_rdata, name, signed_data,
+};
 
 fn main() {
     divan::main();
 }
-
-// RFC 4035 Appendix A (RSASHA1, 1024 bits).
-const ZSK: &str = "AQOy1bZVvpPqhg4j7EJoM9rI3ZmyEx2OzDBV
-    rZy/lvI5CQePxXHZS4i8dANH4DX3tbHol61e
-    k8EFMcsGXxKciJFHyhl94C+NwILQdzsUlSFo
-    vBZsyl/NX6yEbtw/xN9ZNcrbYvgjjZ/UVPZI
-    ySFNsgEYvh0z2542lzMKR4Dh8uZffQ==";
-const NS1_SIGNATURE: &str = "F1C9HVhIcs10cZU09G5yIVfKJy5yRQQ3qVet
-    5pGhp82pzhAOMZ3K22JnmK4c+IjUeFp/to06
-    im5FVpHtbFisdjyPq84bhTv8vrXt5AB1wNB+
-    +iAqvIfdgW4sFNC6oADb1hK8QNauw9VePJhK
-    v/iVXSYC0b7mPSU+EOlknFpVECs=";
-// RFC 5702 §6.2 (RSASHA512, 1024 bits).
-const SHA512_KEY: &str = "AwEAAdHoNTOW+et86KuJOWRD
-    p1pndvwb6Y83nSVXXyLA3DLroROUkN6X0O6pnWnjJQujX/AyhqFD
-    xj13tOnD9u/1kTg7cV6rklMrZDtJCQ5PCl/D7QNPsgVsMu1J2Q8g
-    pMpztNFLpPBz1bWXjDtaR7ZQBlZ3PFY12ZTSncorffcGmhOL";
-const SHA512_SIGNATURE: &str = "tsb4wnjRUDnB1BUi+t
-    6TMTXThjVnG+eCkWqjvvjhzQL1d0YRoOe0CbxrVDYd0xDtsuJRa
-    eUw1ep94PzEWzr0iGYgZBWm/zpq+9fOuagYJRfDqfReKBzMweOL
-    DiNa8iP5g9vMhpuv6OPlvpXwm9Sa9ZXIbNl1MBGk0fthPgxdDLw
-    =";
-// RFC 8976 §A.4 (RSASHA256, 1024 and 2048 bits).
-const URI_ZSK: &str = "AwEAAbMxuFuLeVDuOwIMzYOTD/bTREjLflo7wOi6ieIJhqltEzgjNzmWJf
-    9kGwwDmzxU7kbthMEhBNBZNn84zmcyRSCMzuStWveL7xmqqUlE3swL8kLO
-    vdZvc75XnmpHrk3ndTyEb6eZM7slh2C63Oh6K8VR5VkiZAkEGg0uZIT3Nj
-    sF";
-const URI_MX_SIGNATURE: &str = "kQAJQivmv6A5hqYBK8h6Z13ESY69gmosXwKI6WE09I8RFetfrxr24ecdnY
-    d0lpnDtgNNSoHkYRSOoB+C4+zuJsoyAAzGo9uoWMWj97/2xeGhf3PTC9me
-    Q9Ohi6hul9By7OR76XYmGhdWX8PBi60RUmZ1guslFBfQ8izwPqzuphs=";
-const URI_KSK_1: &str = "AwEAAdkTaWkZtZuRh7/OobBUFxM+ytTst+bCu0r9w+rEwXD7GbDs0pIMhM
-    enrZzoAvmv1fQxw2MGs6Ri6yPKfNULcFOSt9l8i6BVBLI+SKTY6XXeDUQp
-    SEmSaxohHeRPMQFzpysfjxINp/L2rGtZ7yPmxY/XRiFPSO0myqwGJa9r06
-    Zw9CHM5UDHKWV/E+zxPFq/I7CfPbrrzbUotBX7Z6Vh3Sarllbe8cGUB2UF
-    NaTRgwB0TwDBPRD5ER3w2Dzbry9NhbElTr7vVfhaGWeOGuqAUXwlXEg6Cr
-    NkmJXJ2F1Rzr9WHUzhp7uWxhAbmJREGfi2dEyPAbUAyCjBqhFaqglknvc=";
-const URI_KSK_2: &str = "AwEAAenQaBoFmDmvRT+/H5oNbm0Tr5FmNRNDEun0Jpj/ELkzeUrTWhNpQm
-    ZeIMC8I0kZ185tEvOnRvn8OvV39B17QIdrvvKGIh2HlgeDRCLolhaojfn2
-    QM0DStjF/WWHpxJOmE6CIuvhqYEU37yoJscGAPpPVPzNvnL1HhYTaao1VR
-    YWQ/maMrJ+bfHg+YX1N6M/8MnRjIKBif1FWjbCKvsn6dnuGGL9oCWYUFJ3
-    DwofXuhgPyZMkzPc88YkJj5EMvbMH4wtelbCwC+ivx732l0w/rXJn0ciQS
-    OgoeVvDio8dIJmWQITWQAuP+q/ZHFEFHPlrP3gvQh5mcVS48eLX71Bq7c=";
-const URI_DNSKEY_SIGNATURE: &str = "DBE2gkKAoxJCfz47KKxzoImN/0AKArhIVHE7TyTwy0DdRPo44V5R+vL6th
-    UxlQ1CJi2Rw0jwAXymx5Y3Q873pOEllH+4bJoIT4dmoBmPXfYWW7Clvw9U
-    PKHRP0igKHmCVwIeBYDTU3gfLcMTbR4nEWPDN0GxlL1Mf7ITaC2Ioabo79
-    Ip3M/MR8I3Vx/xZ4ZKKPHtLn3xUuJluPNanqJrED2gTslL2xWZ1tqjsAjJ
-    v7JnJo2HJ8XVRB5zBto0IaJ2oBlqcjdcQ/0VlyoM8uOy1pDwHQ2BJl7322
-    gNMHBP9HSiUPIOaIDNUCwW8eUcW6DIUk+s9u3GN1uTqwWzsYB/rA==";
-// RFC 6605 §6 (ECDSAP256SHA256, ECDSAP384SHA384).
-const P256_KEY: &str = "GojIhhXUN/u4v54ZQqGSnyhWJwaubCvTmeexv7bR6edb
-    krSqQpF64cYbcB7wNcP+e+MAnLr+Wi9xMWyQLc8NAA==";
-const P256_SIGNATURE: &str = "qx6wLYqmh+l9oCKTN6qIc+bw6ya+KJ8oMz0YP107epXA
-    yGmt+3SNruPFKG7tZoLBLlUzGGus7ZwmwWep666VCw==";
-const P384_KEY: &str = "xKYaNhWdGOfJ+nPrL8/arkwf2EY3MDJ+SErKivBVSum1
-    w/egsXvSADtNJhyem5RCOpgQ6K8X1DRSEkrbYQ+OB+v8
-    /uX45NBwY8rp65F6Glur8I/mlVNgF6W/qTI37m40";
-const P384_SIGNATURE: &str = "/L5hDKIvGDyI1fcARX3z65qrmPsVz73QD1Mr5CEqOiLP
-    95hxQouuroGCeZOvzFaxsT8Glr74hbavRKayJNuydCuz
-    WTSSPdz7wnqXL5bdcJzusdnI0RSMROxxwGipWcJm";
-// RFC 8080 §6.1 (Ed25519).
-const ED25519_KEY_1: &str = "l02Woi0iS8Aa25FQkUd9RMzZHJpBoRQwAQEX1SxZJA4=";
-const ED25519_SIGNATURE_1: &str = "Edk+IB9KNNWg0HAjm7FazXyrd5m3Rk8zNZbvNpAcM+eysqcUOMIjWoevFkj
-    H5GaMWeG96GUVZu6ECKOQmemHDg==";
 
 /// What one verification takes: the algorithm, the key, the signed data and the signature.
 struct Case {
@@ -142,9 +84,9 @@ fn rsasha1_1024() -> Case {
     );
     case(
         SecAlgorithm::RSASHA1,
-        ZSK,
+        RFC4034_ZSK,
         signed_data(&sig, &[a_record("ns1.example.")]),
-        NS1_SIGNATURE,
+        RFC4034_NS1_SIGNATURE,
     )
 }
 
@@ -302,14 +244,14 @@ fn verify_signature(bencher: divan::Bencher<'_, '_>, which: &str) {
 #[divan::bench(args = [DigestType::SHA1, DigestType::SHA256, DigestType::SHA384])]
 fn ds(bencher: divan::Bencher<'_, '_>, digest: DigestType) {
     let owner = name("example.");
-    let rdata = dnskey_rdata(256, 5, ZSK);
+    let rdata = dnskey_rdata(256, 5, RFC4034_ZSK);
     bencher.bench_local(|| {
         ds_digest(digest, black_box(&owner), black_box(&rdata)).expect("supported")
     });
 }
 
 /// The NSEC3 hash of a name: `iterations + 1` SHA-1 rounds, at 0 (RFC 9276 §3.1), the RFC 5155 example's 12,
-/// and the 150 of RFC 9276 §3.2's old ceiling.
+/// and 150, RFC 5155 §10.3's ceiling for 1024-bit keys.
 #[divan::bench(args = [0, 12, 150])]
 fn nsec3(bencher: divan::Bencher<'_, '_>, iterations: u16) {
     let owner = name("www.example.com.");
