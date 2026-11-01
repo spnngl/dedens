@@ -100,7 +100,22 @@ pub fn acceptor(presented: Arc<Presented>) -> Result<TlsAcceptor, Error> {
 ///
 /// As [`acceptor`].
 pub fn quic_server_config(presented: Arc<Presented>) -> Result<ServerConfig, Error> {
-    let config = server_config(presented, &[&TLS13], ALPN_DOQ)?;
+    quic_server(presented, ALPN_DOQ)
+}
+
+/// The configuration of QUIC connections presenting `presented`, for DNS over HTTPS over HTTP/3 (RFC 8484 §5.2,
+/// RFC 9114 §3.1): as [`quic_server_config`], with ALPN `h3`.
+///
+/// # Errors
+///
+/// As [`acceptor`].
+pub fn h3_server_config(presented: Arc<Presented>) -> Result<ServerConfig, Error> {
+    quic_server(presented, ALPN_H3)
+}
+
+/// [`quic_server_config`] offering `alpn` alone.
+fn quic_server(presented: Arc<Presented>, alpn: &[u8]) -> Result<ServerConfig, Error> {
+    let config = server_config(presented, &[&TLS13], alpn)?;
     let crypto =
         QuicServerConfig::try_from(config).map_err(|error| Error::General(error.to_string()))?;
     Ok(ServerConfig::with_crypto(Arc::new(crypto)))

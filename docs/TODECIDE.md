@@ -36,6 +36,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   advertise `h3`; the two of UncensoredDNS do, but the QUIC handshake stalls after their first flight. They sit
   under `https_h2`, parsed but not asked, until HTTP/2 (step 23). Default: find whether our client or their
   server is at fault for UncensoredDNS.
+- Upstream DoH servers by host name (`servers: ["https://dns.quad9.net/dns-query"]`): D65 takes an address only, so
+  `https://IP[:PORT][/PATH][#NAME]` is what `dedensd` reads (D84). Default: a host name resolved at start and on
+  reload by the system resolver, the first address kept, once `dedensd` has a way to refresh it.
+- `dedensd`'s `https://` listener serves any `Host` or `:authority` on its path, and the pipeline has no client
+  address (the QUIC peer's) to give stages. Default: serve any, add the address when a stage needs it.
 - `dedens -f` aborts the whole run when one server's host name does not resolve (`failed to lookup address
   information`, macOS for `doh.dns.sb`, a CNAME chain), where one query should fail alone. Default: resolve per
   query, as the exchange errors are.

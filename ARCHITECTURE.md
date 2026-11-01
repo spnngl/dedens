@@ -26,7 +26,7 @@ Planned: `dedens-resolver`.
 - Server hot path: bytes → `Query::read` (in place, no allocation) → `Cache::lookup` → hit: copy the stored
   bytes, patch ID, flags, question case and TTLs, append our OPT record (`Edns::append`), pad over TLS and QUIC
   (RFC 8467) → send. Miss: the D23 stage pipeline (plugins, cache, forward), then `Cache::insert`.
-- `dedensd` listens on UDP, TCP, TLS and QUIC (D66) and asks each upstream over its own transport (D65).
+- `dedensd` listens on UDP, TCP, TLS, QUIC (D66) and DoH over HTTP/3 (D84) and asks each upstream over its own transport (D65).
 - Server-side reading of responses: `Message::decode` (records keep RDATA as bytes, D28) → `forward::usable` →
   `Cache::insert`, which encodes it once with its TTL offsets (`message::ttl_offsets`); the reply is then
   served from the entry as a hit (D43).

@@ -94,4 +94,15 @@ fn servers_go_upstream_as_configured() {
     assert_eq!(Server::from(addr).to_string(), "192.0.2.1:853");
     assert_eq!(tls.to_string(), "tls://192.0.2.1:853#dns.example");
     assert_eq!(quic.to_string(), "quic://192.0.2.1:853");
+    let https = Server {
+        addr: "192.0.2.1:443".parse().expect("an address"),
+        via: Via::Https {
+            name: Some("dns.example".into()),
+            path: "/dns-query".into(),
+        },
+    };
+    assert_eq!(
+        https.to_string(),
+        "https://192.0.2.1:443/dns-query#dns.example"
+    );
 }

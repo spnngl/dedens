@@ -21,13 +21,16 @@ use compio::driver::op::RecvFromMultiResult;
 use compio::io::{AsyncWriteExt, BufReader};
 use compio::net::{TcpListener, UdpSocket};
 use compio::quic::{
-    Connection, Endpoint, EndpointConfig, IdleTimeout, SendStream, TransportConfig, VarInt,
+    Connection, Endpoint, EndpointConfig, IdleTimeout, SendStream, ServerConfig, TransportConfig,
+    VarInt,
 };
 use compio::runtime::{JoinHandle, Runtime, spawn};
 use compio::rustls::pki_types::ServerName;
 use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, Server};
+use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
+use dedens_net::https::{Exchange, Pending, Requests};
 use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
@@ -38,6 +41,7 @@ use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
 use futures_util::future::{join_all, select_all};
 use futures_util::lock::Mutex;
 use futures_util::{Stream, StreamExt};
+use http::StatusCode;
 use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
@@ -77,6 +81,8 @@ pub(crate) enum Bound {
     Tls(Socket),
     /// A UDP socket for QUIC.
     Quic(Socket),
+    /// A UDP socket for HTTP/3, serving `DoH` at the path (D84).
+    Https(Socket, Arc<str>),
 }
 
 /// The sockets of one thread.
@@ -94,10 +100,13 @@ pub(crate) fn bind(listen: &[Listen]) -> anyhow::Result<Sockets> {
     };
     listen
         .iter()
-        .map(|&listen| match listen {
-            Listen::Plain(addr) => Ok(Bound::Plain(udp(addr)?, tcp(addr)?)),
-            Listen::Tls(addr) => tcp(addr).map(Bound::Tls),
-            Listen::Quic(addr) => udp(addr).map(Bound::Quic),
+        .map(|listen| match listen {
+            Listen::Plain(addr) => Ok(Bound::Plain(udp(*addr)?, tcp(*addr)?)),
+            Listen::Tls(addr) => tcp(*addr).map(Bound::Tls),
+            Listen::Quic(addr) => udp(*addr).map(Bound::Quic),
+            Listen::Https(addr, path) => {
+                udp(*addr).map(|socket| Bound::Https(socket, Arc::clone(path)))
+            }
         })
         .collect()
 }
@@ -268,8 +277,14 @@ pub(crate) async fn serve(
                 spawn(tcp(listener, Some(acceptor), Rc::clone(&thread)))
             }
             Bound::Quic(udp_socket) => {
-                let endpoint = endpoint(udp_socket, certificate()?)?;
-                spawn(quic(endpoint, Rc::clone(&thread)))
+                let config = tls::quic_server_config(certificate()?).map_err(io::Error::other)?;
+                let endpoint = endpoint(udp_socket, config, 0)?;
+                spawn(quic(endpoint, Service::Quic, Rc::clone(&thread)))
+            }
+            Bound::Https(udp_socket, path) => {
+                let config = tls::h3_server_config(certificate()?).map_err(io::Error::other)?;
+                let endpoint = endpoint(udp_socket, config, H3_UNI_STREAMS)?;
+                spawn(quic(endpoint, Service::Https(path), Rc::clone(&thread)))
             }
         };
         tasks.push(task);
@@ -545,25 +560,38 @@ fn start(
     Some(Started::Upstream(upstream, slot))
 }
 
-/// The QUIC endpoint on `socket`, presenting `presented` (RFC 9250 §4.1): connections closed after [`TCP_IDLE`]
-/// without a packet (§5.5.1), with [`TCP_PENDING`] queries in flight at most, and no stream the server opens
-/// (§4.2).
-fn endpoint(socket: Socket, presented: Arc<Presented>) -> io::Result<Endpoint> {
-    let mut config = tls::quic_server_config(presented).map_err(io::Error::other)?;
+/// The QUIC endpoint on `socket` with `config`: connections closed after [`TCP_IDLE`] without a packet (RFC 9250
+/// §5.5.1), with [`TCP_PENDING`] queries in flight at most, and `uni_streams` the client may open: none for DNS over
+/// QUIC (§4.2), [`H3_UNI_STREAMS`] for HTTP/3 (RFC 9114 §6.2).
+fn endpoint(socket: Socket, mut config: ServerConfig, uni_streams: u32) -> io::Result<Endpoint> {
     let mut transport = TransportConfig::default();
     transport
         .max_idle_timeout(IdleTimeout::try_from(TCP_IDLE).ok())
         .max_concurrent_bidi_streams(
             u32::try_from(TCP_PENDING).map_or(VarInt::MAX, VarInt::from_u32),
         )
-        .max_concurrent_uni_streams(VarInt::from_u32(0));
+        .max_concurrent_uni_streams(VarInt::from_u32(uni_streams));
     config.transport_config(Arc::new(transport));
     let socket = UdpSocket::from_std(socket.into())?;
     Endpoint::new(socket, EndpointConfig::default(), Some(config), None)
 }
 
-/// Accepts the connections of one QUIC endpoint, up to [`TCP_CONNECTIONS`] at once with those over TCP.
-async fn quic(endpoint: Endpoint, thread: Rc<Thread>) {
+/// What a QUIC endpoint serves.
+enum Service {
+    /// DNS over QUIC (RFC 9250).
+    Quic,
+    /// `DoH` over HTTP/3 at the path (RFC 8484, RFC 9114; D84).
+    Https(Arc<str>),
+}
+
+/// Uni streams an HTTP/3 client may open: its control stream and QPACK's two (RFC 9114 §6.2), with room for
+/// the reserved ones it may add (§6.2.3).
+const H3_UNI_STREAMS: u32 = 16;
+
+/// Accepts the connections of one QUIC endpoint, up to [`TCP_CONNECTIONS`] at once with those over TCP, and serves
+/// each as `service` says.
+async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
+    let service = Rc::new(service);
     while let Some(incoming) = endpoint.wait_incoming().await {
         let peer = incoming.remote_address();
         let Some(slot) = thread.connections.take() else {
@@ -578,10 +606,13 @@ async fn quic(endpoint: Endpoint, thread: Rc<Thread>) {
                 continue;
             }
         };
-        let thread = Rc::clone(&thread);
+        let (service, thread) = (Rc::clone(&service), Rc::clone(&thread));
         spawn(async move {
             match connecting.await {
-                Ok(connection) => streams(&connection, &thread).await,
+                Ok(connection) => match &*service {
+                    Service::Quic => streams(&connection, &thread).await,
+                    Service::Https(path) => requests(connection, path, peer, &thread).await,
+                },
                 Err(error) => tracing::debug!(%peer, %error, "QUIC handshake failed"),
             }
             drop(slot);
@@ -640,6 +671,98 @@ async fn stream(query: &[u8], send: SendStream, thread: &Thread) {
         drop(slot);
     }
 }
+
+/// Answers the requests of one HTTP/3 connection (RFC 9114 §4), each alone on a stream the client opened, as
+/// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`]. Requests go through
+/// the pipeline as any query; the client is `peer`.
+async fn requests(connection: Connection, path: &Arc<str>, peer: SocketAddr, thread: &Rc<Thread>) {
+    let mut requests = match compio::time::timeout(TCP_IDLE, Requests::new(connection)).await {
+        Ok(Ok(requests)) => requests,
+        Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 setup failed"),
+        Err(_) => return tracing::debug!(%peer, "HTTP/3 setup timed out"),
+    };
+    loop {
+        match requests.accept().await {
+            Ok(Some(pending)) => {
+                let (path, thread) = (Arc::clone(path), Rc::clone(thread));
+                spawn(async move { request(pending, &path, peer, &thread).await }).detach();
+            }
+            Ok(None) => return,
+            Err(error) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
+        }
+    }
+}
+
+/// Answers one request: what [`Pending::read`] makes of it if it is no query, else the pipeline's reply, or 400 when
+/// the pipeline drops it, a query too short to be a DNS message (RFC 8484 §4.2.1).
+async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread) {
+    let exchange = match compio::time::timeout(TCP_IDLE, pending.read(path)).await {
+        Ok(Ok(exchange)) => exchange,
+        Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
+        Err(_) => return tracing::debug!(%peer, "HTTP/3 request timed out"),
+    };
+    let pipeline = thread.pipeline();
+    let mut first = None;
+    let started = match exchange.query() {
+        Ok(query) => start(thread, &pipeline, query, Transport::Https, |wire| {
+            first = Some(wire.to_vec());
+            true
+        }),
+        Err(status) => return reject(exchange, status, peer).await,
+    };
+    let mut exchange = Some(exchange);
+    if let Some(wire) = first {
+        respond_http(&mut exchange, wire, peer).await;
+    }
+    if let Some(Started::Upstream(upstream, slot)) = started {
+        let deliver = async |wire| respond_http(&mut exchange, wire, peer).await;
+        answer(thread, &pipeline, upstream, Transport::Https, deliver).await;
+        drop(slot);
+    }
+    if let Some(exchange) = exchange {
+        reject(exchange, StatusCode::BAD_REQUEST, peer).await;
+    }
+}
+
+/// Answers 200 with `wire` on `exchange`, unless it was answered already.
+async fn respond_http(exchange: &mut Option<Exchange>, wire: Vec<u8>, peer: SocketAddr) {
+    if let Some(exchange) = exchange.take() {
+        count_doh(exchange.method(), StatusCode::OK);
+        if let Err(error) = exchange.respond(wire).await {
+            tracing::debug!(%peer, %error, "HTTP/3 response failed");
+        }
+    }
+}
+
+/// Answers `status` without a message.
+async fn reject(exchange: Exchange, status: StatusCode, peer: SocketAddr) {
+    count_doh(exchange.method(), status);
+    if let Err(error) = exchange.reject(status).await {
+        tracing::debug!(%peer, %error, "HTTP/3 response failed");
+    }
+}
+
+/// Counts a `DoH` request answered with `status` (D84): the statuses [`Pending::read`] and this module answer with
+/// and the methods `DoH` uses are labelled, the others "other", so the labels stay few.
+fn count_doh(method: Option<Method>, status: StatusCode) {
+    let method = match method {
+        Some(Method::Get) => "get",
+        Some(Method::Post) => "post",
+        None => "other",
+    };
+    let status = match status {
+        StatusCode::OK => "200",
+        StatusCode::BAD_REQUEST => "400",
+        StatusCode::NOT_FOUND => "404",
+        StatusCode::METHOD_NOT_ALLOWED => "405",
+        StatusCode::PAYLOAD_TOO_LARGE => "413",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "415",
+        _ => "other",
+    };
+    metrics::counter!(DOH_QUERIES, "method" => method, "status" => status).increment(1);
+}
+
+const DOH_QUERIES: &str = "dedensd_doh_queries_total";
 
 /// Writes `framed` on `send` and finishes it, unless it was answered already.
 async fn respond(send: &mut Option<SendStream>, framed: Vec<u8>) {
@@ -749,31 +872,34 @@ async fn answer(
 }
 
 /// The server to ask for `server`, and the transport: its own, else UDP for a client over UDP and TCP for a client
-/// over a connection (D65). A name was checked when the configuration was read.
+/// over a connection (D65); the URI template of an HTTPS one is at its path (D84). A name and a path were checked when
+/// the configuration was read.
 fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transport) {
     let (transport, name) = match &server.via {
         Via::Plain if client == Transport::Udp => (Transport::Udp, None),
         Via::Plain => (Transport::Tcp, None),
         Via::Tls(name) => (Transport::Tls, name.as_deref()),
         Via::Quic(name) => (Transport::Quic, name.as_deref()),
+        Via::Https { name, .. } => (Transport::Https, name.as_deref()),
     };
     let name = name
         .and_then(|name| ServerName::try_from(name).ok())
         .map(|name| name.to_owned());
-    (
-        Server {
-            addr: server.addr,
-            name,
-            doh: None,
-        },
-        transport,
-    )
+    let mut target = Server {
+        addr: server.addr,
+        name,
+        doh: None,
+    };
+    if let Via::Https { path, .. } = &server.via {
+        target.doh = target.template_at(path).ok();
+    }
+    (target, transport)
 }
 
 /// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length but
-/// over UDP. Only its bytes leave the buffer, never those of an earlier reply.
+/// over UDP and HTTPS. Only its bytes leave the buffer, never those of an earlier reply.
 fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
-    if transport == Transport::Udp {
+    if matches!(transport, Transport::Udp | Transport::Https) {
         Some(wire.to_vec())
     } else {
         frame(wire)

@@ -141,8 +141,21 @@ impl Server {
 
     /// The URI template of its `DoH` service: the one given, else the default one.
     fn template(&self) -> Result<Template, TemplateError> {
-        if let Some(template) = &self.doh {
-            return Ok(template.clone());
+        match &self.doh {
+            Some(template) => Ok(template.clone()),
+            None => self.template_at(DEFAULT_PATH),
+        }
+    }
+
+    /// The URI template of its `DoH` service at `path`: its authority is the certificate name, else the address,
+    /// with the port unless it is 443 (RFC 9110 §4.2.2).
+    ///
+    /// # Errors
+    ///
+    /// [`TemplateError`] when `path` is not an absolute path without another expression or a fragment.
+    pub fn template_at(&self, path: &str) -> Result<Template, TemplateError> {
+        if !path.starts_with('/') {
+            return Err(TemplateError::NotAbsolute);
         }
         let host = match (&self.name, self.addr.ip()) {
             (Some(ServerName::DnsName(name)), _) => name.as_ref().to_owned(),
@@ -153,7 +166,7 @@ impl Server {
             HTTPS_PORT => String::new(),
             port => format!(":{port}"),
         };
-        Template::parse(&format!("https://{host}{port}{DEFAULT_PATH}"))
+        Template::parse(&format!("https://{host}{port}{path}"))
     }
 
     /// The name its certificate must hold: the one given, else its address.

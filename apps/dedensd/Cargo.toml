@@ -19,6 +19,7 @@ dedens-proto.workspace = true
 dedens-server.workspace = true
 flume.workspace = true
 futures-util.workspace = true
+http.workspace = true
 metrics.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
@@ -37,10 +38,13 @@ doc = ["dedens-net/doc"]
 
 [dev-dependencies]
 dedens-scenario.workspace = true
-http.workspace = true
 rcgen.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "doh3"
+harness = false
 
 [lints]
 workspace = true
