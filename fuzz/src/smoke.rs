@@ -40,7 +40,39 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
             seeds.push((name, fs::read(&path).expect("read seed")));
         }
     }
+    seeds.extend(coap_seeds());
     seeds.sort();
+    seeds
+}
+
+/// The first datagram each way of every CoAP capture of `crates/dedens-net/tests/testdata/coap/` (hex lines).
+fn coap_seeds() -> Vec<(String, Vec<u8>)> {
+    let dir = root().join("../crates/dedens-net/tests/testdata/coap");
+    let mut seeds = Vec::new();
+    for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_none_or(|ext| ext != "txt") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read capture");
+        let name = path
+            .file_stem()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        for direction in ["c2s", "s2c"] {
+            let hex = text
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .find_map(|line| line.split(' ').nth(2).filter(|_| line.contains(direction)))
+                .expect("a datagram each way");
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+                .collect();
+            seeds.push((format!("coap {name} {direction}"), bytes));
+        }
+    }
     seeds
 }
 

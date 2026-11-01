@@ -1,0 +1,3 @@
+# uv run --with aiocoap==0.4.17 python capture.py get_non
+0 c2s 5201693a1089bb74656d7065726174757265
+0 s2c 5245631f1089ff32322e332043

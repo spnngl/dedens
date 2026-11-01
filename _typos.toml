@@ -11,6 +11,8 @@ extend-exclude = [
   "crates/dedens-dnssec/tests/zones/rfc4035_appendix_a.zone",
   # Blocklists and hosts files, as published.
   "crates/dedens-plugins/tests/testdata/",
+  # Hex of captured CoAP datagrams.
+  "crates/dedens-net/tests/testdata/coap/",
 ]
 [default]
 # RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:

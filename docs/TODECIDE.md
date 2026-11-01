@@ -29,6 +29,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   several keys served at once and rotation come with the target in `dedensd`.
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
+- CoAP (D80): non-confirmable requests by the client (RFC 7252 §4.3) and server-side Block1 reassembly (a DoC query
+  fits one datagram, so a server needs neither). Default: not built until DoC meets a server that needs them.
+- CoAP: libcoap's `coap-client` as a second implementation of the captures (only aiocoap is here). Default: add
+  its captures when libcoap is installable in CI.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
