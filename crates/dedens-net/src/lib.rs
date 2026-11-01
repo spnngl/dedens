@@ -36,6 +36,8 @@ pub mod doc;
 pub mod doh;
 pub mod exchange;
 pub mod https;
+#[cfg(feature = "odoh")]
+pub mod odoh;
 pub mod quic;
 pub mod resolv_conf;
 pub mod tcp;

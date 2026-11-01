@@ -41,8 +41,13 @@ pub struct Options {
     /// DNS over HTTPS with the query in the body of a POST. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub https_post: Option<bool>,
+    /// Oblivious DNS over HTTPS (RFC 9230) over HTTP/3 through this proxy, an `https://HOST[:PORT][/PATH]` URI, to the
+    /// server, which must be an `https://` one: the target. Built with the `odoh` feature only (D69). Not with `tcp`,
+    /// `tls`, `quic` or `https_get`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, value_name = "URI"))]
+    pub odoh_proxy: Option<String>,
     /// DNS over CoAP (RFC 9953), unprotected, over UDP, its server on port 5683 unless given another: the `doc`
-    /// feature of the build. Not with `tcp`, `tls`, `quic` or `https`. Default: off.
+    /// feature of the build. Not with `tcp`, `tls`, `quic`, `https` or `odoh_proxy`. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub coap: Option<bool>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
@@ -97,6 +102,7 @@ impl Options {
             https: self.https.or(fallback.https),
             https_get: self.https_get.or(fallback.https_get),
             https_post: self.https_post.or(fallback.https_post),
+            odoh_proxy: self.odoh_proxy.or(fallback.odoh_proxy),
             coap: self.coap.or(fallback.coap),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
@@ -117,8 +123,8 @@ impl Options {
     /// # Errors
     ///
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
-    /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; CoAP
-    /// with `tcp`, `tls`, `quic` or HTTPS.
+    /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; `odoh_proxy` with `tcp`, `tls`,
+    /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -136,12 +142,22 @@ impl Options {
                 "https goes with no tcp, tls or quic: it is HTTP/3, over QUIC",
             ));
         }
+        if self.odoh() && (self.tcp == Some(true) || self.encrypted()) {
+            return Err(InvalidOption(
+                "odoh-proxy goes with no tcp, tls or quic: it is HTTP/3, over QUIC",
+            ));
+        }
+        if self.odoh() && self.https_get == Some(true) {
+            return Err(InvalidOption("odoh-proxy sends by POST: no https-get"));
+        }
         if self.https_get == Some(true) && self.https_post == Some(true) {
             return Err(InvalidOption("https-get and https-post exclude each other"));
         }
-        if self.coap == Some(true) && (self.tcp == Some(true) || self.encrypted() || self.https()) {
+        if self.coap == Some(true)
+            && (self.tcp == Some(true) || self.encrypted() || self.https() || self.odoh())
+        {
             return Err(InvalidOption(
-                "coap goes with no tcp, tls, quic or https: it is CoAP over UDP",
+                "coap goes with no tcp, tls, quic, https or odoh-proxy: it is CoAP over UDP",
             ));
         }
         Ok(())
@@ -187,6 +203,12 @@ impl Options {
         self.tls == Some(true) || self.quic == Some(true)
     }
 
+    /// Whether the server is asked over Oblivious `DoH`: `odoh_proxy` is given.
+    #[must_use]
+    pub const fn odoh(&self) -> bool {
+        self.odoh_proxy.is_some()
+    }
+
     /// Whether the server is asked over HTTPS: `https` on or with a path, else `https_get` or `https_post` on.
     #[must_use]
     pub fn https(&self) -> bool {
@@ -210,7 +232,9 @@ impl Options {
     #[must_use]
     pub fn exchange(&self) -> exchange::Options {
         let mut options = exchange::Options::default();
-        if self.https() {
+        if self.odoh() {
+            options.transport = Transport::Odoh;
+        } else if self.https() {
             options.transport = Transport::Https;
             if self.https_post == Some(true) {
                 options.method = Method::Post;
@@ -524,6 +548,10 @@ mod tests {
             },
             Options {
                 https: Some(HttpsOption::On),
+                ..on.clone()
+            },
+            Options {
+                odoh_proxy: Some("https://proxy.example/proxy".to_owned()),
                 ..on.clone()
             },
         ] {

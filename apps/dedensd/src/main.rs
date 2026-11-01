@@ -8,6 +8,8 @@
 
 mod config;
 mod download;
+#[cfg(feature = "odoh")]
+mod odoh;
 mod reload;
 mod serve;
 
@@ -89,6 +91,8 @@ fn main() -> anyhow::Result<()> {
             listen: config.listen,
             trust: config.trust.clone(),
             presented: presented.clone(),
+            #[cfg(feature = "odoh")]
+            odoh: config.odoh.clone(),
         },
         config.downloads,
     )
@@ -108,9 +112,18 @@ fn main() -> anyhow::Result<()> {
     for sockets in sockets {
         let (current, ended) = (Arc::clone(&current), ended.clone());
         let (trust, presented) = (config.trust.clone(), presented.clone());
+        #[cfg(feature = "odoh")]
+        let odoh = config.odoh.clone();
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
-                let serving = serve::serve(sockets, current, trust, presented);
+                let serving = serve::serve(
+                    sockets,
+                    current,
+                    trust,
+                    presented,
+                    #[cfg(feature = "odoh")]
+                    odoh,
+                );
                 serve::runtime().and_then(|runtime| runtime.block_on(serving))
             }));
             let _ =

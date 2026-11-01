@@ -151,7 +151,8 @@ impl<'q> Client<'q> {
     /// Pads the reply of `len` bytes in `out`, which ends with our OPT record and its `rdata` bytes of options, to
     /// a multiple of [`PADDING_BLOCK`] bytes with a Padding option of zeros, for a client that padded its query
     /// over TLS, QUIC or HTTPS (RFC 7830 §4, RFC 8467 §4.1, RFC 9250 §5.4, RFC 8484 §9); up to the longest reply, past which the
-    /// reply is padded less. Returns the new length, `len` for any other client.
+    /// reply is padded less. Returns the new length, `len` for any other client: over Oblivious `DoH` the encryption
+    /// pads (D79).
     pub(crate) fn pad(&self, out: &mut [u8], len: usize, rdata: usize) -> usize {
         let padded = matches!(
             self.transport,
@@ -221,6 +222,7 @@ impl<'q> Client<'q> {
             | Transport::Tls
             | Transport::Quic
             | Transport::Https
+            | Transport::Odoh
             | Transport::Coap => MAX_MESSAGE_LEN,
             Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
                 edns.udp_payload.clamp(MIN_UDP_PAYLOAD, DEFAULT_UDP_PAYLOAD)

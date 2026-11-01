@@ -31,9 +31,13 @@ use dedens_net::client::{Client, Server};
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
 use dedens_net::https::{Exchange, Pending, Requests};
+#[cfg(feature = "odoh")]
+use dedens_net::odoh::{Kind, classify};
 use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
+#[cfg(feature = "odoh")]
+use dedens_odoh::ResponseContext;
 use dedens_proto::Query;
 use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, OptionCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
@@ -45,6 +49,8 @@ use http::StatusCode;
 use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
+#[cfg(feature = "odoh")]
+use crate::odoh::{self, Target};
 use crate::reload::Current;
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
@@ -173,6 +179,9 @@ struct Thread {
     /// The buffer TCP replies and replies after upstream are made in, of a message's largest size (D63): making
     /// one never waits, so one buffer serves every task, borrowed only while a reply is made and copied out.
     scratch: RefCell<Box<[u8]>>,
+    /// The Oblivious `DoH` target the HTTP/3 listeners serve, if any (D79).
+    #[cfg(feature = "odoh")]
+    odoh: Option<Arc<Target>>,
 }
 
 impl Thread {
@@ -186,6 +195,8 @@ impl Thread {
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
             scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
+            #[cfg(feature = "odoh")]
+            odoh: None,
         }
     }
 
@@ -254,7 +265,8 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 }
 
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
-/// presenting `presented` over TLS and QUIC, until the end of the process.
+/// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target `odoh` over HTTP/3, until the end
+/// of the process.
 ///
 /// # Errors
 ///
@@ -265,8 +277,18 @@ pub(crate) async fn serve(
     current: Arc<Current>,
     trust: Trust,
     presented: Option<Arc<Presented>>,
+    #[cfg(feature = "odoh")] odoh: Option<Arc<Target>>,
 ) -> io::Result<()> {
-    let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, trust));
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(unused_mut, reason = "only Oblivious DoH sets a field")
+    )]
+    let mut thread = Thread::new(current, UPSTREAM_QUERIES, trust);
+    #[cfg(feature = "odoh")]
+    {
+        thread.odoh = odoh;
+    }
+    let thread = Rc::new(thread);
     let certificate = || {
         presented
             .clone()
@@ -711,6 +733,10 @@ async fn requests(connection: Connection, path: &Arc<str>, peer: SocketAddr, thr
 /// Answers one request: what [`Pending::read`] makes of it if it is no query, else the pipeline's reply, or 400 when
 /// the pipeline drops it, a query too short to be a DNS message (RFC 8484 §4.2.1).
 async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread) {
+    #[cfg(feature = "odoh")]
+    if let Some(target) = &thread.odoh {
+        return oblivious(pending, path, peer, thread, target).await;
+    }
     let exchange = match compio::time::timeout(TCP_IDLE, pending.read(path)).await {
         Ok(Ok(exchange)) => exchange,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
@@ -739,8 +765,86 @@ async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread
     }
 }
 
+/// Answers one request at a listener that is an Oblivious `DoH` target too (D79): a POST of an encrypted query is
+/// opened, asked of the pipeline as a query over [`Transport::Odoh`] and answered sealed; a GET of the configurations
+/// is answered with them; any other request is `DoH`'s, as [`request`] answers it.
+#[cfg(feature = "odoh")]
+async fn oblivious(
+    pending: Pending,
+    path: &str,
+    peer: SocketAddr,
+    thread: &Thread,
+    target: &Target,
+) {
+    let read = pending.read_with(|request, body| classify(request, body, path));
+    let exchange = match compio::time::timeout(TCP_IDLE, read).await {
+        Ok(Ok(exchange)) => exchange,
+        Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
+        Err(_) => return tracing::debug!(%peer, "HTTP/3 request timed out"),
+    };
+    let (transport, mut context, query) = match (exchange.kind(), exchange.query()) {
+        (_, Err(status)) => return reject(exchange, status, peer).await,
+        (Kind::Configs, Ok(_)) => {
+            count_doh(exchange.method(), StatusCode::OK);
+            if let Err(error) = exchange.respond_with(target.configs()).await {
+                tracing::debug!(%peer, %error, "HTTP/3 response failed");
+            }
+            return;
+        }
+        (Kind::Oblivious, Ok(body)) => match target.open(body) {
+            Ok((query, context)) => (Transport::Odoh, Some(context), query),
+            Err(status) => return reject(exchange, status, peer).await,
+        },
+        (Kind::Dns, Ok(query)) => (Transport::Https, None, query.to_vec()),
+    };
+    let pipeline = thread.pipeline();
+    let mut first = None;
+    let started = start(thread, &pipeline, &query, transport, |wire| {
+        first = Some(wire.to_vec());
+        true
+    });
+    let mut exchange = Some(exchange);
+    if let Some(wire) = first {
+        respond_sealed(&mut exchange, &mut context, wire, peer).await;
+    }
+    if let Some(Started::Upstream(upstream, slot)) = started {
+        let deliver = async |wire| respond_sealed(&mut exchange, &mut context, wire, peer).await;
+        answer(thread, &pipeline, upstream, transport, deliver).await;
+        drop(slot);
+    }
+    if let Some(exchange) = exchange {
+        reject(exchange, StatusCode::BAD_REQUEST, peer).await;
+    }
+}
+
+/// Answers 200 with `wire` on `exchange`, sealed for the client when `context` holds what that takes, unless it was
+/// answered already.
+#[cfg(feature = "odoh")]
+async fn respond_sealed(
+    exchange: &mut Option<Exchange<Kind>>,
+    context: &mut Option<ResponseContext>,
+    wire: Vec<u8>,
+    peer: SocketAddr,
+) {
+    let Some(context) = context.take() else {
+        return respond_http(exchange, wire, peer).await;
+    };
+    let Some(exchange) = exchange.take() else {
+        return;
+    };
+    match odoh::seal(context, &wire) {
+        Ok(response) => {
+            count_doh(exchange.method(), StatusCode::OK);
+            if let Err(error) = exchange.respond_with(response).await {
+                tracing::debug!(%peer, %error, "HTTP/3 response failed");
+            }
+        }
+        Err(status) => reject(exchange, status, peer).await,
+    }
+}
+
 /// Answers 200 with `wire` on `exchange`, unless it was answered already.
-async fn respond_http(exchange: &mut Option<Exchange>, wire: Vec<u8>, peer: SocketAddr) {
+async fn respond_http<K>(exchange: &mut Option<Exchange<K>>, wire: Vec<u8>, peer: SocketAddr) {
     if let Some(exchange) = exchange.take() {
         count_doh(exchange.method(), StatusCode::OK);
         if let Err(error) = exchange.respond(wire).await {
@@ -750,7 +854,7 @@ async fn respond_http(exchange: &mut Option<Exchange>, wire: Vec<u8>, peer: Sock
 }
 
 /// Answers `status` without a message.
-async fn reject(exchange: Exchange, status: StatusCode, peer: SocketAddr) {
+async fn reject<K>(exchange: Exchange<K>, status: StatusCode, peer: SocketAddr) {
     count_doh(exchange.method(), status);
     if let Err(error) = exchange.reject(status).await {
         tracing::debug!(%peer, %error, "HTTP/3 response failed");
@@ -767,6 +871,7 @@ fn count_doh(method: Option<Method>, status: StatusCode) {
     };
     let status = match status {
         StatusCode::OK => "200",
+        StatusCode::UNAUTHORIZED => "401",
         StatusCode::BAD_REQUEST => "400",
         StatusCode::NOT_FOUND => "404",
         StatusCode::METHOD_NOT_ALLOWED => "405",
@@ -917,7 +1022,7 @@ fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transpo
 fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
     if matches!(
         transport,
-        Transport::Udp | Transport::Https | Transport::Coap
+        Transport::Udp | Transport::Https | Transport::Odoh | Transport::Coap
     ) {
         Some(wire.to_vec())
     } else {

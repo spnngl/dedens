@@ -150,6 +150,12 @@ impl Template {
         &self.authority
     }
 
+    /// The path and query before the `dns` variable, starting with `/`.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
     /// What follows `dns=` joins: `&` once the path holds a query, else `?`.
     fn joiner(&self) -> char {
         if self.path.contains('?') { '&' } else { '?' }
@@ -278,16 +284,21 @@ pub fn wire<T>(http: &Response<T>, body: &[u8], now: SystemTime) -> Result<Vec<u
 
 /// Whether `headers` say the body is [`MEDIA_TYPE`], whatever the case and the parameters.
 fn is_dns_message(headers: &HeaderMap) -> bool {
+    is_media_type(headers, MEDIA_TYPE)
+}
+
+/// Whether `headers` say the body is of `media`, whatever the case and the parameters.
+pub(crate) fn is_media_type(headers: &HeaderMap, media: &str) -> bool {
     headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case(MEDIA_TYPE))
+        .is_some_and(|found| found.trim().eq_ignore_ascii_case(media))
 }
 
 /// The seconds a response was already old when it came: the larger of its `Age` and `now` less its `Date`
 /// (RFC 9111 §4.2.3, without the response delay).
-fn age(headers: &HeaderMap, now: SystemTime) -> u32 {
+pub(crate) fn age(headers: &HeaderMap, now: SystemTime) -> u32 {
     // The first member of a list, and an invalid one ignored (RFC 9111 §5.1); a number beyond 2^31 is that.
     let age = headers
         .get(AGE)

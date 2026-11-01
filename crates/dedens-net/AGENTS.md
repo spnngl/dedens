@@ -20,11 +20,14 @@ crate that touches sockets and timers.
   `block.rs` (RFC 7959 Block options, reassembly, slicing), `exchange.rs` (client: retransmission, matching,
   separate responses, block-wise transfers), `server.rs` (deduplication of confirmable requests), `doc.rs` (the
   FETCH request of a query, the path of a `docpath`); no socket, no clock, no randomness; fuzzed by `parse_coap`.
-- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP''s retransmission, the Max-Age added to the TTLs.
+- `src/odoh.rs`, feature `odoh`: Oblivious DoH over `https.rs` (D79): the sans-IO requests, responses and target
+  classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
+  `Client::exchange_oblivious`.
+- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs.
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
-- `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs` and `rfc8484.rs` against loopback
-  TLS, QUIC and HTTP/3 servers too, with certificates of `tests/common/certificates.rs`. `tests/udp.rs`, `tests/tcp.rs`,
+- `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc8484.rs` and `rfc9230.rs`
+  against loopback TLS, QUIC and HTTP/3 servers too, with certificates of `tests/common/certificates.rs`. `tests/udp.rs`, `tests/tcp.rs`,
   `tests/client.rs`: the transports and the client against scripted servers on the loopback address
   (`tests/common/loopback.rs`); `tests/common/` builds messages and steps. `rfc8484.rs` and `rfc9461.rs` run
   `doh` on the RFC examples and on the responses of public servers in `tests/testdata/doh/` (`capture.nu` has

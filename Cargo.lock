@@ -878,6 +878,7 @@ dependencies = [
  "clap",
  "compio",
  "dedens-net",
+ "dedens-odoh",
  "dedens-proto",
  "dedens-scenario",
  "http",
@@ -941,6 +942,7 @@ name = "dedens-net"
 version = "0.1.0"
 dependencies = [
  "compio",
+ "dedens-odoh",
  "dedens-proto",
  "flume",
  "futures-util",
@@ -951,6 +953,7 @@ dependencies = [
  "rustls-platform-verifier",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -1015,12 +1018,14 @@ dependencies = [
  "compio",
  "dedens-cache",
  "dedens-net",
+ "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
  "dedens-scenario",
  "dedens-server",
  "flume",
  "futures-util",
+ "getrandom 0.4.3",
  "http",
  "metrics",
  "rcgen",
@@ -1033,6 +1038,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]

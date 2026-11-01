@@ -124,13 +124,41 @@ impl HttpsPool {
         deadline: Instant,
     ) -> Result<Reply, HttpsError> {
         let request = doh::request(template, wire, method).map_err(HttpsError::Request)?;
+        let (head, body) = self.send(addr, name, &request, deadline).await?;
+        let wire = doh::wire(&head, &body, SystemTime::now())?;
+        Ok(Reply {
+            wire,
+            http: Http {
+                version: Version::HTTP_3,
+                status: head.status(),
+            },
+        })
+    }
+
+    /// Sends `request` to the server at `addr`, whose certificate must hold `name`, and returns the response's head
+    /// and body, of whatever status and type: what `DoH` makes of it is [`HttpsPool::exchange`]'s, and what
+    /// Oblivious `DoH` makes is the caller's (D79).
+    ///
+    /// A request is sent again once on a new connection as [`HttpsPool::exchange`] says.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError`]: no connection, a failed request, a body longer than a DNS message, or no response before
+    /// `deadline`.
+    pub async fn send(
+        &self,
+        addr: SocketAddr,
+        name: ServerName<'static>,
+        request: &Request<Vec<u8>>,
+        deadline: Instant,
+    ) -> Result<(Response<()>, Vec<u8>), HttpsError> {
         let server = (addr, name);
         let asked = async {
             let (open, reused) = self.connection(&server).await?;
-            match ask(&open, &request).await {
+            match ask(&open, request).await {
                 Err(error) if reused && open.dropped(&error) => {
                     let (fresh, _) = self.connection(&server).await?;
-                    ask(&fresh, &request).await
+                    ask(&fresh, request).await
                 }
                 asked => asked,
             }
@@ -181,7 +209,10 @@ impl Open {
 }
 
 /// Sends `request` alone on a new stream of `open` and reads the response to the end of the stream.
-async fn ask(open: &Open, request: &Request<Vec<u8>>) -> Result<Reply, HttpsError> {
+async fn ask(
+    open: &Open,
+    request: &Request<Vec<u8>>,
+) -> Result<(Response<()>, Vec<u8>), HttpsError> {
     let (parts, body) = request.clone().into_parts();
     let sent = open
         .requests
@@ -217,14 +248,7 @@ async fn ask(open: &Open, request: &Request<Vec<u8>>) -> Result<Reply, HttpsErro
         }
     }
     stream.read = true;
-    let wire = doh::wire(&head, &body, SystemTime::now())?;
-    Ok(Reply {
-        wire,
-        http: Http {
-            version: Version::HTTP_3,
-            status: head.status(),
-        },
-    })
+    Ok((head, body))
 }
 
 /// The request stream, cancelled when dropped before its response is read whole: `RESET_STREAM` and
@@ -304,6 +328,27 @@ impl Pending {
     ///
     /// [`HttpsError::Stream`] for a request the client broke (RFC 9114 §4.1.2: the stream is reset) or cut.
     pub async fn read(self, path: &str) -> Result<Exchange, HttpsError> {
+        self.read_with(|request, body| {
+            let query = if request.uri().path() == path {
+                doh::server_request(request, body)
+            } else {
+                Err(StatusCode::NOT_FOUND)
+            };
+            ((), query)
+        })
+        .await
+    }
+
+    /// As [`Pending::read`], for a service that is not `DoH` alone: `classify` makes of the request head and body
+    /// what the service takes of them, the kind of request and what [`Exchange::query`] gives (Oblivious `DoH`, D79).
+    ///
+    /// # Errors
+    ///
+    /// As [`Pending::read`].
+    pub async fn read_with<K>(
+        self,
+        classify: impl FnOnce(&Request<()>, &[u8]) -> (K, Result<Vec<u8>, StatusCode>),
+    ) -> Result<Exchange<K>, HttpsError> {
         let (request, mut stream) = self.0.resolve_request().await.map_err(HttpsError::Stream)?;
         let mut body = Vec::new();
         while body.len() <= MAX_MESSAGE_LEN
@@ -311,27 +356,31 @@ impl Pending {
         {
             append(&mut body, chunk);
         }
-        let query = if request.uri().path() == path {
-            doh::server_request(&request, &body)
-        } else {
-            Err(StatusCode::NOT_FOUND)
-        };
+        let (kind, query) = classify(&request, &body);
         Ok(Exchange {
             stream,
             method: request.method().clone(),
             query,
+            kind,
         })
     }
 }
 
-/// A request read, to answer on its stream.
-pub struct Exchange {
+/// A request read, to answer on its stream; `K` is the kind [`Pending::read_with`]'s classifier gave it.
+pub struct Exchange<K = ()> {
     stream: h3::server::RequestStream<BidiStream<Bytes>, Bytes>,
     method: http::Method,
     query: Result<Vec<u8>, StatusCode>,
+    kind: K,
 }
 
-impl Exchange {
+impl<K> Exchange<K> {
+    /// The kind of request its classifier gave it.
+    #[must_use]
+    pub const fn kind(&self) -> &K {
+        &self.kind
+    }
+
     /// The request's method: `None` for one `DoH` does not use (RFC 8484 §4.1).
     #[must_use]
     pub fn method(&self) -> Option<Method> {
@@ -361,6 +410,16 @@ impl Exchange {
     pub async fn respond(self, dns_response: Vec<u8>) -> Result<(), HttpsError> {
         let response = doh::server_response(dns_response, &self.method)
             .map_err(|error| HttpsError::Response(error.into()))?;
+        self.respond_with(response).await
+    }
+
+    /// Answers with `response` as it is, and finishes the stream: the response of a service that is not `DoH`
+    /// (Oblivious `DoH`, D79).
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Stream`] for a stream the client reset or a connection that closed.
+    pub async fn respond_with(self, response: Response<Vec<u8>>) -> Result<(), HttpsError> {
         let (head, body) = response.into_parts();
         self.send(Response::from_parts(head, ()), body).await
     }

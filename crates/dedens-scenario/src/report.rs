@@ -93,6 +93,7 @@ impl Report {
                     exchange::Transport::Tls => Transport::Tls,
                     exchange::Transport::Quic => Transport::Quic,
                     exchange::Transport::Https => Transport::Https,
+                    exchange::Transport::Odoh => Transport::Odoh,
                     exchange::Transport::Coap => Transport::Coap,
                 },
                 rtt_us: u64::try_from(response.rtt.as_micros()).unwrap_or(u64::MAX),
@@ -196,6 +197,9 @@ pub enum Transport {
     /// DNS over HTTPS (RFC 8484).
     #[serde(rename = "doh")]
     Https,
+    /// Oblivious DNS over HTTPS (RFC 9230).
+    #[serde(rename = "odoh")]
+    Odoh,
     /// DNS over CoAP (RFC 9953).
     Coap,
 }

@@ -25,8 +25,18 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
   AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
   asks for it.
-- ODoH target keys (D78): `TargetKey` derives from a secret the caller keeps. Default: one key, replaced by hand;
-  several keys served at once and rotation come with the target in `dedensd`.
+- ODoH target keys (D78, D79): `dedensd` serves one key, from `odoh.key` or made at start. Default: replaced by hand
+  with a restart; several keys served at once (the configurations list them, a client picks the first) and rotation
+  with an overlap, when a daemon holds state.
+- ODoH proxy role (D79): `dedensd` as the proxy of RFC 9230 §4 (forwards the POST to `targethost` and `targetpath`;
+  §4.1's checks: no non-standard port, 502 when the target is unreachable, no caching, no redirects). Default: out of
+  this phase, `dedensd` is a target only.
+- ODoH configurations discovery (D79): fetched from `/.well-known/odohconfigs` of the target, straight to it, so the
+  target sees the client's address once per lifetime, and Cloudflare's `no-cache, no-store` makes it once per
+  exchange. Alternatives: through the proxy (needs a proxy that relays GET), from a file, from the target's SVCB
+  record (RFC 9460; the ODoH SVCB parameters are not in an RFC). Default: well-known, direct.
+- ODoH over HTTP/2 (D79): public proxies speak HTTP/2 only (November 2026), so `+odoh-proxy` reaches no public proxy
+  until 23. Default: HTTP/3 only (D83).
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
 - CoAP (D80): non-confirmable requests by the client (RFC 7252 §4.3) and server-side Block1 reassembly (a DoC query
