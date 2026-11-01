@@ -304,16 +304,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   until D62. `apps/dedens/tests/providers.rs` reads it into typed structs: `cargo test` checks the file
   offline; `just providers` (an ignored test, outside `just check`, which stays offline) asks, through one
   `dedens -f -` run (2 tries), `example.com` of every endpoint, `dnssec-failed.org` of each resolver, and
-  each resolver a canary per category, which it must block if `blocks` lists it and answer if not: NXDOMAIN,
-  EDE 15 to 17, no address, `0.0.0.0`, loopback or a listed block page. No provider publishes a canary its
-  peers block, so the canaries are names measured to split the resolvers so. An address family without a
-  route is skipped (IPv6 on CI); half the queries failing stops the test, the network being down. Each
-  failure is then asked again alone with 8 tries, 16 runs at once, since public servers drop queries (Comodo
-  half of them) and QUIC connections sharing a socket stall (`docs/TODECIDE.md`). A REFUSED with EDE 16
-  (Censored) passes: the resolver answered, the law where the test runs refused (OpenDNS from France). A
-  resolver whose packet cache answers with an earlier client's cookie (UncensoredDNS), which `dedens` drops
-  as forged (RFC 7873 §5.3, D68), is marked `stale_cookies` and asked without a cookie. Rejected: a query
-  file generated from it (a file to keep in step), a test per endpoint (480 processes).
+  each resolver the canaries of each category: one blocked if `blocks` lists the category, all answered if not.
+  Blocked is NXDOMAIN, EDE 15 to 17, no address, `0.0.0.0`, loopback or a listed block page. No provider
+  publishes a canary its peers block, and threat feeds differ (HaGeZi's lists EICAR's test site, not WICAR's),
+  so the canaries are names measured to split the resolvers so. An address family without a route is skipped
+  (IPv6 on CI); half the queries failing stops the test, the network being down. Each failure is then asked
+  again alone with 8 tries, 16 runs at once, since public servers drop queries (Comodo half of them) and
+  QUIC connections sharing a socket stall (`docs/TODECIDE.md`). A REFUSED with EDE 16 (Censored) passes: the
+  resolver answered, the law where the test runs refused (OpenDNS from France). A resolver whose packet cache
+  answers with an earlier client's cookie (UncensoredDNS), which `dedens` drops as forged (RFC 7873 §5.3,
+  D68), is marked `stale_cookies` and asked without a cookie. Rejected: a query file generated from it (a file
+  to keep in step), a test per endpoint (a process each, hundreds).
 
 ## Server
 

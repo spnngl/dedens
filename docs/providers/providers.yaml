@@ -15,15 +15,22 @@
 #   https: DNS over HTTPS (RFC 8484) URLs, listed only until `dedens` speaks DoH (D62).
 # IPv6 addresses are quoted: a plain YAML scalar cannot end with `:`. Anchors (`&x`, `*x`) share a list.
 
-# Per category, a name every resolver blocking it blocks and the others answer (measured November 2026). No
-# provider publishes a test name all its peers block: Cloudflare's `malware.testcategory.com` and Quad9's
-# `isitblocked.org` work at their own resolvers only. `malware.wicar.org` is the WICAR malware test site.
+# Per category, names a resolver blocking it blocks at least one of and the others answer (measured November
+# 2026). No provider publishes a test name all its peers block: Cloudflare's `malware.testcategory.com` and
+# Quad9's `isitblocked.org` work at their own resolvers only, and threat feeds differ. `malware.wicar.org` is the
+# WICAR malware test site, `secure.eicar.org` the EICAR site that HaGeZi's TIF and dnsforge list.
 canaries:
-  ads: pagead2.googlesyndication.com
-  malware: malware.wicar.org
-  adult: pornhub.com
-  gambling: bet365.com
-  social: facebook.com
+  ads:
+    - pagead2.googlesyndication.com
+  malware:
+    - malware.wicar.org
+    - secure.eicar.org
+  adult:
+    - pornhub.com
+  gambling:
+    - bet365.com
+  social:
+    - facebook.com
 
 providers:
   - id: cloudflare
@@ -608,12 +615,12 @@ providers:
 
   - id: ffmuc
     name: FFMUC DNS
-    operator: Freifunk München e.V.
+    operator: Freifunk München / Freie Netze München e.V.
     country: DE
-    site: https://ffmuc.net/wiki/doku.php?id=knb:dohdot
+    site: https://dns-setup.ffmuc.net/
     description: >-
-      Donation-funded community resolver, servers in Europe only; QNAME minimization, no filtering.
-    privacy: No logs of queries or IPs, no tracking; anonymous aggregate statistics are published.
+      Donation-funded community resolver of a non-profit association, servers in Munich and Vienna; QNAME minimization, no filtering or censorship.
+    privacy: No logs of queries or IPs, no tracking; anonymous aggregate statistics are published. EU only.
     resolvers:
       - id: standard
         blocks: []
@@ -653,3 +660,158 @@ providers:
         tls: {name: unicast.uncensoreddns.org, addresses: [89.233.43.71, "2a01:3a0:53:53::"]}
         https:
           - https://unicast.uncensoreddns.org/dns-query
+
+  - id: dnsforge
+    name: dnsforge
+    operator: Stefan Giebel (adminForge)
+    country: DE
+    site: https://dnsforge.de/
+    description: >-
+      Hobby resolver of the adminForge free services, on dedicated servers in Germany; blocklists from many sources refreshed daily. Limited to 100 queries per 10 seconds per client.
+    privacy: No query logs. One person, in Germany.
+    resolvers:
+      - id: normal
+        description: Ads, trackers and malware blocked.
+        blocks:
+          - ads
+          - malware
+        dnssec: validates
+        plain: &dnsforge
+          - 49.12.67.122
+          - 91.99.154.175
+          - 176.9.93.198
+          - 176.9.1.117
+          - "2a01:4f8:c013:29d::122"
+          - "2a01:4f8:c010:8c35::175"
+          - "2a01:4f8:151:34aa::198"
+          - "2a01:4f8:141:316d::117"
+        tls: {name: dnsforge.de, addresses: *dnsforge}
+        quic: {name: dnsforge.de, addresses: *dnsforge}
+        https:
+          - https://dnsforge.de/dns-query
+      - id: clean
+        description: Normal plus adult content and gambling blocked, SafeSearch enforced.
+        blocks:
+          - ads
+          - malware
+          - adult
+          - gambling
+        dnssec: validates
+        plain: &dnsforge-clean
+          - 49.12.223.2
+          - 49.12.43.208
+          - "2a01:4f8:c17:4fbc::2"
+          - "2a01:4f8:c012:ed89::208"
+        tls: {name: clean.dnsforge.de, addresses: *dnsforge-clean}
+        quic: {name: clean.dnsforge.de, addresses: *dnsforge-clean}
+        https:
+          - https://clean.dnsforge.de/dns-query
+      - id: hard
+        description: Stricter lists than normal, without an allowlist; may break some sites.
+        blocks:
+          - ads
+          - malware
+        dnssec: validates
+        plain: &dnsforge-hard
+          - 49.12.222.213
+          - 88.198.122.154
+          - "2a01:4f8:c17:2c61::213"
+          - "2a01:4f8:c013:5ec0::154"
+        tls: {name: hard.dnsforge.de, addresses: *dnsforge-hard}
+        quic: {name: hard.dnsforge.de, addresses: *dnsforge-hard}
+        https:
+          - https://hard.dnsforge.de/dns-query
+      - id: blank
+        description: No filtering.
+        blocks: []
+        dnssec: validates
+        plain: &dnsforge-blank
+          - 138.199.149.249
+          - 78.47.71.194
+          - "2a01:4f8:c17:7aa5::249"
+          - "2a01:4f8:c013:aae9::194"
+        tls: {name: blank.dnsforge.de, addresses: *dnsforge-blank}
+        quic: {name: blank.dnsforge.de, addresses: *dnsforge-blank}
+        https:
+          - https://blank.dnsforge.de/dns-query
+
+  - id: digitale-gesellschaft
+    name: Digitale Gesellschaft DNS
+    operator: Digitale Gesellschaft (Digital Society Switzerland)
+    country: CH
+    site: https://www.digitale-gesellschaft.ch/dns/
+    description: >-
+      Non-profit civil-society resolver since 2019, servers in Zurich, funded by donations; no filtering, DNSSEC validation. Encrypted only: deliberately no plain DNS on port 53.
+    privacy: No query logs, no personal data stored; transparency reports published. Swiss jurisdiction.
+    resolvers:
+      - id: standard
+        blocks: []
+        dnssec: validates
+        tls: &digitale-gesellschaft
+          name: dns.digitale-gesellschaft.ch
+          addresses:
+            - 185.95.218.42
+            - 185.95.218.43
+            - "2a05:fc84::42"
+            - "2a05:fc84::43"
+        quic: *digitale-gesellschaft
+        https:
+          - https://dns.digitale-gesellschaft.ch/dns-query
+
+  - id: hagezi
+    name: HaGeZi DNS
+    operator: HaGeZi (private individual)
+    country: DE
+    site: https://github.com/hagezi/dns-servers
+    description: >-
+      Non-commercial resolvers by the author of the HaGeZi blocklists, hosted at Hetzner in the EU: Technitium in front of Unbound with a local root zone, QNAME minimization, no ECS, EDE, ANY dropped, Tor exits blocked. Blocked names answer 0.0.0.0 with EDE 15. Lists refreshed every 4 hours.
+    privacy: >-
+      No query logs; per-client counters for rate limiting only, in RAM for an hour; SERVFAIL domains kept 24 hours without client IPs. GDPR and DSA disclosures published.
+    resolvers:
+      - id: root
+        description: Falkenstein, Germany. HaGeZi Multi Pro (ads, trackers) and TIF (malware, phishing, scam).
+        blocks: &hagezi-full
+          - ads
+          - malware
+        dnssec: validates
+        plain: &hagezi-root
+          - 188.34.161.210
+          - "2a01:4f8:c17:1c66::1"
+        tls: {name: root.hagezi.org, addresses: *hagezi-root}
+        quic: {name: root.hagezi.org, addresses: *hagezi-root}
+        https:
+          - https://root.hagezi.org/dns-query
+      - id: wurzn
+        description: Nuremberg, Germany. The same lists as root.
+        blocks: *hagezi-full
+        dnssec: validates
+        plain: &hagezi-wurzn
+          - 159.69.155.94
+          - "2a01:4f8:1c1c:d363::1"
+        tls: {name: wurzn.hagezi.org, addresses: *hagezi-wurzn}
+        quic: {name: wurzn.hagezi.org, addresses: *hagezi-wurzn}
+        https:
+          - https://wurzn.hagezi.org/dns-query
+      - id: juuri
+        description: Helsinki, Finland. The same lists as root.
+        blocks: *hagezi-full
+        dnssec: validates
+        plain: &hagezi-juuri
+          - 95.217.163.17
+          - "2a01:4f9:c013:dc4e::1"
+        tls: {name: juuri.hagezi.org, addresses: *hagezi-juuri}
+        quic: {name: juuri.hagezi.org, addresses: *hagezi-juuri}
+        https:
+          - https://juuri.hagezi.org/dns-query
+      - id: ctif
+        description: Nuremberg, Germany. Threat-only, HaGeZi TIF alone (malware, phishing, scam, cryptojacking).
+        blocks:
+          - malware
+        dnssec: validates
+        plain: &hagezi-ctif
+          - 162.55.58.40
+          - "2a01:4f8:1c19:6c19::1"
+        tls: {name: ctif.hagezi.org, addresses: *hagezi-ctif}
+        quic: {name: ctif.hagezi.org, addresses: *hagezi-ctif}
+        https:
+          - https://ctif.hagezi.org/dns-query
