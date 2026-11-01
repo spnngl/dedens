@@ -451,6 +451,20 @@ fn blocks_are_found_by_endpoint_and_tag_and_forgotten_like_dedup() {
     assert_eq!(blocks.get(other, &[1], t0 + Duration::from_secs(11)), None);
 }
 
+/// A full table still holds as many messages as its capacity says: only a message that is new makes room.
+#[test]
+fn dedup_at_capacity_still_knows_what_it_holds() {
+    let t0 = Instant::now();
+    let mut dedup = Dedup::new(EXCHANGE_LIFETIME, NonZero::new(2).expect("a value"));
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::New);
+    assert_eq!(dedup.check(SERVER, 2, t0), Seen::New);
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::Duplicate(None));
+    assert_eq!(dedup.check(SERVER, 2, t0), Seen::Duplicate(None));
+    let mut dedup = Dedup::new(EXCHANGE_LIFETIME, NonZero::new(1).expect("a value"));
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::New);
+    assert_eq!(dedup.check(SERVER, 1, t0), Seen::Duplicate(None));
+}
+
 // Captured from aiocoap.
 
 #[test]
