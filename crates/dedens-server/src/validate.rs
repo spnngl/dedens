@@ -163,8 +163,16 @@ impl Validating {
         self
     }
 
-    pub(crate) fn tag(&self) -> &str {
+    /// The name [`Validating::tagged`] gave the validation, empty if none.
+    #[must_use]
+    pub fn tag(&self) -> &str {
         &self.tag
+    }
+
+    /// The validator, whose clones share its cache of keys.
+    #[must_use]
+    pub const fn validator(&self) -> &Validator {
+        &self.validator
     }
 
     pub(crate) const fn metrics(&self) -> &Metrics {

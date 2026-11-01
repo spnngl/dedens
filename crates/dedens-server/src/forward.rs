@@ -74,7 +74,9 @@ impl Forward {
         self.validation.as_ref().map(Validating::tag)
     }
 
-    pub(crate) const fn validation(&self) -> Option<&Validating> {
+    /// The validation of the stage, `None` when it does not validate.
+    #[must_use]
+    pub const fn validation(&self) -> Option<&Validating> {
         self.validation.as_ref()
     }
 
