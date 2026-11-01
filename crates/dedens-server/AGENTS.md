@@ -4,6 +4,8 @@ The server's query pipeline (D23, D41, D43). Sans-IO: `Pipeline::query` returns 
 reply then a refresh, or an upstream request the caller sends (`apps/dedensd`, with `dedens-net`). Plugin stages
 (D54) implement `Plugin`. The stages are tested in `tests/forward.rs`, `tests/cache.rs` and `tests/plugin.rs`;
 upstream answers are the captures of `crates/dedens-proto/tests/testdata`.
+`Pipeline::receive` checks QR, opcode and question of each upstream response itself, not trusting the transport (D111,
+`forward::usable`, `tests/rfc5452.rs`); the ID is the transport's.
 
 A forward stage may validate (D77, `src/validate.rs`): the pipeline turns each question of a
 `dedens_dnssec::Validation` into a `Step::Upstream`, so `apps/dedensd` needs no change per question. Only `Secure`

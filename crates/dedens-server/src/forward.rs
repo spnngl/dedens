@@ -6,7 +6,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_proto::{Decoded, Edns, EdnsFlags, Flags, Message, Question, Rcode};
+use dedens_proto::{Decoded, Edns, EdnsFlags, Flags, Message, Opcode, Question, Rcode};
 
 use crate::reply::Client;
 use crate::validate::Validating;
@@ -178,12 +178,17 @@ pub(crate) fn probe(question: &Question<'_>) -> Message<'static> {
     request
 }
 
-/// Whether an upstream response answers the client, or the next server is asked: not when it breaks the protocol
-/// (D9), is truncated, or says the server failed, refused, does not implement the query or did not understand it
-/// (RFC 1035 §7.3).
-pub(crate) fn usable(response: &Decoded<'_>) -> bool {
+/// Whether an upstream response answers `asked`, the question sent, or the next server is asked (D111): not when
+/// it is no response to it (QR clear, an opcode other than QUERY, any other question than `asked`, the name in
+/// any case, RFC 4343 §4; RFC 5452 §9.1), as a transport drops one, but one of tomorrow may not; nor when it
+/// breaks the protocol (D9), is truncated, or says the server failed, refused, does not implement the query or
+/// did not understand it (RFC 1035 §7.3). The ID is the transport's to check: it picks it (D27).
+pub(crate) fn usable(response: &Decoded<'_>, asked: &Question<'_>) -> bool {
     let message = &response.message;
-    response.violations.is_empty()
+    message.header.flags.contains(Flags::QR)
+        && message.header.opcode == Opcode::QUERY
+        && matches!(message.questions.as_slice(), [got] if got == asked)
+        && response.violations.is_empty()
         && !message.header.flags.contains(Flags::TC)
         && !matches!(
             message.rcode(),

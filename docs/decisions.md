@@ -1193,7 +1193,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D111) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -1727,6 +1727,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `dedens-server/tests/limits.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
     `dedens-dnssec/tests/rfc5155.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
     `crypto/budget.rs` (block boundaries, the paid hash).
+
+- D111 (amends D41) `Pipeline::receive` checks each upstream response against the question sent, as `dedens-net`
+  does (D27, D50; RFC 5452 §9.1), so the core is safe on its own, driven by a transport of tomorrow or a test: QR
+  set, opcode QUERY, exactly one question, equal to the one sent with its name in any case (RFC 4343 §4; `0x20` is
+  the transport's, the core never sees the case sent). The question sent is the validator's while one of its
+  questions is upstream (D77), the client's otherwise. A response failing a check is that server failing, as a
+  timeout or SERVFAIL: the next server is asked, and after the last the failure is held (D43); nothing is stored
+  from it. The ID is not checked: the transport picks it (D27), the core never knows it. Through `dedensd` this is
+  the second check: the transport already drops such a datagram and goes on waiting. No new parsing, the decoded
+  message is read: `miss` bench a/mx/txt_large 0.67-0.72/1.25-1.30/1.88-1.92 µs against 0.71/1.26/2.00 µs before,
+  15 allocations in both. Rejected: leaving the check to `dedens-net` (the audit's L1: an unchecked transport
+  sends uncached replies out as they came).
 
 ## Observability
 
