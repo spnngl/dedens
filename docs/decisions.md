@@ -57,6 +57,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `nsec3_hash` have the fuzz target `dnssec_crypto`. Rejected: aws-lc-rs (a C build, a second backend beside
   rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone would justify one, see
   TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
+- D72 Trust anchors are `dedens_dnssec::anchor::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
+  and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
+  that `just root-anchors` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
+  (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
+  file. The CMS signature of §3.2 is not checked: the file and its `.p7s` come from the same site, so the
+  check proves nothing the HTTPS fetch does not; the test is that every bundled DS matches a key of the
+  captured root DNSKEY RRset (`tests/rfc9718.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
+  anchors are zone text read by `ZoneReader` (the parser the fuzz targets already feed, so no new target), as
+  Unbound's `trust-anchor-file`: absolute owners, class IN only, TTL defaulted to 0, DS and DNSKEY only (a CDS
+  or CDNSKEY is not an anchor), no `$INCLUDE` (the library reads no file), at least one record (an empty set
+  would call every answer insecure). Each error names its line (`ZoneReader::line` was added to `dedens-proto`
+  for it). An NTA lives on `TrustAnchors`, `negative(name)` being true at and below it unless a deeper positive
+  anchor restarts validation (RFC 7646 §1.1's example); at the same depth the NTA wins, as the operator added
+  it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
+  long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](TODECIDE.md)
+  holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
 
 ## Wire format
 

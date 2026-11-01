@@ -205,3 +205,47 @@ rfc-archive:
 # Refresh IANA's root hints, bundled for `dedens +trace`.
 root-hints:
     curl -fsSL --retry 3 -o apps/dedens/src/named.root https://www.internic.net/domain/named.root
+
+# Refresh the bundled root trust anchors (D72): the `KeyDigest` entries of IANA's root-anchors.xml valid now (RFC
+# 9718 §2.2: `validFrom` passed, `validUntil` absent or ahead), as DS zone text. No XML parser in Rust: the file is
+# flat, and a time with an offset other than UTC stops the recipe.
+root-anchors:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=crates/dedens-dnssec/src/root.ds
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    today="$(date -u +%Y-%m-%d)"
+    {
+        echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's root-anchors.xml valid on $today."
+        echo "; Source: https://data.iana.org/root-anchors/root-anchors.xml. Written by \`just root-anchors\`, never by hand."
+        curl -fsSL --retry 3 https://data.iana.org/root-anchors/root-anchors.xml | tr '\n' ' ' \
+            | awk -v now="$(date -u +%Y-%m-%dT%H:%M:%S)" -v RS='</KeyDigest>' '
+                function text(tag,   s) {
+                    if (!match($0, "<" tag ">[^<]*</" tag ">")) return ""
+                    s = substr($0, RSTART + length(tag) + 2, RLENGTH - 2 * length(tag) - 5)
+                    gsub(/[ \t\r]+/, "", s)
+                    return s
+                }
+                function attr(name,   s) {
+                    if (!match($0, name "=\"[^\"]*\"")) return ""
+                    return substr($0, RSTART + length(name) + 2, RLENGTH - length(name) - 3)
+                }
+                function fail(msg) { print "root-anchors: " msg > "/dev/stderr"; failed = 1; exit 1 }
+                function utc(t) {
+                    if (substr(t, 20) !~ /^(\+00:00|Z)$/) fail("time not in UTC: " t)
+                    return substr(t, 1, 19)
+                }
+                NR == 1 && text("Zone") != "." { fail("not the root zone") }
+                index($0, "<KeyDigest") == 0 { next }
+                {
+                    if (utc(attr("validFrom")) > now) next
+                    if (attr("validUntil") != "" && utc(attr("validUntil")) <= now) next
+                    printf ". IN DS %s %s %s %s\n", text("KeyTag"), text("Algorithm"), text("DigestType"), text("Digest")
+                    n++
+                }
+                END { if (!failed && n == 0) fail("no key valid now") }'
+    } > "$tmp"
+    mv "$tmp" "$out"
+    chmod 644 "$out"
+    cat "$out"

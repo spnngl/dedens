@@ -18,6 +18,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   Default: validated; a setting of the validator marking algorithms 5 and 7 unsupported, added with 06.
 - Trust anchor rollover (RFC 5011): follow a root key roll while running. Default: bundled anchors and anchor
   files only, replaced by hand; automate in the recursive phase, when a daemon holds state.
+- NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
+  (D72). Default: none, the caller drops it (`--insecure NAME`, `insecure:` in the configuration); an `until` with the
+  clock passed in when `dedensd` keeps state across reloads.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
