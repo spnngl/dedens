@@ -24,10 +24,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   clock passed in when `dedensd` keeps state across reloads.
 - `+trace +validate` (D76 refuses it): validate each hop, a referral by `start_referral` and the answer by `start`,
   asking DS and DNSKEY of the servers the trace reached. Default: refused; `+validate @server` is the way to a verdict.
-- Key cache, bogus zones (D86): whoever answers a DNSKEY question under an authentic DS can make that zone bogus for
-  60 s, for every validation of the validator (Unbound's `val-bogus-ttl`). Default: kept, it is what the same
-  answerer forces on one validation anyway; a caller with several servers could instead retry the DNSKEY at another
-  before a bogus is stored, or the bogus entry could be dropped by a secure one from a different server.
+- Key cache, bogus zones (D86): whoever answers a DNSKEY question under an authentic DS can still make that zone
+  bogus for 60 s for every validation of the validator, but only by a DNSKEY set without the key the DS digests or
+  with a signature of that key that fails (an empty, unsigned, expired or lame answer is never stored).
+  Unbound stores a bogus zone only after trying its other servers; the sans-IO validator has no retry step.
+  Default: kept (it is what the same answerer forces on one validation anyway); a `Next::Retry` asking the DNSKEY
+  of another server or over TCP before a bogus is stored, or no bogus entry at all (the 60 s only spared repeated
+  failed walks), when a caller has several servers.
 - Key cache, size and lock (D86): bounded by entries (4096 per table), not bytes, with one `Mutex`. Default: as is;
   bytes, an `RwLock` or shards when `dedensd`'s load tests show a validator's keys cost more than a few MB or its
   lock contended.

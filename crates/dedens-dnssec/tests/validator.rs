@@ -1464,3 +1464,133 @@ fn the_cache_is_bound_and_a_bound_of_nothing_keeps_nothing() {
         assert_ne!(first.len(), 0);
     }
 }
+
+/// `nl`'s DNSKEY answer served by `script` but for `nl`, which is `replacement`.
+fn with_nl_keys<'s>(
+    script: &'s Script,
+    replacement: &'s Message<'static>,
+) -> impl Fn(&Question<'static>) -> Option<&'s Message<'static>> {
+    move |ask| {
+        if ask.name == name("nl") && ask.qtype == RecordType::DNSKEY {
+            Some(replacement)
+        } else {
+            script.answer(ask)
+        }
+    }
+}
+
+/// A signature of `nl`'s keys that no longer checks: the TTL it signed is not the one it is given.
+fn bad_signature_of_nl_keys() -> Message<'static> {
+    let mut keys = capture("nl_dnskey");
+    with_rrsigs(&mut keys, |rrsig| rrsig.original_ttl += 1);
+    keys
+}
+
+#[test]
+fn a_dnskey_answer_without_signatures_given_to_start_is_never_kept() {
+    // `start` takes its response as the answer to its own question: a DNSKEY answer fetched without DO is no
+    // proof about `nl`, and must not make `nl` bogus for the validations after it (D86).
+    let (script, validator) = cached();
+    let mut seeded = capture("nl_dnskey");
+    seeded
+        .answer
+        .retain(|record| record.rtype() != RecordType::RRSIG);
+    let (verdict, _) = Script::drive(&validator, &seeded, captured_at(), |ask| script.answer(ask));
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(asked.contains(&"nl. DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn a_dnskey_answer_that_fails_given_to_start_is_never_kept() {
+    // Even a signature that fails under the key the DS names: the response is the caller's, not the zone's.
+    let (script, validator) = cached();
+    let seeded = bad_signature_of_nl_keys();
+    let (verdict, _) = Script::drive(&validator, &seeded, captured_at(), |ask| script.answer(ask));
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(asked.contains(&"nl. DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn a_dnskey_answer_that_proves_nothing_is_never_kept() {
+    // An empty answer, a lame server or a replay says nothing lasting of the zone: bogus for this validation,
+    // asked again by the next (D86).
+    let (script, validator) = cached();
+    let mut empty = capture("nl_dnskey");
+    empty.answer.clear();
+    let (verdict, _) = Script::drive(
+        &validator,
+        &capture("alg8_a"),
+        captured_at(),
+        with_nl_keys(&script, &empty),
+    );
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let mut unsigned = capture("nl_dnskey");
+    unsigned
+        .answer
+        .retain(|record| record.rtype() != RecordType::RRSIG);
+    let (verdict, _) = Script::drive(
+        &validator,
+        &capture("alg8_a"),
+        captured_at(),
+        with_nl_keys(&script, &unsigned),
+    );
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(asked.contains(&"nl. DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn a_signature_that_fails_under_the_keys_a_ds_names_is_held_sixty_seconds() {
+    let (script, validator) = cached();
+    let at = captured_at();
+    let forged = bad_signature_of_nl_keys();
+    let (first, _) = Script::drive(
+        &validator,
+        &capture("alg8_a"),
+        at,
+        with_nl_keys(&script, &forged),
+    );
+    assert!(matches!(first, Verdict::Bogus { .. }), "{first:?}");
+    let (again, asked) = drive_capture(&script, &validator, "alg8_a", at + 59);
+    assert_eq!(again, first);
+    assert_eq!(asked, Vec::<String>::new());
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 60);
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(asked.contains(&"nl. DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn insecure_and_no_cut_outcomes_are_kept_for_their_proofs() {
+    // `google.com`: an opt-out proof, insecure. `_tcp.nlnetlabs.nl`: an empty non-terminal, no zone cut.
+    for id in ["google_com_a", "ent_nsec"] {
+        let (script, validator) = cached();
+        let (first, asked) = drive_capture(&script, &validator, id, captured_at());
+        assert_ne!(asked.len(), 0, "{id}");
+        let (second, asked) = drive_capture(&script, &validator, id, captured_at());
+        assert_eq!(second, first, "{id}");
+        assert_eq!(asked, Vec::<String>::new(), "{id}");
+    }
+}
+
+#[test]
+fn a_negative_anchor_is_the_validators_own_and_its_zones_are_not_kept() {
+    let (script, _) = cached();
+    let mut anchors = TrustAnchors::root();
+    anchors.add_negative(name("nl"));
+    let validator = Validator::new(anchors, Limits::default());
+    let (first, _) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(matches!(first, Verdict::Insecure { .. }), "{first:?}");
+    let (second, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert_eq!(second, first);
+    assert_eq!(asked, Vec::<String>::new());
+    // Another validator with the same negative anchor shares nothing with it, and no other with none is
+    // affected by it.
+    let (script, plain) = cached();
+    let (verdict, _) = drive_capture(&script, &plain, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+}

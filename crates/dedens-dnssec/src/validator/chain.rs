@@ -9,7 +9,7 @@ use dedens_proto::{
 };
 
 use super::section::{Section, dname_of, synthesized};
-use super::verdict::{Failure, InsecureReason, Unusable};
+use super::verdict::{Failure, InsecureReason, Unusable, ede};
 use super::{Need, Validation};
 use crate::denial::Fact;
 use crate::rrsig::{Key, RrSet, SigError, trusted_keys, verify_any};
@@ -122,16 +122,17 @@ pub(super) fn parent(name: &Name<'_>) -> Option<Name<'static>> {
 
 /// What an error of a signature check makes of the data it was about: bogus, but for an exhausted budget, which
 /// says nothing of the data (the caller or an attacker spent it) and so is indeterminate, like a lame server
-/// (RFC 9276 §3.2, D71, D75); and for the limit on failed checks, which refused to look further and so is
-/// transient (D73, D86).
+/// (RFC 9276 §3.2, D71, D75); and what only the key cache tells apart, which keeps a bogus failure only when
+/// it is a fact about the keys ([`SigError::is_proven`]): the other errors, and the limit on failed checks (D73),
+/// are transient (D86).
 pub(super) fn sig_failure(error: &SigError, set: &RrSet<'_>) -> Failure {
     match error {
         SigError::BudgetExhausted(_) => Failure::indeterminate(
             InfoCode::DNSSEC_INDETERMINATE,
             format!("{} {}: {error}", set.owner(), set.rtype()),
         ),
-        SigError::TooManyFailures => Failure::Transient(error.ede(set)),
-        _ => Failure::Bogus(error.ede(set)),
+        _ if error.is_proven() => Failure::Bogus(error.ede(set)),
+        _ => Failure::Transient(error.ede(set)),
     }
 }
 
@@ -280,12 +281,31 @@ impl Validation {
     /// reached is `undecided` if bogus: only a failure of the keys under authentic trust is the data's.
     fn resolve(&mut self, name: &Name<'static>) -> Result<Zone, Need> {
         Ok(match self.cut(name, true)? {
-            Cut::Anchored => Zone::Apex(self.anchor_keys(name)?),
-            Cut::Signed { ds, ttl } => Zone::Apex(self.keys_from_ds(name, &ds, ttl)?),
+            Cut::Anchored => {
+                let settled = self.anchor_keys(name)?;
+                Zone::Apex(self.seeded_undecided(name, settled))
+            }
+            Cut::Signed { ds, ttl } => {
+                let settled = self.keys_from_ds(name, &ds, ttl)?;
+                Zone::Apex(self.seeded_undecided(name, settled))
+            }
             Cut::Inside { apex, ttl } => Zone::Inside { apex, ttl },
             Cut::Unusable(unusable) => Zone::Apex(Settled::Unusable(unusable.undecided())),
             Cut::Beneath(unusable) => Zone::Beneath(unusable),
         })
+    }
+
+    /// `settled`, the keys of the zone `name`, but undecided if its DNSKEY answer is the response `start` was
+    /// given: that is the caller's, fetched how it was, and no answer of the zone to a question of the validator's.
+    fn seeded_undecided(&self, name: &Name<'static>, settled: Settled) -> Settled {
+        match settled {
+            Settled::Unusable(unusable)
+                if self.seeded.contains(&(name.clone(), RecordType::DNSKEY)) =>
+            {
+                Settled::Unusable(unusable.undecided())
+            }
+            other => other,
+        }
     }
 
     /// What the parent says of `name` as a zone cut, and for a name below an insecure zone, that it is insecure.
@@ -490,9 +510,11 @@ fn secure(keys: &RrSet<'static>, ttl: Ttl) -> Settled {
     }
 }
 
+/// No DNSKEY `RRset` in the answer: bogus for the validation, but an answer can lack it whatever the zone, so
+/// transient, never kept (D86).
 fn missing_keys(name: &Name<'_>) -> Settled {
-    Settled::Unusable(Unusable::Failed(Failure::bogus(
+    Settled::Unusable(Unusable::Failed(Failure::Transient(ede(
         InfoCode::DNSKEY_MISSING,
         format!("no DNSKEY RRset of {name}"),
-    )))
+    ))))
 }

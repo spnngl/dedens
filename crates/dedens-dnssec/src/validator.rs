@@ -54,7 +54,7 @@ mod response;
 mod section;
 mod verdict;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
@@ -192,6 +192,7 @@ impl Validator {
             now: u32::from_be_bytes([a, b, c, d]),
             at: now,
             answers: HashMap::new(),
+            seeded: HashSet::new(),
             asked: 0,
             pending: None,
             budget: self.config.limits.budget.clone(),
@@ -221,10 +222,7 @@ impl Validator {
                 return validation;
             }
             Entry::Referral(Some(child)) => {
-                validation.answers.insert(
-                    (child.clone(), RecordType::DS),
-                    Some(Arc::clone(&validation.response)),
-                );
+                validation.seed(child.clone(), RecordType::DS);
                 validation.mode = Mode::Referral(child);
             }
         }
@@ -232,10 +230,7 @@ impl Validator {
             validation.question.qtype,
             RecordType::DS | RecordType::DNSKEY
         ) {
-            validation.answers.insert(
-                (validation.question.name.clone(), validation.question.qtype),
-                Some(Arc::clone(&validation.response)),
-            );
+            validation.seed(validation.question.name.clone(), validation.question.qtype);
         }
         validation
     }
@@ -293,6 +288,9 @@ pub struct Validation {
     now: u32,
     /// The time as given, in Unix seconds: the key cache's.
     at: u64,
+    /// The questions the response `start` was given answers: given before the walk asked anything, so the
+    /// caller's, whatever it was fetched with, and no proof of what is bogus (D86).
+    seeded: HashSet<(Name<'static>, RecordType)>,
     /// The responses given, by question; `None` for a question that got none.
     answers: HashMap<(Name<'static>, RecordType), Option<Arc<Message<'static>>>>,
     asked: usize,
@@ -305,6 +303,13 @@ pub struct Validation {
 }
 
 impl Validation {
+    /// Takes the response `start` was given as the answer to `name` and `rtype`.
+    fn seed(&mut self, name: Name<'static>, rtype: RecordType) {
+        self.answers
+            .insert((name.clone(), rtype), Some(Arc::clone(&self.response)));
+        self.seeded.insert((name, rtype));
+    }
+
     /// What the validation needs: a question to ask, or the verdict.
     ///
     /// Asking again before [`Validation::answer`] repeats the question. Asking after the verdict repeats it.
