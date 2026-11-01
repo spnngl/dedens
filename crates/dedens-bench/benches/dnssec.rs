@@ -276,6 +276,23 @@ fn nsec3(bencher: divan::Bencher<'_, '_>, iterations: u16) {
     });
 }
 
+/// The NSEC3 hash at 150 iterations with a salt of 0, 64 and 255 octets: the `Budget` counts SHA-1 blocks, 1, 2
+/// and 5 per iteration (D106), and the time should follow.
+#[divan::bench(args = [0, 64, 255])]
+fn nsec3_salt(bencher: divan::Bencher<'_, '_>, salt_len: usize) {
+    let owner = name("www.example.com.");
+    let salt = vec![0xaa; salt_len];
+    bencher.bench_local(|| {
+        nsec3_hash(
+            Nsec3HashAlgorithm::SHA1,
+            black_box(&salt),
+            black_box(150),
+            black_box(&owner),
+        )
+        .expect("SHA-1")
+    });
+}
+
 /// A captured signed `RRset`: the `RRset`, its RRSIG `RRset` and the DNSKEY `RRset` of the signer, all as the
 /// zones served them.
 fn captured(answer: &str, keys: &str) -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {

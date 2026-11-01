@@ -5,7 +5,7 @@ mod common;
 #[path = "common/denial.rs"]
 mod support;
 
-use dedens_dnssec::crypto::{Budget, BudgetExhausted, Nsec3Hashes, Verifications};
+use dedens_dnssec::crypto::{Budget, BudgetExhausted, Nsec3Blocks, Verifications};
 use dedens_dnssec::denial::{self, MaxIterations, Unproven};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Nsec3HashAlgorithm, Question, RecordType};
@@ -88,28 +88,28 @@ fn the_default_limit_is_150() {
     ));
 }
 
-/// §3.2: a response whose hashes do not fit the budget is refused, and the budget says which counter ran out;
-/// the verdict, insecure or SERVFAIL, is the caller's (D71).
+/// §3.2: a response whose hashing does not fit the budget is refused, and the budget says which counter ran out;
+/// the verdict, insecure or SERVFAIL, is the caller's (D71). The budget counts SHA-1 blocks (D106).
 #[test]
 fn hashing_is_counted_by_the_budget() {
-    // One hash of 1 iteration costs 2.
-    let mut budget = Budget::new(Verifications(0), Nsec3Hashes(1));
+    // One hash of 1 iteration, of a short name and a short salt, is 2 computations of one block: it costs 2.
+    let mut budget = Budget::new(Verifications(0), Nsec3Blocks(1));
     assert_eq!(
         prove_with(MaxIterations(1), &mut budget),
-        Err(Unproven::Budget(BudgetExhausted::Nsec3Hashes))
+        Err(Unproven::Budget(BudgetExhausted::Nsec3Blocks))
     );
-    assert_eq!(budget.nsec3_hashes_left(), Nsec3Hashes(0));
+    assert_eq!(budget.nsec3_blocks_left(), Nsec3Blocks(0));
     // The budget the proof leaves is the one it did not spend.
     let mut budget = Budget::default();
-    let before = budget.nsec3_hashes_left().0;
+    let before = budget.nsec3_blocks_left().0;
     prove_with(MaxIterations(1), &mut budget).expect("a proof");
-    let spent = before - budget.nsec3_hashes_left().0;
+    let spent = before - budget.nsec3_blocks_left().0;
     assert!(spent > 0 && spent % 2 == 0, "{spent}");
 }
 
-/// RFC 5155 B.1 (`a.c.x.w.example.`, 12 iterations, so 13 rounds a hash) takes four hashes: the name, its parent,
+/// RFC 5155 B.1 (`a.c.x.w.example.`, 12 iterations, so 13 blocks a hash) takes four hashes: the name, its parent,
 /// the closest encloser and its wildcard. The budget runs out in the loop that looks for the closest encloser,
-/// or at the wildcard, and a budget of the whole cost is enough.
+/// or at the wildcard, and a budget of the whole cost, 52 blocks, is enough.
 #[test]
 fn the_budget_runs_out_in_the_middle_of_a_proof() {
     let records = pick(
@@ -123,8 +123,8 @@ fn the_budget_runs_out_in_the_middle_of_a_proof() {
     );
     let question = Question::new("a.c.x.w.example.".parse().expect("a name"), RecordType::A);
     let apex = "example.".parse().expect("a name");
-    let run = |hashes| {
-        let mut budget = Budget::new(Verifications(0), Nsec3Hashes(hashes));
+    let run = |blocks| {
+        let mut budget = Budget::new(Verifications(0), Nsec3Blocks(blocks));
         denial::prove(
             &apex,
             &question,
@@ -136,7 +136,7 @@ fn the_budget_runs_out_in_the_middle_of_a_proof() {
     for short in [0, 12, 13, 26, 38, 39, 51] {
         assert_eq!(
             run(short),
-            Err(Unproven::Budget(BudgetExhausted::Nsec3Hashes)),
+            Err(Unproven::Budget(BudgetExhausted::Nsec3Blocks)),
             "{short}"
         );
     }

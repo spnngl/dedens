@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::crypto::{Budget, Nsec3Hashes, Verifications};
+use dedens_dnssec::crypto::{Budget, Nsec3Blocks, Verifications};
 use dedens_dnssec::denial::MaxIterations;
 use dedens_dnssec::validator::{
     Cost, Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
@@ -665,7 +665,7 @@ fn a_name_too_deep_is_indeterminate() {
 fn an_exhausted_budget_is_indeterminate_not_bogus() {
     let script = Script::new();
     let limits = Limits {
-        budget: Budget::new(Verifications(2), Nsec3Hashes(0)),
+        budget: Budget::new(Verifications(2), Nsec3Blocks(0)),
         ..Limits::default()
     };
     let validator = Validator::new(TrustAnchors::root(), limits);
@@ -696,7 +696,7 @@ fn a_validation_reports_what_it_cost() {
     // The keys of three zones, the DS of two of them and the answer's signature: all verified.
     assert!(cost.verifications >= 6, "{cost:?}");
     assert!(cost.verifications <= 128, "{cost:?}");
-    assert_eq!(cost.nsec3_hashes, 0);
+    assert_eq!(cost.nsec3_blocks, 0);
 }
 
 #[test]
@@ -1552,7 +1552,7 @@ fn an_answer_nobody_gave_is_not_kept() {
 fn an_exhausted_budget_is_never_kept_and_the_verified_part_is() {
     let (script, _) = cached();
     let limits = Limits {
-        budget: Budget::new(Verifications(2), Nsec3Hashes(0)),
+        budget: Budget::new(Verifications(2), Nsec3Blocks(0)),
         ..Limits::default()
     };
     let validator = Validator::new(TrustAnchors::root(), limits);

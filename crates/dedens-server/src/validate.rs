@@ -28,25 +28,30 @@ const MAX_QUESTIONS: u16 = 64;
 /// untrusted input.
 const MAX_CHASES: u8 = 8;
 
-/// NSEC3 hashes that cost one unit of [`Allowance`]: 4096 hashes take about as long as a signature check of the
-/// slowest key (`docs/benchmarks.md`).
-const HASHES_PER_UNIT: u32 = 4096;
+/// SHA-1 blocks of NSEC3 hashing that cost one unit of [`Allowance`]: 4096 blocks take about as long as a
+/// signature check of the slowest key (`docs/benchmarks.md`).
+const BLOCKS_PER_UNIT: u32 = 4096;
 
 /// What the queries of all clients may cost a validating forward stage, in units (D77): a client's question
-/// upstream, a question of the validator's, a signature verification, or 4096 NSEC3 hashes. A unit takes about 10
+/// upstream, a question of the validator's, a signature verification, or 4096 SHA-1 blocks of NSEC3 hashing (a
+/// hash of a short name with no salt is one block per iteration, D106). A unit takes about 10
 /// µs of a core on the checks of the common algorithms and up to 340 µs on a P-384 one (`docs/benchmarks.md`).
 /// A response from the cache costs none, a validation that finds the zone's keys in the validator's key cache
 /// (D86) two units.
 ///
 /// A token bucket: `burst` units, refilled `per_second`. A query that finds none left is answered SERVFAIL without
-/// being validated. A query started with one left may run into debt, so that the bucket does not tell what a query
-/// will cost before it runs: the debt is at most that of the queries running together, each bounded by
-/// `per_query`.
+/// being validated. A query started with one left may run into debt, as the bucket does not tell what a query will
+/// cost before it runs, but a query that finds the bucket in debt asks no more questions and is answered the same
+/// (D106): the work past the first debt is one validation step of each query running then, at most 130 units a
+/// step, and `per_query` bounds a query only to within the step that goes over it. The debt is kept down to
+/// `burst` units and no further (the rest is forgiven), so that validation is back `burst / per_second + 1`
+/// seconds after a flood of expensive queries stops, however large it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Allowance {
     /// Units refilled each second: the sustained rate of validation work.
     pub per_second: u32,
-    /// Units the bucket holds at most: the work a flood after a quiet time may cost.
+    /// Units the bucket holds at most: the work a flood after a quiet time may cost. Also the largest debt it
+    /// keeps (D106).
     pub burst: u32,
     /// Units one client query may cost, its CNAME chain included: past it the verdict is indeterminate.
     pub per_query: u32,
@@ -109,9 +114,20 @@ impl Bucket {
         admitted
     }
 
+    /// Whether work done left the bucket owing units: a query in this state asks no more questions (D106).
+    fn in_debt(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .units
+            < 0
+    }
+
+    /// Takes `units` of work done, down to a debt of one burst and no further (D106).
     fn charge(&self, units: u32) {
         let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        tokens.units = tokens.units.saturating_sub(i64::from(units));
+        let floor = -i64::from(self.allowance.burst);
+        tokens.units = tokens.units.saturating_sub(i64::from(units)).max(floor);
     }
 }
 
@@ -212,6 +228,9 @@ pub(crate) enum Progress {
     /// Ask [`Check::asking`] of the upstream servers and give the response to [`Check::answer`].
     Ask,
     Done(Outcome),
+    /// The allowance is in debt (D106): stop, with the answer of a query refused at [`Validating::admit`]. Not an
+    /// [`Outcome`]: no verdict, and no failure to hold, as the response is not at fault.
+    Shed,
 }
 
 /// The validation of one upstream response, between the questions it asks.
@@ -277,14 +296,21 @@ impl Check {
     }
 
     /// What to do next: ask [`Check::asking`], or the outcome. What the query has cost since the last time is
-    /// charged to `validating`'s allowance, and a query past [`Allowance::per_query`] gets no more questions.
+    /// charged to `validating`'s allowance, after the step: a query past [`Allowance::per_query`] gets no more
+    /// questions, nor one that finds the allowance in debt (D106), which is counted shed.
     pub(crate) fn next(&mut self, validating: &Validating) -> Progress {
         let progress = self.advance();
         let spent = self.spent();
         validating.bucket.charge(spent.saturating_sub(self.charged));
         self.charged = spent;
-        if matches!(progress, Progress::Ask) && spent > validating.bucket.allowance.per_query {
-            return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
+        if matches!(progress, Progress::Ask) {
+            if spent > validating.bucket.allowance.per_query {
+                return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
+            }
+            if validating.bucket.in_debt() {
+                validating.metrics.shed();
+                return Progress::Shed;
+            }
         }
         progress
     }
@@ -368,10 +394,11 @@ impl Check {
     }
 }
 
-/// The units a validation's work cost: its signature verifications and NSEC3 hashes.
+/// The units a validation's work cost: its signature verifications and NSEC3 hashing (`Cost::nsec3_blocks` counts
+/// SHA-1 blocks, D106).
 fn work(cost: Cost) -> u32 {
     cost.verifications
-        .saturating_add(cost.nsec3_hashes.div_ceil(HASHES_PER_UNIT))
+        .saturating_add(cost.nsec3_blocks.div_ceil(BLOCKS_PER_UNIT))
 }
 
 /// Makes `message`, upstream's response, what the client of `outcome` gets (RFC 4035 §3.2): AD set for a secure
@@ -417,5 +444,59 @@ pub(crate) fn present(
         ] {
             section.retain(|record| !unasked(record.rtype()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D106: the debt stops at one burst. 10 000 queries admitted together, each then charged `per_query`, would
+    /// leave 2.5 million units owed, 256 s of refill; the bucket admits again once `burst / per_second + 1`
+    /// seconds have passed, and not before the debt is paid down to nothing.
+    #[test]
+    fn the_debt_of_a_flood_stops_at_one_burst() {
+        let allowance = Allowance::default();
+        let bucket = Bucket::new(allowance);
+        let start = 1_000;
+        assert!((0..10_000).all(|_| bucket.admit(start)));
+        for _ in 0..10_000 {
+            bucket.charge(allowance.per_query);
+        }
+        let repay = u64::from(allowance.burst / allowance.per_second);
+        assert!(!bucket.admit(start));
+        assert!(!bucket.admit(start + repay));
+        assert!(bucket.admit(start + repay + 1));
+    }
+
+    /// D106: the bucket is in debt once work done took more than it held, and not before.
+    #[test]
+    fn the_bucket_is_in_debt_only_below_zero() {
+        let bucket = Bucket::new(Allowance {
+            per_second: 1,
+            burst: 10,
+            per_query: 256,
+        });
+        assert!(bucket.admit(1));
+        bucket.charge(9);
+        assert!(!bucket.in_debt());
+        bucket.charge(1);
+        assert!(bucket.in_debt());
+    }
+
+    /// D106: a debt within the burst is kept whole, so that the clamp costs a query that owes less nothing.
+    #[test]
+    fn a_debt_within_the_burst_is_repaid_as_owed() {
+        let allowance = Allowance {
+            per_second: 10,
+            burst: 100,
+            per_query: 256,
+        };
+        let bucket = Bucket::new(allowance);
+        assert!(bucket.admit(1));
+        bucket.charge(150);
+        // 100 - 1 - 150 = -51: five seconds repay 50, which leaves a unit owed; a sixth admits.
+        assert!(!bucket.admit(6));
+        assert!(bucket.admit(7));
     }
 }

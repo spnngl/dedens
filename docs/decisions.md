@@ -29,8 +29,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   digest and NSEC3 hash numbers (`SecAlgorithm`, `DigestType`, `Nsec3HashAlgorithm`) print as their IANA
   mnemonic and parse from it or from the bare number, which zone text writes. Open questions this phase
   leaves: [`TODECIDE.md`](TODECIDE.md). Steps: `plan/4-dnssec-experimental/`.
-- D71 (amends D69) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock through
-  rustls, and `data-encoding` for test and bench data. Policy, after RFC 9904 §3 and RFC 6840 §5.2: validated
+- D71 (amends D69; amended by D106) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock
+  through rustls, and `data-encoding` for test and bench data. Policy, after RFC 9904 §3 and RFC 6840 §5.2: validated
   are RSASHA1 and its NSEC3 alias (5, 7), RSASHA256 (8), RSASHA512 (10), ECDSAP256SHA256 (13),
   ECDSAP384SHA384 (14), Ed25519 (15); DS digests SHA-1, SHA-256, SHA-384 (1, 2, 4). Unsupported, so the zone or
   delegation is insecure (EDE 1 and 2): RSAMD5, DSA (1, 3, 6), GOST (12, DS digest 3), Ed448 (16, `ring` has
@@ -128,9 +128,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   message and asserts that no input makes data insecure. RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for
   `example.com.`, which has 2: as an `RRset` it is `BadLabels` (RFC 4035 §5.3.1), and `crypto` checks the
   signature over its bytes (`tests/rfc8080.rs`).
-- D74 (amends D69) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3 records the
-  caller verified, each signed by the zone's `apex` (step 06 checks; this trusts them and the module docs list what
-  it owes). `prove` answers a question that got a name error, no data or a referral, `prove_wildcard_answer` one
+- D74 (amends D69; amended by D106) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3
+  records the caller verified, each signed by the zone's `apex` (step 06 checks; this trusts them and the module docs list
+  what it owes). `prove` answers a question that got a name error, no data or a referral, `prove_wildcard_answer` one
   that got a wildcard expansion (the RRSIG's label count gives the next closer name); the result is a `Fact`
   (`NameError { compact }`, `NoData`, `WildcardNoData`, `WildcardAnswer`, `InsecureDelegation`) with the TTL of the
   proof, the least of the records used (RFC 9077 §3), or an `Unproven` reason: the caller picks the verdict, as for
@@ -157,19 +157,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
-- D75 (amends D69; amended by D86) The validator is `dedens_dnssec::validator`, sans-IO: `Validator::new(TrustAnchors, Limits)` (shared,
-  `Clone`, `Send + Sync`) and `start(question, response, now) -> Validation` for the final answer to a question,
-  `start_referral` for a referral. The caller drives a `Validation`: `step()` is `Next::Ask(question)`, to send with
-  RD, DO and CD set (RFC 6840 §5.9) and give back with `answer(Some(response))` or `answer(None)` (a failed query),
-  or `Next::Done(Verdict)`. `step`, not `next`, and `now` once at `start`, not per call (the plan's sketch): a
-  validation is one instant, so a chain cannot straddle a signature's expiry, and `Iterator::next` would mislead.
-  `now` is `u64` Unix seconds, as the cache and the pipeline count seconds from any origin; the signatures take it
-  modulo 2^32 (RFC 4034 §3.1.5, serial arithmetic, D73). A response that is no complete answer to the question (not
-  its one question, in class IN, TC set) is `Indeterminate` at once, as an answer to one of the validator's own
-  questions is, which also makes a truncated DS or DNSKEY answer indeterminate, never bogus (RFC 1035 §4.1.1).
-  `Verdict` is RFC 4035 §4.3 with two more: `Secure { ttl }`, `Incomplete { next, ttl }`, `Referral { child,
-  delegation }`, `Insecure { reason }`, `Bogus { ede }`, `Indeterminate { ede }`; `ede()` the code and text to attach
-  (RFC 8914), the text of an insecure reason included.
+- D75 (amends D69; amended by D86, D106) The validator is `dedens_dnssec::validator`, sans-IO:
+  `Validator::new(TrustAnchors, Limits)` (shared, `Clone`, `Send + Sync`) and `start(question, response, now) ->
+  Validation` for the final answer to a question, `start_referral` for a referral. The caller drives a `Validation`:
+  `step()` is `Next::Ask(question)`, to send with RD, DO and CD set (RFC 6840 §5.9) and give back with
+  `answer(Some(response))` or `answer(None)` (a failed query), or `Next::Done(Verdict)`. `step`, not `next`, and `now`
+  once at `start`, not per call (the plan's sketch): a validation is one instant, so a chain cannot straddle a signature's
+  expiry, and `Iterator::next` would mislead. `now` is `u64` Unix seconds, as the cache and the pipeline count seconds
+  from any origin; the signatures take it modulo 2^32 (RFC 4034 §3.1.5, serial arithmetic, D73). A response that is no
+  complete answer to the question (not its one question, in class IN, TC set) is `Indeterminate` at once, as an answer to
+  one of the validator's own questions is, which also makes a truncated DS or DNSKEY answer indeterminate, never bogus
+  (RFC 1035 §4.1.1). `Verdict` is RFC 4035 §4.3 with two more: `Secure { ttl }`, `Incomplete { next, ttl }`, `Referral {
+  child, delegation }`, `Insecure { reason }`, `Bogus { ede }`, `Indeterminate { ede }`; `ede()` the code and text to
+  attach (RFC 8914), the text of an insecure reason included.
   What Secure covers: every `RRset` of class IN in the answer and the authority section is authentic (RFC 4035
   §3.2.3, RFC 6840 §5.8), what the response lacks is proven absent, and the rcode agrees with the proof (a name error
   is NXDOMAIN, or NOERROR when compact, RFC 9824; no data is NOERROR; NXDOMAIN with an answer is bogus). It does not
@@ -230,7 +230,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). Each zone's outcome (secure keys with their TTL,
   insecure, bogus) is written by one private function, `settle`, and read by one other, `zone_of`; delegations are
   not cached apart from them and an indeterminate outcome is never written, so D86's cache goes there and holds
-  only what the data decides. `Validation::cost() -> Cost { questions, verifications, nsec3_hashes }` (additive,
+  only what the data decides. `Validation::cost() -> Cost { questions, verifications, nsec3_blocks }` (additive,
   `#[non_exhaustive]`) is what the validation spent so far of those limits, for a caller that bounds what a
   client's query costs across validations, as D77 does. Not done: the SHA-1 switch (TODECIDE: it needs a filter in
   `rrsig`). Opt-out wildcards: the TLDs `ph` and `ws`
@@ -245,10 +245,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75) A forward stage validates with `dnssec: validate` (default `off`; `off` is
-  read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else the bundled
-  root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused. One
-  `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
+- D77 (amends D41, D43, D45; builds on D75; amended by D106) A forward stage validates with `dnssec: validate` (default
+  `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
+  the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
+  One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
   unchanged, the tag of its anchors file text and negative anchors the same (D55, D86). The wall clock is
   the caller's (`Validating::new(validator, clock)`, Unix seconds): the pipeline's `now` is a monotonic `u32`.
   The glue is `dedens-server`'s `validate.rs`: `Check` owns a `Validation` and the client's answer, and the
@@ -1574,6 +1574,49 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
   table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
   `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
+
+- D106 (amends D71, D74, D75, D77) Validation cost counts what it costs: the debt of the admission bucket stops at
+  one burst and a query in debt asks no more, and NSEC3 hashing is counted in SHA-1 blocks, as the salt and the name
+  make them.
+  - Debt: `Bucket::charge` (`dedens-server/src/validate.rs`) floors the units at `-burst` (default -20 000). Before,
+    2 000 expensive queries admitted together left about -770 000 units and validation shed for about 77 s after the
+    flood stopped; now it admits again `burst / per_second + 1` s after (3 s by default: `admit` wants a unit above
+    zero, and the clock counts whole seconds). The floor forgives the units above it, so a query is also stopped
+    from spending them: `Check::next` charges the step it ran and, if the bucket is then in debt and the query would
+    ask another question, ends it with `Progress::Shed`, answered as a query refused at `admit` is: SERVFAIL with
+    EDE 14 (Not Ready), nothing held or cached (the response is not at fault, so not `Indeterminate`, which holds
+    the failure), counted in `dedens_validations_total{verdict="shed"}` as a refusal is. The real bound: the work
+    past the first debt is one validation step of each query in flight at that time, a step at most 130 units (the
+    validator's `Budget` of 128 verifications and 8192 blocks, 2 units), and a few units for the common step; the
+    floor then forgives it. A query in flight took a unit at `admit`, so they are at most `burst` plus the refill
+    while they run. `per_query` bounds one query to within the step that goes over it, as `Check::next` checks
+    after the step. Rejected: reserving `per_query` at admission and refunding the rest (the audit's first fix): it
+    adds an exit path to each query's life in the pipeline to refund from, and a query that costs 2 units would
+    still hold 256 while it runs.
+  - NSEC3 blocks: `Budget::nsec3_hash(salt, iterations, owner)` is the one way to hash with a budget: it spends the
+    SHA-1 blocks the hash computes (RFC 5155 §5), then hashes (`spend_nsec3_blocks` is private, so no hash is
+    unpaid): `blocks(owner wire length + salt length) + iterations * blocks(20 + salt length)`, with `blocks(n) =
+    ceil((n + 9) / 64)`, the 9 being SHA-1's `0x80` and 64-bit length (FIPS 180-4 §5.1.1). The first computation
+    hashes the owner name, the later ones a 20-octet hash, so a long name costs on the first only: `(iterations + 1)
+    * blocks(max(owner, 20) + salt)` is an upper bound of this, and charges a name's first block to every
+    iteration. A name with 55 octets or fewer with its salt, and a salt of 35 or fewer, cost one block a
+    computation, `iterations + 1`, as before: that is every zone that follows RFC 9276 §3.1 (empty salt). The
+    limits keep their numbers and change their unit, blocks: `Budget::DEFAULT_NSEC3_BLOCKS` 8192 (D71),
+    `BLOCKS_PER_UNIT` 4096 an `Allowance` unit (D77), `Cost::nsec3_blocks` (D75), `Nsec3Blocks`. So 8192 blocks
+    cover 54 names at 150 iterations and no salt as before, but 10 with a salt of 255 octets (755 blocks each): a
+    salt is no longer a free multiplier of 5 on the CPU a response costs. `Unproven::UnsupportedHash` (D74) is gone:
+    the chain keeps only SHA-1 records (RFC 5155 §8.1), so nothing made it. A block takes 93 ns at no salt, a little
+    above the 90 ns the defaults were sized with, and less with a long salt (`docs/benchmarks.md`): 8192 blocks are
+    0.8 ms and a unit 0.4 ms, kept. Rejected: refusing a salt over 64 octets as insecure (the audit's alternative):
+    RFC 9276 §3.1 only tells zone operators to use none, RFC 5155 §3.1.4 allows 255, and refusing would change the
+    verdict of zones that validate today, where counting changes only what a response may cost. Each chased CNAME
+    name starts a validation with a fresh `Budget` (D77), so one query may spend 9 of them (the first and
+    `MAX_CHASES`), 73 728 blocks, 18 units, 6.6 ms of hashing at most; the `Allowance` charges it as it goes.
+  - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `validate.rs`,
+    `the_debt_of_queries_in_flight_is_at_most_a_burst` and `a_flood_in_flight_asks_no_more_than_the_burst_allows` in
+    `dedens-server/tests/limits.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
+    `dedens-dnssec/tests/rfc5155.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
+    `crypto/budget.rs` (block boundaries, the paid hash).
 
 ## Observability
 

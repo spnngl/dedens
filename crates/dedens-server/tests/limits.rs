@@ -7,7 +7,9 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use common::{Captures, captured_at, client_query, decode, run_captured, validating_under};
+use common::{
+    Captures, captured_at, client_query, decode, run_captured, run_together, validating_under,
+};
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
@@ -63,28 +65,29 @@ fn allowance(burst: u32) -> Allowance {
     }
 }
 
-/// D77: the allowance is spent by the questions and the work of the queries validated; one that finds it spent is
-/// answered SERVFAIL, with no question upstream, and nothing of it is held or cached.
+/// D77, D106: the allowance is spent by the questions and the work of the queries validated; one that finds it spent
+/// is answered SERVFAIL, with no question upstream, and nothing of it is held or cached. One that runs it into debt
+/// asks no more questions: it is answered the same, after the step that did.
 #[test]
 fn a_query_past_the_allowance_is_shed_without_being_validated() {
     let clock = Arc::new(AtomicU64::new(captured_at()));
     let validating = validating(allowance(1), &clock);
-    // One unit left admits a query, which goes into debt as far as it costs.
-    let (questions, reply) = ask(&validating_under(validating.clone()), "cloudflare.com.");
-    assert!(questions > 1, "{questions}");
-    assert_eq!(reply.rcode(), Rcode::NOERROR);
-    assert!(reply.header.flags.contains(Flags::AD));
-    // The next finds the allowance in debt.
+    // One unit left admits a query; its first question takes it, and the debt stops the query there.
     let pipeline = validating_under(validating);
+    let (questions, reply) = ask(&pipeline, "cloudflare.com.");
+    assert_eq!(questions, 1, "the client's question only");
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
+    // The next finds the allowance in debt.
     let (questions, reply) = ask(&pipeline, "nlnetlabs.nl.");
     assert_eq!(questions, 0, "nothing is asked upstream");
     assert_eq!(reply.rcode(), Rcode::SERVFAIL);
     assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
-    // Shed, not failed: no failure is held, so once the debt is paid the same query is validated.
+    // Shed, not failed: no failure is held, so once the debt is paid the same query is asked upstream again.
     clock.fetch_add(1, Ordering::Relaxed);
-    let (questions, reply) = ask(&pipeline, "nlnetlabs.nl.");
-    assert!(questions > 1, "{questions}");
-    assert!(reply.header.flags.contains(Flags::AD));
+    let (questions, reply) = ask(&pipeline, "cloudflare.com.");
+    assert_eq!(questions, 1, "{questions}");
+    assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
 }
 
 /// D77: the allowance refills at its rate, up to its burst, by the clock the validator reads, and never goes
@@ -100,7 +103,7 @@ fn the_allowance_refills_at_its_rate_up_to_its_burst() {
         },
         &clock,
     );
-    // One query goes into debt of dozens of units: one second repays one.
+    // One query goes into debt of one unit, the most the burst keeps: one second repays it, and leaves none.
     drop(ask(
         &validating_under(validating.clone()),
         "cloudflare.com.",
@@ -116,7 +119,73 @@ fn the_allowance_refills_at_its_rate_up_to_its_burst() {
     // A long while later the burst is all that is back, and admits one query.
     clock.store(captured_at() + 10_000, Ordering::Relaxed);
     let (questions, _) = ask(&validating_under(validating), "nlnetlabs.nl.");
-    assert!(questions > 1, "{questions}");
+    assert_eq!(questions, 1, "{questions}");
+}
+
+/// A validator that has the keys of `www.icann.org.` and of the name its CNAME goes on at already, so that a query
+/// for it takes no question upstream but the client's and the chasing of the chain: the step that validates the
+/// first response costs a verification and the question that chases, two units or a few more.
+fn keyed(clock: &Arc<AtomicU64>) -> Validating {
+    let clock = Arc::clone(clock);
+    let keyed = Validating::new(
+        Validator::new(TrustAnchors::root(), Limits::default()),
+        Arc::new(move || clock.load(Ordering::Relaxed)),
+    );
+    let (questions, reply) = ask(&validating_under(keyed.clone()), "www.icann.org.");
+    assert!(questions > 2, "{questions}");
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    keyed
+}
+
+/// D106: the debt stops at one burst: validation is back `burst / per_second + 1` seconds after queries that cost
+/// several times the burst, and not a second before the burst is repaid. Ten queries in flight take the 10 units
+/// of the burst, then cost at least 2 each as they are answered; without the floor the debt of 20 takes 21 s to
+/// repay.
+#[test]
+fn the_debt_of_queries_in_flight_is_at_most_a_burst() {
+    let clock = Arc::new(AtomicU64::new(captured_at()));
+    let allowing = Allowance {
+        per_second: 1,
+        burst: 10,
+        ..Allowance::default()
+    };
+    let validating = keyed(&clock).allowing(allowing);
+    let pipeline = validating_under(validating.clone());
+    let (_, replies) = run_together(&pipeline, "www.icann.org.", 10, &Captures::new());
+    assert_eq!(
+        replies.len(),
+        10,
+        "all were admitted before any was charged"
+    );
+    clock.fetch_add(10, Ordering::Relaxed);
+    let (questions, reply) = ask(&validating_under(validating.clone()), "nlnetlabs.nl.");
+    assert_eq!(questions, 0, "the debt is not yet repaid");
+    assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
+    clock.fetch_add(1, Ordering::Relaxed);
+    let (questions, _) = ask(&validating_under(validating), "nlnetlabs.nl.");
+    assert_eq!(questions, 1, "admitted again");
+}
+
+/// D106: a flood of queries in flight, all admitted before any is charged, asks no more than its units allow: a query
+/// that finds the allowance in debt stops after the step it is in, so that the work past the burst is one step of
+/// each, not the whole chain. 40 queries take 40 of the 60 units at admission; each next question is asked only
+/// after a step that cost a unit and left none owed, so at most 20 are asked. Run to the end, they ask ten times that.
+#[test]
+fn a_flood_in_flight_asks_no_more_than_the_burst_allows() {
+    let clock = Arc::new(AtomicU64::new(captured_at()));
+    let allowing = Allowance {
+        per_second: 1,
+        burst: 60,
+        ..Allowance::default()
+    };
+    let pipeline = validating_under(validating(allowing, &clock));
+    let (requests, replies) = run_together(&pipeline, "cloudflare.com.", 40, &Captures::new());
+    assert!(requests <= 40 + 20, "{requests}");
+    assert_eq!(replies.len(), 40);
+    for reply in replies.iter().flatten() {
+        let reply = decode(reply);
+        assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
+    }
 }
 
 /// D77: one query costs at most `per_query` units, the questions it asks upstream and the signatures it checks,

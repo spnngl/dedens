@@ -8,7 +8,7 @@ use dedens_proto::{Class, Question};
 
 use super::names::{covers, wildcard};
 use super::{Fact, MaxIterations, Proof, Unproven, at_name, least, wildcard_lacks};
-use crate::crypto::{Budget, nsec3_hash};
+use crate::crypto::Budget;
 
 /// The length of a SHA-1 hash, the only one NSEC3 has (RFC 5155 §11).
 const HASH_LEN: usize = 20;
@@ -122,13 +122,7 @@ impl<'r> Chain<'r> {
 
     /// The hash of `name` with the chain's parameters, paid from `budget`.
     fn hash(&self, name: &Name<'_>, budget: &mut Budget) -> Result<Hash, Unproven> {
-        budget.spend_nsec3_hash(self.iterations)?;
-        Ok(nsec3_hash(
-            Nsec3HashAlgorithm::SHA1,
-            &self.salt,
-            self.iterations,
-            name,
-        )?)
+        Ok(budget.nsec3_hash(&self.salt, self.iterations, name)?)
     }
 
     /// The record of the name that hashes to `hash`.

@@ -204,7 +204,7 @@ impl Captures {
         .expect("a capture")
     }
 
-    fn answer(&self, request: &Message<'_>) -> Option<&[u8]> {
+    pub(crate) fn answer(&self, request: &Message<'_>) -> Option<&[u8]> {
         let question = request.questions.first()?;
         self.0
             .get(&(question.name.clone().into_owned(), question.qtype))
@@ -306,6 +306,48 @@ pub(crate) fn run_captured_without(
         requests,
         reply,
     }
+}
+
+/// `queries` identical queries for `name` (type A, DO) in flight together: all are started before any is answered,
+/// then each gets one response a round, upstream answering from `captures`. What a query costs is charged as it is
+/// answered, so that a validating pipeline admits them all before any is charged. The requests sent, and the
+/// replies, `None` for a query dropped.
+pub(crate) fn run_together(
+    pipeline: &Pipeline,
+    name: &str,
+    queries: usize,
+    captures: &Captures,
+) -> (usize, Vec<Option<Vec<u8>>>) {
+    let query = client_query(name, RecordType::A, Flags::NONE, true);
+    let mut out = vec![0; 65535];
+    let mut waiting = Vec::new();
+    let mut replies = Vec::new();
+    let mut requests = 0;
+    let mut finish = |step: Step, out: &[u8], waiting: &mut Vec<_>| match step {
+        Step::Upstream(upstream) | Step::Refresh(_, upstream) => waiting.push(upstream),
+        Step::Reply(len) => replies.push(Some(out[..len].to_vec())),
+        Step::Drop => replies.push(None),
+    };
+    for _ in 0..queries {
+        let step = pipeline.query(
+            &query,
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
+        finish(step, &out, &mut waiting);
+    }
+    while !waiting.is_empty() {
+        for upstream in std::mem::take(&mut waiting) {
+            requests += 1;
+            assert!(requests < 100_000, "the queries ask for ever");
+            let response = captures.answer(&upstream.request());
+            let step = pipeline.receive(upstream, response, 0, &mut out);
+            finish(step, &out, &mut waiting);
+        }
+    }
+    (requests, replies)
 }
 
 /// A query for `name` and `qtype` with RD, the client's `flags` and EDNS with DO set as `dnssec`.

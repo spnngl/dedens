@@ -4,7 +4,7 @@
 //! - `dedensd_access_denied_total{action}`: queries of clients the access lists deny, by `refuse` or `drop` (D91).
 //!   Named for the daemon, which is where the lists are read; only the core sees the verdict.
 //! - `dedens_validations_total{verdict}`: responses validated, by `secure`, `insecure`, `bogus`,
-//!   `indeterminate` or `shed` (the allowance of D77 was spent: not validated).
+//!   `indeterminate` or `shed` (the allowance of D77 was spent, or in debt, D106: not validated, or not to the end).
 //! - `dedens_validation_questions_total`: DS and DNSKEY questions sent upstream for validation, chased names too.
 //!
 //! Handles are taken once, when the forward stage's validator or the access lists are built, from the recorder

@@ -118,11 +118,17 @@ pub fn nsec3_hash(
     if algorithm != Nsec3HashAlgorithm::SHA1 {
         return Err(UnsupportedNsec3Hash(algorithm));
     }
+    Ok(nsec3_sha1(salt, iterations, owner))
+}
+
+/// [`nsec3_hash`] with SHA-1, the only algorithm RFC 5155 §11 defines; unpaid, for [`Budget`](super::Budget) to
+/// call once it has spent the blocks.
+pub(super) fn nsec3_sha1(salt: &[u8], iterations: u16, owner: &Name<'_>) -> [u8; 20] {
     let mut hash = sha1_of(CanonicalOwner::new(owner).as_ref(), salt);
     for _ in 0..iterations {
         hash = sha1_of(&hash, salt);
     }
-    Ok(hash)
+    hash
 }
 
 /// `SHA-1(input | salt)`.

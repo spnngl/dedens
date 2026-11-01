@@ -444,6 +444,7 @@ impl Pipeline {
                         let cap = check.cap();
                         return finish.deliver(outcome, check.into_answer(), cap, out);
                     }
+                    Progress::Shed => return finish.shed(out),
                 }
             }
         } else if let Some(decoded) = decoded {
@@ -593,6 +594,15 @@ impl Finish<'_> {
             return Step::Reply(len);
         }
         reply(self.client, decoded.message, rcode, out)
+    }
+
+    /// Ends the query without a verdict because the allowance is in debt (D106): the reply is SERVFAIL "not ready",
+    /// as for a query refused at the start, and nothing is held or stored: the response is not at fault.
+    fn shed(&self, out: &mut [u8]) -> Step {
+        match self.purpose {
+            Purpose::Reply => servfail(self.client, InfoCode::NOT_READY, out),
+            Purpose::Prefetch | Purpose::Stale => Step::Drop,
+        }
     }
 
     /// Ends the query after the last server failed, or without a verdict, `error` then the reason: the failure is
