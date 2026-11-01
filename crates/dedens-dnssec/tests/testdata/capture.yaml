@@ -155,3 +155,43 @@ queries:
   # DS, and to an unsigned one, with the proof that it has none.
   - {id: referral_signed, name: www.nlnetlabs.nl, type: A, server: 194.0.28.53, options: {recurse: false}, expect: {rcode: NOERROR}}
   - {id: referral_unsigned, name: www.google.com, type: A, server: 192.5.6.30, options: {recurse: false}, expect: {rcode: NOERROR}}
+  # A name of 34 labels, an IPv6 reverse name (RIPE NCC's www.ipv6.ripe.net): its walk asks the DS of every label below arpa (D75).
+  - {id: ip6_ptr, name: b.8.6.0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: PTR, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_34, name: b.8.6.0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_33, name: 8.6.0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_32, name: 6.0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_31, name: 0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_30, name: 0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_29, name: 0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_28, name: 1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_27, name: c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_26, name: 0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_25, name: 0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_24, name: 0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_23, name: 0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_22, name: 0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_21, name: 0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_20, name: 0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_19, name: 0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_18, name: 2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_17, name: 2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_16, name: 0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_15, name: 0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_14, name: 8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_13, name: e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_12, name: 2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_11, name: 0.c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_10, name: c.7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_9, name: 7.6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_8, name: 6.0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_7, name: 0.1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_6, name: 1.0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_5, name: 0.0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_4, name: 0.2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_3, name: 2.ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_2, name: ip6.arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: ip6_ds_1, name: arpa, type: DS, expect: {rcode: NOERROR}}
+  - {id: arpa_dnskey, name: arpa, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: ip6_arpa_dnskey, name: ip6.arpa, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: ip6_1_0_0_2_dnskey, name: 6.0.1.0.0.2.ip6.arpa, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: ripe_ip6_arpa_dnskey, name: 8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa, type: DNSKEY, expect: {rcode: NOERROR}}

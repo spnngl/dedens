@@ -144,10 +144,33 @@ fn every_capture_with_a_denial_is_listed() {
         let negative = message.rcode() == Rcode::NXDOMAIN || message.answer.is_empty();
         if negative && message.authority.iter().any(is_denial) {
             assert!(
-                EXPECTED.iter().any(|(listed, ..)| *listed == id) || OTHERS.contains(&id.as_str()),
+                EXPECTED.iter().any(|(listed, ..)| *listed == id)
+                    || OTHERS.contains(&id.as_str())
+                    || id.starts_with("ip6_ds_"),
                 "{id} has a denial and is not listed"
             );
         }
+    }
+}
+
+/// The DS of each label of an IPv6 reverse name, below `arpa`: a DS where a zone starts, else no data.
+#[test]
+fn the_ds_of_each_label_of_a_reverse_name_is_there_or_proven_absent() {
+    for n in 1..=34 {
+        let id = format!("ip6_ds_{n}");
+        let message = capture(&id);
+        if !message.answer.is_empty() {
+            continue;
+        }
+        let question = &message.questions[0];
+        let proof = prove(
+            &apex(&message).to_string(),
+            &question.name.to_string(),
+            question.qtype,
+            &message.authority,
+        )
+        .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(proof.fact, Fact::NoData, "{id}");
     }
 }
 

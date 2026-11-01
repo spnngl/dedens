@@ -58,6 +58,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   built.
 - CoAP: libcoap's `coap-client` as a second implementation of the captures (only aiocoap is here). Default: add
   its captures when libcoap is installable in CI.
+- An opt-out wildcard answer (a wildcard expansion whose no-closer proof is an opt-out NSEC3, RFC 5155 §9.2): the
+  validator makes it insecure (D75), tested by no real capture, as no zone serves one we know. Default: insecure;
+  find a zone that does, to capture.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
