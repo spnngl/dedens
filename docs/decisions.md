@@ -374,8 +374,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the DNSKEY answer to the validator's own question under an authentic DS or anchor either lacks the key the DS
   digests (`NoKeyForDs`) or has a signature by that key that does not check (`BadSignature`). Whoever answers that
   question can say so, as it could for its own validation: no answer is authenticated before its keys are, and a
-  sans-IO validator cannot retry another server or TCP as Unbound's iterator does before it stores the failure
-  (TODECIDE has the retry). The entry is kept to what limits the harm: 60 s, fixed, never renewed by a hit, one
+  sans-IO validator does not retry another server or TCP as Unbound's iterator does before it stores the failure
+  (no `Next::Retry`: TODECIDE has the cost and the case for it). The entry is kept to what limits the harm: 60 s, fixed, never renewed by a hit, one
   zone (the name of the zone that failed, not its children's names).
   Bound: three tables by kind, keys of secure zones, names (no zone cut, insecure zone) and bogus zones, each with
   its own entry bound (`key_cache`) and its share of `key_cache_bytes` (half, a quarter, a quarter), each evicting
