@@ -98,7 +98,9 @@ impl Dialer {
         transport
             .max_idle_timeout(IdleTimeout::try_from(self.idle).ok())
             .max_concurrent_bidi_streams(VarInt::from_u32(0))
-            .max_concurrent_uni_streams(VarInt::from_u32(self.server_streams));
+            .max_concurrent_uni_streams(VarInt::from_u32(self.server_streams))
+            // No DATAGRAM frame is read (D107): no `max_datagram_frame_size` is advertised (RFC 9221 §3).
+            .datagram_receive_buffer_size(None);
         config.transport_config(Arc::new(transport));
         Ok(self.config.get_or_init(|| config).clone())
     }

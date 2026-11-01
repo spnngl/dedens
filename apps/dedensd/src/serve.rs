@@ -5,19 +5,21 @@
 //! of its replies waiting to be written and the time they take to write (D47).
 
 use std::cell::{Cell, RefCell};
+use std::future::poll_fn;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, mpsc};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use compio::BufResult;
 use compio::buf::{IntoInner, IoBuf};
-use compio::driver::ProactorBuilder;
 use compio::driver::op::RecvFromMultiResult;
+use compio::driver::{DriverType, ProactorBuilder};
 use compio::io::{AsyncWriteExt, BufReader};
 use compio::net::{TcpListener, UdpSocket};
 use compio::quic::{
@@ -83,6 +85,13 @@ const TCP_BACKLOG: i32 = 1024;
 /// How long to wait before accepting again after `accept` failed, for instance out of file descriptors, or
 /// receiving again after a UDP receive failed twice in a row: an error that repeats at once would spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(100);
+
+/// Times a UDP task yields, one after the other, when no buffer is free, before it waits [`BUSY_PAUSE`] between tries.
+const BUSY_YIELDS: u8 = 4;
+
+/// How long a UDP task waits between tries once yielding has not freed a buffer: short, as a datagram waits in the
+/// socket meanwhile, but long enough that a pool kept empty by another socket costs no busy loop.
+const BUSY_PAUSE: Duration = Duration::from_millis(1);
 
 #[cfg(feature = "doc")]
 mod coap;
@@ -171,6 +180,8 @@ const TCP_WRITE: Duration = Duration::from_secs(10);
 /// What the tasks of one thread share.
 struct Thread {
     current: Arc<Current>,
+    /// A message each time a reload replaced the pipeline, for [`follow`].
+    reloads: flume::Receiver<()>,
     /// The pipeline taken from `current`, with its generation; behind an `Rc`, so a query holding it touches no
     /// count shared with other threads.
     #[expect(
@@ -196,8 +207,10 @@ impl Thread {
     /// The state of a thread serving the pipeline of `current`, with room for `upstream_queries`, upstream servers
     /// over TLS and QUIC checked against `trust`.
     fn new(current: Arc<Current>, upstream_queries: usize, trust: Trust) -> Self {
+        let (reloads, generation, pipeline) = current.follow();
         Self {
-            pipeline: RefCell::new((current.generation(), Rc::new(current.get()))),
+            pipeline: RefCell::new((generation, Rc::new(pipeline))),
+            reloads,
             current,
             #[cfg(feature = "odoh")]
             forwarder: Forwarder::new(trust.clone()),
@@ -222,6 +235,14 @@ impl Thread {
             *held = (generation, Rc::new(self.current.get()));
         }
         Rc::clone(&held.1)
+    }
+}
+
+/// Takes each new pipeline as a reload makes it, whether queries come or not: `thread` would hold the old one, with
+/// its lists, until its next query, however long that takes (D107). Never ends.
+async fn follow(thread: Rc<Thread>) {
+    while thread.reloads.recv_async().await.is_ok() {
+        drop(thread.pipeline());
     }
 }
 
@@ -277,9 +298,9 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
 /// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target (and proxy) `odoh` over
 /// HTTP/3, until the end
-/// of the process. `listening` is sent once the sockets are taken by the runtime: on macOS a datagram that arrived before
-/// carries none of the control data `compio-quic` reads, and it panics (D89), so the process announces itself only
-/// then.
+/// of the process. `listening` gets the runtime's driver once the sockets are taken by the runtime: on macOS a
+/// datagram that arrived before carries none of the control data `compio-quic` reads, and it panics (D89), so the
+/// process announces itself only then, and with the driver, which falls back from `io_uring` to `poll` silently (D107).
 ///
 /// # Errors
 ///
@@ -291,7 +312,7 @@ pub(crate) async fn serve(
     trust: Trust,
     presented: Option<Arc<Presented>>,
     #[cfg(feature = "odoh")] odoh: Option<Arc<Target>>,
-    listening: mpsc::Sender<()>,
+    listening: mpsc::Sender<DriverType>,
 ) -> io::Result<()> {
     #[cfg_attr(
         not(feature = "odoh"),
@@ -340,22 +361,20 @@ pub(crate) async fn serve(
         };
         tasks.push(task);
     }
+    tasks.push(spawn(follow(Rc::clone(&thread))));
     // The receiver is gone only if another thread failed first.
-    let _ = listening.send(());
+    let _ = listening.send(Runtime::with_current(Runtime::driver_type));
     drop(listening);
     first_end(tasks).await
 }
 
-/// Waits for the first of `tasks` to end, never when there are none. They never end but by a panic, which the
-/// runtime catches and would otherwise keep silent: the thread then fails, and the process.
+/// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic, which the runtime
+/// catches and would otherwise keep silent: the thread then fails, and the process.
 ///
 /// # Errors
 ///
 /// Always, once a task ended.
 async fn first_end(tasks: Vec<JoinHandle<()>>) -> io::Result<()> {
-    if tasks.is_empty() {
-        return std::future::pending().await;
-    }
     match select_all(tasks).await.0 {
         Ok(()) => Err(io::Error::other("a serving task ended")),
         Err(error) => Err(error.into()),
@@ -371,6 +390,62 @@ async fn udp(socket: UdpSocket, thread: Rc<Thread>) {
     join_all(tasks).await;
 }
 
+/// Receives that failed in a row on one task of a UDP socket, which decide how long it waits before the next (D107).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Receiving {
+    /// The last one gave a datagram, or none has failed yet.
+    Fine,
+    /// The last one failed, of an error other than `Busy`.
+    Failed,
+    /// The last ones found no free buffer in the pool (`ENOBUFS`, `ResourceBusy`): this many.
+    Busy(u8),
+}
+
+/// How long a task waits before receiving again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pause {
+    None,
+    /// Until the thread's other tasks and the driver have had a turn.
+    Yield,
+    Sleep(Duration),
+}
+
+impl Receiving {
+    /// The pause after a receive that failed, `busy` if for a lack of free buffers. A first error of another kind
+    /// is retried at once; a second in a row, as an error that repeats would spin, after [`ERROR_PAUSE`]. The
+    /// pool's buffers (D49) are held by datagrams the kernel filled and the thread's streams have not yet been read,
+    /// which the tasks free as they read them: a few yields let them, then [`BUSY_PAUSE`], since each retry on
+    /// `io_uring` costs a submission the kernel refuses at once while the pool is empty.
+    fn failed(&mut self, busy: bool) -> Pause {
+        let (next, pause) = match (*self, busy) {
+            (Self::Failed, false) => (Self::Failed, Pause::Sleep(ERROR_PAUSE)),
+            (_, false) => (Self::Failed, Pause::None),
+            (Self::Busy(tried), true) if tried >= BUSY_YIELDS => {
+                (Self::Busy(tried), Pause::Sleep(BUSY_PAUSE))
+            }
+            (Self::Busy(tried), true) => (Self::Busy(tried + 1), Pause::Yield),
+            (_, true) => (Self::Busy(1), Pause::Yield),
+        };
+        *self = next;
+        pause
+    }
+}
+
+/// Lets the thread's other tasks run, and the driver complete what it holds, before this one goes on: compio has no
+/// such yield.
+async fn yield_now() {
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if yielded {
+            return Poll::Ready(());
+        }
+        yielded = true;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await;
+}
+
 /// Answers queries from `datagrams`, one after the other; the lock passes the stream to the next task once a
 /// datagram is taken.
 async fn udp_queries(
@@ -379,23 +454,26 @@ async fn udp_queries(
     thread: &Rc<Thread>,
 ) {
     let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
-    let mut failing = false;
+    let mut receiving = Receiving::Fine;
     loop {
+        // The lock is given back at the end of this statement, before any pause (D107).
+        let next = datagrams.lock().await.next().await;
         // An empty datagram ends a stream for a moment: the next poll receives again.
-        let datagram = match datagrams.lock().await.next().await {
+        let datagram = match next {
             Some(Ok(datagram)) => datagram,
             Some(Err(error)) => {
                 tracing::debug!(%error, "UDP receive");
-                // The lock is held: the socket's other tasks pause too.
-                if failing {
-                    compio::time::sleep(ERROR_PAUSE).await;
+                // Only this task pauses: the socket's other tasks go on receiving (D107).
+                match receiving.failed(error.kind() == io::ErrorKind::ResourceBusy) {
+                    Pause::None => {}
+                    Pause::Yield => yield_now().await,
+                    Pause::Sleep(pause) => compio::time::sleep(pause).await,
                 }
-                failing = true;
                 continue;
             }
             None => continue,
         };
-        failing = false;
+        receiving = Receiving::Fine;
         let Some(peer) = datagram.addr().and_then(|addr| addr.as_socket()) else {
             continue;
         };
@@ -630,7 +708,9 @@ fn start(
 
 /// The QUIC endpoint on `socket` with `config`: connections closed after [`TCP_IDLE`] without a packet (RFC 9250
 /// §5.5.1), with [`TCP_PENDING`] queries in flight at most, and `uni_streams` the client may open: none for DNS over
-/// QUIC (§4.2), [`H3_UNI_STREAMS`] for HTTP/3 (RFC 9114 §6.2).
+/// QUIC (§4.2), [`H3_UNI_STREAMS`] for HTTP/3 (RFC 9114 §6.2). No DATAGRAM frame is read (D107): the receive buffer
+/// is off, so quinn advertises no `max_datagram_frame_size` (RFC 9221 §3) and closes the connection on a DATAGRAM
+/// frame from the peer.
 fn endpoint(socket: Socket, mut config: ServerConfig, uni_streams: u32) -> io::Result<Endpoint> {
     let mut transport = TransportConfig::default();
     transport
@@ -638,7 +718,8 @@ fn endpoint(socket: Socket, mut config: ServerConfig, uni_streams: u32) -> io::R
         .max_concurrent_bidi_streams(
             u32::try_from(TCP_PENDING).map_or(VarInt::MAX, VarInt::from_u32),
         )
-        .max_concurrent_uni_streams(VarInt::from_u32(uni_streams));
+        .max_concurrent_uni_streams(VarInt::from_u32(uni_streams))
+        .datagram_receive_buffer_size(None);
     config.transport_config(Arc::new(transport));
     let socket = UdpSocket::from_std(socket.into())?;
     Endpoint::new(socket, EndpointConfig::default(), Some(config), None)
@@ -1228,23 +1309,33 @@ fn now() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::io;
     use std::net::Ipv4Addr;
+    use std::pin::pin;
     use std::rc::Rc;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use compio::BufResult;
+    use compio::driver::op::RecvFromMultiResult;
     use compio::io::{AsyncWriteExt, BufReader};
-    use compio::net::{TcpListener, TcpStream};
+    use compio::net::{TcpListener, TcpStream, UdpSocket};
     use compio::runtime::{Runtime, spawn};
     use dedens_net::tcp::{frame, read_message};
     use dedens_net::tls::Trust;
     use dedens_proto::edns::EdnsOption;
     use dedens_proto::{Message, Question, Rcode, RecordType};
     use dedens_server::{Pipeline, Transport};
+    use futures_util::Stream;
+    use futures_util::future::{Either, select};
+    use futures_util::lock::Mutex;
+    use futures_util::stream::repeat_with;
 
-    use super::{Replies, Slots, TCP_QUEUED, Thread, breaks_doq, connection, first_end, write};
+    use super::{
+        BUSY_PAUSE, BUSY_YIELDS, ERROR_PAUSE, Pause, Receiving, Replies, Slots, TCP_QUEUED, Thread,
+        breaks_doq, connection, first_end, follow, udp_queries, write,
+    };
     use crate::reload::Current;
 
     #[test]
@@ -1381,6 +1472,121 @@ mod tests {
                 [66 * 1002, 66 * 1002, 66 * 1002, 2 * 1002]
             );
         });
+    }
+
+    /// A stream failing on every poll with `kind`, counting its polls in `polls`.
+    fn failing(
+        kind: io::ErrorKind,
+        polls: &Cell<u32>,
+    ) -> Mutex<impl Stream<Item = io::Result<RecvFromMultiResult>> + Unpin + '_> {
+        Mutex::new(repeat_with(move || {
+            polls.set(polls.get() + 1);
+            Err(io::Error::new(kind, "a failure"))
+        }))
+    }
+
+    /// A thread over a pipeline that answers nothing.
+    fn idle() -> Rc<Thread> {
+        let current = Arc::new(Current::new(Pipeline::default()));
+        Rc::new(Thread::new(current, 0, Trust::default()))
+    }
+
+    /// D107: a task pausing after two failed receives in a row leaves the stream free, so the socket's other tasks
+    /// keep receiving: its lock is not held while the task sleeps.
+    #[test]
+    fn a_udp_receive_failing_twice_pauses_only_its_task() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+            let polls = Cell::new(0);
+            let datagrams = failing(io::ErrorKind::Other, &polls);
+            let thread = idle();
+            let probe = async {
+                // The task is asleep by then.
+                compio::time::sleep(ERROR_PAUSE / 5).await;
+                compio::time::timeout(ERROR_PAUSE / 3, datagrams.lock())
+                    .await
+                    .is_ok()
+            };
+            let receiving = pin!(udp_queries(&socket, &datagrams, &thread));
+            let Either::Right((free, _)) = select(receiving, pin!(probe)).await else {
+                panic!("the receiving task never ends");
+            };
+            assert!(free, "the stream stayed locked while its task slept");
+            assert_eq!(polls.get(), 2);
+        });
+    }
+
+    /// D107: no free buffer in the pool (`ENOBUFS`, `ResourceBusy`) is a wait for the tasks to read what the kernel
+    /// filled: the task tries again after a few yields, then every [`BUSY_PAUSE`], without the pause of a failed
+    /// socket, and without spinning either.
+    #[test]
+    fn a_udp_receive_without_a_free_buffer_is_tried_again_without_spinning() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+            let polls = Cell::new(0);
+            let datagrams = failing(io::ErrorKind::ResourceBusy, &polls);
+            let thread = idle();
+            let receiving = udp_queries(&socket, &datagrams, &thread);
+            let ended = compio::time::timeout(ERROR_PAUSE / 2, receiving).await;
+            assert!(ended.is_err(), "the receiving task never ends");
+            // The yields, then one try a millisecond (a timer may be late, never early); without a pause it is
+            // thousands.
+            let polls = polls.get();
+            assert!((10..100).contains(&polls), "{polls} polls");
+        });
+    }
+
+    /// D107: the pause after failed receives by kind: a first error is retried at once, a second in a row after
+    /// [`ERROR_PAUSE`]; a lack of buffers yields [`BUSY_YIELDS`] times, then sleeps [`BUSY_PAUSE`], and counts
+    /// neither as a failure nor towards one.
+    #[test]
+    fn receives_that_failed_are_paused_by_kind() {
+        let mut receiving = Receiving::Fine;
+        assert_eq!(receiving.failed(false), Pause::None);
+        assert_eq!(receiving.failed(false), Pause::Sleep(ERROR_PAUSE));
+        assert_eq!(receiving.failed(false), Pause::Sleep(ERROR_PAUSE));
+        // A lack of buffers between two other errors breaks the run.
+        assert_eq!(receiving.failed(true), Pause::Yield);
+        assert_eq!(receiving.failed(false), Pause::None);
+        let mut receiving = Receiving::Fine;
+        for _ in 0..BUSY_YIELDS {
+            assert_eq!(receiving.failed(true), Pause::Yield);
+        }
+        for _ in 0..3 {
+            assert_eq!(receiving.failed(true), Pause::Sleep(BUSY_PAUSE));
+        }
+    }
+
+    /// D107: a thread no query reaches takes the pipeline a reload made, and so lets go of the old one (and its
+    /// lists), as its runtime wakes to the reload from another thread.
+    #[test]
+    fn an_idle_thread_gives_up_the_old_pipeline_after_a_reload() {
+        let current = Arc::new(Current::new(Pipeline::default()));
+        let old = Arc::downgrade(&current.get());
+        let thread = Rc::new(Thread::new(Arc::clone(&current), 0, Trust::default()));
+        assert_eq!(old.strong_count(), 2, "`current` and the thread hold it");
+        let (released, wait) = flume::bounded(1);
+        let reloading = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            current.replace(Pipeline::default());
+            let start = Instant::now();
+            while old.strong_count() > 0 && start.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            released.send(old.strong_count()).expect("the test waits");
+        });
+        let runtime = Runtime::new().expect("a runtime");
+        let left = runtime.block_on(async {
+            spawn(follow(thread)).detach();
+            compio::time::timeout(Duration::from_secs(10), wait.recv_async())
+                .await
+                .expect("an end within 10 s")
+                .expect("a count")
+        });
+        reloading.join().expect("the reload ran");
+        assert_eq!(left, 0, "the old pipeline is still held");
     }
 
     #[test]

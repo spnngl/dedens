@@ -215,6 +215,14 @@ one core answering four names from its cache, dnsperf on six, 10 s a run, two ro
   150.9k-157.7k and TCP from the cache 1.77M-2.06M → 1.46M-2.09M, both within noise (the base too fell to 1.29M
   once).
   The front `dedensd` is at 100% of its core: 27% in kernel wakeups, 9% reading the clock.
+- Two sockets (`two-sockets`, D107): one core, one cache, two UDP ports; the first flooded (eight clients, dnsperf
+  on five cores), the second asked at 2000 queries/s by one client for 10 s. Before (59db4d0, the pause held the
+  socket's lock) → after (UDP receive errors paused per task, `ResourceBusy` backed off, reload wake-up): the
+  second socket's average latency 0.30-1.04 ms → 0.28-0.31 ms, maximum 13-101 ms → 10-12 ms, no query lost on
+  either socket in any run (four runs: two rounds each). The flood never emptied the pool of 256 buffers, so no
+  `ENOBUFS` happened and the change shows only as noise: the first base run's 101 ms maximum was its warm-up,
+  not repeated in round 2. The scenario cannot show the U2 gain; the unit tests (`serve.rs`) do, with a stream
+  that fails on every poll.
 
 ## Zone files (D25)
 

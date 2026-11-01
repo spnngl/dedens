@@ -16,11 +16,14 @@ use crate::download::Fetcher;
 use crate::flights::Flights;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
-/// one atomic load, and take the new pipeline under the lock only when it changed.
+/// one atomic load, and take the new pipeline under the lock only when it changed; a reload wakes them too, so that
+/// an idle thread takes it without a query (D107).
 #[derive(Debug)]
 pub(crate) struct Current {
     generation: AtomicU64,
     pipeline: Mutex<Arc<Pipeline>>,
+    /// The wake-up of each serving thread, sent by [`Current::replace`]; see [`Current::follow`].
+    followers: Mutex<Vec<flume::Sender<()>>>,
     /// The validator's questions in flight, for all threads and across reloads (D86).
     flights: Flights,
 }
@@ -30,6 +33,7 @@ impl Current {
         Self {
             generation: AtomicU64::new(0),
             pipeline: Mutex::new(Arc::new(pipeline)),
+            followers: Mutex::default(),
             flights: Flights::default(),
         }
     }
@@ -48,9 +52,33 @@ impl Current {
         Arc::clone(&self.pipeline.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    fn replace(&self, pipeline: Pipeline) {
+    /// What a serving thread starts from: a channel with a message once [`Current::replace`] ran since the last one
+    /// taken from it, so that a thread no query reaches still takes the new pipeline and lets go of the old one
+    /// (D107), with the generation and the pipeline in use. In that order, so that a replacement is never missed: one
+    /// after the subscription is heard, one before it is in the pipeline, and a generation read before the pipeline
+    /// can only be older than it.
+    pub(crate) fn follow(&self) -> (flume::Receiver<()>, u64, Arc<Pipeline>) {
+        let (follower, wake) = flume::bounded(1);
+        self.followers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(follower);
+        (wake, self.generation(), self.get())
+    }
+
+    pub(crate) fn replace(&self, pipeline: Pipeline) {
         *self.pipeline.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(pipeline);
         self.generation.fetch_add(1, Ordering::Release);
+        // A full channel holds a wake-up not yet taken, which says as much; one whose thread is gone is dropped.
+        self.followers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|follower| {
+                !matches!(
+                    follower.try_send(()),
+                    Err(flume::TrySendError::Disconnected(()))
+                )
+            });
     }
 }
 

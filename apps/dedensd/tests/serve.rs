@@ -63,6 +63,27 @@ fn a_silent_upstream_gets_servfail() {
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::SERVFAIL));
 }
 
+/// D107: the start says which driver the threads run on, as compio falls back from `io_uring` to `poll` without
+/// anyone seeing (D51). Linux has `io_uring` from 5.19, the floor: `poll` there fails the test, unless
+/// `DEDENS_TEST_ALLOW_POLL` is set, for a container whose seccomp filter refuses `io_uring`.
+#[test]
+fn the_start_logs_the_driver() {
+    let (_socket, upstream) = silent();
+    let server = Server::start(upstream, "");
+    let driver = server.serving["fields"]["driver"].as_str();
+    let known: &[_] = if !cfg!(target_os = "linux") {
+        &["poll", "iocp"]
+    } else if std::env::var_os("DEDENS_TEST_ALLOW_POLL").is_some() {
+        &["io_uring", "poll"]
+    } else {
+        &["io_uring"]
+    };
+    assert!(
+        driver.is_some_and(|driver| known.contains(&driver)),
+        "{driver:?}"
+    );
+}
+
 #[test]
 fn a_taken_address_fails_the_start() {
     let taken = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");

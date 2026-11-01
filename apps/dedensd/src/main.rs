@@ -15,6 +15,7 @@ mod reload;
 mod serve;
 
 use std::io::{self, IsTerminal, Write};
+use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -23,6 +24,7 @@ use std::thread;
 use anyhow::Context;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use compio::driver::DriverType;
 use dedens_server::Pipeline;
 
 use crate::config::Config;
@@ -137,7 +139,10 @@ fn main() -> anyhow::Result<()> {
                     odoh,
                     listening,
                 );
-                serve::runtime().and_then(|runtime| runtime.block_on(serving))
+                // Never dropped, not even when `serving` panics: dropping a runtime frees what its ring's
+                // operations in flight still point to, which the kernel may write after (D107). The process
+                // ends once one thread has, and the kernel then closes the ring.
+                serve::runtime().and_then(|runtime| ManuallyDrop::new(runtime).block_on(serving))
             }));
             let _ =
                 ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
@@ -145,11 +150,65 @@ fn main() -> anyhow::Result<()> {
     }
     drop((ended, listening));
     // Announced once every thread has its sockets; a thread that failed to start never sends, and `end` has why.
-    if (0..threads).all(|_| listened.recv().is_ok()) {
-        tracing::info!(config = %path, ?listen, threads, "serving");
+    // `listened` ends once each thread has sent or failed.
+    let drivers: Vec<_> = listened.iter().collect();
+    if drivers.len() == threads {
+        let driver = Driver::of(&drivers);
+        tracing::info!(config = %path, ?listen, threads, driver = driver.name, "serving");
+        if let Some(warning) = driver.warning(cfg!(target_os = "linux")) {
+            tracing::warn!(driver = driver.name, threads, "{warning}");
+        }
     }
     // Threads serve until one fails to start or panics; each sends before ending.
     end.recv()?.context("cannot serve")
+}
+
+/// What the threads' runtimes run on, as logged at start (D107).
+#[derive(Debug, PartialEq, Eq)]
+struct Driver {
+    /// `io_uring`, `poll`, `iocp`, or `mixed` when the threads differ, which no ring built with the same flags does.
+    name: &'static str,
+    /// Threads on `poll`.
+    polling: usize,
+    threads: usize,
+}
+
+impl Driver {
+    fn of(drivers: &[DriverType]) -> Self {
+        let name = |driver: &DriverType| match driver {
+            DriverType::Poll => "poll",
+            DriverType::IoUring => "io_uring",
+            DriverType::IOCP => "iocp",
+        };
+        let name = match drivers {
+            [first, rest @ ..] if rest.iter().all(|driver| driver == first) => name(first),
+            [] => "none",
+            _ => "mixed",
+        };
+        Self {
+            name,
+            polling: drivers
+                .iter()
+                .filter(|driver| **driver == DriverType::Poll)
+                .count(),
+            threads: drivers.len(),
+        }
+    }
+
+    /// Why a Linux server on `poll` is a loss: compio falls back from `io_uring` without anyone seeing when the
+    /// ring cannot be made, before Linux 5.19 (`COOP_TASKRUN`, D51), under a seccomp filter, or with
+    /// `kernel.io_uring_disabled` set; 5.19 is the floor, with no retry without those flags (D107).
+    fn warning(&self, linux: bool) -> Option<String> {
+        if !linux || self.polling == 0 {
+            return None;
+        }
+        let Self {
+            polling, threads, ..
+        } = self;
+        Some(format!(
+            "{polling} of {threads} threads serve on poll, not io_uring, which is slower: io_uring needs Linux 5.19 or later, and no seccomp filter or `kernel.io_uring_disabled` refusing it"
+        ))
+    }
 }
 
 /// The text of the configuration file `file`.
@@ -196,5 +255,35 @@ fn diagnostics(verbose: u8, format: LogFormat) {
         LogFormat::Text => events
             .with_ansi(io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
             .init(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use compio::driver::DriverType::{IoUring, Poll};
+
+    use super::Driver;
+
+    /// D107: a Linux server on `poll` warns, a server on `io_uring` or elsewhere does not; the threads' drivers are
+    /// one name, `mixed` when they differ.
+    #[test]
+    fn poll_on_linux_warns() {
+        let uring = Driver::of(&[IoUring, IoUring]);
+        assert_eq!((uring.name, uring.warning(true)), ("io_uring", None));
+        let poll = Driver::of(&[Poll, Poll]);
+        assert_eq!(poll.name, "poll");
+        assert_eq!(poll.warning(false), None);
+        let warning = poll.warning(true).expect("a warning");
+        assert!(
+            warning.starts_with("2 of 2 threads serve on poll"),
+            "{warning}"
+        );
+        let mixed = Driver::of(&[IoUring, Poll, IoUring]);
+        assert_eq!(mixed.name, "mixed");
+        let warning = mixed.warning(true).expect("a warning");
+        assert!(
+            warning.starts_with("1 of 3 threads serve on poll"),
+            "{warning}"
+        );
     }
 }

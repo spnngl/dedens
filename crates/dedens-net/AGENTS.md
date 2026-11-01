@@ -31,7 +31,7 @@ crate that touches sockets and timers.
   the discovery of the resource by `/.well-known/core` (D95).
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
-- `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc8484.rs` and `rfc9230.rs`
+- `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc9221.rs`, `rfc8484.rs` and `rfc9230.rs`
   against loopback TLS, QUIC and HTTP/3 servers too, with certificates of `tests/common/certificates.rs`. `tests/udp.rs`, `tests/tcp.rs`,
   `tests/client.rs`: the transports and the client against scripted servers on the loopback address
   (`tests/common/loopback.rs`); `tests/common/` builds messages and steps. `rfc8484.rs` and `rfc9461.rs` run

@@ -94,7 +94,8 @@ bench-unbound:
     "$out/bench" "$out/zone.txt"
 
 # dedensd under dnsperf on Linux (io_uring) in a container, the working tree against `base`, in `mode`: udp or tcp
-# from the cache, forward or forward-tcp to a second dedensd without one: just bench-dnsperf HEAD~1 tcp
+# from the cache, forward or forward-tcp to a second dedensd without one, or two-sockets (the latency of a UDP port
+# beside a flooded one): just bench-dnsperf HEAD~1 tcp
 bench-dnsperf base="HEAD" mode="udp":
     docker run --rm --security-opt seccomp=unconfined -v "$(pwd):/src:ro" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
         -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{base}} {{mode}}
