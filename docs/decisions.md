@@ -305,7 +305,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
   §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
-  validation deadline and a rate limit per client, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
+  validation deadline, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
   holds the validator's closure. Tests: `tests/rfc4035.rs` and
   `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
   `dedens-cache/tests/checked.rs`, the configuration tests of `config.rs`; bench `hit_secure` of `benches/server.rs`.
@@ -1123,7 +1123,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   answered, and a reply not written within the write time is given up with its stream reset: a client granting
   no flow control credit keeps the connection for the write time past the idle time at most, and its slot only
   for the idle time. No per-address cap, for TCP either. Constants for now; configuration with need. Client
-  allow and block lists and per-address caps come later (`docs/TODECIDE.md`).
+  allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90).
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
@@ -1325,6 +1325,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   non-DNS `dns`; 404 for another path, also `/.well-known/odohconfigs` without `odoh`, and for the other listener's
   path; 405 for PUT and DELETE; 413 for a 70000-byte POST. A request the pipeline cannot parse as a query (a wrong
   label length) is 200 with FORMERR (§4.2.1).
+- D90 (amends D47, D77) Rate limits per client address are the deployment's: nftables `hashlimit` or `dnsdist` in
+  front of `dedensd` limits queries and connections per address, for UDP, DoQ and DoT alike (a general reverse
+  proxy such as nginx `stream` does TCP only, and a proxy hides the client's address unless PROXY protocol or the
+  like carries it). `dedensd` keeps what only it can weigh: the validation cost of one query (256 units) and the
+  allowance all queries draw on (D77), and the per-thread connection cap (D47). No per-address query limit and no
+  per-address connection cap in `dedensd`. RRL (response rate limiting, a defence against reflection) belongs to
+  the authoritative phase, where the server answers from its own data; a stub or forwarder has nothing to
+  amplify. The client's address enters the pipeline only for the allow and block lists (`docs/TODECIDE.md`).
 
 ## Observability
 
