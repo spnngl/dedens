@@ -597,7 +597,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`http` is a workspace dependency), so HTTP/3 and HTTP/2 carry the same code, for the client, `dedensd` and ODoH.
   - `Transport::Https`: the whole message, up to 65535 bytes, no length prefix (RFC 8484 §6). ID 0 as over QUIC,
     no edns-tcp-keepalive (RFC 7828 does not apply, §9), queries padded to 128 bytes and replies to padded
-    queries to 468 bytes (D60). TC means the server could not get a full answer (§9), not a retry over TCP.
+    queries to 468 bytes (D60). TC means the server could not get a full answer (§9), not a retry over TCP. A POST
+    states its `content-length`: `cloudflare-dns.com` answers an HTTP/3 POST without it 405 (found by the live check
+    of D84, 2026-11-01; HTTP/2 clients always send it, and `h3` does not add it).
+  - Checked live (2026-11-01): `dns.google`, `cloudflare-dns.com`, `dns.adguard-dns.com`, `dns.quad9.net` and
+    `dns.nextdns.io` answer GET and POST over HTTP/3 (the first, second and fourth advertise `h3` in Alt-Svc;
+    AdGuard and NextDNS answer without one); `doh.opendns.com` and `doh.mullvad.net` do not answer HTTP/3.
   - `Template`: `https://host[:port]/path{?dns}`, or the same without the expression, `{?dns}` implied as dig and
     kdig take it (a provider's `https://doh.cleanbrowsing.org/doh/security-filter/` has none); the path of an
     SVCB `dohpath` (RFC 9461 §5), whose `dns` variable must be written. The one expression is `{?dns}`, or
@@ -1234,6 +1239,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   client came over; `#NAME` is the certificate name (D65) and the authority of the URL, else the address is. An
   address only, as D65: a host name would need resolving first (docs/TODECIDE.md). Rejected: HTTP/2 or
   HTTP/1.1 listeners (step 23), and `Listen` matching the request's authority, which the path alone serves.
+  Checked against an independent client, aioquic 1.7.1 (2026-11-01, two listeners with a test CA, forwarding to
+  8.8.8.8): GET with `dns=` and POST are 200 with `application/dns-message`; `cache-control: max-age=300` on a
+  GET of an answer (its TTL), `max-age=1800` on a GET of a no data (the SOA's TTL and MINIMUM), none on a POST; the
+  ID is echoed; 415 for a POST of another or no content type, and a content type in other case with a parameter is
+  accepted; 400 for garbage or no body, a missing, malformed, padded (RFC 8484 §6 forbids the padding) or
+  non-DNS `dns`; 404 for another path, also `/.well-known/odohconfigs` without `odoh`, and for the other listener's
+  path; 405 for PUT and DELETE; 413 for a 70000-byte POST. A request the pipeline cannot parse as a query (a wrong
+  label length) is 200 with FORMERR (§4.2.1).
 
 ## Observability
 

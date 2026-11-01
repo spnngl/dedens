@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dedens_proto::text::{decode_base64url, encode_base64url};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{DecodeError, Decoded, EncodeError, Message, RData, RecordType, Ttl};
-use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE};
+use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use http::uri::{Authority, InvalidUri, PathAndQuery};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 
@@ -176,7 +176,7 @@ impl fmt::Display for Template {
 
 /// The HTTP request asking `server` for the answer to `query`, a DNS message with ID 0 (RFC 8484 §4.1): a GET with
 /// the query as `dns`, base64url without padding, or a POST with it as the body. It accepts, and for a POST sends,
-/// [`MEDIA_TYPE`].
+/// [`MEDIA_TYPE`] and its length (Cloudflare's HTTP/3 answers 405 to a POST without one).
 ///
 /// # Errors
 ///
@@ -201,6 +201,7 @@ pub fn request(
             .method(http::Method::POST)
             .uri(format!("https://{}{}", server.authority, server.path))
             .header(CONTENT_TYPE, MEDIA_TYPE)
+            .header(CONTENT_LENGTH, query.len())
             .body(query.to_vec()),
     }
 }
