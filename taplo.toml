@@ -1,1 +1,1 @@
-exclude = ["Cargo.lock", "target/**", "fuzz/target/**"]
+exclude = ["Cargo.lock", "target/**", "fuzz/target/**", "plan/**"]
