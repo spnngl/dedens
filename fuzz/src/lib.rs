@@ -1298,10 +1298,6 @@ pub fn denial(data: &[u8]) {
 /// The Unix time of the capture run, "now" for the signatures of the captured seeds.
 const CAPTURED_AT: &str = include_str!("../../crates/dedens-dnssec/tests/testdata/captured_at");
 
-/// The validator with the root anchors and the default limits, built once.
-static VALIDATOR: LazyLock<Validator> =
-    LazyLock::new(|| Validator::new(TrustAnchors::root(), Limits::default()));
-
 /// A captured response, as the bytes it was saved as and as a message.
 type Captured = (Vec<u8>, Message<'static>);
 
@@ -1343,7 +1339,8 @@ fn captured(ask: &Question<'static>) -> Option<&'static Captured> {
 /// picked by a byte of the input, as the input's own message, none, the captured response to the question, that
 /// response with a bit of it flipped, or a captured response to another question. Whatever the bytes, the
 /// validation asks only for DS and DNSKEY, asks at most the limit, ends, and a verdict that is not secure and has
-/// an extended error gives it text.
+/// an extended error gives it text. The validator is new for each input, so that no input depends on another
+/// through its key cache, and the validation runs twice on it, the second with what the first cached.
 ///
 /// # Panics
 ///
@@ -1357,8 +1354,22 @@ pub fn validate(data: &[u8]) {
         return;
     };
     let now = CAPTURED_AT.trim().parse().unwrap_or(0);
+    let validator = Validator::new(TrustAnchors::root(), Limits::default());
+    for _ in 0..2 {
+        validate_once(&validator, data, &response, &question, now);
+    }
+}
+
+/// One validation of `response` with `validator`, answered as `validate` says.
+fn validate_once(
+    validator: &Validator,
+    data: &[u8],
+    response: &Message<'static>,
+    question: &Question<'static>,
+    now: u64,
+) {
     let limit = Limits::default().questions;
-    let mut validation = VALIDATOR.start(&question, &response, now);
+    let mut validation = validator.start(question, response, now);
     for asked in 0..=limit {
         match validation.step() {
             Next::Ask(ask) => {
@@ -1371,7 +1382,7 @@ pub fn validate(data: &[u8]) {
                 let pick = data.get(asked.wrapping_add(12)).copied().unwrap_or(2);
                 let answer = match pick % 5 {
                     0 => None,
-                    1 => Some(answering(&response, &ask)),
+                    1 => Some(answering(response, &ask)),
                     2 => captured(&ask).map(|(_, message)| message.clone()),
                     3 => captured(&ask).and_then(|(wire, _)| {
                         let mut wire = wire.clone();

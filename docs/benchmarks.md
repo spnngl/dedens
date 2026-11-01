@@ -286,6 +286,27 @@ The signature is the cost of the curves (P-256: 27.7 here, 27.3 for the bare che
 stands as sized. RSA with a short exponent is cheap enough for the rest of the work to show: canonical form,
 sorting and building the signed data take a few microseconds.
 
+## DNSSEC key cache (D86)
+
+`benches/dnssec.rs`, `validate_cold` and `validate_warm`: a whole validation of the captured `alg8_a` answer (RSASHA256
+under `.`, `nl`, `nlnetlabs.nl`) at the time of the capture, with the captures as the caller. Cold, a validator that
+knows no zone: 5 questions, the keys of three zones verified. Warm, one whose key cache holds the chain: no question,
+the answer's signature alone. Each `t=N` runs N threads, each its own iterations: the cold ones share nothing, the warm
+ones share one `Validator`, so one `Mutex`. Microseconds per validation, median of one run.
+
+| Threads | Cold | Warm |
+|---|---|---|
+| 1 | 172 | 48 |
+| 2 | 194 | 60 |
+| 4 | 228 | 69 |
+| 8 | 330 | 113 |
+
+The cache takes a validation from 172 to 48 µs, and a verification (one 3.2 µs signature check, above) is a small part of
+either: the rest is the message and the records. The lock is held for one lookup and clones an `Arc` and a name, never
+across a check. From one thread to eight the warm validation slows 2.3x, the cold one, with nothing shared, 1.9x: the
+rest is the machine's (cores of two kinds, one allocator), and the lock costs what is left of the difference. A
+`Mutex` is enough for a validation that runs once per response the response cache lacked (D86).
+
 ## CoAP (D80)
 
 `benches/coap.rs`, medians in nanoseconds, one run, on the datagrams of `tests/testdata/coap/fetch_doc.txt`: aiocoap's

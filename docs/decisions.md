@@ -157,7 +157,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
-- D75 (amends D69) The validator is `dedens_dnssec::validator`, sans-IO: `Validator::new(TrustAnchors, Limits)` (shared,
+- D75 (amends D69; amended by D86) The validator is `dedens_dnssec::validator`, sans-IO: `Validator::new(TrustAnchors, Limits)` (shared,
   `Clone`, `Send + Sync`) and `start(question, response, now) -> Validation` for the final answer to a question,
   `start_referral` for a referral. The caller drives a `Validation`: `step()` is `Next::Ask(question)`, to send with
   RD, DO and CD set (RFC 6840 §5.9) and give back with `answer(Some(response))` or `answer(None)` (a failed query),
@@ -195,7 +195,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the keys, an `RRset` signed by an ancestor's keys is bogus, every RRSIG is tried (a junk one first costs
   nothing) and a forged signer cannot turn bogus into insecure. Signatures are grouped by owner and type
   covered once per response, and the first bogus `RRset` ends the check, so junk costs no more than its size. It
-  costs one DS question per label below the last zone, which the key cache of 06b pays once; an IPv6 reverse name
+  costs one DS question per label below the last zone, which the key cache (D86) pays once; an IPv6 reverse name
   of 34 labels (a real capture, `ip6_ptr`) takes about 40 questions and 80 signature checks. A DS RRset is verified by the parent's keys and then
   vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
   delegation (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). A DS question at a
@@ -222,7 +222,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the questions changes nothing; EDE 5), a question the caller could not answer (EDE 22), a response with an
   rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). Each zone's outcome (secure keys with their TTL,
   insecure, bogus) is written by one private function, `settle`, and read by one other, `zone_of`; delegations are
-  not cached apart from them and an indeterminate outcome is never written, so 06b's cache goes there and holds
+  not cached apart from them and an indeterminate outcome is never written, so D86's cache goes there and holds
   only what the data decides. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
   wildcard answer is untested against a capture, none exists (TODECIDE). Tests: `tests/validator.rs`, a scripted caller that
   answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
@@ -230,14 +230,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
 
-- D76 (amends D32, D34, D37, D40, D69) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
+- D76 (amends D32, D34, D37, D40, D69; amended by D86) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
   the server is a transport, never trusted. `validate` is an `Options` field, so a query file carries it, and it
   sets DO and CD on the query (the response is wanted even when it is bogus, RFC 6840 §5.9; RD stays as the user
   has it) and gives `dedens_dnssec::validator` the response: `apps/dedens/src/validate.rs` is the glue, a loop
   `step()`, send, `answer()` (D75). Each `Next::Ask` goes to the same server over the same transport, with the
   query's own options (UDP with the TCP fallback, TLS, QUIC, HTTPS, CoAP, ODoH proxy), and an unanswered or
-  unreadable one is `answer(None)`. One `Validator` per set of anchors in a run, shared by its queries; no key
-  cache until 06b, so every query asks its whole chain, one DS question per label (`-v` traces each question). The
+  unreadable one is `answer(None)`. One `Validator` per set of anchors in a run, shared by its queries and its key
+  cache (D86), so only a query that finds no zone known asks the chain, one DS question per label (`-v` traces each
+  question). The
   upstream's AD bit is never read: the human report names it `AD set by the server` once a verdict is shown, apart
   from the verdict. Only `Secure` is shown as validated, and then only what it covers (D75): the report of a
   secure response drops the additional section, records not of class IN and the CNAME synthesized from a DNAME
@@ -261,6 +262,52 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `captured_at`: secure, insecure and bogus in each format, the questions asked, a wrong or a right anchor file,
   a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
   `dnssec-failed.org` bogus with EDE 9.
+
+- D86 (amends D75, D76) The key cache: what a `Validator`'s validations learn of zones is kept for the
+  validations after them, in `validator/cache.rs`. It is written by `settle` and read by `zone_of` (D75), nothing
+  else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
+  `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
+  validator, so a change of trust anchors or negative anchors is a new `Validator` with an empty cache, and nothing
+  stale outlives it. API, additive only: `Limits::key_cache` (`usize`, default 4096; 0 turns the cache off);
+  `Limits { .., ..Limits::default() }` as before. `Validation::start` takes the time as before: it is the cache's
+  clock too, so there is no clock inside.
+  Kinds and TTLs. Secure keys: the TTL `keys_from_ds` and `anchor_keys` give, the least of the verified DNSKEY
+  `RRset`'s, the DS `RRset`'s and the signatures' remaining validity (RFC 4035 §5.3.3, RFC 2181 §8). Insecure
+  (unsigned delegation, opt-out, unsupported algorithm or digest, NSEC3 iterations above the limit): the TTL of the
+  proof, that of a denial held to the keys' and RFC 9077 §3.4's three hours (an opt-out proof's TTL lacked both
+  until now: nothing read it). A name that is no zone cut (a proven absence of DS, or a verified CNAME or DNAME)
+  is kept with the TTL of that proof, in a second table. Bogus: 60 seconds
+  (Unbound's `val-bogus-ttl`), for a zone only, by name. A hit gives the TTL it has left, so what is derived from it
+  never outlives it, and a hit is never written back, so reading renews nothing.
+  Never kept: an indeterminate outcome or one of the budget (D71), nor `Failure::Transient`: a bogus verdict that
+  says nothing lasting of the zone, i.e. every bogus found before the zone's keys were reached (a DS that fails,
+  a denial that does not hold, the signature limit of D73 `TooManyFailures`) and any outcome inherited from the parent zone
+  (`Zone::Beneath`, recomputed from its entry); nor what a trust anchor decides (no anchor, negative anchor), which
+  is the `Validator`'s own and costs nothing to find. A validation keeps what it settled in its own map as before
+  (so no step spends the budget twice) and copies a hit into it, so that it sees one outcome whatever the
+  cache does meanwhile.
+  Time: an entry is a hit while `at <= now < at + ttl`, `at` the time given to the validation that wrote it. A `now`
+  before `at` (the clock gone back) is a miss, never a longer life.
+  Poisoning. Secure, insecure and no-cut entries come of verified data only: a signature under keys that a DS or
+  an anchor vouches for, a denial bound to the name asked, so what an attacker sends is either true (then it is what
+  an honest answer gives) or no entry. One validation's forged DS, signature or denial changes no other
+  (`tests/validator.rs`). The one thing a forged answer can still do is the bogus zone: whoever answers the
+  validator's DNSKEY question under an authentic DS can make that zone bogus, as it could for its own validation
+  (an unsigned or garbled DNSKEY answer). It is kept to what limits the harm: 60 s, fixed, never renewed by a hit,
+  one zone (the name of the zone that failed, not its children's names), and only this failure. That is Unbound's
+  behaviour; TODECIDE has the alternative.
+  Bound: `key_cache` entries in each of two tables, zones (keys, insecure, bogus) and names that are no zone cut, so
+  a flood of names under a signed zone, each with a proof of no DS, evicts names and never the keys. Full, a table
+  drops the entry that stops holding first (expired ones go before the others; a scan, paid only when full, and
+  insertion is a rarity next to a verification). 4096 keys of a few KB are about Unbound's 4 MB `key-cache-size`.
+  A `Mutex`, not an `RwLock` or shards: a validation runs only for a response the response cache lacked, the lock is
+  held for one lookup or insert, never across a signature check, and `validate_warm` at 8 threads
+  slows as the lock-free `validate_cold` does (`benchmarks.md`). Measured: a warm validation of `alg8_a` is 48 µs
+  against 172 µs, asking no question.
+  Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
+  clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s
+  and not renewed, the bound, clones and threads. Fuzz target `validate`: a new validator per input, the validation
+  run twice, the second from the cache of the first.
 
 ## Wire format
 

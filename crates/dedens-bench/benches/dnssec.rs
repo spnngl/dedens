@@ -2,11 +2,15 @@
 //! tests verify (their keys and signatures are in `crates/dedens-dnssec/tests/common/mod.rs`), the DS digests
 //! and the NSEC3 hash. The numbers size `Budget`'s defaults (`docs/benchmarks.md`).
 
+use std::collections::HashMap;
 use std::hint::black_box;
+use std::sync::LazyLock;
 
+use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_proto::{DigestType, Nsec3HashAlgorithm, RecordType, SecAlgorithm};
+use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
+use dedens_proto::{DigestType, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm};
 
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]
 mod common;
@@ -15,7 +19,7 @@ use common::{
     ED25519_KEY_1, ED25519_SIGNATURE_1, P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE,
     RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE,
     URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2, URI_MX_SIGNATURE, URI_ZSK, b64, canonical_name,
-    dnskey_rdata, name, signed_data,
+    capture, captured_at, dnskey_rdata, name, names, signed_data,
 };
 
 fn main() {
@@ -312,4 +316,60 @@ fn verify_rrset(bencher: divan::Bencher<'_, '_>, which: &str) {
         )
         .expect("a capture verifies")
     });
+}
+
+/// Every capture, by the question it answers: what a caller hands the validator.
+static CAPTURES: LazyLock<HashMap<(Name<'static>, RecordType), Message<'static>>> =
+    LazyLock::new(|| {
+        names()
+            .iter()
+            .map(|id| capture(id))
+            .filter_map(|message| {
+                let question = message.questions.first()?;
+                Some(((question.name.clone(), question.qtype), message))
+            })
+            .collect()
+    });
+
+/// The verdict on the captured answer `alg8_a` of `nlnetlabs.nl` at the time of the capture, with the captures
+/// as the caller: five questions (the keys of `.`, `nl` and `nlnetlabs.nl` and their DS) when the validator
+/// knows no zone.
+fn validate(validator: &Validator, response: &Message<'static>) -> Verdict {
+    let question = response.questions.first().expect("a question").clone();
+    let mut validation = validator.start(&question, response, u64::from(captured_at()));
+    loop {
+        match validation.step() {
+            Next::Ask(ask) => {
+                validation.answer(CAPTURES.get(&(ask.name.clone().into_owned(), ask.qtype)));
+            }
+            Next::Done(verdict) => return verdict,
+        }
+    }
+}
+
+/// The validator of the warm benches: the chain of `alg8_a` is in its cache.
+static WARM: LazyLock<Validator> = LazyLock::new(|| {
+    let validator = Validator::new(TrustAnchors::root(), Limits::default());
+    let verdict = validate(&validator, &capture("alg8_a"));
+    assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+    validator
+});
+
+/// A whole validation of a captured secure answer under a validator that knows no zone: the keys of the chain
+/// are verified (D86). Its threads share nothing: the scaling of the warm ones is read against this.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn validate_cold(bencher: divan::Bencher<'_, '_>) {
+    let response = capture("alg8_a");
+    bencher.bench(|| {
+        let validator = Validator::new(TrustAnchors::root(), Limits::default());
+        validate(&validator, black_box(&response))
+    });
+}
+
+/// The same under a validator whose key cache has the chain: no question, one signature check for the answer.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn validate_warm(bencher: divan::Bencher<'_, '_>) {
+    let response = capture("alg8_a");
+    let validator = &*WARM;
+    bencher.bench(|| validate(validator, black_box(&response)));
 }

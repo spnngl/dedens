@@ -1217,9 +1217,11 @@ fn records_that_are_not_part_of_the_answer_are_neither_walked_nor_checked() {
         .authority
         .push(ns("evil.example", "ns.evil.example"));
     response.authority.push(ns("com", "ns.evil.example"));
-    let (forged, forged_asked) = Script::drive(&validator, &response, captured_at(), |ask| {
-        script.answer(ask)
-    });
+    // A validator of its own: a shared one would answer the walk from its cache.
+    let (forged, forged_asked) =
+        Script::drive(&Script::validator(), &response, captured_at(), |ask| {
+            script.answer(ask)
+        });
     assert!(secure(&verdict), "{verdict:?}");
     assert_eq!(forged, verdict);
     assert_eq!(forged_asked, asked);
@@ -1242,4 +1244,223 @@ fn proofs_of_two_zones_in_one_response_are_each_checked_by_their_zone() {
     other.authority.extend(capture("nxdomain_nsec3").authority);
     let verdict = script.run(&Script::validator(), &other, captured_at());
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+}
+
+// The key cache (D86): what a validator learned of the zones, kept for the TTL of the proofs.
+
+/// The captures with every TTL at five minutes, and a validator of its own.
+fn cached() -> (Script, Validator) {
+    (
+        Script::new().with_ttl(Ttl::from_wire(300)),
+        Script::validator(),
+    )
+}
+
+/// The verdict on the capture `id` at `now`, and the questions asked for it.
+fn drive_capture(
+    script: &Script,
+    validator: &Validator,
+    id: &str,
+    now: u32,
+) -> (Verdict, Vec<String>) {
+    Script::drive(validator, &capture(id), now, |ask| script.answer(ask))
+}
+
+#[test]
+fn a_validation_under_a_cached_chain_asks_nothing() {
+    let (script, validator) = cached();
+    let (first, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&first), "{first:?}");
+    assert_eq!(asked.len(), 5, "{asked:?}");
+    let (second, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert_eq!(second, first);
+    assert_eq!(asked, Vec::<String>::new());
+}
+
+#[test]
+fn a_cache_is_shared_by_the_clones_of_a_validator_and_by_threads() {
+    fn shared<T: Send + Sync>() {}
+    shared::<Validator>();
+    let (script, validator) = cached();
+    drive_capture(&script, &validator, "alg8_a", captured_at());
+    let clone = validator.clone();
+    let (verdict, asked) = drive_capture(&script, &clone, "alg8_a", captured_at());
+    assert!(
+        secure(&verdict) && asked.is_empty(),
+        "{verdict:?} {asked:?}"
+    );
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+                assert!(
+                    secure(&verdict) && asked.is_empty(),
+                    "{verdict:?} {asked:?}"
+                );
+            });
+        }
+    });
+}
+
+#[test]
+fn a_validator_of_other_anchors_has_a_cache_of_its_own() {
+    let (script, validator) = cached();
+    drive_capture(&script, &validator, "alg8_a", captured_at());
+    let mut anchors = TrustAnchors::root();
+    anchors.add_negative(name("nl"));
+    let other = Validator::new(anchors, Limits::default());
+    // The keys of `nl` are in the cache of the first: secure there, insecure here.
+    let (verdict, _) = drive_capture(&script, &other, "alg8_a", captured_at());
+    assert!(matches!(verdict, Verdict::Insecure { .. }), "{verdict:?}");
+}
+
+#[test]
+fn an_entry_holds_for_its_ttl_and_not_one_second_more() {
+    let (script, validator) = cached();
+    let at = captured_at();
+    let (first, _) = drive_capture(&script, &validator, "alg8_a", at);
+    assert!(secure(&first), "{first:?}");
+    // The keys hold for the 300 s of the records, the answer for its own, shorter TTL.
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 299);
+    assert_eq!(asked, Vec::<String>::new());
+    // What is left of the keys'' TTL is what the answer may be kept for.
+    assert_eq!(
+        verdict,
+        Verdict::Secure {
+            ttl: Ttl::from_wire(1)
+        }
+    );
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 300);
+    assert!(secure(&verdict), "{verdict:?}");
+    assert_ne!(asked.len(), 0);
+}
+
+#[test]
+fn a_clock_gone_back_finds_nothing() {
+    let (script, validator) = cached();
+    let at = captured_at();
+    drive_capture(&script, &validator, "alg8_a", at + 100);
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at);
+    assert!(secure(&verdict), "{verdict:?}");
+    assert_eq!(asked.len(), 5, "{asked:?}");
+}
+
+#[test]
+fn an_answer_nobody_gave_is_not_kept() {
+    let (script, validator) = cached();
+    let silent = |ask: &Question<'static>| {
+        (ask.name != name("nl") || ask.qtype != RecordType::DNSKEY)
+            .then(|| script.answer(ask))
+            .flatten()
+    };
+    let (verdict, _) = Script::drive(&validator, &capture("alg8_a"), captured_at(), silent);
+    assert!(
+        matches!(verdict, Verdict::Indeterminate { .. }),
+        "{verdict:?}"
+    );
+    // The root's keys were verified and are kept, `nl` was not decided and is asked again.
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    assert_eq!(
+        asked,
+        [
+            "nl. DS",
+            "nl. DNSKEY",
+            "nlnetlabs.nl. DS",
+            "nlnetlabs.nl. DNSKEY"
+        ]
+    );
+}
+
+#[test]
+fn an_exhausted_budget_is_never_kept_and_the_verified_part_is() {
+    let (script, _) = cached();
+    let limits = Limits {
+        budget: Budget::new(Verifications(2), Nsec3Hashes(0)),
+        ..Limits::default()
+    };
+    let validator = Validator::new(TrustAnchors::root(), limits);
+    // Each attempt verifies what it can, and the next starts from there: never bogus, and secure at last.
+    let mut verdicts = Vec::new();
+    for _ in 0..8 {
+        let (verdict, _) = drive_capture(&script, &validator, "alg8_a", captured_at());
+        let done = secure(&verdict);
+        verdicts.push(verdict);
+        if done {
+            break;
+        }
+    }
+    let last = verdicts.pop().expect("a verdict");
+    assert!(secure(&last), "{last:?} after {verdicts:?}");
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| matches!(verdict, Verdict::Indeterminate { .. })),
+        "{verdicts:?}"
+    );
+}
+
+#[test]
+fn a_bogus_zone_is_held_sixty_seconds_and_not_renewed_by_being_read() {
+    // `rhybar.cz`: the DS matches none of its keys, and `cz` is sound.
+    let (script, validator) = cached();
+    let at = captured_at();
+    let (first, asked) = drive_capture(&script, &validator, "bogus_expired", at);
+    assert!(bogus(&first, InfoCode::DNSKEY_MISSING), "{first:?}");
+    assert_ne!(asked.len(), 0);
+    let (again, asked) = drive_capture(&script, &validator, "bogus_expired", at + 59);
+    assert_eq!(again, first);
+    assert_eq!(asked, Vec::<String>::new());
+    // The read at 59 s did not renew it.
+    let (again, asked) = drive_capture(&script, &validator, "bogus_expired", at + 60);
+    assert!(bogus(&again, InfoCode::DNSKEY_MISSING), "{again:?}");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    // The sound zones around it do not suffer, and what is not asked is the keys of `cz`.
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", at + 61);
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(!asked.contains(&". DNSKEY".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn a_forged_ds_in_one_validation_poisons_no_other() {
+    let (script, validator) = cached();
+    let mut forged = capture("nl_ds");
+    with_rrsigs(&mut forged, |rrsig| {
+        rrsig.key_tag = rrsig.key_tag.wrapping_add(1);
+    });
+    let (verdict, _) = Script::drive(&validator, &capture("alg8_a"), captured_at(), |ask| {
+        if ask.name == name("nl") && ask.qtype == RecordType::DS {
+            Some(&forged)
+        } else {
+            script.answer(ask)
+        }
+    });
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let (verdict, asked) = drive_capture(&script, &validator, "alg8_a", captured_at());
+    assert!(secure(&verdict), "{verdict:?}");
+    assert!(asked.contains(&"nl. DS".to_owned()), "{asked:?}");
+}
+
+#[test]
+fn the_cache_is_bound_and_a_bound_of_nothing_keeps_nothing() {
+    let (script, _) = cached();
+    // Another zone's answer between two of `nlnetlabs.nl` pushes the keys of `nlnetlabs.nl` out of a cache
+    // of one entry, and leaves them in a cache of room.
+    for (key_cache, kept) in [(0, false), (1, false), (4096, true)] {
+        let limits = Limits {
+            key_cache,
+            ..Limits::default()
+        };
+        let validator = Validator::new(TrustAnchors::root(), limits);
+        let (_, first) = drive_capture(&script, &validator, "alg8_a", captured_at());
+        drive_capture(&script, &validator, "alg13_a", captured_at());
+        let (verdict, second) = drive_capture(&script, &validator, "alg8_a", captured_at());
+        assert!(secure(&verdict), "{verdict:?}");
+        if kept {
+            assert_eq!(second, Vec::<String>::new());
+        } else {
+            assert!(!second.is_empty(), "{key_cache}: {second:?}");
+        }
+        assert_ne!(first.len(), 0);
+    }
 }
