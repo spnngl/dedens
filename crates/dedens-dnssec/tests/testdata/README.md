@@ -113,3 +113,7 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 ## Leaves of the chain of trust
 
 `leaf_*_ds` are the DS queries a validator asks for the owner of each `RRset` of the answers above: the owner's own zone cut, or none. What the resolver returns depends on the name: NODATA or a name error with the parent's proof; the signed CNAME where the name is a CNAME (`www.icann.org`, `www.ripe.net`, the two `sigok` and `sigfail` names), which a DS query reaches as any type; a wildcard no data (`leaf_wildcard_sidnlabs_ds`); a name error under an opt-out span (`leaf_nxdomain_com_ds`, `leaf_nxdomain_org_ds`) proving a delegation without DS: insecure, opt-out.
+
+## A name of 34 labels
+
+`ip6_ptr` is the PTR of an IPv6 reverse name (RIPE NCC's `www.ipv6.ripe.net`, 34 labels under `ip6.arpa`, signed by `8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa`, 13), Secure. The validator asks the DS of each label below `arpa`: `ip6_ds_N` is that of the suffix of N labels (`ip6_ds_1` is `arpa`), a DS at the zone cuts (`arpa`, `ip6.arpa`, `6.0.1.0.0.2.ip6.arpa`, `8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa`) and a signed NODATA elsewhere; `arpa_dnskey`, `ip6_arpa_dnskey`, `ip6_1_0_0_2_dnskey` and `ripe_ip6_arpa_dnskey` are the keys of those zones.
