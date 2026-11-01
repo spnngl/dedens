@@ -31,9 +31,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   Default: kept (it is what the same answerer forces on one validation anyway); a `Next::Retry` asking the DNSKEY
   of another server or over TCP before a bogus is stored, or no bogus entry at all (the 60 s only spared repeated
   failed walks), when a caller has several servers.
-- Key cache, size and lock (D86): bounded by entries (4096 per table), not bytes, with one `Mutex`. Default: as is;
-  bytes, an `RwLock` or shards when `dedensd`'s load tests show a validator's keys cost more than a few MB or its
-  lock contended.
+- Key cache, lock and singleflight (D86): one `Mutex` over three tables, which a hit takes too (it moves the entry in
+  the LRU order), and concurrent misses on one zone each ask and verify. Default: as is; shards by name, an `RwLock`
+  with a lazier LRU, or one in-flight lookup per zone when `dedensd`'s load tests show the lock contended or a cold
+  start's duplicate work costing.
 - ODoH suites other than RFC 9230 §9's (X25519, HKDF-SHA256, AES-128-GCM) (D78): P-256, P-384, HKDF-SHA384,
   AES-256-GCM, ChaCha20-Poly1305. Default: skipped in the configs a target publishes; add one when a target in use
   asks for it.

@@ -319,15 +319,20 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
   `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
   validator, so a change of trust anchors or negative anchors is a new `Validator` with an empty cache, and nothing
-  stale outlives it. API, additive only: `Limits::key_cache` (`usize`, default 4096; 0 turns the cache off);
-  `Limits { .., ..Limits::default() }` as before. `Validation::start` takes the time as before: it is the cache's
+  stale outlives it. API, additive fields only: `Limits::key_cache` (`usize`, entries per table, default 4096; 0
+  turns the cache off) and `Limits::key_cache_bytes` (`usize`, default 4 MiB); `Limits { .., ..Limits::default() }`
+  as before. `Limits` is not `#[non_exhaustive]`: the integration tests and the callers of steps 07 and 08 build it
+  as a struct literal with `..Limits::default()`, which `#[non_exhaustive]` forbids outside the crate; a literal
+  without the `..` breaks with any new field. `Validation::start` takes the time as before: it is the cache's
   clock too, so there is no clock inside.
   Kinds and TTLs. Secure keys: the TTL `keys_from_ds` and `anchor_keys` give, the least of the verified DNSKEY
-  `RRset`'s, the DS `RRset`'s and the signatures' remaining validity (RFC 4035 §5.3.3, RFC 2181 §8). Insecure
+  `RRset`'s, the DS `RRset`'s and the signatures' remaining validity (RFC 4035 §5.3.3, RFC 2181 §8), and no more
+  than a day, whatever the signatures allow (Unbound's `cache-max-ttl` 86400: a key rolled over or a DS removed
+  waits no longer; the same cap holds for every kind). Insecure
   (unsigned delegation, opt-out, unsupported algorithm or digest, NSEC3 iterations above the limit): the TTL of the
   proof, that of a denial held to the keys' and RFC 9077 §3.4's three hours (an opt-out proof's TTL lacked both
   until now: nothing read it). A name that is no zone cut (a proven absence of DS, or a verified CNAME or DNAME)
-  is kept with the TTL of that proof, in a second table. Bogus: 60 seconds
+  is kept with the TTL of that proof, with the insecure zones. Bogus: 60 seconds
   (Unbound's `val-bogus-ttl`), for a zone only, by name. A hit gives the TTL it has left, so what is derived from it
   never outlives it, and a hit is never written back, so reading renews nothing.
   Never kept: an indeterminate outcome or one of the budget (D71), nor `Failure::Transient`: a bogus verdict that
@@ -352,18 +357,33 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   sans-IO validator cannot retry another server or TCP as Unbound's iterator does before it stores the failure
   (TODECIDE has the retry). The entry is kept to what limits the harm: 60 s, fixed, never renewed by a hit, one
   zone (the name of the zone that failed, not its children's names).
-  Bound: `key_cache` entries in each of two tables, zones (keys, insecure, bogus) and names that are no zone cut, so
-  a flood of names under a signed zone, each with a proof of no DS, evicts names and never the keys. Full, a table
-  drops the entry that stops holding first (expired ones go before the others; a scan, paid only when full, and
-  insertion is a rarity next to a verification). 4096 keys of a few KB are about Unbound's 4 MB `key-cache-size`.
+  Bound: three tables by kind, keys of secure zones, names (no zone cut, insecure zone) and bogus zones, each with
+  its own entry bound (`key_cache`) and its share of `key_cache_bytes` (half, a quarter, a quarter), each evicting
+  its least recently used entry (a hit is a use; an expired entry is dropped when read; a `HashMap` and a `BTreeMap`
+  by tick, so insert, hit and eviction are logarithmic under the lock, never a scan). A flood of names under a zone
+  of an attacker, each with a proof of no DS and the longest TTL it can have, evicts names, never keys; the TTL
+  decides nothing about eviction. An entry costs 512 bytes and the wire size of its keys, and a zone whose keys cost
+  more than 16 KiB (a DNSKEY `RRset` padded with keys no DS names: the signature covers them all, and every key of
+  the set is trusted, so the set cannot be cut to the keys a DS names) is used by the validation that found it
+  and not kept: an attacker pins no more than 16 KiB for each name of a zone it signs, and no more than 2 MiB of
+  keys all told by default. At the 4 MiB default a real set (two or three keys, about 1 KiB) leaves room for
+  some two thousand zones; a resolver for more raises `key_cache_bytes`.
+  Rank: an entry of a weaker kind never replaces a live one of a stronger (keys over names over bogus), so a
+  forged answer, or a denial replayed while its signatures last, cannot unseat the keys of a zone, nor a bogus
+  entry a proof of insecurity; once the keys expire the name is free. The price is that a real change (a DS
+  removed, a zone made insecure) waits for the keys' TTL, at most a day, as for any cache of keys.
   A `Mutex`, not an `RwLock` or shards: a validation runs only for a response the response cache lacked, the lock is
   held for one lookup or insert, never across a signature check, and `validate_warm` at 8 threads
-  slows as the lock-free `validate_cold` does (`benchmarks.md`). Measured: a warm validation of `alg8_a` is 48 µs
-  against 172 µs, asking no question.
+  slows 2.1x against the lock-free `validate_cold`'s 1.8x (`benchmarks.md`, with a review's 2.8x against 1.9x:
+  some contention shows). Measured: a warm validation of `alg8_a` is 54 µs against 168 µs, asking no question. No
+  singleflight: concurrent misses on one zone each ask and verify, which costs work and nothing more (TODECIDE).
   Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
   clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s
-  and not renewed, the bound, clones and threads. Fuzz target `validate`: a new validator per input, the validation
-  run twice, the second from the cache of the first.
+  and not renewed, a DNSKEY answer that proves nothing, or that `start` was given, is never kept, insecure and no-cut
+  entries are kept, a negative anchor is its validator's own, clones and threads; `validator/cache.rs`, the flood,
+  LRU order, bytes and the entry limit, rank, the day and the clock gone back. Fuzz target `validate`: a new
+  validator per input, the validation run twice with the same answers (picked by question), the second from the
+  cache of the first, and the two verdicts agree unless one is indeterminate.
 
 ## Wire format
 

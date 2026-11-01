@@ -2,20 +2,75 @@
 //!
 //! It holds what [`Zone::lifetime`] lets it hold, written by `Validation::settle` and read by
 //! `Validation::zone_of`, and nothing else: secure keys, insecure zones and names that are no zone cut for the
-//! TTL of the proof, and a bogus zone for 60 s. What a validation could not decide (a question left
-//! unanswered, a limit, the budget) never gets here.
+//! TTL of the proof, and a bogus zone for 60 s, none for more than a day. What a validation could not decide (a
+//! question left unanswered, a limit, the budget) never gets here.
 //!
 //! Time is the caller's: every call is given `now` in Unix seconds. An entry is a hit while
 //! `at <= now < at + ttl`; a `now` before `at`, the clock gone back, is a miss, so that no entry lives longer
 //! than its TTL.
+//!
+//! Three tables by kind, each with its own bounds in entries and bytes and its own least-recently-used order, so
+//! that an attacker's flood of cheap entries (names under a zone of its own, each with a proof of no DS) evicts
+//! entries of its kind and never the keys of the zones everyone asks about; and an entry of a weaker kind never
+//! replaces a live one of a stronger.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dedens_proto::{Name, Ttl};
 
-use super::chain::Zone;
+use super::chain::{Settled, Zone};
+use super::verdict::Unusable;
+
+/// The longest an entry is kept, whatever its proof says: Unbound's `cache-max-ttl` (D86). A signature may be
+/// valid for months; a key rolled over or a DS removed should not wait for it.
+const MAX_TTL: Ttl = Ttl::from_wire(86_400);
+
+/// What an entry costs besides the records it holds: the maps, the names, the outcome.
+const ENTRY_BASE: usize = 512;
+
+/// The most one entry may cost: the keys of a zone with more than that (a DNSKEY `RRset` padded with keys that
+/// no DS names, which the signature covers all the same) are used by the validation that found them and not
+/// kept, so a signed zone of an attacker pins no more than this per name (D86).
+const MAX_ENTRY_BYTES: usize = 16 * 1024;
+
+/// What an entry is, which sets the table it is in and what may replace it: from the weakest to the strongest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    /// A bogus zone: 60 s, from a failure anyone can cause.
+    Bogus,
+    /// A name that is no zone cut, or an insecure zone: a proof anyone can replay while its signatures last.
+    Names,
+    /// The keys of a secure zone.
+    Keys,
+}
+
+impl Kind {
+    const ALL: [Self; 3] = [Self::Bogus, Self::Names, Self::Keys];
+
+    const fn of(zone: &Zone) -> Self {
+        match zone {
+            Zone::Apex(Settled::Secure { .. }) => Self::Keys,
+            Zone::Inside { .. } | Zone::Apex(Settled::Unusable(Unusable::Insecure { .. })) => {
+                Self::Names
+            }
+            Zone::Apex(Settled::Unusable(Unusable::Failed(_))) | Zone::Beneath(_) => Self::Bogus,
+        }
+    }
+}
+
+/// What `zone` costs in bytes: the wire size of the keys it holds, and a base for the rest.
+fn cost(zone: &Zone) -> usize {
+    match zone {
+        Zone::Apex(Settled::Secure { keys, .. }) => {
+            keys.rdatas().iter().fold(ENTRY_BASE, |bytes, rdata| {
+                bytes.saturating_add(rdata.wire().len())
+            })
+        }
+        _ => ENTRY_BASE,
+    }
+}
 
 /// An outcome, when it was learned and for how long it holds.
 #[derive(Debug)]
@@ -41,89 +96,369 @@ impl Entry {
     }
 }
 
-/// The entries, in two tables each bound on its own: a flood of names below a signed zone, each with a proof
-/// of no DS, evicts names, never the keys of zones. A name is in one table only.
-#[derive(Debug, Default)]
+/// An entry in a table, with its place in the recency order and its cost.
+#[derive(Debug)]
+struct Slot {
+    entry: Entry,
+    tick: u64,
+    cost: usize,
+}
+
+/// The entries of one kind, bound in number and in bytes, the least recently used out first. Every operation
+/// is logarithmic, so that the lock is never held for a scan.
+#[derive(Debug)]
+struct Table {
+    slots: HashMap<Name<'static>, Slot>,
+    /// The names by the tick of their last use: the first is the next to go.
+    recency: BTreeMap<u64, Name<'static>>,
+    tick: u64,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl Table {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            slots: HashMap::new(),
+            recency: BTreeMap::new(),
+            tick: 0,
+            bytes: 0,
+            max_entries,
+            max_bytes,
+        }
+    }
+
+    /// Whether an entry of `cost` bytes may be kept at all.
+    const fn admits(&self, cost: usize) -> bool {
+        self.max_entries > 0 && cost <= self.max_bytes
+    }
+
+    /// Whether a live entry of `name` is here, without counting as a use.
+    fn holds(&self, name: &Name<'static>, now: u64) -> bool {
+        self.slots
+            .get(name)
+            .is_some_and(|slot| slot.entry.live(now).is_some())
+    }
+
+    /// The live entry of `name`, which is then the most recently used; one that has expired is dropped, one
+    /// from a clock that has gone back is a miss and stays.
+    fn get(&mut self, name: &Name<'static>, now: u64) -> Option<Zone> {
+        let slot = self.slots.get(name)?;
+        let Some(zone) = slot.entry.live(now) else {
+            if now >= slot.entry.at {
+                self.remove(name);
+            }
+            return None;
+        };
+        self.tick += 1;
+        if let Some(slot) = self.slots.get_mut(name)
+            && let Some(key) = self.recency.remove(&slot.tick)
+        {
+            slot.tick = self.tick;
+            self.recency.insert(self.tick, key);
+        }
+        Some(zone)
+    }
+
+    fn remove(&mut self, name: &Name<'static>) {
+        if let Some(slot) = self.slots.remove(name) {
+            self.recency.remove(&slot.tick);
+            self.bytes = self.bytes.saturating_sub(slot.cost);
+        }
+    }
+
+    /// Keeps `entry` of `cost` bytes (checked by [`Table::admits`]) for `name`, dropping the least recently used
+    /// until it fits.
+    fn insert(&mut self, name: &Name<'static>, entry: Entry, cost: usize) {
+        self.remove(name);
+        while self.slots.len() >= self.max_entries
+            || self.bytes.saturating_add(cost) > self.max_bytes
+        {
+            let Some((_, oldest)) = self.recency.pop_first() else {
+                break;
+            };
+            if let Some(slot) = self.slots.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(slot.cost);
+            }
+        }
+        self.tick += 1;
+        self.recency.insert(self.tick, name.clone());
+        self.bytes = self.bytes.saturating_add(cost);
+        self.slots.insert(
+            name.clone(),
+            Slot {
+                entry,
+                tick: self.tick,
+                cost,
+            },
+        );
+    }
+}
+
+/// The three tables.
+#[derive(Debug)]
 struct Tables {
-    /// Outcomes of zone apexes: keys, insecure zones, bogus ones.
-    zones: HashMap<Name<'static>, Entry>,
-    /// Names that are no zone cut.
-    names: HashMap<Name<'static>, Entry>,
+    keys: Table,
+    names: Table,
+    bogus: Table,
+}
+
+impl Tables {
+    const fn of(&mut self, kind: Kind) -> &mut Table {
+        match kind {
+            Kind::Keys => &mut self.keys,
+            Kind::Names => &mut self.names,
+            Kind::Bogus => &mut self.bogus,
+        }
+    }
 }
 
 /// The entries of the validations of one validator.
 ///
-/// A [`Mutex`] around plain maps: a validation takes the lock for one lookup or one insert, never across a
+/// A [`Mutex`] around plain tables: a validation takes the lock for one lookup or one insert, never across a
 /// signature check, and runs only for a response the response cache lacked (D86).
 pub(super) struct KeyCache {
-    /// Entries of each table; 0 keeps nothing.
-    capacity: usize,
+    entries: usize,
+    bytes: usize,
     tables: Mutex<Tables>,
 }
 
 impl fmt::Debug for KeyCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KeyCache")
-            .field("capacity", &self.capacity)
+            .field("entries", &self.entries)
+            .field("bytes", &self.bytes)
             .finish_non_exhaustive()
     }
 }
 
 impl KeyCache {
-    /// An empty cache of at most `capacity` entries in each of its two tables.
-    pub(super) fn new(capacity: usize) -> Self {
+    /// An empty cache of at most `entries` in each of its tables, and `bytes` in all: half for keys, a quarter
+    /// each for names and bogus zones. 0 entries keeps nothing.
+    pub(super) fn new(entries: usize, bytes: usize) -> Self {
+        let table = |share: usize| Table::new(entries, bytes / share);
         Self {
-            capacity,
-            tables: Mutex::new(Tables::default()),
+            entries,
+            bytes,
+            tables: Mutex::new(Tables {
+                keys: table(2),
+                names: table(4),
+                bogus: table(4),
+            }),
         }
     }
 
-    /// The tables. A panic of another thread leaves them whole (an insert is one step), so poisoning is
-    /// ignored.
+    /// The tables. A panic of another thread leaves them whole (an insert is a few steps that cannot panic), so
+    /// poisoning is ignored.
     fn lock(&self) -> MutexGuard<'_, Tables> {
         self.tables.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What is known of `name` at `now`, with the TTL it has left.
     pub(super) fn get(&self, name: &Name<'static>, now: u64) -> Option<Zone> {
-        let tables = self.lock();
-        tables
-            .zones
-            .get(name)
-            .or_else(|| tables.names.get(name))?
-            .live(now)
+        let mut tables = self.lock();
+        Kind::ALL
+            .into_iter()
+            .rev()
+            .find_map(|kind| tables.of(kind).get(name, now))
     }
 
-    /// Keeps `zone`, learned of `name` at `now`, for [`Zone::lifetime`]; what has none is not kept. A full
-    /// table drops the entry that stops holding first.
+    /// Keeps `zone`, learned of `name` at `now`, for [`Zone::lifetime`] and at most a day; what has no lifetime,
+    /// or costs more than an entry may, is not kept, and nor is what a live entry of a stronger kind outranks:
+    /// keys over names and insecure zones over a bogus one, so that an answer that can be forged or replayed
+    /// never takes the place of the keys.
     pub(super) fn put(&self, name: &Name<'static>, zone: &Zone, now: u64) {
         let Some(ttl) = zone.lifetime().filter(|ttl| *ttl != Ttl::ZERO) else {
             return;
         };
-        if self.capacity == 0 {
+        let kind = Kind::of(zone);
+        let cost = cost(zone);
+        if cost > MAX_ENTRY_BYTES {
             return;
+        }
+        let mut tables = self.lock();
+        if !tables.of(kind).admits(cost) {
+            return;
+        }
+        if Kind::ALL
+            .into_iter()
+            .filter(|other| *other > kind)
+            .any(|other| tables.of(other).holds(name, now))
+        {
+            return;
+        }
+        for other in Kind::ALL.into_iter().filter(|other| *other != kind) {
+            tables.of(other).remove(name);
         }
         let entry = Entry {
             zone: zone.clone(),
             at: now,
-            ttl,
+            ttl: ttl.min(MAX_TTL),
         };
-        let mut guard = self.lock();
-        let tables = &mut *guard;
-        let (table, other) = match zone {
-            Zone::Inside { .. } => (&mut tables.names, &mut tables.zones),
-            _ => (&mut tables.zones, &mut tables.names),
-        };
-        other.remove(name);
-        if table.len() >= self.capacity && !table.contains_key(name) {
-            let first = table
-                .iter()
-                .min_by_key(|(_, entry)| entry.expires())
-                .map(|(name, _)| name.clone());
-            if let Some(first) = first {
-                table.remove(&first);
-            }
+        tables.of(kind).insert(name, entry, cost);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use dedens_proto::edns::InfoCode;
+    use dedens_proto::rdata::Dnskey;
+    use dedens_proto::{Class, RData, Record, SecAlgorithm, WireRdata};
+
+    use super::*;
+    use crate::rrsig::RrSet;
+    use crate::validator::verdict::{Failure, InsecureReason};
+
+    fn name(text: &str) -> Name<'static> {
+        text.parse().expect("a name")
+    }
+
+    /// Keys of `owner`: `count` of them, of 32 bytes.
+    fn keys(owner: &str, count: u8, ttl: u32) -> Zone {
+        padded(owner, count, 32, ttl)
+    }
+
+    /// Keys of `owner`: `count` of them, of `size` bytes.
+    fn padded(owner: &str, count: u8, size: usize, ttl: u32) -> Zone {
+        let records: Vec<Record<'static>> = (0..count)
+            .map(|index| {
+                let bytes = vec![index; size];
+                let key = Dnskey::new(0x0101, SecAlgorithm::ED25519, &bytes).expect("a key");
+                Record {
+                    name: name(owner),
+                    class: Class::IN,
+                    ttl: Ttl::from_wire(ttl),
+                    rdata: WireRdata::new(&RData::Dnskey(key)),
+                }
+            })
+            .collect();
+        let keys = RrSet::group(&records).pop().expect("a set");
+        Zone::Apex(Settled::Secure {
+            keys: Arc::new(keys),
+            ttl: Ttl::from_wire(ttl),
+        })
+    }
+
+    fn inside(ttl: u32) -> Zone {
+        Zone::Inside {
+            apex: name("example"),
+            ttl: Ttl::from_wire(ttl),
         }
-        table.insert(name.clone(), entry);
+    }
+
+    fn insecure(ttl: u32) -> Zone {
+        Zone::Apex(Settled::Unusable(Unusable::Insecure {
+            reason: InsecureReason::UnsignedDelegation,
+            ttl: Ttl::from_wire(ttl),
+        }))
+    }
+
+    fn bogus() -> Zone {
+        Zone::Apex(Settled::Unusable(Unusable::Failed(Failure::bogus(
+            InfoCode::DNSSEC_BOGUS,
+            "bogus",
+        ))))
+    }
+
+    fn is_keys(cache: &KeyCache, name: &Name<'static>, now: u64) -> bool {
+        matches!(
+            cache.get(name, now),
+            Some(Zone::Apex(Settled::Secure { .. }))
+        )
+    }
+
+    #[test]
+    fn a_flood_of_names_evicts_names_and_never_keys() {
+        let cache = KeyCache::new(64, 1 << 20);
+        let hot = name("hot.example");
+        cache.put(&hot, &keys("hot.example", 2, 300), 1000);
+        for index in 0..10_000 {
+            // The longest TTLs an attacker can have, to outlast anything.
+            cache.put(&name(&format!("n{index}.evil")), &inside(10_800), 1000);
+            cache.put(&name(&format!("i{index}.evil")), &insecure(10_800), 1000);
+            cache.put(&name(&format!("b{index}.evil")), &bogus(), 1000);
+        }
+        assert!(is_keys(&cache, &hot, 1100));
+        let tables = cache.lock();
+        assert!(tables.names.slots.len() <= 64 && tables.bogus.slots.len() <= 64);
+    }
+
+    #[test]
+    fn the_least_recently_used_goes_first_whatever_its_ttl() {
+        let cache = KeyCache::new(2, 1 << 20);
+        let (a, b, c) = (name("a"), name("b"), name("c"));
+        cache.put(&a, &keys("a", 1, 100), 0);
+        cache.put(&b, &keys("b", 1, 100_000), 0);
+        // Reading `a` makes `b` the one to go, though `a` expires first.
+        assert!(is_keys(&cache, &a, 1));
+        cache.put(&c, &keys("c", 1, 100), 1);
+        assert!(is_keys(&cache, &a, 2) && is_keys(&cache, &c, 2));
+        assert!(cache.get(&b, 2).is_none());
+    }
+
+    #[test]
+    fn bytes_bound_the_tables_and_an_entry_over_its_limit_is_not_kept() {
+        let one = cost(&keys("a", 1, 1));
+        // Room for two entries of keys: half of the bytes.
+        let cache = KeyCache::new(100, one * 2 * 2);
+        for owner in ["a", "b", "c"] {
+            cache.put(&name(owner), &keys(owner, 1, 300), 0);
+        }
+        assert!(cache.get(&name("a"), 1).is_none());
+        assert!(is_keys(&cache, &name("b"), 1) && is_keys(&cache, &name("c"), 1));
+        // A set of 255 keys of 100 bytes is over the entry limit, though a table could hold it.
+        let padded = padded("padded", 255, 100, 300);
+        assert!(cost(&padded) > MAX_ENTRY_BYTES);
+        let cache = KeyCache::new(100, 1 << 30);
+        cache.put(&name("padded"), &padded, 0);
+        assert!(cache.get(&name("padded"), 1).is_none());
+        // Without entries or bytes, nothing is kept.
+        for cache in [KeyCache::new(0, 1 << 20), KeyCache::new(10, 0)] {
+            cache.put(&name("a"), &keys("a", 1, 300), 0);
+            assert!(cache.get(&name("a"), 1).is_none());
+        }
+    }
+
+    #[test]
+    fn a_weaker_entry_never_replaces_a_live_stronger_one() {
+        let cache = KeyCache::new(8, 1 << 20);
+        let zone = name("zone");
+        cache.put(&zone, &keys("zone", 1, 300), 0);
+        for weaker in [bogus(), insecure(300), inside(300)] {
+            cache.put(&zone, &weaker, 10);
+            assert!(is_keys(&cache, &zone, 11));
+        }
+        // Once the keys have expired the others may take the name, and one table holds it.
+        cache.put(&zone, &insecure(300), 300);
+        assert!(matches!(
+            cache.get(&zone, 301),
+            Some(Zone::Apex(Settled::Unusable(Unusable::Insecure { .. })))
+        ));
+        cache.put(&zone, &keys("zone", 1, 300), 301);
+        assert!(is_keys(&cache, &zone, 302));
+        assert_eq!(cache.lock().names.slots.len(), 0);
+        // A bogus zone gives way to a proof of insecurity.
+        let other = name("other");
+        cache.put(&other, &bogus(), 0);
+        cache.put(&other, &insecure(300), 1);
+        assert!(!matches!(
+            cache.get(&other, 2),
+            Some(Zone::Apex(Settled::Unusable(Unusable::Failed(_))))
+        ));
+    }
+
+    #[test]
+    fn no_entry_outlives_a_day_and_none_a_clock_gone_back() {
+        let cache = KeyCache::new(8, 1 << 20);
+        let zone = name("zone");
+        cache.put(&zone, &keys("zone", 1, 172_800), 1000);
+        assert!(is_keys(&cache, &zone, 1000 + 86_399));
+        assert!(cache.get(&zone, 1000 + 86_400).is_none());
+        cache.put(&zone, &keys("zone", 1, 300), 1000);
+        assert!(cache.get(&zone, 999).is_none());
+        assert!(is_keys(&cache, &zone, 1000));
     }
 }
