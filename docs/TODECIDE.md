@@ -28,9 +28,15 @@ Open questions, each with its proposed default. Once answered, record the outcom
   bogus for 60 s for every validation of the validator, but only by a DNSKEY set without the key the DS digests or
   with a signature of that key that fails (an empty, unsigned, expired or lame answer is never stored).
   Unbound stores a bogus zone only after trying its other servers; the sans-IO validator has no retry step.
-  Default: kept (it is what the same answerer forces on one validation anyway); a `Next::Retry` asking the DNSKEY
-  of another server or over TCP before a bogus is stored, or no bogus entry at all (the 60 s only spared repeated
-  failed walks), when a caller has several servers.
+  Default: kept (it is what the same answerer forces on one validation anyway). Not built: a `Next::Retry` asking
+  the DNSKEY again, of another server or over TCP, before a bogus is stored. It adds a variant every caller of
+  `step()` matches (`dedens`, `dedens-server`, the fuzz target), a retry state per zone in the validator, and a way
+  for the pipeline to ask a question of a server other than the one that answered (an `Upstream` knows the next
+  server of its stage only after a failure; a stage of one server could only repeat over TCP). The harm it
+  would cut is a 60 s bogus entry for one zone, which an answerer able to forge that answer could also
+  force on each validation, and the cost limits (D77) bound what the repeats cost. Build it when a deployment
+  forwards to several servers, one of which lies or breaks, and a bogus zone shows in its logs; or drop the bogus
+  entry (the 60 s only spared repeated failed walks).
 - Key cache, lock (D86): one `Mutex` over three tables, which a hit takes too (it moves the entry in the LRU
   order). Default: as is; shards by name, or an `RwLock` with a lazier LRU, when `dedensd`'s load tests show the
   lock contended.
