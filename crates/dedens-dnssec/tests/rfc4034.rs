@@ -10,7 +10,7 @@ use common::{
 use dedens_dnssec::crypto::{
     Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
 };
-use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
+use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{DigestType, SecAlgorithm};
 
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
@@ -458,4 +458,74 @@ fn the_ds_digest_of_the_ksk_vouches_for_the_dnskey_rrset() {
             digest: DigestType::GOST
         }
     );
+}
+
+/// The DS RDATA of the DNSKEY RDATA `key` at `example.`.
+fn ds_of(key: &[u8], digest_type: DigestType) -> Vec<u8> {
+    let digest = ds_digest(digest_type, &name("example."), key).expect("supported");
+    let mut rdata = key_tag(key).to_be_bytes().to_vec();
+    rdata.extend([key[3], digest_type.0]);
+    rdata.extend(digest.as_ref());
+    rdata
+}
+
+#[test]
+fn a_sha1_ds_is_ignored_only_beside_a_stronger_digest_of_its_own_key() {
+    // RFC 4509 §3 speaks of the same key: a SHA-256 DS of the ZSK does not drop the SHA-1 DS of the KSK.
+    let (_, _, keys) = appendix_a();
+    let sigs = rrsig_set("example.", &rrsig(48, 5, 1, 9465), DNSKEY_SIGNATURE);
+    let ksk = dnskey_rdata(257, 5, KSK);
+    let zsk = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let ds = rrset(
+        "example.",
+        43,
+        &[
+            ds_of(&ksk, DigestType::SHA1),
+            ds_of(&zsk, DigestType::SHA256),
+        ],
+    );
+    let trusted = rrsig::trusted_keys(
+        &keys,
+        &Signature::all(&sigs),
+        &ds,
+        INCEPTION,
+        &mut Budget::default(),
+    );
+    assert!(trusted.is_ok(), "{trusted:?}");
+}
+
+/// `count` DNSKEY RDATA with the key tag of `key`, each different: two bytes at distances of two are swapped,
+/// which leaves the sum of the key tag (RFC 4034 Appendix B) as it is.
+fn colliding(key: &[u8], count: usize) -> Vec<Vec<u8>> {
+    let mut found: Vec<Vec<u8>> = Vec::new();
+    for at in 4..key.len() - 2 {
+        let mut other = key.to_vec();
+        other.swap(at, at + 2);
+        if other != key && !found.contains(&other) {
+            assert_eq!(key_tag(&other), key_tag(key));
+            found.push(other);
+        }
+        if found.len() == count {
+            break;
+        }
+    }
+    assert_eq!(found.len(), count);
+    found
+}
+
+#[test]
+fn keys_that_share_the_tag_of_a_ds_are_digested_a_few_times_only() {
+    // The DNSKEY `RRset` is not authenticated yet, and a zone may publish many keys of one tag: KeyTrap by the
+    // DS digests (D73). Up to `MAX_FAILED` keys of the tag may fail to match, then the `RRset` is refused.
+    let ksk = dnskey_rdata(257, 5, KSK);
+    let ds = rrset("example.", 43, &[ds_of(&ksk, DigestType::SHA256)]);
+    let trust = |others: usize| {
+        let mut keys = colliding(&ksk, others);
+        keys.push(ksk.clone());
+        let keys = rrset("example.", 48, &keys);
+        rrsig::trusted_keys(&keys, &[], &ds, INCEPTION, &mut Budget::default())
+    };
+    // The right key is found, and nothing signs the `RRset`.
+    assert_eq!(trust(MAX_FAILED), Err(SigError::NoSignature));
+    assert_eq!(trust(MAX_FAILED + 1), Err(SigError::TooManyFailures));
 }

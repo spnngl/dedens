@@ -77,35 +77,57 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   and denial are 05 and 06. `RrSet::group` builds `RRset`s from a section (owner, class, type; RFC 2181 §5.2:
   TTL the minimum); `Signature` and `Key` borrow the RRSIG and DNSKEY records of an `RRset`, a DNSKEY whose
   protocol is not 3 being opaque, so never a `Key`. `verify(rrset, sig, key, now, budget)` checks RFC 4035 §5.3.1
-  in this order: coverage, labels, signer at or above the owner, algorithm supported, key tag and algorithm,
-  REVOKE (RFC 5011 §7), zone key bit, validity window in serial arithmetic (RFC 1982; edges inclusive, no
-  skew, `now` is Unix seconds truncated to 32 bits), then one `Budget` verification and the signature. The
-  kept TTL is the least of the `RRset`'s, the RRSIG record's, the original TTL and the seconds to expiration
-  (RFC 4035 §5.3.3). A wildcard expansion (RRSIG labels below the owner's, a leading `*` not counted; above is
-  `BadLabels`) is verified against `*.` and the rightmost labels, and `Verified::wildcard` returns the closest
-  encloser, which 06 asks 05 to prove the absence of a closer match for. `verify_any` tries every covering
-  RRSIG against every key of its signer, key tag and algorithm, and stops at the first success; at most 8
-  checks may fail per `RRset` (`MAX_FAILED`, as Unbound's `MAX_VALIDATE_RRSIGS`), then `TooManyFailures`, and
-  the shared `Budget` of D71 bounds the validation: its exhaustion is its own error, bogus (the KeyTrap
-  guidance). With none succeeding the error returned is the closest to success, in `SigError::rank` order. An
-  unusable key or an unsupported algorithm is `UnsupportedAlgorithm` (D71, RFC 6840 §5.2), and
-  `SigError::is_unsupported` tells it, and an unsupported DS digest, from the failures that are bogus: the
-  caller takes the data as insecure. `trusted_keys(dnskeys, sigs, ds, now, budget)` counts the DS records
-  whose digest type and algorithm are supported, ignores a SHA-1 DS where a stronger digest of the same key (key
-  tag and algorithm) is present (RFC 4509 §3: of the key, not of the `RRset`, so a SHA-1 DS of another key
-  still counts), matches them to the DNSKEYs by tag, algorithm and digest, and requires the DNSKEY `RRset` to
-  verify by one of those keys (RFC 4035 §5.2); a DS that matches no key is `NoKeyForDs`, bogus. Every `SigError`
-  maps to one EDE code (RFC 8914 §4) through `SigError::ede(&RrSet)`, whose text names the `RRset` and the key
-  tag: 1, 2, 6, 7, 8, 9 (missing and revoked keys), 10, 11, 25. Canonical form (RFC 4034 §6, RFC 6840 §5.1)
-  lowercases the owner and the names in the RDATA of the types of RFC 4034 §6.2 (NSEC's next name apart, the
-  RRSIG's signer included; A6 left out, historic, RFC 6563), sorts the RDATA as unsigned bytes and drops
-  duplicates (§6.3). The name layouts are a table in `rrsig/canonical.rs`, not those of `RData::Opaque`: that
-  list says where compression pointers may occur (RFC 3597 §4), and DNAME and KX are not in it.
+  in this order, the cheap checks first and nothing allocated before they pass: coverage (owner, class, type);
+  the signer at or above the owner, and not the owner for a DS (it belongs to the parent, RFC 4035 §2.4: the
+  child's own signature on it is the child vouching for itself) and the owner for a DNSKEY (§5.2); the labels
+  field neither above the owner's count (a leading `*` not counted) nor below the signer's (the expansion of a
+  wildcard of a zone above the signer's); algorithm supported; the key is the signer's, of the algorithm and
+  key tag; REVOKE (RFC 5011 §7); zone key bit; the validity window in serial arithmetic (RFC 1982; edges
+  inclusive, no skew, `now` is Unix seconds truncated to 32 bits); then one `Budget` verification and the
+  signature. The kept TTL is the least of the `RRset`'s, the RRSIG record's, the original TTL and the seconds to
+  expiration (RFC 4035 §5.3.3). A wildcard expansion (labels below the owner's) is verified against `*.` and the
+  rightmost labels, and `Verified::wildcard` returns the closest encloser; `Verified` is `must_use`, because a
+  wildcard answer proves nothing about the absence of a closer name, which 06 asks 05 to prove (RFC 4035
+  §5.3.4). Zone cuts are the caller's (06): `verify` knows the signer is above the owner, not that its DNSKEY
+  `RRset` is of the zone that holds the `RRset`; the caller picks the keys of the parent for a DS, of the child
+  for its apex DNSKEY, and of the zone below which the owner is not delegated further for the rest (a NS
+  `RRset` or glue under a cut is not signed by the child, RFC 4035 §2.2). `verify_any` tries every covering
+  RRSIG against every key of its signer, key tag and algorithm, and stops at the first success (RFC 6840 §5.4:
+  one valid RRSIG is enough, the others disregarded). An RRSIG whose algorithm is not supported is disregarded
+  whatever the keys (RFC 6840 §5.12), and so is the key no signature can use (D71, the 512-bit RSA key):
+  `verify_any` never says "unsupported". Which algorithms a zone is signed with is for its DS records (RFC 4035
+  §5.2, RFC 6840 §5.11), so only `trusted_keys` can find a zone insecure; otherwise one forged RRSIG of an
+  unknown algorithm beside a forged answer would downgrade a signed zone to insecure. This replaces D71's
+  "an unusable key makes the algorithm unsigned" for RRsets: an `RRset` whose RRSIGs are all disregarded is
+  `NoSignature`, bogus once its zone is known to be signed; a DS or DNSKEY of an unsupported algorithm is what
+  makes it insecure. A pair tried by `verify` alone still says `UnsupportedAlgorithm`. KeyTrap: at most 8
+  failures per `RRset` (`MAX_FAILED`, as Unbound's `MAX_VALIDATE_RRSIGS`), counting every RRSIG or RRSIG and key
+  pair that fails for whatever reason, cheap or costly, but the lack of a key (an RRSIG without a key costs
+  nothing and a zone may sign with keys we were not given); then `TooManyFailures`. The canonical RDATA is built
+  once per `RRset` and the owner and signed data once per RRSIG, not per pair. The shared `Budget` of D71
+  bounds the whole validation, its exhaustion its own error, bogus (the KeyTrap guidance). With none
+  succeeding the error returned is the closest to a success, in `SigError::rank` order. `trusted_keys(dnskeys,
+  sigs, ds, now, budget)` counts the DS records whose digest type and algorithm are supported (else
+  `UnsupportedDigest` or `UnsupportedAlgorithm` when none counts, which `SigError::is_unsupported` tells: the
+  zone is insecure, RFC 4035 §5.2, RFC 6840 §5.2), ignores a SHA-1 DS where a stronger digest of the same key
+  (key tag and algorithm) is present (RFC 4509 §3: of the key, not of the `RRset`, so a SHA-1 DS of another key
+  still counts), indexes the DS records by key tag and algorithm once, matches each DNSKEY by digest against
+  those of its tag and algorithm only, and requires the DNSKEY `RRset` to verify by one of those keys (RFC 4035
+  §5.2). A zone can publish many keys of one tag before its `RRset` is authenticated, so more than 8 keys that
+  match a tag and no digest are `TooManyFailures`; a DS that matches no key is `NoKeyForDs`, bogus. Every
+  `SigError` maps to one EDE code (RFC 8914 §4) through `SigError::ede(&RrSet)`, whose text names the `RRset`
+  and the key tag: 1, 2, 6, 7, 8, 9 (missing and revoked keys), 10, 11, 25. Canonical form (RFC 4034 §6, RFC
+  6840 §5.1) lowercases the owner and the names in the RDATA of the types of RFC 4034 §6.2 (NSEC's next name
+  apart, the RRSIG's signer included; A6 left out, historic, RFC 6563), sorts the RDATA as unsigned bytes and
+  drops duplicates (§6.3). The name layouts are a table in `rrsig/canonical.rs`, not those of `RData::Opaque`:
+  that list says where compression pointers may occur (RFC 3597 §4), and DNAME and KX are not in it.
   `WireRdata::wire` (`dedens-proto`) returns the RDATA uncompressed for it. Tests: RFC examples and the 00b
   captures, every signed `RRset` of them verifies, and fails 1 s after expiration, 1 s before inception and
-  with a byte of RDATA flipped (`tests/captured_rrsig.rs`); `benchmarks.md` has the cost of a whole `verify`.
-  RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for `example.com.`, which has 2: as an `RRset` it is `BadLabels`
-  (RFC 4035 §5.3.1), and `crypto` checks the signature over its bytes (`tests/rfc8080.rs`).
+  with a byte of RDATA flipped (`tests/captured_rrsig.rs`); `benchmarks.md` has the cost of a whole `verify`;
+  the fuzz target `rrsig_verify` runs the grouping, `verify_any` and `trusted_keys` over the records of any
+  message and asserts that no input makes data insecure. RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for
+  `example.com.`, which has 2: as an `RRset` it is `BadLabels` (RFC 4035 §5.3.1), and `crypto` checks the
+  signature over its bytes (`tests/rfc8080.rs`).
 
 ## Wire format
 

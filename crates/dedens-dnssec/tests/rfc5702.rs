@@ -353,17 +353,13 @@ fn rsasha512_example_verifies_as_an_rrset() {
 }
 
 #[test]
-fn a_key_of_512_bits_leaves_the_algorithm_unsupported() {
-    // D71: no usable key for the algorithm is unsigned for it (RFC 6840 §5.2), so the verdict is `insecure`.
+fn a_key_of_512_bits_is_no_key() {
+    // D71: a key no signature can use is no key, so its RRSIG is disregarded; the RRset is bogus, not insecure
+    // (D73: only DS records make a zone insecure, RFC 6840 §5.12).
     let (a, sigs, keys) = example_net(8, SHA256_KEY, SHA256_SIGNATURE, 9033);
     let error = check(&a, &sigs, &keys, INCEPTION).unwrap_err();
-    assert_eq!(
-        error,
-        SigError::UnsupportedAlgorithm {
-            algorithm: SecAlgorithm::RSASHA256
-        }
-    );
-    assert!(error.is_unsupported());
+    assert_eq!(error, SigError::NoKey { key_tag: 9033 });
+    assert!(!error.is_unsupported());
 }
 
 #[test]

@@ -1,9 +1,15 @@
-//! RFC 6840 §5.1 (the canonical form of RDATA, correcting RFC 4034 §6.2) and §5.11 (an RRSIG over an `RRset`
-//! of any type): which names of RDATA a signer lowercases.
+//! RFC 6840 §5.1 (the canonical form of RDATA, correcting RFC 4034 §6.2: which names of RDATA a signer
+//! lowercases), §5.4 (any one valid RRSIG is enough), §5.11 (any single valid path from the DS records) and §5.12
+//! (RRSIGs without a corresponding DNSKEY are disregarded).
 
 mod common;
 
-use common::{canonical_name, name, rrset};
+use common::{
+    RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rrsig, canonical_name, dnskey_rdata, name, rrset, rrsig_set,
+};
+use dedens_dnssec::crypto::{Budget, ds_digest, key_tag};
+use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
+use dedens_proto::DigestType;
 
 /// A name in wire form, in the case given.
 fn wire(text: &str) -> Vec<u8> {
@@ -124,4 +130,101 @@ fn the_records_are_sorted_after_their_names_are_lowercased() {
         set.canonical_rdatas(),
         [canonical_name("a.example."), canonical_name("b.example.")]
     );
+}
+
+// RFC 4035 Appendix A, `ns1.example.` signed by the key of tag 38519: 2004-04-09 to 2004-05-09.
+const INCEPTION: u32 = 1_081_535_779;
+const EXPIRATION: u32 = 1_084_127_779;
+
+fn ns1_rrsig(algorithm: u8, key_tag: u16, expiration: u32) -> Rrsig<'static> {
+    Rrsig {
+        type_covered: 1,
+        algorithm,
+        labels: 2,
+        original_ttl: 3600,
+        expiration,
+        inception: INCEPTION,
+        key_tag,
+        signer: "example.",
+    }
+}
+
+fn zsk() -> RrSet<'static> {
+    rrset("example.", 48, &[dnskey_rdata(256, 5, RFC4034_ZSK)])
+}
+
+#[test]
+fn s5_4_and_s5_12_one_valid_rrsig_is_enough_and_the_others_are_disregarded() {
+    let a = rrset("ns1.example.", 1, &[vec![192, 0, 2, 1]]);
+    let good = rrsig_set(
+        "ns1.example.",
+        &ns1_rrsig(5, 38519, EXPIRATION),
+        RFC4034_NS1_SIGNATURE,
+    );
+    let others = [
+        // §5.4: gibberish for a key we have, and a window that ended.
+        rrsig_set(
+            "ns1.example.",
+            &ns1_rrsig(5, 38519, INCEPTION + 1),
+            RFC4034_NS1_SIGNATURE,
+        ),
+        // §5.12: no DNSKEY of the tag, and an algorithm the DNSKEY RRset has none of.
+        rrsig_set(
+            "ns1.example.",
+            &ns1_rrsig(5, 1, EXPIRATION),
+            RFC4034_NS1_SIGNATURE,
+        ),
+        rrsig_set(
+            "ns1.example.",
+            &ns1_rrsig(200, 38519, EXPIRATION),
+            RFC4034_NS1_SIGNATURE,
+        ),
+        rrsig_set(
+            "ns1.example.",
+            &ns1_rrsig(8, 38519, EXPIRATION),
+            RFC4034_NS1_SIGNATURE,
+        ),
+    ];
+    for other in &others {
+        for sigs in [[&good, other], [other, &good]] {
+            let sigs: Vec<Signature<'_>> =
+                sigs.iter().flat_map(|set| Signature::all(set)).collect();
+            let result = rrsig::verify_any(
+                &a,
+                &sigs,
+                &Key::all(&zsk()),
+                INCEPTION + 100,
+                &mut Budget::default(),
+            );
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn s5_11_a_validator_accepts_any_single_valid_path_from_the_ds_records() {
+    // A DS RRset that signals a digest we do not support beside one that we do: the supported one is the path.
+    let key = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let ds = |digest_type: DigestType, digest: &[u8]| {
+        let mut rdata = key_tag(&key).to_be_bytes().to_vec();
+        rdata.extend([5, digest_type.0]);
+        rdata.extend(digest);
+        rdata
+    };
+    let sha256 = ds_digest(DigestType::SHA256, &name("example."), &key).expect("supported");
+    let keys = zsk();
+    let trust =
+        |ds: &RrSet<'_>| rrsig::trusted_keys(&keys, &[], ds, INCEPTION, &mut Budget::default());
+    let both = rrset(
+        "example.",
+        43,
+        &[
+            ds(DigestType::GOST, &[0; 32]),
+            ds(DigestType::SHA256, sha256.as_ref()),
+        ],
+    );
+    // The path is found; nothing signs the DNSKEY RRset here.
+    assert_eq!(trust(&both), Err(SigError::NoSignature));
+    let gost = rrset("example.", 43, &[ds(DigestType::GOST, &[0; 32])]);
+    assert!(trust(&gost).unwrap_err().is_unsupported());
 }

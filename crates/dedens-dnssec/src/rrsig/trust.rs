@@ -1,27 +1,30 @@
 //! Trusting a DNSKEY `RRset` because the parent's DS `RRset` vouches for it (RFC 4035 §5.2).
 
+use std::collections::{HashMap, HashSet};
+
 use dedens_proto::rdata::Ds;
-use dedens_proto::{DigestType, RData};
+use dedens_proto::{DigestType, RData, SecAlgorithm};
 
 use super::error::SigError;
 use super::rrset::{Key, RrSet, Signature};
-use super::verify::{Verified, verify_any};
+use super::verify::{MAX_FAILED, Verified, verify_any};
 use crate::crypto::{self, Budget};
 
 /// Whether the digest of `ds` is that of `key`.
 fn vouches(ds: &Ds<'_>, key: &Key<'_>) -> bool {
-    ds.key_tag() == key.tag
-        && ds.algorithm() == key.dnskey.algorithm()
-        && crypto::ds_digest(ds.digest_type(), key.owner, &key.wire)
-            .is_ok_and(|digest| digest.as_ref() == ds.digest())
+    crypto::ds_digest(ds.digest_type(), key.owner, &key.wire)
+        .is_ok_and(|digest| digest.as_ref() == ds.digest())
 }
 
-/// Authenticates `dnskeys`, the DNSKEY `RRset` of a zone, from its DS `RRset` `ds`: the DNSKEYs a supported DS
-/// record digests must sign it (`sigs` hold its RRSIGs). On success every key of the `RRset` is trusted
-/// (RFC 4035 §5.2).
+/// Authenticates `dnskeys`, the DNSKEY `RRset` of a zone, from its DS `RRset` `ds`, itself authenticated by the
+/// parent: the DNSKEYs a supported DS record digests must sign it (`sigs` hold its RRSIGs). On success every key
+/// of the `RRset` is trusted (RFC 4035 §5.2).
 ///
 /// A DS record counts when its digest type and algorithm are supported (RFC 6840 §5.2), and a SHA-1 digest is
-/// ignored when a stronger one of the same key (key tag and algorithm) is there (RFC 4509 §3, D73).
+/// ignored when a stronger one of the same key (key tag and algorithm) is there (RFC 4509 §3, D73). DS records
+/// are indexed by key tag and algorithm once, so the digests computed are one per DNSKEY and DS record that
+/// share both; as a DNSKEY `RRset` is not authenticated yet, more than [`MAX_FAILED`] of them of another
+/// key (a colliding key tag) are refused: the answer is [`SigError::TooManyFailures`].
 ///
 /// # Errors
 ///
@@ -56,24 +59,37 @@ pub fn trusted_keys(
     if counted.is_empty() {
         return Err(unsupported.unwrap_or(SigError::NoKeyForDs));
     }
-    let stronger = |ds: &Ds<'_>| {
-        counted.iter().any(|other| {
-            other.digest_type() != DigestType::SHA1
-                && other.key_tag() == ds.key_tag()
-                && other.algorithm() == ds.algorithm()
-        })
-    };
-    let keys: Vec<Key<'_>> = Key::all(dnskeys)
-        .into_iter()
-        .filter(|key| {
-            ds.owner() == key.owner
-                && ds.class() == key.class
-                && counted
-                    .iter()
-                    .filter(|ds| ds.digest_type() != DigestType::SHA1 || !stronger(ds))
-                    .any(|ds| vouches(ds, key))
-        })
+    // The keys with a stronger digest than SHA-1, so that a SHA-1 DS of such a key is dropped.
+    let stronger: HashSet<(u16, SecAlgorithm)> = counted
+        .iter()
+        .filter(|ds| ds.digest_type() != DigestType::SHA1)
+        .map(|ds| (ds.key_tag(), ds.algorithm()))
         .collect();
+    let mut by_key: HashMap<(u16, SecAlgorithm), Vec<&Ds<'_>>> = HashMap::new();
+    for record in &counted {
+        let key = (record.key_tag(), record.algorithm());
+        if record.digest_type() != DigestType::SHA1 || !stronger.contains(&key) {
+            by_key.entry(key).or_default().push(record);
+        }
+    }
+    let mut failed = 0;
+    let mut keys = Vec::new();
+    for key in Key::all(dnskeys) {
+        if ds.owner() != key.owner || ds.class() != key.class {
+            continue;
+        }
+        let Some(candidates) = by_key.get(&(key.tag, key.dnskey.algorithm())) else {
+            continue;
+        };
+        if candidates.iter().any(|ds| vouches(ds, &key)) {
+            keys.push(key);
+        } else {
+            failed += 1;
+            if failed > MAX_FAILED {
+                return Err(SigError::TooManyFailures);
+            }
+        }
+    }
     if keys.is_empty() {
         return Err(SigError::NoKeyForDs);
     }

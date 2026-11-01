@@ -8,15 +8,19 @@ use crate::crypto::BudgetExhausted;
 
 /// Why an `RRset` is not authenticated by a signature or a DS record.
 ///
-/// [`SigError::is_unsupported`] tells the cases that are no proof of forgery: nothing the validator supports
-/// signs the data, so it is insecure, not bogus (RFC 4035 §5.2, RFC 6840 §5.2).
+/// [`SigError::is_unsupported`] tells the cases that are no proof of forgery: the DS records of a zone name
+/// nothing the validator supports, so the zone is insecure, not bogus (RFC 4035 §5.2, RFC 6840 §5.2). Only
+/// [`trusted_keys`](super::trusted_keys) gives them: an RRSIG of an unsupported algorithm is disregarded by
+/// [`verify_any`](super::verify_any) (RFC 6840 §5.12), or the downgrade of a signed zone would be one forged
+/// RRSIG away.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SigError {
     /// No RRSIG covers the `RRset` (RFC 4035 §5.3.1).
     #[error("no RRSIG covers it")]
     NoSignature,
-    /// No DNSKEY has the signer, algorithm and key tag of an RRSIG (RFC 4035 §5.3.1).
+    /// No DNSKEY has the signer, algorithm and key tag of an RRSIG, or the one that has cannot be used by any
+    /// signature (D71) (RFC 4035 §5.3.1).
     #[error("no DNSKEY of key tag {key_tag}")]
     NoKey {
         /// The key tag the RRSIG names.
@@ -25,16 +29,20 @@ pub enum SigError {
     /// No DNSKEY is the one a supported DS record digests (RFC 4035 §5.2).
     #[error("no DNSKEY matches a DS record")]
     NoKeyForDs,
-    /// The labels field of the RRSIG is more than the owner has labels (RFC 4035 §5.3.1).
-    #[error("RRSIG labels field {labels} is more than the {owner} labels of the owner")]
+    /// The labels field of the RRSIG is more than the owner has labels (RFC 4035 §5.3.1), or less than the
+    /// signer has (the expansion would be of a wildcard above the signer's zone).
+    #[error(
+        "RRSIG labels field {labels} does not fit the {owner} labels of the owner and the signer"
+    )]
     BadLabels {
         /// The labels field.
         labels: u8,
         /// The labels of the owner, without a leading `*`.
         owner: usize,
     },
-    /// The signer is not the owner or one of its parents (RFC 4035 §5.3.1).
-    #[error("RRSIG signer is not at or above the owner")]
+    /// The signer is not the owner or one of its parents (RFC 4035 §5.3.1), is the owner of a DS (which belongs
+    /// to the parent zone, RFC 4035 §2.4) or is not the owner of a DNSKEY (RFC 4035 §5.2).
+    #[error("RRSIG signer cannot sign the RRset")]
     BadSigner,
     /// The DNSKEY has the REVOKE bit (RFC 5011 §7).
     #[error("DNSKEY {key_tag} is revoked")]
@@ -48,8 +56,8 @@ pub enum SigError {
         /// The key tag.
         key_tag: u16,
     },
-    /// The signature's algorithm, or the algorithm of a key no signature can use (D71), is not validated
-    /// (RFC 9904 §3), so the data is unsigned for it (RFC 6840 §5.2).
+    /// The algorithm of a DS record, or of a signature checked alone with [`verify`](super::verify()), is not
+    /// validated (RFC 9904 §3), so the data is unsigned for it (RFC 6840 §5.2).
     #[error("algorithm {algorithm} is not supported")]
     UnsupportedAlgorithm {
         /// The algorithm.
@@ -99,7 +107,8 @@ pub enum SigError {
 }
 
 impl SigError {
-    /// Whether the data counts as unsigned, so insecure, not bogus (RFC 6840 §5.2).
+    /// Whether the zone counts as unsigned, so insecure, not bogus (RFC 6840 §5.2): what `trusted_keys` says of
+    /// DS records that name nothing supported. Not a verdict of `verify_any`, which never gives it (D73).
     #[must_use]
     pub const fn is_unsupported(&self) -> bool {
         matches!(

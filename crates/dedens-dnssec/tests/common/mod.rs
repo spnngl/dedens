@@ -101,6 +101,17 @@ pub fn try_records(
     ttl: u32,
     rdatas: &[Vec<u8>],
 ) -> Option<Vec<Record<'static>>> {
+    try_records_in(1, owner, rtype, ttl, rdatas)
+}
+
+/// [`try_records`] of class `class` (1 is IN).
+pub fn try_records_in(
+    class: u16,
+    owner: &str,
+    rtype: u16,
+    ttl: u32,
+    rdatas: &[Vec<u8>],
+) -> Option<Vec<Record<'static>>> {
     let mut wire = vec![0; 6];
     wire.extend(
         u16::try_from(rdatas.len())
@@ -111,7 +122,7 @@ pub fn try_records(
     for rdata in rdatas {
         wire.extend(name(owner).to_wire(&mut [0; MAX_NAME_LEN]));
         wire.extend(rtype.to_be_bytes());
-        wire.extend(1_u16.to_be_bytes());
+        wire.extend(class.to_be_bytes());
         wire.extend(ttl.to_be_bytes());
         wire.extend(
             u16::try_from(rdata.len())
@@ -150,6 +161,12 @@ pub fn check(
         now,
         &mut Budget::default(),
     )
+}
+
+/// An `RRset` of class `class` (1 is IN), as [`rrset`].
+pub fn rrset_in(class: u16, owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
+    let records = try_records_in(class, owner, rtype, 3600, rdatas).expect("decodes");
+    RrSet::group(&records).pop().expect("one RRset")
 }
 
 /// An `RRset` of the records `rdatas` at `owner`, TTL 3600.

@@ -11,8 +11,8 @@ use common::{
     ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, check, dnskey_rdata, hex, name, rrset,
     rrsig_set, signed_data,
 };
-use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, supported, verify};
-use dedens_dnssec::rrsig::SigError;
+use dedens_dnssec::crypto::{Budget, VerifyError, ds_digest, key_tag, supported, verify};
+use dedens_dnssec::rrsig::{self, Key, SigError, Signature};
 use dedens_proto::{DigestType, SecAlgorithm};
 
 const ED25519_DS_1: &str = "3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79
@@ -238,6 +238,7 @@ fn an_ed448_key_leaves_the_algorithm_unsupported() {
     mx.extend(common::canonical_name("mail.example.com."));
     let sigs = rrsig_set("example.com.", &rrsig, ED448_SIGNATURE);
     let keys = rrset("example.com.", 48, &[dnskey_rdata(257, 16, ED448_KEY)]);
+    let mx_rdata = mx.clone();
     let error = check(
         &rrset("example.com.", 15, &[mx]),
         &sigs,
@@ -245,11 +246,24 @@ fn an_ed448_key_leaves_the_algorithm_unsupported() {
         1_438_207_200,
     )
     .unwrap_err();
+    // RFC 6840 §5.12: an RRSIG of an unsupported algorithm is disregarded, so a forger cannot make the data
+    // insecure by it; the DS records of the zone do (D73).
+    assert_eq!(error, SigError::NoSignature);
+    assert!(!error.is_unsupported());
+    // Checked alone, the pair says why.
+    let rrset = rrset("example.com.", 15, &[mx_rdata]);
+    let (sig, key) = (Signature::all(&sigs), Key::all(&keys));
     assert_eq!(
-        error,
+        rrsig::verify(
+            &rrset,
+            &sig[0],
+            &key[0],
+            1_438_207_200,
+            &mut Budget::default()
+        )
+        .unwrap_err(),
         SigError::UnsupportedAlgorithm {
             algorithm: SecAlgorithm::ED448
         }
     );
-    assert!(error.is_unsupported());
 }
