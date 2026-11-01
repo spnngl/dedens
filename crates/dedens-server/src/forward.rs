@@ -68,6 +68,12 @@ impl Forward {
         self.validation.is_some()
     }
 
+    /// The [`Validating::tagged`] name of the validation, `None` when the stage does not validate.
+    #[must_use]
+    pub fn validation_tag(&self) -> Option<&str> {
+        self.validation.as_ref().map(Validating::tag)
+    }
+
     pub(crate) const fn validation(&self) -> Option<&Validating> {
         self.validation.as_ref()
     }

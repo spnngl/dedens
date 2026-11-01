@@ -35,6 +35,7 @@ pub struct Validating {
     validator: Validator,
     clock: Clock,
     metrics: Metrics,
+    tag: Arc<str>,
 }
 
 impl fmt::Debug for Validating {
@@ -53,7 +54,21 @@ impl Validating {
             validator,
             clock,
             metrics: Metrics::new(),
+            tag: Arc::from(""),
         }
+    }
+
+    /// Names the settings of the validator, the trust anchors and what else it was built from, which it cannot
+    /// tell: [`Forward::validation_tag`](crate::Forward::validation_tag) gives it back, for a caller to tell
+    /// whether two forward stages validate the same way.
+    #[must_use]
+    pub fn tagged(mut self, tag: &str) -> Self {
+        self.tag = Arc::from(tag);
+        self
+    }
+
+    pub(crate) fn tag(&self) -> &str {
+        &self.tag
     }
 
     pub(crate) const fn metrics(&self) -> &Metrics {

@@ -514,6 +514,9 @@ pub(crate) fn read(
     if let Some(name) = stages.keys().next() {
         bail!("stage `{name}` is defined but not listed in `pipeline`");
     }
+    // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
+    // validator, or none, does not stand behind them (D77).
+    flush(&mut built, previous)?;
     Ok(Config {
         listen: file.listen,
         presented,
@@ -523,6 +526,37 @@ pub(crate) fn read(
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
+}
+
+/// Replaces the cache stages of `built` that are those of `previous` with empty ones when the forward stages
+/// validate differently.
+fn flush(built: &mut [Stage], previous: &Pipeline) -> anyhow::Result<()> {
+    if validations(previous.stages()) == validations(built) {
+        return Ok(());
+    }
+    for stage in built {
+        if let Stage::Cache(kept) = stage
+            && previous
+                .stages()
+                .iter()
+                .any(|old| matches!(old, Stage::Cache(old) if Arc::ptr_eq(old, kept)))
+        {
+            *kept = Arc::new(Cache::new(kept.config().clone()).context("the cache stage")?);
+        }
+    }
+    Ok(())
+}
+
+/// How each forward stage of `stages` validates, in order: a cache stage built before is only good for the verdicts
+/// it was filled with.
+fn validations(stages: &[Stage]) -> Vec<Option<&str>> {
+    stages
+        .iter()
+        .filter_map(|stage| match stage {
+            Stage::Forward(forward) => Some(forward.validation_tag()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The cache stage `name` of `config`: the one of `previous` while its settings stay, so that a reload keeps the
@@ -637,27 +671,34 @@ impl TryFrom<DnssecText> for Dnssec {
 ///
 /// A `trust_anchors` file that does not read or holds no anchor.
 fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::Result<Validating> {
+    let mut tag = String::from("validate");
     let mut anchors = match trust_anchors {
         None => TrustAnchors::root(),
         Some(path) => {
             let text = fs::read_to_string(path)
                 .with_context(|| format!("`trust_anchors`: cannot read {}", path.display()))?;
+            tag.push_str("\nanchors ");
+            tag.push_str(&text);
             TrustAnchors::read(&text)
                 .with_context(|| format!("`trust_anchors`: {}", path.display()))?
         }
     };
     for Insecure(name) in insecure {
+        tag.push_str("\ninsecure ");
+        tag.push_str(&name.to_string());
         anchors.add_negative(name);
     }
     let clock = || {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs())
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+            |error| {
+                // Time 0 fails closed: no signature is valid yet.
+                tracing::error!(%error, "the system clock is before the Unix epoch");
+                0
+            },
+            |elapsed| elapsed.as_secs(),
+        )
     };
-    Ok(Validating::new(
-        Validator::new(anchors, Limits::default()),
-        Arc::new(clock),
-    ))
+    Ok(Validating::new(Validator::new(anchors, Limits::default()), Arc::new(clock)).tagged(&tag))
 }
 
 /// The Oblivious `DoH` target settings of `odoh`, if any (D79). The key is not read: a reload builds this again, and
@@ -1271,6 +1312,49 @@ mod tests {
             .unwrap()
             .pipeline;
         assert!(!Arc::ptr_eq(&cache(&same), &cache(&changed)));
+    }
+
+    /// D77: answers kept across a reload were stored under the old verdicts: the cache is kept only while the
+    /// forward stages validate the same way.
+    #[test]
+    fn a_reload_flushes_the_cache_when_validation_changes() {
+        let text = |forward: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n{forward}"
+            )
+        };
+        let cache = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Cache(cache)) => Arc::clone(cache),
+            stage => unreachable!("{stage:?}"),
+        };
+        let off = read(&text(""), env, &Pipeline::default()).unwrap().pipeline;
+        let validate = read(&text("    dnssec: validate\n"), env, &off)
+            .unwrap()
+            .pipeline;
+        assert!(
+            !Arc::ptr_eq(&cache(&off), &cache(&validate)),
+            "off to validate"
+        );
+        let same = read(&text("    dnssec: validate\n"), env, &validate)
+            .unwrap()
+            .pipeline;
+        assert!(Arc::ptr_eq(&cache(&validate), &cache(&same)), "unchanged");
+        let insecure = read(
+            &text("    dnssec: validate\n    insecure: [corp.example]\n"),
+            env,
+            &same,
+        )
+        .unwrap()
+        .pipeline;
+        assert!(
+            !Arc::ptr_eq(&cache(&same), &cache(&insecure)),
+            "negative anchor added"
+        );
+        let back = read(&text(""), env, &insecure).unwrap().pipeline;
+        assert!(
+            !Arc::ptr_eq(&cache(&insecure), &cache(&back)),
+            "validate to off"
+        );
     }
 
     #[test]
