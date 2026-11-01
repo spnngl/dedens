@@ -246,6 +246,114 @@ fn a_secure_answer_loses_its_additional_section() {
     assert_eq!(reply.additional, []);
 }
 
+/// A record of class IN owned by `owner` with `data`.
+fn record(owner: &str, ttl: u32, data: &dedens_proto::RData<'_>) -> dedens_proto::Record<'static> {
+    dedens_proto::Record {
+        name: common::dns(owner),
+        class: dedens_proto::Class::IN,
+        ttl: dedens_proto::Ttl::from_wire(ttl),
+        rdata: dedens_proto::WireRdata::new(data),
+    }
+}
+
+/// D77, D75: the validator ignores what is not on the name path of the answer; a record the verdict says nothing
+/// of is neither served under AD nor cached as secure: unrelated sets, signatures that sign nothing, authority
+/// sets that are not at or above the answer, other classes.
+#[test]
+fn a_secure_answer_is_cut_to_what_was_verified() {
+    let mut message = decode(&Captures::get("alg13_a")).into_owned();
+    let a = message.answer[0].clone();
+    let foreign = |owner: &str| dedens_proto::Record {
+        name: common::dns(owner),
+        ..a.clone()
+    };
+    let signature = message
+        .answer
+        .iter()
+        .find(|record| record.rtype() == RecordType::RRSIG)
+        .expect("a signature")
+        .clone();
+    let ns = record(
+        "unrelated.example.",
+        300,
+        &dedens_proto::RData::Cname(common::dns("evil.example.")),
+    );
+    let genuine = message.answer.len();
+    message.answer.push(foreign("other.example."));
+    message.answer.push(dedens_proto::Record {
+        name: common::dns("other.example."),
+        ..signature.clone()
+    });
+    message.answer.push(dedens_proto::Record {
+        name: common::dns("orphan.cloudflare.com."),
+        ..signature
+    });
+    message.answer.push(dedens_proto::Record {
+        class: dedens_proto::Class::CH,
+        ..a.clone()
+    });
+    message.authority.push(ns);
+    message.authority.push(foreign("cloudflare.net."));
+    let captures = Captures::new().with(common::wire(&message));
+    let pipeline = validating();
+    for round in 0..2 {
+        let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+        let done = run_captured(&pipeline, &query, round, &captures);
+        assert_eq!(done.requests.is_empty(), round == 1, "the second is a hit");
+        let wire = done.reply.expect("a reply");
+        let reply = decode(&wire);
+        assert!(reply.header.flags.contains(Flags::AD));
+        assert_eq!(reply.answer.len(), genuine, "{:?}", reply.answer);
+        assert_eq!(reply.authority, [], "round {round}");
+        assert!(
+            reply
+                .answer
+                .iter()
+                .all(|record| record.name == common::dns("cloudflare.com."))
+        );
+    }
+}
+
+/// RFC 6672 §3.1, D75: the validator takes a CNAME set whose first record is what the DNAME makes for the
+/// synthesized one and does not verify the others: they are not served under AD.
+#[test]
+fn only_the_cname_a_dname_makes_is_served_under_ad() {
+    let mut message = decode(&Captures::get("dname_answer")).into_owned();
+    let at = message
+        .answer
+        .iter()
+        .position(|record| record.rtype() == RecordType::CNAME)
+        .expect("the synthesized CNAME");
+    let evil = dedens_proto::Record {
+        rdata: dedens_proto::WireRdata::new(&dedens_proto::RData::Cname(common::dns(
+            "evil.example.",
+        ))),
+        ..message.answer[at].clone()
+    };
+    message.answer.insert(at + 1, evil);
+    let captures = Captures::new().with(common::wire(&message));
+    let query = client_query(
+        "www.dname.sidnlabs.nl.",
+        RecordType::AAAA,
+        Flags::NONE,
+        true,
+    );
+    let done = run_captured(&validating(), &query, 0, &captures);
+    let wire = done.reply.expect("a reply");
+    let reply = decode(&wire);
+    assert!(reply.header.flags.contains(Flags::AD));
+    let cnames: Vec<_> = reply
+        .answer
+        .iter()
+        .filter(|record| record.rtype() == RecordType::CNAME)
+        .collect();
+    assert_eq!(cnames.len(), 1, "{cnames:?}");
+    assert_ne!(
+        cnames[0].data(),
+        dedens_proto::RData::Cname(common::dns("evil.example."))
+    );
+}
+
 /// §4.3: no verdict, for lack of an answer to a question of the validator's: SERVFAIL, held for the next query.
 #[test]
 fn no_verdict_is_servfail_and_held() {

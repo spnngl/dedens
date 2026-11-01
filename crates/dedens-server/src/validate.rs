@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use dedens_dnssec::validator::{Next, Validation, Validator, Verdict};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Class, Decoded, Flags, Message, Question, RecordType, Ttl};
+use dedens_proto::{Decoded, Flags, Message, Question, RecordType, Ttl};
 
+use crate::bailiwick;
 use crate::metrics::Metrics;
 
 /// Seconds since the Unix epoch, as signatures count them: read each time a response starts being validated.
@@ -202,9 +203,8 @@ impl Check {
 /// Makes `message`, upstream's response, what the client of `outcome` gets (RFC 4035 §3.2): AD set for a secure
 /// one only, clear otherwise, whatever upstream said (RFC 6840 §5.8).
 ///
-/// A secure response is cut to what the verdict covers: IN records of the answer and authority sections, not the
-/// additional section (RFC 4035 §3.2.3). The unsigned CNAME of a DNAME stays: the validator only accepts the one
-/// the DNAME makes. The records' TTL is at most `cap`. A client without DO gets no signature nor denial record
+/// A secure response is cut to what the verdict covers, by [`bailiwick::cut`]: not the additional section (RFC 4035
+/// §3.2.3), nor a set the validator ignored. The unsigned CNAME of a DNAME stays, the one record the DNAME makes. The records' TTL is at most `cap`. A client without DO gets no signature nor denial record
 /// it did not ask for (RFC 4035 §3.2.1).
 pub(crate) fn present(
     message: &mut Message<'static>,
@@ -214,9 +214,7 @@ pub(crate) fn present(
 ) {
     let secure = outcome == Outcome::Secure;
     if secure {
-        message.additional.clear();
-        message.answer.retain(|record| record.class == Class::IN);
-        message.authority.retain(|record| record.class == Class::IN);
+        bailiwick::cut(message);
     }
     if let Some(cap) = cap {
         for record in message
