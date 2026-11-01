@@ -91,6 +91,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 9180](https://datatracker.ietf.org/doc/html/rfc9180):** Hybrid Public Key Encryption (HPKE), for ODoH
 * **[RFC 9209](https://datatracker.ietf.org/doc/html/rfc9209):** The Proxy-Status HTTP Response Header Field, the errors of an ODoH proxy
 * **[RFC 9230](https://datatracker.ietf.org/doc/html/rfc9230):** Oblivious DNS over HTTPS (ODoH, Experimental), optional, after DoH
+* **[RFC 9221](https://datatracker.ietf.org/doc/html/rfc9221):** An Unreliable Datagram Extension to QUIC, only its transport parameter: DoQ uses streams, so no endpoint advertises datagram support
 * **[RFC 9250](https://datatracker.ietf.org/doc/html/rfc9250):** DNS over Dedicated QUIC Connections (DoQ)
 * **[RFC 9461](https://datatracker.ietf.org/doc/html/rfc9461):** Service Binding Mapping for DNS Servers
 * **[RFC 9462](https://datatracker.ietf.org/doc/html/rfc9462):** Discovery of Designated Resolvers (DDR)

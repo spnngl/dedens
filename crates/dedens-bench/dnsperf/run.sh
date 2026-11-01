@@ -3,7 +3,9 @@
 # (default HEAD) against the working tree, two rounds each, in mode $2: udp (the default) or tcp, the cache
 # answering every query after the first, which goes to 1.1.1.1 (the network is needed for those); or forward or
 # forward-tcp, over UDP or TCP without a cache, every query going upstream over the same transport to a second
-# dedensd (the working tree's, on its own core) answering from its cache. Runs inside the container `just bench-dnsperf` starts, with the repository at /src
+# dedensd (the working tree's, on its own core) answering from its cache; or two-sockets, the cache answering on two
+# UDP ports of the one core, the first flooded by dnsperf, the second asked at 2000 queries/s: the latency of the
+# second (D107) and the queries the flood lost. Runs inside the container `just bench-dnsperf` starts, with the repository at /src
 # (read-only), a target directory at /target.
 set -euo pipefail
 base="${1:-HEAD}"
@@ -49,7 +51,18 @@ stages:
     type: forward
     servers: ['127.0.0.1:5400']
 EOF
+cat >/two.yaml <<'EOF'
+listen: ['127.0.0.1:5399', '127.0.0.1:5398']
+pipeline: [cache, up]
+stages:
+  cache:
+    type: cache
+  up:
+    type: forward
+    servers: ['1.1.1.1']
+EOF
 config=/perf.yaml transport="$mode"
+[[ $mode == two-sockets ]] && config=/two.yaml transport=udp
 if [[ $mode == forward* ]]; then
     config=/front.yaml transport=udp
     [[ $mode == forward-tcp ]] && transport=tcp
@@ -63,8 +76,18 @@ for round in 1 2; do
         sleep 1
         dig +short @127.0.0.1 -p 5399 example.com A iana.org MX example.org A www.example.com AAAA >/dev/null
         printf '%s, round %s:' "$bin" "$round"
-        taskset -c 1-6 dnsperf -m "$transport" -s 127.0.0.1 -p 5399 -d /queries.txt -l 10 -c 8 -T 4 -q 500 |
-            grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
+        if [[ $mode == two-sockets ]]; then
+            taskset -c 1-5 dnsperf -m udp -s 127.0.0.1 -p 5399 -d /queries.txt -l 12 -c 8 -T 4 -q 500 >/flood.txt &
+            flood=$!
+            sleep 1
+            taskset -c 6 dnsperf -m udp -s 127.0.0.1 -p 5398 -d /queries.txt -l 10 -c 1 -T 1 -Q 2000 -q 100 |
+                grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
+            wait "$flood"
+            grep -E 'lost' /flood.txt | tr -s ' ' | sed 's/^/ flood:/'
+        else
+            taskset -c 1-6 dnsperf -m "$transport" -s 127.0.0.1 -p 5399 -d /queries.txt -l 10 -c 8 -T 4 -q 500 |
+                grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
+        fi
         echo
         kill "$pid"
         wait "$pid" 2>/dev/null || true

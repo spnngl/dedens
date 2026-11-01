@@ -1299,8 +1299,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   it, each counting it as a lost try; errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
-- D51 The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
-  Linux 5.19): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
+- D51 (amended by D107) The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
+  Linux 5.19, the floor for `io_uring`: older kernels serve on `poll`, with a warning at start, D107): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
   forwarding 155k → 82k).
@@ -1343,9 +1343,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     without names of one label or starting with `localhost`: such files open with their host's own entries
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
     Formats, duplicates and the allowlist in D56.
-- D55 (amended by D64) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+- D55 (amended by D64, D107) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
-  before each query (one atomic load) and takes the new pipeline under a lock only when it changed, holding it in
+  before each query (one atomic load) and takes the new pipeline under a lock only when it changed (a thread no query reaches takes it when woken by the reload, D107), holding it in
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
   started on. The cache stage is an `Arc<Cache>` kept while its settings are unchanged, else a new empty one. A
   file that does not read, or a hosts or blocklist file it names, leaves the running pipeline and logs an error;
@@ -1412,7 +1412,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   day, fails, so a list that stops or resumes shows. A list `dedensd` does not read is checked on its first
   MiB, its format being in every line. Dates are parsed by hand in the test, a date crate being a dependency for
   three formats.
-- D64 Review fixes to D44, D47, D54, D55 and D57.
+- D64 (amended by D107) Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
     connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
@@ -1616,6 +1616,39 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
   table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
   `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
+- D107 (amends D51, D55, D64) Runtime fixes of audit step 04.
+  - QUIC datagrams (RFC 9221 §3): both the server (`endpoint`) and `Dialer` set `datagram_receive_buffer_size(None)`.
+    quinn's default of 1.25 MB made both advertise `max_datagram_frame_size` and buffer DATAGRAM frames nothing
+    reads (RFC 9250 uses streams alone). Now a peer sees `max_datagram_size()` as `None`, which the tests check
+    (`tests/rfc9221.rs` of `dedens-net` and `dedensd`). That quinn then closes the connection on a DATAGRAM frame
+    (PROTOCOL_VIOLATION, as RFC 9221 §3 requires) is its behaviour, not tested here.
+  - Driver (amends D51): Linux 5.19 is the floor for `io_uring` (`COOP_TASKRUN` and `TASKRUN_FLAG`), with no retry
+    without those flags on EINVAL. compio falls back to `poll` when the ring cannot be made (before 5.19, a
+    seccomp filter, `kernel.io_uring_disabled`), with a `warn!` nobody sees, so the "serving" event has a `driver`
+    field (`io_uring`, `poll`, or `mixed` if the threads differ), and on Linux a thread on `poll` is a warning at
+    start, with the count of threads on it. compio's own logging (its `enable_log` feature) stays off: it
+    instruments the driver's hot path, unmeasured. `tests/serve.rs` expects `io_uring` on Linux, unless
+    `DEDENS_TEST_ALLOW_POLL` is set (a container whose seccomp filter refuses it); the fallback itself is not
+    tested, as it needs a kernel or a filter refusing the ring.
+  - UDP receive (amends D64): the pause after a failed receive is per task, and the lock on the socket's stream is
+    released before it, so the socket's other tasks keep receiving. A first error is retried at once and a second
+    in a row after 100 ms, as D64 has it. `ResourceBusy` (`ENOBUFS`: the pool's 256 buffers, D49, are held by
+    datagrams the kernel filled and the tasks have not read) is no failure but a wait for the tasks to read:
+    `Receiving`, per task, yields 4 times, then sleeps 1 ms between tries, reset by a datagram. Yielding alone
+    spins: on `io_uring` each retry is a submission the kernel refuses at once while the pool is empty.
+    `just bench-dnsperf BASE two-sockets` (one core, two UDP ports, the first flooded, the second asked at 2000
+    queries/s, `docs/benchmarks.md`) shows no loss and the same latency before and after (0.3 ms on average, 10-13 ms
+    at most): the flood never emptied the pool, so it does not reach the case; the unit tests do.
+  - A runtime is never dropped (`ManuallyDrop` in the thread's closure, `main.rs`): dropping one on a thread that
+    panicked or failed closes the ring and frees the buffers of operations the kernel may still write to, while the
+    other threads serve on. The process ends right after the first thread does, and the kernel then closes the
+    ring. No `unsafe`: `ManuallyDrop` is safe, a leak being so.
+  - Reloads (amends D55, D64): `Current::replace` also wakes each thread, through a `flume` channel of one per
+    thread (`Current::follow`, which subscribes before it reads the generation and the pipeline); a `follow` task
+    per thread takes the new pipeline on it. An idle thread held the old one, its lists included (about 110 MB with
+    the largest), until its next query. The hot path is unchanged: one atomic load of the generation per query, no
+    bench needed. Rejected: a periodic check (a wake-up per thread each period for nothing, and the old one held
+    till the next).
 
 - D106 (amends D71, D74, D75, D77) Validation cost counts what it costs: the debt of the admission bucket stops at
   one burst and a query in debt asks no more, and NSEC3 hashing is counted in SHA-1 blocks, as the salt and the name

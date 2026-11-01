@@ -227,6 +227,8 @@ pub(crate) struct Server {
     pub(crate) config: PathBuf,
     /// Its events, one JSON object a line on stderr (D30).
     events: mpsc::Receiver<Value>,
+    /// The "serving" event that announced it.
+    pub(crate) serving: Value,
 }
 
 impl Drop for Server {
@@ -275,8 +277,10 @@ impl Server {
                 addr,
                 config,
                 events,
+                serving: Value::Null,
             };
-            if server.event("serving").is_some() {
+            if let Some(serving) = server.event("serving") {
+                server.serving = serving;
                 return server;
             }
             let _ = server.child.wait();
