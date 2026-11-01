@@ -4,10 +4,11 @@
 mod common;
 
 use common::{
-    P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE, Rr, Rrsig, b64, dnskey_rdata, hex, name,
-    signed_data,
+    P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE, Rr, Rrsig, b64, check, dnskey_rdata, hex,
+    name, rrset, rrsig_set, signed_data,
 };
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, verify};
+use dedens_dnssec::rrsig::{RrSet, SigError};
 use dedens_proto::{DigestType, SecAlgorithm};
 
 const P256_DS: &str = "b4c8c1fe2e7477127b27115656ad6256f424625bf5c1
@@ -203,4 +204,73 @@ fn ds_digests_are_the_rfcs() {
     let p384 =
         ds_digest(DigestType::SHA384, &owner, &dnskey_rdata(257, 14, P384_KEY)).expect("SHA-384");
     assert_eq!(p384.as_ref(), hex(P384_DS));
+}
+
+/// The example `RRset`, its RRSIG and the DNSKEY `RRset` of `example.net.` holding the RFC key.
+fn example(
+    algorithm: u8,
+    key: &str,
+    signature: &str,
+    (expiration, inception, key_tag): (u32, u32, u16),
+) -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
+    let rrsig = Rrsig {
+        type_covered: 1,
+        algorithm,
+        labels: 3,
+        original_ttl: 3600,
+        expiration,
+        inception,
+        key_tag,
+        signer: "example.net.",
+    };
+    (
+        rrset("www.example.net.", 1, &[vec![192, 0, 2, 1]]),
+        rrsig_set("www.example.net.", &rrsig, signature),
+        rrset("example.net.", 48, &[dnskey_rdata(257, algorithm, key)]),
+    )
+}
+
+#[test]
+fn the_examples_verify_as_an_rrset_in_their_windows() {
+    // The DNSKEY flags of the RFC keys are 257, a KSK that signs the data itself (§6).
+    for (algorithm, key, signature, window) in [
+        (
+            13,
+            P256_KEY,
+            P256_SIGNATURE,
+            (1_284_026_679, 1_281_607_479, 55648),
+        ),
+        (
+            14,
+            P384_KEY,
+            P384_SIGNATURE,
+            (1_284_027_625, 1_281_608_425, 10771),
+        ),
+    ] {
+        let (a, sigs, keys) = example(algorithm, key, signature, window);
+        let verified = check(&a, &sigs, &keys, window.1).expect("verifies");
+        assert_eq!(verified.ttl.get(), 3600);
+        assert_eq!(
+            check(&a, &sigs, &keys, window.0 + 1),
+            Err(SigError::Expired {
+                key_tag: window.2,
+                expiration: window.0
+            })
+        );
+    }
+}
+
+#[test]
+fn an_example_with_a_changed_record_is_a_bad_signature() {
+    let (_, sigs, keys) = example(
+        13,
+        P256_KEY,
+        P256_SIGNATURE,
+        (1_284_026_679, 1_281_607_479, 55648),
+    );
+    let changed = rrset("www.example.net.", 1, &[vec![192, 0, 2, 2]]);
+    assert_eq!(
+        check(&changed, &sigs, &keys, 1_281_607_479),
+        Err(SigError::BadSignature { key_tag: 55648 })
+    );
 }

@@ -8,9 +8,10 @@ mod common;
 
 use common::{
     Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE, URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2,
-    URI_MX_SIGNATURE, URI_ZSK, b64, dnskey_rdata, signed_data,
+    URI_MX_SIGNATURE, URI_ZSK, b64, check, dnskey_rdata, rrset, rrsig_set, signed_data,
 };
 use dedens_dnssec::crypto::{VerifyError, key_tag, supported, verify};
+use dedens_dnssec::rrsig::{RrSet, SigError};
 use dedens_proto::SecAlgorithm;
 
 const EXAMPLE_NET_A: [u8; 4] = [192, 0, 2, 91];
@@ -314,4 +315,77 @@ fn rsa_algorithms_are_supported() {
     ] {
         assert!(supported(algorithm), "{algorithm}");
     }
+}
+
+/// RFC 5702 §6 `www.example.net. A`, its RRSIG and the DNSKEY `RRset` of `example.net.` (flags 256).
+fn example_net(
+    algorithm: u8,
+    key: &str,
+    signature: &str,
+    key_tag: u16,
+) -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
+    let rrsig = Rrsig {
+        type_covered: A,
+        algorithm,
+        labels: 3,
+        original_ttl: 3600,
+        expiration: EXPIRATION,
+        inception: INCEPTION,
+        key_tag,
+        signer: "example.net.",
+    };
+    (
+        rrset("www.example.net.", A, &[EXAMPLE_NET_A.to_vec()]),
+        rrsig_set("www.example.net.", &rrsig, signature),
+        rrset("example.net.", 48, &[dnskey_rdata(256, algorithm, key)]),
+    )
+}
+
+#[test]
+fn rsasha512_example_verifies_as_an_rrset() {
+    let (a, sigs, keys) = example_net(10, SHA512_KEY, SHA512_SIGNATURE, 3740);
+    assert!(check(&a, &sigs, &keys, INCEPTION).is_ok());
+    let changed = rrset("www.example.net.", A, &[vec![192, 0, 2, 92]]);
+    assert_eq!(
+        check(&changed, &sigs, &keys, INCEPTION),
+        Err(SigError::BadSignature { key_tag: 3740 })
+    );
+}
+
+#[test]
+fn a_key_of_512_bits_leaves_the_algorithm_unsupported() {
+    // D71: no usable key for the algorithm is unsigned for it (RFC 6840 §5.2), so the verdict is `insecure`.
+    let (a, sigs, keys) = example_net(8, SHA256_KEY, SHA256_SIGNATURE, 9033);
+    let error = check(&a, &sigs, &keys, INCEPTION).unwrap_err();
+    assert_eq!(
+        error,
+        SigError::UnsupportedAlgorithm {
+            algorithm: SecAlgorithm::RSASHA256
+        }
+    );
+    assert!(error.is_unsupported());
+}
+
+#[test]
+fn the_uri_arpa_mx_verifies_as_an_rrset() {
+    // RFC 8976 §A.4: owner and signer are `uri.arpa.`, two labels.
+    let rrsig = Rrsig {
+        type_covered: 15,
+        algorithm: 8,
+        labels: 2,
+        original_ttl: 600,
+        expiration: 1_613_604_280,
+        inception: 1_611_185_080,
+        key_tag: 37444,
+        signer: "uri.arpa.",
+    };
+    let mut mx = 10_u16.to_be_bytes().to_vec();
+    mx.extend(common::canonical_name("pechora.icann.org."));
+    let (set, sigs) = (
+        rrset("uri.arpa.", 15, &[mx]),
+        rrsig_set("uri.arpa.", &rrsig, URI_MX_SIGNATURE),
+    );
+    let keys = rrset("uri.arpa.", 48, &[dnskey_rdata(256, 8, URI_ZSK)]);
+    let verified = check(&set, &sigs, &keys, 1_611_185_080 + 100).expect("verifies");
+    assert_eq!(verified.ttl.get(), 600);
 }

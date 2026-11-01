@@ -209,3 +209,22 @@ each) 0.75 ms. A validation of a name five zones deep verifies about 20 signatur
 name ten labels deep hashes about a dozen names, 1800 hashes at 150 iterations. Without a cap, a response that
 makes the validator check every signature against every key of one tag (KeyTrap, CVE-2023-50387) costs it
 seconds.
+
+## DNSSEC `RRset` verification (D73)
+
+`benches/dnssec.rs`, `verify_rrset`: one `rrsig::verify` of a captured `RRset` (`crates/dedens-dnssec/tests/testdata`)
+with its RRSIG and key: the checks of RFC 4035 §5.3.1, the canonical form and order of the RDATA, the signed data
+and the signature. Microseconds.
+
+| Capture | Algorithm | Median |
+|---|---|---|
+| `alg7_soa` | RSASHA1-NSEC3-SHA1 (7) | 3.5 |
+| `alg8_a` | RSASHA256 (8) | 3.2 |
+| `alg10_soa` | RSASHA512 (10) | 6.0 |
+| `alg13_a` | ECDSAP256SHA256 (13) | 27.7 |
+| `alg14_a` (11 addresses) | ECDSAP384SHA384 (14) | 347 |
+| `alg15_a` | Ed25519 (15) | 19.2 |
+
+The signature is the cost of the curves (P-256: 27.7 here, 27.3 for the bare check above), so the `Budget` of D71
+stands as sized. RSA with a short exponent is cheap enough for the rest of the work to show: canonical form,
+sorting and building the signed data take a few microseconds.

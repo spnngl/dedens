@@ -4,8 +4,9 @@
 
 use std::hint::black_box;
 
-use dedens_dnssec::crypto::{ds_digest, nsec3_hash, verify};
-use dedens_proto::{DigestType, Nsec3HashAlgorithm, SecAlgorithm};
+use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
+use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
+use dedens_proto::{DigestType, Nsec3HashAlgorithm, RecordType, SecAlgorithm};
 
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]
 mod common;
@@ -264,5 +265,51 @@ fn nsec3(bencher: divan::Bencher<'_, '_>, iterations: u16) {
             black_box(&owner),
         )
         .expect("SHA-1")
+    });
+}
+
+/// A captured signed `RRset`: the `RRset`, its RRSIG `RRset` and the DNSKEY `RRset` of the signer, all as the
+/// zones served them.
+fn captured(answer: &str, keys: &str) -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
+    let sets = |name: &str| RrSet::group(&common::capture(name).answer);
+    let mut answer = sets(answer).into_iter();
+    let data = answer.next().expect("the answer");
+    let sigs = answer.next().expect("its RRSIG");
+    assert_eq!(sigs.rtype(), RecordType::RRSIG);
+    let keys = sets(keys)
+        .into_iter()
+        .find(|set| set.rtype() == RecordType::DNSKEY)
+        .expect("a DNSKEY RRset");
+    (data, sigs, keys)
+}
+
+/// One whole `rrsig::verify` of a captured `RRset` per validated algorithm: canonical form, the signed data and
+/// the signature, at the time of the capture. `la` signs its SOA under 7; the others sign an A or a SOA.
+#[divan::bench(args = ["alg7", "alg8", "alg10", "alg13", "alg14", "alg15"])]
+fn verify_rrset(bencher: divan::Bencher<'_, '_>, which: &str) {
+    let (answer, keys) = match which {
+        "alg7" => ("alg7_soa", "la_dnskey"),
+        "alg8" => ("alg8_a", "nlnetlabs_nl_dnskey"),
+        "alg10" => ("alg10_soa", "cat_dnskey"),
+        "alg13" => ("alg13_a", "cloudflare_com_dnskey"),
+        "alg14" => ("alg14_a", "fedoraproject_org_dnskey"),
+        _ => ("alg15_a", "ed25519_nl_dnskey"),
+    };
+    let (data, sigs, keys) = captured(answer, keys);
+    let now = common::captured_at();
+    let sig = Signature::all(&sigs).into_iter().next().expect("an RRSIG");
+    let key = Key::all(&keys)
+        .into_iter()
+        .find(|key| key.tag() == sig.rrsig().key_tag)
+        .expect("the signer's key");
+    bencher.bench_local(|| {
+        rrsig::verify(
+            black_box(&data),
+            black_box(&sig),
+            black_box(&key),
+            now,
+            &mut Budget::default(),
+        )
+        .expect("a capture verifies")
     });
 }
