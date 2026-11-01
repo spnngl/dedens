@@ -133,6 +133,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "denial"
+path = "fuzz_targets/denial.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 
 # The workspace's lint tables, copied: this crate is a workspace of its own.

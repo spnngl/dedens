@@ -13,4 +13,5 @@ per concern; tests of RFC behaviour in `tests/rfcNNNN.rs`.
   `tests/captured.rs` and `tests/captured_rrsig.rs`; fuzz seeds. Never edit by hand.
 - `tests/zones/`: example zones of RFCs read by the tests (RFC 4035 Appendix A; RFC 5155 Appendix A is in
   `dedens-proto`). `tests/common/denial.rs`: helpers of the denial tests; `tests/denial_captured.rs` checks each
-  negative capture proves what its rcode says, and lists them: a new capture with a denial goes in its table.
+  negative capture proves what its rcode says, and lists them: a new capture with a denial goes in its table. The
+  fuzz target `denial` (`fuzz/`) runs `prove` on any records.

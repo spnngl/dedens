@@ -1,14 +1,29 @@
 //! Authenticated denial of existence: what a set of NSEC or NSEC3 records proves about a name and a type
 //! (RFC 4035 §5.4, RFC 5155 §8, RFC 6840 §4, RFC 9824).
 //!
-//! Pure set logic, no signatures and no I/O. The records must already be verified, by the caller, against the
-//! zone's keys; this module trusts them and checks only what they say. [`prove`] answers a question that got a
-//! name error, no data, or a referral; [`prove_wildcard_answer`] answers one that got a wildcard expansion. Both
-//! return the [`Fact`] proven and the TTL the proof may be cached for, or why nothing is proven.
+//! Pure set logic, no signatures and no I/O. [`prove`] answers a question that got a name error, no data, or a
+//! referral; [`prove_wildcard_answer`] answers one that got a wildcard expansion. Both return the [`Fact`] proven
+//! and the TTL the proof may be cached for, or why nothing is proven.
+//!
+//! What the caller owes, as this module trusts it:
+//!
+//! - The records are verified first, each RRSIG valid and its signer exactly `apex`: RFC 6840 §4.1 tells a
+//!   delegation's NSEC from the child's by the signer, which no record here carries. An NSEC3 with an unchecked
+//!   signature could carry any iteration count, so [`Unproven::IterationsAboveLimit`] (insecure) holds only for
+//!   verified records (RFC 9276 §3.2).
+//! - A question for DS is for a delegation's name. An opt-out span proves "no DS" for any name it covers, one below
+//!   a delegation included (RFC 5155 §8.6), which only the caller knows is not asked.
+//! - [`Proof::opt_out`] is checked before an answer is marked authenticated (RFC 5155 §9.2).
+//!
+//! NXNAME (RFC 9824) is read first: a question for the type is refused before any record is looked at, and an NSEC
+//! or NSEC3 matching the name with NXNAME in its bitmap is a name error whatever else the bitmap lists (NS and DS
+//! included), before the delegation and DS rules apply.
 //!
 //! Which verdict an [`Unproven`] makes (bogus, insecure) is the caller's, as for an exhausted [`Budget`] (D71);
 //! D74 records what this module chooses.
 
+#[cfg(test)]
+mod fixtures;
 mod names;
 mod nsec;
 mod nsec3;
@@ -54,6 +69,27 @@ pub struct Proof {
     pub fact: Fact,
     /// The least TTL of the records the proof used (RFC 9077 §3, RFC 2308 §5).
     pub ttl: Ttl,
+    /// Whether the NSEC3 record that covers the next closer name has the opt-out flag: the name is then proven
+    /// absent from the signed names only, and may exist as an insecure delegation. The answer must not be
+    /// marked authenticated (AD, RFC 5155 §9.2), whatever the [`Fact`]. Always false for NSEC and for a name
+    /// the records match.
+    pub opt_out: bool,
+}
+
+impl Proof {
+    /// A proof by records that leave no room for an unsigned name.
+    const fn new(fact: Fact, ttl: Ttl) -> Self {
+        Self {
+            fact,
+            ttl,
+            opt_out: false,
+        }
+    }
+
+    /// The same proof, with the opt-out mark of the record that covers the next closer name.
+    const fn with_opt_out(self, opt_out: bool) -> Self {
+        Self { opt_out, ..self }
+    }
 }
 
 /// Why records prove nothing about a name.
@@ -80,6 +116,10 @@ pub enum Unproven {
         /// The limit given.
         limit: u16,
     },
+    /// The NSEC3 records have more than one set of parameters (salt, iterations): one zone has one set, so the
+    /// records are not the zone's, or not from one time. The caller makes the response bogus (RFC 5155 §8.2).
+    #[error("NSEC3 records of more than one set of parameters")]
+    ConflictingNsec3Parameters,
     /// The hashes of the proof would cost more than the budget has left (D71); the caller picks the verdict.
     #[error(transparent)]
     Budget(#[from] BudgetExhausted),

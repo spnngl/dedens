@@ -3,8 +3,10 @@
 //! (RRSIGs without a corresponding DNSKEY are disregarded).
 //!
 //! RFC 6840 §4.1 (NSEC and NSEC3 at a delegation or a DNAME), §4.3 (the CNAME bit of a no data), §4.4 (what shows
-//! an insecure delegation), on the example zone of RFC 4035 Appendix A, with the NSEC records it lacks built by
-//! `support::nsec`.
+//! an insecure delegation), on the example zone of RFC 4035 Appendix A (D74). The zone has no DNAME, CNAME or
+//! empty-non-terminal-wildcard case, and no capture does: the tests marked "Derived" build their NSEC records with
+//! `support::nsec`, shaped as the zone's NSEC for `b.example.` (owner, next name, types, RRSIG, NSEC), with the
+//! bitmap the RFC section names.
 
 mod common;
 #[path = "common/denial.rs"]
@@ -286,7 +288,7 @@ fn the_apex_is_not_a_delegation() {
     );
 }
 
-/// §4.1: an NSEC with DNAME proves no subdomain of its owner absent, the DNAME does not apply to its owner.
+/// Derived: §4.1: an NSEC with DNAME proves no subdomain of its owner absent, the DNAME does not apply to its owner.
 #[test]
 fn a_dname_proves_nothing_below_it() {
     let dname = [
@@ -309,7 +311,7 @@ fn a_dname_proves_nothing_below_it() {
     );
 }
 
-/// §4.3: a CNAME at the name answers any type, so an NSEC with CNAME proves no data of none.
+/// Derived: §4.3: a CNAME at the name answers any type, so an NSEC with CNAME proves no data of none.
 #[test]
 fn a_cname_is_not_no_data() {
     let records = [nsec("c.example.", "ns1.example.", &[CNAME, RRSIG, NSEC])];
@@ -324,7 +326,7 @@ fn a_cname_is_not_no_data() {
     );
 }
 
-/// §4.4: an insecure delegation shows NS and no DS and no SOA; a DS, or the SOA of the child, does not.
+/// Derived: §4.4: an insecure delegation shows NS and no DS and no SOA; a DS, or the SOA of the child, does not.
 #[test]
 fn insecure_delegation_needs_ns_without_ds_and_soa() {
     let ds = RecordType::DS;
@@ -355,5 +357,6 @@ fn support_proof(fact: Fact) -> Proof {
     Proof {
         fact,
         ttl: Ttl::from_wire(3600),
+        opt_out: false,
     }
 }

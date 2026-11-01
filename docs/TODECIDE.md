@@ -21,8 +21,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
   (D72). Default: none, the caller drops it (`--insecure NAME`, `insecure:` in the configuration); an `until` with the
   clock passed in when `dedensd` keeps state across reloads.
-- NSEC3 records of differing parameters in one response (D74 ignores all but the first usable set; RFC 5155 §8.2 allows
-  treating them as bogus), and a mix of NSEC and NSEC3 (D74 uses NSEC3). Default: as D74; bogus if a zone shows it.
+- A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
+  Default: as D74; bogus if a zone shows it.
 - NSEC3 iteration limit (D74: 150, as Unbound and BIND). RFC 9276 §3.2 recommends treating more than 0 as
   insecure, and BIND and Unbound lowered theirs over time. Default: 150, a setting of the validator added with 06.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.

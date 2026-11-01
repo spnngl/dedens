@@ -12,34 +12,34 @@ use std::path::PathBuf;
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations};
-use dedens_proto::{Message, Name, RData, Rcode, Record, RecordType};
+use dedens_proto::{Message, Name, RData, Rcode, Record, RecordType, Ttl};
 use support::{capture, prove, prove_wildcard};
 
 const NAME_ERROR: Fact = Fact::NameError { compact: false };
 const COMPACT_NAME_ERROR: Fact = Fact::NameError { compact: true };
 
-/// What each capture proves, by id.
-const EXPECTED: [(&str, Fact); 20] = [
-    ("nxdomain_root_nsec", NAME_ERROR),
-    ("nxdomain_nsec", NAME_ERROR),
-    ("nxdomain_nsec3", NAME_ERROR),
-    ("nxdomain_nsec3_optout", NAME_ERROR),
-    ("nxdomain_nsec3_salt", NAME_ERROR),
-    ("nxdomain_nsec3_iterations", NAME_ERROR),
-    ("nxname_cloudflare", COMPACT_NAME_ERROR),
-    ("nodata_compact", Fact::NoData),
-    ("nodata_root_nsec", Fact::NoData),
-    ("nodata_nsec", Fact::NoData),
-    ("nodata_nsec3", Fact::NoData),
-    ("nodata_nsec3_optout", Fact::NoData),
-    ("nodata_nsec3_iterations", Fact::NoData),
-    ("ent_nsec", Fact::NoData),
-    ("ent_nsec3", Fact::NoData),
-    ("wildcard_nodata", Fact::WildcardNoData),
-    ("google_com_ds", Fact::InsecureDelegation),
-    ("jm_ds", Fact::InsecureDelegation),
-    ("edgekey_net_ds", Fact::InsecureDelegation),
-    ("akamaiedge_net_ds", Fact::InsecureDelegation),
+/// What each capture proves, by id, and whether the NSEC3 over its next closer name has the opt-out flag.
+const EXPECTED: [(&str, Fact, bool); 20] = [
+    ("nxdomain_root_nsec", NAME_ERROR, false),
+    ("nxdomain_nsec", NAME_ERROR, false),
+    ("nxdomain_nsec3", NAME_ERROR, false),
+    ("nxdomain_nsec3_optout", NAME_ERROR, true),
+    ("nxdomain_nsec3_salt", NAME_ERROR, true),
+    ("nxdomain_nsec3_iterations", NAME_ERROR, false),
+    ("nxname_cloudflare", COMPACT_NAME_ERROR, false),
+    ("nodata_compact", Fact::NoData, false),
+    ("nodata_root_nsec", Fact::NoData, false),
+    ("nodata_nsec", Fact::NoData, false),
+    ("nodata_nsec3", Fact::NoData, false),
+    ("nodata_nsec3_optout", Fact::NoData, false),
+    ("nodata_nsec3_iterations", Fact::NoData, false),
+    ("ent_nsec", Fact::NoData, false),
+    ("ent_nsec3", Fact::NoData, false),
+    ("wildcard_nodata", Fact::WildcardNoData, false),
+    ("google_com_ds", Fact::InsecureDelegation, true),
+    ("jm_ds", Fact::InsecureDelegation, false),
+    ("edgekey_net_ds", Fact::InsecureDelegation, true),
+    ("akamaiedge_net_ds", Fact::InsecureDelegation, true),
 ];
 
 /// The captured responses that are not in [`EXPECTED`]: the wildcard expansion is tested below.
@@ -65,9 +65,21 @@ fn apex(message: &Message<'static>) -> Name<'static> {
         .expect("a signed denial")
 }
 
+/// The least TTL of the NSEC and NSEC3 records of the response: each capture's proof uses them all, and every
+/// record the proof reads has one of them or more.
+fn least_ttl(message: &Message<'_>) -> Ttl {
+    message
+        .authority
+        .iter()
+        .filter(|r| is_denial(r))
+        .map(|r| r.ttl)
+        .min()
+        .expect("denial records")
+}
+
 #[test]
 fn every_negative_capture_proves_what_it_says() {
-    for (id, fact) in EXPECTED {
+    for (id, fact, opt_out) in EXPECTED {
         let message = capture(id);
         let question = &message.questions[0];
         let proof = prove(
@@ -78,18 +90,14 @@ fn every_negative_capture_proves_what_it_says() {
         )
         .unwrap_or_else(|e| panic!("{id}: {e}"));
         assert_eq!(proof.fact, fact, "{id}");
+        assert_eq!(proof.opt_out, opt_out, "{id}: opt-out");
         let rcode = if fact == NAME_ERROR {
             Rcode::NXDOMAIN
         } else {
             Rcode::NOERROR
         };
         assert_eq!(message.rcode(), rcode, "{id}");
-        let ttls = message
-            .authority
-            .iter()
-            .filter(|r| is_denial(r))
-            .map(|r| r.ttl);
-        assert!(proof.ttl >= ttls.min().expect("denial records"), "{id}");
+        assert_eq!(proof.ttl, least_ttl(&message), "{id}");
     }
 }
 
@@ -111,7 +119,7 @@ fn every_capture_with_a_denial_is_listed() {
         let negative = message.rcode() == Rcode::NXDOMAIN || message.answer.is_empty();
         if negative && message.authority.iter().any(is_denial) {
             assert!(
-                EXPECTED.iter().any(|(listed, _)| *listed == id) || OTHERS.contains(&id.as_str()),
+                EXPECTED.iter().any(|(listed, ..)| *listed == id) || OTHERS.contains(&id.as_str()),
                 "{id} has a denial and is not listed"
             );
         }
@@ -140,6 +148,8 @@ fn wildcard_expansion_is_proven() {
     )
     .expect("a proof");
     assert_eq!(proof.fact, Fact::WildcardAnswer);
+    assert_eq!(proof.ttl, least_ttl(&message));
+    assert!(!proof.opt_out);
 }
 
 /// The proof of one capture needs about one hash per label of the name, three at most beside the question's.
