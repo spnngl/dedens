@@ -73,6 +73,39 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](TODECIDE.md)
   holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
+- D73 (amends D71) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
+  and denial are 05 and 06. `RrSet::group` builds `RRset`s from a section (owner, class, type; RFC 2181 §5.2:
+  TTL the minimum); `Signature` and `Key` borrow the RRSIG and DNSKEY records of an `RRset`, a DNSKEY whose
+  protocol is not 3 being opaque, so never a `Key`. `verify(rrset, sig, key, now, budget)` checks RFC 4035 §5.3.1
+  in this order: coverage, labels, signer at or above the owner, algorithm supported, key tag and algorithm,
+  REVOKE (RFC 5011 §7), zone key bit, validity window in serial arithmetic (RFC 1982; edges inclusive, no
+  skew, `now` is Unix seconds truncated to 32 bits), then one `Budget` verification and the signature. The
+  kept TTL is the least of the `RRset`'s, the RRSIG record's, the original TTL and the seconds to expiration
+  (RFC 4035 §5.3.3). A wildcard expansion (RRSIG labels below the owner's, a leading `*` not counted; above is
+  `BadLabels`) is verified against `*.` and the rightmost labels, and `Verified::wildcard` returns the closest
+  encloser, which 06 asks 05 to prove the absence of a closer match for. `verify_any` tries every covering
+  RRSIG against every key of its signer, key tag and algorithm, and stops at the first success; at most 8
+  checks may fail per `RRset` (`MAX_FAILED`, as Unbound's `MAX_VALIDATE_RRSIGS`), then `TooManyFailures`, and
+  the shared `Budget` of D71 bounds the validation: its exhaustion is its own error, bogus (the KeyTrap
+  guidance). With none succeeding the error returned is the closest to success, in `SigError::rank` order. An
+  unusable key or an unsupported algorithm is `UnsupportedAlgorithm` (D71, RFC 6840 §5.2), and
+  `SigError::is_unsupported` tells it, and an unsupported DS digest, from the failures that are bogus: the
+  caller takes the data as insecure. `trusted_keys(dnskeys, sigs, ds, now, budget)` counts the DS records
+  whose digest type and algorithm are supported, ignores a SHA-1 DS where a stronger digest of the same key (key
+  tag and algorithm) is present (RFC 4509 §3: of the key, not of the `RRset`, so a SHA-1 DS of another key
+  still counts), matches them to the DNSKEYs by tag, algorithm and digest, and requires the DNSKEY `RRset` to
+  verify by one of those keys (RFC 4035 §5.2); a DS that matches no key is `NoKeyForDs`, bogus. Every `SigError`
+  maps to one EDE code (RFC 8914 §4) through `SigError::ede(&RrSet)`, whose text names the `RRset` and the key
+  tag: 1, 2, 6, 7, 8, 9 (missing and revoked keys), 10, 11, 25. Canonical form (RFC 4034 §6, RFC 6840 §5.1)
+  lowercases the owner and the names in the RDATA of the types of RFC 4034 §6.2 (NSEC's next name apart, the
+  RRSIG's signer included; A6 left out, historic, RFC 6563), sorts the RDATA as unsigned bytes and drops
+  duplicates (§6.3). The name layouts are a table in `rrsig/canonical.rs`, not those of `RData::Opaque`: that
+  list says where compression pointers may occur (RFC 3597 §4), and DNAME and KX are not in it.
+  `WireRdata::wire` (`dedens-proto`) returns the RDATA uncompressed for it. Tests: RFC examples and the 00b
+  captures, every signed `RRset` of them verifies, and fails 1 s after expiration, 1 s before inception and
+  with a byte of RDATA flipped (`tests/captured_rrsig.rs`); `benchmarks.md` has the cost of a whole `verify`.
+  RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for `example.com.`, which has 2: as an `RRset` it is `BadLabels`
+  (RFC 4035 §5.3.1), and `crypto` checks the signature over its bytes (`tests/rfc8080.rs`).
 
 ## Wire format
 

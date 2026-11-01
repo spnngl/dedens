@@ -7,9 +7,14 @@
     reason = "each test crate uses a subset of a shared module"
 )]
 
+use std::fs;
+use std::path::PathBuf;
+
 use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
-use dedens_proto::Name;
+use dedens_dnssec::crypto::Budget;
+use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature, Verified};
 use dedens_proto::name::MAX_NAME_LEN;
+use dedens_proto::{Message, Name, Record};
 
 // spellchecker:off
 /// RFC 4034 §5.4: the key of `dskey.example.com.` (algorithm 5, key tag 60485), the DNSKEY that RFC 4034 and
@@ -47,6 +52,124 @@ pub fn canonical_name(text: &str) -> Vec<u8> {
     let name = name(text);
     let mut buf = [0_u8; MAX_NAME_LEN];
     name.to_wire(&mut buf).to_ascii_lowercase()
+}
+
+/// The directory of the captured responses (`testdata/README.md`), from `dedens-dnssec` or `dedens-bench`.
+pub fn dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata")
+}
+
+/// The ids of every captured file.
+pub fn names() -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir())
+        .expect("testdata directory")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "bin"))
+        .map(|path| {
+            path.file_stem()
+                .expect("stem")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Unix time of the capture run: the "now" the validation tests pass.
+pub fn captured_at() -> u32 {
+    fs::read_to_string(dir().join("captured_at"))
+        .expect("captured_at")
+        .trim()
+        .parse()
+        .expect("Unix time in seconds")
+}
+
+/// The captured response `name`, decoded without a violation.
+pub fn capture(name: &str) -> Message<'static> {
+    let wire = fs::read(dir().join(format!("{name}.bin"))).expect("captured file");
+    let decoded = Message::decode(&wire).expect("decodes");
+    assert_eq!(decoded.violations, [], "{name}");
+    decoded.message.into_owned()
+}
+
+/// The records of one owner and type, class IN, as a decoder reads them from the answer of a message built by
+/// hand with `rdatas` as given (names inside them in any case): none when the message does not decode cleanly.
+pub fn try_records(
+    owner: &str,
+    rtype: u16,
+    ttl: u32,
+    rdatas: &[Vec<u8>],
+) -> Option<Vec<Record<'static>>> {
+    let mut wire = vec![0; 6];
+    wire.extend(
+        u16::try_from(rdatas.len())
+            .expect("a few records")
+            .to_be_bytes(),
+    );
+    wire.extend([0; 4]);
+    for rdata in rdatas {
+        wire.extend(name(owner).to_wire(&mut [0; MAX_NAME_LEN]));
+        wire.extend(rtype.to_be_bytes());
+        wire.extend(1_u16.to_be_bytes());
+        wire.extend(ttl.to_be_bytes());
+        wire.extend(
+            u16::try_from(rdata.len())
+                .expect("a short RDATA")
+                .to_be_bytes(),
+        );
+        wire.extend(rdata);
+    }
+    let decoded = Message::decode(&wire).ok()?;
+    decoded.violations.is_empty().then(|| {
+        decoded
+            .message
+            .answer
+            .into_iter()
+            .map(Record::into_owned)
+            .collect()
+    })
+}
+
+/// [`try_records`] of RDATA that decodes.
+pub fn records(owner: &str, rtype: u16, ttl: u32, rdatas: &[Vec<u8>]) -> Vec<Record<'static>> {
+    try_records(owner, rtype, ttl, rdatas).expect("decodes without a violation")
+}
+
+/// Whether `sigs` sign `rrset` under `keys` at `now`, with the default budget.
+pub fn check(
+    rrset: &RrSet<'_>,
+    sigs: &RrSet<'_>,
+    keys: &RrSet<'_>,
+    now: u32,
+) -> Result<Verified, SigError> {
+    rrsig::verify_any(
+        rrset,
+        &Signature::all(sigs),
+        &Key::all(keys),
+        now,
+        &mut Budget::default(),
+    )
+}
+
+/// An `RRset` of the records `rdatas` at `owner`, TTL 3600.
+pub fn rrset(owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
+    RrSet::group(&records(owner, rtype, 3600, rdatas))
+        .pop()
+        .expect("one RRset")
+}
+
+/// The RRSIG record of `rrsig` over `owner`'s `RRset`, with its signature in base64, as an `RRset` (TTL 3600).
+pub fn rrsig_set(owner: &str, rrsig: &Rrsig<'_>, signature: &str) -> RrSet<'static> {
+    let mut rdata = rrsig.type_covered.to_be_bytes().to_vec();
+    rdata.extend([rrsig.algorithm, rrsig.labels]);
+    rdata.extend(rrsig.original_ttl.to_be_bytes());
+    rdata.extend(rrsig.expiration.to_be_bytes());
+    rdata.extend(rrsig.inception.to_be_bytes());
+    rdata.extend(rrsig.key_tag.to_be_bytes());
+    rdata.extend(canonical_name(rrsig.signer));
+    rdata.extend(b64(signature));
+    rrset(owner, 46, &[rdata])
 }
 
 /// DNSKEY RDATA (RFC 4034 §2.1): flags, protocol 3, the algorithm and the public key.

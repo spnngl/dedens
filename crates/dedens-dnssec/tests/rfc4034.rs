@@ -4,9 +4,13 @@
 mod common;
 
 use common::{
-    DSKEY, RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data,
+    DSKEY, RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, b64, canonical_name, check, dnskey_rdata,
+    hex, name, rrset, rrsig_set, signed_data,
 };
-use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, supported, supported_digest, verify};
+use dedens_dnssec::crypto::{
+    Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
+};
+use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
 use dedens_proto::{DigestType, SecAlgorithm};
 
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
@@ -188,4 +192,270 @@ fn only_the_algorithms_of_rfc_9904_are_supported() {
             );
         }
     }
+}
+
+/// `ns1.example. A`, RFC 4035 Appendix A: the `RRset`, its RRSIG and the DNSKEY `RRset` of `example.`.
+fn appendix_a() -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
+    (
+        rrset("ns1.example.", 1, &[vec![192, 0, 2, 1]]),
+        rrsig_set(
+            "ns1.example.",
+            &rrsig(1, 5, 2, 38519),
+            RFC4034_NS1_SIGNATURE,
+        ),
+        rrset(
+            "example.",
+            48,
+            &[dnskey_rdata(256, 5, RFC4034_ZSK), dnskey_rdata(257, 5, KSK)],
+        ),
+    )
+}
+
+#[test]
+fn canonical_rdata_is_lowercase_sorted_and_without_duplicates() {
+    // §6.2 item 3 and §6.3: MX's exchange lowercased, the records ordered by their RDATA bytes, the two that are
+    // one record in lower case reduced to one.
+    let mx = |preference: u16, exchange: &str| {
+        let mut rdata = preference.to_be_bytes().to_vec();
+        rdata.extend(name(exchange).to_wire(&mut [0; 255]));
+        rdata
+    };
+    let set = rrset(
+        "Host.EXAMPLE.",
+        15,
+        &[
+            mx(20, "Mail.Example."),
+            mx(10, "B.example."),
+            mx(10, "b.EXAMPLE."),
+            mx(9, "z.example."),
+        ],
+    );
+    let lower = |preference: u16, exchange: &str| {
+        let mut rdata = preference.to_be_bytes().to_vec();
+        rdata.extend(canonical_name(exchange));
+        rdata
+    };
+    assert_eq!(
+        set.canonical_rdatas(),
+        [
+            lower(9, "z.example."),
+            lower(10, "b.example."),
+            lower(20, "mail.example.")
+        ]
+    );
+}
+
+#[test]
+fn canonical_order_puts_a_shorter_rdata_before_a_longer_one() {
+    // §6.3: a missing octet sorts before a zero octet.
+    let set = rrset(
+        "example.",
+        16,
+        &[vec![2, b'a', 0], vec![1, b'a'], vec![1, b'a', 0]],
+    );
+    assert_eq!(
+        set.canonical_rdatas(),
+        [vec![1, b'a'], vec![1, b'a', 0], vec![2, b'a', 0]]
+    );
+}
+
+#[test]
+fn appendix_a_a_record_verifies_in_its_window() {
+    // §3.1.5: both ends of the window are inside it.
+    let (a, sigs, keys) = appendix_a();
+    for now in [INCEPTION, INCEPTION + 1, EXPIRATION - 1, EXPIRATION] {
+        let verified = check(&a, &sigs, &keys, now).expect("verifies");
+        assert_eq!(verified.wildcard, None);
+        // RFC 4035 §5.3.3: the TTL is capped by the seconds left.
+        assert_eq!(verified.ttl.get(), 3600.min(EXPIRATION - now));
+    }
+}
+
+#[test]
+fn appendix_a_a_record_fails_outside_its_window() {
+    let (a, sigs, keys) = appendix_a();
+    assert_eq!(
+        check(&a, &sigs, &keys, INCEPTION - 1),
+        Err(SigError::NotYetValid {
+            key_tag: 38519,
+            inception: INCEPTION
+        })
+    );
+    assert_eq!(
+        check(&a, &sigs, &keys, EXPIRATION + 1),
+        Err(SigError::Expired {
+            key_tag: 38519,
+            expiration: EXPIRATION
+        })
+    );
+}
+
+#[test]
+fn appendix_a_dnskey_rrset_verifies_by_its_ksk() {
+    // The signer is the owner of the `RRset`, `example.`: one label.
+    let (_, _, keys) = appendix_a();
+    let sigs = rrsig_set("example.", &rrsig(48, 5, 1, 9465), DNSKEY_SIGNATURE);
+    assert!(check(&keys, &sigs, &keys, INCEPTION).is_ok());
+}
+
+#[test]
+fn a_changed_record_does_not_verify() {
+    let (_, sigs, keys) = appendix_a();
+    let changed = rrset("ns1.example.", 1, &[vec![192, 0, 2, 2]]);
+    assert_eq!(
+        check(&changed, &sigs, &keys, INCEPTION),
+        Err(SigError::BadSignature { key_tag: 38519 })
+    );
+}
+
+#[test]
+fn rrsig_fields_must_match_the_rrset_and_the_key() {
+    let (a, sigs, keys) = appendix_a();
+    let other_owner = rrset("ns2.example.", 1, &[vec![192, 0, 2, 1]]);
+    let other_type = rrset("ns1.example.", 16, &[vec![1, b'a']]);
+    for set in [&other_owner, &other_type] {
+        assert_eq!(
+            check(set, &sigs, &keys, INCEPTION),
+            Err(SigError::NoSignature)
+        );
+    }
+    // The signer `example.` must be at or above the owner.
+    let elsewhere = rrset("ns1.example.org.", 1, &[vec![192, 0, 2, 1]]);
+    let wrong_zone = rrsig_set(
+        "ns1.example.org.",
+        &rrsig(1, 5, 3, 38519),
+        RFC4034_NS1_SIGNATURE,
+    );
+    assert_eq!(
+        check(&elsewhere, &wrong_zone, &keys, INCEPTION),
+        Err(SigError::BadSigner)
+    );
+    // A key tag no DNSKEY has.
+    let no_key = rrsig_set("ns1.example.", &rrsig(1, 5, 2, 1), RFC4034_NS1_SIGNATURE);
+    assert_eq!(
+        check(&a, &no_key, &keys, INCEPTION),
+        Err(SigError::NoKey { key_tag: 1 })
+    );
+    // No RRSIG at all.
+    assert_eq!(
+        rrsig::verify_any(&a, &[], &Key::all(&keys), INCEPTION, &mut Budget::default()),
+        Err(SigError::NoSignature)
+    );
+}
+
+#[test]
+fn a_window_that_ends_before_it_starts_is_its_own_error() {
+    let (a, _, keys) = appendix_a();
+    let mut sig = rrsig(1, 5, 2, 38519);
+    (sig.inception, sig.expiration) = (EXPIRATION, INCEPTION);
+    let sigs = rrsig_set("ns1.example.", &sig, RFC4034_NS1_SIGNATURE);
+    assert_eq!(
+        check(&a, &sigs, &keys, INCEPTION),
+        Err(SigError::ExpiredBeforeValid { key_tag: 38519 })
+    );
+}
+
+#[test]
+fn the_window_wraps_in_serial_arithmetic() {
+    // RFC 1982: 2^32 - 10 is before 5, so a window from the one to the other holds 0. The signature is for
+    // another window and fails, but only once the window check has passed.
+    let (a, _, keys) = appendix_a();
+    let mut sig = rrsig(1, 5, 2, 38519);
+    (sig.inception, sig.expiration) = (u32::MAX - 9, 5);
+    let sigs = rrsig_set("ns1.example.", &sig, RFC4034_NS1_SIGNATURE);
+    assert_eq!(
+        check(&a, &sigs, &keys, 0),
+        Err(SigError::BadSignature { key_tag: 38519 })
+    );
+    assert!(matches!(
+        check(&a, &sigs, &keys, 10),
+        Err(SigError::Expired { .. })
+    ));
+    assert!(matches!(
+        check(&a, &sigs, &keys, u32::MAX - 20),
+        Err(SigError::NotYetValid { .. })
+    ));
+}
+
+#[test]
+fn a_key_signs_only_with_the_zone_bit_and_without_revoke() {
+    let (a, sigs, _) = appendix_a();
+    let zsk = |flags| rrset("example.", 48, &[dnskey_rdata(flags, 5, RFC4034_ZSK)]);
+    // The flags are in the key tag: the RRSIG names the tag the changed key has.
+    let tag = |flags| key_tag(&dnskey_rdata(flags, 5, RFC4034_ZSK));
+    for (flags, expected) in [
+        (0, SigError::NotZoneKey { key_tag: tag(0) }),
+        (
+            0x0100 | 0x0080,
+            SigError::RevokedKey {
+                key_tag: tag(0x0180),
+            },
+        ),
+    ] {
+        let sigs = rrsig_set(
+            "ns1.example.",
+            &rrsig(1, 5, 2, tag(flags)),
+            RFC4034_NS1_SIGNATURE,
+        );
+        assert_eq!(check(&a, &sigs, &zsk(flags), INCEPTION), Err(expected));
+    }
+    assert!(check(&a, &sigs, &zsk(0x0100), INCEPTION).is_ok());
+}
+
+#[test]
+fn the_ds_digest_of_the_ksk_vouches_for_the_dnskey_rrset() {
+    // The DS records are computed from the KSK (§5.1.4): the Appendix has none for `example.` itself.
+    let (_, _, keys) = appendix_a();
+    let sigs = rrsig_set("example.", &rrsig(48, 5, 1, 9465), DNSKEY_SIGNATURE);
+    let rdata = dnskey_rdata(257, 5, KSK);
+    let ds = |digest_type: DigestType, digest: &[u8]| {
+        let mut rdata = 9465_u16.to_be_bytes().to_vec();
+        rdata.extend([5, digest_type.0]);
+        rdata.extend(digest);
+        rdata
+    };
+    let digest = |digest_type| {
+        ds_digest(digest_type, &name("example."), &rdata)
+            .expect("supported")
+            .as_ref()
+            .to_vec()
+    };
+    let (sha1, sha256) = (digest(DigestType::SHA1), digest(DigestType::SHA256));
+    let trust = |ds: &RrSet<'_>| {
+        rrsig::trusted_keys(
+            &keys,
+            &Signature::all(&sigs),
+            ds,
+            INCEPTION,
+            &mut Budget::default(),
+        )
+    };
+    for (digest_type, digest) in [(DigestType::SHA1, &sha1), (DigestType::SHA256, &sha256)] {
+        let set = rrset("example.", 43, &[ds(digest_type, digest)]);
+        assert!(trust(&set).is_ok(), "{digest_type}");
+    }
+    // RFC 4509 §3: a SHA-1 DS is ignored when a SHA-256 one of the key is there, so a right SHA-1 digest does
+    // not save a wrong SHA-256 one.
+    let both = rrset(
+        "example.",
+        43,
+        &[
+            ds(DigestType::SHA1, &sha1),
+            ds(DigestType::SHA256, &[0; 32]),
+        ],
+    );
+    assert_eq!(trust(&both), Err(SigError::NoKeyForDs));
+    // A DS of another owner vouches for nothing here.
+    let elsewhere = rrset("example.org.", 43, &[ds(DigestType::SHA256, &sha256)]);
+    assert_eq!(trust(&elsewhere), Err(SigError::NoKeyForDs));
+    // Digest 3 (GOST) is not supported: insecure, not bogus (RFC 6840 §5.2).
+    let gost = rrset("example.", 43, &[ds(DigestType::GOST, &[0; 32])]);
+    let error = trust(&gost).unwrap_err();
+    assert!(error.is_unsupported());
+    assert_eq!(
+        error,
+        SigError::UnsupportedDigest {
+            digest: DigestType::GOST
+        }
+    );
 }

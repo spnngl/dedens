@@ -3,46 +3,12 @@
 //! says they do, and their signatures are valid at `captured_at` but where they are not meant to be.
 
 use std::fs;
-use std::path::PathBuf;
 
 use dedens_proto::{Message, Rcode, Record, RecordType};
 
-fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")
-}
+mod common;
 
-/// Unix time of the capture run: the "now" the validation tests pass.
-fn captured_at() -> u32 {
-    fs::read_to_string(dir().join("captured_at"))
-        .expect("captured_at")
-        .trim()
-        .parse()
-        .expect("Unix time in seconds")
-}
-
-fn capture(name: &str) -> Message<'static> {
-    let wire = fs::read(dir().join(format!("{name}.bin"))).expect("captured file");
-    let decoded = Message::decode(&wire).expect("decodes");
-    assert_eq!(decoded.violations, [], "{name}");
-    decoded.message.into_owned()
-}
-
-/// The ids of every captured file.
-fn names() -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(dir())
-        .expect("testdata directory")
-        .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().is_some_and(|e| e == "bin"))
-        .map(|path| {
-            path.file_stem()
-                .expect("stem")
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    names.sort();
-    names
-}
+use common::{capture, captured_at, dir, names};
 
 fn records<'a>(message: &'a Message<'static>) -> impl Iterator<Item = &'a Record<'static>> {
     message

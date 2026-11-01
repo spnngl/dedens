@@ -8,9 +8,11 @@
 mod common;
 
 use common::{
-    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, dnskey_rdata, hex, name, signed_data,
+    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, check, dnskey_rdata, hex, name, rrset,
+    rrsig_set, signed_data,
 };
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, supported, verify};
+use dedens_dnssec::rrsig::SigError;
 use dedens_proto::{DigestType, SecAlgorithm};
 
 const ED25519_DS_1: &str = "3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79
@@ -185,4 +187,69 @@ fn ds_digests_are_the_rfcs() {
         .expect("SHA-256");
         assert_eq!(digest.as_ref(), hex(ds), "algorithm {algorithm}");
     }
+}
+
+#[test]
+fn the_examples_label_count_is_refused_as_an_rrset() {
+    // The RRSIG says 3 labels for `example.com.`, which has 2 (RFC 4034 §3.1.3): the signature is valid over
+    // the bytes, but RFC 4035 §5.3.1 makes the RRSIG itself invalid, so a validator never reaches it.
+    let rrsig = Rrsig {
+        type_covered: 15,
+        algorithm: 15,
+        labels: 3,
+        original_ttl: 3600,
+        expiration: 1_440_021_600,
+        inception: 1_438_207_200,
+        key_tag: 3613,
+        signer: "example.com.",
+    };
+    let mut mx = 10_u16.to_be_bytes().to_vec();
+    mx.extend(common::canonical_name("mail.example.com."));
+    let sigs = rrsig_set("example.com.", &rrsig, ED25519_SIGNATURE_1);
+    let keys = rrset("example.com.", 48, &[dnskey_rdata(257, 15, ED25519_KEY_1)]);
+    assert_eq!(
+        check(
+            &rrset("example.com.", 15, &[mx]),
+            &sigs,
+            &keys,
+            1_438_207_200
+        ),
+        Err(SigError::BadLabels {
+            labels: 3,
+            owner: 2
+        })
+    );
+}
+
+#[test]
+fn an_ed448_key_leaves_the_algorithm_unsupported() {
+    // D71: `ring` has no Ed448, so the algorithm is unsigned for the validator (RFC 6840 §5.2).
+    let rrsig = Rrsig {
+        type_covered: 15,
+        algorithm: 16,
+        labels: 2,
+        original_ttl: 3600,
+        expiration: 1_440_021_600,
+        inception: 1_438_207_200,
+        key_tag: 9713,
+        signer: "example.com.",
+    };
+    let mut mx = 10_u16.to_be_bytes().to_vec();
+    mx.extend(common::canonical_name("mail.example.com."));
+    let sigs = rrsig_set("example.com.", &rrsig, ED448_SIGNATURE);
+    let keys = rrset("example.com.", 48, &[dnskey_rdata(257, 16, ED448_KEY)]);
+    let error = check(
+        &rrset("example.com.", 15, &[mx]),
+        &sigs,
+        &keys,
+        1_438_207_200,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        SigError::UnsupportedAlgorithm {
+            algorithm: SecAlgorithm::ED448
+        }
+    );
+    assert!(error.is_unsupported());
 }

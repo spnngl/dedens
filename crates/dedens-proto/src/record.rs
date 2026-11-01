@@ -3,6 +3,7 @@
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::str::FromStr;
+use std::borrow::Cow;
 
 use zerocopy::network_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -147,6 +148,17 @@ impl<'a> WireRdata<'a> {
             },
             |(data, _)| data,
         )
+    }
+
+    /// The RDATA as wire bytes, names uncompressed (RFC 3597 §4): borrowed unless names in it were compressed.
+    #[must_use]
+    pub fn wire(&self) -> Cow<'_, [u8]> {
+        match &self.0 {
+            Repr::InMessage { rtype, .. } if RData::may_hold_compressed_names(*rtype) => {
+                Cow::Owned(self.data().with_wire(<[u8]>::to_vec))
+            }
+            Repr::InMessage { .. } | Repr::Owned { .. } => Cow::Borrowed(self.reader().rest()),
+        }
     }
 
     /// The same RDATA, owning its bytes, with names uncompressed.
