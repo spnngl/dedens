@@ -1,5 +1,6 @@
-//! Arbitrary bytes as the HTTP side of Oblivious `DoH` (RFC 9230 §4; D79) must never panic: the `cache-control` of
-//! a target's configurations, the requests a target classifies, and the responses a client reads.
+//! Arbitrary bytes as the HTTP side of Oblivious `DoH` (RFC 9230 §4; D79, D94) must never panic: the `cache-control` of
+//! a target's configurations, the requests a target classifies, a proxy routes and forwards, and the responses a
+//! client reads.
 
 #![no_main]
 

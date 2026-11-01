@@ -137,6 +137,25 @@ impl HttpsPool {
         })
     }
 
+    /// Makes sure the pool holds an open connection to the server at `addr`, whose certificate must hold `name`: the
+    /// one it has, or a new one. A caller that must tell a connection not made in time from a response not received
+    /// in time (D94) connects first and [`sends`](Self::send) after.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError`]: no connection, or none before `deadline`.
+    pub async fn connect(
+        &self,
+        addr: SocketAddr,
+        name: ServerName<'static>,
+        deadline: Instant,
+    ) -> Result<(), HttpsError> {
+        compio::time::timeout_at(deadline, self.connection(&(addr, name)))
+            .await
+            .unwrap_or(Err(HttpsError::TimedOut))
+            .map(|_| ())
+    }
+
     /// Sends `request` to the server at `addr`, whose certificate must hold `name`, and returns the response's head
     /// and body, of whatever status and type: what `DoH` makes of it is [`HttpsPool::exchange`]'s, and what
     /// Oblivious `DoH` makes is the caller's (D79).
