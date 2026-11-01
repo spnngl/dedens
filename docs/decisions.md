@@ -29,6 +29,27 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   digest and NSEC3 hash numbers (`SecAlgorithm`, `DigestType`, `Nsec3HashAlgorithm`) print as their IANA
   mnemonic and parse from it or from the bare number, which zone text writes. Open questions this phase
   leaves: [`TODECIDE.md`](TODECIDE.md). Steps: `plan/4-dnssec-experimental/`.
+- D71 (amends D69) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock through
+  rustls, and `data-encoding` for test and bench data. Policy, after RFC 9904 §3 and RFC 6840 §5.2: validated
+  are RSASHA1 and its NSEC3 alias (5, 7), RSASHA256 (8), RSASHA512 (10), ECDSAP256SHA256 (13),
+  ECDSAP384SHA384 (14), Ed25519 (15); DS digests SHA-1, SHA-256, SHA-384 (1, 2, 4). Unsupported, so the zone or
+  delegation is insecure (EDE 1 and 2): RSAMD5, DSA (1, 3, 6), GOST (12, DS digest 3), Ed448 (16, `ring` has
+  none), GOST 2012 (23), SM3 (DS 6), private and unknown codes. SHA-1 signatures stay validated, as RFC 9905 §2
+  tells implementations, though it tells operators to treat them as unsupported: too many signed zones still
+  use them (README item 3); [`TODECIDE.md`](TODECIDE.md) holds the switch. RSA keys: RFC 3110 §2, modulus 1024
+  to 4096 bits (`ring`'s `_1024_8192` variants, capped at RFC 3110 §2's 4096 where ring allows 8192), exponent
+  odd, 3 to 2^33 (`ring`'s bounds); anything else, the 512-bit keys of RFC 5155 Appendix A and RFC 5702 §6.1 included, is an unusable key, because `ring` does
+  not tell a refused key from a bad signature. An ECDSA point off the curve and an invalid Ed25519 key are
+  also reported as a bad signature, as `ring` returns no finer error. `Budget` bounds the work of one
+  validation, spent before each `verify` and `nsec3_hash` by the caller: 64 signature verifications and 8192
+  NSEC3 hashes (`iterations + 1` per name). Sized from `benchmarks.md`: 64 verifications cost at most 22 ms
+  (P-384, the slowest) where a chain of five zones needs about 20; 8192 hashes are 0.75 ms and cover 54 names
+  at 150 iterations, where a denial proof hashes about a dozen. An exhausted counter stays exhausted; the
+  answer is bogus, not retried. Signature examples are verified here from signed data built by hand from the
+  RFC text in `tests/common/mod.rs`, test-only. Rejected: aws-lc-rs (a C build, a second backend beside
+  rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone
+  would justify one, see TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed
+  in, D69).
 
 ## Wire format
 

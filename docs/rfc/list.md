@@ -45,6 +45,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 9619](https://datatracker.ietf.org/doc/html/rfc9619):** In the DNS, QDCOUNT Is (Usually) One
 
 ### DNSSEC (DNS Security Extensions)
+* **[RFC 3110](https://datatracker.ietf.org/doc/html/rfc3110):** RSA/SHA-1 SIGs and RSA KEYs in the DNS (RSA public key format)
 * **[RFC 3225](https://datatracker.ietf.org/doc/html/rfc3225):** Indicating Resolver Support of DNSSEC (DO bit)
 * **[RFC 4033](https://datatracker.ietf.org/doc/html/rfc4033):** DNS Security Introduction and Requirements
 * **[RFC 4034](https://datatracker.ietf.org/doc/html/rfc4034):** Resource Records for the DNS Security Extensions

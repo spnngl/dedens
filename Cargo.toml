@@ -29,6 +29,8 @@ compio = { version = "0.19.2", default-features = false, features = [
   "rustls",
   "time",
 ] }
+# D71: the RFC examples' base64, base32hex and hex in the crypto tests; the lock has it already.
+data-encoding = "2.11.1"
 dedens-cache = { path = "crates/dedens-cache" }
 dedens-dnssec = { path = "crates/dedens-dnssec" }
 dedens-net = { path = "crates/dedens-net" }

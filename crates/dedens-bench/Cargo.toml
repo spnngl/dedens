@@ -15,7 +15,10 @@ metrics = ["dedens-cache/metrics"]
 recorder = ["metrics", "dep:metrics-util"]
 
 [dependencies]
+# The RFC examples' keys and signatures, in base64, for `benches/dnssec.rs`.
+data-encoding.workspace = true
 dedens-cache.workspace = true
+dedens-dnssec.workspace = true
 dedens-net.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
@@ -49,6 +52,10 @@ harness = false
 
 [[bench]]
 name = "doh"
+harness = false
+
+[[bench]]
+name = "dnssec"
 harness = false
 
 [lints]
