@@ -5,7 +5,7 @@ mod common;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use common::loopback::{Peer, answer, id, listen, query_with_id};
+use common::loopback::{CLOSED, Peer, answer, id, listen, query_with_id};
 use dedens_net::tcp::{TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Record};
@@ -263,10 +263,8 @@ async fn the_server_keepalive_shortens_the_idle_timeout() {
 
 #[compio::test]
 async fn a_refused_connection_is_a_connect_error() {
-    let (listener, server) = listen().await;
-    drop(listener);
     let result = pool()
-        .exchange(server, &query_with_id(11), deadline())
+        .exchange(CLOSED, &query_with_id(11), deadline())
         .await;
     assert!(matches!(result, Err(TcpError::Connect(_))), "{result:?}");
 }
@@ -419,12 +417,10 @@ async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
 /// The error of a connection that cannot open goes to every query waiting for it, not to the first only.
 #[compio::test]
 async fn a_connect_error_goes_to_every_query_waiting() {
-    let (listener, server) = listen().await;
-    drop(listener);
     let pool = pool();
     let (first, second) = futures_util::future::join(
-        pool.local_addr(server, deadline()),
-        pool.local_addr(server, deadline()),
+        pool.local_addr(CLOSED, deadline()),
+        pool.local_addr(CLOSED, deadline()),
     )
     .await;
     assert!(matches!(first, Err(TcpError::Connect(_))), "{first:?}");

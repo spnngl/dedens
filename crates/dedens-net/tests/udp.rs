@@ -5,7 +5,7 @@ mod common;
 use std::io;
 use std::time::{Duration, Instant};
 
-use common::loopback::{answer, id, query_with_id, udp_responder};
+use common::loopback::{CLOSED, answer, id, query_with_id, udp_responder};
 use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_net::udp::UdpPool;
@@ -140,11 +140,8 @@ async fn a_large_datagram_comes_whole() {
 /// The socket is connected: an ICMP port unreachable reaches the query waiting on it.
 #[compio::test]
 async fn a_closed_port_is_refused() {
-    let closed = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-    let addr = closed.local_addr().expect("an address");
-    drop(closed);
     let pool = UdpPool::new(1);
-    let mut query = pool.query(addr, 0, 3).await.expect("a socket");
+    let mut query = pool.query(CLOSED, 0, 3).await.expect("a socket");
     query.send(&query_with_id(3)).await.expect("sent");
     let refused = query.recv(soon()).await.map_err(|error| error.kind());
     assert_eq!(refused, Err(io::ErrorKind::ConnectionRefused));
@@ -153,12 +150,9 @@ async fn a_closed_port_is_refused() {
 /// An error of the socket goes to the queries that sent on it, not to one that sent nothing yet.
 #[compio::test]
 async fn an_error_skips_a_query_that_sent_nothing() {
-    let closed = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-    let addr = closed.local_addr().expect("an address");
-    drop(closed);
     let pool = UdpPool::new(1);
-    let mut sending = pool.query(addr, 0, 3).await.expect("a socket");
-    let mut quiet = pool.query(addr, 0, 4).await.expect("a socket");
+    let mut sending = pool.query(CLOSED, 0, 3).await.expect("a socket");
+    let mut quiet = pool.query(CLOSED, 0, 4).await.expect("a socket");
     sending.send(&query_with_id(3)).await.expect("sent");
     let refused = sending.recv(soon()).await.map_err(|error| error.kind());
     assert_eq!(refused, Err(io::ErrorKind::ConnectionRefused));
