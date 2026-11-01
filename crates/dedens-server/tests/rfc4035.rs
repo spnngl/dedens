@@ -1,0 +1,268 @@
+//! RFC 4035 in the validating forward stage (D77): what a validating resolver answers (§3.2), caches (§4.5, §4.7)
+//! and sends (§4.6, §4.8). Upstream answers from the captures of `dedens-dnssec` (`testdata/README.md`), the
+//! validation at the time of their run.
+
+mod common;
+
+use common::{Captures, client_query, decode, run_captured, validating, with_flags};
+use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::{Flags, Message, Rcode, RecordType};
+
+/// The reply to a query, the requests upstream, and what the pipeline replied.
+fn ask(
+    name: &str,
+    qtype: RecordType,
+    flags: Flags,
+    dnssec: bool,
+) -> (Vec<Message<'static>>, Vec<u8>) {
+    let pipeline = validating();
+    let done = run_captured(
+        &pipeline,
+        &client_query(name, qtype, flags, dnssec),
+        0,
+        &Captures::new(),
+    );
+    (done.requests, done.reply.expect("a reply"))
+}
+
+/// Whether `items` has one: `is_empty` and `first` are both linted in an assertion.
+fn some<T>(items: &[T]) -> bool {
+    matches!(items, [_, ..])
+}
+
+fn signed(reply: &Message<'_>) -> bool {
+    reply
+        .answer
+        .iter()
+        .chain(&reply.authority)
+        .any(|record| record.rtype() == RecordType::RRSIG)
+}
+
+fn error(reply: &Message<'_>) -> Option<InfoCode> {
+    reply
+        .edns
+        .as_ref()?
+        .options
+        .iter()
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        })
+}
+
+/// §3.2.3: the answer of a secure zone checked up to the trust anchor is authentic, and says so. §3.2.1: the
+/// signatures come with it for a client that set DO.
+#[test]
+fn a_secure_answer_has_ad_and_its_signatures_for_clients_with_do() {
+    let (requests, wire) = ask("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(signed(&reply));
+    assert!(requests.len() > 1, "the chain of trust is asked for");
+}
+
+/// §3.2.1: a client that did not set DO gets no DNSSEC record, §3.2.3 and RFC 6840 §5.8: AD when it asked with AD.
+#[test]
+fn signatures_are_left_out_for_clients_without_do() {
+    let (_, wire) = ask("cloudflare.com.", RecordType::A, Flags::AD, false);
+    let reply = decode(&wire);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(!signed(&reply));
+    assert!(some(&reply.answer));
+}
+
+/// §3.2.3: an answer of an unsigned zone is insecure: no AD.
+#[test]
+fn an_insecure_answer_has_no_ad() {
+    let (_, wire) = ask("google.com.", RecordType::A, Flags::AD, true);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(some(&reply.answer));
+}
+
+/// §5.5, RFC 8914 §4.7: an answer that fails validation is SERVFAIL, with the reason.
+#[test]
+fn a_bogus_answer_is_servfail_with_an_extended_error() {
+    for (name, code) in [
+        ("dnssec-failed.org.", InfoCode::DNSKEY_MISSING),
+        ("sigfail.verteiltesysteme.net.", InfoCode::DNSSEC_BOGUS),
+    ] {
+        let (_, wire) = ask(name, RecordType::A, Flags::NONE, true);
+        let reply = decode(&wire);
+        assert_eq!(reply.rcode(), Rcode::SERVFAIL, "{name}");
+        assert!(reply.answer.is_empty(), "{name}");
+        assert!(!reply.header.flags.contains(Flags::AD));
+        assert_eq!(error(&reply), Some(code), "{name}");
+    }
+}
+
+/// §3.2.2: a client that set CD gets the data whatever its signatures, as it came, AD clear, and no validation
+/// was asked for.
+#[test]
+fn a_client_with_cd_gets_bogus_data_unvalidated() {
+    let (requests, wire) = ask("dnssec-failed.org.", RecordType::A, Flags::CD, true);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(some(&reply.answer));
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(reply.header.flags.contains(Flags::CD));
+    assert_eq!(requests.len(), 1);
+}
+
+/// §4.7: bad data is kept for a short time that the resolver sets, 60 seconds; a client that did not disable
+/// checking gets SERVFAIL from it, one that did gets the data (§3.2.2); then it is validated again.
+#[test]
+fn bogus_data_is_cached_for_sixty_seconds() {
+    let pipeline = validating();
+    let captures = Captures::new();
+    let query = client_query("dnssec-failed.org.", RecordType::A, Flags::NONE, true);
+    let first = run_captured(&pipeline, &query, 100, &captures);
+    assert!(some(&first.requests));
+    let cached = run_captured(&pipeline, &query, 159, &captures);
+    assert_eq!(cached.requests.len(), 0, "answered from the cache");
+    let wire = cached.reply.expect("a reply");
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert_eq!(error(&reply), Some(InfoCode::DNSKEY_MISSING));
+
+    let disabled = client_query("dnssec-failed.org.", RecordType::A, Flags::CD, true);
+    let served = run_captured(&pipeline, &disabled, 159, &captures);
+    assert_eq!(served.requests.len(), 0, "the data comes from the cache");
+    let wire = served.reply.expect("a reply");
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(some(&reply.answer));
+
+    let again = run_captured(&pipeline, &query, 161, &captures);
+    assert!(some(&again.requests), "validated again");
+}
+
+/// §4.5: a validated response is one entry with its signatures: a client's next query is answered from it, AD
+/// following the client's query and the verdict.
+#[test]
+fn a_validated_answer_is_cached_whole() {
+    let pipeline = validating();
+    let captures = Captures::new();
+    let asked = |flags, dnssec| {
+        let query = client_query("cloudflare.com.", RecordType::A, flags, dnssec);
+        let done = run_captured(&pipeline, &query, 1, &captures);
+        (
+            done.requests.len(),
+            decode(&done.reply.expect("a reply")).into_owned(),
+        )
+    };
+    let (first, _) = asked(Flags::NONE, true);
+    assert!(first > 1);
+    let (hit, reply) = asked(Flags::NONE, true);
+    assert_eq!(hit, 0);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(signed(&reply));
+    let (hit, reply) = asked(Flags::NONE, false);
+    assert!(hit > 1, "another key: the answer for a client without DO");
+    assert!(!reply.header.flags.contains(Flags::AD));
+    let (hit, reply) = asked(Flags::AD, false);
+    assert_eq!(hit, 0);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(!signed(&reply));
+}
+
+/// §4.6: queries clear AD; RFC 6840 §5.9: and set CD, with DO, and none of the client's options, for the client's
+/// question and for each of the validator's.
+#[test]
+fn every_query_upstream_has_do_and_cd_and_no_ad() {
+    let pipeline = validating();
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::AD, false);
+    let done = run_captured(&pipeline, &query, 0, &Captures::new());
+    assert!(done.requests.len() > 1);
+    for request in &done.requests {
+        assert_eq!(request.header.flags, Flags::RD | Flags::CD);
+        let edns = request.edns.as_ref().expect("EDNS");
+        assert!(edns.flags.contains(dedens_proto::EdnsFlags::DO));
+        assert_eq!(edns.options, []);
+    }
+}
+
+/// §4.8: the CNAME a DNAME makes is covered by the DNAME's signature, and the answer keeps it.
+#[test]
+fn the_cname_a_dname_makes_stays_in_the_secure_answer() {
+    let (_, wire) = ask(
+        "www.dname.sidnlabs.nl.",
+        RecordType::AAAA,
+        Flags::NONE,
+        true,
+    );
+    let reply = decode(&wire);
+    assert!(reply.header.flags.contains(Flags::AD));
+    let types: Vec<RecordType> = reply
+        .answer
+        .iter()
+        .map(dedens_proto::Record::rtype)
+        .collect();
+    assert!(types.contains(&RecordType::DNAME), "{types:?}");
+    assert!(types.contains(&RecordType::CNAME), "{types:?}");
+    assert!(types.contains(&RecordType::AAAA), "{types:?}");
+}
+
+/// §3.2.3 and RFC 6840 §5.8: AD says all of the answer is authentic: a chain that goes on in an unsigned zone
+/// is delivered without it, whatever the CNAMEs signed.
+#[test]
+fn an_answer_that_leaves_the_secure_zone_has_no_ad() {
+    let (_, wire) = ask("www.ripe.net.", RecordType::A, Flags::AD, true);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(some(&reply.answer));
+    assert!(!reply.header.flags.contains(Flags::AD));
+}
+
+/// §4.6: the AD bit of an upstream response means nothing without a secure channel: only the verdict sets it.
+#[test]
+fn the_ad_bit_of_upstream_is_ignored() {
+    let pipeline = validating();
+    let lying = with_flags(Captures::get("google_com_a"), Flags::AD);
+    let captures = Captures::new().with(lying);
+    let query = client_query("google.com.", RecordType::A, Flags::AD, true);
+    let done = run_captured(&pipeline, &query, 0, &captures);
+    let wire = done.reply.expect("a reply");
+    assert!(!decode(&wire).header.flags.contains(Flags::AD));
+}
+
+/// §3.2.3: the verdict covers the answer and authority sections, not the additional one: what upstream put there
+/// is not handed out.
+#[test]
+fn a_secure_answer_loses_its_additional_section() {
+    let mut message = decode(&Captures::get("alg13_a")).into_owned();
+    let mut extra = message.answer[0].clone();
+    extra.name = common::dns("unsigned.example.");
+    message.additional.push(extra);
+    let captures = Captures::new().with(common::wire(&message));
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let done = run_captured(&validating(), &query, 0, &captures);
+    let wire = done.reply.expect("a reply");
+    let reply = decode(&wire);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(some(&reply.answer));
+    assert_eq!(reply.additional, []);
+}
+
+/// §4.3: no verdict, for lack of an answer to a question of the validator's: SERVFAIL, held for the next query.
+#[test]
+fn no_verdict_is_servfail_and_held() {
+    let pipeline = validating();
+    let captures = Captures::new().without("com.", RecordType::DS);
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let first = run_captured(&pipeline, &query, 0, &captures);
+    assert!(
+        first.asked.len() > 2,
+        "every server was tried: {:?}",
+        first.asked
+    );
+    let wire = first.reply.expect("a reply");
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(error(&reply).is_some());
+    let held = run_captured(&pipeline, &query, 1, &captures);
+    assert_eq!(held.requests.len(), 0, "the failure is held");
+}

@@ -6,17 +6,19 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_proto::{Decoded, Flags, Message, Question, Rcode};
+use dedens_proto::{Decoded, Edns, EdnsFlags, Flags, Message, Question, Rcode};
 
 use crate::reply::Client;
+use crate::validate::Validating;
 
 /// Asks upstream servers the client's question, in order, until one answers usably.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Forward {
     /// Never empty.
     servers: Box<[Server]>,
     timeout: Duration,
     tries: NonZeroU8,
+    validation: Option<Validating>,
 }
 
 impl Forward {
@@ -34,6 +36,7 @@ impl Forward {
             servers,
             timeout: Self::TIMEOUT,
             tries: Self::TRIES,
+            validation: None,
         })
     }
 
@@ -49,6 +52,24 @@ impl Forward {
     pub const fn with_tries(mut self, tries: NonZeroU8) -> Self {
         self.tries = tries;
         self
+    }
+
+    /// Validates what the servers answer (D77): AD is set by the verdict alone, a bogus answer is SERVFAIL, and
+    /// the validator's questions go to the servers too.
+    #[must_use]
+    pub fn validating(mut self, validation: Validating) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    /// Whether [`Forward::validating`] was set.
+    #[must_use]
+    pub const fn validates(&self) -> bool {
+        self.validation.is_some()
+    }
+
+    pub(crate) const fn validation(&self) -> Option<&Validating> {
+        self.validation.as_ref()
     }
 
     /// How long each query waits, and how many each server is sent.
@@ -120,10 +141,32 @@ impl fmt::Display for Server {
 /// The query asked upstream for the client's: its question, RD set (only queries asking for recursion get here,
 /// and refreshes), the client's AD and CD bits (RFC 6840 §5.7-5.9), and our EDNS with its DO bit, none of its
 /// options. The client subnet stays here (D41), and cookies are between us and upstream (RFC 7873 §5.1).
-pub(crate) fn request(client: &Client<'_>, question: &Question<'_>) -> Message<'static> {
+///
+/// Validating (D77), the query is the one of [`probe`]: our own validation needs the signatures, and the client's
+/// bits are for the reply.
+pub(crate) fn request(
+    client: &Client<'_>,
+    question: &Question<'_>,
+    validating: bool,
+) -> Message<'static> {
+    if validating {
+        return probe(question);
+    }
     let mut request = Message::query(0, question.clone().into_owned());
     request.header.flags = client.header.flags & (Flags::AD | Flags::CD) | Flags::RD;
     request.edns = Some(client.our_edns());
+    request
+}
+
+/// A query of the validator's (D77): RD, DO to get the signatures and CD so that a response failing validation
+/// still comes (RFC 6840 §5.9), our EDNS and none of the client's.
+pub(crate) fn probe(question: &Question<'_>) -> Message<'static> {
+    let mut request = Message::query(0, question.clone().into_owned());
+    request.header.flags = Flags::RD | Flags::CD;
+    request.edns = Some(Edns {
+        flags: EdnsFlags::DO,
+        ..Edns::default()
+    });
     request
 }
 

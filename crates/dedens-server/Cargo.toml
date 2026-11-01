@@ -8,9 +8,15 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Validation counters through the `metrics` facade (D30, D77).
+metrics = ["dep:metrics"]
+
 [dependencies]
 dedens-cache.workspace = true
+dedens-dnssec.workspace = true
 dedens-proto.workspace = true
+metrics = { workspace = true, optional = true }
 
 [lints]
 workspace = true

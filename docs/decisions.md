@@ -229,6 +229,39 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
+- D77 (amends D41, D43, D45; builds on D75) A forward stage validates with `dnssec: validate` (default `off`; `off` is
+  read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else the bundled
+  root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused. One
+  `Validator` per stage, built by `config.rs` at each read, so a reload builds a new one (D55). The wall clock is
+  the caller's (`Validating::new(validator, clock)`, Unix seconds): the pipeline's `now` is a monotonic `u32`.
+  The glue is `dedens-server`'s `validate.rs`: `Check` owns a `Validation` and the client's answer, and the
+  pipeline turns each `Next::Ask` into a `Step::Upstream` whose `Upstream::request()` is the validator's question
+  (RD, DO and CD, no client option, never AD: RFC 4035 §4.6, RFC 6840 §5.9) and whose servers start again from the
+  first (the `tries`/`timeout_ms` and rotation of D45 apply to each question). So `serve.rs` is unchanged. A
+  validating stage's query for the client's own question also carries CD and DO whatever the client set; a client
+  with CD (or a question not of class IN) is answered unvalidated, AD clear, from the same upstream query. Every
+  validation question is an upstream query of its own and counts as one (`dedens_validation_questions_total`); none
+  is read from or written to the answer cache, and each answer is untrusted input to the validator. A key cache
+  (06b) slots into `Validating`, not the pipeline. Prefetch and stale refresh validate as any query.
+  Verdicts (`dedens_validations_total{verdict}`): AD is set by `Secure` alone, never from the upstream's bit, and
+  only for a client with DO or AD (RFC 6840 §5.8); additional section, other classes dropped from a secure answer
+  (RFC 4035 §3.2.3), every TTL capped at the verdict's. The CNAME a DNAME makes is kept: the validator accepts only
+  the exact one (RFC 4035 §4.8 lets the resolver return it), and a client that does not synthesize it would
+  otherwise lose the answer. `Incomplete`: the answer of `next` is validated apart; the chain's answer is then
+  delivered insecure, AD clear, cached at most as long as the incomplete part, whatever the second verdict, but
+  bogus and indeterminate end it. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
+  (RFC 8914; the code only: the OPT of a reply carries no text), and the response cached for `Config::bogus_ttl`
+  (60 s, Unbound's `val-bogus-ttl`; RFC 4035 §4.7: small, assigned), never served stale; a hit answers
+  SERVFAIL+EDE without validating, a client with CD gets the data (RFC 4035 §3.2.2: the cache stores it under the CD
+  key as well, `Checked::Insecure`). `Indeterminate`: SERVFAIL with EDE, not cached: the failure hold of D43 (RFC 9520)
+  starts, which may outlast 60 s once repeated. A question unanswered by every server is indeterminate, not bogus.
+  Cache: an entry records `Checked` (`Unchecked`, `Secure`, `Insecure`, `Bogus(code)`) beside the response; a hit
+  sets or clears AD from it, and nothing else of DNSSEC is in the cache. It stores each response whole under the
+  client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
+  §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
+  §4.7, an EDE on a cached insecure answer, aggressive use of NSEC (RFC 8198). Tests: `tests/rfc4035.rs` and
+  `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
+  `dedens-cache/tests/checked.rs`, the configuration tests of `config.rs`; bench `hit_secure` of `benches/server.rs`.
 
 - D76 (amends D32, D34, D37, D40, D69; amended by D86) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
   the server is a transport, never trusted. `validate` is an `Options` field, so a query file carries it, and it

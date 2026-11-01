@@ -64,6 +64,13 @@ impl Key {
         Some(Self::new(question, dnssec_ok, checking_disabled))
     }
 
+    /// This key with the CD bit set: the entry a client that validates itself reads.
+    pub(crate) fn with_checking_disabled(&self) -> Self {
+        let mut key = self.clone();
+        key.bytes[key.len - 1] |= CHECKING_DISABLED;
+        key
+    }
+
     /// The bytes compared and hashed.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {

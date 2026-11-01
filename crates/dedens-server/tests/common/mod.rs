@@ -3,12 +3,15 @@
 
 #![allow(dead_code, reason = "each test file uses part of the helpers")]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
-use dedens_proto::{Flags, Message, Name, Rcode};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_dnssec::anchor::TrustAnchors;
+use dedens_dnssec::validator::{Limits, Validator};
+use dedens_proto::{Flags, Message, Name, Rcode, RecordType};
+use dedens_server::{Forward, Pipeline, Stage, Step, Transport, Validating};
 
 /// The upstream servers of [`forwarder`], in order.
 pub(crate) fn servers() -> Vec<SocketAddr> {
@@ -153,4 +156,145 @@ pub(crate) fn reply(
     run(pipeline, query, transport, &[response])
         .reply
         .expect("a reply")
+}
+
+/// The captured responses of `dedens-dnssec` (its `testdata/README.md`), by the question each answers: the upstream
+/// of the validation tests.
+pub(crate) struct Captures(HashMap<(Name<'static>, RecordType), Vec<u8>>);
+
+impl Captures {
+    pub(crate) fn new() -> Self {
+        let dir = format!(
+            "{}/../dedens-dnssec/tests/testdata",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut all = HashMap::new();
+        for entry in std::fs::read_dir(dir).expect("the captures") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_some_and(|extension| extension == "bin") {
+                let wire = std::fs::read(&path).expect("a capture");
+                let message = decode(&wire).into_owned();
+                let question = message.questions.first().expect("a question");
+                all.insert((question.name.clone(), question.qtype), wire);
+            }
+        }
+        Self(all)
+    }
+
+    /// The capture `id`, as `testdata/README.md` names it.
+    /// The same captures, `wire` answering its question instead of the one captured.
+    pub(crate) fn with(mut self, wire: Vec<u8>) -> Self {
+        let message = decode(&wire).into_owned();
+        let question = message.questions.first().expect("a question");
+        self.0.insert((question.name.clone(), question.qtype), wire);
+        self
+    }
+
+    /// The same captures without the answer to `name` and `qtype`: upstream stays silent.
+    pub(crate) fn without(mut self, name: &str, qtype: RecordType) -> Self {
+        self.0.remove(&(dns(name), qtype));
+        self
+    }
+
+    pub(crate) fn get(id: &str) -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/../dedens-dnssec/tests/testdata/{id}.bin",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("a capture")
+    }
+
+    fn answer(&self, request: &Message<'_>) -> Option<&[u8]> {
+        let question = request.questions.first()?;
+        self.0
+            .get(&(question.name.clone().into_owned(), question.qtype))
+            .map(Vec::as_slice)
+    }
+}
+
+/// The Unix time of the capture run: when the signatures are valid.
+pub(crate) fn captured_at() -> u64 {
+    std::fs::read_to_string(format!(
+        "{}/../dedens-dnssec/tests/testdata/captured_at",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("captured_at")
+    .trim()
+    .parse()
+    .expect("Unix time in seconds")
+}
+
+/// A pipeline with a cache, then forwarding to [`servers`] and validating against the root's trust anchor at
+/// [`captured_at`].
+pub(crate) fn validating() -> Pipeline {
+    validating_with(TrustAnchors::root())
+}
+
+/// [`validating`] with `anchors`.
+pub(crate) fn validating_with(anchors: TrustAnchors) -> Pipeline {
+    let validator = Validator::new(anchors, Limits::default());
+    let clock = std::sync::Arc::new(captured_at);
+    Pipeline::new(vec![
+        Stage::Cache(Arc::new(
+            Cache::new(Config::default()).expect("the default settings"),
+        )),
+        Stage::Forward(
+            Forward::new(servers())
+                .expect("servers")
+                .validating(Validating::new(validator, clock)),
+        ),
+    ])
+}
+
+/// [`run_at`] with upstream answering each request from `captures`, by its question: nothing for a question it
+/// has no capture of.
+pub(crate) fn run_captured(
+    pipeline: &Pipeline,
+    query: &[u8],
+    now: u32,
+    captures: &Captures,
+) -> Run {
+    let mut out = vec![0; 65535];
+    let mut asked = Vec::new();
+    let mut requests = Vec::new();
+    let mut sent = None;
+    let mut step = pipeline.query(query, Transport::Udp, now, &mut out);
+    let reply = loop {
+        match step {
+            Step::Reply(len) => break Some(out[..len].to_vec()),
+            Step::Drop => break sent,
+            Step::Refresh(len, upstream) => {
+                sent = Some(out[..len].to_vec());
+                step = Step::Upstream(upstream);
+            }
+            Step::Upstream(upstream) => {
+                asked.push(upstream.server().addr);
+                let request = upstream.request();
+                let response = captures.answer(&request);
+                requests.push(request);
+                assert!(requests.len() < 200, "the query asks for ever");
+                step = pipeline.receive(upstream, response, now, &mut out);
+            }
+        }
+    };
+    Run {
+        asked,
+        requests,
+        reply,
+    }
+}
+
+/// A query for `name` and `qtype` with RD, the client's `flags` and EDNS with DO set as `dnssec`.
+pub(crate) fn client_query(name: &str, qtype: RecordType, flags: Flags, dnssec: bool) -> Vec<u8> {
+    let mut query = Message::query(7, dedens_proto::Question::new(dns(name), qtype));
+    query.header.flags = Flags::RD | flags;
+    query.edns = Some(dedens_proto::Edns {
+        flags: if dnssec {
+            dedens_proto::EdnsFlags::DO
+        } else {
+            dedens_proto::EdnsFlags::default()
+        },
+        ..dedens_proto::Edns::default()
+    });
+    wire(&query)
 }
