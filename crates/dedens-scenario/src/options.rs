@@ -50,6 +50,11 @@ pub struct Options {
     /// feature of the build. Not with `tcp`, `tls`, `quic`, `https` or `odoh_proxy`. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub coap: Option<bool>,
+    /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
+    /// are not fetched from the target, which would give it the client's address, and no query is linked to it.
+    /// Default: fetched from the target.
+    #[cfg_attr(feature = "clap", arg(long, value_name = "FILE"))]
+    pub odoh_config: Option<String>,
     /// Keep a truncated UDP response instead of asking again over TCP. Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub ignore: Option<bool>,
@@ -104,6 +109,7 @@ impl Options {
             https_post: self.https_post.or(fallback.https_post),
             odoh_proxy: self.odoh_proxy.or(fallback.odoh_proxy),
             coap: self.coap.or(fallback.coap),
+            odoh_config: self.odoh_config.or(fallback.odoh_config),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
             cdflag: self.cdflag.or(fallback.cdflag),
@@ -124,7 +130,8 @@ impl Options {
     ///
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
     /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; `odoh_proxy` with `tcp`, `tls`,
-    /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`.
+    /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`; `odoh_config` without
+    /// `odoh_proxy`.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -149,6 +156,9 @@ impl Options {
         }
         if self.odoh() && self.https_get == Some(true) {
             return Err(InvalidOption("odoh-proxy sends by POST: no https-get"));
+        }
+        if self.odoh_config.is_some() && !self.odoh() {
+            return Err(InvalidOption("odoh-config goes with odoh-proxy"));
         }
         if self.https_get == Some(true) && self.https_post == Some(true) {
             return Err(InvalidOption("https-get and https-post exclude each other"));

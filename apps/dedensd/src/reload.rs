@@ -54,9 +54,9 @@ pub(crate) struct Fixed {
     pub(crate) trust: Trust,
     /// The certificate presented over TLS and QUIC, which a reload replaces (D66).
     pub(crate) presented: Option<Arc<Presented>>,
-    /// The Oblivious `DoH` target: its key is made at start (D79).
+    /// The Oblivious `DoH` target's settings: its key is read at start (D79).
     #[cfg(feature = "odoh")]
-    pub(crate) odoh: Option<Arc<crate::odoh::Target>>,
+    pub(crate) odoh: Option<crate::odoh::Section>,
 }
 
 /// The first wait after a failed download; each failure in a row doubles it, up to the refresh interval.
@@ -172,9 +172,7 @@ fn reload(
                 tracing::warn!(%config, "changes to `upstream_ca` take a restart");
             }
             #[cfg(feature = "odoh")]
-            if new.odoh.as_deref().map(crate::odoh::Target::source)
-                != fixed.odoh.as_deref().map(crate::odoh::Target::source)
-            {
+            if new.odoh != fixed.odoh {
                 tracing::warn!(%config, "changes to `odoh` take a restart");
             }
             if let (Some(presented), Some(new)) = (&fixed.presented, new.presented) {

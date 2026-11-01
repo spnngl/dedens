@@ -81,6 +81,10 @@ pub enum ClientError {
     /// The transport is not built in: its Cargo feature is off (D69).
     #[error("the {0} transport is not built in")]
     NotBuilt(&'static str),
+    /// [`Client::exchange`] was asked for [`Transport::Odoh`], which is oblivious through a proxy only: it is
+    /// [`Client::exchange_oblivious`]'s (D79).
+    #[error("Oblivious DoH goes through Client::exchange_oblivious")]
+    OdohWithoutProxy,
     /// The exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
@@ -97,6 +101,7 @@ impl ClientError {
             | Self::Encode(_)
             | Self::Template(_)
             | Self::NotBuilt(_)
+            | Self::OdohWithoutProxy
             | Self::Tcp(TcpError::Trust(_))
             | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
             | Self::Https(
@@ -312,13 +317,16 @@ impl Client {
     /// # Errors
     ///
     /// [`ClientError`]: no randomness, a query that cannot be encoded, a socket or connection failure, or no
-    /// response after all the tries.
+    /// response after all the tries; [`ClientError::OdohWithoutProxy`] for [`Transport::Odoh`].
     pub async fn exchange(
         &self,
         query: Message<'_>,
         server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
+        if options.transport == Transport::Odoh {
+            return Err(ClientError::OdohWithoutProxy);
+        }
         self.run(query, &server.into(), None, options).await
     }
 
@@ -346,6 +354,28 @@ impl Client {
         };
         self.run(query, &target.into(), proxy.as_ref(), &options)
             .await
+    }
+
+    /// Keeps `configs`, the encoded key configurations of the Oblivious `DoH` `target`, for good: they are not
+    /// fetched from it, which would give it the client's address (D79).
+    ///
+    /// # Errors
+    ///
+    /// [`OdohError`] for a target with no template, or bytes that are no configurations.
+    #[cfg(feature = "odoh")]
+    pub fn pin_odoh_configs(
+        &self,
+        target: impl Into<Server>,
+        configs: &[u8],
+    ) -> Result<(), OdohError> {
+        self.odoh.pin(&target.into(), configs)
+    }
+
+    /// What the Oblivious `DoH` exchanges since the last call have to tell the user (D79).
+    #[cfg(feature = "odoh")]
+    #[must_use]
+    pub fn take_odoh_notices(&self) -> Vec<odoh::Notice> {
+        self.odoh.take_notices()
     }
 
     /// [`Client::exchange`] with the proxy of an Oblivious `DoH` exchange, if any.

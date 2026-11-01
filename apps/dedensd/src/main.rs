@@ -71,6 +71,14 @@ fn main() -> anyhow::Result<()> {
     let path = file.display();
     let text = read(&file)?;
     let config = build(&file, &text, &Pipeline::default())?;
+    // The key is read here, once: `validate` checks it reads.
+    #[cfg(feature = "odoh")]
+    let odoh = config
+        .odoh
+        .as_ref()
+        .map(odoh::Section::target)
+        .transpose()?
+        .map(Arc::new);
     if let Some(Command::Validate) = args.command {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
@@ -113,7 +121,7 @@ fn main() -> anyhow::Result<()> {
         let (current, ended) = (Arc::clone(&current), ended.clone());
         let (trust, presented) = (config.trust.clone(), presented.clone());
         #[cfg(feature = "odoh")]
-        let odoh = config.odoh.clone();
+        let odoh = odoh.clone();
         thread::spawn(move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
                 let serving = serve::serve(

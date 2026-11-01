@@ -294,6 +294,16 @@ async fn ask(
         options.transport = transport;
     }
     let address = endpoint.server.addr;
+    #[cfg(feature = "odoh")]
+    if endpoint.proxy.is_some()
+        && let Some(file) = &job.options.odoh_config
+    {
+        let configs = std::fs::read(file)
+            .with_context(|| format!("+odoh-config {file}: cannot read the file"))?;
+        client
+            .pin_odoh_configs(endpoint.server.clone(), &configs)
+            .with_context(|| format!("+odoh-config {file}: not key configurations"))?;
+    }
     for (index, name) in job.names.iter().enumerate() {
         let question = Question {
             name: name.clone(),
@@ -305,9 +315,11 @@ async fn ask(
         let response = match &endpoint.proxy {
             #[cfg(feature = "odoh")]
             Some(proxy) => {
-                client
+                let response = client
                     .exchange_oblivious(query, server, Some(Server::clone(proxy)), &options)
-                    .await?
+                    .await;
+                notices(client);
+                response?
             }
             _ => client.exchange(query, server, &options).await?,
         };
@@ -318,6 +330,22 @@ async fn ask(
         }
     }
     Err(anyhow!("no name to ask"))
+}
+
+/// Tells on stderr what the Oblivious `DoH` exchanges since the last call have to tell (D79).
+#[cfg(feature = "odoh")]
+fn notices(client: &Client) {
+    for notice in client.take_odoh_notices() {
+        let message = match notice {
+            dedens_net::odoh::Notice::ConfigsNotToBeKept(target) => format!(
+                "{target} was asked for its key configurations from this address, not through the proxy, and does not want them kept: \
+                 it can link the address to the query that follows; +odoh-config=FILE avoids the fetch"
+            ),
+            _ => continue,
+        };
+        // Nowhere to report a stderr that does not write.
+        let _ = writeln!(io::stderr(), "warning: {message}");
+    }
 }
 
 /// Whether `error` is the server's silence, refusal or reset: dig's exit code 9.

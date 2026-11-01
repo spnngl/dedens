@@ -124,7 +124,9 @@ impl HttpsPool {
         deadline: Instant,
     ) -> Result<Reply, HttpsError> {
         let request = doh::request(template, wire, method).map_err(HttpsError::Request)?;
-        let (head, body) = self.send(addr, name, &request, deadline).await?;
+        let (head, body) = self
+            .send(addr, name, &request, MAX_MESSAGE_LEN, deadline)
+            .await?;
         let wire = doh::wire(&head, &body, SystemTime::now())?;
         Ok(Reply {
             wire,
@@ -139,26 +141,28 @@ impl HttpsPool {
     /// and body, of whatever status and type: what `DoH` makes of it is [`HttpsPool::exchange`]'s, and what
     /// Oblivious `DoH` makes is the caller's (D79).
     ///
-    /// A request is sent again once on a new connection as [`HttpsPool::exchange`] says.
+    /// A request is sent again once on a new connection as [`HttpsPool::exchange`] says. A body longer than `limit`
+    /// bytes is an error: a DNS message at most, or what Oblivious `DoH` adds to one (D79).
     ///
     /// # Errors
     ///
-    /// [`HttpsError`]: no connection, a failed request, a body longer than a DNS message, or no response before
+    /// [`HttpsError`]: no connection, a failed request, a body longer than `limit`, or no response before
     /// `deadline`.
     pub async fn send(
         &self,
         addr: SocketAddr,
         name: ServerName<'static>,
         request: &Request<Vec<u8>>,
+        limit: usize,
         deadline: Instant,
     ) -> Result<(Response<()>, Vec<u8>), HttpsError> {
         let server = (addr, name);
         let asked = async {
             let (open, reused) = self.connection(&server).await?;
-            match ask(&open, request).await {
+            match ask(&open, request, limit).await {
                 Err(error) if reused && open.dropped(&error) => {
                     let (fresh, _) = self.connection(&server).await?;
-                    ask(&fresh, request).await
+                    ask(&fresh, request, limit).await
                 }
                 asked => asked,
             }
@@ -208,10 +212,12 @@ impl Open {
     }
 }
 
-/// Sends `request` alone on a new stream of `open` and reads the response to the end of the stream.
+/// Sends `request` alone on a new stream of `open` and reads the response to the end of the stream, which may not be
+/// longer than `limit`.
 async fn ask(
     open: &Open,
     request: &Request<Vec<u8>>,
+    limit: usize,
 ) -> Result<(Response<()>, Vec<u8>), HttpsError> {
     let (parts, body) = request.clone().into_parts();
     let sent = open
@@ -243,7 +249,7 @@ async fn ask(
     let mut body = Vec::new();
     while let Some(chunk) = stream.inner.recv_data().await.map_err(HttpsError::Stream)? {
         append(&mut body, chunk);
-        if body.len() > MAX_MESSAGE_LEN {
+        if body.len() > limit {
             return Err(HttpsError::TooLong);
         }
     }
@@ -328,7 +334,7 @@ impl Pending {
     ///
     /// [`HttpsError::Stream`] for a request the client broke (RFC 9114 §4.1.2: the stream is reset) or cut.
     pub async fn read(self, path: &str) -> Result<Exchange, HttpsError> {
-        self.read_with(|request, body| {
+        self.read_with(MAX_MESSAGE_LEN, |request, body| {
             let query = if request.uri().path() == path {
                 doh::server_request(request, body)
             } else {
@@ -341,17 +347,19 @@ impl Pending {
 
     /// As [`Pending::read`], for a service that is not `DoH` alone: `classify` makes of the request head and body
     /// what the service takes of them, the kind of request and what [`Exchange::query`] gives (Oblivious `DoH`, D79).
+    /// The body is read to the end or past `limit` bytes: a DNS message's size, or what Oblivious `DoH` adds to it.
     ///
     /// # Errors
     ///
     /// As [`Pending::read`].
     pub async fn read_with<K>(
         self,
+        limit: usize,
         classify: impl FnOnce(&Request<()>, &[u8]) -> (K, Result<Vec<u8>, StatusCode>),
     ) -> Result<Exchange<K>, HttpsError> {
         let (request, mut stream) = self.0.resolve_request().await.map_err(HttpsError::Stream)?;
         let mut body = Vec::new();
-        while body.len() <= MAX_MESSAGE_LEN
+        while body.len() <= limit
             && let Some(chunk) = stream.recv_data().await.map_err(HttpsError::Stream)?
         {
             append(&mut body, chunk);

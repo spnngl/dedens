@@ -32,9 +32,17 @@ Open questions, each with its proposed default. Once answered, record the outcom
   §4.1's checks: no non-standard port, 502 when the target is unreachable, no caching, no redirects). Default: out of
   this phase, `dedensd` is a target only.
 - ODoH configurations discovery (D79): fetched from `/.well-known/odohconfigs` of the target, straight to it, so the
-  target sees the client's address once per lifetime, and Cloudflare's `no-cache, no-store` makes it once per
-  exchange. Alternatives: through the proxy (needs a proxy that relays GET), from a file, from the target's SVCB
-  record (RFC 9460; the ODoH SVCB parameters are not in an RFC). Default: well-known, direct.
+  target sees the client's address, and the query that follows may be linked to it by timing; `dedens` keeps them an
+  hour at least (a longer-lived `dedensd` client fetches rarely) and warns when the target forbids keeping them, but
+  a one-shot `dedens` fetches each run: `+odoh-config=FILE` is its way out. Alternatives: through the proxy (needs a
+  proxy that relays GET), from the target's SVCB record (RFC 9460; the ODoH SVCB parameters are not in an RFC), a
+  fetch at a random time apart from the query. Default: well-known, direct.
+- ODoH target throttle (D79): `dedensd` opens every POST of the media type, an X25519 decapsulation and an AEAD open,
+  before it knows the sender; the proxy of RFC 9230 §4 is no authentication, and the rate limit of `dedensd` (when
+  there is one) comes after. Default: none; add a per-address budget before the decapsulation with the rate limits.
+- ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
+  `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
+  one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
 - ODoH over HTTP/2 (D79): public proxies speak HTTP/2 only (November 2026), so `+odoh-proxy` reaches no public proxy
   until 23. Default: HTTP/3 only (D83).
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).

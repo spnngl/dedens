@@ -388,9 +388,9 @@ pub(crate) struct Config {
     pub(crate) listen: Vec<Listen>,
     /// The certificate presented over TLS and QUIC: there when `listen` has such an address.
     pub(crate) presented: Option<Presented>,
-    /// The Oblivious `DoH` target, there when `odoh` is.
+    /// The Oblivious `DoH` target's settings, there when `odoh` is: the key is read at start only.
     #[cfg(feature = "odoh")]
-    pub(crate) odoh: Option<Arc<crate::odoh::Target>>,
+    pub(crate) odoh: Option<crate::odoh::Section>,
     pub(crate) pipeline: Pipeline,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
@@ -416,7 +416,7 @@ pub(crate) fn read(
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     let presented = presented(&file.listen, file.tls.as_ref())?;
     #[cfg(feature = "odoh")]
-    let odoh = target(file.odoh.as_ref(), &file.listen)?;
+    let odoh = section(file.odoh.as_ref(), &file.listen)?;
     #[cfg(not(feature = "odoh"))]
     ensure!(
         file.odoh.is_none(),
@@ -534,16 +534,17 @@ fn forward(
     Ok(forward)
 }
 
-/// The Oblivious `DoH` target of `odoh`, if any (D79).
+/// The Oblivious `DoH` target settings of `odoh`, if any (D79). The key is not read: a reload builds this again, and
+/// the key is read at start (D79).
 ///
 /// # Errors
 ///
-/// `odoh` without an `https://` address in `listen`, or a key that does not read.
+/// `odoh` without an `https://` address in `listen`.
 #[cfg(feature = "odoh")]
-fn target(
+fn section(
     odoh: Option<&OdohFile>,
     listen: &[Listen],
-) -> anyhow::Result<Option<Arc<crate::odoh::Target>>> {
+) -> anyhow::Result<Option<crate::odoh::Section>> {
     let Some(odoh) = odoh else {
         return Ok(None);
     };
@@ -553,7 +554,7 @@ fn target(
             .any(|listen| matches!(listen, Listen::Https(..))),
         "`odoh` is served over HTTP/3: `listen` has no https:// address"
     );
-    crate::odoh::Target::new(odoh.key.as_deref()).map(|target| Some(Arc::new(target)))
+    Ok(Some(crate::odoh::Section::new(odoh.key.as_deref())))
 }
 
 /// The certificate of `tls`, read from its files, when `listen` has an address over TLS, QUIC or HTTP/3.

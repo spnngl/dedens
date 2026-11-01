@@ -7,9 +7,12 @@
 //! hold (§4.3).
 //!
 //! The target's key configurations come from `/.well-known/odohconfigs` (§5 leaves discovery out of scope; the path
-//! is the convention public targets follow). The client asks the target for them directly, never through the proxy:
-//! a proxy forwards the POSTs of §4.1 and nothing else. The target sees the client's address then, once per
-//! lifetime of the configurations, but no query (D79).
+//! is the convention public targets follow), or from the caller ([`Client::pin_odoh_configs`]). The client asks the
+//! target for them directly, never through the proxy: a proxy forwards the POSTs of §4.1 and nothing else. The
+//! target sees the client's address then, and no query; to keep that address from being linked to the query that
+//! follows, the configurations are kept for an hour at least, whatever the target says: they are public (D79).
+//!
+//! A proxy's URI is a plain URI: the RFC 9230 §4.1 URI templates (`{?targethost,targetpath}`) are not supported.
 
 use core::convert::Infallible;
 use std::cell::RefCell;
@@ -23,11 +26,13 @@ use dedens_odoh::{
     decrypt_response, encrypt_query, query_padding,
 };
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use zeroize::Zeroizing;
 
+#[cfg(doc)]
+use crate::client::Client;
 use crate::client::{Server, local_io};
 use crate::doh::{self, Template, TemplateError};
 use crate::exchange::Http;
@@ -36,6 +41,23 @@ use crate::quic::QuicError;
 
 /// Where a target serves its key configurations: the well-known URI of public targets, which no RFC defines.
 pub const CONFIGS_PATH: &str = "/.well-known/odohconfigs";
+
+/// The longest HTTP body of a query or response: a DNS message, and what the encryption adds to it: the message
+/// header, the key identifier, the encapsulated key or nonce, the tag and the padding, well under 1024 bytes (RFC
+/// 9230 §6.1, §6.2, RFC 9180 §4).
+pub const MAX_BODY: usize = MAX_MESSAGE_LEN + 1024;
+
+/// The least time configurations are kept, whatever their `Cache-Control` says (D79).
+const MIN_KEPT: Duration = Duration::from_hours(1);
+
+/// The most time configurations are kept: a key a target changes without a 401 for the old one is not used longer.
+const MAX_KEPT: Duration = Duration::from_hours(24);
+
+/// The targets whose configurations are kept at most.
+const MAX_TARGETS: usize = 64;
+
+/// The header a proxy adds to the errors it makes (RFC 9209 §2).
+const PROXY_STATUS: HeaderName = HeaderName::from_static("proxy-status");
 
 /// Why an Oblivious `DoH` exchange got no DNS response.
 #[derive(Debug, thiserror::Error)]
@@ -53,9 +75,15 @@ pub enum OdohError {
     /// No randomness for the ephemeral key.
     #[error("no randomness: {0}")]
     Random(getrandom::Error),
+    /// The proxy's URI sets `targethost` or `targetpath` itself: a URI template, which is not supported.
+    #[error("the proxy's URI holds targethost or targetpath: URI templates are not supported")]
+    ProxyVariables,
     /// The target does not give its configurations: its status.
     #[error("configurations: HTTP status {0}")]
     Configs(StatusCode),
+    /// An error status the proxy made, as its `Proxy-Status` says: not the target's (RFC 9230 §4.3, §11.3).
+    #[error("the proxy answered HTTP status {0}")]
+    Proxy(StatusCode),
     /// The configurations or the message are not what RFC 9230 §5 and §6.1 encode.
     #[error("malformed message or configuration")]
     Wire(#[from] WireError),
@@ -76,6 +104,7 @@ impl OdohError {
         match self {
             Self::Random(_)
             | Self::Template(_)
+            | Self::ProxyVariables
             | Self::Request(_)
             | Self::Https(
                 HttpsError::Quic(QuicError::Trust(_) | QuicError::Connect(_))
@@ -87,12 +116,10 @@ impl OdohError {
     }
 
     /// Whether the configurations the query was encrypted under may be out of date: the target's 401 for a key it
-    /// does not hold, or a response that does not decrypt (RFC 9230 §4.3).
+    /// does not hold (RFC 9230 §4.3). A 401 the proxy made is [`OdohError::Proxy`], and a response that does not
+    /// decrypt says nothing of the key: a proxy can send any.
     fn stale_configs(&self) -> bool {
-        matches!(
-            self,
-            Self::Status(StatusCode::UNAUTHORIZED) | Self::Exchange(_)
-        )
+        matches!(self, Self::Status(StatusCode::UNAUTHORIZED))
     }
 }
 
@@ -102,10 +129,15 @@ const ENTROPY: usize = 64;
 
 /// Random bytes for [`dedens_odoh::encrypt_query`] and [`dedens_odoh::encrypt_response`], drawn from the system when
 /// made, so that a failing generator is an error where the exchange starts and not a panic where the encryption
-/// draws. One per encryption: a second would reuse the bytes, and a third find none.
+/// draws. One per encryption: a second would reuse the bytes.
+///
+/// A draw past the bytes, which no encryption makes, gets zeros and is no panic: [`Entropy::finish`] says so, and
+/// what was encrypted is then dropped.
 pub struct Entropy {
     bytes: Zeroizing<[u8; ENTROPY]>,
     used: usize,
+    /// A draw found too few bytes left.
+    exhausted: bool,
 }
 
 impl Entropy {
@@ -117,19 +149,39 @@ impl Entropy {
     pub fn new() -> Result<Self, getrandom::Error> {
         let mut bytes = Zeroizing::new([0; ENTROPY]);
         getrandom::fill(bytes.as_mut_slice())?;
-        Ok(Self { bytes, used: 0 })
+        Ok(Self {
+            bytes,
+            used: 0,
+            exhausted: false,
+        })
     }
 
-    /// The next `len` bytes.
-    fn take(&mut self, len: usize) -> &[u8] {
-        let end = self.used + len;
-        // Both encryptions draw less than `ENTROPY` bytes; a test holds them to it.
+    /// Whether every draw got random bytes: to be asked once the encryption is done, before its output is used.
+    ///
+    /// # Errors
+    ///
+    /// [`getrandom::Error::UNEXPECTED`] when a draw found too few bytes left.
+    pub fn finish(self) -> Result<(), getrandom::Error> {
+        if self.exhausted {
+            Err(getrandom::Error::UNEXPECTED)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Fills `dst` with the next bytes, or with zeros when there are too few.
+    fn fill(&mut self, dst: &mut [u8]) {
         let taken = self
-            .bytes
-            .get(self.used..end)
-            .expect("an encryption draws less than ENTROPY bytes");
-        self.used = end;
-        taken
+            .used
+            .checked_add(dst.len())
+            .and_then(|end| Some((self.bytes.get(self.used..end)?, end)));
+        if let Some((bytes, end)) = taken {
+            dst.copy_from_slice(bytes);
+            self.used = end;
+        } else {
+            dst.fill(0);
+            self.exhausted = true;
+        }
     }
 }
 
@@ -138,18 +190,18 @@ impl TryRng for Entropy {
 
     fn try_next_u32(&mut self) -> Result<u32, Infallible> {
         let mut bytes = [0; 4];
-        bytes.copy_from_slice(self.take(4));
+        self.fill(&mut bytes);
         Ok(u32::from_le_bytes(bytes))
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Infallible> {
         let mut bytes = [0; 8];
-        bytes.copy_from_slice(self.take(8));
+        self.fill(&mut bytes);
         Ok(u64::from_le_bytes(bytes))
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
-        dst.copy_from_slice(self.take(dst.len()));
+        self.fill(dst);
         Ok(())
     }
 }
@@ -243,32 +295,59 @@ pub fn response<T>(response: &Response<T>, body: &[u8]) -> Result<ObliviousDoHMe
     Ok(ObliviousDoHMessage::parse(body)?)
 }
 
-/// How long the configurations in a response with `headers` may be kept, as of `now`: the `max-age` of its
-/// `Cache-Control` less the response's age, none for `no-store`, `no-cache`, no `max-age` or one that is not a
-/// number (RFC 9111 §4.2.1, §5.2.2).
+/// How long a client keeps the configurations of a response (D79).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lifetime {
+    /// The time to keep them: the `max-age` of the response's `Cache-Control` less its age, or none when it has
+    /// none, but at least an hour and at most a day. The configurations are public, and a fetch the target can link
+    /// to the query that follows is rare this way.
+    pub keep: Duration,
+    /// The response says not to keep them: `no-store`, or `no-cache` with no field name (RFC 9111 §5.2.2).
+    pub forbidden: bool,
+}
+
+/// How long the configurations in a response with `headers` are kept, as of `now` (RFC 9111 §4.2.1, §5.2.2).
+///
+/// The age is the larger of `Age` and `now` less `Date`, so a clock behind the target's makes it large and the
+/// lifetime short: the hour [`Lifetime::keep`] never goes under.
 #[must_use]
-pub fn configs_lifetime(headers: &HeaderMap, now: SystemTime) -> Duration {
+pub fn configs_lifetime(headers: &HeaderMap, now: SystemTime) -> Lifetime {
     let mut max_age = None;
+    let mut forbidden = false;
     for directive in headers
         .get_all(CACHE_CONTROL)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
     {
-        let (name, argument) = directive.split_once('=').unwrap_or((directive, ""));
-        match name.trim().to_ascii_lowercase().as_str() {
-            "no-store" | "no-cache" => return Duration::ZERO,
-            "max-age" if max_age.is_none() => {
-                let Ok(seconds) = argument.trim().trim_matches('"').parse::<u64>() else {
-                    return Duration::ZERO;
-                };
-                max_age = Some(seconds);
+        let (name, argument) = match directive.split_once('=') {
+            Some((name, argument)) => (name, Some(argument)),
+            None => (directive, None),
+        };
+        match (name.trim().to_ascii_lowercase().as_str(), argument) {
+            ("no-store", _) | ("no-cache", None) => forbidden = true,
+            ("max-age", Some(argument)) if max_age.is_none() => {
+                max_age = Some(
+                    argument
+                        .trim()
+                        .trim_matches('"')
+                        .parse::<u64>()
+                        .unwrap_or(0),
+                );
             }
             _ => {}
         }
     }
-    let age = u64::from(doh::age(headers, now));
-    Duration::from_secs(max_age.unwrap_or(0).saturating_sub(age))
+    let fresh = if forbidden {
+        0
+    } else {
+        let age = u64::from(doh::age(headers, now));
+        max_age.unwrap_or(0).saturating_sub(age)
+    };
+    Lifetime {
+        keep: Duration::from_secs(fresh).clamp(MIN_KEPT, MAX_KEPT),
+        forbidden,
+    }
 }
 
 /// What a target is asked for (D79).
@@ -285,17 +364,17 @@ pub enum Kind {
 /// The kind and the query of a request to a target serving `DoH` and Oblivious `DoH` at `path`, for
 /// [`Pending::read_with`](crate::https::Pending::read_with) (RFC 9230 §4.1, RFC 8484 §4.1).
 ///
-/// A POST of the oblivious media type at `path` is [`Kind::Oblivious`], its body the query; a GET of
-/// [`CONFIGS_PATH`] is [`Kind::Configs`]. Any other request at `path` is `DoH`'s, as
-/// [`doh::server_request`] reads it; the status is 404 for another path, 405 for a configs request that is no GET,
-/// 400 for an empty message and 413 for one longer than a DNS message.
+/// A POST of the oblivious media type at `path` is [`Kind::Oblivious`], its body the query; any other request at
+/// `path` is `DoH`'s, as [`doh::server_request`] reads it. A GET of [`CONFIGS_PATH`], unless that is `path`, is
+/// [`Kind::Configs`]. The status is 404 for another path, 405 for a configs request that is no GET, 400 for an empty
+/// message and 413 for one longer than [`MAX_BODY`].
 pub fn classify<T>(
     request: &Request<T>,
     body: &[u8],
     path: &str,
 ) -> (Kind, Result<Vec<u8>, StatusCode>) {
     let at = request.uri().path();
-    if at == CONFIGS_PATH {
+    if at != path && at == CONFIGS_PATH {
         let query = if request.method() == http::Method::GET {
             Ok(Vec::new())
         } else {
@@ -309,7 +388,7 @@ pub fn classify<T>(
     if request.method() == http::Method::POST && doh::is_media_type(request.headers(), MEDIA_TYPE) {
         let query = if body.is_empty() {
             Err(StatusCode::BAD_REQUEST)
-        } else if body.len() > MAX_MESSAGE_LEN {
+        } else if body.len() > MAX_BODY {
             Err(StatusCode::PAYLOAD_TOO_LARGE)
         } else {
             Ok(body.to_vec())
@@ -351,6 +430,46 @@ pub fn configs_response(configs: Vec<u8>, max_age: u32) -> Response<Vec<u8>> {
     response
 }
 
+/// Whether the URI template of `proxy` sets `targethost` or `targetpath` itself in its query: RFC 9230 §4.1 URI
+/// templates, which are not supported, as the module says.
+#[must_use]
+pub fn names_target(proxy: &Template) -> bool {
+    proxy.path().split_once('?').is_some_and(|(_, query)| {
+        query.split('&').any(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name);
+            matches!(name, "targethost" | "targetpath")
+        })
+    })
+}
+
+/// Whether `headers` hold a `Proxy-Status` that names an error: the proxy made the response, the target did not
+/// (RFC 9209 §2, §2.1.1, RFC 9230 §4.3).
+#[must_use]
+pub fn proxy_error(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(PROXY_STATUS)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .flat_map(|member| member.split(';').skip(1))
+        .any(|parameter| {
+            let name = parameter
+                .split_once('=')
+                .map_or(parameter, |(name, _)| name);
+            name.trim().eq_ignore_ascii_case("error")
+        })
+}
+
+/// What a client tells its user about the configurations of a target (D79).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Notice {
+    /// The target asked for its configurations not to be kept, and the client asked for them from its own address
+    /// while it sends its queries through a proxy: the target can link that address to a query that follows. They
+    /// are kept anyway, for an hour at least; [`Client::pin_odoh_configs`] keeps the address out of it.
+    ConfigsNotToBeKept(Authority),
+}
+
 /// A target's configurations and when they stop being fresh.
 #[derive(Debug)]
 struct Known {
@@ -358,24 +477,32 @@ struct Known {
     until: Instant,
 }
 
-/// The configurations of the targets a client asked, kept for their HTTP lifetime.
+/// The identity of a target: its address and authority.
+type Key = (SocketAddr, Authority);
+
+/// The configurations of the targets a client asked, kept as [`Lifetime::keep`] says, and those it was given.
 #[derive(Debug, Default)]
 pub(crate) struct Configs {
-    /// By the target's address and authority.
-    known: RefCell<HashMap<(SocketAddr, Authority), Known>>,
+    /// Fetched, at most [`MAX_TARGETS`].
+    known: RefCell<HashMap<Key, Known>>,
+    /// Given by the caller, never fetched again nor dropped: a 401 for them is an error.
+    pinned: RefCell<HashMap<Key, ObliviousDoHConfigs>>,
+    /// Not yet taken by [`Configs::take_notices`].
+    notices: RefCell<Vec<Notice>>,
 }
 
 impl Configs {
     /// Asks `target`, through `proxy` when there is one, for the answer to `wire`, a DNS query with ID 0 and no
     /// padding of its own (D79).
     ///
-    /// The configurations are the cached ones, else fetched from the target. A 401, or a response that does not
-    /// decrypt, under cached ones may mean the target changed its key: they are fetched again, once (RFC 9230 §4.3).
+    /// The configurations are the pinned ones, the kept ones, else fetched from the target. A 401 the target made
+    /// under kept ones may mean it changed its key: they are fetched again, once (RFC 9230 §4.3). A response that
+    /// does not decrypt, or an error of the proxy's, is no reason to.
     ///
     /// # Errors
     ///
-    /// [`OdohError`]: no template, no randomness, a failed request, configurations that are none, a response that
-    /// is not one, or no response before `deadline`.
+    /// [`OdohError`]: no template, a proxy URI that sets the target, no randomness, a failed request,
+    /// configurations that are none, a response that is not one, or no response before `deadline`.
     pub(crate) async fn exchange(
         &self,
         https: &HttpsPool,
@@ -386,15 +513,25 @@ impl Configs {
     ) -> Result<Reply, OdohError> {
         let target_template = target.template()?;
         let proxy_template = proxy.map(Server::template).transpose()?;
+        if proxy_template.as_ref().is_some_and(names_target) {
+            return Err(OdohError::ProxyVariables);
+        }
         let key = (target.addr, target_template.authority().clone());
-        let mut cached = self.fresh(&key);
+        let pinned = self.pinned.borrow().get(&key).cloned();
+        let mut cached = pinned.clone().or_else(|| self.fresh(&key));
         loop {
-            let from_cache = cached.is_some();
+            let from_cache = cached.is_some() && pinned.is_none();
             let configs = match cached.take() {
                 Some(configs) => configs,
                 None => {
-                    self.fetch(https, target, &target_template, &key, deadline)
-                        .await?
+                    self.fetch(
+                        https,
+                        (target, &target_template),
+                        proxy.is_some(),
+                        &key,
+                        deadline,
+                    )
+                    .await?
                 }
             };
             let asked = ask(
@@ -416,8 +553,26 @@ impl Configs {
         }
     }
 
+    /// Keeps `bytes`, encoded configurations, for `target` for good: they are not fetched, nor dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`OdohError::Template`] for a target with no template, [`OdohError::Wire`] for bytes that are no
+    /// configurations.
+    pub(crate) fn pin(&self, target: &Server, bytes: &[u8]) -> Result<(), OdohError> {
+        let key = (target.addr, target.template()?.authority().clone());
+        let configs = ObliviousDoHConfigs::parse(bytes)?;
+        self.pinned.borrow_mut().insert(key, configs);
+        Ok(())
+    }
+
+    /// The notices since the last call.
+    pub(crate) fn take_notices(&self) -> Vec<Notice> {
+        std::mem::take(&mut *self.notices.borrow_mut())
+    }
+
     /// The configurations of `key` while they are fresh.
-    fn fresh(&self, key: &(SocketAddr, Authority)) -> Option<ObliviousDoHConfigs> {
+    fn fresh(&self, key: &Key) -> Option<ObliviousDoHConfigs> {
         self.known
             .borrow()
             .get(key)
@@ -425,35 +580,65 @@ impl Configs {
             .map(|known| known.configs.clone())
     }
 
-    /// Fetches the configurations from `target` directly, and keeps them as long as the response says.
+    /// Fetches the configurations from `target` directly, and keeps them as [`Lifetime::keep`] says. `proxied` tells
+    /// that the queries go through a proxy: the fetch gives the target the address of the client, and a target that
+    /// asks for no keeping then makes a [`Notice`].
     async fn fetch(
         &self,
         https: &HttpsPool,
-        target: &Server,
-        template: &Template,
-        key: &(SocketAddr, Authority),
+        (target, template): (&Server, &Template),
+        proxied: bool,
+        key: &Key,
         deadline: Instant,
     ) -> Result<ObliviousDoHConfigs, OdohError> {
         let request = configs_request(template).map_err(OdohError::Request)?;
         let (head, body) = https
-            .send(target.addr, target.certified(), &request, deadline)
+            .send(
+                target.addr,
+                target.certified(),
+                &request,
+                MAX_BODY,
+                deadline,
+            )
             .await?;
         if !head.status().is_success() {
             return Err(OdohError::Configs(head.status()));
         }
         let configs = ObliviousDoHConfigs::parse(&body)?;
         let lifetime = configs_lifetime(head.headers(), SystemTime::now());
-        if !lifetime.is_zero() {
-            let until = crate::exchange::after(Instant::now(), lifetime);
-            self.known.borrow_mut().insert(
-                key.clone(),
-                Known {
-                    configs: configs.clone(),
-                    until,
-                },
-            );
+        if proxied && lifetime.forbidden {
+            let notice = Notice::ConfigsNotToBeKept(key.1.clone());
+            let mut notices = self.notices.borrow_mut();
+            if !notices.contains(&notice) {
+                notices.push(notice);
+            }
         }
+        self.keep(key, &configs, lifetime.keep);
         Ok(configs)
+    }
+
+    /// Keeps `configs` for `key` for `keep`, dropping what is stale, and the soonest to be stale when there are
+    /// [`MAX_TARGETS`].
+    fn keep(&self, key: &Key, configs: &ObliviousDoHConfigs, keep: Duration) {
+        let now = Instant::now();
+        let mut known = self.known.borrow_mut();
+        known.retain(|_, known| known.until > now);
+        if known.len() >= MAX_TARGETS
+            && !known.contains_key(key)
+            && let Some(soonest) = known
+                .iter()
+                .min_by_key(|(_, known)| known.until)
+                .map(|(key, _)| key.clone())
+        {
+            known.remove(&soonest);
+        }
+        known.insert(
+            key.clone(),
+            Known {
+                configs: configs.clone(),
+                until: crate::exchange::after(now, keep),
+            },
+        );
     }
 }
 
@@ -470,11 +655,21 @@ async fn ask(
     let config = configs.configs().first().ok_or(WireError::NoUsableConfig)?;
     let mut entropy = Entropy::new().map_err(OdohError::Random)?;
     let (message, context) = encrypt_query(config, wire, query_padding(wire.len()), &mut entropy)?;
+    entropy.finish().map_err(OdohError::Random)?;
     let request = request(proxy_template, target_template, &message).map_err(OdohError::Request)?;
     let server = proxy.unwrap_or(target);
     let (head, body) = https
-        .send(server.addr, server.certified(), &request, deadline)
+        .send(
+            server.addr,
+            server.certified(),
+            &request,
+            MAX_BODY,
+            deadline,
+        )
         .await?;
+    if proxy.is_some() && !head.status().is_success() && proxy_error(head.headers()) {
+        return Err(OdohError::Proxy(head.status()));
+    }
     let message = response(&head, &body)?;
     debug_assert_eq!(message.message_type(), MessageType::Response);
     let plaintext = decrypt_response(&context, &message)?;
@@ -493,7 +688,22 @@ mod tests {
 
     use super::*;
 
-    /// Both encryptions stay within the bytes drawn: the bound `Entropy::take` relies on.
+    /// The kept configurations are at most [`MAX_TARGETS`], however many targets are asked.
+    #[test]
+    fn the_kept_configurations_are_bounded() {
+        let configs = Configs::default();
+        let parsed = ObliviousDoHConfigs::new(vec![TargetKey::derive(&[7; 32]).config().clone()]);
+        for port in 0..u16::try_from(MAX_TARGETS * 2).expect("a small number") {
+            let key = (
+                SocketAddr::from(([127, 0, 0, 1], 1000 + port)),
+                Authority::from_static("a.example"),
+            );
+            configs.keep(&key, &parsed, MIN_KEPT);
+        }
+        assert_eq!(configs.known.borrow().len(), MAX_TARGETS);
+    }
+
+    /// Both encryptions stay within the bytes drawn: the bound `Entropy::fill` relies on.
     #[test]
     fn encryptions_draw_within_the_entropy() {
         let key = TargetKey::derive(&[7; 32]);

@@ -8,9 +8,11 @@
 )]
 mod common;
 
+use std::io::Write as _;
+
 use assert_cmd::Command;
 use common::{Responder, TLS_NAME, Transport};
-use dedens_odoh::TargetKey;
+use dedens_odoh::{ObliviousDoHConfigs, TargetKey};
 use dedens_proto::Message;
 use predicates::str::contains;
 
@@ -76,6 +78,42 @@ fn odoh_usage_errors_exit_2() {
     ] {
         dedens().args(args).assert().code(2);
     }
+}
+
+/// D79: `+odoh-config=FILE` gives the target's key configurations, which are then not fetched: the right ones work,
+/// those of another key are a 401, which is no reason to fetch them either; the option needs `+odoh-proxy`.
+#[test]
+fn odoh_config_gives_the_configurations() {
+    let (server, ca) = Responder::oblivious(&["a"], TargetKey::derive(&[7; 32]));
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let target = format!("@https://127.0.0.1:{port}#{TLS_NAME}");
+    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{TLS_NAME}");
+    let configs = |seed: u8| {
+        let mut file = tempfile::NamedTempFile::new().expect("a file");
+        let key = TargetKey::derive(&[seed; 32]);
+        let encoded = ObliviousDoHConfigs::new(vec![key.config().clone()])
+            .encode()
+            .expect("configurations encode");
+        file.write_all(&encoded).expect("written");
+        file
+    };
+    let right = configs(7);
+    let given = format!("+odoh-config={}", right.path().display());
+    let out = run(&[&target, &proxy, &given, &ca, "example.com"], 0);
+    assert!(out.contains("over ODoH (HTTP/3 200)"), "{out}");
+    let wrong = configs(8);
+    let given = format!("+odoh-config={}", wrong.path().display());
+    dedens()
+        .args([&target, &proxy, &given, &ca])
+        .arg("example.com")
+        .assert()
+        .failure()
+        .stderr(contains("401"));
+    dedens()
+        .args(["+odoh-config=/nonexistent/odoh.configs", "example.com"])
+        .assert()
+        .code(2);
 }
 
 /// D79: a proxy that is no `https://` URI is refused.

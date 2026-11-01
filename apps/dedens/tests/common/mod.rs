@@ -401,7 +401,7 @@ fn oblivious_answer(
             .body(Vec::new())
             .expect("a response")
     };
-    let (kind, query) = odoh::classify(request, body, request.uri().path());
+    let (kind, query) = odoh::classify(request, body, dedens_net::doh::DEFAULT_PATH);
     let response = match (kind, query) {
         (_, Err(code)) => status(code),
         (Kind::Configs, Ok(_)) => {
@@ -413,10 +413,13 @@ fn oblivious_answer(
         (Kind::Oblivious, Ok(message)) => {
             let opened = ObliviousDoHMessage::parse(&message)
                 .ok()
-                .and_then(|message| dedens_odoh::decrypt_query(key, &message).ok());
+                .map(|message| dedens_odoh::decrypt_query(key, &message));
             match opened {
-                None => status(http::StatusCode::BAD_REQUEST),
-                Some((plaintext, context)) => {
+                Some(Err(dedens_odoh::ExchangeError::UnknownKey)) => {
+                    status(http::StatusCode::UNAUTHORIZED)
+                }
+                None | Some(Err(_)) => status(http::StatusCode::BAD_REQUEST),
+                Some(Ok((plaintext, context))) => {
                     let query = plaintext.into_dns_message();
                     log.lock()
                         .expect("unpoisoned")
