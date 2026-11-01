@@ -12,12 +12,14 @@
 
 use core::ops::RangeInclusive;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
+use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{self, Budget};
-use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::denial::{self, MaxIterations};
+use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
+use dedens_dnssec::validator::{Limits, Next, Validator};
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
@@ -59,6 +61,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("dnssec_crypto", dnssec_crypto),
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
+    ("validate", validate),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -970,4 +973,69 @@ pub fn denial(data: &[u8]) {
             );
         }
     }
+}
+
+/// The Unix time of the capture run, "now" for the signatures of the captured seeds.
+const CAPTURED_AT: &str = include_str!("../../crates/dedens-dnssec/tests/testdata/captured_at");
+
+/// The validator with the root anchors and the default limits, built once.
+static VALIDATOR: LazyLock<Validator> =
+    LazyLock::new(|| Validator::new(TrustAnchors::root(), Limits::default()));
+
+/// `message` as a response to `question`, whatever it answered.
+fn answering(message: &Message<'static>, question: &Question<'static>) -> Message<'static> {
+    let mut message = message.clone();
+    message.questions = vec![question.clone()];
+    message
+}
+
+/// A response read from the input, validated: the input is the response, and the byte it holds at the number of
+/// the question picks the answer to that question: none, the response read as the answer, or the message the input
+/// holds from another offset read as the answer. Whatever the bytes, the validation asks only for DS and DNSKEY,
+/// asks at most the limit, ends, and a verdict that is not secure carries an extended error with text.
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on a validation that breaks one of those rules.
+pub fn validate(data: &[u8]) {
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let response = decoded.message.into_owned();
+    let Some(question) = response.questions.first().cloned() else {
+        return;
+    };
+    let now = CAPTURED_AT.trim().parse().unwrap_or(0);
+    let limit = Limits::default().questions;
+    let mut validation = VALIDATOR.start(&question, &response, now);
+    for asked in 0..=limit {
+        match validation.step() {
+            Next::Ask(ask) => {
+                assert!(
+                    matches!(ask.qtype, RecordType::DS | RecordType::DNSKEY),
+                    "asked for {}",
+                    ask.qtype
+                );
+                assert!(asked < limit, "asked past the limit");
+                let pick = data.get(asked).copied().unwrap_or(0);
+                let from = usize::from(pick).saturating_mul(asked + 1) % data.len();
+                let other = data
+                    .get(from..)
+                    .and_then(|rest| Message::decode(rest).ok())
+                    .map(|decoded| decoded.message.into_owned());
+                match (pick % 3, other) {
+                    (1, _) => validation.answer(Some(&answering(&response, &ask))),
+                    (2, Some(other)) => validation.answer(Some(&answering(&other, &ask))),
+                    _ => validation.answer(None),
+                }
+            }
+            Next::Done(verdict) => {
+                if let Some(ede) = verdict.ede() {
+                    assert!(!ede.text.is_empty(), "no text for {verdict:?}");
+                }
+                return;
+            }
+        }
+    }
+    unreachable!("a validation asks at most the limit, then ends");
 }

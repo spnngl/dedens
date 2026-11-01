@@ -8,7 +8,7 @@
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-server` | Server core: the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
-| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures (`crypto/`; `rrsig/`: an `RRset` by its RRSIG and DNSKEY, a DNSKEY `RRset` by its DS), denial of existence, chain of trust | none (sans-IO), time passed in |
+| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures (`crypto/`; `rrsig/`: an `RRset` by its RRSIG and DNSKEY, a DNSKEY `RRset` by its DS), denial of existence, chain of trust and the verdict on a response (`validator`) | none (sans-IO), time passed in |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69): configurations, message encryption | none (sans-IO) |
 | `crates/dedens-net` | UDP, TCP, TLS, QUIC and HTTP/3 (DoH, D83) transports on compio over a sans-IO exchange; the sans-IO core of DoH (D82); `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
