@@ -47,9 +47,7 @@ impl Dedup {
     /// Notes the CON message `id` from `endpoint` at `now`, and tells whether it was seen.
     pub fn check(&mut self, endpoint: SocketAddr, id: u16, now: Instant) -> Seen<'_> {
         while let Some((key, at)) = self.order.front().copied() {
-            if now.saturating_duration_since(at) < self.lifetime
-                && self.order.len() < self.capacity.get()
-            {
+            if now.saturating_duration_since(at) < self.lifetime {
                 break;
             }
             self.order.pop_front();
@@ -58,6 +56,13 @@ impl Dedup {
         let key = (endpoint, id);
         if self.replies.contains_key(&key) {
             return Seen::Duplicate(self.replies.get(&key).and_then(Option::as_deref));
+        }
+        // Only a new message makes room, so a full table still knows every message it holds.
+        while self.order.len() >= self.capacity.get() {
+            let Some((oldest, _)) = self.order.pop_front() else {
+                break;
+            };
+            self.replies.remove(&oldest);
         }
         // A key at most once in `order`: it is not in `replies`.
         self.order.push_back((key, now));
