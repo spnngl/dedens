@@ -160,10 +160,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the `base64-simd` crate and our table against a signed zone; `unsafe` only if it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
-- Order after phase 4 (DoH over HTTP/3, DNSSEC validation, ODoH and DoC, all merged): kubernetes stage, recursive
-  resolver (with an RRset cache, priming per RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones,
+- Order after phase 4 (DoH over HTTP/3, DNSSEC validation, ODoH and DoC, all merged): prewarm (names from the
+  configuration kept in the cache), DNSCrypt (client, server, Anonymized DNSCrypt client, PQDNSCrypt; the
+  relay role later), kubernetes stage, recursive resolver (with an RRset cache, priming per RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones,
   AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182); the error reporting option (RFC 9567) with the server; DoH over
   HTTP/2 once compio releases tokio's I/O traits (D62).
+- An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
+  for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.
