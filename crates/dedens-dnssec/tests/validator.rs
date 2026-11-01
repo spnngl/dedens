@@ -8,7 +8,9 @@ use std::net::Ipv4Addr;
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, Nsec3Hashes, Verifications};
 use dedens_dnssec::denial::MaxIterations;
-use dedens_dnssec::validator::{Delegation, InsecureReason, Limits, Next, Validator, Verdict};
+use dedens_dnssec::validator::{
+    Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
+};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec, Rrsig};
 use dedens_proto::{
@@ -197,6 +199,108 @@ fn every_secure_capture_is_secure() {
         .map(|(id, verdict)| format!("{id}: {verdict:?}"))
         .collect();
     assert_eq!(failed, Vec::<String>::new());
+}
+
+/// D75: `covered` keeps all a secure verdict rests on: the verdict on the cut response is the one on the whole, and
+/// cutting it again changes nothing. A capture holds nothing else than the answer, so most are kept as they are.
+#[test]
+fn the_covered_part_of_every_secure_capture_is_as_secure() {
+    let script = Script::new();
+    let validator = Script::validator();
+    for id in SECURE {
+        let response = capture(id);
+        let cut = covered(&response);
+        let whole = script.run(&validator, &response, captured_at());
+        assert_eq!(script.run(&validator, &cut, captured_at()), whole, "{id}");
+        assert_eq!(covered(&cut), cut, "{id}");
+    }
+}
+
+/// D75: what the verdict is not about is cut, whatever it is: the additional section, a class other than IN, a
+/// set off the answer's names, an orphan signature, a set in the authority section off the names. What it is
+/// about is not touched.
+#[test]
+fn what_the_verdict_does_not_cover_is_cut() {
+    let plain = capture("alg8_a");
+    let a = plain
+        .answer
+        .iter()
+        .find(|record| record.rtype() == RecordType::A)
+        .expect("an A record")
+        .clone();
+    let rrsig = plain
+        .answer
+        .iter()
+        .find(|record| is_rrsig_of(record, RecordType::A))
+        .expect("its RRSIG")
+        .clone();
+    let mut response = plain.clone();
+    response.answer.push(Record {
+        name: name("evil.example"),
+        ..a.clone()
+    });
+    response.answer.push(Record {
+        name: name("evil.example"),
+        ..rrsig.clone()
+    });
+    response.answer.push(Record {
+        class: Class::CH,
+        ..a.clone()
+    });
+    response.answer.push(Record {
+        class: Class::CH,
+        ..rrsig
+    });
+    response.additional.push(a);
+    response
+        .authority
+        .push(ns("evil.example", "ns.evil.example"));
+    response.authority.push(ns("com", "ns.evil.example"));
+    let cut = covered(&response);
+    assert_eq!(cut.additional, []);
+    assert_eq!(cut.answer, plain.answer);
+    assert_eq!(cut.authority, plain.authority);
+    assert_eq!(cut.header, plain.header);
+    assert_eq!(cut.questions, plain.questions);
+}
+
+/// RFC 6672 \u00a75.3.3, D75: the CNAME a DNAME makes stays, unsigned: its signature is not in the answer, and the
+/// DNAME and the answer below it are as they were.
+#[test]
+fn the_cname_a_dname_makes_stays_without_signature() {
+    let response = capture("dname_answer");
+    let cut = covered(&response);
+    assert_eq!(cut.answer, response.answer);
+    assert!(
+        response
+            .answer
+            .iter()
+            .any(|r| r.rtype() == RecordType::CNAME)
+    );
+    // A signature over it, as an attacker adds one, is not kept: nothing verifies it.
+    let cname = response
+        .answer
+        .iter()
+        .find(|record| record.rtype() == RecordType::CNAME)
+        .expect("the synthesized CNAME")
+        .clone();
+    let rrsig = response
+        .answer
+        .iter()
+        .find(|record| is_rrsig_of(record, RecordType::DNAME))
+        .expect("the RRSIG of the DNAME")
+        .clone();
+    let RData::Rrsig(signature) = rrsig.data() else {
+        panic!("an RRSIG")
+    };
+    let mut signature = signature.into_owned();
+    signature.type_covered = RecordType::CNAME;
+    let mut forged = response.clone();
+    forged.answer.push(Record {
+        rdata: WireRdata::new(&RData::Rrsig(signature)),
+        ..cname
+    });
+    assert_eq!(covered(&forged).answer, response.answer);
 }
 
 /// An IPv6 reverse name has 34 labels, and the walk asks the DS of each below `arpa` (a real capture of RIPE

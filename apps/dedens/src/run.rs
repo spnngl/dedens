@@ -12,6 +12,7 @@ use anyhow::{Context, anyhow, bail};
 use compio::quic::ConnectionError;
 use compio::quic::h3::error::ConnectionError as H3Error;
 use compio::rustls::pki_types::ServerName;
+use dedens_dnssec::validator::covered;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::doc::path_segments;
 #[cfg(feature = "doc")]
@@ -29,7 +30,7 @@ use crate::args::{self, Cli};
 use crate::idn;
 use crate::output::{self, Format, Printing};
 use crate::trace::{self, Trail};
-use crate::validate::{self, Judge, Judges};
+use crate::validate::{Judge, Judges};
 
 /// The queries in flight at most: each holds a socket.
 const IN_FLIGHT: usize = 64;
@@ -352,7 +353,9 @@ async fn ask(
                 .await;
             // Only a secure verdict is shown as covering the response, and then only what it covers (D76).
             let report = if dnssec.status == DnssecStatus::Secure {
-                Report::exchanged(id, address, &response, &validate::covered(&decoded))
+                let mut shown = decoded.clone();
+                shown.message = covered(&decoded.message);
+                Report::exchanged(id, address, &response, &shown)
             } else {
                 Report::exchanged(id, address, &response, &decoded)
             };

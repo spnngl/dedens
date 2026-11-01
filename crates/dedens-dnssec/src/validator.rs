@@ -39,17 +39,18 @@
 //!
 //! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
 //! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
-//! additional section, records of another class, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3),
-//! which the caller strips or never relies on. Only the `RRsets` of the answer (the question's name, the names
-//! its CNAME and DNAME chain leads through) and, in the authority section, those at or above such a name are
-//! checked: others are out of bailiwick, neither walked nor verified, and the verdict says nothing of them, so
-//! the caller strips them too. [`Verdict::Incomplete`] is the same for a CNAME chain that stops before the
+//! additional section, records of another class, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3).
+//! Only the `RRsets` of the answer (the question's name, the names its CNAME and DNAME chain leads through) and,
+//! in the authority section, those at or above such a name are checked: others are out of bailiwick, neither
+//! walked nor verified, and the verdict says nothing of them. [`covered()`] is the response cut to what a secure
+//! verdict covers, the one definition: the caller hands out or shows that, never the response. [`Verdict::Incomplete`] is the same for a CNAME chain that stops before the
 //! type asked: the caller follows it to `next`, bounds how many CNAMEs it chases (a loop of them never ends
 //! otherwise) and does not take the names it chases for entropy (0x20): they come from the server. A referral is no answer: [`Validator::start_referral`]
 //! judges it by its delegation alone, and never gives Secure for it.
 
 mod cache;
 mod chain;
+mod covered;
 mod response;
 mod section;
 mod verdict;
@@ -62,6 +63,7 @@ use dedens_proto::{Class, Flags, Message, Name, Question, RecordType};
 
 use self::cache::KeyCache;
 use self::chain::Zone;
+pub use self::covered::covered;
 use self::response::Parsed;
 pub use self::verdict::{Delegation, InsecureReason, Verdict};
 use crate::anchor::TrustAnchors;

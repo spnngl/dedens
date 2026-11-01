@@ -7,7 +7,7 @@ upstream answers are the captures of `crates/dedens-proto/tests/testdata`.
 
 A forward stage may validate (D77, `src/validate.rs`): the pipeline turns each question of a
 `dedens_dnssec::Validation` into a `Step::Upstream`, so `apps/dedensd` needs no change per question. Only `Secure`
-sets AD, the upstream's AD is never read, and `src/bailiwick.rs` cuts a secure response to the records the
-verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
+sets AD, the upstream's AD is never read, and a secure response is cut by `dedens_dnssec::validator::covered`
+to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
 captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. Feature `metrics` (D30): the validation
 counters, `src/metrics.rs`.

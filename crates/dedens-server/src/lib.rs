@@ -26,7 +26,6 @@
     clippy::print_stderr
 )]
 
-mod bailiwick;
 mod cache;
 mod forward;
 mod metrics;
