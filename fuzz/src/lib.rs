@@ -46,8 +46,11 @@ use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
 use hickory_proto::serialize::binary::DecodeError as HickoryDecodeError;
 
+mod coap_doc;
 #[cfg(test)]
 mod smoke;
+
+pub use coap_doc::coap_doc;
 
 /// A fuzz entry point.
 pub type Entry = fn(&[u8]);
@@ -76,6 +79,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("denial", denial),
     ("validate", validate),
     ("parse_coap", parse_coap),
+    ("coap_doc", coap_doc),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
