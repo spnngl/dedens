@@ -342,8 +342,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
   `dnssec-failed.org` bogus with EDE 9.
 
-- D86 (amends D75, D76, D77) The key cache: what a `Validator`'s validations learn of zones is kept for the
-  validations after them, in `validator/cache.rs`. It is written by `settle` and read by `zone_of` (D75), nothing
+- D86 (amends D75, D76, D77; amended by D92) The key cache: what a `Validator`'s validations learn of zones is kept
+  for the validations after them, in `validator/cache.rs`. It is written by `settle` and read by `zone_of` (D75), nothing
   else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
   `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
   validator, so a change of trust anchors or negative anchors is a new `Validator` with an empty cache, and nothing
@@ -362,17 +362,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   proof, that of a denial held to the keys' and RFC 9077 §3.4's three hours (an opt-out proof's TTL lacked both
   until now: nothing read it). A name that is no zone cut (a proven absence of DS, or a verified CNAME or DNAME)
   is kept with the TTL of that proof, with the insecure zones. Bogus: 60 seconds
-  (Unbound's `val-bogus-ttl`), for a zone only, by name. A hit gives the TTL it has left, so what is derived from it
-  never outlives it, and a hit is never written back, so reading renews nothing.
+  (Unbound's `val-bogus-ttl`), for a zone only, by name (superseded by D92). A hit gives the TTL it has left, so what
+  is derived from it never outlives it, and a hit is never written back, so reading renews nothing.
   Never kept: an indeterminate outcome or one of the budget (D71), nor `Failure::Transient`: a bogus verdict that
   says nothing lasting of the zone: every bogus found before the zone's keys were reached (a DS that fails, a
   denial that does not hold), the signature limit of D73 (`TooManyFailures`), a DNSKEY answer that is empty,
   missing, unsigned, of keys no signature names, expired or not yet valid (`SigError::is_proven` is false: any
   answer can lack those, and a replay repeats them), any bogus resting on the response `start` was given
-  (`Validation::seeded`: the caller's, however fetched), and any outcome inherited from the parent zone
-  (`Zone::Beneath`, recomputed from its entry); nor what a trust anchor decides (no anchor, negative anchor), which
-  is the `Validator`'s own and costs nothing to find. A validation keeps what it settled in its own map as before
-  (so no step spends the budget twice) and copies a hit into it, so that it sees one outcome whatever the
+  (`Validation::seeded`: the caller's, however fetched) (superseded by D92: no failure is kept), and any outcome
+  inherited from the parent zone (`Zone::Beneath`, recomputed from its entry); nor what a trust anchor decides (no
+  anchor, negative anchor), which is the `Validator`'s own and costs nothing to find. A validation keeps what it settled in its own map as
+  before (so no step spends the budget twice) and copies a hit into it, so that it sees one outcome whatever the
   cache does meanwhile.
   Time: an entry is a hit while `at <= now < at + ttl`, `at` the time given to the validation that wrote it. A `now`
   before `at` (the clock gone back) is a miss, never a longer life.
@@ -384,10 +384,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   digests (`NoKeyForDs`) or has a signature by that key that does not check (`BadSignature`). Whoever answers that
   question can say so, as it could for its own validation: no answer is authenticated before its keys are, and a
   sans-IO validator does not retry another server or TCP as Unbound's iterator does before it stores the failure
-  (no `Next::Retry`: TODECIDE has the cost and the case for it). The entry is kept to what limits the harm: 60 s, fixed, never renewed by a hit, one
-  zone (the name of the zone that failed, not its children's names).
+  (no `Next::Retry`: TODECIDE has the cost and the case for it). The entry is kept to what limits the harm: 60 s,
+  fixed, never renewed by a hit, one zone (the name of the zone that failed, not its children's names)
+  (superseded by D92: no bogus zone is kept).
   Bound: three tables by kind, keys of secure zones, names (no zone cut, insecure zone) and bogus zones, each with
-  its own entry bound (`key_cache`) and its share of `key_cache_bytes` (half, a quarter, a quarter), each evicting
+  its own entry bound (`key_cache`) and its share of `key_cache_bytes` (half, a quarter, a quarter) (superseded by
+  D92: two tables, half each), each evicting
   its least recently used entry (a hit is a use; an expired entry is dropped when read; a `HashMap` and a `BTreeMap`
   by tick, so insert, hit and eviction are logarithmic under the lock, never a scan). A flood of names under a zone
   of an attacker, each with a proof of no DS and the longest TTL it can have, evicts names, never keys; the TTL
@@ -400,8 +402,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   some thirteen hundred zones; a resolver for more raises `key_cache_bytes`.
   Rank: an entry of a weaker kind never replaces a live one of a stronger (keys over names over bogus), so a
   forged answer, or a denial replayed while its signatures last, cannot unseat the keys of a zone, nor a bogus
-  entry a proof of insecurity; once the keys expire the name is free. The price is that a real change (a DS
-  removed, a zone made insecure) waits for the keys' TTL, at most a day, as for any cache of keys.
+  entry a proof of insecurity; once the keys expire the name is free (the bogus rank superseded by D92). The price
+  is that a real change (a DS removed, a zone made insecure) waits for the keys' TTL, at most a day, as for any
+  cache of keys.
   Known and left: a CD=1 answer found bogus is stored as insecure for 60 s (`insert_checked`), over a fresher entry
   of the same key, the same upstream data; and the SOA owner of a negative answer is not checked as the zone's apex, so
   it sets only the negative TTL, which the cache caps.
@@ -422,12 +425,46 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `dedensd`: 8 clients make one DNSKEY question of the root, not 8.
   Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
   clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s
-  and not renewed, a DNSKEY answer that proves nothing, or that `start` was given, is never kept, insecure and no-cut
-  entries are kept, a negative anchor is its validator's own, clones and threads; `validator/cache.rs`, the flood,
-  LRU order, bytes and the entry limit, rank, the day and the clock gone back. Fuzz target `validate`: a new
+  and not renewed (superseded by D92), a DNSKEY answer that proves nothing, or that `start` was given, is never
+  kept, insecure and no-cut entries are kept, a negative anchor is its validator's own, clones and threads;
+  `validator/cache.rs`, the flood, LRU order, bytes and the entry limit, rank, the day and the clock gone back. Fuzz target `validate`: a new
   validator per input, the validation run twice with the same answers (picked by question), the second from the
   cache of the first, and the two verdicts agree unless one is indeterminate.
 
+- D92 (amends D86) The key cache keeps no bogus zone: its tables are two, keys and names. A validation that fails
+  at a zone's keys settles it in its own map as before (no step spends the budget twice), and the next
+  validation walks the zone again. Gone with the table: `Kind::Bogus`, `BOGUS_TTL`, `Failure::Transient`
+  (now a bogus verdict, as any), `Unusable::undecided`, `Validation::seeded` and `SigError::is_proven`, which
+  only decided what the table could store; `key_cache_bytes` is half for keys and half for names (the names
+  table doubled, the keys' share is as it was). The response cache keeps a bad answer for `Config::bogus_ttl`
+  (D77), per question, never served stale.
+  Why. A DNSKEY answer is no authenticated one before its keys are, and whoever sends it, a server of the
+  stage, a forger or a replay, can lack the key the DS digests or break the signature of that key. The 60 s
+  entry made that one answer the verdict of every validation under a sound zone: a one-answer denial of the zone
+  for a minute, to every client. Unbound stores the failure only after it tried its other servers; the sans-IO
+  validator cannot, and `Next::Retry` would add a variant every caller of `step()` matches (`dedens`,
+  `dedens-server`, the fuzz target), a retry state per zone, and a way to ask a server other than the one that
+  answered (an `Upstream` knows its next server only after a failure; a stage of one could only repeat over TCP).
+  Less code wins: with no entry, a lie costs the validation it was told to, and the next one asks again.
+  Revisit `Next::Retry` when a deployment forwards to several servers, one of which lies or breaks, and a bogus
+  zone shows in its logs.
+  Cost. A zone bogus to everyone is walked by each validation under it: for `rhybar.cz` (its DS matches none of
+  its keys; the keys of `cz` cached) 2 questions, the DS and the DNSKEY, and one signature check, the same every
+  time (`tests/validator.rs`). The validator's questions never use the answer cache (D77), so each query for a
+  name under such a zone costs those 2 upstream questions, whatever the response cache holds; only concurrent
+  ones share them (singleflight, D86). The response cache holds the bad answer 60 s per question, so with a cache
+  stage a client asking the same question costs one walk a minute; without one, every query does. RFC 4035 §4.7:
+  a resolver with a BAD cache "MUST take steps to prevent the cache from being useful as a denial-of-service attack
+  amplifier". Here the bad answer's TTL is small and assigned (`bogus_ttl`), and what an attacker can make a
+  query cost is bounded: by the questions, budget and failed checks of one validation (`Limits::questions`,
+  `budget`; D73, D75) and by the allowance of all of them (`Allowance`, `per_second`, D77), a flood of different
+  names paying it as any uncached query does. Not met: §4.7's threshold of failures before a bad answer is
+  served from the cache (TODECIDE, D77).
+  Tests: `validator/cache.rs`, a failure and a name inherited are kept nowhere; `tests/validator.rs`, a bogus zone
+  is asked again each time and the sound zones around it keep their keys, repeated walks under a bogus zone cost
+  2 questions and 1 check each, a failure an answerer can force is the validation it lied to and no other, and
+  the DNSKEY answers that prove nothing or that `start` was given are never kept (D86, as before). `validate_*`
+  and `serve_*` do not move (`benchmarks.md`, run before and after).
 ## Wire format
 
 - D7 `Name<'a>`: wire-form bytes, case kept, compared and hashed ASCII case-insensitively (RFC 4343); built only

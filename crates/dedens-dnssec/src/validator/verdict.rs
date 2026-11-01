@@ -189,12 +189,10 @@ pub(super) fn ede(code: InfoCode, text: impl Into<String>) -> ExtendedError<'sta
 /// Why a zone, or a delegation, is unusable: the verdict of anything that depends on it.
 #[derive(Debug, Clone)]
 pub(super) enum Failure {
-    /// Decided by the data: a zone's DNSKEY `RRset` that no key vouched for under a DS `RRset` or a trust
-    /// anchor that is authentic. The one failure the key cache keeps (D86).
+    /// The data fails: a signature, a DS or a proof that does not hold, the limit on failed checks (D73), a
+    /// DNSKEY `RRset` that no key vouched for or that the answer lacks, or no parent to vouch for the zone. Never
+    /// kept in the key cache: an answerer can cause it for a zone that is sound (D92).
     Bogus(ExtendedError<'static>),
-    /// A bogus verdict that says nothing lasting of the zone: a limit refused (D73), or a response that proves
-    /// nothing of the zone, a forger's or a replay. Never kept in the key cache (D86).
-    Transient(ExtendedError<'static>),
     /// Nothing is known: the caller had no answer, or the budget ran out. Never kept anywhere.
     Indeterminate(ExtendedError<'static>),
 }
@@ -220,17 +218,6 @@ pub(super) enum Unusable {
     Failed(Failure),
 }
 
-impl Unusable {
-    /// The outcome of a walk that did not reach a zone's keys: a bogus one is [`Failure::Transient`], for the
-    /// response it came from proves nothing of the zone to a cache.
-    pub(super) fn undecided(self) -> Self {
-        match self {
-            Self::Failed(Failure::Bogus(ede)) => Self::Failed(Failure::Transient(ede)),
-            other => other,
-        }
-    }
-}
-
 impl From<Unusable> for Verdict {
     fn from(unusable: Unusable) -> Self {
         match unusable {
@@ -243,7 +230,7 @@ impl From<Unusable> for Verdict {
 impl From<Failure> for Verdict {
     fn from(failure: Failure) -> Self {
         match failure {
-            Failure::Bogus(ede) | Failure::Transient(ede) => Self::Bogus { ede },
+            Failure::Bogus(ede) => Self::Bogus { ede },
             Failure::Indeterminate(ede) => Self::Indeterminate { ede },
         }
     }

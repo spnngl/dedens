@@ -313,6 +313,23 @@ name, never across a check. From one thread to eight the warm validation slows 5
 validations, spread over time and far fewer than one per cache miss, do not. Part of the slowdown is the machine's
 (cores of two kinds, one allocator).
 
+D92 drops the bogus table (two tables, not three). The machine drifts too much between runs to compare against the
+figures above: five runs after the change gave 1-thread warm medians of 5 to 13 µs and 8-thread cold ones of 126 to
+330 µs, and `serve_warm` is bimodal, 6.7 or 17.5 µs per query, from one run to the next. So the build before and
+the build after were run alternately, four runs of each, from the same directory. Medians over the four runs, µs:
+
+| Measure | Before D92 | After |
+|---|---|---|
+| `validate_cold` t=1 | 113.6 | 112.4 |
+| `validate_cold` t=8 | 309 | 313 |
+| `validate_warm` t=1 | 13.2 | 13.1 |
+| `validate_warm` t=8 | 17.5 | 17.6 |
+
+The two builds are within 1.5% of each other and each within the spread of its own runs, so the change costs
+nothing measurable. The absolute figures are those of a slow state of the machine, which is why they differ from the
+table above (4.6 µs warm); that table is the figure of a quiet machine and is not redone. `serve_warm` did the same:
+both builds showed the two modes.
+
 ## DNSSEC cost limits (D77)
 
 `benches/dnssec.rs`, `serve_cold`, `serve_warm` and `serve_shed`: one uncached client query of the captured `alg8_a`
