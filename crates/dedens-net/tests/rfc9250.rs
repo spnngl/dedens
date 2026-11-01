@@ -14,7 +14,7 @@ use common::loopback::answer;
 use common::{query, sent, start, t0};
 use compio::BufResult;
 use compio::io::AsyncWriteExt;
-use compio::quic::{ServerBuilder, VarInt};
+use compio::quic::{ConnectionError, ServerBuilder, VarInt};
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Options, Transport};
@@ -51,6 +51,8 @@ struct Seen {
     streams: RefCell<Vec<Vec<u8>>>,
     /// The code of each `STOP_SENDING` the server got.
     stopped: RefCell<Vec<u64>>,
+    /// The error code of each `CONNECTION_CLOSE` of the application the server got.
+    closed: RefCell<Vec<u64>>,
 }
 
 /// A QUIC server on the loopback address answering each stream's query on it as `serve` says.
@@ -78,7 +80,15 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                 let opened = connection.open_uni().is_ok() || connection.open_bi().is_ok();
                 log.opened.set(log.opened.get() || opened);
                 let mut streams = 0;
-                while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                loop {
+                    let (mut send, mut recv) = match connection.accept_bi().await {
+                        Ok(stream) => stream,
+                        Err(ConnectionError::ApplicationClosed(close)) => {
+                            log.closed.borrow_mut().push(close.error_code.into_inner());
+                            return;
+                        }
+                        Err(_) => return,
+                    };
                     streams += 1;
                     if serve == Serve::ClosingAtSecond && streams == 2 {
                         connection.close(VarInt::from_u32(0), b"going away");
@@ -198,8 +208,36 @@ async fn a_certificate_for_another_name_is_refused() {
     assert_eq!(seen.streams.borrow().len(), 0);
 }
 
-/// RFC 9250 §4.2: a response without its length is a protocol error, on a new connection or a reused one alike:
-/// the query is not asked again.
+/// RFC 9250 §4.3.3: a stream that is not one message behind its length is a protocol error: the client closes the
+/// connection with `DOQ_PROTOCOL_ERROR`, 2, and the next query opens another instead of reusing it (D109).
+#[compio::test]
+async fn s4_3_3_a_framing_error_closes_the_connection_with_doq_protocol_error() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::Unframed).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
+    assert!(
+        matches!(error, Err(ClientError::Quic(QuicError::Framing))),
+        "{error:?}"
+    );
+    for _ in 0..50 {
+        if !seen.closed.borrow().is_empty() {
+            break;
+        }
+        compio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*seen.closed.borrow(), [2]);
+    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
+    assert!(
+        matches!(error, Err(ClientError::Quic(QuicError::Framing))),
+        "{error:?}"
+    );
+    assert_eq!(seen.connections.get(), 2);
+    // Neither query was asked again.
+    assert_eq!(seen.streams.borrow().len(), 2);
+}
+
+/// RFC 9250 §4.2: a response without its length is a protocol error: the query is not asked again.
 #[compio::test]
 async fn s4_2_a_response_without_its_length_is_refused() {
     let certificates = certificates();

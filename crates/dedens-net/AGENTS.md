@@ -10,7 +10,7 @@ crate that touches sockets and timers.
   together.
 - `src/tls.rs`: the certificates trusted and the TLS configurations (D60).
 - `src/dial.rs`: the QUIC endpoints and connections of DoQ and DoH, and the per-server slots holding them.
-- `src/quic.rs`: one QUIC connection per server, a stream per query (D61).
+- `src/quic.rs`: one QUIC connection per server, a stream per query, closed on a response not framed (D61, D109).
 - `src/https.rs`: one HTTP/3 connection per server, a request stream per query, opened again after GOAWAY or a
   close (D83); the `h3` crate's connection driver runs as a task.
 - `src/doh.rs`: the sans-IO core of DoH (D82), for client, server and ODoH, on `http` types, no HTTP version: URI
@@ -26,7 +26,8 @@ crate that touches sockets and timers.
   classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
   `Client::exchange_oblivious`. `src/odoh/proxy.rs` is the proxy's side (D94): routing a request, the listed `Target`s,
   the forwarded request and response, the `Proxy-Status` errors; fuzzed by `read_odoh_http`.
-- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs;
+- `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs, all
+  ended at the query's deadline (D109);
   the discovery of the resource by `/.well-known/core` (D95).
 - `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.

@@ -33,6 +33,9 @@ pub enum DocError {
     /// The CoAP exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
+    /// No response before the deadline of the DNS query, whatever CoAP was still waiting for (D109).
+    #[error("no response before the deadline")]
+    TimedOut,
     /// A response code other than 2.05: a CoAP error never holds a DNS response (RFC 9953 §4.3.1).
     #[error("the server answered {0}")]
     Code(Code),
@@ -52,23 +55,28 @@ pub enum DocError {
 
 /// Asks `server` for the DNS response to `query` at the path `docpath`, with the `random` bytes for the token (8),
 /// the first message ID (2) and the seed of the retransmission jitter (4). The response is the body of the 2.05
-/// answer, the TTLs raised by its Max-Age (RFC 9953 §4.3.2).
+/// answer, the TTLs raised by its Max-Age (RFC 9953 §4.3.2). The whole exchange, the retransmissions, the wait for
+/// a separate response (RFC 7252 §5.2.2) and the blocks (RFC 7959 §2.4) alike, ends at `deadline` (D109).
 ///
 /// # Errors
 ///
-/// [`ClientError::Doc`]: a socket failure, no response, a CoAP error code, a content format or body that is not DNS.
+/// [`ClientError::Doc`]: a socket failure, no response before `deadline`, a CoAP error code, a content format or body
+/// that is not DNS.
 pub(crate) async fn coap(
     query: &[u8],
     server: SocketAddr,
     docpath: &[Box<[u8]>],
     random: [u8; 14],
+    deadline: Instant,
 ) -> Result<Vec<u8>, ClientError> {
     let [token @ .., id_high, id_low, s0, s1, s2, s3] = random;
     let token = Token::new(&token).expect("8 bytes fit a token");
     let request = request(docpath, query.to_vec(), token);
     let first_id = u16::from_be_bytes([id_high, id_low]);
     let seed = u32::from_be_bytes([s0, s1, s2, s3]).max(1);
-    let response = run(request, server, first_id, seed).await?;
+    let response = timeout_at(deadline, run(request, server, first_id, seed))
+        .await
+        .unwrap_or(Err(DocError::TimedOut))?;
     debug!(
         %server,
         code = %response.code,

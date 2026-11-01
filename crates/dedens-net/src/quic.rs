@@ -86,7 +86,9 @@ impl QuicPool {
     /// Sends `wire` to `addr`, whose certificate must hold `name`, and returns the response.
     ///
     /// A reused connection found closed once the query fails, as one the server dropped while idle (RFC 9250
-    /// §4.4), is replaced once and the query sent again (D27).
+    /// §4.4), is replaced once and the query sent again (D27). A response not framed closes the connection with
+    /// `DOQ_PROTOCOL_ERROR` (RFC 9250 §4.3.3, D109): the query is not sent again, and the next one opens a new
+    /// connection.
     ///
     /// # Errors
     ///
@@ -104,7 +106,12 @@ impl QuicPool {
         let asked = async {
             let (connection, reused) = self.connection(&server).await?;
             match ask(&connection, &framed).await {
-                Err(_) if reused && connection.close_reason().is_some() => {
+                // A framing error is the server's, and closes the connection here: not one found closed.
+                Err(error)
+                    if reused
+                        && !matches!(error, QuicError::Framing)
+                        && connection.close_reason().is_some() =>
+                {
                     let (fresh, _) = self.connection(&server).await?;
                     ask(&fresh, &framed).await
                 }
@@ -147,7 +154,16 @@ async fn ask(connection: &Connection, framed: &[u8]) -> Result<Vec<u8>, QuicErro
         .send
         .finish()
         .map_err(|closed| QuicError::Stream(io::Error::other(closed)))?;
-    let response = read_message(&mut stream.recv).await?;
+    let response = match read_message(&mut stream.recv).await {
+        Ok(response) => response,
+        Err(QuicError::Framing) => {
+            // The server broke the protocol: the connection goes, and the next query opens another (RFC 9250
+            // §4.3.3, D109).
+            connection.close(VarInt::from_u32(DOQ_PROTOCOL_ERROR), b"response not framed");
+            return Err(QuicError::Framing);
+        }
+        Err(error) => return Err(error),
+    };
     stream.read = true;
     Ok(response)
 }

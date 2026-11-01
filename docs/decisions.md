@@ -620,7 +620,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     address, `[ADDRESS]:PORT` or with its zone, is taken as such before any name; a name for TLS is made only
     over TLS or QUIC.
   - Tests make their certificates with rcgen at run time, so no private key is checked in.
-- D61 DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
+- D61 (amended by D109) DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
   One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
   opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
   (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
@@ -667,7 +667,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
     §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
     Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
-- D83 (completes D82) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
+- D83 (completes D82; amended by D109) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
   QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
   - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
     request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
@@ -861,7 +861,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     on every request; its server blocks at 1024 by itself with ETag and Size2, answers a Block1 PUT 2.31 per block
     then 2.01, sends a separate response as an empty ACK then a CON, a NON request a NON response; a lost request or
     ACK is sent again after 2.4 s. Not checked: DTLS, OSCORE (not built), Observe.
-- D81 (completes D80; amended by D95) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
+- D81 (completes D80; amended by D95, D109) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
   `dedensd` and `dedens-net` (D69): the client `Transport::Coap` (`dedens_net::doc`), the `dedens` options
   `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path unless given), the `dedensd` listener
   `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the client's `request`, the server's
@@ -944,6 +944,24 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
+- D109 (amends D61, D81, D83) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
+  by the query's deadline (audit step 06):
+  - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
+    8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `https.rs`), where h3 states none; a response with a larger header section
+    is refused as a stream error (`HttpsError::Stream`), the request not sent again. 8 KiB is ten times the largest
+    header section of the responses captured from Cloudflare, Google, Quad9 and AdGuard (797 bytes, counted as
+    RFC 9114 §4.2.2 does: name, value and 32 per field; `tests/testdata/doh/*.headers`) and what servers commonly
+    take of a request; a server that sends more is no DoH server worth asking. The body limit is unchanged, and the
+    QUIC receive windows are step 12's.
+  - DoQ (RFC 9250 §4.3.3): a response stream that is not one message behind its length closes the connection with
+    `DOQ_PROTOCOL_ERROR` (2). The pool does not reuse it (a closed connection is not, D61), and the query is not sent
+    again on a new connection (D27's retry is for a connection found closed, not for one closed here): the error is
+    the server's.
+  - DoC (RFC 7252 §4.8, §5.2.2; RFC 7959 §2.4): the CoAP exchange, with its retransmissions, the wait for a separate
+    response after an empty ACK (93 s) and the blocks, ends at the DNS exchange's deadline, as over the other
+    transports: `DocError::TimedOut`, which the client turns into the exchange's timeout, `Failure::TimedOut` with
+    one send (D81: the DNS tries are 1). A blackholed server holds a query for the timeout, not for 93 s or more.
+    The discovery (D95) is not bounded: it has no query deadline, and the CLI asks it once.
 
 ## Presentation format
 

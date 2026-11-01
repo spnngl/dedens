@@ -817,12 +817,17 @@ enum Serve {
     ClosingAfterFirst,
     /// Never an answer.
     Silent,
+    /// Each query answered with a header section of 16 KiB, which the server sends only if the client's settings
+    /// let it.
+    BigHeaders,
 }
 
 /// What the server saw.
 #[derive(Default)]
 struct Seen {
     connections: Cell<u32>,
+    /// The most the client's settings let a header section hold, for each response the server could not send.
+    refused: RefCell<Vec<u64>>,
     /// Each request's head and body.
     requests: RefCell<Vec<(http::request::Parts, Vec<u8>)>>,
 }
@@ -894,11 +899,22 @@ async fn h3_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, Rc
                                     .expect("a response")
                             }
                         };
-                        let (head, body) = reply.into_parts();
-                        stream
-                            .send_response(Response::from_parts(head, ()))
-                            .await
-                            .expect("the client reads");
+                        let (mut head, body) = reply.into_parts();
+                        if serve == Serve::BigHeaders {
+                            head.headers.insert(
+                                "x-padding",
+                                "a".repeat(16 << 10).parse().expect("a header value"),
+                            );
+                            // The client's settings reach the server on a stream of their own.
+                            compio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        let sent = stream.send_response(Response::from_parts(head, ())).await;
+                        if let Err(h3::error::StreamError::HeaderTooBig { max_size, .. }) = &sent {
+                            log.refused.borrow_mut().push(*max_size);
+                            stream.stop_stream(h3::error::Code::H3_INTERNAL_ERROR);
+                            return;
+                        }
+                        sent.expect("the client reads");
                         stream
                             .send_data(Bytes::from(body))
                             .await
@@ -1137,6 +1153,23 @@ async fn s5_2_no_answer_times_out() {
     );
     assert_eq!(seen.requests.borrow().len(), 2);
     assert_eq!(seen.connections.get(), 1);
+}
+
+/// RFC 9114 §4.2.2, §7.2.4.1: the client states the header section it accepts, 8 KiB, which fits the responses
+/// captured from public servers (at most 797 bytes: `testdata/doh/*.headers`), and a response past it is not read.
+#[compio::test]
+async fn s4_2_2_a_response_header_section_past_the_limit_is_refused() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::BigHeaders).await;
+    let client = trusting(certificates);
+    let mut options = https(Method::Get);
+    options.timeout = Duration::from_secs(5);
+    let error = client.exchange(query(), named(addr, NAME), &options).await;
+    assert!(
+        matches!(error, Err(ClientError::Https(HttpsError::Stream(_)))),
+        "{error:?}"
+    );
+    assert_eq!(*seen.refused.borrow(), [8 << 10]);
 }
 
 /// RFC 8484 §5.1: a response with an `Age` reaches the caller with its TTLs reduced, one without it unchanged.
