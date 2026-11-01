@@ -17,18 +17,19 @@ use dedens_net::coap::doc::path_segments;
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
 use dedens_net::doh::{DEFAULT_PATH, Template, TemplateError};
-use dedens_net::exchange::{Failure, Transport};
+use dedens_net::exchange::{self, Failure, Response, Transport};
 use dedens_net::https::HttpsError;
 use dedens_net::quic::QuicError;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
-use dedens_scenario::{Expect, Id, Latency, Options, QueryFile, Report};
+use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report};
 
 use crate::args::{self, Cli};
 use crate::idn;
 use crate::output::{self, Format, Printing};
 use crate::trace::{self, Trail};
+use crate::validate::{self, Judge, Judges};
 
 /// The queries in flight at most: each holds a socket.
 const IN_FLIGHT: usize = 64;
@@ -43,6 +44,8 @@ struct Job {
     route: Route,
     options: Options,
     expect: Option<Expect>,
+    /// Set for a query that validates (`+validate`): its validator, which queries with the same anchors share.
+    judge: Option<Judge>,
 }
 
 /// Where a query goes.
@@ -91,10 +94,14 @@ impl Route {
 
 /// Runs `cli`; an error is one of the run as a whole, before any query or while printing.
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
-    let jobs = match &cli.file {
+    let mut jobs = match &cli.file {
         Some(path) => file_jobs(cli, path)?,
         None => command_line_jobs(cli)?,
     };
+    let mut judges = Judges::new()?;
+    for job in &mut jobs {
+        job.judge = judges.of(&job.options)?;
+    }
     if let Some(job) = jobs
         .iter()
         .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
@@ -196,6 +203,23 @@ fn show(
             for line in report.violations.iter().chain(&report.failures) {
                 eprintln!("dedens: {}: {line}", report.id);
             }
+            // Short output is the answer's data: a failed verdict must not pass unseen (D76).
+            for dnssec in report
+                .dnssec
+                .iter()
+                .filter(|d| matches!(d.status, DnssecStatus::Bogus | DnssecStatus::Indeterminate))
+            {
+                let ede = dnssec
+                    .ede
+                    .iter()
+                    .map(|e| format!(" (EDE {}: {})", e.code, e.text));
+                eprintln!(
+                    "dedens: {}: dnssec {}{}",
+                    report.id,
+                    dnssec.status,
+                    ede.collect::<String>()
+                );
+            }
         }
         code = code.max(u8::from(!report.failures.is_empty()));
         if let Some(dir) = &cli.save_wire {
@@ -277,6 +301,9 @@ async fn repeat(
         }
         if let Some(expect) = &job.expect {
             report.failures = expect.check(&Message::decode(wire)?.message);
+            report
+                .failures
+                .extend(expect.check_dnssec(report.dnssec.as_ref().map(|dnssec| dnssec.status)));
         }
     }
     last
@@ -310,23 +337,32 @@ async fn ask(
             qtype: job.qtype,
             qclass: job.qclass,
         };
-        let query = job.options.query(question);
-        let server = endpoint.server.clone();
-        let response = match &endpoint.proxy {
-            #[cfg(feature = "odoh")]
-            Some(proxy) => {
-                let response = client
-                    .exchange_oblivious(query, server, Some(Server::clone(proxy)), &options)
-                    .await;
-                notices(client);
-                response?
-            }
-            _ => client.exchange(query, server, &options).await?,
-        };
+        let query = job.options.query(question.clone());
+        let response = exchange(client, endpoint, query, &options).await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
-            let report = Report::exchanged(id, address, &response, &decoded);
-            return Ok((report, response.wire));
+            let Some(judge) = &job.judge else {
+                let report = Report::exchanged(id, address, &response, &decoded);
+                return Ok((report, response.wire));
+            };
+            // The verdict is on the response; its questions go to the same server, the same way.
+            let send = async |query| Ok(exchange(client, endpoint, query, &options).await?.wire);
+            let dnssec = judge
+                .judge(&job.options, &question, &decoded.message, send)
+                .await;
+            // Only a secure verdict is shown as covering the response, and then only what it covers (D76).
+            let report = if dnssec.status == DnssecStatus::Secure {
+                Report::exchanged(id, address, &response, &validate::covered(&decoded))
+            } else {
+                Report::exchanged(id, address, &response, &decoded)
+            };
+            return Ok((
+                Report {
+                    dnssec: Some(dnssec),
+                    ..report
+                },
+                response.wire,
+            ));
         }
     }
     Err(anyhow!("no name to ask"))
@@ -345,6 +381,27 @@ fn notices(client: &Client) {
         };
         // Nowhere to report a stderr that does not write.
         let _ = writeln!(io::stderr(), "warning: {message}");
+    }
+}
+
+/// Sends `query` to `endpoint`, over the transport of `options`, through its proxy when it has one.
+async fn exchange(
+    client: &Client,
+    endpoint: &Endpoint,
+    query: Message<'_>,
+    options: &exchange::Options,
+) -> Result<Response, ClientError> {
+    let server = endpoint.server.clone();
+    match &endpoint.proxy {
+        #[cfg(feature = "odoh")]
+        Some(proxy) => {
+            let response = client
+                .exchange_oblivious(query, server, Some(Server::clone(proxy)), options)
+                .await;
+            notices(client);
+            response
+        }
+        _ => client.exchange(query, server, options).await,
     }
 }
 
@@ -405,6 +462,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         route: route.clone(),
         options: cli.options.clone(),
         expect: None,
+        judge: None,
     };
     let mut jobs = Vec::new();
     for (text, types) in lookups {
@@ -463,6 +521,14 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
                 .or(query.options)
                 .or(file.options.clone());
             options.check().with_context(|| format!("{id}"))?;
+            if query
+                .expect
+                .as_ref()
+                .is_some_and(|expect| expect.dnssec.is_some())
+                && !options.validating()
+            {
+                bail!("{id}: the dnssec expectation needs the validate option");
+            }
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
                 route: Route::Servers(match &servers {
@@ -477,6 +543,7 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
                 qclass: Class::IN,
                 options,
                 expect: query.expect,
+                judge: None,
             })
         })
         .collect()

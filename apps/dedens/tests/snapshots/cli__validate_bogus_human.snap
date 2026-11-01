@@ -1,0 +1,11 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: out
+---
+dnssec-failed.org. A  NOERROR  N ms from 127.0.0.1:PORT over UDP
+answer
+  dnssec-failed.org.  5m  A      96.99.227.255
+                          RRSIG  A 13 2 300 20261105015706 20261028225206 32784 dnssec-failed.org. ELXURSle2X0DpeJqThiKHyDKBs9l0W0Y7ON4ZwJeWKJNuD4tUg0cfMW2xvx6JAGS+HFS7cF67IudjKe7metAfg==
+checking disabled · EDNS 1232 bytes · DNSSEC OK · 58/232 bytes
+EDE 9 DNSKEY Missing: no SEP matching the DS found for dnssec-failed.org.
+dnssec bogus: EDE 9 DNSKEY Missing: dnssec-failed.org. DNSKEY: no DNSKEY matches a DS record

@@ -5,7 +5,7 @@ use std::time::Duration;
 use dedens_net::exchange::{self, Transport};
 use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Name, Question, RecordType};
-use dedens_scenario::{CookieOption, Id, Latency, Options, QueryFile, Timeout};
+use dedens_scenario::{CookieOption, DnssecStatus, Id, Latency, Options, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.
 const A: &[u8] = include_bytes!("../../dedens-proto/tests/testdata/a.bin");
@@ -244,4 +244,100 @@ fn options_build_the_query_and_the_exchange() {
         ..Options::default()
     };
     assert!(!off.exchange().cookies);
+}
+
+const VALIDATING: &str = "
+options: {validate: true, trust_anchor: root.keys, insecure: [bad.example, test]}
+queries:
+  - name: example.com
+    type: A
+    expect: {dnssec: bogus}
+  - name: example.org
+    type: A
+    options: {validate: false}
+";
+
+#[test]
+fn validation_options_and_the_dnssec_expectation_are_read() {
+    let file = QueryFile::parse(VALIDATING).expect("valid");
+    let [bogus, off] = file.queries.as_slice() else {
+        panic!("two queries");
+    };
+    let options = bogus.options.clone().or(file.options.clone());
+    assert_eq!(options.validate, Some(true));
+    assert_eq!(options.trust_anchor.as_deref(), Some("root.keys".as_ref()));
+    let insecure: Vec<_> = options
+        .insecure
+        .iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(insecure, ["bad.example.", "test."]);
+    assert!(options.validating());
+    assert!(!off.options.clone().or(file.options.clone()).validating());
+    let expect = bogus.expect.as_ref().expect("an expectation");
+    assert_eq!(expect.dnssec, Some(DnssecStatus::Bogus));
+}
+
+#[test]
+fn the_dnssec_expectation_is_checked_against_the_verdict() {
+    let file = QueryFile::parse(VALIDATING).expect("valid");
+    let expect = file.queries[0].expect.as_ref().expect("an expectation");
+    assert_eq!(expect.check_dnssec(Some(DnssecStatus::Bogus)), None);
+    assert_eq!(
+        expect.check_dnssec(Some(DnssecStatus::Secure)).as_deref(),
+        Some("dnssec secure instead of bogus")
+    );
+    assert_eq!(
+        expect.check_dnssec(None).as_deref(),
+        Some("dnssec bogus expected, but not validated")
+    );
+    let none = QueryFile::parse("queries: [{name: a.example, type: A, expect: {rcode: NOERROR}}]")
+        .expect("valid");
+    let expect = none.queries[0].expect.as_ref().expect("an expectation");
+    assert_eq!(expect.check_dnssec(Some(DnssecStatus::Bogus)), None);
+    assert!(
+        QueryFile::parse("queries: [{name: a.example, type: A, expect: {dnssec: maybe}}]").is_err()
+    );
+}
+
+#[test]
+fn validation_sets_do_and_cd_and_refuses_what_contradicts_it() {
+    let question = Question::new(Name::root(), RecordType::NS);
+    let validate = Options {
+        validate: Some(true),
+        ..Options::default()
+    };
+    let query = validate.query(question.clone());
+    assert!(query.header.flags.contains(Flags::CD));
+    assert!(query.edns.expect("EDNS").flags.contains(EdnsFlags::DO));
+    assert_eq!(validate.check(), Ok(()));
+    // An anchor or a negative one asks for validation too, until `validate` says no.
+    let anchored = Options {
+        trust_anchor: Some("root.keys".into()),
+        ..Options::default()
+    };
+    assert!(anchored.validating());
+    let off = Options {
+        validate: Some(false),
+        ..anchored
+    };
+    assert!(!off.validating());
+    assert!(!off.query(question).header.flags.contains(Flags::CD));
+    for conflicting in [
+        Options {
+            edns: Some(false),
+            ..validate.clone()
+        },
+        Options {
+            dnssec: Some(false),
+            ..validate.clone()
+        },
+        Options {
+            cdflag: Some(false),
+            ..validate
+        },
+    ] {
+        assert!(conflicting.check().is_err(), "{conflicting:?}");
+    }
 }

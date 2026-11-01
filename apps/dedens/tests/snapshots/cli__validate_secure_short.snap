@@ -1,0 +1,7 @@
+---
+source: apps/dedens/tests/cli.rs
+expression: out
+---
+104.16.132.229
+104.16.133.229
+A 13 2 300 20261102121044 20261031101044 34505 cloudflare.com. 8qV8fGMYDUY8IUgJTevrxFxQ+QbHr0KSZuR4n2vBdJ3HqspUUjKAOFvVYvTjWq/CIOUEBfJjHvvJOBIkRApusg==

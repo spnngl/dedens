@@ -460,12 +460,19 @@ fn certified(
     (certificates.config(versions, alpn), pem)
 }
 
-/// The captured responses named, `"a"` for `a.bin`.
+/// The captured responses named, `"a"` for `a.bin`, from the captures of the protocol or of DNSSEC (no name is in
+/// both).
 fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
-    let dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/dedens-proto/tests/testdata");
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates");
+    let dirs =
+        ["dedens-proto", "dedens-dnssec"].map(|krate| crates.join(krate).join("tests/testdata"));
     let canned = names.iter().map(|name| {
-        let wire = std::fs::read(dir.join(format!("{name}.bin"))).expect("captured response");
+        let file = format!("{name}.bin");
+        let dir = dirs
+            .iter()
+            .find(|dir| dir.join(&file).exists())
+            .expect("a captured response");
+        let wire = std::fs::read(dir.join(file)).expect("captured response");
         let (key, _) = question(&wire).expect("a question");
         Canned {
             key,

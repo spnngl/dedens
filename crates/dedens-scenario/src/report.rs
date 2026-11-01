@@ -1,13 +1,14 @@
 //! The report of a response (D37): what `dedens --json` and `--yaml` print, one object per query, and what the
 //! server's tests read back. Empty lists and strings are left out: an absent field is empty.
 
+use std::fmt;
 use std::net::SocketAddr;
 
 use dedens_net::exchange::{self, Response};
-use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::text::Hex;
 use dedens_proto::{Decoded, Edns, EdnsFlags, Question, Record};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Id;
 
@@ -38,6 +39,10 @@ pub struct Report {
     /// The OPT record (RFC 6891 §6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edns: Option<EdnsReport>,
+    /// What validation made of the response, when asked for (`+validate`, D76); the answer and authority
+    /// sections are what it covers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dnssec: Option<DnssecReport>,
     /// The rules of the protocol the response breaks, in words (D9).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub violations: Vec<String>,
@@ -70,6 +75,7 @@ impl Report {
             authority: records(&message.authority),
             additional: records(&message.additional),
             edns: message.edns.as_ref().map(EdnsReport::new),
+            dnssec: None,
             violations: decoded.violations.iter().map(ToString::to_string).collect(),
             failures: Vec::new(),
             latency: None,
@@ -105,6 +111,83 @@ impl Report {
                 }),
             }),
             ..Self::new(id, decoded, response.wire.len())
+        }
+    }
+}
+
+/// What validation made of a response (RFC 4033 §5), the verdicts of RFC 4035 §4.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnssecStatus {
+    /// Authenticated: signatures and proofs of absence check out from a trust anchor.
+    Secure,
+    /// Not covered by a chain of trust, which is no failure: an unsigned zone, a negative trust anchor.
+    Insecure,
+    /// A secure zone's data fails validation.
+    Bogus,
+    /// Nothing is known: a question went unanswered or a limit stopped the validation.
+    Indeterminate,
+}
+
+impl fmt::Display for DnssecStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Secure => "secure",
+            Self::Insecure => "insecure",
+            Self::Bogus => "bogus",
+            Self::Indeterminate => "indeterminate",
+        })
+    }
+}
+
+/// The verdict on a response (D76), apart from the server's own AD flag, which is never read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DnssecReport {
+    /// The verdict.
+    pub status: DnssecStatus,
+    /// The extended error the verdict comes with (RFC 8914), for a failure or an unsupported algorithm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ede: Option<EdeReport>,
+    /// Why the response is insecure, in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl DnssecReport {
+    /// A verdict of `status` with its extended error and reason, if any.
+    #[must_use]
+    pub fn new(
+        status: DnssecStatus,
+        ede: Option<&ExtendedError<'_>>,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            status,
+            ede: ede.map(EdeReport::new),
+            reason,
+        }
+    }
+}
+
+/// An Extended DNS Error (RFC 8914 §2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EdeReport {
+    /// The INFO-CODE.
+    pub code: u16,
+    /// Its purpose in the IANA registry, when registered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    /// The EXTRA-TEXT, its control characters escaped as in Rust.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+impl EdeReport {
+    fn new(error: &ExtendedError<'_>) -> Self {
+        Self {
+            code: error.code.0,
+            purpose: InfoCode::mnemonic(error.code).map(str::to_owned),
+            text: printable(&error.text),
         }
     }
 }
@@ -366,11 +449,18 @@ impl OptionReport {
                 client: Hex(&cookie.client()).to_string(),
                 server: cookie.server().map(|s| Hex(s).to_string()),
             },
-            EdnsOption::Ede(error) => Self::Ede {
-                code: error.code.0,
-                purpose: InfoCode::mnemonic(error.code).map(str::to_owned),
-                text: printable(&error.text),
-            },
+            EdnsOption::Ede(error) => {
+                let EdeReport {
+                    code,
+                    purpose,
+                    text,
+                } = EdeReport::new(error);
+                Self::Ede {
+                    code,
+                    purpose,
+                    text,
+                }
+            }
             EdnsOption::ClientSubnet(subnet) => other(format!(
                 "{}/{}/{}",
                 subnet.address(),

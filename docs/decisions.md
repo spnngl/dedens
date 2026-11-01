@@ -230,6 +230,38 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
 
+- D76 (amends D32, D34, D37, D40, D69) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
+  the server is a transport, never trusted. `validate` is an `Options` field, so a query file carries it, and it
+  sets DO and CD on the query (the response is wanted even when it is bogus, RFC 6840 §5.9; RD stays as the user
+  has it) and gives `dedens_dnssec::validator` the response: `apps/dedens/src/validate.rs` is the glue, a loop
+  `step()`, send, `answer()` (D75). Each `Next::Ask` goes to the same server over the same transport, with the
+  query's own options (UDP with the TCP fallback, TLS, QUIC, HTTPS, CoAP, ODoH proxy), and an unanswered or
+  unreadable one is `answer(None)`. One `Validator` per set of anchors in a run, shared by its queries; no key
+  cache until 06b, so every query asks its whole chain, one DS question per label (`-v` traces each question). The
+  upstream's AD bit is never read: the human report names it `AD set by the server` once a verdict is shown, apart
+  from the verdict. Only `Secure` is shown as validated, and then only what it covers (D75): the report of a
+  secure response drops the additional section, records not of class IN and the CNAME synthesized from a DNAME
+  (`validate::covered`); `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
+  asked of the same server and validated on its own, at most 8 times, then indeterminate; the verdict is that of
+  the last answer, never an AD of the first. `Referral` cannot come of `start`; a `Referral` or `Incomplete`
+  that reaches the report is indeterminate. `--trust-anchor FILE` (DS or DNSKEY records in zone text,
+  `TrustAnchors::read`, D72) replaces the bundled root anchors, `--insecure NAME` (repeatable, `insecure:` a list
+  in a file) adds negative trust anchors (RFC 7646, no end time, TODECIDE); each of them turns validation on unless
+  `+novalidate` says otherwise, so an anchor file is never silently ignored. `+noedns`, `+nodnssec` and `+nocd`
+  with validation, and `+trace` with it (a trace does not follow CNAMEs or ask a chain, D40), are usage errors,
+  as D32 does for options needing EDNS; a file whose `expect` has `dnssec` for a query that does not validate
+  is an error at load. `DEDENS_NOW` (Unix seconds) replaces the clock of validation, as `DEDENS_ROOTS` does the
+  roots, for tests. The report has a `dnssec` object, `status` (`secure`, `insecure`, `bogus`, `indeterminate`),
+  `ede` (`code`, `purpose`, `text`, as an EDE option of the response) and `reason` (an insecure verdict's words),
+  in JSON and YAML; the human format ends with one line, green when secure, plain when insecure, red with the
+  EDE when bogus or indeterminate; `+short` prints nothing of it but a line to stderr for the last two, like a
+  violation. The expectation `dnssec: secure|insecure|bogus|indeterminate` (D34) fails the query as any other,
+  exit 1. Exit codes stay D33's: a bogus response alone exits 0, since the verdict is the answer the tool
+  gives. Tests: `apps/dedens/tests/cli.rs` against the captures of `crates/dedens-dnssec/tests/testdata` at their
+  `captured_at`: secure, insecure and bogus in each format, the questions asked, a wrong or a right anchor file,
+  a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
+  `dnssec-failed.org` bogus with EDE 9.
+
 ## Wire format
 
 - D7 `Name<'a>`: wire-form bytes, case kept, compared and hashed ASCII case-insensitively (RFC 4343); built only
@@ -735,7 +767,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Glue is an address record of a name server inside the answering server's zone (RFC 2181 §5.4.1), unlike dig;
   name servers without glue are looked up the same way, A then AAAA, at most 4 deep, those inside the referred
   zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
-  validation, no CNAME following. Refused with `@server`, `-f`, `--repeat`, `--search`, `+tls` and `+quic`. The human format
+  validation (`+validate` is refused, D76), no CNAME following. Refused with `@server`, `-f`, `--repeat`, `--search`, `+tls` and `+quic`. The human format
   counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS` replaces the roots
   for tests.
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,

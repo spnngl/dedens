@@ -123,11 +123,12 @@ impl Cli {
                 || cli.options.encrypted()
                 || cli.options.https()
                 || cli.options.odoh()
-                || cli.options.coap == Some(true))
+                || cli.options.coap == Some(true)
+                || cli.options.validating())
         {
             usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy or +coap"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap or +validate"
                     .to_owned(),
             );
         }
@@ -406,6 +407,10 @@ mod tests {
             (&["+sh"], &["--short"]),
             (&["+nojson"], &["--json=false"]),
             (&["+bufsize=512"], &["--bufsize=512"]),
+            (&["+validate"], &["--validate"]),
+            (&["+novalidate"], &["--validate=false"]),
+            (&["+trust-anchor=a.zone"], &["--trust-anchor=a.zone"]),
+            (&["+insecure=example.com"], &["--insecure=example.com"]),
             (&["+save-wire=dir"], &["--save-wire=dir"]),
             (&["--only", "@x", "+nsid"], &["--only", "@x", "--nsid"]),
             (&["-f", "+x"], &["-f", "+x"]),

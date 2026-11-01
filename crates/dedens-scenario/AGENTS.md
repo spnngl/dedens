@@ -5,10 +5,12 @@ and the server's tests. No I/O: callers read the file and run the queries.
 
 - `src/file.rs`: `QueryFile`, `Query`, `Id`; serde with `deny_unknown_fields`.
 - `src/options.rs`: `Options`, dig's `+` options, one set for files and the command line (clap flags behind the
-  `clap` feature); builds the query and the `dedens-net` exchange options.
-- `src/expect.rs`: `Expect`, checked against a decoded response into failures in words.
+  `clap` feature); builds the query and the `dedens-net` exchange options; `validate`, `trust_anchor` and `insecure` ask for
+  validation (D76), which the crate only describes: `apps/dedens` does it.
+- `src/expect.rs`: `Expect`, checked against a decoded response into failures in words; the `dnssec` verdict is
+  checked apart, `check_dnssec`, as the crate does not validate.
 - `src/report.rs`: `Report`, what `dedens --json` and `--yaml` print; built from a `dedens_net` response or a
-  decoded message.
+  decoded message; `DnssecReport`, the verdict of D76.
 - `tests/query_file.rs`: YAML and JSON files, and expectations against captured responses.
 
 Fuzz target: `parse_query_file`.
