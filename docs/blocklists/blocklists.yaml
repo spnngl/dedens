@@ -1,13 +1,21 @@
-# Published blocklists (D87). `apps/dedensd/tests/blocklists.rs` reads this file: `cargo test` checks its fields,
-# `just blocklists` downloads every list and checks its `format`. Facts checked at each source on 2026-11-01.
+# Published blocklists (D87, D88). `apps/dedensd/tests/blocklists.rs` reads this file: `cargo test` checks its
+# fields, `just blocklists` downloads every list and checks its `format`, its `updated` and its source's `status`.
+# Facts checked at each source on 2026-11-01.
 #
-# A source: `id` (unique), `name`, `maintainer`, `site`, `license` (an SPDX id, else the terms, quoted short),
-# `description` (how it is built, its state), then its main `lists`, none when it publishes no list to download.
+# A source: `id` (unique), `name`, `maintainer`, `site`, `status`, `license`, `use`, `terms`, `description` (how
+# it is built), then its main `lists`.
+#   status: `active`; `frozen: <date>`, its lists unchanged since that day (UTC); `retired`, no list left to
+#     download, `lists: []`.
+#   license: an SPDX id; `custom`, its own terms; `none`, no licence given.
+#   use: what the terms allow with the data, as read: `free` (any use, commercial included; an SPDX licence),
+#     `no-resale` (any use but selling it), `non-commercial`, `ask` (in a product or a service for others, only
+#     with permission), `unknown` (no terms given).
+#   terms: the terms, quoted short; for a `custom` or `none` licence only.
 # A list: `id` (unique in its source), an optional `description`, `url`, `format`, `categories` (any of `ads` (and
 # trackers), `malware`, `phishing`, `scam`, `cryptojacking`, `adult`, `gambling`, `spam`, `botnet` (command and
-# control), `attacks` (addresses scanning, brute-forcing, exploiting): what it holds), `updated` (as
-# announced, else as measured from the file's dates). `format`, as measured, a line each after `#`, `;` or `!`
-# comments:
+# control), `attacks` (addresses scanning, brute-forcing, exploiting): what it holds), `updated` (an ISO 8601
+# duration of weeks to seconds, `P1D` or `PT30M`, as announced, else as measured from the file's dates; or
+# `irregular`). `format`, as measured, a line each after `#`, `;` or `!` comments:
 #   domains: a name; `dedensd` reads it (D56) as the name and its subdomains, as OISD and HaGeZi mean theirs;
 #   wildcard: `*.name`, read as `domains`;
 #   hosts: `/etc/hosts`, `0.0.0.0 name`, read by `dedensd`;
@@ -20,7 +28,9 @@ sources:
     name: oisd
     maintainer: Stephan van Ruth (sjhgvr)
     site: https://oisd.nl
+    status: active
     license: GPL-3.0-only
+    use: free
     description: >-
       Aggregates public blocklists and keeps only entries that break no site ("Block. Don't break."); dead domains pruned every 5 days. Each name blocks its subdomains; exact-name and hosts files ended on 2024-01-01.
     lists:
@@ -34,27 +44,29 @@ sources:
           - malware
           - phishing
           - cryptojacking
-        updated: daily
+        updated: P1D
       - id: small
         description: Mainly ads; a subset of `big`.
         url: https://small.oisd.nl/domainswild2
         format: domains
         categories:
           - ads
-        updated: daily
+        updated: P1D
       - id: nsfw
         description: Porn, shock and adult sites; lists the whole TLDs `adult`, `porn`, `sex` and `xxx`.
         url: https://nsfw.oisd.nl/domainswild2
         format: domains
         categories:
           - adult
-        updated: daily
+        updated: P1D
 
   - id: stevenblack
     name: StevenBlack Unified Hosts
     maintainer: Steven Black (StevenBlack)
     site: https://github.com/StevenBlack/hosts
+    status: active
     license: MIT
+    use: free
     description: >-
       Merges 15 curated hosts files (AdAway, MVPS, someonewhocares, yoyo.org, KADhosts, FadeMind…), duplicates removed, plus category extensions. Some merged sources are non-commercial (MVPS CC BY-NC-SA 4.0, someonewhocares). No schedule announced; a release every 1 to 3 days. Each file opens with the host's own entries (`127.0.0.1 localhost`, `0.0.0.0 0.0.0.0`).
     lists:
@@ -65,27 +77,29 @@ sources:
         categories:
           - ads
           - malware
-        updated: every 1 to 3 days
+        updated: P1D
       - id: porn-only
         description: The porn extension alone, without the base list.
         url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
         format: hosts
         categories:
           - adult
-        updated: every 1 to 3 days
+        updated: P1D
       - id: gambling-only
         description: The gambling extension alone, without the base list.
         url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
         format: hosts
         categories:
           - gambling
-        updated: every 1 to 3 days
+        updated: P1D
 
   - id: hagezi
     name: HaGeZi DNS Blocklists
     maintainer: Gerd (hagezi)
     site: https://github.com/hagezi/dns-blocklists
+    status: active
     license: GPL-3.0-only
+    use: free
     description: >-
       Built from about 230 sources (sources.md) and the maintainer's own lists, dead entries pruned. Tiers from light to ultimate block more and break more. Each name blocks its subdomains (the `*-onlydomains` files; `wildcard/<name>.txt` holds the same as `*.name`). Published on GitHub and jsDelivr daily at 11:00 UTC.
     lists:
@@ -99,7 +113,7 @@ sources:
           - phishing
           - scam
           - cryptojacking
-        updated: daily
+        updated: P1D
       - id: pro
         description: Multi PRO, the maintainer's recommended tier.
         url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt
@@ -110,7 +124,7 @@ sources:
           - phishing
           - scam
           - cryptojacking
-        updated: daily
+        updated: P1D
       - id: ultimate
         description: Multi ULTIMATE, the most aggressive tier; breaks some Meta and Microsoft services.
         url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/ultimate-onlydomains.txt
@@ -121,7 +135,7 @@ sources:
           - phishing
           - scam
           - cryptojacking
-        updated: daily
+        updated: P1D
       - id: tif
         description: >-
           Threat Intelligence Feeds, to add to any tier: malware, phishing, scam, spam, cryptojacking and command and control domains. About 1.9M names, 33 MB.
@@ -134,25 +148,28 @@ sources:
           - cryptojacking
           - spam
           - botnet
-        updated: daily
+        updated: P1D
       - id: gambling
         url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/gambling-onlydomains.txt
         format: domains
         categories:
           - gambling
-        updated: daily
+        updated: P1D
       - id: nsfw
         url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt
         format: domains
         categories:
           - adult
-        updated: daily
+        updated: P1D
 
   - id: 1hosts
     name: 1Hosts
     maintainer: badmojr
     site: https://badmojr.github.io/1Hosts/
+    status:
+      frozen: 2026-09-03
     license: MPL-2.0
+    use: free
     description: >-
       Aggregates 322 credited sources (oisd big and OpenPhish among them) against ads, trackers and malware. Built daily until 2026-09-03, unchanged since; Pro is gone (404). Exact names: subdomains are listed out.
     lists:
@@ -163,7 +180,7 @@ sources:
         categories:
           - ads
           - malware
-        updated: daily
+        updated: P1D
       - id: xtra
         description: Aggressive, more false positives; about 1.1M names.
         url: https://raw.githubusercontent.com/badmojr/1Hosts/master/Xtra/domains.txt
@@ -171,13 +188,15 @@ sources:
         categories:
           - ads
           - malware
-        updated: daily
+        updated: P1D
 
   - id: adguard-dns
     name: AdGuard DNS filter
     maintainer: AdGuard Software Ltd (AdguardTeam)
     site: https://github.com/AdguardTeam/AdguardSDNSFilter
+    status: active
     license: GPL-3.0-only
+    use: free
     description: >-
       AdGuard Base, Tracking Protection and Mobile Ads filters, EasyList, EasyPrivacy and regional lists reduced to domain rules; the default filter of AdGuard Home and AdGuard DNS. Published on the gh-pages branch only, redeployed about every 2 hours. Holds a few `@@` exceptions and `/regex/` rules beside `||name^`.
     lists:
@@ -187,13 +206,16 @@ sources:
         categories:
           - ads
           - cryptojacking
-        updated: every 2 hours
+        updated: PT2H
 
   - id: phishing-army
     name: Phishing Army
     maintainer: Andrea Draghetti (drego85)
     site: https://phishing.army/
-    license: >-
+    status: active
+    license: custom
+    use: non-commercial
+    terms: >-
       "Free for personal and individual use" (file header), no restriction added to its sources' terms, which commercial users must check; generator GPL-3.0.
     description: >-
       Aggregates 9 phishing feeds (PhishTank, OpenPhish, CERT.PL, Phishunt, urlscan.io, PhishStats, StalkPhish, URLAbuse, AntiPhish.org), filtered with the Tranco and anudeepND allowlists, leaving out shared hosting and dynamic DNS parents. Exact names. The old blocklist and extended files are now this one.
@@ -203,13 +225,15 @@ sources:
         format: domains
         categories:
           - phishing
-        updated: every 3 hours
+        updated: PT3H
 
   - id: shadowwhisperer
     name: ShadowWhisperer BlockLists
     maintainer: ShadowWhisperer
     site: https://github.com/ShadowWhisperer/BlockLists
+    status: active
     license: Unlicense
+    use: free
     description: >-
       Domain lists in 25 categories from the maintainer's own scripts and manual additions, no other list merged; dead and parked domains pruned now and then. No schedule announced; pushes almost daily. `Lists/<category>` holds the same names with an `Updated:` header.
     lists:
@@ -218,14 +242,14 @@ sources:
         format: domains
         categories:
           - ads
-        updated: daily
+        updated: P1D
       - id: tracking
         description: Analytics, diagnostics, location, metrics and public address lookup services.
         url: https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/RAW/Tracking
         format: domains
         categories:
           - ads
-        updated: daily
+        updated: P1D
       - id: malware
         description: Malware, hijackers, phishing, unwanted programs, redirectors and remote-support scams.
         url: https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/RAW/Malware
@@ -234,26 +258,29 @@ sources:
           - malware
           - phishing
           - scam
-        updated: daily
+        updated: P1D
       - id: scam
         description: Fake freight, gift cards, pets, products, firearms, news and tech support.
         url: https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/RAW/Scam
         format: domains
         categories:
           - scam
-        updated: daily
+        updated: P1D
       - id: adult
         url: https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/RAW/Adult
         format: domains
         categories:
           - adult
-        updated: daily
+        updated: P1D
 
   - id: maltrail
     name: Maltrail trails
     maintainer: Miroslav Stampar and Mikhail Kasimov (stamparm)
     site: https://github.com/stamparm/trails
-    license: >-
+    status: active
+    license: custom
+    use: ask
+    terms: >-
       "Maltrail Trails Community Data License 1.0": free for internal defence and research; in a product, a DNS or security service or a feed for others, only with written permission; each item CC BY 4.0 three years after it is published. The Maltrail sensor itself is MIT.
     description: >-
       The indicators behind the Maltrail sensor, about 1.8M from public reports, each with its reference. The full set (`trails.csv.gz`) mixes names, URLs, paths and `address:port`; the domain list below is the only raw list. Released about twice a day (announced four times). The URL redirects to GitHub's release storage.
@@ -265,13 +292,16 @@ sources:
         categories:
           - malware
           - botnet
-        updated: every 6 hours
+        updated: PT6H
 
   - id: openphish
     name: OpenPhish Community Feed
     maintainer: OpenPhish
     site: https://openphish.com/
-    license: >-
+    status: active
+    license: custom
+    use: non-commercial
+    terms: >-
       Personal and academic non-commercial use only: not for an organisation's "security operations, threat intelligence, detection" or other business functions; no redistribution.
     description: >-
       Phishing URLs found by OpenPhish's own detection engine, not an aggregation; 300 URLs, refreshed every 12 hours (every 5 minutes for paying customers). Hosts include shared platforms (github.io, weebly.com), so a URL's host is no name to block.
@@ -281,13 +311,17 @@ sources:
         format: urls
         categories:
           - phishing
-        updated: every 12 hours
+        updated: PT12H
 
   - id: botvrij
     name: botvrij.eu
     maintainer: Koen Van Impe (cudeso)
     site: https://www.botvrij.eu/
-    license: >-
+    status:
+      frozen: 2026-02-03
+    license: custom
+    use: no-resale
+    terms: >-
       "You can use this data the way you prefer but all use of the data is at your own risk. You cannot resell the data."
     description: >-
       Network indicators from public APT and campaign reports, kept in MISP and exported as text; entries older than about 6 months dropped. Volunteer-run, unchanged since 2026-02-03; its domain list is empty. The site advises detecting and alerting with it, not blocking.
@@ -310,7 +344,10 @@ sources:
     name: DNS Threat Intelligence dataset
     maintainer: IPanalytics (ipanalytics)
     site: https://github.com/ipanalytics/DNS-Threat-Intelligence-dataset
+    status:
+      frozen: 2026-06-19
     license: MIT
+    use: free
     description: >-
       A pipeline turning public feeds (URLhaus and ThreatFox in practice) into name and address lists. Data unchanged since 2026-06-19: the daily release republishes that snapshot.
     lists:
@@ -338,7 +375,9 @@ sources:
     name: EmberStack Threat Feed
     maintainer: EmberStack (winromulus)
     site: https://github.com/emberstack/threat-feed
+    status: active
     license: MIT
+    use: free
     description: >-
       Built nightly by a .NET tool, committed when changed. Its configuration uses StevenBlack's unified hosts and 11 names of its own only, the other sources its README names being commented out: in practice a copy of `stevenblack.unified`, labelled advertising.
     lists:
@@ -348,13 +387,16 @@ sources:
         categories:
           - ads
           - malware
-        updated: daily
+        updated: P1D
 
   - id: sans-isc
     name: SANS Internet Storm Center (DShield)
     maintainer: SANS Technology Institute
     site: https://isc.sans.edu/feeds_doc.html
-    license: >-
+    status: active
+    license: custom
+    use: no-resale
+    terms: >-
       "Use of data permitted with attribution … Do not resell the data. Other commercial uses are allowed." (feeds documentation; file headers say CC BY-NC-SA)
     description: >-
       Attack sources ranked from the firewall logs and honeypots of DShield sensors. The suspicious domain lists are retired (404); `daily_sources`, `threatintel.txt` and the API say they are no blocklists. `block.txt`, the top 20 attacking /24 networks, is a range a line (start, end, prefix length), no format here. Fetch at most hourly.
@@ -365,14 +407,17 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: daily
+        updated: P1D
 
   - id: firehol
     name: FireHOL IP lists
     maintainer: FireHOL (Costa Tsaousis, ktsaou)
     site: https://iplists.firehol.org
-    license: >-
-      None for the combined lists ("a few of these lists may have special licences attached": each source keeps its terms); the update-ipsets generator is GPL-2.0.
+    status: active
+    license: none
+    use: unknown
+    terms: >-
+      No licence for the combined lists ("a few of these lists may have special licences attached": each source keeps its terms); the update-ipsets generator is GPL-2.0.
     description: >-
       IPv4 lists merged, deduplicated and reduced from third-party feeds (Spamhaus DROP, DShield, abuse.ch Feodo, blocklist.de, Team Cymru fullbogons…) in levels trading coverage for false positives. Regenerated several times a day; the firehol/blocklist-ipsets GitHub mirror only daily. Mirrors CINS, blocklist.de and Emerging Threats.
     lists:
@@ -385,14 +430,14 @@ sources:
           - attacks
           - botnet
           - spam
-        updated: several times a day
+        updated: PT6H
       - id: level2
         description: Attacks of the last 48 hours (blocklist_de, dshield_1d, greensnow).
         url: https://iplists.firehol.org/files/firehol_level2.netset
         format: ips
         categories:
           - attacks
-        updated: several times a day
+        updated: PT6H
       - id: level3
         description: Attacks, spyware and viruses of the last 30 days (bruteforceblocker, ciarmy, dshield_30d, vxvault).
         url: https://iplists.firehol.org/files/firehol_level3.netset
@@ -400,7 +445,7 @@ sources:
         categories:
           - attacks
           - malware
-        updated: several times a day
+        updated: PT6H
       - id: level4
         description: Wide, with "a large number of false positives" (botscout_30d, cybercrime, iblocklist…).
         url: https://iplists.firehol.org/files/firehol_level4.netset
@@ -409,7 +454,7 @@ sources:
           - attacks
           - malware
           - spam
-        updated: several times a day
+        updated: PT6H
       - id: webclient
         description: Addresses a web client should never reach (CyberCrime command and control), on top of level1.
         url: https://iplists.firehol.org/files/firehol_webclient.netset
@@ -423,8 +468,11 @@ sources:
     name: blocklist-abuseipdb
     maintainer: Johan Borestad (borestad)
     site: https://github.com/borestad/blocklist-abuseipdb
-    license: >-
-      None (no LICENSE file); AbuseIPDB's data redistributed "with permission".
+    status: active
+    license: none
+    use: unknown
+    terms: >-
+      No LICENSE file; AbuseIPDB's data redistributed "with permission".
     description: >-
       AbuseIPDB's 100% confidence addresses from a free plan, merged with DShield, Censys, Palo Alto, Project Sonar, OpenAI's GPTBot and a honeypot of its own, as rolling windows (crawlers and scanners included); IPv4 only. The README advises at most 30 days. Rebuilt twice an hour.
     lists:
@@ -433,25 +481,27 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: several times a day
+        updated: PT30M
       - id: s100-7d
         url: https://raw.githubusercontent.com/borestad/blocklist-abuseipdb/main/abuseipdb-s100-7d.ipv4
         format: ips
         categories:
           - attacks
-        updated: several times a day
+        updated: PT30M
       - id: s100-30d
         url: https://raw.githubusercontent.com/borestad/blocklist-abuseipdb/main/abuseipdb-s100-30d.ipv4
         format: ips
         categories:
           - attacks
-        updated: several times a day
+        updated: PT30M
 
   - id: ipsum
     name: IPsum
     maintainer: Miroslav Stampar (stamparm)
     site: https://github.com/stamparm/ipsum
+    status: active
     license: Unlicense
+    use: free
     description: >-
       Merges 30+ public lists of suspicious addresses (Maltrail's feeds); each address with the number of lists holding it, a higher count more trustworthy. The top ones are mostly research scanners (Censys, Shadowserver). Rebuilt daily.
     lists:
@@ -462,7 +512,7 @@ sources:
         categories:
           - attacks
           - malware
-        updated: daily
+        updated: P1D
       - id: level3
         description: Addresses on 3 lists or more, the README's example.
         url: https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt
@@ -470,7 +520,7 @@ sources:
         categories:
           - attacks
           - malware
-        updated: daily
+        updated: P1D
       - id: level5
         description: Addresses on 5 lists or more.
         url: https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt
@@ -478,13 +528,16 @@ sources:
         categories:
           - attacks
           - malware
-        updated: daily
+        updated: P1D
 
   - id: binarydefense
     name: Binary Defense Artillery banlist
     maintainer: Binary Defense Systems
     site: https://www.binarydefense.com
-    license: >-
+    status: active
+    license: custom
+    use: non-commercial
+    terms: >-
       "for public use only … may not be used for commercial resale or in products that are charging fees for such services" (file header)
     description: >-
       Addresses caught by Binary Defense's Artillery honeypots; the Artillery tool's default feed. No schedule announced; changes about daily.
@@ -494,13 +547,16 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: daily
+        updated: P1D
 
   - id: spamhaus-drop
     name: Spamhaus DROP (Don't Route Or Peer)
     maintainer: The Spamhaus Project SLU
     site: https://www.spamhaus.org/blocklists/do-not-route-or-peer/
-    license: >-
+    status: active
+    license: custom
+    use: free
+    terms: >-
       DROP Lists Terms of Use (https://www.spamhaus.org/drop/terms/): free, crediting Spamhaus and keeping the date and © line with the data; the name not used in marketing.
     description: >-
       Networks hijacked by or leased to spam and cyber-crime operations, curated by Spamhaus, EDROP merged in on 2024-04-10. Spamhaus recommends its NDJSON files (`drop_v4.json`, `drop_v6.json`; `asndrop.json` holds autonomous systems) and will deprecate the text ones with notice. Fetch at most hourly.
@@ -512,7 +568,7 @@ sources:
           - spam
           - malware
           - botnet
-        updated: daily
+        updated: P1D
       - id: drop-v6
         url: https://www.spamhaus.org/drop/dropv6.txt
         format: ips
@@ -520,13 +576,15 @@ sources:
           - spam
           - malware
           - botnet
-        updated: daily
+        updated: P1D
 
   - id: romainmarcoux
     name: malicious-ip
     maintainer: Romain Marcoux (Sekio)
     site: https://github.com/romainmarcoux/malicious-ip
+    status: active
     license: MIT
+    use: free
     description: >-
       Merges about 16 feeds of scanners and brute-forcers (AbuseIPDB, blocklist.de, ISC SANS, CINS, Emerging Threats, Binary Defense, IPsum, AlienVault OTX, Project Honeypot…), most listed first, Googlebot and Bingbot left out; IPv4 only, about 1M addresses in chunks. For inbound traffic only. Rebuilt hourly.
     lists:
@@ -535,19 +593,21 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: hourly
+        updated: PT1H
       - id: top-131k
         url: https://raw.githubusercontent.com/romainmarcoux/malicious-ip/main/full-aa.txt
         format: ips
         categories:
           - attacks
-        updated: hourly
+        updated: PT1H
 
   - id: data-shield
     name: Data-Shield IPv4 Blocklist
     maintainer: Laurent Minne (duggytuxy)
     site: https://github.com/duggytuxy/Data-Shield_IPv4_Blocklist
-    license: GPL-3.0
+    status: active
+    license: GPL-3.0-only
+    use: free
     description: >-
       Curated IPv4 addresses for inbound filtering on firewalls and WAFs, sources undocumented; over 100k each. Generated every 2 hours, committed when changed.
     lists:
@@ -557,20 +617,23 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: every 2 hours
+        updated: PT2H
       - id: critical
         description: Stricter, a superset of `standard`.
         url: https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/refs/heads/main/prod_critical_data-shield_ipv4_blocklist.txt
         format: ips
         categories:
           - attacks
-        updated: every 2 hours
+        updated: PT2H
 
   - id: cins-army
     name: CINS Army
     maintainer: Sentinel IPS (CINSscore.com)
     site: https://cinsscore.com/
-    license: >-
+    status: active
+    license: custom
+    use: free
+    terms: >-
       "a simple text file, with which you can parse and use in any way you see fit"
     description: >-
       Addresses with a poor Rogue Packet score or tripping trusted alerts across Sentinel IPS units, capped at 15,000. No schedule announced.
@@ -586,8 +649,11 @@ sources:
     name: blocklist.de
     maintainer: Martin Schiftian (blocklist.de)
     site: https://www.blocklist.de/en/export.html
-    license: >-
-      None: "These files are as they are, and to be used at your own risk."
+    status: active
+    license: none
+    use: free
+    terms: >-
+      "These files are as they are, and to be used at your own risk."
     description: >-
       Addresses that attacked a reporting server (fail2ban and others) in the last 48 hours, per attacked service; IPv4 and IPv6. Generated every 30 minutes.
     lists:
@@ -596,39 +662,41 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: every 30 minutes
+        updated: PT30M
       - id: ssh
         url: https://lists.blocklist.de/lists/ssh.txt
         format: ips
         categories:
           - attacks
-        updated: every 30 minutes
+        updated: PT30M
       - id: mail
         url: https://lists.blocklist.de/lists/mail.txt
         format: ips
         categories:
           - attacks
-        updated: every 30 minutes
+        updated: PT30M
       - id: apache
         description: Attacks on web servers, DDoS and remote file inclusion among them.
         url: https://lists.blocklist.de/lists/apache.txt
         format: ips
         categories:
           - attacks
-        updated: every 30 minutes
+        updated: PT30M
       - id: strongips
         description: Listed for more than 2 months with more than 5,000 attacks.
         url: https://lists.blocklist.de/lists/strongips.txt
         format: ips
         categories:
           - attacks
-        updated: every 30 minutes
+        updated: PT30M
 
   - id: emerging-threats
     name: Proofpoint Emerging Threats (ET Open)
     maintainer: Proofpoint, Inc. (Emerging Threats)
     site: https://rules.emergingthreats.net/
+    status: active
     license: BSD-3-Clause
+    use: free
     description: >-
       Firewall address lists of the free ET Open ruleset, announced "updated daily or better"; measured every 1 to 2 days.
     lists:
@@ -638,7 +706,7 @@ sources:
         format: ips
         categories:
           - attacks
-        updated: daily
+        updated: P1D
       - id: block-ips
         description: Spamhaus DROP networks, DShield top attackers and abuse.ch Feodo command and control.
         url: https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt
@@ -647,13 +715,16 @@ sources:
           - attacks
           - botnet
           - spam
-        updated: daily
+        updated: P1D
 
   - id: gazpitchy92
     name: gazpitchy92 IP blocklist
     maintainer: Gareth Pitchford (gazpitchy92)
     site: https://github.com/gazpitchy92/ip-blocklist
-    license: None (no LICENSE file).
+    status: active
+    license: none
+    use: unknown
+    terms: No LICENSE file.
     description: >-
       Aggregates about 54 public feeds (FireHOL, DShield, ET, CINS, IPsum, Spamhaus DROP, blocklist.de, Feodo, AbuseIPDB…) and its maintainer's own IPS and honeypot, leaving VPNs and Tor out; IPv4 only. Holds a few invalid and private addresses. "Regularly updated"; commits about daily.
     lists:
@@ -665,7 +736,7 @@ sources:
           - botnet
           - malware
           - spam
-        updated: daily
+        updated: P1D
       - id: ranges
         url: https://raw.githubusercontent.com/gazpitchy92/ip-blocklist/main/range/blacklist.txt
         format: ips
@@ -674,13 +745,16 @@ sources:
           - botnet
           - malware
           - spam
-        updated: daily
+        updated: P1D
 
   - id: logrhythm-tis
     name: LogRhythm Threat Intelligence Service open-source feeds
     maintainer: Exabeam (LogRhythm)
     site: https://docs.logrhythm.com/lrsiem/docs/firewall-blocking-open-source-urls-in-tis
-    license: Proprietary documentation
+    status: retired
+    license: custom
+    use: unknown
+    terms: Proprietary documentation.
     description: >-
       The 13 feed URLs a firewall must let LogRhythm reach, no list of its own. Each is dead (abuse.ch ZeuS and Ransomware Tracker, Hail a TAXII, AlienVault reputation frozen in 2021), behind a commercial API (Cisco Threat Grid, CrowdStrike, ThreatStream, Webroot, PhishTank) or here already (abuse.ch Feodo in `emerging-threats.block-ips`, Tor exits in FireHOL, SANS ISC).
     lists: []

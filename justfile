@@ -172,7 +172,8 @@ capture-dnssec:
 providers:
     cargo test -p dedens --test providers -- --ignored --nocapture
 
-# Download every list of docs/blocklists/blocklists.yaml and check its format (D87).
+# Download every list of docs/blocklists/blocklists.yaml and check its format and freshness (D87, D88).
+# GITHUB_TOKEN, when set, lifts GitHub's limit of 60 API requests an hour.
 blocklists:
     cargo test -p dedensd --test blocklists -- --ignored --nocapture
 
