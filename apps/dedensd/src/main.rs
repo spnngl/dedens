@@ -8,6 +8,7 @@
 
 mod config;
 mod download;
+mod flights;
 #[cfg(feature = "odoh")]
 mod odoh;
 mod reload;

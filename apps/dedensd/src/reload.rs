@@ -13,6 +13,7 @@ use dedens_server::Pipeline;
 
 use crate::config::{Downloads, Listen};
 use crate::download::Fetcher;
+use crate::flights::Flights;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
 /// one atomic load, and take the new pipeline under the lock only when it changed.
@@ -20,6 +21,8 @@ use crate::download::Fetcher;
 pub(crate) struct Current {
     generation: AtomicU64,
     pipeline: Mutex<Arc<Pipeline>>,
+    /// The validator's questions in flight, for all threads and across reloads (D86).
+    flights: Flights,
 }
 
 impl Current {
@@ -27,7 +30,12 @@ impl Current {
         Self {
             generation: AtomicU64::new(0),
             pipeline: Mutex::new(Arc::new(pipeline)),
+            flights: Flights::default(),
         }
+    }
+
+    pub(crate) const fn flights(&self) -> &Flights {
+        &self.flights
     }
 
     /// Bumped by each [`Current::replace`], after the pipeline is.
