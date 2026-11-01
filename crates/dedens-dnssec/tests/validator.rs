@@ -9,7 +9,7 @@ use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, Nsec3Hashes, Verifications};
 use dedens_dnssec::denial::MaxIterations;
 use dedens_dnssec::validator::{
-    Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
+    Cost, Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
 };
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec, Rrsig};
@@ -651,6 +651,29 @@ fn an_exhausted_budget_is_indeterminate_not_bogus() {
         matches!(&verdict, Verdict::Indeterminate { ede } if ede.code == InfoCode::DNSSEC_INDETERMINATE),
         "{verdict:?}"
     );
+}
+
+/// D75: a validation counts the questions it asked and the work it did, for a caller that bounds the cost of a
+/// client's query across validations.
+#[test]
+fn a_validation_reports_what_it_cost() {
+    let script = Script::new();
+    let validator = Script::validator();
+    let response = capture("alg8_a");
+    let question = response.questions.first().expect("a question").clone();
+    let mut validation = validator.start(&question, &response, u64::from(captured_at()));
+    assert_eq!(validation.cost(), Cost::default());
+    let mut asked = 0;
+    while let Next::Ask(ask) = validation.step() {
+        asked += 1;
+        validation.answer(script.answer(&ask));
+    }
+    let cost = validation.cost();
+    assert_eq!(cost.questions, asked);
+    // The keys of three zones, the DS of two of them and the answer's signature: all verified.
+    assert!(cost.verifications >= 6, "{cost:?}");
+    assert!(cost.verifications <= 128, "{cost:?}");
+    assert_eq!(cost.nsec3_hashes, 0);
 }
 
 #[test]

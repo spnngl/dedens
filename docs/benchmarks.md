@@ -300,17 +300,41 @@ ones share one `Validator`, so one `Mutex`. Microseconds per validation, median 
 
 | Threads | Cold | Warm |
 |---|---|---|
-| 1 | 168 | 54 |
-| 2 | 197 | 56 |
-| 4 | 237 | 70 |
-| 8 | 307 | 114 |
+| 1 | 106 | 4.6 |
+| 2 | 129 | 6.9 |
+| 4 | 140 | 9.3 |
+| 8 | 235 | 22.9 |
 
-The cache takes a validation from 168 to 54 µs, and a verification (one 3.2 µs signature check, above) is a small part of
-either: the rest is the message and the records. The lock is held for one lookup and clones an `Arc` and a name, never
-across a check. From one thread to eight the warm validation slows 2.1x, the cold one, with nothing shared, 1.8x; a review's run
-measured 2.8x against 1.9x, so the warm figure moves by 30 % between runs of 100 samples. Part of the slowdown is the
-machine's (cores of two kinds, one allocator) and part is the lock, contended by every thread at once, which a real
-caller's validations, spread over time and far fewer than one per cache miss, are not. Hits take a write lock (they
+The cache takes a validation from 106 to 4.6 µs, which is the answer's one signature check (3.2 µs, above) and little
+else. (The first figures of this section, 168 and 54 µs, included the read of the `captured_at` file the bench made
+for each validation: 50 µs; the bench reads it once now.) The lock is held for one lookup and clones an `Arc` and a
+name, never across a check. From one thread to eight the warm validation slows 5x, the cold one, with nothing shared,
+2.2x: at 4.6 µs a validation, eight threads in a tight loop ask the one lock all the time, which a real caller's
+validations, spread over time and far fewer than one per cache miss, do not. Part of the slowdown is the machine's
+(cores of two kinds, one allocator).
+
+## DNSSEC cost limits (D77)
+
+`benches/dnssec.rs`, `serve_cold`, `serve_warm` and `serve_shed`: one uncached client query of the captured `alg8_a`
+answer through `Pipeline::query` and `receive` of a validating forward stage with no cache stage, the captures as the
+upstream, so each run validates or is shed. Cold: a validator that knows no zone, five questions and the keys of three
+zones verified; warm: its key cache holds the chain; shed: `Allowance::burst` 0, so the allowance refuses the query
+before anything is sent. `t=N` threads share one pipeline in warm and shed, so one allowance and one `Mutex`; the
+cold ones build their own. Median per query, one run.
+
+| Threads | Cold | Warm | Shed |
+|---|---|---|---|
+| 1 | 115 µs | 6.2 µs | 0.12 µs |
+| 2 | 110 µs | 6.2 µs | 0.12 µs |
+| 4 | 113 µs | 6.2 µs | 0.12 µs |
+| 8 | 106 µs | 6.2 µs | 0.11 µs |
+
+Admitting and charging a query costs a clock read and two or three short critical sections, not seen against the 6 µs
+of a warm one, and the lock does not slow eight threads. A shed query costs 0.1 µs: a flood of uncached queries past
+the allowance asks nothing upstream and decodes nothing. A unit (`Allowance`) is about 10 µs at the cold figure (five
+questions and some seven checks, 12 units, 115 µs, no network), 3 µs for an RSA check, 27 µs for ECDSA P-256 and
+340 µs for P-384, the worst case the default `per_second` (10 000, so 0.1 core on the common algorithms, 3.4 on
+P-384 alone) is set against (TODECIDE has the weighting by algorithm). Hits take a write lock (they
 move the entry in the recency order), so the readers do not run in parallel as an `RwLock` would let them; sharding
 the tables by name or an `RwLock` is for a measured need (TODECIDE). Not measured: the cost of a miss at the bounds
 (a `BTreeMap` pop, logarithmic, under the lock).

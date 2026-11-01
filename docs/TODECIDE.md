@@ -88,8 +88,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   without a configuration reload. Default: none.
 - Validating forwarder (D77): the cost of a query upstream. A bogus answer Response::build refuses to cache (a NODATA
   without SOA, TTL 0) is validated again on each query; up to 64 questions hold one upstream slot until a verdict;
-  no deadline per query nor rate limit per client; the dead server is skipped for one query only. Default: as is
-  until the key cache (06b) cuts the questions; then a per-query deadline if a deployment shows the need.
+  no deadline per query; the dead server is skipped for one query only. Default: as is; a per-query deadline if a
+  deployment shows the need.
+- Validating forwarder (D77): the allowance is one bucket for all clients and has no knob in the configuration
+  (`Allowance` defaults), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a P-256
+  one). Default: global, fixed; a bucket per source (an IP prefix) once the pipeline sees the client's address
+  (the rate limits), `dnssec_allowance:` keys when a deployment hits the default, units weighted by algorithm
+  when one signs with P-384 to burn the bucket's CPU.
 - Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a
   bare SERVFAIL, with no EDE 22 (No Reachable Authority) or 23 (Network Error). Default: bare.
 
