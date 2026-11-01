@@ -87,8 +87,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   failures). Default: none, a bogus verdict is cached at once for 60 s, as Unbound does.
 - Validating forwarder (D77): an EDE on an answer cached as insecure (the stored bytes carry no OPT), and the text of
   an EDE (the reply's OPT holds the code only). Default: neither; the code is on a bogus or indeterminate SERVFAIL.
-- Validating forwarder (D77): the DS and DNSKEY answers are not cached until the key cache (step 06b), so each
-  uncached query asks the chain again. Default: as is until 06b.
+- Validating forwarder (D77): an answer proved insecure is cached for the response cache's `max_ttl`, 7 days, against
+  a day for keys (D86), so a zone that turns secure serves its old insecure answers that long (AD is never set on
+  them). Default: as is; a lower insecure TTL if a deployment shows the need.
 - Validating forwarder (D77): Bogus and indeterminate counts are per query, not per zone; no `trust_anchors` reload
   without a configuration reload. Default: none.
 - Validating forwarder (D77): the cost of a query upstream. A bogus answer Response::build refuses to cache (a NODATA

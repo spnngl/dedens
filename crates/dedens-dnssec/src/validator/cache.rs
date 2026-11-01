@@ -27,8 +27,12 @@ use super::verdict::Unusable;
 /// valid for months; a key rolled over or a DS removed should not wait for it.
 const MAX_TTL: Ttl = Ttl::from_wire(86_400);
 
-/// What an entry costs besides the records it holds: the maps, the names, the outcome.
-const ENTRY_BASE: usize = 512;
+/// What an entry costs besides its names and records: the map slots, the `Arc`, the outcome. An estimate of what
+/// the allocator holds, not a measurement (D86).
+const ENTRY_BASE: usize = 256;
+
+/// What the allocator holds beyond the bytes asked for, for each heap allocation of a record or a name.
+const ALLOCATION: usize = 16;
 
 /// The most one entry may cost: the keys of a zone with more than that (a DNSKEY `RRset` padded with keys that
 /// no DS names, which the signature covers all the same) are used by the validation that found them and not
@@ -60,15 +64,18 @@ impl Kind {
     }
 }
 
-/// What `zone` costs in bytes: the wire size of the keys it holds, and a base for the rest.
-fn cost(zone: &Zone) -> usize {
+/// What `zone`, kept under `name`, costs in bytes: the base, `name` twice (the slot and its recency entry), and for
+/// keys their owner again and each record as the struct and the allocation of its bytes.
+fn cost(name: &Name<'_>, zone: &Zone) -> usize {
+    let names = ENTRY_BASE + 2 * (name.wire_len() + ALLOCATION);
     match zone {
-        Zone::Apex(Settled::Secure { keys, .. }) => {
-            keys.rdatas().iter().fold(ENTRY_BASE, |bytes, rdata| {
-                bytes.saturating_add(rdata.wire().len())
-            })
-        }
-        _ => ENTRY_BASE,
+        Zone::Apex(Settled::Secure { keys, .. }) => keys.rdatas().iter().fold(
+            names + keys.owner().wire_len() + ALLOCATION,
+            |bytes, rdata| {
+                bytes.saturating_add(size_of_val(rdata) + rdata.wire().len() + ALLOCATION)
+            },
+        ),
+        _ => names,
     }
 }
 
@@ -273,7 +280,7 @@ impl KeyCache {
             return;
         };
         let kind = Kind::of(zone);
-        let cost = cost(zone);
+        let cost = cost(name, zone);
         if cost > MAX_ENTRY_BYTES {
             return;
         }
@@ -401,7 +408,7 @@ mod tests {
 
     #[test]
     fn bytes_bound_the_tables_and_an_entry_over_its_limit_is_not_kept() {
-        let one = cost(&keys("a", 1, 1));
+        let one = cost(&name("a"), &keys("a", 1, 1));
         // Room for two entries of keys: half of the bytes.
         let cache = KeyCache::new(100, one * 2 * 2);
         for owner in ["a", "b", "c"] {
@@ -411,7 +418,7 @@ mod tests {
         assert!(is_keys(&cache, &name("b"), 1) && is_keys(&cache, &name("c"), 1));
         // A set of 255 keys of 100 bytes is over the entry limit, though a table could hold it.
         let padded = padded("padded", 255, 100, 300);
-        assert!(cost(&padded) > MAX_ENTRY_BYTES);
+        assert!(cost(&name("padded"), &padded) > MAX_ENTRY_BYTES);
         let cache = KeyCache::new(100, 1 << 30);
         cache.put(&name("padded"), &padded, 0);
         assert!(cache.get(&name("padded"), 1).is_none());

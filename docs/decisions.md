@@ -391,16 +391,20 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   its least recently used entry (a hit is a use; an expired entry is dropped when read; a `HashMap` and a `BTreeMap`
   by tick, so insert, hit and eviction are logarithmic under the lock, never a scan). A flood of names under a zone
   of an attacker, each with a proof of no DS and the longest TTL it can have, evicts names, never keys; the TTL
-  decides nothing about eviction. An entry costs 512 bytes and the wire size of its keys, and a zone whose keys cost
-  more than 16 KiB (a DNSKEY `RRset` padded with keys no DS names: the signature covers them all, and every key of
+  decides nothing about eviction. An entry costs 256 bytes, its name twice (the slot and its recency entry), the owner again and each
+  key as its struct and bytes for a secure zone, each allocation with 16 more (an estimate of what the allocator holds,
+  not a measurement), and a zone whose keys cost more than 16 KiB (a DNSKEY `RRset` padded with keys no DS names: the signature covers them all, and every key of
   the set is trusted, so the set cannot be cut to the keys a DS names) is used by the validation that found it
   and not kept: an attacker pins no more than 16 KiB for each name of a zone it signs, and no more than 2 MiB of
-  keys all told by default. At the 4 MiB default a real set (two or three keys, about 1 KiB) leaves room for
-  some two thousand zones; a resolver for more raises `key_cache_bytes`.
+  keys all told by default. At the 4 MiB default a real set (two or three keys, about 1 KiB on the wire, about 1.5 KiB as cost) leaves room for
+  some thirteen hundred zones; a resolver for more raises `key_cache_bytes`.
   Rank: an entry of a weaker kind never replaces a live one of a stronger (keys over names over bogus), so a
   forged answer, or a denial replayed while its signatures last, cannot unseat the keys of a zone, nor a bogus
   entry a proof of insecurity; once the keys expire the name is free. The price is that a real change (a DS
   removed, a zone made insecure) waits for the keys' TTL, at most a day, as for any cache of keys.
+  Known and left: a CD=1 answer found bogus is stored as insecure for 60 s (`insert_checked`), over a fresher entry
+  of the same key, the same upstream data; and the SOA owner of a negative answer is not checked as the zone's apex, so
+  it sets only the negative TTL, which the cache caps.
   A `Mutex`, not an `RwLock` or shards: a validation runs only for a response the response cache lacked, the lock is
   held for one lookup or insert, never across a signature check, and `validate_warm` at 8 threads
   slows 5x against the lock-free `validate_cold`'s 2.2x (`benchmarks.md`: in a tight loop of 4.6 µs validations the
