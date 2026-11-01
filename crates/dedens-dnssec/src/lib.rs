@@ -7,4 +7,5 @@
 
 pub mod anchor;
 pub mod crypto;
+pub mod denial;
 pub mod rrsig;

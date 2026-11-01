@@ -128,6 +128,31 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   message and asserts that no input makes data insecure. RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for
   `example.com.`, which has 2: as an `RRset` it is `BadLabels` (RFC 4035 §5.3.1), and `crypto` checks the
   signature over its bytes (`tests/rfc8080.rs`).
+- D74 (amends D69) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3 records the
+  caller verified (step 04 checks the signatures; this trusts them). `prove` answers a question that got a name
+  error, no data or a referral, `prove_wildcard_answer` one that got a wildcard expansion (the RRSIG's label
+  count gives the next closer name); the result is a `Fact` (`NameError { compact }`, `NoData`, `WildcardNoData`,
+  `WildcardAnswer`, `InsecureDelegation`) with the TTL of the proof, the least of the records used (RFC 9077 §3),
+  or an `Unproven` reason: the caller picks the verdict, as for `Budget` (D71). A DS question's `NoData` is the
+  parent's: an NSEC or NSEC3 with SOA is the child's and proves nothing of the delegation (`FromChildApex`,
+  RFC 4035 §5.2, RFC 6840 §4.4), and NS without DS and SOA, or an opt-out span, is `InsecureDelegation`, which is
+  also the proof of a referral to an unsigned child (RFC 5155 §8.9). Per RFC 6840 §4.1 an NSEC or NSEC3 at a
+  delegation proves no name below it nor a type at its owner but DS, and one with DNAME proves no name below
+  its owner. The CNAME bit counts in every no data (§4.3). NSEC3 records are used when the response has usable
+  ones (SHA-1, flags 0 or 1, owner one 32-digit base32hex label below the apex), NSEC otherwise; the
+  first usable record fixes the one parameter set, the others are ignored (RFC 5155 §8.2 allows treating them as
+  bogus, TODECIDE). `Name` has no order: canonical order (RFC 4034 §6.1) is private to `denial`. NSEC3 hashes are
+  paid from the `Budget`, one per name, cached. Iterations above `MaxIterations`, default 150 as Unbound and
+  BIND (RFC 9276 §3.2 recommends 0 but tells validators to accept some; the limit is a parameter), are
+  `IterationsAboveLimit`, refused before any hashing: the response is insecure, with EDE 27 (`info_code`). Compact
+  denial (RFC 9824): an NSEC or NSEC3 matching the name with NXNAME in its bitmap is a `NameError { compact:
+  true }` for any type, so 06 and 08 tell it from an NXDOMAIN (the response is NOERROR, §3.3); NXNAME is never a
+  question to answer, `NxnameQuery` carries EDE 30 (§3.5). A name error under opt-out is a name error (RFC 5155
+  §8.4), but a DS question whose next closer name is in an opt-out span is an `InsecureDelegation` even when
+  the response also proves the wildcard absent. Tests: RFC 4035 Appendix B (the Appendix A zone, in
+  `tests/zones/`), RFC 5155 Appendix B, RFC 6840 §4, RFC 9276, RFC 9824, and every negative capture of
+  `tests/testdata/`; the proptest checks that against a whole NSEC chain each name is matched or covered by
+  exactly one record.
 
 ## Wire format
 

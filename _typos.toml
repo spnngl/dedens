@@ -7,6 +7,8 @@ extend-exclude = [
   "apps/dedensd/tests/end_to_end.yaml",
   # RFC 5155 appendix A, as published.
   "crates/dedens-proto/tests/zones/rfc5155_appendix_a.zone",
+  # RFC 4035 appendix A, as published.
+  "crates/dedens-dnssec/tests/zones/rfc4035_appendix_a.zone",
   # Blocklists and hosts files, as published.
   "crates/dedens-plugins/tests/testdata/",
 ]

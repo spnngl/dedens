@@ -1,15 +1,23 @@
 //! RFC 6840 §5.1 (the canonical form of RDATA, correcting RFC 4034 §6.2: which names of RDATA a signer
 //! lowercases), §5.4 (any one valid RRSIG is enough), §5.11 (any single valid path from the DS records) and §5.12
 //! (RRSIGs without a corresponding DNSKEY are disregarded).
+//!
+//! RFC 6840 §4.1 (NSEC and NSEC3 at a delegation or a DNAME), §4.3 (the CNAME bit of a no data), §4.4 (what shows
+//! an insecure delegation), on the example zone of RFC 4035 Appendix A, with the NSEC records it lacks built by
+//! `support::nsec`.
 
 mod common;
+#[path = "common/denial.rs"]
+mod support;
 
 use common::{
     RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rrsig, canonical_name, dnskey_rdata, name, rrset, rrsig_set,
 };
 use dedens_dnssec::crypto::{Budget, ds_digest, key_tag};
+use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
-use dedens_proto::DigestType;
+use dedens_proto::{DigestType, Record, RecordType, Ttl};
+use support::{nsec, pick, prove, zone};
 
 /// A name in wire form, in the case given.
 fn wire(text: &str) -> Vec<u8> {
@@ -227,4 +235,125 @@ fn s5_11_a_validator_accepts_any_single_valid_path_from_the_ds_records() {
     assert_eq!(trust(&both), Err(SigError::NoSignature));
     let gost = rrset("example.", 43, &[ds(DigestType::GOST, &[0; 32])]);
     assert!(trust(&gost).unwrap_err().is_unsupported());
+}
+
+// Denial of existence (D74).
+
+const APEX: &str = "example.";
+const AAAA: RecordType = RecordType::AAAA;
+const CNAME: RecordType = RecordType::CNAME;
+const DNAME: RecordType = RecordType::DNAME;
+const MX: RecordType = RecordType::MX;
+const NS: RecordType = RecordType::NS;
+const NSEC: RecordType = RecordType::NSEC;
+const RRSIG: RecordType = RecordType::RRSIG;
+const SOA: RecordType = RecordType::SOA;
+
+fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
+    pick(
+        &zone("tests/zones/rfc4035_appendix_a.zone"),
+        RecordType::NSEC,
+        owners,
+    )
+}
+
+/// §4.1: `b.example.` is a delegation, so its NSEC is the parent's and proves no name below it.
+#[test]
+fn a_delegation_proves_nothing_below_it() {
+    let records = nsecs(&["b.example.", "example."]);
+    assert_eq!(
+        prove(APEX, "mc.b.example.", RecordType::A, &records),
+        Err(Unproven::NotCovered)
+    );
+    // Nor, but for DS, a type at its owner: the NS set may be the child's.
+    assert_eq!(
+        prove(APEX, "b.example.", MX, &records),
+        Err(Unproven::AtDelegation)
+    );
+    assert_eq!(
+        prove(APEX, "b.example.", RecordType::DS, &records),
+        Ok(support_proof(Fact::InsecureDelegation))
+    );
+}
+
+/// §4.1: the NSEC of the apex has NS as well, and is not a delegation: SOA is set.
+#[test]
+fn the_apex_is_not_a_delegation() {
+    let records = nsecs(&["example.", "b.example."]);
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &records),
+        Ok(support_proof(Fact::NameError { compact: false }))
+    );
+}
+
+/// §4.1: an NSEC with DNAME proves no subdomain of its owner absent, the DNAME does not apply to its owner.
+#[test]
+fn a_dname_proves_nothing_below_it() {
+    let dname = [
+        nsec("d.example.", "ns1.example.", &[DNAME, RRSIG, NSEC]),
+        nsec("example.", "a.example.", &[NS, SOA, MX, RRSIG, NSEC]),
+    ];
+    assert_eq!(
+        prove(APEX, "x.d.example.", RecordType::A, &dname),
+        Err(Unproven::NotCovered)
+    );
+    // At the owner, the DNAME is an ordinary type.
+    assert_eq!(
+        prove(APEX, "d.example.", AAAA, &dname),
+        Ok(support_proof(Fact::NoData))
+    );
+    // A name next to it is not below it: the NSEC covers it.
+    assert_eq!(
+        prove(APEX, "e.example.", RecordType::A, &dname),
+        Ok(support_proof(Fact::NameError { compact: false }))
+    );
+}
+
+/// §4.3: a CNAME at the name answers any type, so an NSEC with CNAME proves no data of none.
+#[test]
+fn a_cname_is_not_no_data() {
+    let records = [nsec("c.example.", "ns1.example.", &[CNAME, RRSIG, NSEC])];
+    assert_eq!(
+        prove(APEX, "c.example.", RecordType::A, &records),
+        Err(Unproven::TypePresent)
+    );
+    // The type of the CNAME itself is no exception.
+    assert_eq!(
+        prove(APEX, "c.example.", CNAME, &records),
+        Err(Unproven::TypePresent)
+    );
+}
+
+/// §4.4: an insecure delegation shows NS and no DS and no SOA; a DS, or the SOA of the child, does not.
+#[test]
+fn insecure_delegation_needs_ns_without_ds_and_soa() {
+    let ds = RecordType::DS;
+    let cases = [
+        (
+            &[NS, RRSIG, NSEC][..],
+            Ok(support_proof(Fact::InsecureDelegation)),
+        ),
+        (&[NS, ds, RRSIG, NSEC][..], Err(Unproven::TypePresent)),
+        (&[NS, SOA, RRSIG, NSEC][..], Err(Unproven::FromChildApex)),
+        // No NS: nothing delegates, and no DS is no data.
+        (
+            &[RecordType::A, RRSIG, NSEC][..],
+            Ok(support_proof(Fact::NoData)),
+        ),
+    ];
+    for (types, expected) in cases {
+        let records = [nsec("b.example.", "ns1.example.", types)];
+        assert_eq!(
+            prove(APEX, "b.example.", ds, &records),
+            expected,
+            "{types:?}"
+        );
+    }
+}
+
+fn support_proof(fact: Fact) -> Proof {
+    Proof {
+        fact,
+        ttl: Ttl::from_wire(3600),
+    }
 }

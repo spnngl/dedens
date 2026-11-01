@@ -1,15 +1,23 @@
 //! RFC 4035 §5.3: the checks of an RRSIG over an `RRset`, with the signed zone `example.` of Appendix A (keys of
 //! 1024 bits, RSASHA1): wildcard expansion (§5.3.2, Appendix B.6), the labels field, and the limits on failed
 //! checks that RFC 4035 leaves open (D73).
+//!
+//! RFC 4035 §5.2, §5.4: the denials of existence of Appendix B, from the NSEC records of the example zone of
+//! Appendix A, `tests/zones/rfc4035_appendix_a.zone` (D74).
 
 mod common;
+#[path = "common/denial.rs"]
+mod support;
 
 use common::{
     RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rrsig, check, dnskey_rdata, name, rrset, rrset_in,
     rrsig_set,
 };
 use dedens_dnssec::crypto::Budget;
+use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
+use dedens_proto::{Record, RecordType, Ttl};
+use support::{pick, prove, prove_wildcard, zone};
 
 // 2004-04-09T18:36:19Z and 2004-05-09T18:36:19Z.
 const INCEPTION: u32 = 1_081_535_779;
@@ -441,5 +449,218 @@ fn rrsigs_without_a_key_do_not_count_toward_the_cap() {
     assert_eq!(
         verify_any(&forged(), &sigs, &zsk(), INCEPTION),
         Err(SigError::NoKey { key_tag: 1 })
+    );
+}
+
+// Denial of existence (D74).
+
+const APEX: &str = "example.";
+/// The TTL of every record of Appendix A.
+const TTL: Ttl = Ttl::from_wire(3600);
+
+fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
+    pick(
+        &zone("tests/zones/rfc4035_appendix_a.zone"),
+        RecordType::NSEC,
+        owners,
+    )
+}
+
+fn proof(fact: Fact) -> Proof {
+    Proof { fact, ttl: TTL }
+}
+
+const NAME_ERROR: Fact = Fact::NameError { compact: false };
+
+/// B.2: `ml.example.` is covered by `b.example.`, and `*.example.` by the apex.
+#[test]
+fn b2_name_error() {
+    let records = nsecs(&["b.example.", "example."]);
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &records),
+        Ok(proof(NAME_ERROR))
+    );
+    // Without the wildcard's NSEC the response proves less.
+    let records = nsecs(&["b.example."]);
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &records),
+        Err(Unproven::WildcardNotDenied)
+    );
+    // Without the name's.
+    let records = nsecs(&["example."]);
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &records),
+        Err(Unproven::NotCovered)
+    );
+}
+
+/// The last NSEC of the chain wraps to the apex, and a name below an existing name has it as closest encloser.
+#[test]
+fn name_errors_after_the_last_name_and_below_a_name() {
+    let records = nsecs(&["xx.example.", "example."]);
+    assert_eq!(
+        prove(APEX, "zzz.example.", RecordType::A, &records),
+        Ok(proof(NAME_ERROR))
+    );
+    // The wildcard `*.ns1.example.` sorts between `ns1.example.` and `ns2.example.`.
+    let records = nsecs(&["ns1.example."]);
+    assert_eq!(
+        prove(APEX, "a.b.ns1.example.", RecordType::A, &records),
+        Ok(proof(NAME_ERROR))
+    );
+}
+
+/// B.3: `ns1.example.` exists and has no MX.
+#[test]
+fn b3_no_data() {
+    let records = nsecs(&["ns1.example."]);
+    assert_eq!(
+        prove(APEX, "ns1.example.", RecordType::MX, &records),
+        Ok(proof(Fact::NoData))
+    );
+    assert_eq!(
+        prove(APEX, "ns1.example.", RecordType::A, &records),
+        Err(Unproven::TypePresent)
+    );
+}
+
+/// The name of an NSEC and the case of the question do not matter (RFC 4343).
+#[test]
+fn names_compare_without_case() {
+    let records = nsecs(&["ns1.example."]);
+    assert_eq!(
+        prove(APEX, "NS1.Example.", RecordType::MX, &records),
+        Ok(proof(Fact::NoData))
+    );
+}
+
+/// A name that is an ancestor of names of the zone exists, with no data: the NSEC before it names one below it.
+#[test]
+fn empty_non_terminal_is_no_data() {
+    let records = nsecs(&["x.w.example."]);
+    assert_eq!(
+        prove(APEX, "y.w.example.", RecordType::A, &records),
+        Ok(proof(Fact::NoData))
+    );
+    // `w.example.` is one too: `*.w.example.` is below it.
+    assert_eq!(
+        prove(APEX, "w.example.", RecordType::A, &nsecs(&["ns2.example."])),
+        Ok(proof(Fact::NoData))
+    );
+}
+
+/// B.5: `b.example.` has NS, no DS and no SOA: an unsigned delegation, which is what the NSEC proves of DS.
+#[test]
+fn b5_referral_to_unsigned_zone() {
+    let records = nsecs(&["b.example."]);
+    assert_eq!(
+        prove(APEX, "b.example.", RecordType::DS, &records),
+        Ok(proof(Fact::InsecureDelegation))
+    );
+}
+
+/// B.4: `a.example.` has a DS, so no NSEC proves it absent.
+#[test]
+fn b4_referral_to_signed_zone() {
+    let records = nsecs(&["a.example."]);
+    assert_eq!(
+        prove(APEX, "a.example.", RecordType::DS, &records),
+        Err(Unproven::TypePresent)
+    );
+}
+
+/// B.6: the RRSIG of `a.z.w.example.` has 2 labels, and the NSEC of `x.y.w.example.` covers `z.w.example.`.
+#[test]
+fn b6_wildcard_expansion() {
+    let records = nsecs(&["x.y.w.example."]);
+    assert_eq!(
+        prove_wildcard(APEX, "a.z.w.example.", 2, &records),
+        Ok(proof(Fact::WildcardAnswer))
+    );
+    // `y.w.example.` is an empty non-terminal: the NSEC of `x.w.example.` leads below it.
+    assert_eq!(
+        prove_wildcard(APEX, "a.y.w.example.", 2, &nsecs(&["x.w.example."])),
+        Err(Unproven::CloserNameExists)
+    );
+    // `x.w.example.` exists and has an NSEC of its own.
+    assert_eq!(
+        prove_wildcard(APEX, "a.x.w.example.", 2, &nsecs(&["x.w.example."])),
+        Err(Unproven::CloserNameExists)
+    );
+    // Labels that leave nothing for the wildcard to replace.
+    assert_eq!(
+        prove_wildcard(APEX, "a.z.w.example.", 4, &records),
+        Err(Unproven::NotExpanded)
+    );
+}
+
+/// B.7: `*.w.example.` exists and has no AAAA, and `x.y.w.example.` covers `z.w.example.`.
+#[test]
+fn b7_wildcard_no_data() {
+    let records = nsecs(&["x.y.w.example.", "*.w.example."]);
+    assert_eq!(
+        prove(APEX, "a.z.w.example.", RecordType::AAAA, &records),
+        Ok(proof(Fact::WildcardNoData))
+    );
+    // The wildcard has an MX: the response should have been an answer.
+    assert_eq!(
+        prove(APEX, "a.z.w.example.", RecordType::MX, &records),
+        Err(Unproven::WildcardHasType)
+    );
+}
+
+/// B.8: the NSEC of the apex has SOA, so it is the child's, and says nothing of a delegation.
+#[test]
+fn b8_ds_from_the_child() {
+    let records = nsecs(&["example."]);
+    assert_eq!(
+        prove(APEX, "example.", RecordType::DS, &records),
+        Err(Unproven::FromChildApex)
+    );
+    // At the apex, other types are no data as anywhere.
+    assert_eq!(
+        prove(APEX, "example.", RecordType::AAAA, &records),
+        Ok(proof(Fact::NoData))
+    );
+    assert_eq!(
+        prove(APEX, "example.", RecordType::MX, &records),
+        Err(Unproven::TypePresent)
+    );
+}
+
+/// RFC 9077 §3: a proof lasts as long as the shortest of its records.
+#[test]
+fn ttl_is_the_least_of_the_records_used() {
+    let mut records = nsecs(&["b.example.", "example."]);
+    records[0].ttl = Ttl::from_wire(300);
+    records[1].ttl = Ttl::from_wire(60);
+    // A record the proof does not use does not count.
+    let mut unused = nsecs(&["xx.example."]);
+    unused[0].ttl = Ttl::ZERO;
+    records.extend(unused);
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &records),
+        Ok(Proof {
+            fact: NAME_ERROR,
+            ttl: Ttl::from_wire(60),
+        })
+    );
+}
+
+#[test]
+fn other_questions_prove_nothing() {
+    let records = nsecs(&["b.example.", "example."]);
+    assert_eq!(
+        prove(APEX, "ml.other.", RecordType::A, &records),
+        Err(Unproven::OutsideZone)
+    );
+    assert_eq!(
+        prove(APEX, "ml.example.", RecordType::A, &[]),
+        Err(Unproven::NoUsableRecords)
+    );
+    // Records of another zone are ignored.
+    assert_eq!(
+        prove("other.", "ml.other.", RecordType::A, &records),
+        Err(Unproven::NoUsableRecords)
     );
 }
