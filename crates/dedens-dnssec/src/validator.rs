@@ -88,9 +88,14 @@ pub struct Limits {
     pub budget: Budget,
     /// The NSEC3 iterations above which a zone's denials are insecure (RFC 9276 §3.2, D74).
     pub iterations: MaxIterations,
-    /// Entries of the validator's key cache, in each of its two tables, zones and names that are no zone
-    /// cut: 4096 (D86). Full, a table drops the entry that stops holding first. 0 turns the cache off.
+    /// Entries of the validator's key cache, in each of its three tables, keys of secure zones, names and
+    /// insecure zones, and bogus zones: 4096 (D86). Full, a table drops its least recently used entry. 0 turns
+    /// the cache off.
     pub key_cache: usize,
+    /// Bytes of the validator's key cache, all tables: 4 MiB, Unbound's `key-cache-size` (D86). Half is for
+    /// keys, a quarter for names and insecure zones and a quarter for bogus zones, so that none of them can
+    /// push out another. A set of keys of more than 16 KiB is never kept.
+    pub key_cache_bytes: usize,
 }
 
 impl Default for Limits {
@@ -101,6 +106,7 @@ impl Default for Limits {
             budget: Budget::new(Verifications(128), Budget::DEFAULT_NSEC3_HASHES),
             iterations: MaxIterations::default(),
             key_cache: 4096,
+            key_cache_bytes: 4 << 20,
         }
     }
 }
@@ -123,7 +129,7 @@ impl Validator {
     /// A validator whose chains of trust start at `anchors`, within `limits`.
     #[must_use]
     pub fn new(anchors: TrustAnchors, limits: Limits) -> Self {
-        let cache = KeyCache::new(limits.key_cache);
+        let cache = KeyCache::new(limits.key_cache, limits.key_cache_bytes);
         Self {
             config: Arc::new(Config {
                 anchors,

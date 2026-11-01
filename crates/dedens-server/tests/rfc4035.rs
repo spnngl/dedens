@@ -160,7 +160,10 @@ fn a_validated_answer_is_cached_whole() {
     assert!(reply.header.flags.contains(Flags::AD));
     assert!(signed(&reply));
     let (hit, reply) = asked(Flags::NONE, false);
-    assert!(hit > 1, "another key: the answer for a client without DO");
+    assert_eq!(
+        hit, 1,
+        "another key: the answer for a client without DO, its chain from the key cache (D86)"
+    );
     assert!(!reply.header.flags.contains(Flags::AD));
     let (hit, reply) = asked(Flags::AD, false);
     assert_eq!(hit, 0);

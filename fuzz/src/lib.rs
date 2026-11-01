@@ -11,6 +11,7 @@
 )]
 
 use core::ops::RangeInclusive;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
 
@@ -19,7 +20,7 @@ use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::denial::{self, MaxIterations};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_dnssec::validator::{Limits, Next, Validator};
+use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
 use dedens_net::coap::block::{Block, BlockSize, slice};
 use dedens_net::coap::exchange::{Exchange, Params, Request};
 use dedens_net::coap::{Code, Message as CoapMessage};
@@ -1355,19 +1356,37 @@ pub fn validate(data: &[u8]) {
     };
     let now = CAPTURED_AT.trim().parse().unwrap_or(0);
     let validator = Validator::new(TrustAnchors::root(), Limits::default());
-    for _ in 0..2 {
-        validate_once(&validator, data, &response, &question, now);
+    let first = validate_once(&validator, data, &response, &question, now);
+    let second = validate_once(&validator, data, &response, &question, now);
+    // Same answers, so the same verdict, from the cache or not (what is indeterminate says nothing, and the
+    // second run has the budget and the questions the first spent); the TTL of a hit is what is left.
+    if !matches!(first, Verdict::Indeterminate { .. })
+        && !matches!(second, Verdict::Indeterminate { .. })
+    {
+        assert_eq!(
+            (
+                std::mem::discriminant(&first),
+                first.ede().map(|ede| ede.code)
+            ),
+            (
+                std::mem::discriminant(&second),
+                second.ede().map(|ede| ede.code)
+            ),
+            "the second validation differs: {first:?}, then {second:?}"
+        );
     }
 }
 
-/// One validation of `response` with `validator`, answered as `validate` says.
+/// One validation of `response` with `validator`, answered as `validate` says, and its verdict. The answer to a
+/// question is picked by the question, not by when it is asked, so that a run that asks fewer (the cache has the
+/// keys) gets the answers of the one before.
 fn validate_once(
     validator: &Validator,
     data: &[u8],
     response: &Message<'static>,
     question: &Question<'static>,
     now: u64,
-) {
+) -> Verdict {
     let limit = Limits::default().questions;
     let mut validation = validator.start(question, response, now);
     for asked in 0..=limit {
@@ -1379,14 +1398,22 @@ fn validate_once(
                     ask.qtype
                 );
                 assert!(asked < limit, "asked past the limit");
-                let pick = data.get(asked.wrapping_add(12)).copied().unwrap_or(2);
+                let slot = {
+                    let mut hasher = DefaultHasher::new();
+                    (&ask.name, ask.qtype).hash(&mut hasher);
+                    usize::try_from(hasher.finish() % 4096).unwrap_or(0)
+                };
+                let pick = data
+                    .get(slot % data.len().saturating_sub(12).max(1) + 12)
+                    .copied()
+                    .unwrap_or(2);
                 let answer = match pick % 5 {
                     0 => None,
                     1 => Some(answering(response, &ask)),
                     2 => captured(&ask).map(|(_, message)| message.clone()),
                     3 => captured(&ask).and_then(|(wire, _)| {
                         let mut wire = wire.clone();
-                        let at = usize::from(pick).saturating_mul(asked + 7) % wire.len().max(1);
+                        let at = usize::from(pick).saturating_mul(slot + 7) % wire.len().max(1);
                         *wire.get_mut(at)? ^= 1 << (pick % 8);
                         Some(Message::decode(&wire).ok()?.message.into_owned())
                     }),
@@ -1400,7 +1427,7 @@ fn validate_once(
                 if let Some(ede) = verdict.ede() {
                     assert!(!ede.text.is_empty(), "no text for {verdict:?}");
                 }
-                return;
+                return verdict;
             }
         }
     }

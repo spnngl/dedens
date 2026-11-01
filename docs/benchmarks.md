@@ -300,16 +300,20 @@ ones share one `Validator`, so one `Mutex`. Microseconds per validation, median 
 
 | Threads | Cold | Warm |
 |---|---|---|
-| 1 | 172 | 48 |
-| 2 | 194 | 60 |
-| 4 | 228 | 69 |
-| 8 | 330 | 113 |
+| 1 | 168 | 54 |
+| 2 | 197 | 56 |
+| 4 | 237 | 70 |
+| 8 | 307 | 114 |
 
-The cache takes a validation from 172 to 48 µs, and a verification (one 3.2 µs signature check, above) is a small part of
+The cache takes a validation from 168 to 54 µs, and a verification (one 3.2 µs signature check, above) is a small part of
 either: the rest is the message and the records. The lock is held for one lookup and clones an `Arc` and a name, never
-across a check. From one thread to eight the warm validation slows 2.3x, the cold one, with nothing shared, 1.9x: the
-rest is the machine's (cores of two kinds, one allocator), and the lock costs what is left of the difference. A
-`Mutex` is enough for a validation that runs once per response the response cache lacked (D86).
+across a check. From one thread to eight the warm validation slows 2.1x, the cold one, with nothing shared, 1.8x; a review's run
+measured 2.8x against 1.9x, so the warm figure moves by 30 % between runs of 100 samples. Part of the slowdown is the
+machine's (cores of two kinds, one allocator) and part is the lock, contended by every thread at once, which a real
+caller's validations, spread over time and far fewer than one per cache miss, are not. Hits take a write lock (they
+move the entry in the recency order), so the readers do not run in parallel as an `RwLock` would let them; sharding
+the tables by name or an `RwLock` is for a measured need (TODECIDE). Not measured: the cost of a miss at the bounds
+(a `BTreeMap` pop, logarithmic, under the lock).
 
 ## CoAP (D80)
 
