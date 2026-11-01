@@ -55,24 +55,33 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 5702](https://datatracker.ietf.org/doc/html/rfc5702):** Use of SHA-2 Algorithms with RSA in DNSKEY and RRSIG Resource Records for DNSSEC
 * **[RFC 6605](https://datatracker.ietf.org/doc/html/rfc6605):** Elliptic Curve Digital Signature Algorithm (DSA) for DNSSEC
 * **[RFC 6840](https://datatracker.ietf.org/doc/html/rfc6840):** Clarifications and Implementation Notes for DNSSEC
+* **[RFC 7646](https://datatracker.ietf.org/doc/html/rfc7646):** Definition and Use of DNSSEC Negative Trust Anchors
 * **[RFC 8080](https://datatracker.ietf.org/doc/html/rfc8080):** Edwards-Curve Digital Security Algorithm (EdDSA) for DNSSEC
 * **[RFC 8198](https://datatracker.ietf.org/doc/html/rfc8198):** Aggressive Use of DNSSEC-Validated Cache
 * **[RFC 9077](https://datatracker.ietf.org/doc/html/rfc9077):** NSEC and NSEC3: TTLs and Aggressive Use
 * **[RFC 9276](https://datatracker.ietf.org/doc/html/rfc9276):** Guidance for NSEC3 Parameter Settings
 * **[RFC 9364](https://datatracker.ietf.org/doc/html/rfc9364):** DNS Security Extensions (DNSSEC) (BCP 237, overview of the DNSSEC document set)
+* **[RFC 9718](https://datatracker.ietf.org/doc/html/rfc9718):** DNSSEC Trust Anchor Publication for the Root Zone (Obsoletes RFC 7958)
 * **[RFC 9824](https://datatracker.ietf.org/doc/html/rfc9824):** Compact Denial of Existence in DNSSEC
 * **[RFC 9904](https://datatracker.ietf.org/doc/html/rfc9904):** DNSSEC Cryptographic Algorithm Recommendation Update Process (Obsoletes RFC 8624)
 * **[RFC 9905](https://datatracker.ietf.org/doc/html/rfc9905):** Deprecating the Use of SHA-1 in DNSSEC Signature Algorithms
 
 ### Encrypted Transport & Privacy
+* **[RFC 7252](https://datatracker.ietf.org/doc/html/rfc7252):** The Constrained Application Protocol (CoAP), the carrier of DoC
+* **[RFC 7641](https://datatracker.ietf.org/doc/html/rfc7641):** Observing Resources in CoAP (for the record: DoC does not use it)
 * **[RFC 7830](https://datatracker.ietf.org/doc/html/rfc7830):** The EDNS(0) Padding Option
 * **[RFC 7858](https://datatracker.ietf.org/doc/html/rfc7858):** Specification for DNS over Transport Layer Security (DoT)
+* **[RFC 7959](https://datatracker.ietf.org/doc/html/rfc7959):** Block-Wise Transfers in CoAP
+* **[RFC 8132](https://datatracker.ietf.org/doc/html/rfc8132):** PATCH and FETCH Methods for the Constrained Application Protocol (CoAP)
 * **[RFC 8310](https://datatracker.ietf.org/doc/html/rfc8310):** Usage Profiles for DNS over TLS and DNS over DTLS
 * **[RFC 8467](https://datatracker.ietf.org/doc/html/rfc8467):** Padding Policies for Extension Mechanisms for DNS (EDNS(0))
 * **[RFC 8484](https://datatracker.ietf.org/doc/html/rfc8484):** DNS Queries over HTTPS (DoH)
+* **[RFC 8613](https://datatracker.ietf.org/doc/html/rfc8613):** Object Security for Constrained RESTful Environments (OSCORE), to protect DoC later
 * **[RFC 8932](https://datatracker.ietf.org/doc/html/rfc8932):** Recommendations for DNS Privacy Service Operators
 * **[RFC 9103](https://datatracker.ietf.org/doc/html/rfc9103):** DNS Zone Transfer over TLS (XoT)
+* **[RFC 9147](https://datatracker.ietf.org/doc/html/rfc9147):** The Datagram Transport Layer Security (DTLS) Protocol Version 1.3, to protect DoC later
 * **[RFC 9156](https://datatracker.ietf.org/doc/html/rfc9156):** DNS Query Name Minimisation to Improve Privacy (Obsoletes RFC 7816)
+* **[RFC 9180](https://datatracker.ietf.org/doc/html/rfc9180):** Hybrid Public Key Encryption (HPKE), for ODoH
 * **[RFC 9230](https://datatracker.ietf.org/doc/html/rfc9230):** Oblivious DNS over HTTPS (ODoH, Experimental), optional, after DoH
 * **[RFC 9250](https://datatracker.ietf.org/doc/html/rfc9250):** DNS over Dedicated QUIC Connections (DoQ)
 * **[RFC 9461](https://datatracker.ietf.org/doc/html/rfc9461):** Service Binding Mapping for DNS Servers

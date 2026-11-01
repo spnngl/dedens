@@ -8,6 +8,18 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
 
+## DNSSEC and experimental transports
+
+- ODoQ (Oblivious DNS over QUIC): no RFC exists. Default: dropped; revisit when the IETF publishes one.
+- Ed448 (algorithm 16, RFC 8080): `ring` has no Ed448. Default: unsupported, so a zone signed with it is
+  insecure (RFC 6840 §5.2); a pure-Rust crate only if a signed zone in use needs it.
+- Trust anchor rollover (RFC 5011): follow a root key roll while running. Default: bundled anchors and anchor
+  files only, replaced by hand; automate in the recursive phase, when a daemon holds state.
+- Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
+- Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
+- Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
+  window's edges inclusive; an option when a deployment shows it.
+
 ## Later
 
 - QUIC connections sharing the client's one UDP socket per address family (`crates/dedens-net/src/quic.rs`):
@@ -46,11 +58,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the `base64-simd` crate and our table against a signed zone; `unsafe` only if it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
-- Order after the server forwarder: DoH in the client, CLI and server once compio releases tokio's I/O traits
-  (D62), kubernetes stage, recursive resolver (with an RRset cache, priming per
+- Order after the server forwarder: DoH over HTTP/3 and DNSSEC validation (`plan/4-dnssec-experimental`),
+  DoH over HTTP/2 once compio releases tokio's I/O traits (D62), kubernetes stage, recursive resolver (with an RRset cache, priming per
   RFC 8109, BCP 123 behaviour per RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182),
-  DNSSEC, then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option
-  (RFC 9567) with the server.
+  then ODoH (RFC 9230) and DoC (RFC 9953) as experimental; the error reporting option (RFC 9567) with the
+  server.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
   response mapped back). Default: after the plugins that need no upstream step, as D54 plugins cannot yet
   touch an upstream exchange.

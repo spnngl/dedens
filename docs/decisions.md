@@ -19,6 +19,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
+- D69 (amends D2) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
+  and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
+  only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
+  code is `dedens-dnssec`, sans-IO, the clock passed in. ODoH (RFC 9230) and DoC (RFC 9953) are experimental:
+  `dedens-odoh` and the `odoh` and `doc` Cargo features, off by default and forwarded from `dedens-net` to
+  both binaries, so a default build carries neither (`just check` builds with all features). Text forms: the
+  DNSSEC record types print as their mnemonic and parse from it or from `TYPEn` (RFC 3597); algorithm,
+  digest and NSEC3 hash numbers (`SecAlgorithm`, `DigestType`, `Nsec3HashAlgorithm`) print as their IANA
+  mnemonic and parse from it or from the bare number, which zone text writes. Open questions this phase
+  leaves: [`TODECIDE.md`](TODECIDE.md). Steps: `plan/4-dnssec-experimental/`.
 
 ## Wire format
 

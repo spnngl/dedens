@@ -25,7 +25,7 @@ pub mod text;
 pub mod transport;
 pub mod wire;
 
-pub use codes::{Class, Opcode, Rcode, RecordType};
+pub use codes::{Class, DigestType, Nsec3HashAlgorithm, Opcode, Rcode, RecordType, SecAlgorithm};
 pub use edns::{Edns, EdnsFlags, EdnsView};
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Flags, Header};

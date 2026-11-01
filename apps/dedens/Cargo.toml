@@ -24,6 +24,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-script.workspace = true
 
+[features]
+# D69: experimental transports, off by default.
+odoh = ["dedens-net/odoh"]
+doc = ["dedens-net/doc"]
+
 [dev-dependencies]
 assert_cmd.workspace = true
 insta.workspace = true

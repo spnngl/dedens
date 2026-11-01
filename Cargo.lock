@@ -798,6 +798,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-dnssec"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "ring",
+]
+
+[[package]]
 name = "dedens-net"
 version = "0.1.0"
 dependencies = [
@@ -812,6 +820,10 @@ dependencies = [
  "thiserror",
  "tracing",
 ]
+
+[[package]]
+name = "dedens-odoh"
+version = "0.1.0"
 
 [[package]]
 name = "dedens-plugins"
