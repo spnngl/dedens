@@ -49,6 +49,10 @@ pub enum ClientError {
     /// The QUIC connection or stream failed.
     #[error("QUIC")]
     Quic(#[from] QuicError),
+    /// The client does not run this transport: HTTPS has its request and response in [`crate::doh`], and no
+    /// connection yet.
+    #[error("{0:?} is not run by this client")]
+    Unsupported(Transport),
     /// The exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
@@ -63,6 +67,7 @@ impl ClientError {
         let io = match self {
             Self::Random(_)
             | Self::Encode(_)
+            | Self::Unsupported(_)
             | Self::Tcp(TcpError::Trust(_))
             | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
             | Self::Exchange(Failure::Encode(_)) => return true,
@@ -105,10 +110,10 @@ impl From<SocketAddr> for Server {
 }
 
 impl Server {
-    /// The TCP or TLS connection to it over `transport`, none over UDP and QUIC.
+    /// The TCP or TLS connection to it over `transport`, none over UDP, QUIC and HTTPS.
     fn link(&self, transport: Transport) -> Option<Link> {
         match transport {
-            Transport::Udp | Transport::Quic => None,
+            Transport::Udp | Transport::Quic | Transport::Https => None,
             Transport::Tcp => Some(Link::Tcp(self.addr)),
             Transport::Tls => Some(Link::Tls(self.addr, self.certified())),
         }
@@ -214,6 +219,9 @@ impl Client {
         server: impl Into<Server>,
         options: &Options,
     ) -> Result<Response, ClientError> {
+        if options.transport == Transport::Https {
+            return Err(ClientError::Unsupported(Transport::Https));
+        }
         let target = server.into();
         let server = target.addr;
         // The ID, then the UDP socket of the pool.

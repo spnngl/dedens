@@ -23,6 +23,8 @@ dedens-server = { path = "../crates/dedens-server" }
 hickory-proto = { version = "0.26.3", default-features = false, features = [
   "std",
 ] }
+# The messages of `doh`; the same version as the workspace's (D82).
+http = "1.5.0"
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -91,6 +93,27 @@ bench = false
 [[bin]]
 name = "parse_lists"
 path = "fuzz_targets/parse_lists.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_doh_template"
+path = "fuzz_targets/parse_doh_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_request"
+path = "fuzz_targets/server_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_doh_response"
+path = "fuzz_targets/read_doh_response.rs"
 test = false
 doc = false
 bench = false

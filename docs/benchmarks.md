@@ -124,6 +124,23 @@ removed `MessageView` read every record in 178/505/1093 ns.
   three block heads: 15.7 µs fastest, at most 98 B held at once; `read` of the same heads and the allowlist,
   15-16 µs fastest of 1000 samples both before and after `read` and `check` shared their line reader.
 
+## DoH core (D82)
+
+`benches/doh.rs`, medians in nanoseconds for `a`/`mx`/`txt_large`, one run. The HTTP layers (`h3`, `h2`) are
+not measured: the core only makes and reads `http` types.
+
+| Measure | ns |
+|---|---|
+| `request`, GET (query to base64url in the URI) | 359/336/328 |
+| `request`, POST | 295/295/290 |
+| `response`, TTLs untouched | 135/238/442 |
+| `response`, `Age: 10`, every TTL lowered | 132/236/475 |
+| `server_request`, GET (one allocation, the query) | 24/20/19 |
+| `server_response`, GET (decodes to find the TTLs, copies the body) | 174/282/514 |
+
+- A request or response costs about what decoding the message does (73/153/289, Codec above): the HTTP
+  headers are a few hundred nanoseconds, so a DoH exchange is bound by the HTTP and TLS layers.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on

@@ -198,10 +198,35 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Queries are padded as over TLS (§5.4), and carry no edns-tcp-keepalive (§5.5.2).
   - The CLI writes a QUIC server `quic://HOST[:PORT][#NAME]`, or any server with `+quic`; UDP port 853 unless
     given.
-- D62 DoH (RFC 8484) waits for compio to release tokio's I/O traits on its streams (the `h2` crate needs them;
-  draft on branch `feat/io-tokio-compat` of compio); no adapter of our own meanwhile. HTTP/3 waits for compio
-  too. Queries go by GET by default, ID 0 so HTTP caches can keep them (§4.1), and by POST with
-  `+https-post`, as dig.
+- D62 (amended by D82) DoH (RFC 8484) waits for compio to release tokio's I/O traits on its streams (the `h2`
+  crate needs them; draft on branch `feat/io-tokio-compat` of compio); no adapter of our own meanwhile.
+  ~~HTTP/3 waits for compio too.~~ Queries go by GET by default, ID 0 so HTTP caches can keep them (§4.1), and
+  by POST with `+https-post`, as dig.
+- D82 (amends D62) DoH goes over HTTP/3 first, on compio's released `h3` feature (compio 0.19.2,
+  `compio-quic/h3`, the `h3` crate 0.0.8) over the QUIC connection of D61; HTTP/2 follows when a compio release
+  carries the `tokio::io` traits, as D62 says. `h3` calls itself "very experimental" and is pre-1.0 (API may
+  change, bugs possible); accepted because compio's QUIC is the only QUIC we have (D61), HTTP/3 over it costs no
+  adapter, and it sits behind `Transport::Https`, so replacing it touches one module. Rejected: our own HTTP/3
+  (a protocol of its own to fuzz and keep), waiting for HTTP/2 (blocks DoH and ODoH on a compio release).
+  The core is sans-IO like D26 and knows no HTTP version: `dedens-net::doh` makes and reads `http` types
+  (`http` is a workspace dependency), so HTTP/3 and HTTP/2 carry the same code, for the client, `dedensd` and ODoH.
+  - `Transport::Https`: the whole message, up to 65535 bytes, no length prefix (RFC 8484 §6). ID 0 as over QUIC,
+    no edns-tcp-keepalive (RFC 7828 does not apply, §9), queries padded to 128 bytes and replies to padded
+    queries to 468 bytes (D60). TC means the server could not get a full answer (§9), not a retry over TCP.
+  - `Template`: `https://host[:port]/path{?dns}`, or the same without the expression, `{?dns}` implied as dig and
+    kdig take it (a provider's `https://doh.cleanbrowsing.org/doh/security-filter/` has none); the path of an
+    SVCB `dohpath` (RFC 9461 §5), whose `dns` variable must be written. The one expression is `{?dns}`, or
+    `{&dns}` after a query: any other RFC 6570 expression is refused, since DoH defines no other variable. No
+    user information; a `dns` parameter of its own in the path is refused, as the server would read one of two.
+  - A response is a DNS response if its status is 2xx whatever the rcode (§4.2.1), its content type
+    `application/dns-message` (parameters and case ignored) and its body a DNS message. TTLs go down by the
+    larger of `Age` and the time since `Date` (§5.1, RFC 9111 §4.2.3, without the response delay), to 0 at
+    least: a copy a cache kept is not read as fresh. A bad `Age` is ignored (RFC 9111 §5.1); only the
+    IMF-fixdate form of `Date` is read (RFC 9110 §5.6.7).
+  - A server answers a GET with `cache-control: max-age` of the least TTL of the answer and of the SOA of the
+    authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
+    §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
+    Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
 
 ## Presentation format
 

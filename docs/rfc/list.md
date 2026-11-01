@@ -67,6 +67,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 9905](https://datatracker.ietf.org/doc/html/rfc9905):** Deprecating the Use of SHA-1 in DNSSEC Signature Algorithms
 
 ### Encrypted Transport & Privacy
+* **[RFC 6570](https://datatracker.ietf.org/doc/html/rfc6570):** URI Template, the form of a DoH server's address
 * **[RFC 7252](https://datatracker.ietf.org/doc/html/rfc7252):** The Constrained Application Protocol (CoAP), the carrier of DoC
 * **[RFC 7641](https://datatracker.ietf.org/doc/html/rfc7641):** Observing Resources in CoAP (for the record: DoC does not use it)
 * **[RFC 7830](https://datatracker.ietf.org/doc/html/rfc7830):** The EDNS(0) Padding Option
@@ -79,6 +80,10 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 8613](https://datatracker.ietf.org/doc/html/rfc8613):** Object Security for Constrained RESTful Environments (OSCORE), to protect DoC later
 * **[RFC 8932](https://datatracker.ietf.org/doc/html/rfc8932):** Recommendations for DNS Privacy Service Operators
 * **[RFC 9103](https://datatracker.ietf.org/doc/html/rfc9103):** DNS Zone Transfer over TLS (XoT)
+* **[RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110):** HTTP Semantics, for DoH
+* **[RFC 9111](https://datatracker.ietf.org/doc/html/rfc9111):** HTTP Caching, the freshness of a DoH response
+* **[RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113):** HTTP/2, the minimum DoH is recommended to run on
+* **[RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114):** HTTP/3, DoH over QUIC
 * **[RFC 9147](https://datatracker.ietf.org/doc/html/rfc9147):** The Datagram Transport Layer Security (DTLS) Protocol Version 1.3, to protect DoC later
 * **[RFC 9156](https://datatracker.ietf.org/doc/html/rfc9156):** DNS Query Name Minimisation to Improve Privacy (Obsoletes RFC 7816)
 * **[RFC 9180](https://datatracker.ietf.org/doc/html/rfc9180):** Hybrid Public Key Encryption (HPKE), for ODoH

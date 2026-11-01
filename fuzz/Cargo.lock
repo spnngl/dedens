@@ -463,6 +463,7 @@ dependencies = [
  "dedens-scenario",
  "dedens-server",
  "hickory-proto",
+ "http",
  "libfuzzer-sys",
 ]
 
@@ -475,6 +476,7 @@ dependencies = [
  "flume",
  "futures-util",
  "getrandom 0.4.3",
+ "http",
  "rustls-platform-verifier",
  "thiserror",
 ]

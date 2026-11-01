@@ -1,6 +1,6 @@
 [package]
 name = "dedens-net"
-description = "DNS transports (UDP, TCP, TLS, QUIC) on the compio runtime."
+description = "DNS transports (UDP, TCP, TLS, QUIC) on the compio runtime, and the sans-IO core of DoH."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,7 @@ dedens-proto.workspace = true
 flume.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
+http.workspace = true
 rustls-platform-verifier.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }

@@ -1,0 +1,8 @@
+HTTP/2 200 
+content-type: application/dns-message
+cache-control: max-age=1822
+content-length: 161
+x-content-type-options: nosniff
+alt-svc: h3=":443"
+access-control-allow-origin: *
+

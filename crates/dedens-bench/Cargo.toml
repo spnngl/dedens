@@ -16,10 +16,12 @@ recorder = ["metrics", "dep:metrics-util"]
 
 [dependencies]
 dedens-cache.workspace = true
+dedens-net.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
 divan.workspace = true
+http.workspace = true
 # Zone file readers, for `benches/zone.rs`.
 domain = { workspace = true, features = ["zonefile"] }
 hickory-proto = { workspace = true, features = ["std"] }
@@ -43,6 +45,10 @@ harness = false
 
 [[bench]]
 name = "blocklist"
+harness = false
+
+[[bench]]
+name = "doh"
 harness = false
 
 [lints]
