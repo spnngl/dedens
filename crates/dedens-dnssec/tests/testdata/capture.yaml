@@ -67,6 +67,18 @@ queries:
   - {id: bad_dnssec_wb_sidnlabs_nl_dnskey, name: bad-dnssec.wb.sidnlabs.nl, type: DNSKEY, expect: {rcode: NOERROR}}
   - {id: sigexpired_wb_sidnlabs_nl_ds, name: sigexpired.bad-dnssec.wb.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
   - {id: sigexpired_wb_sidnlabs_nl_dnskey, name: sigexpired.bad-dnssec.wb.sidnlabs.nl, type: DNSKEY, expect: {rcode: NOERROR}}
+  # Zones of the wildcards below: `internet.nl` (NSEC), `nist.gov` (NSEC, signs each name on demand), and the TLDs
+  # `ph` and `ws` (NSEC3 opt-out, each with a wildcard).
+  - {id: internet_nl_ds, name: internet.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: internet_nl_dnskey, name: internet.nl, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: gov_ds, name: gov, type: DS, expect: {rcode: NOERROR}}
+  - {id: gov_dnskey, name: gov, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: nist_gov_ds, name: nist.gov, type: DS, expect: {rcode: NOERROR}}
+  - {id: nist_gov_dnskey, name: nist.gov, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: ph_ds, name: ph, type: DS, expect: {rcode: NOERROR}}
+  - {id: ph_dnskey, name: ph, type: DNSKEY, expect: {rcode: NOERROR}}
+  - {id: ws_ds, name: ws, type: DS, expect: {rcode: NOERROR}}
+  - {id: ws_dnskey, name: ws, type: DNSKEY, expect: {rcode: NOERROR}}
   # Unsigned delegations: the parent proves there is no DS (RFC 4035 §5.2, RFC 5155 §8.6, §8.9).
   - {id: google_com_ds, name: google.com, type: DS, expect: {rcode: NOERROR}}
   - {id: google_com_a, name: google.com, type: A, expect: {rcode: NOERROR}}
@@ -85,6 +97,10 @@ queries:
   - {id: leaf_ent_nlnetlabs_ds, name: _tcp.nlnetlabs.nl, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_ent_sidnlabs_ds, name: _tcp.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_wildcard_sidnlabs_ds, name: wildcard-test.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_wildcard_internet_nl_ds, name: wildcard-test.internet.nl, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_synthesized_nist_gov_ds, name: wildcard-test.nist.gov, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_wildcard_ph_ds, name: wildcard-test.ph, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_wildcard_ws_ds, name: wildcard-test.ws, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_www_icann_org_ds, name: www.icann.org, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_cdn_cloudflare_net_ds, name: cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_www_nlnetlabs_ds, name: www.nlnetlabs.nl, type: DS, expect: {rcode: NOERROR}}
@@ -135,6 +151,15 @@ queries:
   # NSEC3 proves the next closer name does not exist; for another type, the wildcard's own NODATA proof.
   - {id: wildcard_answer, name: wildcard-test.sidnlabs.nl, type: MX, expect: {rcode: NOERROR}}
   - {id: wildcard_nodata, name: wildcard-test.sidnlabs.nl, type: A, expect: {rcode: NOERROR}}
+  # The same with NSEC (RFC 4035 §3.1.3.3, §3.1.3.4, §5.3.4: `internet.nl`); an answer signed for its own name, as
+  # `nist.gov` does (RRSIG labels equal to the owner's, no proof sent); and under an opt-out NSEC3 (RFC 5155
+  # §8.7, §8.8, §9.2: `ph`, `ws`).
+  - {id: wildcard_answer_nsec, name: wildcard-test.internet.nl, type: TXT, expect: {rcode: NOERROR}}
+  - {id: wildcard_nodata_nsec, name: wildcard-test.internet.nl, type: A, expect: {rcode: NOERROR}}
+  - {id: synthesized_nist_gov_txt, name: wildcard-test.nist.gov, type: TXT, expect: {rcode: NOERROR}}
+  - {id: wildcard_answer_optout, name: wildcard-test.ph, type: A, expect: {rcode: NOERROR}}
+  - {id: wildcard_answer_optout_ws, name: wildcard-test.ws, type: A, expect: {rcode: NOERROR}}
+  - {id: wildcard_nodata_optout, name: wildcard-test.ph, type: MX, expect: {rcode: NOERROR}}
   # Answers that cross zones: secure to secure (org, net), secure to insecure (ripe.net to akamaiedge.net),
   # and a zone-to-zone CNAME three zones deep (net, stream, ippacket.stream, rsa2048-sha256.ippacket.stream).
   - {id: cname_cross_zone, name: www.icann.org, type: A, expect: {rcode: NOERROR}}

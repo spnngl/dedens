@@ -19,7 +19,7 @@ const NAME_ERROR: Fact = Fact::NameError { compact: false };
 const COMPACT_NAME_ERROR: Fact = Fact::NameError { compact: true };
 
 /// What each capture proves, by id, and whether the NSEC3 over its next closer name has the opt-out flag.
-const EXPECTED: [(&str, Fact, bool); 37] = [
+const EXPECTED: [(&str, Fact, bool); 43] = [
     ("nxdomain_root_nsec", NAME_ERROR, false),
     ("nxdomain_nsec", NAME_ERROR, false),
     ("nxdomain_nsec3", NAME_ERROR, false),
@@ -36,6 +36,8 @@ const EXPECTED: [(&str, Fact, bool); 37] = [
     ("ent_nsec", Fact::NoData, false),
     ("ent_nsec3", Fact::NoData, false),
     ("wildcard_nodata", Fact::WildcardNoData, false),
+    ("wildcard_nodata_nsec", Fact::WildcardNoData, false),
+    ("wildcard_nodata_optout", Fact::WildcardNoData, true),
     ("google_com_ds", Fact::InsecureDelegation, true),
     ("jm_ds", Fact::InsecureDelegation, false),
     ("edgekey_net_ds", Fact::InsecureDelegation, true),
@@ -49,6 +51,10 @@ const EXPECTED: [(&str, Fact, bool); 37] = [
     ("leaf_ent_nlnetlabs_ds", Fact::NoData, false),
     ("leaf_ent_sidnlabs_ds", Fact::NoData, false),
     ("leaf_wildcard_sidnlabs_ds", Fact::WildcardNoData, false),
+    ("leaf_wildcard_internet_nl_ds", Fact::WildcardNoData, false),
+    ("leaf_synthesized_nist_gov_ds", Fact::NoData, false),
+    ("leaf_wildcard_ph_ds", Fact::InsecureDelegation, true),
+    ("leaf_wildcard_ws_ds", Fact::InsecureDelegation, true),
     ("leaf_dname_sidnlabs_ds", Fact::NoData, false),
     ("leaf_www_example_nl_ds", Fact::NoData, false),
     ("leaf_cdn_cloudflare_net_ds", Fact::NoData, false),
