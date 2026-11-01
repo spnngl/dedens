@@ -374,3 +374,116 @@ fn no_verdict_is_servfail_and_held() {
     let held = run_captured(&pipeline, &query, 1, &captures);
     assert_eq!(held.requests.len(), 0, "the failure is held");
 }
+
+/// `genuine` as the response to the question for `name`, its records replaced by `answer`.
+fn response_for(
+    genuine: &Message<'static>,
+    name: &str,
+    answer: Vec<dedens_proto::Record<'static>>,
+) -> Vec<u8> {
+    let mut message = genuine.clone();
+    message.questions[0].name = common::dns(name);
+    message.answer = answer;
+    message.authority.clear();
+    message.additional.clear();
+    common::wire(&message)
+}
+
+/// The signed CNAME of `www.ripe.net.` alone, and the rest of its chain: what two responses of upstream are, to
+/// the question for the name and to the one for the CNAME's target.
+fn split_chain() -> (Vec<u8>, Vec<u8>) {
+    let genuine = decode(&Captures::get("cname_to_insecure")).into_owned();
+    let (head, tail): (Vec<_>, Vec<_>) = genuine
+        .answer
+        .iter()
+        .cloned()
+        .partition(|record| record.name == common::dns("www.ripe.net."));
+    (
+        response_for(&genuine, "www.ripe.net.", head),
+        response_for(&genuine, "www.ripe.net.edgekey.net.", tail),
+    )
+}
+
+/// RFC 6840 §5.8, D77: a CNAME chain that stops short is chased, the name it goes on at asked and its response
+/// validated as one of its own; the answer is never secure, whatever the verdicts.
+#[test]
+fn a_chain_that_stops_short_is_chased_and_not_secure() {
+    let (head, tail) = split_chain();
+    let captures = Captures::new().with(head).with(tail);
+    let query = client_query("www.ripe.net.", RecordType::A, Flags::AD, true);
+    let done = run_captured(&validating(), &query, 0, &captures);
+    let chased = done
+        .requests
+        .iter()
+        .any(|request| request.questions[0].name == common::dns("www.ripe.net.edgekey.net."));
+    assert!(chased);
+    let reply = decode(&done.reply.expect("a reply")).into_owned();
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(some(&reply.answer));
+}
+
+/// D77: a chased name upstream does not answer leaves no verdict: SERVFAIL, not the first response as if it were
+/// the whole answer.
+#[test]
+fn a_chased_name_without_an_answer_is_indeterminate() {
+    let (head, _) = split_chain();
+    let captures = Captures::new()
+        .with(head)
+        .without("www.ripe.net.edgekey.net.", RecordType::A);
+    let query = client_query("www.ripe.net.", RecordType::A, Flags::AD, true);
+    let done = run_captured(&validating(), &query, 0, &captures);
+    let reply = decode(&done.reply.expect("a reply")).into_owned();
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(reply.answer.is_empty());
+}
+
+/// D77: a server that did not answer is not asked again for the next question of the same query: one dead server
+/// costs the patience of one question, not of each.
+#[test]
+fn a_dead_server_is_asked_once_by_a_query() {
+    let dead = common::servers()[0];
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let done = common::run_captured_without(&validating(), &query, 0, &Captures::new(), Some(dead));
+    let reply = decode(&done.reply.expect("a reply")).into_owned();
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(done.requests.len() > 2);
+    assert_eq!(
+        done.asked.iter().filter(|&&server| server == dead).count(),
+        1
+    );
+}
+
+/// §4.7, D77: a refresh whose answer fails validation leaves the entry it refreshes: bad data does not replace data
+/// that is still good.
+#[test]
+fn a_refresh_that_turns_bogus_keeps_the_entry() {
+    let pipeline = validating();
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let first = run_captured(&pipeline, &query, 0, &Captures::new());
+    let ttl = decode(&first.reply.expect("a reply")).answer[0].ttl.get();
+    assert!(ttl >= 20, "{ttl}");
+
+    let mut forged = decode(&Captures::get("alg13_a")).into_owned();
+    for record in &mut forged.answer {
+        if record.rtype() == RecordType::A {
+            record.rdata = dedens_proto::WireRdata::new(&dedens_proto::RData::A(
+                std::net::Ipv4Addr::new(192, 0, 2, 66),
+            ));
+        }
+    }
+    let captures = Captures::new().with(common::wire(&forged));
+    let late = ttl - 1;
+    let refresh = run_captured(&pipeline, &query, late, &captures);
+    assert!(some(&refresh.requests), "the entry was refreshed");
+
+    let served = run_captured(&pipeline, &query, late, &captures);
+    assert_eq!(served.requests.len(), 0, "answered from the cache");
+    let reply = decode(&served.reply.expect("a reply")).into_owned();
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(reply.header.flags.contains(Flags::AD));
+    assert!(reply.answer.iter().all(|record| {
+        !matches!(record.data(), dedens_proto::RData::A(address) if address == std::net::Ipv4Addr::new(192, 0, 2, 66))
+    }));
+}

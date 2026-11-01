@@ -24,6 +24,11 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// included: past it the verdict is indeterminate.
 const MAX_QUESTIONS: u16 = 64;
 
+/// Names of a CNAME chain one client query chases, as far as `dedens` chases (`apps/dedens/src/validate.rs`): past
+/// it the verdict is indeterminate. The validator leaves the chasing to the caller, and an upstream's chain is
+/// untrusted input.
+const MAX_CHASES: u8 = 8;
+
 /// The validator and the clock of a forward stage (D77).
 #[derive(Clone)]
 pub struct Validating {
@@ -97,6 +102,8 @@ pub(crate) struct Check {
     /// The least TTL the verdicts allow the records.
     cap: Option<Ttl>,
     sent: u16,
+    /// The names chased so far, at most [`MAX_CHASES`].
+    chases: u8,
 }
 
 impl Check {
@@ -115,6 +122,7 @@ impl Check {
             qtype: question.qtype,
             cap: None,
             sent: 0,
+            chases: 0,
         }
     }
 
@@ -148,8 +156,12 @@ impl Check {
                 self.asking = question;
                 self.ask()
             }
+            Next::Done(Verdict::Incomplete { .. }) if self.chases >= MAX_CHASES => {
+                Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE))
+            }
             Next::Done(Verdict::Incomplete { next, ttl }) => {
                 self.limit(ttl);
+                self.chases += 1;
                 self.asking = Question::new(next, self.qtype);
                 self.chasing = true;
                 self.chased = true;

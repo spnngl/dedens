@@ -358,16 +358,11 @@ impl Pipeline {
             if let Some(mut check) = check {
                 match check.next() {
                     Progress::Ask => {
-                        // Each question starts at the first server again.
-                        if let Some(server) = forward.and_then(|forward| forward.servers().first())
-                        {
-                            validating.metrics().question();
-                            upstream.server = server.clone();
-                            upstream.next = 1;
-                            upstream.check = Some(check);
-                            return Step::Upstream(upstream);
-                        }
-                        return Step::Drop;
+                        // The next question goes to the server that answered the last: one that failed is not
+                        // tried again, so a dead server costs one query's patience, not each question's.
+                        validating.metrics().question();
+                        upstream.check = Some(check);
+                        return Step::Upstream(upstream);
                     }
                     Progress::Done(outcome) => {
                         validating.metrics().outcome(outcome);
@@ -482,6 +477,11 @@ impl Finish<'_> {
             Outcome::Bogus(code) => Checked::Bogus(code),
             Outcome::Indeterminate(code) => return self.failed(Some(code), out),
         };
+        // A refresh that fails validation leaves the entry it refreshes: bad data kept for 60 s must not replace
+        // data that is still good, as Unbound keeps it (RFC 4035 §4.7).
+        if self.purpose != Purpose::Reply && matches!(checked, Checked::Bogus(_)) {
+            return Step::Drop;
+        }
         present(&mut decoded.message, outcome, cap, self.client.dnssec());
         let rcode = decoded.message.rcode();
         let stored = self.cache.filter(|cache| {
