@@ -23,7 +23,7 @@ Planned: `dedens-resolver`.
 
 - Client: `Message::query` → `encode` into a buffer → `dedens-net` → `Message::decode` (borrows the input) →
   output, with any `Violation` shown.
-- Server hot path: bytes → `Query::read` (in place, no allocation) → `Cache::lookup` → hit: copy the stored
+- Server hot path: client address → access lists (D91, REFUSED or nothing for a denied one) → bytes → `Query::read` (in place, no allocation) → `Cache::lookup` → hit: copy the stored
   bytes, patch ID, flags, question case and TTLs, append our OPT record (`Edns::append`), pad over TLS and QUIC
   (RFC 8467) → send. Miss: the D23 stage pipeline (plugins, cache, forward), then `Cache::insert`.
 - `dedensd` listens on UDP, TCP, TLS, QUIC (D66), DoH over HTTP/3 (D84) and CoAP (DoC, D81), as an Oblivious DoH target with `odoh` (D79), and asks each upstream over its own transport (D65).

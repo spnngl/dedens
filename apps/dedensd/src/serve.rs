@@ -6,7 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
@@ -390,7 +390,7 @@ async fn udp_queries(
             continue;
         };
         let pipeline = thread.pipeline();
-        let step = pipeline.query(datagram.data(), Transport::Udp, now(), &mut out);
+        let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now(), &mut out);
         // The buffer goes back to the pool before the reply waits to be sent.
         drop(datagram);
         let upstream = match step {
@@ -437,6 +437,11 @@ async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Th
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
+                // `action: drop` (D91): no slot, no handshake, no reply; `refuse` answers each query.
+                if thread.pipeline().drops(peer.ip()) {
+                    drop(stream);
+                    continue;
+                }
                 let Some(slot) = thread.connections.take() else {
                     tracing::debug!(%peer, "too many connections: closed");
                     continue;
@@ -447,14 +452,21 @@ async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Th
                     let _ = stream.set_nodelay(true);
                     let Some(acceptor) = acceptor else {
                         let (reader, writer) = stream.into_split();
-                        connection(BufReader::new(reader), writer, Transport::Tcp, &thread).await;
+                        connection(
+                            BufReader::new(reader),
+                            writer,
+                            Transport::Tcp,
+                            peer.ip(),
+                            &thread,
+                        )
+                        .await;
                         drop(slot);
                         return;
                     };
                     match compio::time::timeout(TCP_IDLE, acceptor.accept(stream)).await {
                         Ok(Ok(secured)) => {
                             let (reader, writer) = Polled::halves(secured);
-                            connection(reader, writer, Transport::Tls, &thread).await;
+                            connection(reader, writer, Transport::Tls, peer.ip(), &thread).await;
                         }
                         Ok(Err(error)) => tracing::debug!(%peer, %error, "TLS handshake failed"),
                         Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
@@ -480,6 +492,7 @@ async fn connection(
     mut reader: impl Inbound,
     writer: impl Outbound + 'static,
     transport: Transport,
+    from: IpAddr,
     thread: &Rc<Thread>,
 ) {
     let (sender, queue) = flume::unbounded::<Vec<u8>>();
@@ -502,7 +515,7 @@ async fn connection(
             break;
         };
         let pipeline = thread.pipeline();
-        let (upstream, slot) = match start(thread, &pipeline, &query, transport, |wire| {
+        let (upstream, slot) = match start(thread, &pipeline, &query, transport, from, |wire| {
             replies.push(wire)
         }) {
             Some(Started::Upstream(upstream, slot)) => (upstream, slot),
@@ -572,7 +585,7 @@ enum Started {
     Upstream(Box<Upstream>, Slot),
 }
 
-/// Runs `query`, from a client over `transport`, through `pipeline`, handing `push` the reply made in the thread's
+/// Runs `query`, from the client at `from` over `transport`, through `pipeline`, handing `push` the reply made in the thread's
 /// buffer, if any, before any wait; past the thread's upstream queries, the reply is SERVFAIL. `None` once `push`
 /// returned `false`: the client is gone.
 fn start(
@@ -580,10 +593,11 @@ fn start(
     pipeline: &Pipeline,
     query: &[u8],
     transport: Transport,
+    from: IpAddr,
     mut push: impl FnMut(&[u8]) -> bool,
 ) -> Option<Started> {
     let mut out = thread.scratch.borrow_mut();
-    let upstream = match pipeline.query(query, transport, now(), &mut out) {
+    let upstream = match pipeline.query(query, transport, from, now(), &mut out) {
         Step::Reply(len) => return push(&out[..len]).then_some(Started::Done),
         Step::Drop => return Some(Started::Done),
         Step::Upstream(upstream) => upstream,
@@ -642,6 +656,11 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
     let service = Rc::new(service);
     while let Some(incoming) = endpoint.wait_incoming().await {
         let peer = incoming.remote_address();
+        // `action: drop` (D91): not even a Retry, no slot, no handshake; `refuse` answers each query.
+        if thread.pipeline().drops(peer.ip()) {
+            incoming.ignore();
+            continue;
+        }
         if !incoming.remote_address_validated() {
             if let Err(error) = incoming.retry() {
                 tracing::debug!(%peer, %error, "QUIC retry failed");
@@ -664,7 +683,7 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
         spawn(async move {
             match connecting.await {
                 Ok(connection) => match &*service {
-                    Service::Quic => streams(&connection, &thread).await,
+                    Service::Quic => streams(&connection, peer.ip(), &thread).await,
                     Service::Https(path) => requests(connection, path, peer, &thread).await,
                 },
                 Err(error) => tracing::debug!(%peer, %error, "QUIC handshake failed"),
@@ -678,7 +697,7 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
 /// Answers the queries of one QUIC connection (RFC 9250 §4.2), each alone on a stream the client opened, as soon
 /// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned, and a query breaking
 /// the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3).
-async fn streams(connection: &Connection, thread: &Rc<Thread>) {
+async fn streams(connection: &Connection, from: IpAddr, thread: &Rc<Thread>) {
     while let Ok(Ok((send, mut recv))) =
         compio::time::timeout(TCP_IDLE, connection.accept_bi()).await
     {
@@ -686,7 +705,7 @@ async fn streams(connection: &Connection, thread: &Rc<Thread>) {
         spawn(async move {
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
             match read {
-                Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, send, &thread).await,
+                Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, send, from, &thread).await,
                 Ok(Ok(_) | Err(QuicError::Framing)) => {
                     connection.close(VarInt::from_u32(DOQ_PROTOCOL_ERROR), b"");
                 }
@@ -710,10 +729,10 @@ fn breaks_doq(query: &[u8]) -> bool {
 }
 
 /// Answers `query` on its stream `send`, then finishes it: one reply, the first made.
-async fn stream(query: &[u8], send: SendStream, thread: &Thread) {
+async fn stream(query: &[u8], send: SendStream, from: IpAddr, thread: &Thread) {
     let pipeline = thread.pipeline();
     let mut first = None;
-    let started = start(thread, &pipeline, query, Transport::Quic, |wire| {
+    let started = start(thread, &pipeline, query, Transport::Quic, from, |wire| {
         first = frame(wire);
         true
     });
@@ -765,10 +784,17 @@ async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread
     let pipeline = thread.pipeline();
     let mut first = None;
     let started = match exchange.query() {
-        Ok(query) => start(thread, &pipeline, query, Transport::Https, |wire| {
-            first = Some(wire.to_vec());
-            true
-        }),
+        Ok(query) => start(
+            thread,
+            &pipeline,
+            query,
+            Transport::Https,
+            peer.ip(),
+            |wire| {
+                first = Some(wire.to_vec());
+                true
+            },
+        ),
         Err(status) => return reject(exchange, status, peer).await,
     };
     let mut exchange = Some(exchange);
@@ -821,7 +847,7 @@ async fn oblivious(
     };
     let pipeline = thread.pipeline();
     let mut first = None;
-    let started = start(thread, &pipeline, &query, transport, |wire| {
+    let started = start(thread, &pipeline, &query, transport, peer.ip(), |wire| {
         first = Some(wire.to_vec());
         true
     });
@@ -1137,6 +1163,7 @@ fn now() -> u32 {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::net::Ipv4Addr;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1189,7 +1216,14 @@ mod tests {
             let serving = spawn(async move {
                 let (stream, _) = listener.accept().await.expect("accepted");
                 let (reader, writer) = stream.into_split();
-                connection(BufReader::new(reader), writer, Transport::Tcp, &thread).await;
+                connection(
+                    BufReader::new(reader),
+                    writer,
+                    Transport::Tcp,
+                    Ipv4Addr::LOCALHOST.into(),
+                    &thread,
+                )
+                .await;
             });
             let mut client = TcpStream::connect(addr).await.expect("connected");
             for _ in 0..2 {

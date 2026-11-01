@@ -83,7 +83,13 @@ fn servers_go_upstream_as_configured() {
     )]);
     let mut out = vec![0; 65535];
     let query = query_for(&captured("a"));
-    let Step::Upstream(first) = pipeline.query(&wire(&query), Transport::Udp, 0, &mut out) else {
+    let Step::Upstream(first) = pipeline.query(
+        &wire(&query),
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        0,
+        &mut out,
+    ) else {
         unreachable!("a forwarder sends the query upstream");
     };
     assert_eq!(first.server(), &tls);

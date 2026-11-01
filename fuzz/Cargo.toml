@@ -73,6 +73,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "parse_network"
+path = "fuzz_targets/parse_network.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_query_file"
 path = "fuzz_targets/parse_query_file.rs"
 test = false

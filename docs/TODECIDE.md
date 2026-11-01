@@ -115,10 +115,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - QUIC datagram without control data (D89): `compio-io`'s `CMsgIter::new` panics on an empty control buffer, which
   macOS gives for a datagram queued before the socket options were set. Default: as is (`serving` waits for the
   endpoints); an upstream fix (accept an empty buffer), then drop the note.
-- Client allow and block lists (RFC 5358: no open resolver): networks allowed to query, others REFUSED. Rate limits
-  and a cap of connections per address are the deployment's, not `dedensd`'s (D90). Default: a stage or core setting, loopback and private ranges
-  allowed when unset; networks in a longest-prefix tree (as HAProxy's `ip` match), never a list scanned, also for
-  blocking by answer address.
+- Blocking by answer address: an answer holding an address in a listed network (a blocklist of IPs, as HAProxy's
+  `ip` match) becomes REFUSED or NXDOMAIN. Client lists are D91, with the longest-prefix tree to reuse. Default:
+  none; the blocklist stage judges names only.
 - Steering each datagram to the socket of the CPU that received it: `SO_INCOMING_CPU` on each thread's socket
   (the kernel's `SO_REUSEPORT` choice prefers it: `reuseport_select_sock_by_hash`) and threads pinned to their CPUs, or a
   `SO_REUSEPORT_CBPF` program. Default: wait for a benchmark between two machines; on loopback the sender's

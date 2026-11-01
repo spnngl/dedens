@@ -53,7 +53,13 @@ fn ask(
     query.questions[0].qclass = class;
     let query = query.to_vec().expect("a query fits");
     let mut out = vec![0; 65535];
-    match pipeline.query(&query, Transport::Udp, 0, &mut out) {
+    match pipeline.query(
+        &query,
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        0,
+        &mut out,
+    ) {
         Step::Reply(len) => Some(
             Message::decode(&out[..len])
                 .expect("the reply decodes")

@@ -178,11 +178,15 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
     }
 }
 
-/// Answers one request: the list of the `DoC` resource if it asks for `/.well-known/core` ([`discovery`], D95), else
-/// the error [`query`] finds in it, else the pipeline's reply, or 4.00 when the pipeline
-/// drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a later block is answered from the
-/// response kept for it, or 4.00.
+/// Answers one request: nothing to a client the access lists drop (D91), else the list of the `DoC` resource if it
+/// asks for `/.well-known/core` ([`discovery`], D95), else the error [`query`] finds in it, else the pipeline's
+/// reply, or 4.00 when the pipeline drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a
+/// later block is answered from the response kept for it, unless the lists now deny the client (a reload), or 4.00.
 async fn handle(coap: Rc<Coap>, thread: Rc<Thread>, request: Message, peer: SocketAddr) {
+    let pipeline = thread.pipeline();
+    if pipeline.drops(peer.ip()) {
+        return;
+    }
     if let Some(reply) = discovery(&request, coap.next_id(), &coap.path) {
         return coap.reply(&request, peer, reply).await;
     }
@@ -193,7 +197,8 @@ async fn handle(coap: Rc<Coap>, thread: Rc<Thread>, request: Message, peer: Sock
                 .blocks
                 .borrow_mut()
                 .get(peer, request.options.request_tag(), Instant::now())
-                .map(<[u8]>::to_vec);
+                .map(<[u8]>::to_vec)
+                .filter(|_| pipeline.denial(peer.ip()).is_none());
             if let Some(wire) = kept {
                 return coap.respond(&request, peer, wire).await;
             }
@@ -205,12 +210,18 @@ async fn handle(coap: Rc<Coap>, thread: Rc<Thread>, request: Message, peer: Sock
             return coap.reply(&request, peer, reply).await;
         }
     };
-    let pipeline = thread.pipeline();
     let mut first = None;
-    let started = start(&thread, &pipeline, query, Transport::Coap, |wire| {
-        first = Some(wire.to_vec());
-        true
-    });
+    let started = start(
+        &thread,
+        &pipeline,
+        query,
+        Transport::Coap,
+        peer.ip(),
+        |wire| {
+            first = Some(wire.to_vec());
+            true
+        },
+    );
     let mut answered = false;
     if let Some(wire) = first {
         answered = true;

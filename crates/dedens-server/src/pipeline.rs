@@ -1,5 +1,6 @@
 //! The pipeline: the stages in order (D23), and the replies the core gives before any stage (D41).
 
+use std::net::IpAddr;
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,9 +12,10 @@ use dedens_proto::{
     Ttl,
 };
 
+use crate::access::{Access, Denial};
 use crate::cache::{self, Looked, Read};
 use crate::forward::{self, Forward, Server};
-use crate::plugin::Plugin;
+use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
 use crate::validate::{Check, Outcome, Progress, present};
 
@@ -30,10 +32,12 @@ pub enum Stage {
     Plugin(Box<dyn Plugin>),
 }
 
-/// The stages a listener runs on each query, in order (D23); a query no stage answers is refused.
+/// The stages a listener runs on each query, in order (D23); a query no stage answers is refused. Without
+/// [`Pipeline::with_access`], every client is answered.
 #[derive(Debug, Default)]
 pub struct Pipeline {
     stages: Box<[Stage]>,
+    access: Option<Access>,
 }
 
 /// What to do next with a query.
@@ -92,7 +96,35 @@ impl Pipeline {
     pub fn new(stages: Vec<Stage>) -> Self {
         Self {
             stages: stages.into(),
+            access: None,
         }
+    }
+
+    /// Answers only the clients `access` permits (D91).
+    #[must_use]
+    pub fn with_access(mut self, access: Access) -> Self {
+        self.access = Some(access);
+        self
+    }
+
+    /// What the access lists do to the client at `from` (D91), `None` when it is answered. Counts nothing: for a
+    /// caller that must tell a denied client from a query the pipeline drops, or serve it nothing kept.
+    #[must_use]
+    pub fn denial(&self, from: IpAddr) -> Option<Denial> {
+        self.access
+            .as_ref()
+            .filter(|access| !access.permits(from))
+            .map(Access::denial)
+    }
+
+    /// Whether the client at `from` is denied with [`Denial::Drop`] (D91): the caller sends it nothing, and takes
+    /// no connection or state for it. Counts the denial. A client denied with [`Denial::Refuse`], or not denied,
+    /// is answered by [`Pipeline::query`].
+    #[must_use]
+    pub fn drops(&self, from: IpAddr) -> bool {
+        self.access
+            .as_ref()
+            .is_some_and(|access| access.denial() == Denial::Drop && access.deny(from))
     }
 
     /// The stages, in order.
@@ -101,14 +133,35 @@ impl Pipeline {
         &self.stages
     }
 
-    /// Answers `wire`, a query that came over `transport` at `now` (seconds, any monotonic origin), writing any
-    /// reply into `out`: at least 512 bytes, and 65535 for a reply over TCP to come whole.
+    /// Answers `wire`, a query from the client at `from` that came over `transport` at `now` (seconds, any monotonic
+    /// origin), writing any reply into `out`: at least 512 bytes, and 65535 for a reply over TCP to come whole. Over
+    /// a proxy, `from` is the proxy's.
     ///
-    /// Before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
+    /// First, a client the access lists deny (D91, RFC 5358 §4) gets what they say, before any stage: nothing for
+    /// [`Denial::Drop`], else REFUSED with EDE 18 (Prohibited, RFC 8914 §4.19) built from the query in place, with
+    /// no allocation, unless the bytes are a response or shorter than a header. An IPv4-mapped IPv6 address is the
+    /// IPv4 one.
+    ///
+    /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
     /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
     /// a forwarder does not do. Responses are dropped, never answered.
-    pub fn query(&self, wire: &[u8], transport: Transport, now: u32, out: &mut [u8]) -> Step {
+    pub fn query(
+        &self,
+        wire: &[u8],
+        transport: Transport,
+        from: IpAddr,
+        now: u32,
+        out: &mut [u8],
+    ) -> Step {
+        if let Some(access) = &self.access
+            && access.deny(from)
+        {
+            return match access.denial() {
+                Denial::Drop => Step::Drop,
+                Denial::Refuse => prohibit(wire, transport, out),
+            };
+        }
         let Ok(query) = Query::read(wire) else {
             return match Header::peek(wire) {
                 Some(header) if !header.flags.contains(Flags::QR) => reply(
@@ -565,6 +618,37 @@ impl Finish<'_> {
             Purpose::Prefetch | Purpose::Stale => Step::Drop,
         }
     }
+}
+
+/// REFUSED with EDE 18 (Prohibited) to the query `wire`, which is no response and holds a header at least. Allocates
+/// nothing for a query that reads, the usual one: the question is copied from the wire. A query that does not read,
+/// or has no question, gets a reply of the header alone.
+fn prohibit(wire: &[u8], transport: Transport, out: &mut [u8]) -> Step {
+    let Some(header) = Header::peek(wire).filter(|header| !header.flags.contains(Flags::QR)) else {
+        return Step::Drop;
+    };
+    let query = Query::read(wire);
+    let client = match &query {
+        Ok(query) => Client::of(query, transport),
+        Err(_) => Client::unread(header, transport),
+    };
+    let refused = Answer {
+        rcode: Rcode::REFUSED,
+        records: None,
+        authoritative: false,
+        error: Some(InfoCode::PROHIBITED),
+    };
+    client
+        .answer(wire, &refused, out)
+        .or_else(|| {
+            client.reply(
+                Message::default(),
+                Rcode::REFUSED,
+                Some(InfoCode::PROHIBITED),
+                out,
+            )
+        })
+        .map_or(Step::Drop, Step::Reply)
 }
 
 /// SERVFAIL with the extended error `code` (RFC 8914).

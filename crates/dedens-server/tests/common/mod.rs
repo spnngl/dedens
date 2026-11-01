@@ -4,7 +4,7 @@
 #![allow(dead_code, reason = "each test file uses part of the helpers")]
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
@@ -120,7 +120,7 @@ pub(crate) fn run_at(
     let mut asked = Vec::new();
     let mut requests = Vec::new();
     let mut sent = None;
-    let mut step = pipeline.query(query, transport, now, &mut out);
+    let mut step = pipeline.query(query, transport, Ipv4Addr::LOCALHOST.into(), now, &mut out);
     let reply = loop {
         match step {
             Step::Reply(len) => {
@@ -274,7 +274,13 @@ pub(crate) fn run_captured_without(
     let mut asked = Vec::new();
     let mut requests = Vec::new();
     let mut sent = None;
-    let mut step = pipeline.query(query, Transport::Udp, now, &mut out);
+    let mut step = pipeline.query(
+        query,
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        now,
+        &mut out,
+    );
     let reply = loop {
         match step {
             Step::Reply(len) => break Some(out[..len].to_vec()),

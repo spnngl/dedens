@@ -12,7 +12,7 @@
 
 use core::ops::RangeInclusive;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
@@ -37,10 +37,11 @@ use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
     DecodeErrorKind, DecodedRecord, DigestType, EdnsView, EncodeError, Flags, Header, Message,
-    Name, Nsec3HashAlgorithm, Query, Question, Record, RecordType, SecAlgorithm, Ttl, message,
+    Name, Nsec3HashAlgorithm, Query, Question, Rcode, Record, RecordType, SecAlgorithm, Ttl,
+    message,
 };
 use dedens_scenario::QueryFile;
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_server::{Access, Denial, Forward, Network, Pipeline, Stage, Step, Transport};
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -65,6 +66,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("cache_insert", cache_insert),
     ("serve_query", serve_query),
     ("parse_name", parse_name),
+    ("parse_network", parse_network),
     ("differential_hickory", differential_hickory),
     ("parse_query_file", parse_query_file),
     ("parse_resolv_conf", parse_resolv_conf),
@@ -298,7 +300,8 @@ pub fn cache_insert(data: &[u8]) {
 
 /// Arbitrary bytes as a client's query, and as the upstream response to a query for their question, then that query
 /// again, from the cache: whatever the server sends back is a conforming reply under the query's ID, within the
-/// client's UDP payload.
+/// client's UDP payload. A server whose access lists hold no network answers the first input with nothing or REFUSED
+/// under its ID (D91).
 ///
 /// # Panics
 ///
@@ -306,14 +309,33 @@ pub fn cache_insert(data: &[u8]) {
 pub fn serve_query(data: &[u8]) {
     let server = SocketAddr::from(([192, 0, 2, 1], 53));
     let mut out = vec![0; MAX_MESSAGE_LEN];
+    let denying = Pipeline::default().with_access(Access::new([], [], Denial::Refuse));
     for transport in [Transport::Udp, Transport::Tcp] {
+        match denying.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out) {
+            Step::Drop => {}
+            Step::Reply(len) => {
+                let id = Header::peek(data).expect("a reply goes to a header").id;
+                check_reply(&out[..len], id, transport);
+                let reply = Message::decode(&out[..len]).expect("a reply decodes");
+                assert_eq!(
+                    reply.message.rcode(),
+                    Rcode::REFUSED,
+                    "a denied client is refused"
+                );
+            }
+            Step::Upstream(_) | Step::Refresh(..) => {
+                panic!("a denied client's query goes upstream")
+            }
+        }
         let pipeline = Pipeline::new(vec![
             Stage::Cache(Arc::new(
                 Cache::new(Config::default()).expect("the default settings"),
             )),
             Stage::Forward(Forward::new([server]).expect("one server")),
         ]);
-        if let Step::Reply(len) = pipeline.query(data, transport, 0, &mut out) {
+        if let Step::Reply(len) =
+            pipeline.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out)
+        {
             let id = Header::peek(data).expect("a reply goes to a header").id;
             check_reply(&out[..len], id, transport);
         }
@@ -327,7 +349,9 @@ pub fn serve_query(data: &[u8]) {
         let query = Message::query(id, question.clone())
             .to_vec()
             .expect("a query fits");
-        let Step::Upstream(upstream) = pipeline.query(&query, transport, 0, &mut out) else {
+        let Step::Upstream(upstream) =
+            pipeline.query(&query, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out)
+        else {
             continue;
         };
         let Step::Reply(len) = pipeline.receive(upstream, Some(data), 0, &mut out) else {
@@ -335,7 +359,9 @@ pub fn serve_query(data: &[u8]) {
         };
         check_reply(&out[..len], id, transport);
         // Asked again, from the cache when it stored the response.
-        if let Step::Reply(len) = pipeline.query(&query, transport, 1, &mut out) {
+        if let Step::Reply(len) =
+            pipeline.query(&query, transport, Ipv4Addr::LOCALHOST.into(), 1, &mut out)
+        {
             check_reply(&out[..len], id, transport);
         }
     }
@@ -378,6 +404,33 @@ pub fn parse_name(data: &[u8]) {
         format!("{name:?}"),
         "`{shown}` from `{text}`"
     );
+}
+
+/// A network of an access list (D91): what reads displays as text that reads back to the same network, with
+/// no bit past its length, and a list holding it permits its own address.
+///
+/// # Panics
+///
+/// On a disagreement, or a bug in the reader or display.
+pub fn parse_network(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(network) = text.parse::<Network>() else {
+        return;
+    };
+    let shown = network.to_string();
+    let again: Network = shown
+        .parse()
+        .unwrap_or_else(|e| panic!("`{shown}` from `{text}` reads back: {e}"));
+    assert_eq!(again, network, "`{shown}` from `{text}`");
+    let access = Access::new([network], [], Denial::Refuse);
+    // The address of a network with no host bits is its first one.
+    let address = shown
+        .split_once('/')
+        .and_then(|(address, _)| address.parse::<IpAddr>().ok());
+    let address = address.unwrap_or_else(|| panic!("`{shown}` from `{text}` has an address"));
+    assert!(access.permits(address), "`{shown}` from `{text}`");
 }
 
 /// A zone file: every record it yields is written as text and read back to the same record, names byte for
@@ -611,8 +664,13 @@ pub fn parse_lists(data: &[u8]) {
             let Ok(query) = Message::query(1, Question::new(name.clone(), qtype)).to_vec() else {
                 continue;
             };
-            if let Step::Reply(len) = pipeline.query(&query, Transport::Udp, 0, &mut out)
-                && let Err(error) = Message::decode(&out[..len])
+            if let Step::Reply(len) = pipeline.query(
+                &query,
+                Transport::Udp,
+                Ipv4Addr::LOCALHOST.into(),
+                0,
+                &mut out,
+            ) && let Err(error) = Message::decode(&out[..len])
             {
                 panic!("{word} {qtype}: the reply does not decode: {error}");
             }

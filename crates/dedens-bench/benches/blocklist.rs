@@ -2,7 +2,7 @@
 //! blocked name, an allowed one under a blocked parent, and one in no list, which goes upstream.
 
 use std::hint::black_box;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use dedens_plugins::{Action, Blocklist, List, Lists, Origin};
 use dedens_proto::{Message, Question, RecordType, Ttl};
@@ -70,7 +70,13 @@ fn query(bencher: divan::Bencher<'_, '_>, name: &str) {
         .expect("a query fits");
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
-        let step = pipeline.query(black_box(&query), Transport::Udp, 0, &mut out);
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
         assert_eq!(matches!(step, Step::Reply(_)), blocked);
     });
 }

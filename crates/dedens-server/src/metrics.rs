@@ -1,13 +1,66 @@
-//! Validation counters through the `metrics` facade (D30, D77), compiled in by the `metrics` feature; without it
-//! every method is empty and compiles away.
+//! Counters through the `metrics` facade (D30, D77, D91), compiled in by the `metrics` feature; without it every
+//! method is empty and compiles away.
 //!
+//! - `dedensd_access_denied_total{action}`: queries of clients the access lists deny, by `refuse` or `drop` (D91).
+//!   Named for the daemon, which is where the lists are read; only the core sees the verdict.
 //! - `dedens_validations_total{verdict}`: responses validated, by `secure`, `insecure`, `bogus`,
 //!   `indeterminate` or `shed` (the allowance of D77 was spent: not validated).
 //! - `dedens_validation_questions_total`: DS and DNSKEY questions sent upstream for validation, chased names too.
 //!
-//! Handles are taken once, when the forward stage's validator is built, from the recorder installed then.
+//! Handles are taken once, when the forward stage's validator or the access lists are built, from the recorder
+//! installed then.
 
+use crate::access::Denial;
 use crate::validate::Outcome;
+
+/// The counter of denied queries.
+#[cfg(feature = "metrics")]
+#[derive(Clone)]
+pub(crate) struct Denied {
+    refused: metrics::Counter,
+    dropped: metrics::Counter,
+}
+
+/// The counter of denied queries: none without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+#[derive(Clone)]
+pub(crate) struct Denied;
+
+#[cfg(feature = "metrics")]
+impl Denied {
+    pub(crate) fn new() -> Self {
+        const DENIED: &str = "dedensd_access_denied_total";
+        metrics::describe_counter!(
+            DENIED,
+            "Queries of clients the access lists deny, by action: refuse or drop."
+        );
+        Self {
+            refused: metrics::counter!(DENIED, "action" => "refuse"),
+            dropped: metrics::counter!(DENIED, "action" => "drop"),
+        }
+    }
+
+    pub(crate) fn count(&self, denial: Denial) {
+        match denial {
+            Denial::Refuse => &self.refused,
+            Denial::Drop => &self.dropped,
+        }
+        .increment(1);
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+impl Denied {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn count(&self, _: Denial) {}
+}
 
 /// The counters of one validating forward stage.
 #[cfg(feature = "metrics")]

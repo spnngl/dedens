@@ -120,6 +120,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "array-const-fn-init"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bcb85e548c05d407fa6faff46b750ba287714ef32afc0f5e15b4641ffd6affb"
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1009,7 +1015,12 @@ dependencies = [
  "dedens-cache",
  "dedens-dnssec",
  "dedens-proto",
+ "ipnet",
  "metrics",
+ "metrics-util",
+ "prefix-trie",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -2241,6 +2252,19 @@ checksum = "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2"
 dependencies = [
  "predicates-core",
  "termtree",
+]
+
+[[package]]
+name = "prefix-trie"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6369af434551b9bf8be05ab871ac1263687d6f0c9485e6d781f904f3e06d7d03"
+dependencies = [
+ "array-const-fn-init",
+ "either",
+ "ipnet",
+ "num-traits",
+ "smallvec",
 ]
 
 [[package]]
