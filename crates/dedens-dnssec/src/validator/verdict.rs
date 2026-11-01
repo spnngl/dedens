@@ -84,7 +84,8 @@ pub enum Verdict {
     },
     /// What the response holds is authenticated, but the CNAME chain it follows ends before the type asked:
     /// ask for it at `next`. The answer is incomplete, so it never carries AD; the caller that chases the
-    /// chain validates each response.
+    /// chain validates each response, bounds the number of links (a loop of CNAMEs has no end) and does not
+    /// use `next`, which the server chose, as 0x20 entropy.
     Incomplete {
         /// The name the chain leads to and the response does not answer.
         next: Name<'static>,

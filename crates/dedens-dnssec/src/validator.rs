@@ -37,8 +37,12 @@
 //! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
 //! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
 //! additional section, records of another class, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3),
-//! which the caller strips or never relies on. [`Verdict::Incomplete`] is the same for a CNAME chain that
-//! stops before the type asked: the caller follows it to `next`. A referral is no answer: [`Validator::start_referral`]
+//! which the caller strips or never relies on. Only the `RRsets` of the answer (the question's name, the names
+//! its CNAME and DNAME chain leads through) and, in the authority section, those at or above such a name are
+//! checked: others are out of bailiwick, neither walked nor verified, and the verdict says nothing of them, so
+//! the caller strips them too. [`Verdict::Incomplete`] is the same for a CNAME chain that stops before the
+//! type asked: the caller follows it to `next`, bounds how many CNAMEs it chases (a loop of them never ends
+//! otherwise) and does not take the names it chases for entropy (0x20): they come from the server. A referral is no answer: [`Validator::start_referral`]
 //! judges it by its delegation alone, and never gives Secure for it.
 
 mod chain;
@@ -56,21 +60,26 @@ use self::chain::Zone;
 use self::response::Parsed;
 pub use self::verdict::{Delegation, InsecureReason, Verdict};
 use crate::anchor::TrustAnchors;
-use crate::crypto::Budget;
+use crate::crypto::{Budget, Verifications};
 use crate::denial::MaxIterations;
 
 /// What one validation may do before it gives up, so that no response makes the validator loop or work for
 /// long (RFC 9276 §3.2, CVE-2023-50387).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
-    /// Questions one validation may ask the caller: 32 (D75), the DS and DNSKEY of ten labels and the
-    /// chains of a few CNAMEs. Past it the verdict is [`Verdict::Indeterminate`].
+    /// Questions one validation may ask the caller: 64 (D75). The walk asks the DS of each label below the
+    /// last zone, so an IPv6 reverse name of 34 labels takes about 40 with the DNSKEY of each zone, and a few
+    /// CNAMEs more; the key cache of 06b answers the walk of a name seen before from memory. Past the limit the
+    /// verdict is [`Verdict::Indeterminate`].
     pub questions: usize,
-    /// Labels of a name below its closest trust anchor: 32 (D75). A name deeper is walked no further, and the
-    /// verdict is [`Verdict::Indeterminate`], whatever the order of the questions.
+    /// Labels of a name below its closest trust anchor: 127 (D75), the most a name has, so that the limit
+    /// is the number of questions's. A name deeper is walked no further, and the verdict is
+    /// [`Verdict::Indeterminate`], whatever the order of the questions.
     pub depth: usize,
-    /// The signature checks and NSEC3 hashes of the validation, its chain of trust included (D71). Past it the
-    /// verdict is [`Verdict::Bogus`], as an attacker could cause it, and insecure would let one downgrade.
+    /// The signature checks and NSEC3 hashes of the validation, its chain of trust included (D71): 128
+    /// signature checks here, where [`Budget::default`] has 64, for the proofs of no DS of each label of a
+    /// 34-label name need about 80 (D75). Past it the verdict is [`Verdict::Indeterminate`]: the budget says
+    /// nothing of the data, bogus would blame a zone for a long walk, and insecure would let a forger downgrade.
     pub budget: Budget,
     /// The NSEC3 iterations above which a zone's denials are insecure (RFC 9276 §3.2, D74).
     pub iterations: MaxIterations,
@@ -79,9 +88,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            questions: 32,
-            depth: 32,
-            budget: Budget::default(),
+            questions: 64,
+            depth: 127,
+            budget: Budget::new(Verifications(128), Budget::DEFAULT_NSEC3_HASHES),
             iterations: MaxIterations::default(),
         }
     }
@@ -119,14 +128,16 @@ impl Validator {
         self.begin(question, response, now, Entry::Final)
     }
 
-    /// Starts validating `response`, a referral to a zone below `question`'s name, as far as the parent that sent
-    /// it vouches for the delegation: its DS records or their proven absence (RFC 4035 §5.2). The verdict is
-    /// [`Verdict::Referral`] and never secure: the NS records and the glue of a referral are not signed by the
-    /// parent, so no answer comes of it; the caller follows the delegation and validates the answer of the
-    /// child with [`Validator::start`].
+    /// Starts validating `response`, a referral to a delegation on the path to `question`'s name (the child is
+    /// the name or above it, not the root), as far as the parent that sent it vouches for it: its DS records or
+    /// their proven absence (RFC 4035 §5.2). The verdict is [`Verdict::Referral`] and never secure: the NS
+    /// records and the glue of a referral are not signed by the parent, and that the parent sent it is not
+    /// proven; the caller follows the delegation and validates the answer of the child with [`Validator::start`].
+    /// [`Delegation::Signed`] says the DS `RRset` is authentic and has a record of a supported algorithm and
+    /// digest, nothing more.
     ///
-    /// Not a referral (see [`Message::referral`]), or one to a name `question` is not within, or to the root:
-    /// [`Verdict::Indeterminate`].
+    /// Not a referral (see [`Message::referral`]), or one to a name that `question`'s is not at or below, or to
+    /// the root: [`Verdict::Indeterminate`].
     #[must_use]
     pub fn start_referral(
         &self,

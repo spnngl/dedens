@@ -181,19 +181,30 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   no way to secure; `start_referral` judges only the delegation, by the DS records of the child or their proven
   absence, and says `Referral` with `Signed` or `Unsigned { reason }`, never `Secure`, so no TTL and no AD come of
   it. A referral that answers one of the validator's DS questions is read as any DS answer: its DS or its
-  proof, else bogus.
-  The chain of trust is walked top-down from the closest anchor to the owner of each `RRset` (the name asked for a
+  proof, else bogus. `Referral { Signed }` is a verified DS `RRset` with a record of a supported algorithm and
+  digest (else `Unsigned { UnsupportedAlgorithm | UnsupportedDigest }`, RFC 4035 §5.2, RFC 6840 §5.2); the NS
+  records and the glue are unauthenticated and that the sender is the parent is not proven, so the caller treats
+  a referral as a hint to follow. `Incomplete.next` is the server's: the caller bounds its CNAME chasing and takes
+  no 0x20 entropy from it.
+  Bailiwick: only the `RRsets` of the answer section at a name the answer passes through (the question's name and
+  the targets of its CNAME and DNAME chain, or the owner of a DNAME above one) and those of the authority section
+  at or above such a name are walked and verified; the others are out of bailiwick, change no verdict, and are the
+  caller's to strip, as the additional section is. The chain of trust is walked top-down from the closest anchor to the owner of each `RRset` (the name asked for a
   DS, the parent's apex): the DS of each label, then where there is a zone its DNSKEY (RFC 4035 §5.2). The walk
   goes to the owner (RFC 4035 §5.3.1), never to the signer a signature names, so a rewritten signer cannot pick
   the keys, an `RRset` signed by an ancestor's keys is bogus, every RRSIG is tried (a junk one first costs
-  nothing) and a forged signer cannot turn bogus into insecure. It costs one DS question per label
-  below the last zone, which the key cache of 06b pays once. A DS RRset is verified by the parent's keys and then
+  nothing) and a forged signer cannot turn bogus into insecure. Signatures are grouped by owner and type
+  covered once per response, and the first bogus `RRset` ends the check, so junk costs no more than its size. It
+  costs one DS question per label below the last zone, which the key cache of 06b pays once; an IPv6 reverse name
+  of 34 labels (a real capture, `ip6_ptr`) takes about 40 questions and 80 signature checks. A DS RRset is verified by the parent's keys and then
   vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
   delegation (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). A DS question at a
   name that is a CNAME (or below a DNAME, or a wildcard CNAME) gets the CNAME: if it verifies, the name is no cut.
   Data below an insecure zone, at or below a negative anchor (D72, RFC 7646 §2, nothing asked), or with no anchor
   above it, is insecure. Unsigned in a secure zone, or in a zone the keys of which are not its owner's, is bogus
-  (EDE 10, 6); every NSEC, NSEC3 and SOA of the authority section must verify, or the response is bogus. A wildcard
+  (EDE 10, 6); every NSEC, NSEC3 and SOA of the authority section must verify, or the response is bogus, each with the keys of
+  the zone that signed it among the zones the response is about (a wildcard answer of one zone and the no data
+  of another carry proofs of both). A wildcard
   expansion also needs the no-closer proof of `prove_wildcard_answer`, else bogus (RFC 4035 §5.3.4). An opt-out
   proof, in a denial, a wildcard answer or the DS of a delegation, is insecure, `OptOut`, never secure (RFC 5155
   §9.2): `tests/testdata/README.md` says so of `google_com_ds`, `edgekey_net_ds`, `nxdomain_nsec3_optout` and
@@ -203,15 +214,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   algorithm or digest in a DS is insecure with EDE 1 or 2 (D71, RFC 6840 §5.2; RRSIGs of unknown algorithms are
   disregarded, D73); NSEC3 iterations above `Limits::iterations` (`MaxIterations`, default 150, D74) are insecure
   with EDE 27; `ConflictingNsec3Parameters`, a missing or contradictory proof and any other `Unproven` are bogus
-  (EDE 12, 6); an exhausted `Budget` (D71, shared by the whole validation) is bogus, not insecure, since insecure
-  would let a forger downgrade by spending it. Other limits are `Indeterminate`: more than `Limits::questions` (32)
-  questions, a name more than `Limits::depth` (32) labels below its anchor (counted from the anchor, so the order of
+  (EDE 12, 6); an exhausted `Budget` (D71, shared by the whole validation) is indeterminate, never bogus (it says nothing
+  of the data: a long walk spends it) and never insecure (a forger would downgrade by spending it), and never
+  stored in a zone's outcome. Its default here is 128 signature checks, where `Budget::default` has 64: the 34 DS
+  proofs of the reverse name above need about 80. Limits are `Indeterminate`: more than `Limits::questions` (64)
+  questions, a name more than `Limits::depth` (127, a name's most) labels below its anchor (counted from the anchor, so the order of
   the questions changes nothing; EDE 5), a question the caller could not answer (EDE 22), a response with an
   rcode but NOERROR and NXDOMAIN (EDE 5), NXNAME asked (EDE 30). Each zone's outcome (secure keys with their TTL,
   insecure, bogus) is written by one private function, `settle`, and read by one other, `zone_of`; delegations are
   not cached apart from them and an indeterminate outcome is never written, so 06b's cache goes there and holds
   only what the data decides. Not done: the SHA-1 switch (TODECIDE: it needs a filter in `rrsig`); an opt-out
-  wildcard answer is untested against a capture, none exists. Tests: `tests/validator.rs`, a scripted caller that
+  wildcard answer is untested against a capture, none exists (TODECIDE). Tests: `tests/validator.rs`, a scripted caller that
   answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit

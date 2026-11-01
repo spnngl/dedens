@@ -9,10 +9,11 @@ use std::sync::Arc;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Name, Question, RData, Rcode, Record, RecordType, Ttl};
 
-use super::chain::{Cut, Settled, parent};
+use super::chain::{Cut, Settled, parent, sig_failure};
 use super::section::{Chain, Section, is_denial, synthesized};
 use super::verdict::{Delegation, Failure, InsecureReason, Unusable, Verdict};
 use super::{Mode, Need, Validation};
+use crate::crypto;
 use crate::denial::{self, Fact, Proof, Unproven};
 use crate::rrsig::{Key, RrSet, verify_any};
 
@@ -64,8 +65,44 @@ struct Evidence {
     limit: Ttl,
 }
 
-/// The evidence of each zone a response has been checked in, once.
-type Evidences = Vec<(Name<'static>, Result<Arc<Evidence>, Unusable>)>;
+/// The evidence of each zone a response has been checked in, once, and which zone each proof is of.
+///
+/// A response may hold proofs of two zones (a wildcard answer of one, a no data of the zone a CNAME led to): each
+/// NSEC, NSEC3 or SOA `RRset` is checked against the keys of one zone, the one that signed it among the zones the
+/// response is about, or `fallback`, the zone of the name it ends on, when its signer is none of them. A wrong
+/// signer only makes the `RRset` fail with the keys of `fallback` (D75).
+struct Evidences {
+    known: Vec<(Name<'static>, Result<Arc<Evidence>, Unusable>)>,
+    zones: Vec<Name<'static>>,
+    fallback: Name<'static>,
+}
+
+impl Evidences {
+    /// The proofs of a response that holds a single zone's: all of them are `apex`'s.
+    fn only(apex: &Name<'static>) -> Self {
+        Self {
+            known: Vec::new(),
+            zones: vec![apex.clone()],
+            fallback: apex.clone(),
+        }
+    }
+
+    /// Whether the `RRset` `set` of `authority` is a proof of the zone `apex`.
+    fn owns(&self, apex: &Name<'static>, set: &RrSet<'static>, authority: &Section) -> bool {
+        let signers: Vec<Name<'static>> = authority
+            .signatures(set)
+            .iter()
+            .map(|sig| sig.rrsig().signer.clone().into_owned())
+            .collect();
+        let owner = self
+            .zones
+            .iter()
+            .filter(|zone| signers.contains(zone))
+            .max_by_key(|zone| zone.label_count())
+            .unwrap_or(&self.fallback);
+        owner == apex
+    }
+}
 
 /// The zone that holds the data of `name` and `rtype`: for a DS, the parent's.
 fn home(name: &Name<'_>, rtype: RecordType) -> Name<'static> {
@@ -87,6 +124,11 @@ fn unproven(error: Unproven, ttl: Ttl) -> Unusable {
             InfoCode::INVALID_QUERY_TYPE,
             error.to_string(),
         )),
+        // The hashes ran out: nothing is known of the zone (D71, D75).
+        Unproven::Budget(_) => Unusable::Failed(Failure::indeterminate(
+            InfoCode::DNSSEC_INDETERMINATE,
+            error.to_string(),
+        )),
         Unproven::NoUsableRecords
         | Unproven::NotCovered
         | Unproven::NoClosestEncloser
@@ -95,6 +137,25 @@ fn unproven(error: Unproven, ttl: Ttl) -> Unusable {
         }
         _ => Unusable::Failed(Failure::bogus(InfoCode::DNSSEC_BOGUS, error.to_string())),
     }
+}
+
+/// Why no record of a DS `RRset` can vouch for a key, when none can: the first unsupported digest, or algorithm
+/// of a record with a supported digest, as `trusted_keys` tells them (RFC 6840 §5.2).
+fn unsupported_ds(ds: &RrSet<'_>) -> Option<InsecureReason> {
+    let mut reason = None;
+    for rdata in ds.rdatas() {
+        let RData::Ds(record) = rdata.data() else {
+            continue;
+        };
+        if !crypto::supported_digest(record.digest_type()) {
+            reason.get_or_insert(InsecureReason::UnsupportedDigest);
+        } else if !crypto::supported(record.algorithm()) {
+            reason.get_or_insert(InsecureReason::UnsupportedAlgorithm);
+        } else {
+            return None;
+        }
+    }
+    reason
 }
 
 /// The keys of a zone found secure, or the verdict of its being anything else.
@@ -132,12 +193,22 @@ impl Validation {
     }
 
     /// What the DS records of `child`, or their proven absence, in the referral say of the delegation (RFC 4035
-    /// §5.2). Nothing else of the referral is read: its NS records and glue are not signed by the parent.
+    /// §5.2). Nothing else of the referral is read: its NS records and glue are not signed by the parent, and
+    /// that the parent sent it is not proven. Signed means a verified DS `RRset` with a record whose algorithm
+    /// and digest are supported; one with none is an unsigned delegation as far as this validator goes (RFC 4035
+    /// §5.2, RFC 6840 §5.2).
     fn referral(&mut self, child: &Name<'static>) -> Result<Verdict, Need> {
         Ok(match self.cut(child, false)? {
-            Cut::Anchored | Cut::Signed { .. } => Verdict::Referral {
+            Cut::Anchored => Verdict::Referral {
                 child: child.clone(),
                 delegation: Delegation::Signed,
+            },
+            Cut::Signed { ds, .. } => Verdict::Referral {
+                child: child.clone(),
+                delegation: match unsupported_ds(&ds) {
+                    None => Delegation::Signed,
+                    Some(reason) => Delegation::Unsigned { reason },
+                },
             },
             Cut::Inside(_) => Verdict::bogus(
                 InfoCode::DNSSEC_BOGUS,
@@ -185,13 +256,13 @@ impl Validation {
         let sets = answer
             .sets
             .iter()
-            .filter(|set| !synthesized(set, answer))
+            .filter(|set| chain.answers(set) && !synthesized(set, answer))
             .map(|set| (set, answer))
             .chain(
                 authority
                     .sets
                     .iter()
-                    .filter(|set| !is_denial(set.rtype()))
+                    .filter(|set| !is_denial(set.rtype()) && chain.about(set))
                     .map(|set| (set, authority)),
             );
         for (set, section) in sets {
@@ -204,10 +275,38 @@ impl Validation {
             None
         };
 
-        let mut evidences = Evidences::new();
+        let mut zones: Vec<Name<'static>> =
+            items.iter().map(|item| item.zone.apex.clone()).collect();
+        zones.extend(denial_zone.as_ref().map(|zone| zone.apex.clone()));
+        let fallback = denial_zone.as_ref().map_or_else(
+            || home(&chain.end, question.qtype),
+            |zone| zone.apex.clone(),
+        );
+        let mut evidences = Evidences {
+            known: Vec::new(),
+            zones,
+            fallback,
+        };
         let mut verdict = Verdict::Secure { ttl: Ttl::MAX };
+        // Bogus outranks every other verdict, so the first one is the last word and the rest costs nothing.
         for item in &items {
             verdict = verdict.worse(self.item_verdict(item, authority, &mut evidences));
+            if matches!(verdict, Verdict::Bogus { .. }) {
+                return Ok(verdict);
+            }
+        }
+        // The proofs of the zones the answer came from, wildcard or not, are checked too: the verdict covers the
+        // whole authority section (RFC 4035 §3.2.3).
+        for item in items.iter().filter(|_| authority.has_denial()) {
+            let zone = &item.zone;
+            if denial_zone.as_ref().is_some_and(|d| d.apex == zone.apex) {
+                continue;
+            }
+            let checked = self.denial_verdict(authority, zone, None, rcode, &mut evidences);
+            verdict = verdict.worse(checked);
+            if matches!(verdict, Verdict::Bogus { .. }) {
+                return Ok(verdict);
+            }
         }
         if let Some(zone) = denial_zone {
             let asked = Question::new(chain.end.clone(), question.qtype);
@@ -290,7 +389,7 @@ impl Validation {
         }
         match verify_any(set, &sigs, &Key::all(keys), self.now, &mut self.budget) {
             Ok(verified) => Ok((verified.ttl.min(keys_ttl), verified.wildcard)),
-            Err(error) => Err(Unusable::Failed(Failure::Bogus(error.ede(set)))),
+            Err(error) => Err(Unusable::Failed(sig_failure(&error, set))),
         }
     }
 
@@ -343,7 +442,7 @@ impl Validation {
         let Some(encloser) = wildcard else {
             return Ok(ttl);
         };
-        let evidence = self.evidence(apex, keys, keys_ttl, authority)?;
+        let evidence = self.evidence(apex, keys, keys_ttl, authority, &Evidences::only(apex))?;
         self.no_closer(set, &encloser, apex, &evidence, ttl)
     }
 
@@ -406,11 +505,13 @@ impl Validation {
         keys_ttl: Ttl,
         authority: &Section,
     ) -> Result<Arc<Evidence>, Unusable> {
-        if let Some((_, known)) = evidences.iter().find(|(name, _)| name == apex) {
+        if let Some((_, known)) = evidences.known.iter().find(|(name, _)| name == apex) {
             return known.clone();
         }
-        let evidence = self.evidence(apex, keys, keys_ttl, authority).map(Arc::new);
-        evidences.push((apex.clone(), evidence.clone()));
+        let evidence = self
+            .evidence(apex, keys, keys_ttl, authority, evidences)
+            .map(Arc::new);
+        evidences.known.push((apex.clone(), evidence.clone()));
         evidence
     }
 
@@ -424,10 +525,15 @@ impl Validation {
         keys: &RrSet<'static>,
         keys_ttl: Ttl,
         authority: &Section,
+        scope: &Evidences,
     ) -> Result<Evidence, Unusable> {
         let mut records = Vec::new();
         let mut limit = keys_ttl.min(DENIAL_TTL_CAP);
-        for set in authority.sets.iter().filter(|set| is_denial(set.rtype())) {
+        let proofs = authority
+            .sets
+            .iter()
+            .filter(|set| is_denial(set.rtype()) && scope.owns(apex, set, authority));
+        for set in proofs {
             let (ttl, wildcard) = self.authentic(set, authority, apex, keys, keys_ttl)?;
             if wildcard.is_some() {
                 return Err(Unusable::Failed(Failure::bogus(
@@ -479,7 +585,7 @@ impl Validation {
         authority: &Section,
         question: &Question<'_>,
     ) -> Result<Proof, Unusable> {
-        let evidence = self.evidence(apex, keys, keys_ttl, authority)?;
+        let evidence = self.evidence(apex, keys, keys_ttl, authority, &Evidences::only(apex))?;
         self.prove(apex, question, &evidence)
     }
 }
