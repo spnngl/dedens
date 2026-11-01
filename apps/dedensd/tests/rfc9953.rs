@@ -178,6 +178,30 @@ fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
             Code::BAD_OPTION,
         ),
         (
+            "Proxy-Uri",
+            Box::new(|m| {
+                m.options.remove(OptionNumber::URI_PATH);
+                m.options
+                    .insert(OptionNumber::PROXY_URI, b"coap://dns.example/dns/query");
+            }),
+            Code::PROXYING_NOT_SUPPORTED,
+        ),
+        (
+            "Proxy-Scheme",
+            Box::new(|m| m.options.insert(OptionNumber::PROXY_SCHEME, b"coap")),
+            Code::PROXYING_NOT_SUPPORTED,
+        ),
+        (
+            "an If-Match with a tag no representation has",
+            Box::new(|m| m.options.insert(OptionNumber::IF_MATCH, [1, 2, 3, 4])),
+            Code::PRECONDITION_FAILED,
+        ),
+        (
+            "an If-None-Match, the resource existing",
+            Box::new(|m| m.options.insert(OptionNumber::IF_NONE_MATCH, [])),
+            Code::PRECONDITION_FAILED,
+        ),
+        (
             "a body in blocks",
             Box::new(|m| {
                 let size = BlockSize::new(2).expect("64 bytes");
@@ -196,6 +220,23 @@ fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
         assert_eq!(response.token, request.token, "{name}");
     }
     assert_eq!(upstream.queries(), 0);
+}
+
+/// RFC 7252 §5.10.1, §5.10.8.1: a request naming the host and port, or asking for any representation, is a query as
+/// another: the server has one resource, whatever the authority.
+#[test]
+fn s5_10_the_authority_and_an_empty_if_match_are_accepted() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let mut request = fetch(5, &query_for(&captured("a"), 0));
+    request
+        .options
+        .insert(OptionNumber::URI_HOST, b"dns.example");
+    request
+        .options
+        .insert(OptionNumber::URI_PORT, server.addr.port().to_be_bytes());
+    request.options.insert(OptionNumber::IF_MATCH, []);
+    assert_eq!(ask(server.addr, &request).code, Code::CONTENT);
 }
 
 /// RFC 7252 §4.5: a retransmitted CON request gets the reply again and is not asked of the upstream again.

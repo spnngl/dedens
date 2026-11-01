@@ -823,7 +823,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Server: a FETCH, or a POST (RFC 9953 defines FETCH only; accepted as the same query), to the listener's path.
     Codes (§4.3.1): 4.04 another path, 4.05 another method (GET included), 4.15 a content format other than 553 or
     none, 4.06 another one accepted, 4.02 a critical option unknown, a Uri-Query or a bad block, 4.00 no body,
-    4.13 a body in Block1 blocks (a server keeps no request state, a query fits one datagram). A DNS failure
+    4.13 a body in Block1 blocks (a server keeps no request state, a query fits one datagram), and from RFC 7252
+    §5.7.2, §5.10.8: 5.05 for a Proxy-Uri or Proxy-Scheme (no forward-proxy, and no own names to take a proxy
+    request for itself as local), 4.12 for an If-None-Match, or an If-Match with a tag (the resource has no stable
+    tag to match; an empty one, any representation, passes). Uri-Host and Uri-Port are accepted, whatever they
+    say: one resource tree serves every authority. A DNS failure
     upstream is the pipeline's SERVFAIL in a 2.05 (§4.3.1). The Max-Age is the least TTL, which is taken from every
     TTL (§4.3.2, the RECOMMENDED algorithm). A response over 1024 bytes goes in Block2 blocks of 1024, each cut
     again from a new query (the follow-up carries it, D80), or of the size a request asks; each block carries

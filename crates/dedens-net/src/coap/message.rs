@@ -88,6 +88,8 @@ impl Code {
     pub const NOT_ACCEPTABLE: Self = Self::new(4, 6);
     /// 4.08 Request Entity Incomplete (RFC 7959 §2.9.2).
     pub const REQUEST_ENTITY_INCOMPLETE: Self = Self::new(4, 8);
+    /// 4.12 Precondition Failed: an If-Match or If-None-Match condition is not fulfilled (RFC 7252 §5.9.2.8).
+    pub const PRECONDITION_FAILED: Self = Self::new(4, 12);
     /// 4.13 Request Entity Too Large (RFC 7252 §5.9.2.9, RFC 7959 §2.9.3).
     pub const REQUEST_ENTITY_TOO_LARGE: Self = Self::new(4, 13);
     /// 4.15 Unsupported Content-Format (RFC 7252 §5.9.2.10).
@@ -96,6 +98,9 @@ impl Code {
     pub const INTERNAL_SERVER_ERROR: Self = Self::new(5, 0);
     /// 5.03 Service Unavailable (RFC 7252 §5.9.3.4).
     pub const SERVICE_UNAVAILABLE: Self = Self::new(5, 3);
+    /// 5.05 Proxying Not Supported: a request with a Proxy-Uri or Proxy-Scheme the server does not act on (RFC 7252
+    /// §5.9.3.6).
+    pub const PROXYING_NOT_SUPPORTED: Self = Self::new(5, 5);
 
     /// The code of `class` (0 to 7) and `detail` (0 to 31); the bits above those are dropped.
     #[must_use]

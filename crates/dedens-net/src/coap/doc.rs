@@ -77,11 +77,21 @@ pub enum Query<'a> {
 ///
 /// # Errors
 ///
-/// The response code of the CoAP error (RFC 9953 §4.3.1), to answer with [`error`]: 4.04 for another path, 4.05
-/// for another method, 4.02 for an unknown critical option, a query option or a bad block option, 4.15 for another
-/// content format, 4.06 for another one accepted, 4.13 for a body sent in blocks, and 4.00 for no body unless it asks for a block past the first.
+/// The response code of the CoAP error (RFC 9953 §4.3.1), to answer with [`error`]: 5.05 for a Proxy-Uri or
+/// Proxy-Scheme (a server is no forward-proxy, RFC 7252 §5.7.2, and does not know its own names to treat a proxy
+/// request for itself as local), 4.04 for another path, 4.05 for another method, 4.02 for an unknown critical option,
+/// a query option or a bad block option, 4.15 for another content format, 4.06 for another one accepted, 4.13 for a
+/// body sent in blocks, 4.00 for no body unless it asks for a block past the first, and 4.12 for an If-Match whose tag is not one of the resource, or an
+/// If-None-Match, which the resource, existing, does not fulfil (§5.10.8; checked last, for a condition may be ignored
+/// when the request fails otherwise). Uri-Host and Uri-Port are accepted whatever they say: the server has one
+/// resource tree, as for any authority (§5.10.1).
 pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, Code> {
     let options = &request.options;
+    if options.get(OptionNumber::PROXY_URI).is_some()
+        || options.get(OptionNumber::PROXY_SCHEME).is_some()
+    {
+        return Err(Code::PROXYING_NOT_SUPPORTED);
+    }
     if !options.uri_path().eq(path.iter().map(|segment| &**segment)) {
         return Err(Code::NOT_FOUND);
     }
@@ -111,13 +121,27 @@ pub fn query<'a>(request: &'a Message, path: &[Box<[u8]>]) -> Result<Query<'a>, 
         Ok(_) => {}
         Err(_) => return Err(Code::BAD_OPTION),
     }
-    if request.payload.is_empty() {
-        return match options.block2() {
-            Ok(Some(block)) if block.num() != 0 => Ok(Query::Block),
-            _ => Err(Code::BAD_REQUEST),
-        };
+    let query = if request.payload.is_empty() {
+        match options.block2() {
+            Ok(Some(block)) if block.num() != 0 => Query::Block,
+            _ => return Err(Code::BAD_REQUEST),
+        }
+    } else {
+        Query::Dns(&request.payload)
+    };
+    // A response has no tag to match but a block's, which a query does not name, and the resource exists.
+    if options
+        .get_all(OptionNumber::IF_NONE_MATCH)
+        .next()
+        .is_some()
+        || (options.get_all(OptionNumber::IF_MATCH).next().is_some()
+            && options
+                .get_all(OptionNumber::IF_MATCH)
+                .all(|tag| !tag.is_empty()))
+    {
+        return Err(Code::PRECONDITION_FAILED);
     }
-    Ok(Query::Dns(&request.payload))
+    Ok(query)
 }
 
 /// The answer to `request` that carries the DNS response `dns` (RFC 9953 §4.3): 2.05 with the content format
