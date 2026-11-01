@@ -236,30 +236,48 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the caller's (`Validating::new(validator, clock)`, Unix seconds): the pipeline's `now` is a monotonic `u32`.
   The glue is `dedens-server`'s `validate.rs`: `Check` owns a `Validation` and the client's answer, and the
   pipeline turns each `Next::Ask` into a `Step::Upstream` whose `Upstream::request()` is the validator's question
-  (RD, DO and CD, no client option, never AD: RFC 4035 §4.6, RFC 6840 §5.9) and whose servers start again from the
-  first (the `tries`/`timeout_ms` and rotation of D45 apply to each question). So `serve.rs` is unchanged. A
-  validating stage's query for the client's own question also carries CD and DO whatever the client set; a client
-  with CD (or a question not of class IN) is answered unvalidated, AD clear, from the same upstream query. Every
+  (RD, DO and CD, no client option, AD clear: RFC 4035 §4.6, RFC 6840 §5.9) and which goes to the server that
+  answered the last question: one that failed is not asked again by the same query, so a dead server costs one
+  question's patience (`tries`/`timeout_ms` of D45), not each one's. So `serve.rs` is unchanged. A validating
+  stage's query for the client's own question also carries CD and DO whatever the client set; a client with CD (or
+  a question not of class IN) is answered unvalidated, AD clear, from a plain forwarder's query (the client's AD
+  and CD, RFC 6840 §5.7; upstream's AD is not read). Every
   validation question is an upstream query of its own and counts as one (`dedens_validation_questions_total`); none
   is read from or written to the answer cache, and each answer is untrusted input to the validator. A key cache
   (06b) slots into `Validating`, not the pipeline. Prefetch and stale refresh validate as any query.
   Verdicts (`dedens_validations_total{verdict}`): AD is set by `Secure` alone, never from the upstream's bit, and
-  only for a client with DO or AD (RFC 6840 §5.8); additional section, other classes dropped from a secure answer
-  (RFC 4035 §3.2.3), every TTL capped at the verdict's. The CNAME a DNAME makes is kept: the validator accepts only
-  the exact one (RFC 4035 §4.8 lets the resolver return it), and a client that does not synthesize it would
-  otherwise lose the answer. `Incomplete`: the answer of `next` is validated apart; the chain's answer is then
-  delivered insecure, AD clear, cached at most as long as the incomplete part, whatever the second verdict, but
-  bogus and indeterminate end it. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
+  only for a client with DO or AD (RFC 6840 §5.8). A secure response is cut (`bailiwick.rs`) to what the verdict
+  covers before it is served or cached: the validator ignores, neither verifying nor walking to them, the answer
+  sets whose owner is not on the name path of the question (CNAME and DNAME links) and the non-denial authority
+  sets not at or above a name of it, and says nothing of the additional section or of other classes, so those are
+  dropped (RFC 4035 §3.2.3), with the RRSIGs that sign nothing left; NSEC, NSEC3 and SOA of the authority section
+  stay, the validator verified them. Every TTL is capped at the verdict's. The CNAME a DNAME makes is kept as the
+  one record the DNAME makes of its owner (RFC 4035 §4.8 lets the resolver return it; a client that does not
+  synthesize it would otherwise lose the answer): the validator compares only the first record of that CNAME set
+  with the expected one and skips verifying the set, so another record in it would ride under AD; the cut drops
+  it (`dedens-dnssec` should compare every record: reported to the step 06 owner). `Incomplete`: the answer of
+  `next` is validated apart, at most 8 names a query (as `dedens`; `next` is the upstream's, not 0x20 entropy, and
+  dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
+  incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
+  indeterminate. All the questions of a query, the chase included, are at most 64 (`MAX_QUESTIONS`; the
+  validator's `Limits` bound each validation separately): past it the verdict is indeterminate. `Insecure`: AD clear, cached as it came. `Bogus`: SERVFAIL with the EDE code
   (RFC 8914; the code only: the OPT of a reply carries no text), and the response cached for `Config::bogus_ttl`
   (60 s, Unbound's `val-bogus-ttl`; RFC 4035 §4.7: small, assigned), never served stale; a hit answers
   SERVFAIL+EDE without validating, a client with CD gets the data (RFC 4035 §3.2.2: the cache stores it under the CD
-  key as well, `Checked::Insecure`). `Indeterminate`: SERVFAIL with EDE, not cached: the failure hold of D43 (RFC 9520)
+  key as well, `Checked::Insecure`); a prefetch or stale refresh that turns bogus is dropped, not stored: bad data does
+  not replace good data still in the cache. `Indeterminate`: SERVFAIL with EDE, not cached: the failure hold of D43 (RFC 9520)
   starts, which may outlast 60 s once repeated. A question unanswered by every server is indeterminate, not bogus.
   Cache: an entry records `Checked` (`Unchecked`, `Secure`, `Insecure`, `Bogus(code)`) beside the response; a hit
-  sets or clears AD from it, and nothing else of DNSSEC is in the cache. It stores each response whole under the
+  sets or clears AD from it (clear on a secure entry served stale: expired data is no longer vouched for by the
+  signatures), and nothing else of DNSSEC is in the cache. A reload keeps the cache stage only while every forward
+  stage validates the same way (`Validating::tagged`: dnssec mode, trust anchor text, negative anchors, set by
+  `config.rs`): else entries from another validator, or none, would be served under the old AD and verdicts. It stores each response whole under the
   client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
-  §4.7, an EDE on a cached insecure answer, aggressive use of NSEC (RFC 8198). Tests: `tests/rfc4035.rs` and
+  §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
+  validation deadline and a rate limit per client (a query holds its upstream slot for up to 64 questions until the
+  key cache of 06b), aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
+  holds the validator's closure. Tests: `tests/rfc4035.rs` and
   `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
   `dedens-cache/tests/checked.rs`, the configuration tests of `config.rs`; bench `hit_secure` of `benches/server.rs`.
 
