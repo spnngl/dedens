@@ -40,6 +40,8 @@ Planned: `dedens-resolver`.
 
 - [`docs/decisions.md`](docs/decisions.md): every design choice and its reason (`Dn`).
 - [`docs/TODECIDE.md`](docs/TODECIDE.md): open questions with proposed defaults.
+- [`tests/interop/`](tests/interop/odoh.py): `dedensd` as an Oblivious DoH target for Cloudflare's `odoh-rs`
+  (`just odoh-interop`, by hand, needs `uv` and the network); `just odoh-live` asks public targets (D79).
 - [`docs/benchmarks.md`](docs/benchmarks.md): measurements behind the performance decisions.
 - [`docs/providers/providers.yaml`](docs/providers/providers.yaml): public resolvers and their endpoints,
   checked by `just providers` (D67).

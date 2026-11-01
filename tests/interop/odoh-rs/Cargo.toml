@@ -1,0 +1,12 @@
+[package]
+name = "odoh-rs-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Own workspace: this crate is outside dedens's (see ../odoh.py).
+[workspace]
+
+[dependencies]
+odoh-rs = "=1.0.5"
+rand = { version = "0.10", default-features = false, features = ["thread_rng"] }
