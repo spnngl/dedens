@@ -161,6 +161,23 @@ one after another over one connection.
   at once 0.47x (GET) and 0.61x (POST) of DoQ's rate, the one thread running both ends. A GET builds a URI with the
   query in base64url and its server parses it; POST sends the query as a body.
 
+## dedensd serving DoH over HTTP/3 (D84)
+
+`cargo bench -p dedensd --bench doh3`: the release `dedensd` on a macOS host (one serving thread) answers one name from
+its cache behind an `https://` listener; a `dedens-net` `Client` of the bench process, on one thread, asks it over
+loopback, 3 s a row, one run, the connection and the cache warm.
+
+| Method | in flight | queries/s |
+|---|---|---|
+| GET | 1 | 9031 |
+| GET | 32 | 73189 |
+| POST | 1 | 9087 |
+| POST | 32 | 77608 |
+
+- One at a time the rate is that of the echo server of D83 above (8.6k-8.8k): the round trip, not `dedensd`, is the
+  limit. With 32 at once 0.77x (GET) and 0.62x (POST) of that server's, the client and `dedensd` each on one
+  core and `dedensd` also decoding, looking in its cache and encoding.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on

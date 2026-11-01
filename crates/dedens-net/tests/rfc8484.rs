@@ -14,8 +14,9 @@ use common::loopback::answer;
 use common::{query, sent, start, t0};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ServerBuilder, VarInt, h3};
+use compio::rustls::pki_types::ServerName;
 use compio::rustls::version::TLS13;
-use dedens_net::client::{Client, ClientError};
+use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::{
     DohError, MEDIA_TYPE, Method, Template, TemplateError, request, response, server_request,
     server_response, wire,
@@ -200,6 +201,37 @@ fn s3_templates() {
         cleanbrowsing.to_string(),
         "https://doh.cleanbrowsing.org/doh/security-filter/{?dns}"
     );
+}
+
+/// D84: the template of a server at a path has the server's name, else its address, as authority, and its port unless
+/// 443; the path is absolute.
+#[test]
+fn s3_a_servers_template_is_at_its_path() {
+    let server = |addr: &str, name| Server {
+        addr: addr.parse().expect("an address"),
+        name,
+        doh: None,
+    };
+    let name = || Some(ServerName::try_from(NAME).expect("a name"));
+    for (server, expected) in [
+        (
+            server("192.0.2.1:443", name()),
+            "https://dns.example/doh{?dns}",
+        ),
+        (
+            server("192.0.2.1:8443", name()),
+            "https://dns.example:8443/doh{?dns}",
+        ),
+        (server("192.0.2.1:443", None), "https://192.0.2.1/doh{?dns}"),
+        (
+            server("[2001:db8::1]:8443", None),
+            "https://[2001:db8::1]:8443/doh{?dns}",
+        ),
+    ] {
+        let template = server.template_at("/doh").expect("a template");
+        assert_eq!(template.to_string(), expected);
+    }
+    assert!(server("192.0.2.1:443", None).template_at("doh").is_err());
 }
 
 /// §5: a template for another scheme is refused, and so is one dig could not use.

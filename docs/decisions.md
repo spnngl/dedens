@@ -549,7 +549,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
   AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
   cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
-- D42 (amended by D45, D47-D49, D52, D65, D66) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
+- D42 (amended by D45, D47-D49, D52, D65, D66, D84) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
   own UDP socket and TCP listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one
   thread elsewhere, where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind
   together. Every socket is bound before any thread starts, so a taken address fails the start. A reply the
@@ -576,7 +576,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -789,6 +789,21 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `DOQ_PROTOCOL_ERROR` (§4.3.3); a connection holds 64 streams at once and counts as a TCP one against the
   thread's connections; each thread's QUIC socket takes `SO_REUSEPORT`, so a client changing address may land
   on another thread and lose its connection. Replies to padded queries are padded (D60).
+- D84 (amends D42, D44, D65; completes D82, D83) `dedensd` serves DNS over HTTPS on HTTP/3 (RFC 8484, RFC 9114) and
+  forwards to DoH upstreams. A `listen` address `https://ADDR[:PORT][/PATH]` (port 443, path `/dns-query`; a path
+  with a query, a fragment or a template expression is refused) takes UDP, as `quic://` does: the certificate of
+  `tls` (D66) is required with it, ALPN `h3`, TLS 1.3 alone, no 0-RTT, the connection counted against the thread's
+  TCP ones, idle time D27's, 64 request streams and 16 unidirectional ones (control and QPACK, D83) at once, the
+  connection set up and each request read within that idle time. A request goes through D82's `server_request`,
+  then the pipeline as any query (over `Transport::Https`: padding as D60 says); a request for another path is 404
+  whatever its method, a query the pipeline drops is 400 (RFC 8484 §4.2.1: the status says the request is bad,
+  not the DNS answer), the other statuses are D82's. The reply is D82's `server_response`: `cache-control` for a
+  GET only. Stats (D30): `dedensd_doh_queries_total{method, status}`, the method `get`, `post` or `other` and the
+  status one of those above or `other`, so labels stay few. An upstream `https://IP[:PORT][/PATH][#NAME]`
+  (`Via::Https`, port 443, path `/dns-query`) is asked over D83's connection by GET, whatever transport the
+  client came over; `#NAME` is the certificate name (D65) and the authority of the URL, else the address is. An
+  address only, as D65: a host name would need resolving first (docs/TODECIDE.md). Rejected: HTTP/2 or
+  HTTP/1.1 listeners (step 23), and `Listen` matching the request's authority, which the path alone serves.
 
 ## Observability
 

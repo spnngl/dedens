@@ -1,6 +1,7 @@
 //! DNS over HTTPS (RFC 8484) over HTTP/3 (RFC 9114): one HTTP/3 connection per server and certificate name, opened
 //! on first use and shared by the queries meanwhile, each query on a request stream of its own (D83). The request
-//! and the response are [`crate::doh`]'s; the QUIC connection is the dialer's, as DNS over QUIC's.
+//! and the response are [`crate::doh`]'s; the QUIC connection is the dialer's, as DNS over QUIC's. The server's
+//! side of a connection, [`Requests`], serves the same (D84).
 
 use std::cell::Cell;
 use std::net::SocketAddr;
@@ -11,10 +12,10 @@ use compio::bytes::{Buf, Bytes};
 use compio::quic::Connection;
 use compio::quic::h3::client::{self, RequestStream, SendRequest};
 use compio::quic::h3::error::{Code, ConnectionError, StreamError};
-use compio::quic::h3::{BidiStream, OpenStreams};
+use compio::quic::h3::{self, BidiStream, OpenStreams};
 use compio::rustls::pki_types::ServerName;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
-use http::{Request, Version};
+use http::{Request, Response, StatusCode, Version};
 
 use crate::dial::{Dialer, Peer, Slots};
 use crate::doh::{self, DohError, Method, Template};
@@ -25,6 +26,10 @@ use crate::tls::{self, Trust};
 /// The unidirectional streams the server opens: its control stream and its two QPACK streams (RFC 9114 §6.2.1,
 /// RFC 9204 §4.2), with room for the reserved types a peer may open (RFC 9114 §6.2.3).
 const SERVER_STREAMS: u32 = 16;
+
+/// The header section of a request a server reads, at most: a GET's URI of up to 65535 bytes and room for its other
+/// fields (RFC 9114 §4.2.2, §7.2.4.1).
+const MAX_FIELD_SECTION: u64 = 80 << 10;
 
 /// Why an HTTPS exchange failed.
 #[derive(Debug, thiserror::Error)]
@@ -205,13 +210,8 @@ async fn ask(open: &Open, request: &Request<Vec<u8>>) -> Result<Reply, HttpsErro
         .await
         .map_err(HttpsError::Stream)?;
     let mut body = Vec::new();
-    while let Some(mut chunk) = stream.inner.recv_data().await.map_err(HttpsError::Stream)? {
-        while chunk.has_remaining() {
-            let part = chunk.chunk();
-            body.extend_from_slice(part);
-            let taken = part.len();
-            chunk.advance(taken);
-        }
+    while let Some(chunk) = stream.inner.recv_data().await.map_err(HttpsError::Stream)? {
+        append(&mut body, chunk);
         if body.len() > MAX_MESSAGE_LEN {
             return Err(HttpsError::TooLong);
         }
@@ -242,5 +242,152 @@ impl Drop for Stream {
             self.inner.stop_stream(Code::H3_REQUEST_CANCELLED);
             self.inner.stop_sending(Code::H3_REQUEST_CANCELLED);
         }
+    }
+}
+
+/// Appends the bytes of `chunk` to `body`.
+fn append(body: &mut Vec<u8>, mut chunk: impl Buf) {
+    while chunk.has_remaining() {
+        let part = chunk.chunk();
+        body.extend_from_slice(part);
+        let taken = part.len();
+        chunk.advance(taken);
+    }
+}
+
+/// The server side of an HTTP/3 connection a client opened: the `DoH` requests on it (RFC 8484 §4, RFC 9114 §4).
+pub struct Requests {
+    inner: h3::server::Connection<Connection, Bytes>,
+}
+
+impl Requests {
+    /// Starts HTTP/3 on the accepted QUIC `connection`: the control stream and the settings go out (RFC 9114 §3.3,
+    /// §6.2.1, §7.2.4).
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Connection`] when the client breaks the protocol or the connection closes.
+    pub async fn new(connection: Connection) -> Result<Self, HttpsError> {
+        let mut builder = h3::server::builder();
+        builder.max_field_section_size(MAX_FIELD_SECTION);
+        let inner = builder
+            .build(connection)
+            .await
+            .map_err(HttpsError::Connection)?;
+        Ok(Self { inner })
+    }
+
+    /// The next request stream the client opened; `None` once the client is done with the connection (RFC 9114
+    /// §5.2). Called again as soon as a request is taken, so that the connection's control stream is read while the
+    /// requests are answered.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Connection`] when the client breaks the protocol or the connection closes.
+    pub async fn accept(&mut self) -> Result<Option<Pending>, HttpsError> {
+        let resolver = self.inner.accept().await.map_err(HttpsError::Connection)?;
+        Ok(resolver.map(Pending))
+    }
+}
+
+/// A request stream the client opened, its request not read yet.
+pub struct Pending(h3::server::RequestResolver<Connection, Bytes>);
+
+impl Pending {
+    /// Reads the request head and, to the end or past a DNS message's size, its body, for the service at `path`:
+    /// the query it holds, or the status to answer with ([`Exchange::query`]).
+    ///
+    /// The status is 404 for another path (RFC 9110 §15.5.5), else [`doh::server_request`]'s. The authority and the
+    /// scheme are not checked: the server answers for the names its certificate holds.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Stream`] for a request the client broke (RFC 9114 §4.1.2: the stream is reset) or cut.
+    pub async fn read(self, path: &str) -> Result<Exchange, HttpsError> {
+        let (request, mut stream) = self.0.resolve_request().await.map_err(HttpsError::Stream)?;
+        let mut body = Vec::new();
+        while body.len() <= MAX_MESSAGE_LEN
+            && let Some(chunk) = stream.recv_data().await.map_err(HttpsError::Stream)?
+        {
+            append(&mut body, chunk);
+        }
+        let query = if request.uri().path() == path {
+            doh::server_request(&request, &body)
+        } else {
+            Err(StatusCode::NOT_FOUND)
+        };
+        Ok(Exchange {
+            stream,
+            method: request.method().clone(),
+            query,
+        })
+    }
+}
+
+/// A request read, to answer on its stream.
+pub struct Exchange {
+    stream: h3::server::RequestStream<BidiStream<Bytes>, Bytes>,
+    method: http::Method,
+    query: Result<Vec<u8>, StatusCode>,
+}
+
+impl Exchange {
+    /// The request's method: `None` for one `DoH` does not use (RFC 8484 §4.1).
+    #[must_use]
+    pub fn method(&self) -> Option<Method> {
+        match self.method {
+            http::Method::GET => Some(Method::Get),
+            http::Method::POST => Some(Method::Post),
+            _ => None,
+        }
+    }
+
+    /// The DNS query, or the status to [`reject`](Exchange::reject) the request with.
+    ///
+    /// # Errors
+    ///
+    /// [`Pending::read`]'s status.
+    pub fn query(&self) -> Result<&[u8], StatusCode> {
+        self.query.as_deref().map_err(|status| *status)
+    }
+
+    /// Answers 200 with the DNS message `dns_response`, as [`doh::server_response`] makes it for the request's method,
+    /// and finishes the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Response`] for a message that is not a DNS one, [`HttpsError::Stream`] for a stream the client
+    /// reset or a connection that closed.
+    pub async fn respond(self, dns_response: Vec<u8>) -> Result<(), HttpsError> {
+        let response = doh::server_response(dns_response, &self.method)
+            .map_err(|error| HttpsError::Response(error.into()))?;
+        let (head, body) = response.into_parts();
+        self.send(Response::from_parts(head, ()), body).await
+    }
+
+    /// Answers `status`, with no body, and finishes the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Stream`] for a stream the client reset or a connection that closed.
+    pub async fn reject(self, status: StatusCode) -> Result<(), HttpsError> {
+        let mut response = Response::new(());
+        *response.status_mut() = status;
+        self.send(response, Vec::new()).await
+    }
+
+    async fn send(mut self, head: Response<()>, body: Vec<u8>) -> Result<(), HttpsError> {
+        let stream = &mut self.stream;
+        stream
+            .send_response(head)
+            .await
+            .map_err(HttpsError::Stream)?;
+        if !body.is_empty() {
+            stream
+                .send_data(Bytes::from(body))
+                .await
+                .map_err(HttpsError::Stream)?;
+        }
+        stream.finish().await.map_err(HttpsError::Stream)
     }
 }

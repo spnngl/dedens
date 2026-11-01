@@ -59,6 +59,35 @@ fn encrypted_upstream_servers_answer_clients_over_udp_and_tcp() {
     }
 }
 
+/// D84: an upstream server behind `https://` is asked over HTTP/3 by GET (RFC 8484 §4.1), at its path or
+/// `/dns-query`, whatever transport the client came over.
+#[test]
+fn an_https_upstream_server_answers_clients_over_udp_and_tcp() {
+    let response = captured("a");
+    let upstream = decode(&response);
+    let (responder, ca) = Responder::https(&["a"]);
+    for path in ["", "/doh"] {
+        let server = forwarding(
+            &format!("https://{}{path}#{TLS_NAME}", responder.addr),
+            ca.path(),
+        );
+        for (id, ask) in [(1, ask_udp as fn(_, &_) -> _), (2, ask_tcp)] {
+            let reply = ask(server.addr, &query_for(&response, id));
+            assert_eq!(
+                (reply.rcode(), &reply.answer),
+                (Rcode::NOERROR, &upstream.answer),
+                "{path}"
+            );
+        }
+    }
+    let transports: Vec<_> = responder
+        .queries()
+        .into_iter()
+        .map(|(over, _)| over)
+        .collect();
+    assert_eq!(transports, [Transport::HttpsGet; 4]);
+}
+
 /// RFC 8310 §8.1: without a name given, the certificate must hold the address, which the responder's does.
 #[test]
 fn a_certificate_is_checked_against_the_name_given_else_the_address() {

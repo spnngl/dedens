@@ -81,6 +81,13 @@ pub enum Via {
     Tls(Option<Arc<str>>),
     /// QUIC (RFC 9250), the certificate checked as over TLS.
     Quic(Option<Arc<str>>),
+    /// DNS over HTTPS over HTTP/3 (RFC 8484, RFC 9114), the certificate checked as over TLS (D84).
+    Https {
+        /// The name the certificate must hold, else the address.
+        name: Option<Arc<str>>,
+        /// The URI template's path, `{?dns}` implied (RFC 8484 §3), starting with `/`.
+        path: Arc<str>,
+    },
 }
 
 impl From<SocketAddr> for Server {
@@ -92,15 +99,17 @@ impl From<SocketAddr> for Server {
     }
 }
 
-/// As written in `dedensd`'s configuration: `IP:PORT`, `tls://IP:PORT#NAME`, `quic://IP:PORT`.
+/// As written in `dedensd`'s configuration: `IP:PORT`, `tls://IP:PORT#NAME`, `quic://IP:PORT`,
+/// `https://IP:PORT/PATH#NAME`.
 impl fmt::Display for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (scheme, name) = match &self.via {
-            Via::Plain => ("", None),
-            Via::Tls(name) => ("tls://", name.as_deref()),
-            Via::Quic(name) => ("quic://", name.as_deref()),
+        let (scheme, name, path) = match &self.via {
+            Via::Plain => ("", None, ""),
+            Via::Tls(name) => ("tls://", name.as_deref(), ""),
+            Via::Quic(name) => ("quic://", name.as_deref(), ""),
+            Via::Https { name, path } => ("https://", name.as_deref(), &**path),
         };
-        write!(f, "{scheme}{}", self.addr)?;
+        write!(f, "{scheme}{}{path}", self.addr)?;
         match name {
             Some(name) => write!(f, "#{name}"),
             None => Ok(()),

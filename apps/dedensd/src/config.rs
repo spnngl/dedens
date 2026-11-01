@@ -2,7 +2,7 @@
 //! `pipeline` lists them.
 //!
 //! ```yaml
-//! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0"]
+//! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query"]
 //! tls:
 //!   certificate: /etc/dedensd/tls/fullchain.pem
 //!   key: /etc/dedensd/tls/key.pem
@@ -43,10 +43,12 @@ use anyhow::{Context, anyhow, bail, ensure};
 use compio::rustls::pki_types::pem::PemObject as _;
 use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use dedens_cache::Cache;
+use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::Ttl;
 use dedens_server::{Forward, Pipeline, Stage, Via};
+use http::uri::PathAndQuery;
 use serde::Deserialize;
 
 use crate::download;
@@ -81,19 +83,21 @@ struct TlsFile {
     key: PathBuf,
 }
 
-/// An address `dedensd` answers on (D66): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
-/// over QUIC, on port 853 unless `:PORT` follows (RFC 7858 §3.1, RFC 9250 §4.1.1).
-#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+/// An address `dedensd` answers on (D66, D84): `IP:PORT` over UDP and TCP; behind `tls://` over TLS, behind `quic://`
+/// over QUIC, on port 853 unless `:PORT` follows (RFC 7858 §3.1, RFC 9250 §4.1.1); behind `https://` over HTTP/3, on
+/// port 443 unless `:PORT` follows, at `/PATH` (`/dns-query` unless set; RFC 8484 §3, RFC 9114 §3.1).
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
 pub(crate) enum Listen {
     Plain(SocketAddr),
     Tls(SocketAddr),
     Quic(SocketAddr),
+    Https(SocketAddr, Arc<str>),
 }
 
 impl Listen {
     /// Whether queries come encrypted, with the certificate of `tls`.
-    const fn encrypted(self) -> bool {
+    const fn encrypted(&self) -> bool {
         !matches!(self, Self::Plain(_))
     }
 }
@@ -105,6 +109,7 @@ impl fmt::Debug for Listen {
             Self::Plain(addr) => write!(f, "{addr}"),
             Self::Tls(addr) => write!(f, "tls://{addr}"),
             Self::Quic(addr) => write!(f, "quic://{addr}"),
+            Self::Https(addr, path) => write!(f, "https://{addr}{path}"),
         }
     }
 }
@@ -118,11 +123,34 @@ impl TryFrom<String> for Listen {
             None => text.parse().ok().map(Self::Plain),
             Some(("tls", rest)) => encrypted(rest).map(Self::Tls),
             Some(("quic", rest)) => encrypted(rest).map(Self::Quic),
+            Some(("https", rest)) => {
+                let (rest, path) =
+                    split_path(rest).map_err(|error| format!("`{text}`: {error}"))?;
+                address(rest, HTTPS_PORT).map(|addr| Self::Https(addr, path))
+            }
             Some(_) => None,
         };
         listen.ok_or_else(|| {
-            format!("`{text}` is neither IP:PORT nor tls:// or quic:// before IP[:PORT]")
+            format!("`{text}` is neither IP:PORT nor tls://, quic:// or https:// before IP[:PORT]")
         })
+    }
+}
+
+/// `ADDR[/PATH]` split in `ADDR` and the path, `/dns-query` unless set (RFC 8484 §3): a path of a request target
+/// without query, which a template's `{?dns}` fills (RFC 6570 §3.2.8).
+fn split_path(text: &str) -> Result<(&str, Arc<str>), String> {
+    let Some(start) = text.find('/') else {
+        return Ok((text, Arc::from(DEFAULT_PATH)));
+    };
+    let (rest, path) = text.split_at(start);
+    let valid = path
+        .parse::<PathAndQuery>()
+        .is_ok_and(|parsed| parsed.query().is_none())
+        && !path.contains(['{', '}']);
+    if valid {
+        Ok((rest, Arc::from(path)))
+    } else {
+        Err(format!("`{path}` is not a path without query"))
     }
 }
 
@@ -221,15 +249,19 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
 }
 
-/// An upstream server (D65): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in brackets);
-/// behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set, and `#NAME` after it for the name
-/// its certificate must hold, else its address.
+/// An upstream server (D65, D84): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in
+/// brackets); behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set; behind `https://`, asked
+/// over HTTP/3 at `/PATH` (`/dns-query` unless set), on port 443 unless set; and `#NAME` after it for the name its
+/// certificate must hold, else its address.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub(crate) struct Server(pub(crate) dedens_server::Server);
 
 /// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
 const ENCRYPTED_PORT: u16 = 853;
+
+/// The port of DNS over HTTPS (RFC 8484 §3, RFC 9110 §4.2.2).
+const HTTPS_PORT: u16 = 443;
 
 impl TryFrom<String> for Server {
     type Error = String;
@@ -243,7 +275,19 @@ impl TryFrom<String> for Server {
             Some((rest, name)) if scheme.is_some() => (rest, Some(name)),
             _ => (rest, None),
         };
-        let port = if scheme.is_some() { ENCRYPTED_PORT } else { 53 };
+        let (rest, path) = match scheme {
+            Some("https") => {
+                let (rest, path) =
+                    split_path(rest).map_err(|error| format!("`{text}`: {error}"))?;
+                (rest, Some(path))
+            }
+            _ => (rest, None),
+        };
+        let port = match scheme {
+            None => 53,
+            Some("https") => HTTPS_PORT,
+            Some(_) => ENCRYPTED_PORT,
+        };
         let addr = address(rest, port)
             .ok_or_else(|| format!("`{text}`: `{rest}` is neither IP:PORT nor IP"))?;
         if let Some(name) = name
@@ -251,13 +295,30 @@ impl TryFrom<String> for Server {
         {
             return Err(format!("`{text}`: `{name}` is not a name for TLS"));
         }
+        if let Some(path) = &path {
+            let probe = dedens_net::client::Server {
+                addr,
+                name: name
+                    .and_then(|name| ServerName::try_from(name).ok().map(|name| name.to_owned())),
+                doh: None,
+            };
+            probe
+                .template_at(path)
+                .map_err(|error| format!("`{text}`: {error}"))?;
+        }
         let name = name.map(Arc::from);
         let via = match scheme {
             None => Via::Plain,
             Some("tls") => Via::Tls(name),
             Some("quic") => Via::Quic(name),
+            Some("https") => Via::Https {
+                name,
+                path: path.unwrap_or_else(|| Arc::from(DEFAULT_PATH)),
+            },
             Some(scheme) => {
-                return Err(format!("`{text}`: `{scheme}://` is not tls:// or quic://"));
+                return Err(format!(
+                    "`{text}`: `{scheme}://` is not tls://, quic:// or https://"
+                ));
             }
         };
         Ok(Self(dedens_server::Server { addr, via }))
@@ -392,20 +453,22 @@ pub(crate) fn read(
     })
 }
 
-/// The certificate of `tls`, read from its files, when `listen` has an address over TLS or QUIC.
+/// The certificate of `tls`, read from its files, when `listen` has an address over TLS, QUIC or HTTP/3.
 ///
 /// # Errors
 ///
 /// A certificate without such an address or the reverse, a file that does not read, a chain without a certificate,
 /// a file without a key, or a key that is not the certificate's.
 fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<Presented>> {
-    let encrypted = listen.iter().any(|listen| listen.encrypted());
+    let encrypted = listen.iter().any(Listen::encrypted);
     let tls = match (tls, encrypted) {
         (Some(tls), true) => tls,
         (None, false) => return Ok(None),
-        (None, true) => bail!("`listen` has a tls:// or quic:// address, and `tls` no certificate"),
+        (None, true) => {
+            bail!("`listen` has a tls://, quic:// or https:// address, and `tls` no certificate")
+        }
         (Some(_), false) => {
-            bail!("`tls` has a certificate, and `listen` no tls:// or quic:// address")
+            bail!("`tls` has a certificate, and `listen` no tls://, quic:// or https:// address")
         }
     };
     let path = tls.certificate.display();
@@ -688,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_servers_take_port_53_by_default_and_853_encrypted() {
+    fn upstream_servers_take_port_53_by_default_853_encrypted_and_443_over_https() {
         let server =
             |text: &str| Server::try_from(text.to_owned()).map(|server| server.0.to_string());
         for (written, read) in [
@@ -706,14 +769,26 @@ mod tests {
                 "quic://94.140.14.140:853#dns.adguard-dns.com",
             ),
             ("tls://192.0.2.1#192.0.2.1", "tls://192.0.2.1:853#192.0.2.1"),
+            (
+                "https://9.9.9.9#dns.quad9.net",
+                "https://9.9.9.9:443/dns-query#dns.quad9.net",
+            ),
+            (
+                "https://[2001:db8::1]:8443/doh/query",
+                "https://[2001:db8::1]:8443/doh/query",
+            ),
         ] {
             assert_eq!(server(written).as_deref(), Ok(read), "{written}");
         }
         for refused in [
             "example.com",
             "tls://dns.google",
-            "https://192.0.2.1",
+            "https://dns.quad9.net/dns-query",
+            "https://192.0.2.1/dns-query?dns=",
+            "https://192.0.2.1/{?dns}",
+            "https://192.0.2.1/a b",
             "192.0.2.1#dns.example",
+            "https://192.0.2.1#",
             "tls://192.0.2.1#",
             "tls://192.0.2.1#not a name",
         ] {
@@ -736,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn listen_addresses_take_port_853_encrypted() {
+    fn listen_addresses_take_port_853_encrypted_and_443_over_https() {
         for (text, listen) in [
             (
                 "127.0.0.1:53",
@@ -751,12 +826,24 @@ mod tests {
                 Listen::Tls("[::1]:8853".parse().unwrap()),
             ),
             ("quic://[::1]", Listen::Quic("[::1]:853".parse().unwrap())),
+            (
+                "https://127.0.0.1",
+                Listen::Https("127.0.0.1:443".parse().unwrap(), "/dns-query".into()),
+            ),
+            (
+                "https://[::1]:8443/doh",
+                Listen::Https("[::1]:8443".parse().unwrap(), "/doh".into()),
+            ),
         ] {
             assert_eq!(Listen::try_from(text.to_owned()), Ok(listen), "{text}");
         }
         for text in [
             "127.0.0.1",
-            "https://127.0.0.1",
+            "https://dns.example",
+            "https://127.0.0.1/dns-query?dns=",
+            "https://127.0.0.1/{?dns}",
+            "https://127.0.0.1#dns.example",
+            "https://127.0.0.1:0x1",
             "tls://dns.example",
             "tls://127.0.0.1#dns.example",
         ] {
