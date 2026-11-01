@@ -314,7 +314,7 @@ fn no_reply(error: &anyhow::Error) -> bool {
     };
     match error.downcast_ref() {
         Some(
-            ClientError::Exchange(Failure::TimedOut { .. })
+            ClientError::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. })
             | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed)
             | ClientError::Quic(
                 QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),

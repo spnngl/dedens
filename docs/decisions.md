@@ -130,6 +130,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
   alone may leave the question out; once a server has sent a cookie, a response without one is dropped, even
   without OPT (RFC 7873 §5.3 MUST), at the price of timeouts if that server loses cookie support mid-process.
+- D68 (amends D31) An exchange that runs out of tries after dropping a response for its cookie fails as
+  `Forged`, not `TimedOut`: "no response after N queries, responses with a wrong cookie dropped (RFC 7873
+  §5.3)", so a packet cache answering with an earlier client's cookie is told from silence (UncensoredDNS,
+  D67). Exit code 9, as a timeout (D33).
 - D60 (amends D2) Encrypted transports come before DNSSEC: DoT, then DoQ and DoH, each in the client and CLI
   first, then in `dedensd`. DoT (RFC 7858) is D27's TCP connection with a TLS session on it: one pipelined
   connection per server, the same idle, keepalive and retry rules. The TLS stream splits into halves locked only
