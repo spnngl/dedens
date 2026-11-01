@@ -1,80 +1,75 @@
 //! A section of a response as `RRsets` with their signatures, and the names an answer leads along (RFC 1034
 //! §3.6.2, RFC 6672 §2.2, §3.1).
 
+use std::collections::HashMap;
+
 use dedens_proto::name::NameError;
 use dedens_proto::{Class, Name, Question, RData, Record, RecordType};
 
 use crate::rrsig::{RrSet, Signature};
 
-/// The `RRsets` of one section, class IN, and the RRSIG `RRsets` among them.
+/// The `RRsets` of one section, class IN, and the RRSIG `RRsets` among them, indexed by owner and type.
 #[derive(Debug)]
 pub(super) struct Section {
     pub(super) sets: Vec<RrSet<'static>>,
+    index: HashMap<(Name<'static>, RecordType), usize>,
     sigs: Vec<RrSet<'static>>,
+    sigs_of: HashMap<Name<'static>, Vec<usize>>,
 }
 
 impl Section {
     pub(super) fn new(records: &[Record<'static>]) -> Self {
-        let (sigs, sets) = RrSet::group(records)
+        let (sigs, sets): (Vec<_>, Vec<_>) = RrSet::group(records)
             .into_iter()
             .filter(|set| set.class() == Class::IN)
             .partition(|set| set.rtype() == RecordType::RRSIG);
-        Self { sets, sigs }
+        let index = sets
+            .iter()
+            .enumerate()
+            .map(|(at, set)| ((set.owner().clone(), set.rtype()), at))
+            .collect();
+        let mut sigs_of: HashMap<Name<'static>, Vec<usize>> = HashMap::new();
+        for (at, set) in sigs.iter().enumerate() {
+            sigs_of.entry(set.owner().clone()).or_default().push(at);
+        }
+        Self {
+            sets,
+            index,
+            sigs,
+            sigs_of,
+        }
     }
 
     /// The `RRset` of `owner` and `rtype`.
     pub(super) fn find(&self, owner: &Name<'_>, rtype: RecordType) -> Option<&RrSet<'static>> {
-        self.sets
-            .iter()
-            .find(|set| set.rtype() == rtype && set.owner() == owner)
+        let at = self.index.get(&(owner.clone().into_owned(), rtype))?;
+        self.sets.get(*at)
     }
 
     /// The RRSIGs of the section that cover `set`, in the order they come.
     pub(super) fn signatures(&self, set: &RrSet<'_>) -> Vec<Signature<'_>> {
-        self.sigs
-            .iter()
-            .filter(|sigs| sigs.owner() == set.owner())
+        self.sigs_of
+            .get(set.owner())
+            .into_iter()
+            .flatten()
+            .filter_map(|at| self.sigs.get(*at))
             .flat_map(|sigs| Signature::all(sigs))
             .filter(|sig| sig.rrsig().type_covered == set.rtype())
             .collect()
     }
-}
-
-/// How an `RRset` is signed.
-pub(super) enum Signer {
-    /// By a zone at or above a name: the zone's apex.
-    Zone(Name<'static>),
-    /// By no RRSIG.
-    Unsigned,
-    /// By RRSIGs none of whose signer is at or above the name (RFC 4035 §5.3.1).
-    Misplaced,
-}
-
-impl Section {
-    /// How `set` is signed, for data that belongs at or below `within`: the signer of its first RRSIG whose
-    /// signer is at or above that name (RFC 4035 §5.3.1).
-    pub(super) fn signer(&self, set: &RrSet<'_>, within: &Name<'_>) -> Signer {
-        let sigs = self.signatures(set);
-        if sigs.is_empty() {
-            return Signer::Unsigned;
-        }
-        sigs.iter()
-            .map(|sig| &sig.rrsig().signer)
-            .find(|signer| within.is_within(signer))
-            .map_or(Signer::Misplaced, |signer| {
-                Signer::Zone(signer.clone().into_owned())
-            })
-    }
 
     /// Whether the section has a record of proof for or against a name's existence: NSEC, NSEC3 or SOA.
     pub(super) fn has_denial(&self) -> bool {
-        self.sets.iter().any(|set| {
-            matches!(
-                set.rtype(),
-                RecordType::NSEC | RecordType::NSEC3 | RecordType::SOA
-            )
-        })
+        self.sets.iter().any(|set| is_denial(set.rtype()))
     }
+}
+
+/// Whether records of `rtype` are the proof of a denial: NSEC, NSEC3 or the SOA that bounds it (RFC 4035 §5.4).
+pub(super) const fn is_denial(rtype: RecordType) -> bool {
+    matches!(
+        rtype,
+        RecordType::NSEC | RecordType::NSEC3 | RecordType::SOA
+    )
 }
 
 /// A name in uncompressed wire form, the RDATA of a DNAME (RFC 6672 §2.1).
@@ -115,13 +110,15 @@ fn substitute(
 }
 
 /// The DNAME `RRset` that rewrites `name`: one whose owner is a proper ancestor.
-fn dname_of<'s>(section: &'s Section, name: &Name<'_>) -> Option<&'s RrSet<'static>> {
-    section.sets.iter().find(|set| {
-        set.rtype() == RecordType::DNAME && name.is_within(set.owner()) && name != set.owner()
+pub(super) fn dname_of<'s>(section: &'s Section, name: &Name<'_>) -> Option<&'s RrSet<'static>> {
+    (1..=name.label_count()).find_map(|skip| {
+        let ancestor = Name::from_labels(name.labels().skip(skip)).ok()?;
+        section.find(&ancestor, RecordType::DNAME)
     })
 }
 
 /// Where an answer leads from the name asked.
+#[derive(Debug)]
 pub(super) struct Chain {
     /// The last name: the one the answer is for, after its CNAMEs and DNAMEs.
     pub(super) end: Name<'static>,
@@ -138,11 +135,12 @@ impl Chain {
         let mut end = question.name.clone().into_owned();
         let mut links = 0;
         while links <= section.sets.len() {
-            let here = |set: &&RrSet<'_>| set.owner() == &end;
-            let wanted = |set: &&RrSet<'_>| {
-                question.qtype == RecordType::ANY || set.rtype() == question.qtype
+            let present = if question.qtype == RecordType::ANY {
+                section.sets.iter().any(|set| set.owner() == &end)
+            } else {
+                section.find(&end, question.qtype).is_some()
             };
-            if section.sets.iter().filter(here).any(|set| wanted(&set)) {
+            if present {
                 return Self {
                     end,
                     found: true,

@@ -87,6 +87,7 @@ queries:
   - {id: leaf_wildcard_sidnlabs_ds, name: wildcard-test.sidnlabs.nl, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_www_icann_org_ds, name: www.icann.org, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_cdn_cloudflare_net_ds, name: cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
+  - {id: leaf_org_cdn_ds, name: org.cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_icann_cdn_mid_ds, name: icann.org.cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_icann_cdn_ds, name: www.icann.org.cdn.cloudflare.net, type: DS, expect: {rcode: NOERROR}}
   - {id: leaf_sigok_vs_ds, name: sigok.verteiltesysteme.net, type: DS, expect: {rcode: NOERROR}}

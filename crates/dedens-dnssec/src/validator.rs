@@ -41,10 +41,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Message, Name, Question, RecordType};
+use dedens_proto::{Class, Flags, Message, Name, Question, RecordType};
 
-use self::chain::{Delegation, Zone};
-pub use self::verdict::{InsecureReason, Verdict};
+use self::chain::Zone;
+use self::response::Parsed;
+pub use self::verdict::{Delegation, InsecureReason, Verdict};
 use crate::anchor::TrustAnchors;
 use crate::crypto::Budget;
 use crate::denial::MaxIterations;
@@ -98,46 +99,113 @@ impl Validator {
         }
     }
 
-    /// Starts validating `response` to `question`, at the time `now` (Unix seconds).
+    /// Starts validating `response`, the final answer to `question`, at the time `now` (Unix seconds).
     ///
-    /// The validation keeps what it needs of `response`. A response that is a referral, or the answer to a DS
-    /// or DNSKEY question, is also the one the validation would otherwise ask for.
+    /// The validation keeps what it needs of `response`. A response that is no answer to `question` (another
+    /// name, type or class, no question or more than one, truncated) is [`Verdict::Indeterminate`]. A referral
+    /// given here is judged as the answer it is: it has no answer, so its NS records are unsigned data of a secure
+    /// zone and it is bogus, or insecure below an insecure zone; use [`Validator::start_referral`] for a referral.
     #[must_use]
     pub fn start(&self, question: &Question<'_>, response: &Message<'_>, now: u64) -> Validation {
+        self.begin(question, response, now, Entry::Final)
+    }
+
+    /// Starts validating `response`, a referral to a zone below `question`'s name, as far as the parent that sent
+    /// it vouches for the delegation: its DS records or their proven absence (RFC 4035 §5.2). The verdict is
+    /// [`Verdict::Referral`] and never secure: the NS records and the glue of a referral are not signed by the
+    /// parent, so no answer comes of it; the caller follows the delegation and validates the answer of the
+    /// child with [`Validator::start`].
+    ///
+    /// Not a referral (see [`Message::referral`]), or one to a name `question` is not within, or to the root:
+    /// [`Verdict::Indeterminate`].
+    #[must_use]
+    pub fn start_referral(
+        &self,
+        question: &Question<'_>,
+        response: &Message<'_>,
+        now: u64,
+    ) -> Validation {
+        let child = response
+            .referral()
+            .filter(|child| !child.is_root() && question.name.is_within(child))
+            .map(|child| child.clone().into_owned());
+        self.begin(question, response, now, Entry::Referral(child))
+    }
+
+    fn begin(
+        &self,
+        question: &Question<'_>,
+        response: &Message<'_>,
+        now: u64,
+        entry: Entry,
+    ) -> Validation {
         let question = question.clone().into_owned();
         let response = Arc::new(response.clone().into_owned());
-        let mut answers = HashMap::new();
-        if matches!(question.qtype, RecordType::DS | RecordType::DNSKEY) {
-            answers.insert(
-                (question.name.clone(), question.qtype),
-                Some(Arc::clone(&response)),
-            );
-        }
-        if let Some(child) = response
-            .referral()
-            .filter(|child| question.name.is_within(child))
-        {
-            answers.insert(
-                (child.clone().into_owned(), RecordType::DS),
-                Some(Arc::clone(&response)),
-            );
-        }
         // Signatures count seconds modulo 2^32 (RFC 4034 §3.1.5).
         let [_, _, _, _, a, b, c, d] = now.to_be_bytes();
-        Validation {
+        let mut validation = Validation {
             config: Arc::clone(&self.config),
+            parsed: Arc::new(Parsed::new(&question, &response.answer, &response.authority)),
+            mode: Mode::Final,
             question,
             response,
             now: u32::from_be_bytes([a, b, c, d]),
-            answers,
+            answers: HashMap::new(),
             asked: 0,
             pending: None,
             budget: self.config.limits.budget.clone(),
             zones: HashMap::new(),
-            cuts: HashMap::new(),
             done: None,
+        };
+        if !answers_question(&validation.response, &validation.question) {
+            validation.done = Some(Verdict::indeterminate(
+                InfoCode::DNSSEC_INDETERMINATE,
+                format!(
+                    "the response is no complete answer to {} {}",
+                    validation.question.name, validation.question.qtype
+                ),
+            ));
+            return validation;
         }
+        match entry {
+            Entry::Final => {}
+            Entry::Referral(None) => {
+                validation.done = Some(Verdict::indeterminate(
+                    InfoCode::DNSSEC_INDETERMINATE,
+                    format!("the response is no referral for {}", validation.question.name),
+                ));
+                return validation;
+            }
+            Entry::Referral(Some(child)) => {
+                validation.answers.insert(
+                    (child.clone(), RecordType::DS),
+                    Some(Arc::clone(&validation.response)),
+                );
+                validation.mode = Mode::Referral(child);
+            }
+        }
+        if matches!(validation.question.qtype, RecordType::DS | RecordType::DNSKEY) {
+            validation.answers.insert(
+                (
+                    validation.question.name.clone(),
+                    validation.question.qtype,
+                ),
+                Some(Arc::clone(&validation.response)),
+            );
+        }
+        validation
     }
+}
+
+/// Whether `response` is a whole answer to `question`: its only question, in class IN (RFC 9619 §4), and not
+/// truncated (RFC 1035 §4.1.1: the part that came is no proof of what was cut).
+fn answers_question(response: &Message<'_>, question: &Question<'_>) -> bool {
+    question.qclass == Class::IN
+        && !response.header.flags.contains(Flags::TC)
+        && matches!(
+            response.questions.as_slice(),
+            [got] if got.name == question.name && got.qtype == question.qtype && got.qclass == Class::IN
+        )
 }
 
 /// What a [`Validation`] wants next.
@@ -153,12 +221,30 @@ pub enum Next {
 /// What a validation needs of an answer: its question.
 struct Need(Question<'static>);
 
+/// How a validation was started: for a referral, its child, or none when the response is not one.
+enum Entry {
+    Final,
+    Referral(Option<Name<'static>>),
+}
+
+/// What the response is validated as.
+#[derive(Debug, Clone)]
+enum Mode {
+    /// The final answer to the question.
+    Final,
+    /// A referral to this child: its delegation is what is judged.
+    Referral(Name<'static>),
+}
+
 /// One response being validated, and what it asked and learned on the way (RFC 4035 §5).
 #[derive(Debug)]
 pub struct Validation {
     config: Arc<Config>,
     question: Question<'static>,
     response: Arc<Message<'static>>,
+    /// The response's sections, read once.
+    parsed: Arc<Parsed>,
+    mode: Mode,
     /// The time, in seconds modulo 2^32.
     now: u32,
     /// The responses given, by question; `None` for a question that got none.
@@ -166,10 +252,9 @@ pub struct Validation {
     asked: usize,
     pending: Option<Question<'static>>,
     budget: Budget,
-    /// What the walk found of each name that is, or sits below, an apex.
+    /// What the walk found of each name that is, or sits below, an apex: written by `settle` only, read by
+    /// `zone_of` only, never an outcome of a limit (06b caches these).
     zones: HashMap<Name<'static>, Zone>,
-    /// What the parent says of each name as a cut.
-    cuts: HashMap<Name<'static>, Delegation>,
     done: Option<Verdict>,
 }
 
@@ -208,20 +293,15 @@ impl Validation {
 
     /// Gives the response to the question last asked, or `None` when there was none: the query failed.
     ///
-    /// A response whose question section names another question counts as none. Nothing happens when no
-    /// question is pending.
+    /// A response that is no complete answer to that question (see [`Validator::start`]) counts as none, and
+    /// so does a truncated one, which leaves the validation [`Verdict::Indeterminate`], never bogus. Nothing
+    /// happens when no question is pending.
     pub fn answer(&mut self, response: Option<&Message<'_>>) {
         let Some(question) = self.pending.take() else {
             return;
         };
-        let wanted = |message: &Message<'_>| {
-            message
-                .questions
-                .first()
-                .is_none_or(|got| got.name == question.name && got.qtype == question.qtype)
-        };
         let response = response
-            .filter(|message| wanted(message))
+            .filter(|message| answers_question(message, &question))
             .map(|message| Arc::new(message.clone().into_owned()));
         self.answers
             .insert((question.name, question.qtype), response);
