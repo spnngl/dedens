@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use coap_capture::{SERVER, capture, delivered, essence, ids, play, request_of};
 use dedens_net::coap::exchange::{Exchange, Failure, Next, Params, Request, Step};
-use dedens_net::coap::server::{Dedup, EXCHANGE_LIFETIME, Seen};
+use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, OptionNumber, Options, ParseError, Token, Type, WriteError};
 use proptest::prelude::*;
 
@@ -428,6 +428,29 @@ fn dedup_forgets_after_the_lifetime_and_at_capacity() {
     );
 }
 
+#[test]
+fn blocks_are_found_by_endpoint_and_tag_and_forgotten_like_dedup() {
+    let t0 = Instant::now();
+    let mut blocks = Blocks::new(Duration::from_secs(10), NonZero::new(2).expect("a value"));
+    let other = "127.0.0.2:5683".parse().expect("a value");
+    blocks.keep(SERVER, &[1], t0, vec![1]);
+    assert_eq!(blocks.get(SERVER, &[1], t0), Some(&[1][..]));
+    // Another tag, another endpoint, no tag: nothing kept for them.
+    assert_eq!(blocks.get(SERVER, &[2], t0), None);
+    assert_eq!(blocks.get(other, &[1], t0), None);
+    assert_eq!(blocks.get(SERVER, &[], t0), None);
+    // The same request again replaces the response, taking no room.
+    blocks.keep(SERVER, &[1], t0, vec![2]);
+    blocks.keep(other, &[1], t0, vec![3]);
+    assert_eq!(blocks.get(SERVER, &[1], t0), Some(&[2][..]));
+    // Full: the oldest goes.
+    blocks.keep(SERVER, &[], t0, vec![4]);
+    assert_eq!(blocks.get(SERVER, &[1], t0), None);
+    assert_eq!(blocks.get(other, &[1], t0), Some(&[3][..]));
+    // The lifetime is over.
+    assert_eq!(blocks.get(other, &[1], t0 + Duration::from_secs(11)), None);
+}
+
 // Captured from aiocoap.
 
 #[test]
@@ -472,6 +495,37 @@ fn captured_separate_response() {
 }
 
 #[test]
+fn libcoap_separate_response() {
+    // libcoap's server answers a CON GET with an empty ACK, then, 4 s later, a CON of its own (RFC 7252 §5.2.2).
+    let played = play("libcoap_get_async", Params::default());
+    let capture = capture("libcoap_get_async");
+    let client: Vec<_> = delivered(&capture, true);
+    assert_eq!(played.sent.len(), 2);
+    for (ours, theirs) in played.sent.iter().zip(&client) {
+        assert_eq!(ours.to_vec().expect("a value"), theirs.bytes);
+    }
+    let response = played.result.expect("a value");
+    assert_eq!((response.code, response.payload.len()), (Code::CONTENT, 4));
+}
+
+#[test]
+fn libcoap_non_exchange() {
+    // libcoap answers a NON request with a NON response, with the message ID of the request, an empty token on
+    // both, and a Max-Age of 1: the exchange matches it by the token alone (§5.3.2).
+    let capture = capture("libcoap_get_non");
+    let (request, response) = (capture[0].message(), capture[1].message());
+    assert_eq!(
+        (request.kind, response.kind),
+        (Type::NonConfirmable, Type::NonConfirmable)
+    );
+    assert_eq!(request.token, response.token);
+    assert_eq!(response.options.max_age(), 1);
+    let played = play("libcoap_get_non", Params::default());
+    assert_eq!(played.sent.len(), 1);
+    assert_eq!(played.result.expect("a value").payload, response.payload);
+}
+
+#[test]
 fn captured_non_exchange() {
     let capture = capture("get_non");
     let request = capture[0].message();
@@ -488,7 +542,12 @@ fn captured_non_exchange() {
 
 #[test]
 fn captured_retransmissions_are_the_same_datagram() {
-    for id in ["get_lost_request", "get_lost_ack"] {
+    for id in [
+        "get_lost_request",
+        "get_lost_ack",
+        "libcoap_get_lost_request",
+        "libcoap_get_lost_ack",
+    ] {
         let capture = capture(id);
         let (request, first_id) = request_of(&capture);
         let now = Instant::now();
@@ -507,7 +566,7 @@ fn captured_retransmissions_are_the_same_datagram() {
             .map(|d| d.bytes.clone())
             .collect();
         assert_eq!(sent[0], theirs[0], "{id}");
-        // aiocoap waited between ACK_TIMEOUT and ACK_RANDOM_FACTOR times it as well.
+        // aiocoap and libcoap waited between ACK_TIMEOUT and ACK_RANDOM_FACTOR times it as well.
         let second = capture
             .iter()
             .filter(|d| d.from_client)

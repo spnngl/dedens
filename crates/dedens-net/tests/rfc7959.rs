@@ -561,10 +561,10 @@ fn captured_get_in_64_byte_blocks() {
 }
 
 /// The request of an upload capture: its first message holds the first block only.
-fn upload_exchange(id: &str, params: Params) -> coap_capture::Played {
+fn upload_exchange(id: &str, params: Params, payload: Vec<u8>) -> coap_capture::Played {
     let capture = capture(id);
     let (mut request, first_id) = request_of(&capture);
-    request.payload = body(2500);
+    request.payload = payload;
     request.options.remove(OptionNumber::SIZE1);
     let now = Instant::now();
     let mut sent = Vec::new();
@@ -590,7 +590,7 @@ fn upload_exchange(id: &str, params: Params) -> coap_capture::Played {
 
 #[test]
 fn captured_post_in_1024_byte_blocks() {
-    let played = upload_exchange("post_block1", Params::default());
+    let played = upload_exchange("post_block1", Params::default(), body(2500));
     same_requests("post_block1", &played, true);
     assert_eq!(played.result.expect("a value").code, Code::CHANGED);
 }
@@ -600,7 +600,7 @@ fn captured_post_in_64_byte_blocks() {
     let params = params(|p| {
         p.block1_size = size(64);
     });
-    let played = upload_exchange("post_block1_64", params);
+    let played = upload_exchange("post_block1_64", params, body(2500));
     assert_eq!(played.sent.len(), 40);
     same_requests("post_block1_64", &played, true);
     assert_eq!(played.result.expect("a value").code, Code::CHANGED);
@@ -612,7 +612,7 @@ fn captured_post_in_blocks_with_a_response_in_blocks() {
     let params = params(|p| {
         p.block1_size = size(64);
     });
-    let played = upload_exchange("post_block1_block2", params);
+    let played = upload_exchange("post_block1_block2", params, body(2500));
     assert_eq!(played.sent.len(), 42);
     same_requests("post_block1_block2", &played, true);
     let response = played.result.expect("a value");
@@ -632,4 +632,81 @@ fn captured_fetch_in_64_byte_blocks() {
     assert_eq!(played.sent.len(), 3);
     assert!(played.sent.iter().all(|m| !m.payload.is_empty()));
     assert_eq!(played.result.expect("a value").payload.len(), 161);
+}
+
+// Captured from libcoap (tests/testdata/coap/capture_libcoap.py).
+
+/// Real DNS responses over `DoH`, of 2808 and 1280 bytes: longer than a libcoap block.
+const TXT: &[u8] = include_bytes!("testdata/coap/dns_txt.body");
+const DNSKEY: &[u8] = include_bytes!("testdata/coap/dns_dnskey.body");
+
+/// What the client of libcoap adds to every request and ours does not: the port of the URI (RFC 7252 §5.10.1) and a
+/// Request-Tag (RFC 9175 §3.2).
+const LIBCOAP_EXTRAS: [OptionNumber; 2] = [OptionNumber::URI_PORT, OptionNumber(292)];
+
+/// The requests of `id`, libcoap's and ours, message by message: kind, code, options but those only libcoap adds,
+/// and the payload if `payload`.
+fn same_as_libcoap(id: &str, played: &coap_capture::Played, payload: bool) {
+    let capture = capture(id);
+    let theirs: Vec<Message> = delivered(&capture, true)
+        .iter()
+        .map(|d| d.message())
+        .collect();
+    assert_eq!(played.sent.len(), theirs.len(), "{id}");
+    for (n, (ours, theirs)) in played.sent.iter().zip(&theirs).enumerate() {
+        let (mut ours, mut theirs) = (essence(ours), essence(theirs));
+        for side in [&mut ours, &mut theirs] {
+            side.2.retain(|(number, _)| {
+                !LIBCOAP_EXTRAS.contains(number) && *number != OptionNumber::SIZE1
+            });
+            if !payload {
+                side.3.clear();
+            }
+        }
+        assert_eq!(ours, theirs, "{id}, request {n}");
+    }
+}
+
+#[test]
+fn libcoap_get_in_1024_byte_blocks() {
+    // libcoap blocks a body of 2808 bytes by itself, with an ETag and Size2 (RFC 7959 §2.4, §4).
+    let played = play("libcoap_get_block2", Params::default());
+    same_as_libcoap("libcoap_get_block2", &played, true);
+    assert_eq!(played.sent.len(), 3);
+    assert_eq!(played.result.expect("a value").payload, TXT);
+}
+
+#[test]
+fn libcoap_get_in_64_byte_blocks() {
+    let params = params(|p| {
+        p.block2_size = Some(size(64));
+    });
+    let played = play("libcoap_get_block2_64", params);
+    same_as_libcoap("libcoap_get_block2_64", &played, true);
+    assert_eq!(played.sent.len(), 44);
+    assert_eq!(played.result.expect("a value").payload, TXT);
+}
+
+#[test]
+fn libcoap_fetch_in_1024_byte_blocks() {
+    // libcoap's client asks for the next blocks without the query; we send it again (RFC 8132 §2), so the requests
+    // are the same but for the payload.
+    let played = play("libcoap_fetch_doc_block2", Params::default());
+    same_as_libcoap("libcoap_fetch_doc_block2", &played, false);
+    assert!(played.sent.iter().all(|m| !m.payload.is_empty()));
+    let response = played.result.expect("a value");
+    assert_eq!(response.payload, TXT);
+    assert_eq!(response.options.content_format(), Some(553));
+}
+
+#[test]
+fn libcoap_put_in_64_byte_blocks_gets_continue_then_created() {
+    // 2.31 Continue for each block but the last, 2.01 Created for it (RFC 7959 §2.9.1, RFC 7252 §5.9.1.1).
+    let params = params(|p| {
+        p.block1_size = size(64);
+    });
+    let played = upload_exchange("libcoap_put_block1_64", params, DNSKEY.to_vec());
+    same_as_libcoap("libcoap_put_block1_64", &played, true);
+    assert_eq!(played.sent.len(), 20);
+    assert_eq!(played.result.expect("a value").code, Code::CREATED);
 }
