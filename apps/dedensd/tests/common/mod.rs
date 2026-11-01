@@ -89,9 +89,14 @@ impl Responder {
                 Some(answer)
             }
         };
-        let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
-        let addr = udp.local_addr().expect("its address");
-        let tcp = TcpListener::bind(addr).expect("the same port over TCP");
+        // The port UDP got may be taken over TCP by a test running beside this one: take another.
+        let (udp, tcp, addr) = loop {
+            let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+            let addr = udp.local_addr().expect("its address");
+            if let Ok(tcp) = TcpListener::bind(addr) {
+                break (udp, tcp, addr);
+            }
+        };
         let for_udp = reply.clone();
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
