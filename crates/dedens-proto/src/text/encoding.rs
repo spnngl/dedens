@@ -1,27 +1,33 @@
-//! Hex (RFC 3597 §5), base64 (RFC 4648 §4: the SVCB `ech` value, DNSSEC keys and signatures) and base32hex (RFC
-//! 4648 §7: NSEC3 hashes, RFC 5155 §3.3) in presentation format.
+//! Hex (RFC 3597 §5), base64 (RFC 4648 §4: the SVCB `ech` value, DNSSEC keys and signatures), unpadded base64url
+//! (§5: the `dns` variable of `DoH`, RFC 8484 §6) and base32hex (§7: NSEC3 hashes, RFC 5155 §3.3) in presentation
+//! format.
 
 use core::fmt;
 
 const BASE32HEX: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /// The value of each byte as a base64 character, `NOT_BASE64` for bytes outside the alphabet.
+const BASE64_VALUES: [u8; 256] = values_of(BASE64);
+/// As [`BASE64_VALUES`], for the URL-safe alphabet.
+const BASE64URL_VALUES: [u8; 256] = values_of(BASE64URL);
+const NOT_BASE64: u8 = 0xFF;
+
 #[expect(
     clippy::cast_possible_truncation,
     reason = "indexes are below 64; `From` is not const"
 )]
-const BASE64_VALUES: [u8; 256] = {
+const fn values_of(alphabet: &[u8; 64]) -> [u8; 256] {
     let mut values = [NOT_BASE64; 256];
     let mut i = 0;
-    while i < BASE64.len() {
-        values[BASE64[i] as usize] = i as u8;
+    while i < alphabet.len() {
+        values[alphabet[i] as usize] = i as u8;
         i += 1;
     }
     values
-};
-const NOT_BASE64: u8 = 0xFF;
+}
 
 /// Writes bytes as lowercase hex.
 pub struct Hex<'b>(pub &'b [u8]);
@@ -152,6 +158,57 @@ pub(crate) fn decode_base32hex(text: &[u8]) -> Option<Vec<u8>> {
     (bits < 5 && acc == 0).then_some(out)
 }
 
+/// Writes bytes as base64url without padding (RFC 4648 §5): the text of a byte string is one, and has no `=`.
+#[must_use]
+pub fn encode_base64url(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut group = [0_u8; 3];
+        group
+            .get_mut(..chunk.len())
+            .unwrap_or_default()
+            .copy_from_slice(chunk);
+        let bits = u32::from(group[0]) << 16 | u32::from(group[1]) << 8 | u32::from(group[2]);
+        // A chunk of n bytes makes n + 1 characters.
+        for i in 0..=chunk.len() {
+            let index = usize::try_from(bits >> (18 - 6 * i) & 0x3F).unwrap_or_default();
+            out.push(char::from(BASE64URL[index]));
+        }
+    }
+    out
+}
+
+/// Decodes base64url without padding; `None` unless every byte is of the alphabet (no `=`, no `+` or `/`), the
+/// length is not one more than a multiple of four, and the bits the last character leaves unused are zero, so that
+/// each byte string has one text (RFC 4648 §3.5, §5).
+#[must_use]
+pub fn decode_base64url(text: &[u8]) -> Option<Vec<u8>> {
+    let (groups, rest) = text.as_chunks::<4>();
+    let mut out = Vec::with_capacity(groups.len() * 3 + 2);
+    for group in groups {
+        out.extend_from_slice(sextets(group)?.to_be_bytes().get(1..)?);
+    }
+    if rest.is_empty() {
+        return Some(out);
+    }
+    // Two characters hold one byte and four unused bits, three hold two and two; one holds none.
+    let missing = 4_usize.checked_sub(rest.len()).filter(|&m| m <= 2)?;
+    let bits = sextets(rest)?;
+    if bits & ((1 << (2 * missing)) - 1) != 0 {
+        return None;
+    }
+    out.extend_from_slice((bits << (6 * missing)).to_be_bytes().get(1..4 - missing)?);
+    Some(out)
+}
+
+/// The bits of up to four base64url characters, six each; `None` for a byte outside the alphabet.
+fn sextets(chars: &[u8]) -> Option<u32> {
+    chars.iter().try_fold(0_u32, |bits, &b| {
+        let value = BASE64URL_VALUES[usize::from(b)];
+        (value != NOT_BASE64).then(|| bits << 6 | u32::from(value))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +273,30 @@ mod tests {
         for bad in ["CO======", "c", "cpn", "cpnmuo", "cw", "c!", "cp"] {
             assert_eq!(decode_base32hex(bad.as_bytes()), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn base64url_is_base64_without_padding_and_with_dash_and_underscore() {
+        // RFC 4648 §10 without the `=`, and §5's alphabet on bytes whose base64 has `+` and `/`.
+        for (plain, encoded) in [
+            (&b""[..], ""),
+            (b"f", "Zg"),
+            (&[0x66, 0x6F], "Zm8"),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg"),
+            (b"fooba", "Zm9vYmE"),
+            (b"foobar", "Zm9vYmFy"),
+            (&[0xFB, 0xEF, 0xBE, 0xFF], "----_w"),
+        ] {
+            assert_eq!(encode_base64url(plain), encoded);
+            assert_eq!(decode_base64url(encoded.as_bytes()).unwrap(), plain);
+        }
+        assert_eq!(decode_base64url(b"Zg=="), None);
+        assert_eq!(decode_base64url(b"Z"), None);
+        assert_eq!(decode_base64url(b"Zm9vY"), None);
+        assert_eq!(decode_base64url(b"Zh"), None);
+        assert_eq!(decode_base64url(b"Zm9"), None);
+        assert_eq!(decode_base64url(b"+/+/"), None);
+        assert_eq!(decode_base64url(b"Zg!"), None);
     }
 }

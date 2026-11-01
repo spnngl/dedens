@@ -142,7 +142,8 @@ pub struct Exchange {
 impl Exchange {
     /// Starts an exchange: send [`Exchange::wire`] now. The ID, and the cookie when the query has EDNS, are the
     /// caller's, as are the random bits of [`Options::random_case`]; a query changed by a fallback goes with the
-    /// next ID. Over QUIC, the ID is 0, the stream telling the response (RFC 9250 §4.2.1).
+    /// next ID. Over QUIC and HTTPS, the ID is 0, the stream or the HTTP exchange telling the response (RFC 9250
+    /// §4.2.1, RFC 8484 §4.1).
     ///
     /// # Errors
     ///
@@ -154,7 +155,7 @@ impl Exchange {
         now: Instant,
     ) -> Result<Self, EncodeError> {
         let mut query = query.into_owned();
-        if options.transport == Transport::Quic {
+        if streamed(options.transport) {
             query.header.id = 0;
         }
         if let Some(bits) = &options.random_case {
@@ -382,7 +383,7 @@ impl Exchange {
     /// Sends the changed query over `transport`, with the next ID so that a late response to the query before
     /// cannot end the exchange: it would not answer the changed query.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
-        if transport != Transport::Quic {
+        if !streamed(transport) {
             self.query.header.id = self.query.header.id.wrapping_add(1);
         }
         match encode(&mut self.query, transport) {
@@ -421,8 +422,8 @@ const OPTION_HEAD: usize = 4;
 
 /// Encodes `query` for `transport`, with the options of a query with EDNS fitted to it; those the caller put in
 /// are replaced. Over TCP and TLS, an empty edns-tcp-keepalive, so the server may tell how long to keep the
-/// connection; over UDP and QUIC, none (RFC 7828 §3.2.1, RFC 7858 §3.4, RFC 9250 §5.5.2). Over TLS and QUIC,
-/// padding to a multiple of [`PADDING_BLOCK`] bytes, so the length tells less of the name (RFC 7830, RFC 8467
+/// connection; over UDP, QUIC and HTTPS, none (RFC 7828 §3.2.1, RFC 7858 §3.4, RFC 9250 §5.5.2, RFC 8484 §9).
+/// Over TLS, QUIC and HTTPS, padding to a multiple of [`PADDING_BLOCK`] bytes, so the length tells less of the name (RFC 7830, RFC 8467
 /// §4.1, RFC 9250 §5.4).
 fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, EncodeError> {
     let Some(edns) = &mut query.edns else {
@@ -451,7 +452,16 @@ fn encode(query: &mut Message<'_>, transport: Transport) -> Result<Vec<u8>, Enco
 
 /// Whether queries over `transport` are padded: those encrypted.
 const fn padded(transport: Transport) -> bool {
-    matches!(transport, Transport::Tls | Transport::Quic)
+    matches!(
+        transport,
+        Transport::Tls | Transport::Quic | Transport::Https
+    )
+}
+
+/// Whether each query has a stream or an HTTP exchange of its own, which tells its response: the ID is 0 (RFC 9250
+/// §4.2.1, RFC 8484 §4.1).
+const fn streamed(transport: Transport) -> bool {
+    matches!(transport, Transport::Quic | Transport::Https)
 }
 
 /// The cookie `query` sends, if any.

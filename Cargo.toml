@@ -49,6 +49,8 @@ futures-util = { version = "0.3.34", default-features = false, features = [
 # D27: query IDs and client cookies.
 getrandom = "0.4.3"
 hickory-proto = { version = "0.26.3", default-features = false }
+# D82: the request and response types of DoH, shared by `h2` and `h3`.
+http = "1.5.0"
 # D32: Unicode names to A-labels (UTS 46), and the scripts of their labels.
 idna = "1.1.0"
 insta = "1.49"

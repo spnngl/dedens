@@ -776,12 +776,14 @@ name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
  "dedens-cache",
+ "dedens-net",
  "dedens-plugins",
  "dedens-proto",
  "dedens-server",
  "divan",
  "domain",
  "hickory-proto",
+ "http",
  "metrics-util",
 ]
 
@@ -814,6 +816,7 @@ dependencies = [
  "flume",
  "futures-util",
  "getrandom 0.4.3",
+ "http",
  "proptest",
  "rcgen",
  "rustls-platform-verifier",

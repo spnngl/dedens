@@ -150,14 +150,16 @@ impl<'q> Client<'q> {
 
     /// Pads the reply of `len` bytes in `out`, which ends with our OPT record and its `rdata` bytes of options, to
     /// a multiple of [`PADDING_BLOCK`] bytes with a Padding option of zeros, for a client that padded its query
-    /// over TLS or QUIC (RFC 7830 §4, RFC 8467 §4.1, RFC 9250 §5.4); up to the longest reply, past which the
+    /// over TLS, QUIC or HTTPS (RFC 7830 §4, RFC 8467 §4.1, RFC 9250 §5.4, RFC 8484 §9); up to the longest reply, past which the
     /// reply is padded less. Returns the new length, `len` for any other client.
     pub(crate) fn pad(&self, out: &mut [u8], len: usize, rdata: usize) -> usize {
-        let padded = matches!(self.transport, Transport::Tls | Transport::Quic)
-            && self.edns.as_ref().is_some_and(|edns| {
-                edns.options()
-                    .any(|option| option.code() == OptionCode::PADDING)
-            });
+        let padded = matches!(
+            self.transport,
+            Transport::Tls | Transport::Quic | Transport::Https
+        ) && self.edns.as_ref().is_some_and(|edns| {
+            edns.options()
+                .any(|option| option.code() == OptionCode::PADDING)
+        });
         let end = (len + OPTION_HEAD)
             .next_multiple_of(PADDING_BLOCK)
             .min(self.limit())
@@ -215,7 +217,7 @@ impl<'q> Client<'q> {
     /// The longest reply.
     pub(crate) fn limit(&self) -> usize {
         match self.transport {
-            Transport::Tcp | Transport::Tls | Transport::Quic => MAX_MESSAGE_LEN,
+            Transport::Tcp | Transport::Tls | Transport::Quic | Transport::Https => MAX_MESSAGE_LEN,
             Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
                 edns.udp_payload.clamp(MIN_UDP_PAYLOAD, DEFAULT_UDP_PAYLOAD)
             })),

@@ -77,6 +77,23 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "long name".into(),
             [header([0, 1, 0, 0, 0, 0, 0, 0]), vec![63; 300]].concat(),
         ),
+        // DoH: a template, a GET (RFC 8484 §4.1.1) and an aged response around a captured message.
+        (
+            "doh template".into(),
+            b"https://dnsserver.example.net/dns-query{?dns}".to_vec(),
+        ),
+        (
+            "doh get".into(),
+            b"\0dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB".to_vec(),
+        ),
+        (
+            "doh response".into(),
+            [
+                &b"\x80\x00100\x00Sun, 06 Nov 1994 08:49:37 GMT\x00"[..],
+                include_bytes!("../../crates/dedens-proto/tests/testdata/aaaa.bin"),
+            ]
+            .concat(),
+        ),
     ]
 }
 
