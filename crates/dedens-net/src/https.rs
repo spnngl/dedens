@@ -362,7 +362,9 @@ impl Pending {
         while body.len() <= limit
             && let Some(chunk) = stream.recv_data().await.map_err(HttpsError::Stream)?
         {
-            append(&mut body, chunk);
+            // At most one byte past the limit is kept, whatever the size of the chunk.
+            let room = limit.saturating_add(1) - body.len();
+            append(&mut body, chunk.take(room));
         }
         let (kind, query) = classify(&request, &body);
         Ok(Exchange {
