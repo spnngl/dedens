@@ -29,7 +29,8 @@ pub enum Action {
     Nodata,
     /// The server refuses to answer (RFC 1035 §4.1.1).
     Refused,
-    /// The unspecified address, `0.0.0.0` or `::`, to A and AAAA queries; no data to other types.
+    /// The unspecified address, `0.0.0.0` or `::`, to A and AAAA queries of class IN or ANY; no data to other types
+    /// and classes.
     Null,
 }
 
@@ -322,8 +323,8 @@ fn parents(key: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// A plugin answering queries for blocked names as its [`Action`] says; other names, and other classes than IN,
-/// go to the next stage.
+/// A plugin answering queries for blocked names as its [`Action`] says, whatever their class (D110); other names go
+/// to the next stage.
 #[derive(Debug)]
 pub struct Blocklist {
     lists: Lists,
@@ -359,7 +360,7 @@ impl Plugin for Blocklist {
     fn answer(&self, query: &Query<'_>) -> Option<Answer<'_>> {
         let question = query.question()?;
         let mut buf = [0; MAX_NAME_LEN];
-        if question.qclass != Class::IN || !self.lists.blocks(text::key(&question.name, &mut buf)) {
+        if !self.lists.blocks(text::key(&question.name, &mut buf)) {
             return None;
         }
         let (rcode, records) = match self.action {
@@ -368,9 +369,10 @@ impl Plugin for Blocklist {
             Action::Refused => (Rcode::REFUSED, None),
             Action::Null => (
                 Rcode::NOERROR,
-                match question.qtype {
-                    RecordType::A => Some(&self.null_a),
-                    RecordType::AAAA => Some(&self.null_aaaa),
+                // The records are of class IN: no data to a question of another class.
+                match (question.qclass, question.qtype) {
+                    (Class::IN | Class::ANY, RecordType::A) => Some(&self.null_a),
+                    (Class::IN | Class::ANY, RecordType::AAAA) => Some(&self.null_aaaa),
                     _ => None,
                 },
             ),

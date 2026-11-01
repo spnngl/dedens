@@ -150,10 +150,32 @@ fn each_action_has_its_reply() {
     }
 }
 
+/// A name is blocked whatever the class asked, ANY (QCLASS 255) and NONE included (D110): a class other than IN
+/// must not walk around the list. Names not listed go on in every class.
 #[test]
-fn other_classes_go_on() {
+fn every_class_is_blocked() {
     let hosts = pipeline(STEVENBLACK, Action::Nxdomain);
-    assert!(ask(&hosts, "2no.co.", RecordType::A, Class::CH).is_none());
+    for class in [Class::IN, Class::ANY, Class::NONE, Class::CH, Class::HS] {
+        let reply = ask(&hosts, "www.2no.co.", RecordType::A, class);
+        assert_eq!(reply.map(|r| r.rcode()), Some(Rcode::NXDOMAIN), "{class}");
+        assert!(ask(&hosts, "example.com.", RecordType::A, class).is_none());
+    }
+}
+
+/// `Action::Null` answers with records of class IN: to IN and ANY questions only, no data to another class.
+#[test]
+fn null_records_answer_in_and_any_only() {
+    let hosts = pipeline(HAGEZI, Action::Null);
+    for (class, answers) in [
+        (Class::IN, 1),
+        (Class::ANY, 1),
+        (Class::CH, 0),
+        (Class::NONE, 0),
+    ] {
+        let reply = ask(&hosts, "Ad.001zb.com.", RecordType::A, class).expect("a reply");
+        assert_eq!(reply.rcode(), Rcode::NOERROR, "{class}");
+        assert_eq!(reply.answer.len(), answers, "{class}");
+    }
 }
 
 #[test]
