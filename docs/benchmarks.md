@@ -130,6 +130,36 @@ removed `MessageView` read every record in 178/505/1093 ns.
   buffered first) → `Lists::check`, names counted, not hashed or stored. `benches/blocklist.rs` `check` on the
   three block heads: 15.7 µs fastest, at most 98 B held at once; `read` of the same heads and the allowlist,
   15-16 µs fastest of 1000 samples both before and after `read` and `check` shared their line reader.
+- Suffix walk (D110, audit P4), `benches/blocklist.rs` on the test heads, names of `a.` labels in no list unless
+  said. The old and the new bench binaries built from the same tree, run alternately 5 times, 100 samples each:
+  the fastest sample of all runs, and in parentheses the median of the runs' medians, in ns. `lookup` is
+  `Blocklist::answer` on a query read once; `query_labels` is the whole `Pipeline::query` (decoding included).
+
+  | Bench, labels | before | after |
+  |---|---|---|
+  | `lookup` 1 | 14.6 (15.7) | 9.0 (10.2) |
+  | `lookup` 3 | 27.8 (30.4) | 39.5 (41.4) |
+  | `lookup` 10 | 75.3 (77.9) | 55.7 (60.6) |
+  | `lookup` 127 | 3082 (3166) | 203 (245) |
+  | `lookup_blocked`, under `adform.net.`, 10 | 148 (156) | 83 (102) |
+  | `lookup_blocked`, under `adform.net.`, 123 | 6249 (6416) | 252 (278) |
+  | `lookup_empty` (no names) 1 / 3 / 10 / 127 | 12 / 27 / 70 / 2978 | 7.7 / 8.6 / 8.2 / 15.6 |
+  | `query_labels` 1 | 77.6 (120) | 77.6 (120) |
+  | `query_labels` 3 | 96.1 (106) | 98.6 (114) |
+  | `query_labels` 10 | 148 (160) | 125 (135) |
+  | `query_labels` 127 | 3244 (3369) | 411 (492) |
+
+  A 127-label name: 15 times faster, linear now (the lookup of 123 labels under a listed parent, which also
+  looks the allowlist up, 25 times). P4's "Done when" (127 labels under 3 times a 3-label name) is not met: 5.1
+  times (fastest; 5.9 on medians). Below the hashes, finding where each label starts costs ~1.3 ns a label
+  (a name is read from its front, each length byte giving the next): `lookup` 127 less its 5 hashes is ~150 ns.
+  A 3-label name is 11 ns slower, a real loss: the chained hashes wait for each other where the suffixes hashed
+  separately ran side by side; the whole query at 3 labels is the same within noise (96 → 99 ns, ±30%). Open
+  question in `docs/TODECIDE.md`.
+- Loading, `Lists::read` of the published lists (43.8 MB, 2.4M lines) as one block list, best of 7 reads in one
+  process, 5 runs alternated: before 0.45-0.85 s, median 0.60 s; after 0.49-0.71 s, median 0.66 s (+10%: a name's
+  hash is now a chain of its labels' hashes, not one hash). Memory the same, a set gaining 16 bytes. `read` on
+  the test heads, fastest of 5 alternated runs: 16.6-17.7 → 18.1-19.4 µs.
 
 ## DoH core (D82)
 

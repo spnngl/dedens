@@ -59,13 +59,25 @@ pub(crate) fn name(line: usize, field: &str) -> Result<Name<'static>, LineError>
     })
 }
 
-/// The wire form of `name` in lowercase: the key plugins look names up by, case-insensitively (RFC 4343 §3).
-pub(crate) fn key<'b>(name: &Name<'_>, buf: &'b mut [u8; MAX_NAME_LEN]) -> &'b [u8] {
+/// The wire form of a name in lowercase, the key plugins look names up by, case-insensitively (RFC 4343 §3): the
+/// labels, each after its length byte, then the root's zero byte, 255 bytes at most. Only [`key`] makes one, so a
+/// walk of the labels can rely on that form.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Key<'b>(&'b [u8]);
+
+impl<'b> Key<'b> {
+    pub(crate) const fn as_bytes(self) -> &'b [u8] {
+        self.0
+    }
+}
+
+/// The [`Key`] of `name`, written to `buf`.
+pub(crate) fn key<'b>(name: &Name<'_>, buf: &'b mut [u8; MAX_NAME_LEN]) -> Key<'b> {
     let mut wire = [0; MAX_NAME_LEN];
     let wire = name.to_wire(&mut wire);
     let key = &mut buf[..wire.len()];
     key.copy_from_slice(wire);
     // Length bytes stay below 64, under `A`.
     key.make_ascii_lowercase();
-    key
+    Key(key)
 }

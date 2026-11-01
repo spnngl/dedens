@@ -1394,20 +1394,33 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   pipeline as a reload does (D55; the cache kept). Counted in
   `dedensd_list_fetches_total{result="changed|unchanged|error"}`. Later, with need: a list swapped alone instead
   of the pipeline, per-list intervals.
-- D58 A blocklist holds the 64-bit `SipHash` of each name's lowercase wire form under a key drawn per `Lists`
-  (std's `RandomState`), in a `HashSet<u64>` hashing them no further: 8 bytes a name instead of the name and its
-  allocation. Published lists of 2.29M names: 110 MB resident instead of 240 MB, read in 0.64 s instead of
-  0.87 s, lookups as fast (`benches/blocklist.rs`). A false match needs two names of equal hash, 2^-64 a pair:
-  ~10^12 queries per wrong answer against 2M names, and the key, unknown outside the process, keeps a client from
-  aiming at one. The cost: names cannot be listed back, so a blocked name under a blocked parent is no longer
+- D58 (amended by D110) A blocklist holds a 64-bit `SipHash` of each name (D110 defines the hash: chained from the
+  root over the lowercase wire labels) under a key drawn per `Lists` (std's `RandomState`), in a `HashSet<u64>`
+  hashing them no further: 8 bytes a name instead of the name and its allocation. Published lists of 2.29M names:
+  110 MB resident instead of 240 MB, read in 0.64 s instead of 0.87 s, lookups as fast (`benches/blocklist.rs`;
+  the chain of D110 changed the load time, `docs/benchmarks.md`). A false match needs two names of equal hash
+  (D110 gives the odds), and the key, unknown outside the process, keeps a client from aiming at one. The cost: names cannot be listed back, so a blocked name under a blocked parent is no longer
   dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
   sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
   slower to build).
-- D110 (amends D54) The blocklist blocks a name in any class (audit L11). It looked up IN queries only, so a query of
-  class ANY (QCLASS 255), NONE, CH or HS for a blocked name went to the next stage: the list is a policy on names,
-  and the class is no longer read. `Action::Null` answers A and AAAA with records of class IN, so only to questions
-  of class IN or ANY; the other classes get no data. Rejected: reading ANY and NONE as IN (CH and HS would still
-  go on).
+- D110 (amends D54, D58) The blocklist blocks a name in any class, and finds a name's suffixes in a walk linear in
+  its labels (audit L11, P4).
+  Class: it looked up IN queries only, so a query of class ANY (QCLASS 255), NONE, CH or HS for a blocked name
+  went to the next stage: the list is a policy on names, and the class is no longer read. `Action::Null` answers A
+  and AAAA with records of class IN, so only to questions of class IN or ANY; the other classes get no data.
+  Rejected: reading ANY and NONE as IN (CH and HS would still go on).
+  Walk: each suffix was hashed from scratch, labels² bytes of `SipHash` for a name of 127 labels. The hash of a name is
+  now chained from the root, `h = SipHash(parent ‖ length byte and label)` under the same per-`Lists` key (the
+  root's `h` is 0), so a name's walk hashes each label once and each suffix's hash is the one reached on the way.
+  The key stays: a client chooses the names it asks, and an unkeyed or weak hash (a rolling hash, FNV) lets it
+  aim at collisions (D22's reason for keyed hashing). A set also keeps which label counts its names have, a
+  `u128`: a lookup hashes no deeper than the longest name of the lists that can still decide, probes only counts
+  present, and does not walk a name with fewer labels than the shortest blocked name. Collision odds: a collision
+  at a label carries to the names below it, so two names share a hash with a chance of at most 2^-64 per label,
+  about one wrong answer in 10^11 queries of a few labels against 2M names (D58 had 10^12). Rejected: a trie of
+  reversed labels (D58 rejected a trie: a node per label, 8 bytes a name becomes tens); label offsets alone (the
+  hash of each suffix is still computed from its bytes). What stays linear in the labels is finding where each
+  label starts, from the front of the wire name; `docs/TODECIDE.md` asks if that is enough. Measures: `docs/benchmarks.md`.
 - D87 Published blocklists live in `docs/blocklists/blocklists.yaml`, as D67's resolvers: a source's facts
   (maintainer, licence, how it is built) and its main lists, each with its URL, what it holds, how often it
   changes and its `format`, measured: names, `*.name` and hosts lines, which `dedensd` reads (D56), adblock rules,

@@ -112,6 +112,17 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "long name".into(),
             [header([0, 1, 0, 0, 0, 0, 0, 0]), vec![63; 300]].concat(),
         ),
+        // Blocklists: names that are parents of each other, the blocked first, the allowed second, in mixed case.
+        (
+            "blocklist names".into(),
+            b"example.com ok.example.com a.B.c.example.COM *.x.ok.example.com e.f.g.h.example.com 127.0.0.1 a.b.c.d.example.com"
+                .to_vec(),
+        ),
+        (
+            "blocklist deep allowlist".into(),
+            b"example.com a.b.c.d.e.example.com b.example.net x.y.example.com Z.B.EXAMPLE.net 127.0.0.1"
+                .to_vec(),
+        ),
         // CoAP discovery: the listing of RFC 6690 §5.5, and the paths a `DoC` server may hold (D95).
         (
             "link format".into(),

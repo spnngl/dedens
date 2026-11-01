@@ -7,6 +7,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
+- Blocklist lookup of a 127-label name (D110): audit P4 asked it to cost under 3 times one of 3 labels; it costs
+  5 times (`benches/blocklist.rs` `lookup`, `docs/benchmarks.md`), 15 times less than before. The rest is the walk
+  that finds where each label starts: a name is read from its front, label by label, ~1.3 ns each. Default: as
+  is, the name is the client's choice but 0.2 µs; store the label offsets in `Name` (a `dedens-proto` change, step
+  09) only if a profile of `dedensd` shows the walk.
 
 ## DNSSEC and experimental transports
 

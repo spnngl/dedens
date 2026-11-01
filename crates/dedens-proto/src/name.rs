@@ -14,8 +14,10 @@ use crate::wire::{Reader, Writer};
 pub const MAX_NAME_LEN: usize = 255;
 /// Longest label (RFC 1035 §2.3.4).
 pub const MAX_LABEL_LEN: usize = 63;
+/// Most labels in a name, the root not counted: each takes 2 bytes at least, and the root 1, of [`MAX_NAME_LEN`].
+pub const MAX_LABELS: usize = MAX_NAME_LEN / 2;
 /// Most compression pointers followed in one name: one per label of the longest name.
-const MAX_POINTERS: usize = 127;
+const MAX_POINTERS: usize = MAX_LABELS;
 
 /// A label that cannot be part of a [`Name`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

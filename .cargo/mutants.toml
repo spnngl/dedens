@@ -23,8 +23,9 @@ exclude_re = [
   'tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
   # `Same` hashes `u64` keys through `write_u64`; `write` is never called.
   '<impl Hasher for Same>::write( with |$)',
-  # The root (a suffix of one byte) is never listed; the other changes hang the walk.
-  'blocklist\.rs:\d+:\d+: replace (> with >=|\+= with \*=|\+ with -) in parents$',
+  # The label counts only save work (D110): a count held with no name, or no skip of a name shorter than the shortest
+  # blocked one, finds nothing in the hashes either.
+  'replace LabelCounts::(holds -> bool with true|shortest -> Option<u32> with Some\([01]\))',
   # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
   'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
   # Read by dedensd only, whose tests do not run for a mutant of dedens-server.

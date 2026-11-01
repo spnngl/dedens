@@ -11,6 +11,7 @@
 )]
 
 use core::ops::RangeInclusive;
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
@@ -41,7 +42,7 @@ use dedens_proto::{
     message,
 };
 use dedens_scenario::QueryFile;
-use dedens_server::{Access, Denial, Forward, Network, Pipeline, Stage, Step, Transport};
+use dedens_server::{Access, Denial, Forward, Network, Pipeline, Plugin, Stage, Step, Transport};
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -636,6 +637,7 @@ pub fn parse_lists(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
+    blocklist_model(text);
     let mut lists = Lists::new();
     let (Ok(hosts), Ok(_)) = (
         Hosts::new(text, Ttl::ZERO, false),
@@ -674,6 +676,86 @@ pub fn parse_lists(data: &[u8]) {
             {
                 panic!("{word} {qtype}: the reply does not decode: {error}");
             }
+        }
+    }
+}
+
+/// The first words of `text` as host names, of a blocklist and of an allowlist alternately: a query is blocked
+/// exactly when a suffix of its name is blocked and none is allowed, whatever the case, as a plain model of the
+/// two sets says (D110). The queries are the listed names, their suffixes, and a name below each in other case.
+fn blocklist_model(text: &str) {
+    type Labels = Vec<Vec<u8>>;
+    let mut lists = Lists::new();
+    let (mut block, mut allow) = (HashSet::<Labels>::new(), HashSet::<Labels>::new());
+    let mut names = Vec::new();
+    // Words the line reader takes whole: no other whitespace, comment or byte order mark.
+    let plain = |word: &&str| {
+        word.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.*:".contains(&byte))
+    };
+    for (index, word) in text
+        .split_ascii_whitespace()
+        .filter(plain)
+        .take(16)
+        .enumerate()
+    {
+        let (list, held) = if index % 2 == 0 {
+            (List::Block, &mut block)
+        } else {
+            (List::Allow, &mut allow)
+        };
+        let Ok(read) = lists.read(list, Origin::Local, word) else {
+            continue;
+        };
+        // An address is no name; `*.` reads as the name after it.
+        if read.names + read.duplicates == 0 {
+            continue;
+        }
+        let Ok(name) = word
+            .strip_prefix("*.")
+            .unwrap_or(word)
+            .parse::<Name<'static>>()
+        else {
+            return;
+        };
+        held.insert(name.labels().map(<[u8]>::to_ascii_lowercase).collect());
+        names.push(name);
+    }
+    let blocklist = Blocklist::new(lists, Action::Nxdomain, Ttl::ZERO);
+    let listed = |set: &HashSet<Labels>, labels: &[Vec<u8>]| {
+        (0..labels.len()).any(|at| labels.get(at..).is_some_and(|suffix| set.contains(suffix)))
+    };
+    for name in names {
+        let labels: Labels = name.labels().map(<[u8]>::to_vec).collect();
+        let mut queries: Vec<Labels> = (0..labels.len())
+            .filter_map(|at| labels.get(at..).map(<[Vec<u8>]>::to_vec))
+            .collect();
+        queries.push([vec![b'x']].into_iter().chain(labels.clone()).collect());
+        queries.push(
+            labels
+                .iter()
+                .map(|label| label.to_ascii_uppercase())
+                .collect(),
+        );
+        for labels in queries {
+            let Ok(name) = Name::from_labels(labels.iter().map(Vec::as_slice)) else {
+                continue;
+            };
+            let lower: Labels = labels
+                .iter()
+                .map(|label| label.to_ascii_lowercase())
+                .collect();
+            let expected = listed(&block, &lower) && !listed(&allow, &lower);
+            let shown = name.to_string();
+            let wire = Message::query(1, Question::new(name, RecordType::A))
+                .to_vec()
+                .expect("a query of a valid name encodes");
+            let query = Query::read(&wire).expect("a query of a valid name reads");
+            assert_eq!(
+                blocklist.answer(&query).is_some(),
+                expected,
+                "{shown}: block {block:?}, allow {allow:?}"
+            );
         }
     }
 }
