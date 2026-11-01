@@ -4,7 +4,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # internals, so its version and this nightly move together: bump both by hand. Stable is pinned in
 # rust-toolchain.toml.
 nightly := "nightly-2026-10-26"
-rapx_version := "0.7.64"
+# A commit of RAPx's main: its fix for async closures (safer-rust/RAPx#319) is in no release yet (0.7.65 predates it).
+# Back to a crates.io version once one has it.
+rapx_rev := "8d9d0a2f0389f48891b9e8bd3321a70a932e2e90"
 # renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
 unbound_version := "1.26.2"
 
@@ -147,6 +149,10 @@ capture *ids:
     cargo run -p dedens -- -f crates/dedens-proto/tests/testdata/capture.yaml \
         --save-wire crates/dedens-proto/tests/testdata {{ prepend("--only=", ids) }}
 
+# Ask every public resolver of docs/providers/providers.yaml over the network, IPv4 and IPv6 (D67).
+providers:
+    cargo test -p dedens --test providers -- --ignored --nocapture
+
 # Install the pinned RAPx and the nightly's rustc internals. Needs Z3: `brew install z3` or
 # `apt-get install libz3-dev`.
 rapx-install:
@@ -158,13 +164,18 @@ rapx-install:
     fi
     rustup toolchain install {{nightly}} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
     rustc="$(rustup which --toolchain {{nightly}} rustc)"
-    RUSTC="$rustc" rustup run {{nightly}} cargo install rapx --version {{rapx_version}} --locked
+    RUSTC="$rustc" rustup run {{nightly}} cargo install --git https://github.com/safer-rust/RAPx --rev {{rapx_rev}} rapx --locked
 
 # RAPx static analysis, outside the gate: use-after-free, double free and leaks by default; `just rapx opt` for
 # optimization hints. Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
 rapx *args="check -f -m":
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"; \
-        CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{nightly}} cargo rapx {{args}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The nightly's own cargo first in PATH: RAPx calls `cargo`, which `rustup run` leaves to a Homebrew cargo
+    # ahead in PATH, and the dependencies it builds don't load in RAPx's rustc.
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    export PATH="$(dirname "$rustc"):$PATH"
+    CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{nightly}} cargo rapx {{args}}
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:
