@@ -1,6 +1,7 @@
 //! Running the queries of the command line or of a query file: at most [`IN_FLIGHT`] at a time, each result
 //! printed in order as soon as it is ready.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -289,7 +290,7 @@ async fn repeat(
     for _ in 0..times {
         match ask(client, job, endpoint, id.clone()).await {
             Ok(answered) => {
-                rtts.extend(answered.0.exchange.map(|exchange| exchange.rtt_us));
+                rtts.extend(answered.0.exchange.as_ref().map(|exchange| exchange.rtt_us));
                 last = Ok(answered);
             }
             Err(error) if last.is_err() => last = Err(error),
@@ -322,6 +323,14 @@ async fn ask(
         options.transport = transport;
     }
     let address = endpoint.server.addr;
+    let (found, doc_path) = discovered(client, job, endpoint, options.transport).await?;
+    let endpoint = &*found;
+    let with_path = |mut report: Report| {
+        if let Some(exchange) = &mut report.exchange {
+            exchange.doc_path.clone_from(&doc_path);
+        }
+        report
+    };
     #[cfg(feature = "odoh")]
     if endpoint.proxy.is_some()
         && let Some(file) = &job.options.odoh_config
@@ -344,7 +353,7 @@ async fn ask(
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
             let Some(judge) = &job.judge else {
                 let report = Report::exchanged(id, address, &response, &decoded);
-                return Ok((report, response.wire));
+                return Ok((with_path(report), response.wire));
             };
             // The verdict is on the response; its questions go to the same server, the same way.
             let send = async |query| Ok(exchange(client, endpoint, query, &options).await?.wire);
@@ -360,15 +369,53 @@ async fn ask(
                 Report::exchanged(id, address, &response, &decoded)
             };
             return Ok((
-                Report {
+                with_path(Report {
                     dnssec: Some(dnssec),
                     ..report
-                },
+                }),
                 response.wire,
             ));
         }
     }
     Err(anyhow!("no name to ask"))
+}
+
+/// `endpoint`, and with `+doc-discover` the path of its `DoC` resource, the first its `/.well-known/core` lists
+/// with the resource type `core.dns` (RFC 9953 §3.1, D95), as a URI path. The server is the one named: never
+/// found, so what it lists is as trusted as it is (§3).
+async fn discovered<'a>(
+    client: &Client,
+    job: &Job,
+    endpoint: &'a Endpoint,
+    transport: Transport,
+) -> anyhow::Result<(Cow<'a, Endpoint>, Option<String>)> {
+    if job.options.doc_discover != Some(true) {
+        return Ok((Cow::Borrowed(endpoint), None));
+    }
+    let address = endpoint.server.addr;
+    if transport != Transport::Coap || !endpoint.server.docpath.is_empty() {
+        bail!("server {address}: +doc-discover needs a CoAP server with no path");
+    }
+    let paths = client
+        .discover_doc(address)
+        .await
+        .with_context(|| format!("server {address}: +doc-discover"))?;
+    let Some(path) = paths.into_iter().next() else {
+        bail!("server {address}: no resource of type core.dns in its /.well-known/core");
+    };
+    let text = path.iter().fold(String::new(), |text, segment| {
+        format!("{text}/{}", String::from_utf8_lossy(segment))
+    });
+    let mut found = endpoint.clone();
+    found.server.docpath = path;
+    Ok((
+        Cow::Owned(found),
+        Some(if text.is_empty() {
+            "/".to_owned()
+        } else {
+            text
+        }),
+    ))
 }
 
 /// Tells on stderr what the Oblivious `DoH` exchanges since the last call have to tell (D79).

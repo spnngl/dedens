@@ -69,6 +69,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 
 ### Encrypted Transport & Privacy
 * **[RFC 6570](https://datatracker.ietf.org/doc/html/rfc6570):** URI Template, the form of a DoH server's address
+* **[RFC 6690](https://datatracker.ietf.org/doc/html/rfc6690):** Constrained RESTful Environments (CoRE) Link Format, the list of resources DoC discovery reads
 * **[RFC 7252](https://datatracker.ietf.org/doc/html/rfc7252):** The Constrained Application Protocol (CoAP), the carrier of DoC
 * **[RFC 7641](https://datatracker.ietf.org/doc/html/rfc7641):** Observing Resources in CoAP (for the record: DoC does not use it)
 * **[RFC 7830](https://datatracker.ietf.org/doc/html/rfc7830):** The EDNS(0) Padding Option

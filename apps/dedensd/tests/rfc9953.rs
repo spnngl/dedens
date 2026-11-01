@@ -433,3 +433,122 @@ fn s6_a_coap_listener_logs_a_warning() {
     let _ = child.wait();
     assert!(warned);
 }
+
+/// A CON GET of `/.well-known/core`, asking for the link format, with these Uri-Query options.
+fn discover(id: u16, queries: &[&str]) -> Message {
+    let mut options = Options::new();
+    options.push_uri_path([b".well-known".as_slice(), b"core"]);
+    for query in queries {
+        options.insert(OptionNumber::URI_QUERY, query.as_bytes());
+    }
+    options.set_accept(Options::LINK_FORMAT);
+    Message {
+        kind: Type::Confirmable,
+        code: Code::GET,
+        id,
+        token: Token::new(&[9, 9]).expect("a token"),
+        options,
+        payload: Vec::new(),
+    }
+}
+
+/// RFC 9953 §3.1, RFC 6690 §4: `/.well-known/core` lists the resource with `rt=core.dns` and the content format 553,
+/// as an ACK carrying 2.05 in the link format; the upstream is not asked (D95).
+#[test]
+fn s3_1_the_well_known_core_lists_the_resource() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let request = discover(0x4321, &["rt=core.dns"]);
+    let response = ask(server.addr, &request);
+    assert_eq!(response.kind, Type::Acknowledgement);
+    assert_eq!((response.id, response.token), (request.id, request.token));
+    assert_eq!(response.code, Code::CONTENT);
+    assert_eq!(
+        response.options.content_format(),
+        Some(Options::LINK_FORMAT)
+    );
+    assert_eq!(response.payload, b"</dns/query>;rt=core.dns;ct=553");
+    assert_eq!(upstream.queries(), 0);
+}
+
+/// RFC 6690 §4.1: the filter keeps the link when the resource type matches, as a complete value or a prefix with `*`;
+/// a query on another attribute is no filter on `rt`, and an unfiltered request gets the list.
+#[test]
+fn s3_1_the_filter_on_rt_keeps_or_empties_the_list() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    for (queries, listed) in [
+        (vec![], true),
+        (vec!["rt=core.dns"], true),
+        (vec!["rt=core.*"], true),
+        (vec!["rt=*"], true),
+        (vec!["ct=553"], true),
+        (vec!["rt=core.sen"], false),
+        (vec!["rt=core.dns2"], false),
+        (vec!["rt=core.dns", "rt=other"], false),
+    ] {
+        let response = ask(server.addr, &discover(1, &queries));
+        assert_eq!(response.code, Code::CONTENT, "{queries:?}");
+        assert_eq!(!response.payload.is_empty(), listed, "{queries:?}");
+    }
+}
+
+/// RFC 7252 §5.10.4: a request that accepts another format than the link format is 4.06; D95: a method other than
+/// GET is 4.05, an unknown critical option 4.02; a NON request gets a NON response.
+#[test]
+fn s3_1_a_discovery_request_that_cannot_be_served_gets_an_error_code() {
+    let upstream = Responder::start(&["a"]);
+    let server = serving(upstream.addr);
+    let cases: Vec<Case> = vec![
+        (
+            "accepting DNS",
+            Box::new(|m| m.options.set_accept(Options::DNS_MESSAGE)),
+            Code::NOT_ACCEPTABLE,
+        ),
+        (
+            "a POST",
+            Box::new(|m| m.code = Code::POST),
+            Code::METHOD_NOT_ALLOWED,
+        ),
+        (
+            "a FETCH",
+            Box::new(|m| m.code = Code::FETCH),
+            Code::METHOD_NOT_ALLOWED,
+        ),
+        (
+            "an unknown critical option",
+            Box::new(|m| m.options.insert(OptionNumber(2049), b"x".as_slice())),
+            Code::BAD_OPTION,
+        ),
+    ];
+    for (what, change, code) in cases {
+        let mut request = discover(2, &[]);
+        change(&mut request);
+        assert_eq!(ask(server.addr, &request).code, code, "{what}");
+    }
+    let mut request = discover(3, &[]);
+    request.kind = Type::NonConfirmable;
+    let response = ask(server.addr, &request);
+    assert_eq!(response.kind, Type::NonConfirmable);
+    assert_eq!(response.code, Code::CONTENT);
+}
+
+/// D95: a server at the root path lists `</>`; another path under `/.well-known` is not found.
+#[test]
+fn s3_1_the_root_resource_is_listed_as_a_slash_and_another_well_known_is_not_found() {
+    let upstream = Responder::start(&["a"]);
+    let server = Server::configured(|listen| {
+        format!(
+            "listen: ['coap://{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n",
+            upstream.addr
+        )
+    });
+    let response = ask(server.addr, &discover(4, &[]));
+    assert_eq!(response.payload, b"</>;rt=core.dns;ct=553");
+    let mut other = discover(5, &[]);
+    other.options = Options::new();
+    other
+        .options
+        .push_uri_path([b".well-known".as_slice(), b"other"]);
+    assert_eq!(ask(server.addr, &other).code, Code::NOT_FOUND);
+}

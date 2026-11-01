@@ -20,7 +20,7 @@ use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message};
 
 #[cfg(feature = "doc")]
-use crate::doc::{DocError, coap};
+use crate::doc::{DocError, coap, discover};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
 use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
 use crate::https::{HttpsError, HttpsPool};
@@ -395,6 +395,26 @@ impl Client {
         self.odoh.take_notices()
     }
 
+    /// The paths of the `DoC` resources of the CoAP server at `server`, asked of `/.well-known/core` by their
+    /// resource type, `core.dns`: each a list of path segments, none for the root path, in the order the server lists
+    /// them; none when it lists no such resource (RFC 9953 §3.1, RFC 6690, D95).
+    ///
+    /// The server is not authenticated: what it lists is no more trusted than it is (RFC 9953 §3), so the caller
+    /// asks only where the user said to.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError`]: no randomness, a socket failure, no response, a CoAP error code or a response that is not in
+    /// the link format, or links all of which name resources outside the server; [`ClientError::NotBuilt`] without
+    /// the `doc` feature.
+    pub async fn discover_doc(
+        &self,
+        server: SocketAddr,
+    ) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
+        let random = self.random.borrow_mut().take::<14>()?;
+        discover(server, random).await
+    }
+
     /// [`Client::exchange`] with the proxy of an Oblivious `DoH` exchange, if any.
     async fn run(
         &self,
@@ -671,6 +691,16 @@ async fn coap(
     _docpath: &[Box<[u8]>],
     _random: [u8; 14],
 ) -> Result<Vec<u8>, ClientError> {
+    Err(ClientError::NotBuilt("CoAP"))
+}
+
+/// Discovers over CoAP without the `doc` feature: not built in (D69).
+#[cfg(not(feature = "doc"))]
+#[expect(clippy::unused_async, reason = "the signature of the `doc` one")]
+async fn discover(
+    _server: SocketAddr,
+    _random: [u8; 14],
+) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
     Err(ClientError::NotBuilt("CoAP"))
 }
 

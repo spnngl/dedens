@@ -346,10 +346,10 @@ impl Responder {
 #[cfg(feature = "doc")]
 impl Responder {
     /// As [`Responder::start`], over CoAP only (RFC 9953), at `path`: the answers of the library's own server side
-    /// ([`dedens_net::coap::doc`]), the same `dedensd` serves with. Any other path gets 4.04.
+    /// ([`dedens_net::coap::doc`]), the same `dedensd` serves with, `/.well-known/core` too (D95). Any other path gets 4.04.
     pub(crate) fn coap(names: &[&str], path: &str) -> Self {
         use dedens_net::coap::Message;
-        use dedens_net::coap::doc::{Query, error, path_segments, query, response};
+        use dedens_net::coap::doc::{Query, discovery, error, path_segments, query, response};
 
         let (canned, path) = (canned(names), path_segments(path));
         let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
@@ -364,6 +364,12 @@ impl Responder {
                 let Ok(request) = Message::parse(&buf[..len]) else {
                     continue;
                 };
+                if let Some(reply) = discovery(&request, 1, &path) {
+                    socket
+                        .send_to(&reply.to_vec().expect("it writes"), from)
+                        .expect("sent");
+                    continue;
+                }
                 let reply = match query(&request, &path) {
                     Err(code) => error(&request, 1, code),
                     // Nothing is kept here for the blocks past the first.

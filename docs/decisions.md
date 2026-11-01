@@ -861,7 +861,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     on every request; its server blocks at 1024 by itself with ETag and Size2, answers a Block1 PUT 2.31 per block
     then 2.01, sends a separate response as an empty ACK then a CON, a NON request a NON response; a lost request or
     ACK is sent again after 2.4 s. Not checked: DTLS, OSCORE (not built), Observe.
-- D81 (completes D80) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
+- D81 (completes D80; amended by D95) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind the `doc` feature of `dedens`,
   `dedensd` and `dedens-net` (D69): the client `Transport::Coap` (`dedens_net::doc`), the `dedens` options
   `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path unless given), the `dedensd` listener
   `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the client's `request`, the server's
@@ -906,7 +906,44 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     request (`-l 60%`) is sent again and answered; 4.04 for another path or the root, 4.15 for another content
     format, 4.06 for another accept, 4.05 for GET. A lost ACK (a duplicate) is checked by the test only.
   - Not done: GET with `?dns=`, which the RFC does not define; a `coap://` upstream of the `forward` stage; the
-    discovery by SVCB `docpath` and `rt=core.dns` (§3).
+    discovery by SVCB `docpath` (§3.2, D95).
+- D95 (amends D81) DoC discovery by `rt=core.dns` in `/.well-known/core` (RFC 9953 §3.1, RFC 6690), the `dedensd`
+  listener's answer and `dedens +doc-discover`, behind the `doc` feature:
+  - Server (`coap::doc::discovery`, before D81's `query`): a GET of `/.well-known/core` answers 2.05 in Content-Format
+    40 with one link, `<PATH>;rt=core.dns;ct=553`, `PATH` the listener's path (a socket has one: one link per DoC
+    listener); the root path is `</>`, a path that starts with an empty segment is written after `/.` (else the
+    link would read as an authority), and bytes a path cannot hold are percent-encoded. A `rt=` query filters (RFC 6690
+    §4.1) on a complete value or a `*` prefix; no match is 2.05 with an empty payload, and any other query is ignored,
+    as §4.1 allows. 4.05 for another method, 4.02 for an unknown critical option, 4.06 for an Accept other than 40,
+    4.12 as D81 for the preconditions; a NON request gets a NON response; a request with a Proxy-Uri or Proxy-Scheme
+    is not the listing and goes on to the forwarding refusal of D81. A listener path of `/.well-known/core`, or with a
+    segment `.` or `..` (a Uri-Path is never one, RFC 7252 §5.10.1: no request could reach it), is refused at
+    configuration.
+  - Client: `Client::discover_doc(server)` sends a GET with Accept 40 and `rt=core.dns` and returns the paths of the
+    links to take, in the order listed. `coap::link::parse` reads RFC 6690 §2 (whitespace tolerated around `;`, `,`
+    and `=`, as the RFC's own examples need): `rt`, `if`, `sz` and `ct` once, a repeated `rel` takes the first,
+    `ct` a u16 or a list of them, other attributes checked and dropped; a syntax error is `DocError::Links`, a payload
+    that is not Content-Format 40 `DocError::NotLinks(format)`. A link is taken when it has the type `core.dns`, a
+    `ct` with 553 or none, no `anchor` and a `rel` of `hosts` or none. A link's target is resolved against
+    `coap://SERVER/.well-known/core` (RFC 3986 §5.2) and taken only when it is a path on the same IP address and port
+    (a host name never matches: no lookup); a link to another server is refused, since a forged list must not send
+    the queries away, and does not fail the lot when another link is fine. Each segment is percent-decoded after the
+    dot segments are removed (RFC 7252 §6.4); a `?`, a `#`, a bad percent-encoding or a decoded `.`/`..` is refused.
+    The fuzz target `parse_link_format` reads arbitrary bytes, and the list the server writes for any path back
+    to that path: it found the encoding and the empty first segment above.
+  - `dedens +doc-discover @coap://HOST[:PORT]` (or `+coap`; option `doc_discover`, `--doc-discover`): before each
+    query, the server is asked and the first path is the Uri-Path of the FETCH; the report says `(discovered /PATH)`,
+    JSON `doc_path`. Never automatic: §6 allows discovery only from a trusted source, and `dedens` does not tell
+    one from another, so the user asks for it for the server they name. It is a usage error with a path in the URI
+    (the path is found, not given), with a non-CoAP server or with none (exit 2); a failed discovery, an empty list or
+    no resource of that type is an error of the exchange (exit 9).
+  - Cut: discovery by SVCB `docpath` (§3.2). The request is built from the ALPN, `coap` for CoAP over TLS (RFC 8323) or `co`
+    for CoAP over DTLS (RFC 9952), and the unprotected CoAP of D81 has none: neither is built, so the key stays
+    parsed and unused. See `docs/TODECIDE.md`.
+  - Checked live: libcoap 4.3.5b's `coap-client -m get coap://127.0.0.1:56840/.well-known/core` against `dedensd`
+    (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
+    same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
+    @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
 
 ## Presentation format
 

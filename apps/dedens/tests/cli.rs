@@ -512,6 +512,48 @@ fn coap_responses_in_blocks_are_put_together() {
     assert_eq!(server.queries().len(), 2);
 }
 
+/// D95: `+doc-discover` asks the server for its resource and queries the path it lists, which the report says; no
+/// path to discover, or a server that lists none, is an error.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_doc_discover_queries_the_path_the_server_lists() {
+    let server = Responder::coap(&["a"], "/dns/query");
+    let port = server.addr.port();
+    let at = format!("@coap://127.0.0.1:{port}");
+    let out = run(&[&at, "+doc-discover", "example.com"], 0);
+    assert!(
+        out.contains("over CoAP") && out.contains("discovered /dns/query"),
+        "{out}"
+    );
+    let out = run(&[&at, "+doc-discover", "example.com", "--json"], 0);
+    assert!(out.contains(r#""doc_path":"/dns/query""#), "{out}");
+    let out = run(
+        &[
+            "@127.0.0.1",
+            "+coap",
+            "+doc-discover",
+            &format!("--port={port}"),
+            "example.com",
+        ],
+        0,
+    );
+    assert!(out.contains("discovered /dns/query"), "{out}");
+    assert_eq!(server.queries().len(), 3);
+}
+
+/// D95: a discovery that fails is an error naming `+doc-discover`, not a query to the root.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_doc_discover_that_fails_is_an_error() {
+    // A closed port: no answer to the discovery.
+    dedens()
+        .args(["@coap://127.0.0.1:1", "+doc-discover", "example.com"])
+        .args(["+tries=1", "+time=100ms"])
+        .assert()
+        .code(9)
+        .stderr(contains("+doc-discover"));
+}
+
 /// D81: CoAP is a server of its own, with its id.
 #[cfg(feature = "doc")]
 #[test]
@@ -594,6 +636,13 @@ fn usage_errors_exit_2() {
         &["@coap://127.0.0.1", "+quic", "example.com"],
         &["@coap://127.0.0.1", "+https", "example.com"],
         &["+coap", "@https://127.0.0.1", "example.com"],
+        &["+doc-discover", "example.com"],
+        &["+doc-discover", "@127.0.0.1", "example.com"],
+        &[
+            "+doc-discover",
+            "@coap://127.0.0.1/dns/query",
+            "example.com",
+        ],
     ] {
         dedens().args(args).assert().code(2);
     }

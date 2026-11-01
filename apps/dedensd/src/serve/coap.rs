@@ -18,7 +18,7 @@ use compio::BufResult;
 use compio::net::UdpSocket;
 use compio::runtime::spawn;
 use dedens_net::coap::block::Block;
-use dedens_net::coap::doc::{Query, error, path_segments, query, response};
+use dedens_net::coap::doc::{Query, discovery, error, path_segments, query, response};
 use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, Type};
 use dedens_server::Transport;
@@ -178,10 +178,14 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
     }
 }
 
-/// Answers one request: the error [`query`] finds in it, else the pipeline's reply, or 4.00 when the pipeline
+/// Answers one request: the list of the `DoC` resource if it asks for `/.well-known/core` ([`discovery`], D95), else
+/// the error [`query`] finds in it, else the pipeline's reply, or 4.00 when the pipeline
 /// drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a later block is answered from the
 /// response kept for it, or 4.00.
 async fn handle(coap: Rc<Coap>, thread: Rc<Thread>, request: Message, peer: SocketAddr) {
+    if let Some(reply) = discovery(&request, coap.next_id(), &coap.path) {
+        return coap.reply(&request, peer, reply).await;
+    }
     let query = match query(&request, &coap.path) {
         Ok(Query::Dns(query)) => query,
         Ok(Query::Block) => {

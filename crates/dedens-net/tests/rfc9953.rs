@@ -1,5 +1,6 @@
 //! DNS over CoAP (RFC 9953), against a scripted CoAP server on the loopback address: the request a query makes (§4.1,
-//! §4.2), the response and its Max-Age (§4.3), and what the client does with an error (§4.3.1). The server's side of
+//! §4.2), the response and its Max-Age (§4.3), what the client does with an error (§4.3.1), and the discovery of the
+//! resource (§3.1, D95). The server's side of
 //! the protocol, and the requests as aiocoap sends them, are tested with RFC 8132 and RFC 7959 (`rfc8132.rs`,
 //! `rfc7959.rs`).
 #![cfg(feature = "doc")]
@@ -14,6 +15,7 @@ use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::block::{Block, BlockSize, slice};
 use dedens_net::coap::doc::{add_max_age, etag, path_segments, response, take_max_age};
 use dedens_net::coap::exchange::Failure;
+use dedens_net::coap::link::LinkError;
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Type};
 use dedens_net::doc::DocError;
 use dedens_net::exchange::{Options as DnsOptions, Transport};
@@ -324,6 +326,190 @@ async fn s4_3_another_content_format_or_a_body_that_is_no_dns_message_is_refused
         matches!(error, Err(ClientError::Doc(DocError::NotDns))),
         "{error:?}"
     );
+}
+
+/// A CoAP server answering each GET with this code, content format and payload; the requests it got.
+async fn links_server(
+    code: Code,
+    format: Option<u16>,
+    payload: &'static str,
+) -> (SocketAddr, Rc<RefCell<Vec<Message>>>) {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
+    let addr = socket.local_addr().expect("an address");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&seen);
+    compio::runtime::spawn(async move {
+        loop {
+            let BufResult(received, buf) = socket.recv_from(Vec::with_capacity(2048)).await;
+            let (len, peer) = received.expect("a request");
+            let Ok(request) = Message::parse(&buf[..len]) else {
+                continue;
+            };
+            if request.code != Code::GET {
+                continue;
+            }
+            log.borrow_mut().push(request.clone());
+            let mut reply = Message::piggybacked(&request, code);
+            if let Some(format) = format {
+                reply.options.set_content_format(format);
+            }
+            reply.payload = payload.as_bytes().to_vec();
+            let BufResult(sent, _) = socket
+                .send_to(reply.to_vec().expect("a reply that writes"), peer)
+                .await;
+            sent.expect("sent");
+        }
+    })
+    .detach();
+    (addr, seen)
+}
+
+const LINK_FORMAT: Option<u16> = Some(Options::LINK_FORMAT);
+
+/// The paths of the resources `payload` lists, as text.
+async fn discovered(
+    code: Code,
+    format: Option<u16>,
+    payload: &'static str,
+) -> Result<Vec<String>, ClientError> {
+    let (addr, _) = links_server(code, format, payload).await;
+    Client::new().discover_doc(addr).await.map(|paths| {
+        paths
+            .iter()
+            .map(|path| {
+                path.iter().fold(String::new(), |text, segment| {
+                    text + "/" + &String::from_utf8_lossy(segment)
+                })
+            })
+            .collect()
+    })
+}
+
+/// RFC 9953 §3.1, RFC 6690 §4.1: discovery is a GET of `/.well-known/core` filtered on `rt=core.dns`, asking for the link
+/// format; the path of the link it lists is the one to query (D95).
+#[compio::test]
+async fn s3_1_discovery_is_a_filtered_get_of_the_well_known_core() {
+    let (addr, seen) = links_server(
+        Code::CONTENT,
+        LINK_FORMAT,
+        "</dns/query>;rt=core.dns;ct=553",
+    )
+    .await;
+    let paths = Client::new().discover_doc(addr).await.expect("a list");
+    assert_eq!(
+        paths,
+        [path_segments("/dns/query")],
+        "the path of the one link"
+    );
+    let seen = seen.borrow();
+    let [request] = seen.as_slice() else {
+        panic!("one request, not {}", seen.len());
+    };
+    assert_eq!(request.kind, Type::Confirmable);
+    assert_eq!(
+        request.options.uri_path().collect::<Vec<_>>(),
+        [b".well-known".as_slice(), b"core"]
+    );
+    assert_eq!(
+        request
+            .options
+            .get_all(OptionNumber::URI_QUERY)
+            .collect::<Vec<_>>(),
+        [b"rt=core.dns".as_slice()]
+    );
+    assert_eq!(request.options.accept(), Some(Options::LINK_FORMAT));
+    assert_eq!(request.payload.len(), 0);
+}
+
+/// RFC 6690 §4.1: a server that does not filter lists every link; the client keeps the hosted ones with the resource
+/// type `core.dns` (RFC 9953 §3.1), among several types, whose content formats allow 553, in the order listed.
+#[compio::test]
+async fn s3_1_the_client_picks_the_links_of_the_resource_type_from_an_unfiltered_list() {
+    let text = "</sensors>;ct=40;title=\"Sensor Index\",\n\
+                </sensors/temp>;rt=\"temperature-c\";if=\"sensor\",\n\
+                </dns>;rt=\"core.sen core.dns\";ct=\"553 50\",\n\
+                </json>;rt=core.dns;ct=50,\n\
+                </other>;rt=core.dns;anchor=\"/sensors/temp\",\n\
+                </b>;rt=core.dns;rel=item,\n\
+                <http://www.example.com/sensors/t123>;anchor=\"/sensors/temp\";rel=\"describedby\",\n\
+                </a/b>;rt=core.dns";
+    let paths = discovered(Code::CONTENT, LINK_FORMAT, text).await;
+    assert_eq!(paths.expect("a list"), ["/dns", "/a/b"]);
+}
+
+/// RFC 6690 §4: no resource of the type, or no resource at all, is no error: no paths.
+#[compio::test]
+async fn s3_1_a_list_without_the_resource_type_has_no_paths() {
+    for text in ["", "</sensors>;ct=40", "</temp>;rt=\"temperature-c\""] {
+        let paths = discovered(Code::CONTENT, LINK_FORMAT, text).await;
+        assert_eq!(paths.expect("a list"), Vec::<String>::new(), "{text:?}");
+    }
+}
+
+/// RFC 9953 §3.1: a link at the root path is the root resource; no Content-Format is the link format asked for.
+#[compio::test]
+async fn s3_1_a_link_to_the_root_is_the_root_path() {
+    let paths = discovered(Code::CONTENT, None, "</>;rt=core.dns;ct=553").await;
+    assert_eq!(paths.expect("a list"), [""]);
+}
+
+/// RFC 9953 §3.1: a CoAP error is no list, another content format than the link format is refused, and so is a
+/// payload outside the link format.
+#[compio::test]
+async fn s3_1_an_error_code_another_format_or_a_payload_outside_the_link_format_is_refused() {
+    let error = discovered(Code::NOT_FOUND, None, "").await;
+    assert!(
+        matches!(
+            &error,
+            Err(ClientError::Doc(DocError::Code(Code::NOT_FOUND)))
+        ),
+        "{error:?}"
+    );
+    let error = discovered(
+        Code::CONTENT,
+        Some(Options::DNS_MESSAGE),
+        "</a>;rt=core.dns",
+    )
+    .await;
+    assert!(
+        matches!(&error, Err(ClientError::Doc(DocError::NotLinks(553)))),
+        "{error:?}"
+    );
+    let error = discovered(Code::CONTENT, LINK_FORMAT, "/a;rt=core.dns").await;
+    assert!(
+        matches!(
+            &error,
+            Err(ClientError::Doc(DocError::Links(LinkError::Syntax { .. })))
+        ),
+        "{error:?}"
+    );
+}
+
+/// D95: a link to another host, port or scheme than the server's is refused, not followed; a refused link is no
+/// error beside one that is fine.
+#[compio::test]
+async fn s3_1_a_link_to_another_server_is_refused() {
+    for text in [
+        "<coap://192.0.2.1/dns>;rt=core.dns",
+        "<//dns.example/dns>;rt=core.dns",
+        "</dns?a=b>;rt=core.dns",
+    ] {
+        let error = discovered(Code::CONTENT, LINK_FORMAT, text).await;
+        assert!(
+            matches!(
+                &error,
+                Err(ClientError::Doc(DocError::Links(LinkError::Target { .. })))
+            ),
+            "{text}: {error:?}"
+        );
+    }
+    let paths = discovered(
+        Code::CONTENT,
+        LINK_FORMAT,
+        "<coap://192.0.2.1/dns>;rt=core.dns,</dns/query>;rt=core.dns",
+    )
+    .await;
+    assert_eq!(paths.expect("a list"), ["/dns/query"]);
 }
 
 /// RFC 7252 §6.4: the path of a URI is its segments, as written: none for the root, an empty one for each `//`.

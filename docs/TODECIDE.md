@@ -64,9 +64,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (RFC 8768), are ignored by the client and the server. Default: not built until DoC meets a CoAP proxy to forward to.
 - DoC (D81): DTLS (`coaps://`, RFC 9953 §6) and OSCORE (§5.2), needing a CoAP-level security stack. Default: not
   before phase 4 asks for an encrypted DoC; the unprotected listener warns at start.
-- DoC (D81): a `coap://` upstream of the `forward` stage, the discovery of a server by SVCB `docpath` or
-  `rt=core.dns` (§3), GET with `?dns=` (RFC 9953 does not define it), server-side Block1 reassembly. Default: not
-  built.
+- DoC (D81): a `coap://` upstream of the `forward` stage, GET with `?dns=` (RFC 9953 does not define it),
+  server-side Block1 reassembly. Default: not built.
+- DoC (D95): the discovery of a server by SVCB `docpath` (RFC 9953 §3.2), which needs CoAP over TLS or DTLS
+  (the SVCB ALPN says which), and a client that follows `+doc-discover` on its own (a list from an untrusted source
+  may not be used, §6). Default: not built; `+doc-discover` is asked for, one server at a time.
 - Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
