@@ -741,9 +741,26 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
     gains status 401 and counts no configurations GET (not a `DoH` query). The unauthenticated decapsulation per
     POST has no throttle yet (`docs/TODECIDE.md`).
-  - Not here: the proxy role (`docs/TODECIDE.md`), HTTP/2 (public proxies speak HTTP/2 only, so the live check
-    through one waits for 23; against Cloudflare's target, which answers HTTP/3, the CLI resolved with the target
-    as its own proxy, 2026-11-01).
+  - Not here: the proxy role (`docs/TODECIDE.md`), HTTP/2.
+  - Checked live (2026-11-01, `dedens @https://TARGET/PATH +odoh-proxy=PROXY example.com A`, the targets and
+    relays of `DNSCrypt/dnscrypt-resolvers` `v3/odoh-servers.md` and `odoh-relays.md`): every target below answers
+    HTTP/3 and serves, at `/.well-known/odohconfigs`, one config of version 1 with the one suite of D78 (no other
+    suite, no unusable config, in any of the five or the dnscry.pt ones): `odoh.cloudflare-dns.com` (`no-cache,
+    no-store`, so the warning above; its key is the one of `tests/testdata/odohconfigs-cloudflare.bin`),
+    `odoh.crypto.sx`, `doh.tiar.app` (path `/odoh`), `dope.snowstorm.love` and `doh.tiarap.org` (path `/odoh`); the others send `max-age=86400` or no `cache-control`, so no warning. Each answered the CLI asked directly (the target as
+    its own proxy) and through `odoh-relay.edgecompute.app` (Fastly, path `/`, HTTP/3: `targethost` and `targetpath`
+    with `/odoh` and `/dns-query` accepted), except `doh.tiarap.org`, which this relay refuses (403 for that
+    `targethost`, also with a plain `curl`). The other listed relay, `odoh-relay.numa.rs/relay`, advertises `h3` in
+    Alt-Svc but answers no QUIC packet from here (`aioquic` too), so every try times out (exit 9); over HTTP/2 it
+    answers (`curl`: 400 for a bad message), which waits for step 23. A wrong key (the configurations of another
+    target, `+odoh-config=`) is a 401 from Cloudflare and `doh.tiar.app`, direct and through the Fastly relay, so
+    the exit is 10 with the 401 and no second fetch, as pinned configurations say. Pinned right ones
+    (`+odoh-config=` on the file `curl` saved) fetch nothing and work through the relay, with or without EDNS.
+    The responses decrypted every time; those of `odoh.crypto.sx`, `doh.tiar.app` and `doh.tiarap.org` carry their
+    own EDNS padding to 132 bytes, the other two none. Not checked live: the refetch after a 401 of cached
+    configurations (a key rotation cannot be provoked on a real target; loopback tests only), that a target
+    refuses a badly padded query, the size on the wire of our padded query, and our `dedensd` as a target for any
+    other client.
   - Tests: `crates/dedens-net/tests/rfc9230.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
     headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch),
     `apps/dedensd/tests/rfc9230.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
