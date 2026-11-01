@@ -72,6 +72,24 @@ fn captured_response() {
 }
 
 #[test]
+fn libcoap_answers_the_request_of_a_query() {
+    // libcoap's server (coap-server, /example_data) answers a FETCH with the DNS message it holds: piggybacked, content
+    // format 553, no Max-Age option, so 60 seconds (RFC 7252 §5.10.5).
+    let capture = capture("libcoap_fetch_doc");
+    let request = delivered(&capture, true)[0].message();
+    assert_eq!(request.code, Code::FETCH);
+    assert_eq!(request.payload, QUERY);
+    let played = play("libcoap_fetch_doc", Params::default());
+    assert_eq!(played.sent.len(), 1);
+    assert_eq!(played.sent[0].payload, QUERY);
+    let response = played.result.expect("a value");
+    assert_eq!(response.code, Code::CONTENT);
+    assert_eq!(response.options.content_format(), Some(553));
+    assert_eq!(response.options.max_age(), 60);
+    assert_eq!(response.payload, ANSWER);
+}
+
+#[test]
 fn the_query_goes_with_each_request_for_a_block() {
     // RFC 8132 §2: the body is part of the cache key, so a server that keeps nothing needs it again.
     let capture = capture("fetch_doc_block2_64");
