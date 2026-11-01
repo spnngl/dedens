@@ -107,6 +107,15 @@ pub enum Failure {
         /// Queries sent in all.
         sends: u16,
     },
+    /// No response to any of the tries but responses dropped for their cookie (RFC 7873 §5.3), as a packet
+    /// cache answering with an earlier client's cookie does.
+    #[error(
+        "no response after {sends} queries, responses with a wrong cookie dropped (RFC 7873 §5.3)"
+    )]
+    Forged {
+        /// Queries sent in all.
+        sends: u16,
+    },
     /// A query changed by a fallback could not be encoded.
     #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
@@ -126,6 +135,8 @@ pub struct Exchange {
     timeouts: u8,
     edns_dropped: bool,
     bad_cookies: u8,
+    /// Whether a response was dropped for its cookie.
+    forged: bool,
 }
 
 impl Exchange {
@@ -164,6 +175,7 @@ impl Exchange {
             timeouts: 0,
             edns_dropped: false,
             bad_cookies: 0,
+            forged: false,
         })
     }
 
@@ -235,6 +247,7 @@ impl Exchange {
         }
         let Ok(cookie) = self.cookie_of(&response) else {
             debug!(server = %self.server, "dropped: without the client cookie sent, or the server cookie");
+            self.forged = true;
             return Progress::Wait(self);
         };
         if self.options.tcp_fallback
@@ -281,8 +294,8 @@ impl Exchange {
         }))
     }
 
-    /// Notes the time: past the deadline, the query is sent again, or the exchange fails once all tries are spent.
-    /// EDNS stays (RFC 8906 §3).
+    /// Notes the time: past the deadline, the query is sent again, or the exchange fails once all tries are spent,
+    /// [`Failure::Forged`] when a response was dropped for its cookie. EDNS stays (RFC 8906 §3).
     #[must_use]
     pub fn time_out(mut self, now: Instant) -> Progress {
         if now < self.deadline {
@@ -291,7 +304,12 @@ impl Exchange {
         self.timeouts += 1;
         if self.timeouts >= self.options.tries.get() {
             debug!(server = %self.server, sends = self.sends, "timed out: no try left");
-            return Progress::Done(Err(Failure::TimedOut { sends: self.sends }));
+            let sends = self.sends;
+            return Progress::Done(Err(if self.forged {
+                Failure::Forged { sends }
+            } else {
+                Failure::TimedOut { sends }
+            }));
         }
         debug!(server = %self.server, sends = self.sends, "timed out: asking again");
         self.sent(now);

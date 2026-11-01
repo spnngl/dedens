@@ -3,11 +3,13 @@
 
 mod common;
 
+use std::num::NonZeroU8;
+
 use common::{
-    CLIENT_COOKIE, cookie, cookie_of, expect_response, expect_send, expect_wait, query,
-    query_with_cookie, response, sent, server, start, t0, udp, wire,
+    CLIENT_COOKIE, cookie, cookie_of, expect_failure, expect_response, expect_send, expect_wait,
+    query, query_with_cookie, response, secs, sent, server, start, t0, udp, wire,
 };
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::{Failure, Options, Transport};
 use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::{Message, Rcode};
 
@@ -49,6 +51,22 @@ fn a_wrong_client_cookie_is_dropped() {
     let wrong = Cookie::new(*b"attacker", Some(SERVER_COOKIE)).expect("a valid cookie");
     let answer = with_options(&query, Rcode::NOERROR, vec![EdnsOption::Cookie(wrong)]);
     expect_wait(udp(start(&query, Options::default(), now), &answer, now));
+}
+
+/// The failure says why, unlike plain silence: a packet cache answering with an earlier client's cookie.
+#[test]
+fn an_exchange_with_only_wrong_cookies_fails_as_forged() {
+    let now = t0();
+    let query = query_with_cookie(None);
+    let wrong = Cookie::new(*b"attacker", Some(SERVER_COOKIE)).expect("a valid cookie");
+    let answer = with_options(&query, Rcode::NOERROR, vec![EdnsOption::Cookie(wrong)]);
+    let mut options = Options::default();
+    options.tries = NonZeroU8::MIN;
+    let exchange = expect_wait(udp(start(&query, options, now), &answer, now));
+    assert_eq!(
+        expect_failure(exchange.time_out(now + secs(5))),
+        Failure::Forged { sends: 1 }
+    );
 }
 
 #[test]

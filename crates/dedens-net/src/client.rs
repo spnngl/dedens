@@ -69,7 +69,9 @@ impl ClientError {
             Self::Udp(error)
             | Self::Tcp(TcpError::Connect(error))
             | Self::Quic(QuicError::Bind(error)) => error,
-            Self::Tcp(_) | Self::Quic(_) | Self::Exchange(Failure::TimedOut { .. }) => {
+            Self::Tcp(_)
+            | Self::Quic(_)
+            | Self::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. }) => {
                 return false;
             }
         };
