@@ -55,10 +55,7 @@ pub(super) fn links<'r>(apex: &Name<'_>, records: &'r [Record<'r>]) -> Vec<Link<
 pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof, Unproven> {
     let (qname, qtype) = (&question.name, question.qtype);
     if let Some(link) = links.iter().find(|l| l.owner == qname) {
-        return Ok(Proof {
-            fact: at_name(&link.types, qtype)?,
-            ttl: link.ttl,
-        });
+        return Ok(Proof::new(at_name(&link.types, qtype)?, link.ttl));
     }
     let covering = links
         .iter()
@@ -66,29 +63,29 @@ pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof
         .ok_or(Unproven::NotCovered)?;
     // The next name is below the name: it is an empty non-terminal, which has no data of any type.
     if covering.next.is_within(qname) {
-        return Ok(Proof {
-            fact: Fact::NoData,
-            ttl: covering.ttl,
-        });
+        return Ok(Proof::new(Fact::NoData, covering.ttl));
     }
     // The closest encloser is the longest ancestor of the name that the NSEC shows to exist: the owner and
     // the next name are both names of the zone, so their common ancestors with the name are.
     let depth = shared_labels(qname, covering.owner).max(shared_labels(qname, &covering.next));
     let wildcard = wildcard(&suffix(qname, depth)?)?;
     if let Some(link) = links.iter().find(|l| *l.owner == wildcard) {
-        return Ok(Proof {
-            fact: wildcard_lacks(&link.types, qtype)?,
-            ttl: least([covering.ttl, link.ttl]),
-        });
+        return Ok(Proof::new(
+            wildcard_lacks(&link.types, qtype)?,
+            least([covering.ttl, link.ttl]),
+        ));
     }
     let denying = links
         .iter()
         .find(|l| l.covers(&wildcard))
         .ok_or(Unproven::WildcardNotDenied)?;
-    Ok(Proof {
-        fact: Fact::NameError { compact: false },
-        ttl: least([covering.ttl, denying.ttl]),
-    })
+    let ttl = least([covering.ttl, denying.ttl]);
+    // The next name is below the wildcard: `*.ce` is an empty non-terminal, which exists and has no data of any
+    // type (RFC 4592 §2.2.1), as a matched wildcard of no types would.
+    if denying.next.is_within(&wildcard) {
+        return Ok(Proof::new(Fact::WildcardNoData, ttl));
+    }
+    Ok(Proof::new(Fact::NameError { compact: false }, ttl))
 }
 
 /// RFC 4035 §5.3.4: an NSEC covers the next closer name, so the wildcard was the closest match.
@@ -107,54 +104,22 @@ pub(super) fn prove_wildcard_answer(
     if covering.next.is_within(next_closer) {
         return Err(Unproven::CloserNameExists);
     }
-    Ok(Proof {
-        fact: Fact::WildcardAnswer,
-        ttl: covering.ttl,
-    })
+    Ok(Proof::new(Fact::WildcardAnswer, covering.ttl))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use dedens_proto::text::{Entry, ZoneReader};
+    use dedens_proto::record::Record;
     use proptest::prelude::*;
 
+    use super::super::fixtures::{names, zone};
     use super::*;
 
-    /// The names of the example zone of RFC 4035 Appendix A, whose NSEC records chain all of them, and others
-    /// that sort around them.
-    const LABELS: [&str; 14] = [
-        "a", "ai", "b", "ns1", "ns2", "w", "x", "y", "xx", "z", "*", "A", "\\001", "\\200",
-    ];
-
+    /// The NSEC records of the example zone of RFC 4035 Appendix A, which chain all of its names.
     fn chain() -> Vec<Record<'static>> {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/zones/rfc4035_appendix_a.zone");
-        let text = std::fs::read(path).expect("zone file");
-        ZoneReader::new(&text, None)
-            .map(|e| match e.expect("a zone") {
-                Entry::Record(decoded) => decoded.record,
-                other => panic!("unexpected {other:?}"),
-            })
-            .filter(|r| r.rtype() == RecordType::NSEC)
-            .collect()
-    }
-
-    fn names() -> impl Strategy<Value = Name<'static>> {
-        prop::collection::vec(prop::sample::select(LABELS.to_vec()), 0..5).prop_map(|mut labels| {
-            labels.push("example");
-            let labels = labels.iter().map(|l| unescape(l));
-            Name::from_labels(labels.collect::<Vec<_>>().iter().map(Vec::as_slice)).expect("a name")
-        })
-    }
-
-    fn unescape(label: &str) -> Vec<u8> {
-        match label {
-            "\\001" => vec![1],
-            "\\200" => vec![0x80],
-            other => other.as_bytes().to_vec(),
-        }
+        let mut records = zone("tests/zones/rfc4035_appendix_a.zone");
+        records.retain(|r| r.rtype() == RecordType::NSEC);
+        records
     }
 
     proptest! {

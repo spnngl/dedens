@@ -10,7 +10,7 @@ use data_encoding::BASE32HEX_NOPAD;
 use dedens_dnssec::crypto::{UnsupportedNsec3Hash, VerifyError, key_tag, nsec3_hash, verify};
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_proto::{Nsec3HashAlgorithm, Record, RecordType, SecAlgorithm, Ttl};
-use support::{nsec3_with, pick, prove, prove_wildcard, zone};
+use support::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard, zone};
 
 const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
 const ITERATIONS: u16 = 12;
@@ -175,8 +175,21 @@ fn nsec3s(hashes: &[&str]) -> Vec<Record<'static>> {
     )
 }
 
+/// A proof of `fact` over a covered next closer name, whose record has the opt-out flag (all of Appendix A do).
 fn proof(fact: Fact) -> Proof {
-    Proof { fact, ttl: TTL }
+    Proof {
+        fact,
+        ttl: TTL,
+        opt_out: true,
+    }
+}
+
+/// A proof by a record that matches the name: no span is involved, so no opt-out.
+fn matched(fact: Fact) -> Proof {
+    Proof {
+        opt_out: false,
+        ..proof(fact)
+    }
 }
 
 /// B.1: `x.w.example.` is the closest encloser of `a.c.x.w.example.`, `c.x.w.example.` is covered by the apex's
@@ -218,7 +231,7 @@ fn b1_name_error() {
 fn b2_no_data() {
     assert_eq!(
         prove(APEX, "ns1.example.", RecordType::MX, &nsec3s(&[NS1])),
-        Ok(proof(Fact::NoData))
+        Ok(matched(Fact::NoData))
     );
     assert_eq!(
         prove(APEX, "ns1.example.", RecordType::A, &nsec3s(&[NS1])),
@@ -226,7 +239,7 @@ fn b2_no_data() {
     );
     assert_eq!(
         prove(APEX, "y.w.example.", RecordType::A, &nsec3s(&[Y_W])),
-        Ok(proof(Fact::NoData))
+        Ok(matched(Fact::NoData))
     );
 }
 
@@ -239,7 +252,7 @@ fn b3_referral_to_opt_out_zone() {
         prove(APEX, "c.example.", RecordType::DS, &records),
         Ok(proof(Fact::InsecureDelegation))
     );
-    // Without the flag nothing says `c.example.` has no signed zone.
+    // Derived: without the flag (rewritten on the real records) nothing says `c.example.` has no signed zone.
     let records: Vec<_> = records
         .iter()
         .map(|r| nsec3_with(r, Nsec3HashAlgorithm::SHA1, 0, ITERATIONS))
@@ -292,8 +305,8 @@ fn b6_ds_from_the_child() {
     );
 }
 
-/// §8.1, §8.2: records of an unknown hash algorithm or with flags other than 0 and 1 are ignored, and so are
-/// those of other parameters than the first's.
+/// §8.1, §8.2: records of an unknown hash algorithm or with flags other than 0 and 1 are ignored. Derived:
+/// the algorithm and flags of the real records of Appendix A are rewritten.
 #[test]
 fn unusable_records_are_ignored() {
     let records = nsec3s(&[EXAMPLE, X_W, A]);
@@ -335,4 +348,96 @@ fn closest_encloser_is_not_a_delegation() {
         prove(APEX, "x.a.example.", RecordType::A, &nsec3s(&[A])),
         Err(Unproven::EncloserBelowCut)
     );
+}
+
+/// §8.2: records of more than one set of parameters are not one zone's: nothing is proven, and the caller makes
+/// the response bogus, whichever record comes first. Derived: the iterations and the salt of one real record of
+/// Appendix A are rewritten.
+#[test]
+fn records_of_two_sets_of_parameters_prove_nothing() {
+    let records = nsec3s(&[EXAMPLE, X_W, A]);
+    for other in [
+        nsec3_with(&records[2], Nsec3HashAlgorithm::SHA1, 1, ITERATIONS + 1),
+        nsec3_salted(&records[2], &[0xaa, 0xbb]),
+    ] {
+        let mut mixed = records[..2].to_vec();
+        mixed.push(other.clone());
+        let mut reversed = vec![other];
+        reversed.extend_from_slice(&records[..2]);
+        for set in [mixed, reversed] {
+            assert_eq!(
+                prove(APEX, "a.c.x.w.example.", RecordType::A, &set),
+                Err(Unproven::ConflictingNsec3Parameters)
+            );
+        }
+    }
+}
+
+/// §9.2: the proof over a next closer name that an opt-out record covers says so: the name may be an insecure
+/// delegation, and the answer is not authenticated. The mark is the covering record's own: the flag of the other
+/// records does not change it. Derived: the flags of real records of Appendix A are rewritten.
+#[test]
+fn opt_out_comes_from_the_record_that_covers_the_next_closer_name() {
+    let flags = |flags: [u8; 3]| -> Vec<Record<'static>> {
+        nsec3s(&[EXAMPLE, X_W, A])
+            .iter()
+            .zip(flags)
+            .map(|(r, flags)| nsec3_with(r, Nsec3HashAlgorithm::SHA1, flags, ITERATIONS))
+            .collect()
+    };
+    // `c.x.w.example.` is covered by the record of the apex, the first.
+    let name_error =
+        |set: Vec<Record<'static>>| prove(APEX, "a.c.x.w.example.", RecordType::A, &set);
+    assert_eq!(name_error(flags([1, 0, 0])), Ok(proof(NAME_ERROR)));
+    let closed = name_error(flags([0, 1, 1])).expect("a proof");
+    assert_eq!(closed.fact, NAME_ERROR);
+    assert!(!closed.opt_out);
+    // Wildcard no data: `a.z.w.example.`, `z.w.example.` covered by the record of `ns2.example.`.
+    let records = nsec3s(&[W, NS2, WILDCARD_W]);
+    let flagged = |flag| -> Vec<Record<'static>> {
+        records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                nsec3_with(
+                    r,
+                    Nsec3HashAlgorithm::SHA1,
+                    u8::from(i == 1) * flag,
+                    ITERATIONS,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        prove(APEX, "a.z.w.example.", RecordType::AAAA, &flagged(1)),
+        Ok(proof(Fact::WildcardNoData))
+    );
+    let closed = prove(APEX, "a.z.w.example.", RecordType::AAAA, &flagged(0)).expect("a proof");
+    assert!(!closed.opt_out);
+    // Wildcard answer: the same record.
+    assert_eq!(
+        prove_wildcard(APEX, "a.z.w.example.", 2, &flagged(1)),
+        Ok(proof(Fact::WildcardAnswer))
+    );
+    let closed = prove_wildcard(APEX, "a.z.w.example.", 2, &flagged(0)).expect("a proof");
+    assert!(!closed.opt_out);
+}
+
+/// §8.6: a DS question whose next closer name is in an opt-out span is an insecure delegation, ahead of the
+/// wildcard that the same records deny: the answer is a referral, and it is marked opt-out.
+#[test]
+fn a_ds_question_under_opt_out_is_an_insecure_delegation() {
+    let records = nsec3s(&[EXAMPLE, X_W, A]);
+    assert_eq!(
+        prove(APEX, "a.c.x.w.example.", RecordType::DS, &records),
+        Ok(proof(Fact::InsecureDelegation))
+    );
+    // Not in a span with the flag, it is a name error as for any type.
+    let closed: Vec<_> = records
+        .iter()
+        .map(|r| nsec3_with(r, Nsec3HashAlgorithm::SHA1, 0, ITERATIONS))
+        .collect();
+    let closed = prove(APEX, "a.c.x.w.example.", RecordType::DS, &closed).expect("a proof");
+    assert_eq!(closed.fact, NAME_ERROR);
+    assert!(!closed.opt_out);
 }

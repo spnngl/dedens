@@ -17,6 +17,7 @@ use std::sync::Arc;
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
+use dedens_dnssec::denial::{self, MaxIterations};
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
@@ -57,6 +58,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("read_doh_response", read_doh_response),
     ("dnssec_crypto", dnssec_crypto),
     ("rrsig_verify", rrsig_verify),
+    ("denial", denial),
 ];
 
 /// A DNS message read by both dedens and hickory-proto: they agree on whether it is valid, and what each one
@@ -881,6 +883,91 @@ pub fn rrsig_verify(data: &[u8]) {
                     let _ = rrsig::trusted_keys(set, &sigs, ds, now, &mut Budget::default());
                 }
             }
+        }
+    }
+}
+
+/// The NSEC and NSEC3 records of a message, or of a zone file, as the proof of denial of existence of a question
+/// the message asks, or of a name the records are about: `prove` and `prove_wildcard_answer` under every ancestor
+/// of the name as the apex, so that records of any zone, shape and parameters reach every path. Whatever the
+/// records, the functions answer, and a proof lasts as long as one of the records does (RFC 9077 §3).
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on a proof with a TTL no record has.
+pub fn denial(data: &[u8]) {
+    let (records, question, labels): (Vec<Record<'static>>, Question<'static>, u8) =
+        if let Ok(decoded) = Message::decode(data) {
+            let message = decoded.message.into_owned();
+            let labels = message
+                .answer
+                .iter()
+                .find_map(|r| match r.data() {
+                    RData::Rrsig(rrsig) => Some(rrsig.labels),
+                    _ => None,
+                })
+                .unwrap_or(1);
+            let question = message.questions.first().cloned();
+            let records = [message.answer, message.authority, message.additional].concat();
+            let question = question.or_else(|| {
+                records
+                    .first()
+                    .map(|r| Question::new(r.name.clone(), r.rtype()))
+            });
+            let Some(question) = question else {
+                return;
+            };
+            (records, question, labels)
+        } else {
+            let records: Vec<Record<'static>> = ZoneReader::new(data, Some(Name::root()))
+                .with_ttl(Ttl::ZERO)
+                .filter_map(|entry| match entry {
+                    Ok(ZoneEntry::Record(decoded)) => Some(decoded.record),
+                    _ => None,
+                })
+                .collect();
+            let Some(first) = records.first() else {
+                return;
+            };
+            // The type is any of those a zone proves things about, picked by the input's length.
+            let qtypes = [
+                RecordType::A,
+                RecordType::MX,
+                RecordType::DS,
+                RecordType::SOA,
+            ];
+            let qtype = qtypes[data.len() % qtypes.len()];
+            let question = Question::new(first.name.clone(), qtype);
+            (records, question, u8::try_from(data.len() % 8).unwrap_or(0))
+        };
+    let ttls: Vec<Ttl> = records.iter().map(|r| r.ttl).collect();
+    let labels_of_name: Vec<&[u8]> = question.name.labels().collect();
+    for skip in 0..=labels_of_name.len() {
+        let Ok(apex) = Name::from_labels(labels_of_name.iter().skip(skip).copied()) else {
+            continue;
+        };
+        let proofs = [
+            denial::prove(
+                &apex,
+                &question,
+                &records,
+                MaxIterations::default(),
+                &mut Budget::default(),
+            ),
+            denial::prove_wildcard_answer(
+                &apex,
+                &question.name,
+                labels,
+                &records,
+                MaxIterations::default(),
+                &mut Budget::default(),
+            ),
+        ];
+        for proof in proofs.into_iter().flatten() {
+            assert!(
+                ttls.contains(&proof.ttl),
+                "{proof:?}: no record has the TTL"
+            );
         }
     }
 }

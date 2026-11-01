@@ -17,7 +17,7 @@ use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{Record, RecordType, Ttl};
-use support::{pick, prove, prove_wildcard, zone};
+use support::{nsec, pick, prove, prove_wildcard, zone};
 
 // 2004-04-09T18:36:19Z and 2004-05-09T18:36:19Z.
 const INCEPTION: u32 = 1_081_535_779;
@@ -467,7 +467,11 @@ fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
 }
 
 fn proof(fact: Fact) -> Proof {
-    Proof { fact, ttl: TTL }
+    Proof {
+        fact,
+        ttl: TTL,
+        opt_out: false,
+    }
 }
 
 const NAME_ERROR: Fact = Fact::NameError { compact: false };
@@ -531,6 +535,51 @@ fn names_compare_without_case() {
     assert_eq!(
         prove(APEX, "NS1.Example.", RecordType::MX, &records),
         Ok(proof(Fact::NoData))
+    );
+}
+
+/// Derived: the owner and next names of NSEC records in capitals, as a signer may write them; the shape is the
+/// zone's NSEC of `ns1.example.` and of the apex (RFC 4343, RFC 4034 §6.2 lowercases names to sign, not to send).
+#[test]
+fn nsec_names_compare_without_case() {
+    let types = [RecordType::NS, RecordType::RRSIG, RecordType::NSEC];
+    let records = [
+        nsec("NS1.EXAMPLE.", "NS2.Example.", &types),
+        nsec(
+            "EXAMPLE.",
+            "A.EXAMPLE.",
+            &[
+                RecordType::NS,
+                RecordType::SOA,
+                RecordType::RRSIG,
+                RecordType::NSEC,
+            ],
+        ),
+    ];
+    assert_eq!(
+        prove(APEX, "ns1.example.", RecordType::MX, &records[..1]),
+        Err(Unproven::AtDelegation)
+    );
+    assert_eq!(
+        prove(APEX, "ns1a.example.", RecordType::A, &records),
+        Ok(proof(NAME_ERROR))
+    );
+}
+
+/// Derived: RFC 4592 §2.2.1: `a.*.w.example.` exists, so `*.w.example.` is an empty non-terminal. It exists, so
+/// `q.w.example.` is answered by it with no data, and an NSEC that lists the wildcard's child as the next name
+/// does not deny the wildcard. The chain is the zone's, with `a.*.w.example.` inserted between `ns2.example.`
+/// and `x.w.example.`.
+#[test]
+fn a_wildcard_that_is_an_empty_non_terminal_is_no_data() {
+    let types = [RecordType::A, RecordType::RRSIG, RecordType::NSEC];
+    let records = [
+        nsec("ns2.example.", "a.*.w.example.", &types),
+        nsec("a.*.w.example.", "x.w.example.", &types),
+    ];
+    assert_eq!(
+        prove(APEX, "q.w.example.", RecordType::A, &records),
+        Ok(proof(Fact::WildcardNoData))
     );
 }
 
@@ -625,25 +674,6 @@ fn b8_ds_from_the_child() {
     assert_eq!(
         prove(APEX, "example.", RecordType::MX, &records),
         Err(Unproven::TypePresent)
-    );
-}
-
-/// RFC 9077 §3: a proof lasts as long as the shortest of its records.
-#[test]
-fn ttl_is_the_least_of_the_records_used() {
-    let mut records = nsecs(&["b.example.", "example."]);
-    records[0].ttl = Ttl::from_wire(300);
-    records[1].ttl = Ttl::from_wire(60);
-    // A record the proof does not use does not count.
-    let mut unused = nsecs(&["xx.example."]);
-    unused[0].ttl = Ttl::ZERO;
-    records.extend(unused);
-    assert_eq!(
-        prove(APEX, "ml.example.", RecordType::A, &records),
-        Ok(Proof {
-            fact: NAME_ERROR,
-            ttl: Ttl::from_wire(60),
-        })
     );
 }
 

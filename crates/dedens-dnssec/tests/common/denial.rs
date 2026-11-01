@@ -126,6 +126,26 @@ pub fn nsec3_with(
     )
 }
 
+/// `record`, an NSEC3, made with another salt.
+pub fn nsec3_salted(record: &Record<'static>, salt: &[u8]) -> Record<'static> {
+    let n = nsec3(record);
+    let n = Nsec3::new(
+        n.hash_algorithm,
+        n.flags,
+        n.iterations,
+        salt,
+        n.next_hashed_owner(),
+        n.types.clone(),
+    )
+    .expect("valid");
+    Record::new(
+        record.name.clone(),
+        record.class,
+        record.ttl,
+        &RData::Nsec3(n),
+    )
+}
+
 /// The NSEC3 RDATA of `record`.
 pub fn nsec3(record: &Record<'static>) -> Nsec3<'static> {
     match record.data() {

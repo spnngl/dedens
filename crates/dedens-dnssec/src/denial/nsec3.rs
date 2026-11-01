@@ -60,12 +60,13 @@ fn owner_hash(label: &[u8]) -> Option<Hash> {
 
 impl<'r> Chain<'r> {
     /// The usable NSEC3 records of `apex`, or none: IN records one label below the apex that is a hash, of SHA-1
-    /// and flags 0 or 1 (RFC 5155 §8.1, §8.2). The first one sets the parameters; records with other parameters
-    /// are ignored.
+    /// and flags 0 or 1 (RFC 5155 §8.1, §8.2).
     ///
     /// # Errors
     ///
-    /// [`Unproven::IterationsAboveLimit`] when the parameters have more iterations than `max` (RFC 9276 §3.2).
+    /// [`Unproven::IterationsAboveLimit`] when the iterations of any usable record are above `max` (RFC 9276
+    /// §3.2), and otherwise [`Unproven::ConflictingNsec3Parameters`] when the usable records differ in iterations
+    /// or salt (RFC 5155 §8.2): no record decides which set is the zone's.
     pub(super) fn new(
         apex: &Name<'_>,
         records: &'r [Record<'r>],
@@ -73,6 +74,8 @@ impl<'r> Chain<'r> {
     ) -> Result<Option<Self>, Unproven> {
         let depth = apex.label_count() + 1;
         let mut chain: Option<Self> = None;
+        let mut conflict = false;
+        let mut most = 0;
         for record in records.iter().filter(|r| {
             r.class == Class::IN && r.name.is_within(apex) && r.name.label_count() == depth
         }) {
@@ -90,14 +93,13 @@ impl<'r> Chain<'r> {
             {
                 continue;
             }
+            most = most.max(nsec3.iterations);
             let chain = chain.get_or_insert_with(|| Self {
                 entries: Vec::new(),
                 iterations: nsec3.iterations,
                 salt: nsec3.salt().to_vec(),
             });
-            if nsec3.iterations != chain.iterations || nsec3.salt() != chain.salt {
-                continue;
-            }
+            conflict |= nsec3.iterations != chain.iterations || nsec3.salt() != chain.salt;
             chain.entries.push(Entry {
                 hash,
                 next,
@@ -106,13 +108,16 @@ impl<'r> Chain<'r> {
                 ttl: record.ttl,
             });
         }
-        match chain {
-            Some(c) if c.iterations > max.0 => Err(Unproven::IterationsAboveLimit {
-                iterations: c.iterations,
+        if most > max.0 {
+            return Err(Unproven::IterationsAboveLimit {
+                iterations: most,
                 limit: max.0,
-            }),
-            chain => Ok(chain),
+            });
         }
+        if conflict {
+            return Err(Unproven::ConflictingNsec3Parameters);
+        }
+        Ok(chain)
     }
 
     /// The hash of `name` with the chain's parameters, paid from `budget`.
@@ -188,39 +193,31 @@ pub(super) fn prove(
     let (qname, qtype) = (&question.name, question.qtype);
     let qhash = chain.hash(qname, budget)?;
     if let Some(entry) = chain.matching(&qhash) {
-        return Ok(Proof {
-            fact: at_name(&entry.types, qtype)?,
-            ttl: entry.ttl,
-        });
+        return Ok(Proof::new(at_name(&entry.types, qtype)?, entry.ttl));
     }
     let encloser = chain.closest_encloser(apex, qname, &qhash, budget)?;
+    let opt_out = encloser.next_closer.opt_out;
     let ttl = least([encloser.entry.ttl, encloser.next_closer.ttl]);
     // A delegation without DS may sit in an opt-out span, unsigned and unlisted (RFC 5155 §6, §8.6, §8.9). This
     // comes before the wildcard: a DS question asks for a delegation, and a response that also has a record
     // covering the wildcard is no less one.
-    if qtype == RecordType::DS && encloser.next_closer.opt_out {
-        return Ok(Proof {
-            fact: Fact::InsecureDelegation,
-            ttl,
-        });
+    if qtype == RecordType::DS && opt_out {
+        return Ok(Proof::new(Fact::InsecureDelegation, ttl).with_opt_out(true));
     }
     let wildcard_hash = chain.hash(&wildcard(&encloser.name)?, budget)?;
     if let Some(entry) = chain.matching(&wildcard_hash) {
-        return Ok(Proof {
-            fact: wildcard_lacks(&entry.types, qtype)?,
-            ttl: least([ttl, entry.ttl]),
-        });
+        let fact = wildcard_lacks(&entry.types, qtype)?;
+        return Ok(Proof::new(fact, least([ttl, entry.ttl])).with_opt_out(opt_out));
     }
     if let Some(entry) = chain.covering(&wildcard_hash) {
-        return Ok(Proof {
-            fact: Fact::NameError { compact: false },
-            ttl: least([ttl, entry.ttl]),
-        });
+        let fact = Fact::NameError { compact: false };
+        return Ok(Proof::new(fact, least([ttl, entry.ttl])).with_opt_out(opt_out));
     }
     Err(Unproven::WildcardNotDenied)
 }
 
-/// RFC 5155 §8.8: an NSEC3 covers the next closer name, so the wildcard was the closest match.
+/// RFC 5155 §8.8: an NSEC3 covers the next closer name, so the wildcard was the closest match. Under an opt-out
+/// span the next closer name may exist as an insecure delegation, and the proof says so (RFC 5155 §9.2).
 pub(super) fn prove_wildcard_answer(
     chain: &Chain<'_>,
     next_closer: &Name<'_>,
@@ -231,14 +228,14 @@ pub(super) fn prove_wildcard_answer(
         return Err(Unproven::CloserNameExists);
     }
     let covering = chain.covering(&hash).ok_or(Unproven::NotCovered)?;
-    Ok(Proof {
-        fact: Fact::WildcardAnswer,
-        ttl: covering.ttl,
-    })
+    Ok(Proof::new(Fact::WildcardAnswer, covering.ttl).with_opt_out(covering.opt_out))
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
+    use super::super::fixtures::{names, zone};
     use super::*;
 
     /// RFC 5155 Appendix A: `H(example)`.
@@ -249,5 +246,33 @@ mod tests {
         assert_eq!(owner_hash(b"0P9MHAVEQVM6T7VBL5LOP2U3T2RP3TOM"), Some(hash));
         assert_eq!(owner_hash(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3to"), None);
         assert_eq!(owner_hash(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3tow"), None);
+    }
+
+    proptest! {
+        /// RFC 5155 §8: against a whole chain, a hash is the owner of one NSEC3 or sorts between the hash and
+        /// the next hash of one (the last wraps to the first), never both and never two: for the hash of a name
+        /// around the zone's, and for any 20 bytes.
+        #[test]
+        fn a_hash_is_matched_or_covered_by_exactly_one_record(
+            name in names(),
+            bytes in any::<[u8; 20]>(),
+        ) {
+            let mut records = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");
+            records.retain(|r| r.rtype() == RecordType::NSEC3);
+            let apex: Name<'static> = "example.".parse().expect("a name");
+            let chain = Chain::new(&apex, &records, MaxIterations::default())
+                .expect("one set of parameters")
+                .expect("NSEC3 records");
+            let named = chain.hash(&name, &mut Budget::default()).expect("a hash");
+            for hash in [named, bytes] {
+                let matched = chain.entries.iter().filter(|e| e.hash == hash).count();
+                let covered = chain
+                    .entries
+                    .iter()
+                    .filter(|e| covers(&e.hash, &e.next, &hash))
+                    .count();
+                prop_assert_eq!(matched + covered, 1, "{:?}", hash);
+            }
+        }
     }
 }

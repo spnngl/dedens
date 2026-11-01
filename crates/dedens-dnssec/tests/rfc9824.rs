@@ -88,7 +88,9 @@ fn nxname_is_not_a_question() {
     );
 }
 
-/// §4: an NSEC3 at the hash of the name with NXNAME in its bitmap says the same as the NSEC.
+/// Derived: §4: an NSEC3 at the hash of the name with NXNAME in its bitmap says the same as the NSEC. The record
+/// is the real one of `ns1.example.` in RFC 5155 Appendix A with its bitmap replaced; no capture has compact
+/// denial by NSEC3.
 #[test]
 fn nsec3_nxname_is_a_name_error() {
     let zone = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");

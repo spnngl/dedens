@@ -1,6 +1,6 @@
 //! Stable-toolchain stand-in for a short fuzz run: replays every captured response in
 //! `crates/dedens-proto/tests/testdata/` and `crates/dedens-dnssec/tests/testdata/` and the zone files of
-//! `crates/dedens-proto/tests/zones/`, plus truncated and bit-flipped variants through each target. Any panic
+//! `crates/dedens-proto/tests/zones/` and `crates/dedens-dnssec/tests/zones/`, plus truncated and bit-flipped variants through each target. Any panic
 //! fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it into a test).
 
 use std::fs;
@@ -25,6 +25,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         "dedens-proto/tests/testdata",
         "dedens-proto/tests/zones",
         "dedens-dnssec/tests/testdata",
+        "dedens-dnssec/tests/zones",
     ] {
         let dir = root().join("../crates").join(dir);
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
