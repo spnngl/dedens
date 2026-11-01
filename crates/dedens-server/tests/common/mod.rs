@@ -254,6 +254,17 @@ pub(crate) fn run_captured(
     now: u32,
     captures: &Captures,
 ) -> Run {
+    run_captured_without(pipeline, query, now, captures, None)
+}
+
+/// [`run_captured`] with the server at `dead`, if any, answering nothing.
+pub(crate) fn run_captured_without(
+    pipeline: &Pipeline,
+    query: &[u8],
+    now: u32,
+    captures: &Captures,
+    dead: Option<SocketAddr>,
+) -> Run {
     let mut out = vec![0; 65535];
     let mut asked = Vec::new();
     let mut requests = Vec::new();
@@ -270,7 +281,9 @@ pub(crate) fn run_captured(
             Step::Upstream(upstream) => {
                 asked.push(upstream.server().addr);
                 let request = upstream.request();
-                let response = captures.answer(&request);
+                let response = captures
+                    .answer(&request)
+                    .filter(|_| dead != Some(upstream.server().addr));
                 requests.push(request);
                 assert!(requests.len() < 200, "the query asks for ever");
                 step = pipeline.receive(upstream, response, now, &mut out);
