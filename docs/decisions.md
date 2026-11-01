@@ -1335,7 +1335,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amended by D64) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amended by D64, D110) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -1354,7 +1354,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     Blocked (RFC 8914 §4.16), AA clear. Of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1`, `::1` count,
     without names of one label or starting with `localhost`: such files open with their host's own entries
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
-    Formats, duplicates and the allowlist in D56.
+    Any class asked (D110). Formats, duplicates and the allowlist in D56.
 - D55 (amended by D64, D107) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed (a thread no query reaches takes it when woken by the reload, D107), holding it in
@@ -1403,6 +1403,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
   sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
   slower to build).
+- D110 (amends D54) The blocklist blocks a name in any class (audit L11). It looked up IN queries only, so a query of
+  class ANY (QCLASS 255), NONE, CH or HS for a blocked name went to the next stage: the list is a policy on names,
+  and the class is no longer read. `Action::Null` answers A and AAAA with records of class IN, so only to questions
+  of class IN or ANY; the other classes get no data. Rejected: reading ANY and NONE as IN (CH and HS would still
+  go on).
 - D87 Published blocklists live in `docs/blocklists/blocklists.yaml`, as D67's resolvers: a source's facts
   (maintainer, licence, how it is built) and its main lists, each with its URL, what it holds, how often it
   changes and its `format`, measured: names, `*.name` and hosts lines, which `dedensd` reads (D56), adblock rules,
