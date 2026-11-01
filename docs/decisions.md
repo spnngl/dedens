@@ -1089,7 +1089,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   it asks loses its connection). A query waiting upstream holds no reply buffer until a reply is made. A QUIC
   Initial from an address not yet validated is answered with a Retry (RFC 9000 §8.1.2) and takes no connection
   slot, so forged sources cannot fill them; always on, at the cost of a round trip for a first connection (a
-  client holding a token from an earlier one skips it). Constants for now; configuration with need. Client allow and block lists come later (`docs/TODECIDE.md`).
+  client holding a token from an earlier one skips it). A QUIC connection (DoQ, HTTP/3) is a TCP one in these
+  limits: no new stream within the idle time, whatever pings keep it alive, ends it once the queries asked are
+  answered, and a reply not written within the write time is given up with its stream reset: a client granting
+  no flow control credit keeps the connection for the write time past the idle time at most, and its slot only
+  for the idle time. No per-address cap, for TCP either. Constants for now; configuration with need. Client
+  allow and block lists and per-address caps come later (`docs/TODECIDE.md`).
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
@@ -1272,7 +1277,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   forwards to DoH upstreams. A `listen` address `https://ADDR[:PORT][/PATH]` (port 443, path `/dns-query`; a path
   with a query, a fragment or a template expression is refused) takes UDP, as `quic://` does: the certificate of
   `tls` (D66) is required with it, ALPN `h3`, TLS 1.3 alone, no 0-RTT, the connection counted against the thread's
-  TCP ones, idle time D27's, 64 request streams and 16 unidirectional ones (control and QPACK, D83) at once, the
+  TCP ones, idle time and write time D47's (no new request within the idle time ends it, pings or not), 64 request streams and 16 unidirectional ones (control and QPACK, D83) at once, the
   connection set up and each request read within that idle time. A request goes through D82's `server_request`,
   then the pipeline as any query (over `Transport::Https`: padding as D60 says); a request for another path is 404
   whatever its method, a query the pipeline drops is 400 (RFC 8484 §4.2.1: the status says the request is bad,
