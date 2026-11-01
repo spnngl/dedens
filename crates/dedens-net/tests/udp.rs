@@ -163,7 +163,7 @@ async fn an_error_skips_a_query_that_sent_nothing() {
     assert_eq!(nothing, Ok(None));
 }
 
-/// A query dropped stops taking datagrams: those with its ID that come later do not crowd out the next query's.
+/// A query dropped stops taking datagrams: those with its ID that come later do not reach the next query's.
 #[compio::test]
 async fn a_dropped_query_takes_no_more_datagrams() {
     let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
@@ -174,7 +174,7 @@ async fn a_dropped_query_takes_no_more_datagrams() {
     let BufResult(received, sent_query) = server.recv_from(Vec::with_capacity(SIZE)).await;
     let (_, from) = received.expect("a query");
     drop(gone);
-    // As many as a socket keeps for its queries, delivered before the next query waits.
+    // Many, delivered before the next query waits.
     for _ in 0..64 {
         let BufResult(sent, _) = server.send_to(answer(&sent_query, Vec::new()), from).await;
         sent.expect("sent");
@@ -208,5 +208,63 @@ async fn a_dropped_query_leaves_the_others_datagrams() {
         .recv(Instant::now() + Duration::from_secs(1))
         .await
         .expect("received");
+    assert_eq!(response.as_deref().map(id), Some(2));
+}
+
+/// One more query than a socket once kept datagrams for: every response arrives though none is read yet.
+#[compio::test]
+async fn sixty_five_queries_on_one_socket_all_complete() {
+    let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+    let addr = server.local_addr().expect("an address");
+    let pool = UdpPool::new(1);
+    let mut queries = Vec::new();
+    for n in 1..=65 {
+        let query = pool.query(addr, 0, n).await.expect("a socket");
+        query.send(&query_with_id(n)).await.expect("sent");
+        queries.push(query);
+    }
+    let mut received = Vec::new();
+    for _ in 0..queries.len() {
+        let BufResult(read, query) = server.recv_from(Vec::with_capacity(SIZE)).await;
+        received.push((query, read.expect("a query").1));
+    }
+    for (query, from) in received {
+        let BufResult(sent, _) = server.send_to(answer(&query, Vec::new()), from).await;
+        sent.expect("sent");
+    }
+    // All received by the socket's task before any query reads.
+    compio::time::sleep(Duration::from_millis(100)).await;
+    for (n, query) in (1..=65).zip(&mut queries) {
+        let response = query.recv(soon()).await.expect("received");
+        assert_eq!(response.as_deref().map(id), Some(n));
+    }
+}
+
+/// A query flooded with datagrams of its ID takes no room from the others on its socket.
+#[compio::test]
+async fn a_flooded_query_leaves_the_others_their_responses() {
+    let server = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+    let addr = server.local_addr().expect("an address");
+    let pool = UdpPool::new(1);
+    let flooded = pool.query(addr, 0, 1).await.expect("a socket");
+    let mut other = pool.query(addr, 0, 2).await.expect("a socket");
+    flooded.send(&query_with_id(1)).await.expect("sent");
+    other.send(&query_with_id(2)).await.expect("sent");
+    let mut received = Vec::new();
+    for _ in 0..2 {
+        let BufResult(read, query) = server.recv_from(Vec::with_capacity(SIZE)).await;
+        received.push((id(&query), query, read.expect("a query").1));
+    }
+    let to = |n| received.iter().find(|(of, ..)| *of == n).expect("a query");
+    let (_, flood, from) = to(1);
+    for _ in 0..200 {
+        let BufResult(sent, _) = server.send_to(answer(flood, Vec::new()), *from).await;
+        sent.expect("sent");
+    }
+    let (_, query, from) = to(2);
+    let BufResult(sent, _) = server.send_to(answer(query, Vec::new()), *from).await;
+    sent.expect("sent");
+    compio::time::sleep(Duration::from_millis(100)).await;
+    let response = other.recv(soon()).await.expect("received");
     assert_eq!(response.as_deref().map(id), Some(2));
 }

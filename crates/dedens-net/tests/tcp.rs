@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,9 @@ use common::loopback::{CLOSED, Peer, answer, id, listen, query_with_id};
 use dedens_net::tcp::{TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Record};
+
+/// The IDs of a connection.
+const IDS: usize = 1 << 16;
 
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
@@ -118,15 +122,25 @@ async fn an_id_already_waiting_goes_out_as_another() {
 async fn the_id_of_a_timed_out_query_stays_taken() {
     let (listener, server) = listen().await;
     let pool = pool();
-    let timed_out = {
+    let ask = |n, until| {
         let pool = Rc::clone(&pool);
-        let soon = Instant::now() + Duration::from_millis(50);
-        compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(7), soon).await })
+        compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(n), until).await })
     };
+    let timed_out = ask(7, Instant::now() + Duration::from_millis(50));
+    let answered = ask(8, deadline());
     let mut peer = Peer::accept(&listener).await;
-    let late = peer.read().await.expect("a query");
-    // Something read on the connection since the query went: it stays.
-    peer.write(&[answer(&query_with_id(3), Vec::new())]).await;
+    let (first, second) = (
+        peer.read().await.expect("a query"),
+        peer.read().await.expect("a query"),
+    );
+    let (late, other) = if id(&first) == 7 {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    // A response read on the connection since the query went, to another query: it stays.
+    peer.write(&[answer(&other, Vec::new())]).await;
+    assert!(answered.await.expect("joined").is_ok());
     let timed_out = timed_out.await.expect("joined");
     assert!(
         matches!(timed_out, Err(TcpError::TimedOut)),
@@ -414,6 +428,113 @@ async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
 }
 
+/// Frames no query waits for prove nothing: a connection that gets only those since a query that timed out is
+/// replaced, though the server keeps writing.
+#[compio::test]
+async fn a_connection_trickling_unasked_frames_is_replaced() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let timed_out = {
+        let pool = Rc::clone(&pool);
+        let soon = Instant::now() + Duration::from_millis(100);
+        compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(16), soon).await })
+    };
+    let mut trickling = Peer::accept(&listener).await;
+    trickling.read().await.expect("a query");
+    // The client may close the connection before the trickle ends.
+    for _ in 0..5 {
+        if !trickling
+            .offer(&[answer(&query_with_id(3), Vec::new())])
+            .await
+        {
+            break;
+        }
+        compio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let timed_out = timed_out.await.expect("joined");
+    assert!(
+        matches!(timed_out, Err(TcpError::TimedOut)),
+        "{timed_out:?}"
+    );
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(17), deadline()).await
+        })
+    };
+    let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+        .await
+        .expect("a new connection");
+    let query = fresh.read().await.expect("the query on a new connection");
+    fresh.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
+}
+
+/// Frames no query waits for do not keep a connection open either: it closes once idle, however they trickle.
+#[compio::test]
+async fn unasked_frames_do_not_keep_a_connection_open() {
+    let (listener, server) = listen().await;
+    let pool = Rc::new(TcpPool::new(Duration::from_millis(200)));
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(
+            async move { pool.exchange(server, &query_with_id(8), deadline()).await },
+        )
+    };
+    let mut peer = Peer::accept(&listener).await;
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert!(asked.await.expect("joined").is_ok());
+    // The trickle lasts five times the idle timeout.
+    let mut closed = false;
+    for _ in 0..40 {
+        let open = peer.offer(&[answer(&query_with_id(3), Vec::new())]).await;
+        let read = compio::time::timeout(Duration::from_millis(25), peer.read()).await;
+        if !open || read == Ok(None) {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "still open after the trickle");
+}
+
+/// A burst of queries beyond a connection's queue goes on another connection; each is answered all the same.
+#[compio::test]
+async fn a_burst_beyond_the_queue_opens_another_connection() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let connections = Rc::new(Cell::new(0));
+    let accepting = {
+        let connections = Rc::clone(&connections);
+        compio::runtime::spawn(async move {
+            loop {
+                let mut peer = Peer::accept(&listener).await;
+                connections.set(connections.get() + 1);
+                compio::runtime::spawn(async move {
+                    while let Some(query) = peer.read().await {
+                        peer.write(&[answer(&query, Vec::new())]).await;
+                    }
+                })
+                .detach();
+            }
+        })
+    };
+    let asked: Vec<_> = (0..3000)
+        .map(|n| {
+            let pool = Rc::clone(&pool);
+            compio::runtime::spawn(async move {
+                pool.exchange(server, &query_with_id(n), deadline()).await
+            })
+        })
+        .collect();
+    for (n, asked) in (0..3000).zip(asked) {
+        let response = asked.await.expect("joined").expect("a response");
+        assert_eq!(id(&response), n);
+    }
+    assert!(connections.get() > 1, "{} connection", connections.get());
+    drop(accepting);
+}
+
 /// The error of a connection that cannot open goes to every query waiting for it, not to the first only.
 #[compio::test]
 async fn a_connect_error_goes_to_every_query_waiting() {
@@ -429,22 +550,38 @@ async fn a_connect_error_goes_to_every_query_waiting() {
 
 /// RFC 7766 §6.2.1: once all 65536 IDs of a connection wait for a response, the next query goes on a new one.
 ///
-/// The deadlines and the idle time are far, so a loaded machine filling the connection (the peer reads nothing, its
-/// writes block) never has them expire before the new connection opens.
+/// The deadlines and the idle time are far, so a loaded machine filling the connection never has them expire before
+/// the new connection opens.
 #[compio::test]
 async fn a_query_finding_every_id_taken_opens_a_connection() {
     let far = || Instant::now() + Duration::from_secs(60);
     let (listener, server) = listen().await;
     let pool = Rc::new(TcpPool::new(Duration::from_secs(60)));
-    let waiting: Vec<_> = (0..=u16::MAX)
-        .map(|n| {
-            let pool = Rc::clone(&pool);
-            compio::runtime::spawn(
-                async move { pool.exchange(server, &query_with_id(n), far()).await },
-            )
+    let ask = |n| {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(n), far()).await })
+    };
+    let mut waiting = vec![ask(0)];
+    // The server reads every query and answers none; the queries go in batches the queue holds.
+    let mut full = Peer::accept(&listener).await;
+    let read = Rc::new(Cell::new(0_usize));
+    let reading = {
+        let read = Rc::clone(&read);
+        compio::runtime::spawn(async move {
+            while full.read().await.is_some() {
+                read.set(read.get() + 1);
+            }
         })
-        .collect();
-    let _full = Peer::accept(&listener).await;
+    };
+    while waiting.len() < IDS {
+        let end = (waiting.len() + 256).min(IDS);
+        for n in waiting.len()..end {
+            waiting.push(ask(u16::try_from(n).expect("an ID")));
+        }
+        while read.get() < waiting.len() {
+            compio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
     let asked = {
         let pool = Rc::clone(&pool);
         compio::runtime::spawn(
@@ -457,5 +594,5 @@ async fn a_query_finding_every_id_taken_opens_a_connection() {
     let query = fresh.read().await.expect("the query on a new connection");
     fresh.write(&[answer(&query, Vec::new())]).await;
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
-    drop(waiting);
+    drop((waiting, reading));
 }
