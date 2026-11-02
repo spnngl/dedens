@@ -214,9 +214,18 @@ Open questions, each with its proposed default. Once answered, record the outcom
   numbers. Default: add them with TSIG, in the authoritative phase.
 - What to build after DoH over HTTP/3 (D83), DNSSEC validation (D77), ODoH (D79) and DoC (D81): prewarm (names from
   the configuration kept in the cache), DNSCrypt (client, server, Anonymized DNSCrypt client, PQDNSCrypt; the relay
-  role later), kubernetes stage, recursive resolver (with an RRset cache, priming per RFC 8109, BCP 123 behaviour per
-  RFC 4697), authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182). Default: in that order; the error
-  reporting option (RFC 9567) with the server, and DoH over HTTP/2 once compio releases tokio's I/O traits (D62).
+  role later), kubernetes stage, roots (root and TLD hints bundled, the TLD list and root anchors refreshed, the
+  anchors checked by their signature, special-use and nonexistent TLDs answered locally, TLD and domain lookups over
+  RDAP), recursive resolver (with an RRset cache, priming per RFC 8109, BCP 123 behaviour per RFC 4697, TLD hints),
+  authoritative (zones, AXFR/IXFR, NOTIFY, UPDATE, TSIG, RFC 2182). Default: in that order; the error reporting option
+  (RFC 9567) with the server, and DoH over HTTP/2 once compio releases tokio's I/O traits (D62).
+- Zone files held by the resolver: the root's (`root.zone`, RFC 8806, Unbound's `auth-zone`) or TLDs' (generic ones
+  through ICANN's CZDS: an account, each registry's approval, daily copies, no redistribution; `.com` alone about
+  160 million domains). Default: none; the root and TLD hints of `named.root` and `tlds.json` save the root query,
+  and the cache saves the TLD ones.
+- Special-use names below the TLDs (IANA's Special-Use Domain Names registry: `home.arpa` per RFC 8375,
+  `resolver.arpa` per RFC 9462, the locally served zones of RFC 6303): `tlds.json` lists TLDs only. Default: with
+  the recursive resolver, which must not send them upstream.
 - An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
   for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
