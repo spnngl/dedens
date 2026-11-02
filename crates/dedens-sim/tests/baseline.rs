@@ -32,7 +32,6 @@ const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
 
 /// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time, and
 /// the file keeps to its budget.
-
 const FEW: &[u64] = &[0, 7];
 
 /// One client asks `example.com A` `asks` times over `carrier`, through a resolver with one upstream server.
