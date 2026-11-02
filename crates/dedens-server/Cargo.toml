@@ -9,9 +9,9 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-# Validation and access counters through the `metrics` facade (D30, D77, D91).
+# Validation, access, rate limit and cookie counters through the `metrics` facade (D30, D77, D91, D113).
 metrics = ["dep:metrics"]
-# `Network` and `Denial` read from configuration files (D24, D91).
+# `Network`, `Denial`, `Secret` read from configuration files (D24, D91, D113).
 serde = ["dep:serde"]
 
 [dependencies]
@@ -22,7 +22,9 @@ ipnet.workspace = true
 metrics = { workspace = true, optional = true }
 prefix-trie.workspace = true
 serde = { workspace = true, optional = true }
+siphasher.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 metrics.workspace = true

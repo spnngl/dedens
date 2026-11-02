@@ -428,3 +428,36 @@ and reads the response through `Exchange`, copying the request in.
 | `permits`, IPv6 in the table | 24.0 |
 | `permits`, IPv4-mapped IPv6 in the table | 5.4 |
 | `denied_query` | 42 |
+
+## Rate limiting and Server Cookies (D113)
+
+`benches/rrl.rs`: `Pipeline::query` over UDP from `198.51.100.7` (not loopback, which the limit skips) for the cached
+response `a` with EDNS, in a 1232-byte buffer. The hit is the cheapest path a query takes, so the added cost is the largest
+share of it. Machine: Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), release profile with debuginfo, a laptop in use.
+Command: `cargo bench -p dedens-bench --bench rrl -- --sample-count 1000 --sample-size 2000`, run 3 times; each cell is the
+range over the runs, in nanoseconds, of the fastest sample and of the median (the fastest is the less noisy; the median is
+what a loaded machine sees).
+
+- `limited`: the limit on, the source within its rate (one keyed hash, one atomic update).
+- `client_cookie`: a Server Cookie is made (clock read, SipHash-2-4 of 28 bytes) and written in the reply.
+- `valid_cookie`: the cookie is checked, the limit skipped, and a fresh one made.
+- `over_the_rate`: the source's bucket is spent, `slip` 0 (dropped) or 2 (every second one a TC reply).
+- `over_the_rate_with_client_cookie`: the same with cookies on and a Client Cookie not yet valid: it is checked first,
+  then dropped or (every second one) BADCOOKIE with a fresh Server Cookie.
+
+| Measure | fastest ns | median ns |
+|---|---|---|
+| `baseline`, no limit, no cookies | 98.0-98.2 | 147.8-148.9 |
+| `limited` | 109.0-110.7 | 166.8-169.0 |
+| `client_cookie` | 148.1-160.1 | 223.0-231.0 |
+| `limit_and_client_cookie` | 165.8-178.2 | 257.4-270.8 |
+| `valid_cookie` (with the limit on) | 183.9-197.2 | 270.7-271.5 |
+| `over_the_rate`, slip 0 | 46.7-47.6 | 70.6-72.7 |
+| `over_the_rate`, slip 2 | 74.6-76.2 | 115.4-116.8 |
+| `over_the_rate_with_client_cookie`, slip 0 | 67.5-68.0 | 100.6-101.8 |
+| `over_the_rate_with_client_cookie`, slip 2 | 124.2-136.6 | 190.3-208.5 |
+
+The limit adds about 11-20 ns to a hit. A query with a Client Cookie costs about 1.5x a cookie-less one, the clock read of
+`SystemTime::now` and the hash being most of it. A query over its rate is answered in half the time of a hit, and a
+spoofed flood costs the server no allocation with `slip` 0. A slipped reply allocates once (divan's allocation column:
+64 bytes for a TC reply, 160 for BADCOOKIE, which holds the cookie option); no other path allocates.

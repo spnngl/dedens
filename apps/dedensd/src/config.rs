@@ -15,6 +15,18 @@
 //!   allow: ["10.0.0.0/8", "2001:db8::/32"]
 //!   deny: ["10.9.0.0/16"]            # the longest network holding the client decides; deny wins a tie
 //!   action: refuse                   # refuse (default) answers REFUSED with EDE 18, drop answers nothing
+//! rrl:                              # response rate limiting over UDP and DoC (D113); on by default, these are the defaults
+//!   enabled: true
+//!   slip: 2                          # of the queries over the rate, one in `slip` gets TC=1; 0 answers none, 1 all
+//!   table_size: 65536                # buckets; memory is 8 bytes each, fixed
+//!   ipv4: {prefix: 24, rate: 1600, burst: 4000}   # per second and network of `prefix` bits; burst: 2.5 x rate
+//!   ipv6: {prefix: 56, rate: 150, burst: 375}   # a burst is at least the rate
+//!   exempt: ["127.0.0.0/8", "::1/128"]   # never limited: a proxy or a monitor, not a source that can be spoofed
+//! cookies:                          # Server Cookies, RFC 7873 and RFC 9018 (D113); on by default
+//!   enabled: true
+//!   secret: '${COOKIE_SECRET}'       # 32 hex digits, quoted so that a secret of digits only stays a string; default: random at
+//!                                    # start. Set it, and `accept`, to share among anycast servers
+//!   accept: ['${OLD_COOKIE_SECRET}'] # other secrets cookies are accepted under (RFC 9018 §5)
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
@@ -47,7 +59,7 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, fs, io};
 
@@ -61,7 +73,10 @@ use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::{Name, Ttl};
-use dedens_server::{Access, Denial, Forward, Network, Pipeline, Stage, Validating, Via};
+use dedens_server::{
+    Access, Cookies, Denial, Forward, MAX_BURST, Network, Pipeline, Rate, RateLimit,
+    RateLimitConfig, Secret, Secrets, Stage, Validating, Via,
+};
 use http::uri::PathAndQuery;
 use serde::Deserialize;
 
@@ -79,6 +94,12 @@ struct File {
     odoh: Option<OdohFile>,
     /// The clients answered (D91). Default: those of loopback, private and link-local networks.
     access: Option<AccessFile>,
+    /// Response rate limiting over UDP and `DoC` (D113). Default: on.
+    #[serde(default)]
+    rrl: RrlFile,
+    /// Server Cookies (D113). Default: on, with a secret made at start.
+    #[serde(default)]
+    cookies: CookiesFile,
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
@@ -89,6 +110,202 @@ struct File {
     pipeline: Vec<String>,
     /// The stages, by name.
     stages: BTreeMap<String, StageFile>,
+}
+
+/// The rate limit, as written (D113). A field left out is the library's default.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RrlFile {
+    /// `false` limits nothing.
+    #[serde(default = "yes")]
+    enabled: bool,
+    /// One in `slip` limited queries is answered with TC=1; none when 0.
+    slip: Option<u8>,
+    /// Buckets in the table.
+    table_size: Option<usize>,
+    /// Limits of IPv4 networks.
+    ipv4: Option<RateFile>,
+    /// Limits of IPv6 networks.
+    ipv6: Option<RateFile>,
+    /// Networks never limited. Default: loopback.
+    exempt: Option<Vec<Network>>,
+}
+
+impl Default for RrlFile {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            slip: None,
+            table_size: None,
+            ipv4: None,
+            ipv6: None,
+            exempt: None,
+        }
+    }
+}
+
+/// The limit of one address family, as written (D113).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RateFile {
+    /// The bits of the address that name a network.
+    prefix: Option<u8>,
+    /// Queries a second of a network.
+    rate: Option<u32>,
+    /// Queries at once: 2.5 times the rate if left out.
+    burst: Option<u32>,
+}
+
+/// 2.5 times `rate`, at least 1 and at most [`MAX_BURST`].
+fn two_and_a_half(rate: u32) -> u32 {
+    u32::try_from((u64::from(rate) * 5 / 2).clamp(1, u64::from(MAX_BURST)))
+        .expect("clamped to MAX_BURST, below 2^32")
+}
+
+impl RateFile {
+    /// The limit with the fields written, the others from `default`.
+    fn over(file: Option<Self>, default: Rate) -> Rate {
+        let Some(file) = file else {
+            return default;
+        };
+        let per_second = file.rate.unwrap_or(default.per_second);
+        Rate {
+            prefix: file.prefix.unwrap_or(default.prefix),
+            per_second,
+            burst: file.burst.unwrap_or_else(|| {
+                if file.rate.is_none() {
+                    default.burst
+                } else {
+                    two_and_a_half(per_second)
+                }
+            }),
+        }
+    }
+}
+
+impl RrlFile {
+    /// The rate limit, `None` when disabled. That of `previous` is kept, table and all, when its settings are the
+    /// same: a reload must not hand every source a full bucket.
+    fn into_limit(self, previous: &Pipeline) -> anyhow::Result<Option<Arc<RateLimit>>> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let default = RateLimitConfig::default();
+        let config = RateLimitConfig {
+            ipv4: RateFile::over(self.ipv4, default.ipv4),
+            ipv6: RateFile::over(self.ipv6, default.ipv6),
+            slip: self.slip.unwrap_or(default.slip),
+            table: self.table_size.unwrap_or(default.table),
+            exempt: self.exempt.unwrap_or(default.exempt),
+        };
+        if let Some(kept) = previous
+            .rate_limit()
+            .filter(|limit| limit.config() == &config)
+        {
+            return Ok(Some(Arc::clone(kept)));
+        }
+        RateLimit::new(config)
+            .map(|limit| Some(Arc::new(limit)))
+            .context("`rrl`")
+    }
+}
+
+/// Server Cookies, as written (D113).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CookiesFile {
+    /// `false` makes and checks none.
+    #[serde(default = "yes")]
+    enabled: bool,
+    /// The secret cookies are made with; one made at start if left out.
+    secret: Option<Secret>,
+    /// The secrets, besides `secret`, cookies are accepted under.
+    #[serde(default)]
+    accept: Vec<Secret>,
+}
+
+impl Default for CookiesFile {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            secret: None,
+            accept: Vec::new(),
+        }
+    }
+}
+
+impl CookiesFile {
+    /// The cookies, `None` when disabled. With no `secret` it is one made at start, the same at every reload so
+    /// that cookies given stay good.
+    fn into_cookies(self) -> anyhow::Result<Option<Cookies>> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let secrets = if let Some(current) = self.secret {
+            Secrets::new(current, self.accept)
+        } else {
+            ensure!(
+                self.accept.is_empty(),
+                "`cookies`: `accept` needs a `secret`"
+            );
+            Secrets::new(random_secret()?, Vec::new())
+        };
+        Ok(Some(Cookies::new(secrets, Arc::new(unix_seconds))))
+    }
+}
+
+/// The secret made at start: drawn once, for every configuration read.
+fn random_secret() -> anyhow::Result<Secret> {
+    static SECRET: OnceLock<Secret> = OnceLock::new();
+    if let Some(secret) = SECRET.get() {
+        return Ok(secret.clone());
+    }
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).context("`cookies`: no randomness for a secret")?;
+    // A reload racing the first read keeps whichever secret was set first.
+    Ok(SECRET.get_or_init(|| Secret::new(bytes)).clone())
+}
+
+/// What stands before the stages: who is answered, how fast, and the cookies (D91, D113).
+struct Guard {
+    access: Option<AccessFile>,
+    rrl: RrlFile,
+    cookies: CookiesFile,
+}
+
+impl Guard {
+    /// The pipeline of `stages` behind it; the rate limit of `previous` is kept when its settings are.
+    fn around(self, stages: Vec<Stage>, previous: &Pipeline) -> anyhow::Result<Pipeline> {
+        let access = self
+            .access
+            .map_or_else(|| Access::local(Denial::default()), AccessFile::into_access);
+        let mut pipeline = Pipeline::new(stages).with_access(access);
+        if let Some(limit) = self.rrl.into_limit(previous)? {
+            pipeline = pipeline.with_rate_limit(limit);
+        }
+        if let Some(cookies) = self.cookies.into_cookies()? {
+            pipeline = pipeline.with_cookies(cookies);
+        }
+        Ok(pipeline)
+    }
+}
+
+/// `true`, the default of what is on unless turned off.
+const fn yes() -> bool {
+    true
+}
+
+/// Seconds since the Unix epoch, 0 with a clock before it.
+fn unix_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+        |error| {
+            // Time 0 fails closed for signatures: none is valid yet. Cookies stamped 0 stay good; they prove
+            // an address, not a time of day.
+            tracing::error!(%error, "the system clock is before the Unix epoch");
+            0
+        },
+        |elapsed| elapsed.as_secs(),
+    )
 }
 
 /// The access lists, as written (D91).
@@ -433,6 +650,17 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
 }
 
+impl Downloads {
+    /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
+    fn add(&mut self, urls: impl Iterator<Item = Url>) {
+        for Url(url) in urls {
+            if !self.urls.contains(&url) {
+                self.urls.push(url);
+            }
+        }
+    }
+}
+
 /// An upstream server (D65, D84): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in
 /// brackets); behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set; behind `https://`, asked
 /// over HTTP/3 at `/PATH` (`/dns-query` unless set), on port 443 unless set; and `#NAME` after it for the name its
@@ -556,7 +784,8 @@ fn hosts(
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
 /// query on; a second cache stage, which would never be filled; a hosts or blocklist stage after a cache stage,
 /// whose answers a reload keeps; `refresh_minutes` above a year; settings a stage refuses; an `access` network that is
-/// malformed or has bits set past its length, an unknown `action`.
+/// malformed or has bits set past its length, an unknown `action`; `rrl` settings out of bounds, a cookie `secret`
+/// that is not 32 hexadecimal digits, `accept` without a `secret`.
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -577,9 +806,11 @@ pub(crate) fn read(
     );
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let source = AccessSource::of(file.access.as_ref());
-    let access = file
-        .access
-        .map_or_else(|| Access::local(Denial::default()), AccessFile::into_access);
+    let guard = Guard {
+        access: file.access,
+        rrl: file.rrl,
+        cookies: file.cookies,
+    };
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
     let mut downloads = Downloads {
@@ -635,12 +866,7 @@ pub(crate) fn read(
                 };
                 let lists = lists(name, &block, &allow, &downloads.dir)
                     .with_context(|| format!("stage `{name}`"))?;
-                for Url(url) in block.urls.into_iter().chain(allow.urls) {
-                    // Once each: the downloads run together, two of one URL would save one copy at once (D104).
-                    if !downloads.urls.contains(&url) {
-                        downloads.urls.push(url);
-                    }
-                }
+                downloads.add(block.urls.into_iter().chain(allow.urls));
                 let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
                 Stage::Plugin(Box::new(Blocklist::new(
                     lists,
@@ -656,12 +882,13 @@ pub(crate) fn read(
     // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
     // validator, or none, does not stand behind them (D77).
     flush(&mut built, previous)?;
+    let pipeline = guard.around(built, previous)?;
     Ok(Config {
         listen: file.listen,
         presented,
         #[cfg(feature = "odoh")]
         odoh,
-        pipeline: Pipeline::new(built).with_access(access),
+        pipeline,
         access: source,
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
@@ -835,17 +1062,11 @@ fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::
         tag.push_str(&name.to_string());
         anchors.add_negative(name);
     }
-    let clock = || {
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
-            |error| {
-                // Time 0 fails closed: no signature is valid yet.
-                tracing::error!(%error, "the system clock is before the Unix epoch");
-                0
-            },
-            |elapsed| elapsed.as_secs(),
-        )
-    };
-    Ok(Validating::new(Validator::new(anchors, Limits::default()), Arc::new(clock)).tagged(&tag))
+    Ok(Validating::new(
+        Validator::new(anchors, Limits::default()),
+        Arc::new(unix_seconds),
+    )
+    .tagged(&tag))
 }
 
 /// The Oblivious `DoH` target settings of `odoh`, if any (D79, D94). The key is not read: a reload builds this again,
@@ -1126,6 +1347,8 @@ fn interpolate_line(
 
 #[cfg(test)]
 mod tests {
+    use dedens_server::Standing;
+
     use super::*;
 
     fn env(name: &str) -> Option<String> {
@@ -1134,6 +1357,7 @@ mod tests {
             "EMPTY" => Some(String::new()),
             "LINES" => Some("a\nb".to_owned()),
             "RETURN" => Some("a\rb: c".to_owned()),
+            "DIGITS" => Some("12345678901234567890123456789012".to_owned()),
             _ => None,
         }
     }
@@ -1221,6 +1445,152 @@ mod tests {
         ] {
             assert!(server(refused).is_err(), "{refused}");
         }
+    }
+
+    /// Whether a source outside loopback is limited within the default burst of 4000 queries at once.
+    fn limited(pipeline: &Pipeline) -> bool {
+        let from = "198.51.100.1".parse().unwrap();
+        (0..5000).any(|_| pipeline.limits(from, 0))
+    }
+
+    #[test]
+    fn rate_limiting_and_cookies_are_on_by_default() {
+        let config = read(MINIMAL, env, &Pipeline::default()).unwrap();
+        assert!(limited(&config.pipeline));
+        assert!(config.pipeline.cookies().is_some());
+    }
+
+    #[test]
+    fn rate_limiting_and_cookies_can_be_turned_off() {
+        let text = format!("rrl: {{enabled: false}}\ncookies: {{enabled: false}}\n{MINIMAL}");
+        let config = read(&text, env, &Pipeline::default()).unwrap();
+        assert!(!limited(&config.pipeline));
+        assert!(config.pipeline.cookies().is_none());
+    }
+
+    #[test]
+    fn rate_limit_settings_are_checked() {
+        for refused in [
+            "rrl: {ipv4: {prefix: 33}}",
+            "rrl: {ipv6: {prefix: 0}}",
+            "rrl: {ipv4: {rate: 0}}",
+            "rrl: {slip: 11}",
+            "rrl: {table_size: 0}",
+            "rrl: {ipv4: {burst: 0}}",
+            "rrl: {rate: 5}",
+            "rrl: {ipv4: {per_second: 5}}",
+        ] {
+            let text = format!("{refused}\n{MINIMAL}");
+            assert!(read(&text, env, &Pipeline::default()).is_err(), "{refused}");
+        }
+        let text = format!("rrl: {{slip: 0, ipv4: {{prefix: 16, rate: 10}}}}\n{MINIMAL}");
+        assert!(read(&text, env, &Pipeline::default()).is_ok());
+    }
+
+    #[test]
+    fn a_rate_without_a_burst_has_two_and_a_half_times_the_rate() {
+        let default = Rate {
+            prefix: 24,
+            per_second: 1600,
+            burst: 4000,
+        };
+        let file = |rate| {
+            Some(RateFile {
+                prefix: None,
+                rate,
+                burst: None,
+            })
+        };
+        assert_eq!(RateFile::over(None, default), default);
+        assert_eq!(RateFile::over(file(None), default), default);
+        // Odd rates round down, never to a burst below the rate (that is an error); 1 gives 2.
+        for (rate, burst) in [(1, 2), (2, 5), (3, 7), (10, 25), (1_000_000, 2_500_000)] {
+            assert_eq!(RateFile::over(file(Some(rate)), default).burst, burst);
+        }
+        // A rate of 4 billion would overflow a `u32` doubled and a half over: it stops at the limit of a burst,
+        // which `rrl` then refuses as below the rate.
+        assert_eq!(
+            RateFile::over(file(Some(u32::MAX)), default).burst,
+            MAX_BURST
+        );
+        let text = format!("rrl: {{ipv4: {{rate: {}}}}}\n{MINIMAL}", u32::MAX);
+        assert!(read(&text, env, &Pipeline::default()).is_err());
+    }
+
+    #[test]
+    fn the_exempt_networks_are_not_limited() {
+        let from: IpAddr = "203.0.113.7".parse().unwrap();
+        let default = read(MINIMAL, env, &Pipeline::default()).unwrap();
+        assert!((0..5000).any(|_| default.pipeline.limits(from, 0)));
+        let text = format!("rrl: {{exempt: ['203.0.113.0/24']}}\n{MINIMAL}");
+        let config = read(&text, env, &Pipeline::default()).unwrap();
+        assert!(!(0..5000).any(|_| config.pipeline.limits(from, 0)));
+        // Loopback is no longer exempt once the list is written.
+        assert!((0..5000).any(|_| config.pipeline.limits("127.0.0.1".parse().unwrap(), 0)));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_rate_limit_while_its_settings_stay() {
+        let first = read(MINIMAL, env, &Pipeline::default()).unwrap();
+        let same = read(MINIMAL, env, &first.pipeline).unwrap();
+        let kept = |a: &Pipeline, b: &Pipeline| match (a.rate_limit(), b.rate_limit()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        assert!(kept(&first.pipeline, &same.pipeline));
+        let text = format!("rrl: {{slip: 1}}\n{MINIMAL}");
+        let changed = read(&text, env, &first.pipeline).unwrap();
+        assert!(!kept(&first.pipeline, &changed.pipeline));
+    }
+
+    #[test]
+    fn a_cookie_secret_is_32_hex_digits_and_hidden() {
+        let ok = format!("cookies: {{secret: '{}'}}\n{MINIMAL}", "ab".repeat(16));
+        let config = read(&ok, env, &Pipeline::default()).unwrap();
+        let shown = format!("{:?}", config.pipeline.cookies());
+        assert!(!shown.contains("abab"), "{shown}");
+        // Quoted, a secret of digits only stays a string, in the file or through `${VAR}` (YAML reads 1234 as a number).
+        for text in [
+            "cookies: {secret: '12345678901234567890123456789012'}",
+            "cookies: {secret: '${DIGITS}'}",
+        ] {
+            read(&format!("{text}\n{MINIMAL}"), env, &Pipeline::default()).unwrap();
+        }
+        for refused in ["cookies: {secret: 'abcd'}", "cookies: {secret: zz}"] {
+            let text = format!("{refused}\n{MINIMAL}");
+            let error = read(&text, env, &Pipeline::default()).unwrap_err();
+            assert!(!error.to_string().contains("zz"), "{error}");
+        }
+        let text = format!("cookies: {{accept: ['{}']}}\n{MINIMAL}", "ab".repeat(16));
+        let error = read(&text, env, &Pipeline::default()).unwrap_err();
+        assert!(error.to_string().contains("`accept` needs a `secret`"));
+    }
+
+    /// How the cookies of `of` take a cookie the cookies of `by` made.
+    fn standing(by: &Pipeline, of: &Pipeline) -> Standing {
+        let from: IpAddr = "192.0.2.9".parse().unwrap();
+        let cookie = by.cookies().unwrap().issue([7; 8], from);
+        of.cookies().unwrap().verify(Some(&cookie), from)
+    }
+
+    #[test]
+    fn a_reload_keeps_the_random_cookie_secret() {
+        let first = read(MINIMAL, env, &Pipeline::default()).unwrap();
+        let second = read(MINIMAL, env, &first.pipeline).unwrap();
+        assert_eq!(standing(&first.pipeline, &second.pipeline), Standing::Valid);
+    }
+
+    #[test]
+    fn a_cookie_of_a_secret_is_accepted_only_where_it_is_listed() {
+        let (a, b) = ("aa".repeat(16), "bb".repeat(16));
+        let with =
+            |text: String| read(&format!("{text}\n{MINIMAL}"), env, &Pipeline::default()).unwrap();
+        let old = with(format!("cookies: {{secret: '{a}'}}"));
+        let new = with(format!("cookies: {{secret: '{b}'}}"));
+        let rolling = with(format!("cookies: {{secret: '{b}', accept: ['{a}']}}"));
+        assert_eq!(standing(&old.pipeline, &new.pipeline), Standing::Invalid);
+        assert_eq!(standing(&old.pipeline, &rolling.pipeline), Standing::Valid);
+        assert_eq!(standing(&rolling.pipeline, &new.pipeline), Standing::Valid);
     }
 
     #[test]

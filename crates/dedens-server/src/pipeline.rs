@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Checked, Key, StalePolicy};
-use dedens_proto::edns::InfoCode;
+use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{
     Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
     Ttl,
@@ -14,9 +14,11 @@ use dedens_proto::{
 
 use crate::access::{Access, Denial};
 use crate::cache::{self, Looked, Read};
+use crate::cookie::{Cookies, Standing};
 use crate::forward::{self, Forward, Server};
 use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
+use crate::rrl::{RateLimit, Verdict};
 use crate::validate::{Check, Outcome, Progress, present};
 
 /// A stage of the pipeline (D23).
@@ -38,6 +40,8 @@ pub enum Stage {
 pub struct Pipeline {
     stages: Box<[Stage]>,
     access: Option<Access>,
+    rate_limit: Option<Arc<RateLimit>>,
+    cookies: Option<Cookies>,
 }
 
 /// What to do next with a query.
@@ -74,6 +78,8 @@ pub struct Upstream {
     /// The client's query, with a question, read again for the request and the reply.
     query: Box<[u8]>,
     transport: Transport,
+    /// The cookie of the reply (D113).
+    cookie: Option<Cookie>,
     server: Server,
     /// The forward stage, its next server, and the cache stage before it.
     forward: usize,
@@ -97,6 +103,8 @@ impl Pipeline {
         Self {
             stages: stages.into(),
             access: None,
+            rate_limit: None,
+            cookies: None,
         }
     }
 
@@ -105,6 +113,44 @@ impl Pipeline {
     pub fn with_access(mut self, access: Access) -> Self {
         self.access = Some(access);
         self
+    }
+
+    /// Limits the rate of UDP queries by source network (D113): a source over its rate gets TC=1 or nothing, unless
+    /// its query carries a valid Server Cookie ([`Pipeline::with_cookies`]). TCP, TLS, QUIC and HTTPS are not
+    /// limited: their clients proved their addresses.
+    #[must_use]
+    pub fn with_rate_limit(mut self, rate_limit: impl Into<Arc<RateLimit>>) -> Self {
+        self.rate_limit = Some(rate_limit.into());
+        self
+    }
+
+    /// Answers a query that has a Client Cookie with a Server Cookie (RFC 7873 §5.2, RFC 9018), and takes a valid one
+    /// as proof of the source address (D113).
+    #[must_use]
+    pub fn with_cookies(mut self, cookies: Cookies) -> Self {
+        self.cookies = Some(cookies);
+        self
+    }
+
+    /// The cookies made and checked, if any.
+    #[must_use]
+    pub const fn cookies(&self) -> Option<&Cookies> {
+        self.cookies.as_ref()
+    }
+
+    /// The rate limit, for a reload to keep it, and its table, when its settings stay.
+    #[must_use]
+    pub const fn rate_limit(&self) -> Option<&Arc<RateLimit>> {
+        self.rate_limit.as_ref()
+    }
+
+    /// Whether a query over UDP without TC, `CoAP` or a REFUSED, from `from` at `now` is over its rate and not to be
+    /// answered (D113): `DoC` is unprotected CoAP over UDP, an amplifier as DNS over UDP is. Counts the drop.
+    #[must_use]
+    pub fn limits(&self, from: IpAddr, now: u32) -> bool {
+        self.rate_limit
+            .as_ref()
+            .is_some_and(|limit| limit.check(from, now, false) != Verdict::Pass)
     }
 
     /// What the access lists do to the client at `from` (D91), `None` when it is answered. Counts nothing: for a
@@ -148,7 +194,13 @@ impl Pipeline {
     /// First, a client the access lists deny (D91, RFC 5358 §4) gets what they say, before any stage: nothing for
     /// [`Denial::Drop`], else REFUSED with EDE 18 (Prohibited, RFC 8914 §4.19) built from the query in place, with
     /// no allocation, unless the bytes are a response or shorter than a header. An IPv4-mapped IPv6 address is the
-    /// IPv4 one.
+    /// IPv4 one. Over UDP that REFUSED counts against the rate of the source network too, and is dropped past it
+    /// ([`Pipeline::with_rate_limit`]).
+    ///
+    /// Then, with cookies ([`Pipeline::with_cookies`]), a query with a Client Cookie is answered with a fresh Server
+    /// Cookie whatever follows (RFC 7873 §5.2, D113), and over UDP a query without a valid Server Cookie counts
+    /// against the rate of its source network ([`Pipeline::with_rate_limit`]): over it, a query gets nothing, or
+    /// every `slip`th an empty reply with TC=1, or BADCOOKIE with a Server Cookie when it had a Client Cookie.
     ///
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
@@ -171,6 +223,11 @@ impl Pipeline {
         {
             return match access.denial() {
                 Denial::Drop => Step::Drop,
+                // Over UDP a spoofed source is denied too, and its REFUSED is as much an answer to aim at the
+                // address as any: the rate limit applies, with no TC (D113).
+                Denial::Refuse if transport == Transport::Udp && self.limits(from, now) => {
+                    Step::Drop
+                }
                 Denial::Refuse => prohibit(wire, transport, out),
             };
         }
@@ -189,7 +246,31 @@ impl Pipeline {
         if header.flags.contains(Flags::QR) {
             return Step::Drop;
         }
-        let client = Client::of(&query, transport);
+        // The cookie is checked first, which costs a hash only for a Server Cookie, and made last, only for a query
+        // that is answered: a flood that is dropped makes none.
+        let request = self.request_cookie(&query);
+        let standing = self.cookies.as_ref().map_or(Standing::NoCookie, |cookies| {
+            cookies.verify(request.as_ref(), from)
+        });
+        // A source that proved its address with a cookie is not spoofed (RFC 7873 §5.2.5).
+        let verdict = match &self.rate_limit {
+            Some(limit) if transport == Transport::Udp && standing != Standing::Valid => {
+                limit.check(from, now, true)
+            }
+            _ => Verdict::Pass,
+        };
+        if verdict == Verdict::Drop {
+            return Step::Drop;
+        }
+        let fresh = self
+            .cookies
+            .as_ref()
+            .zip(request)
+            .map(|(cookies, request)| cookies.issue(request.client(), from));
+        let client = Client::of(&query, transport).with_cookie(fresh);
+        if verdict == Verdict::Slip {
+            return slip(&client, out);
+        }
         let rcode = if !query.violations().is_empty() {
             Rcode::FORMERR
         } else if header.opcode != Opcode::QUERY {
@@ -198,6 +279,14 @@ impl Pipeline {
             Rcode::BADVERS
         } else {
             match query.question() {
+                // A query with a cookie and no question asks for one (RFC 7873 §5.4).
+                None if client.cookie.is_some() => {
+                    if standing == Standing::Invalid {
+                        Rcode::BADCOOKIE
+                    } else {
+                        Rcode::NOERROR
+                    }
+                }
                 None => Rcode::FORMERR,
                 Some(question) if matches!(question.qtype, RecordType::AXFR | RecordType::IXFR) => {
                     Rcode::REFUSED
@@ -206,6 +295,18 @@ impl Pipeline {
             }
         };
         reply(&client, Message::default(), rcode, out)
+    }
+
+    /// The first COOKIE option of `query` (RFC 7873 §5.2), when the pipeline has cookies. A query that breaks a rule
+    /// has none: it is answered FORMERR (§5.2.2).
+    fn request_cookie(&self, query: &Query<'_>) -> Option<Cookie> {
+        if self.cookies.is_none() || !query.violations().is_empty() {
+            return None;
+        }
+        query.edns()?.options().find_map(|option| match option {
+            EdnsOption::Cookie(cookie) => Some(cookie),
+            _ => None,
+        })
     }
 
     /// Runs the stages on a query that passed the core's checks. Without RD, only fresh cached data answers: no
@@ -325,6 +426,7 @@ impl Pipeline {
         Ok(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
+            cookie: client.cookie,
             server: forward.servers().first().ok_or(Refused::NoServer)?.clone(),
             forward: index,
             next: 1,
@@ -359,7 +461,7 @@ impl Pipeline {
         }
         let cache = self.cache(upstream.cache?)?;
         let query = Query::read(&upstream.query).ok()?;
-        let client = Client::of(&query, upstream.transport);
+        let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
         let Looked::Reply { len, .. } = cache::look(
             cache,
             &query,
@@ -399,7 +501,7 @@ impl Pipeline {
         let Ok(query) = Query::read(&upstream.query) else {
             return Step::Drop;
         };
-        let client = Client::of(&query, upstream.transport);
+        let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
         let cache = upstream.cache.and_then(|index| self.cache(index));
         let purpose = upstream.purpose;
         let forward = match self.stages.get(upstream.forward) {
@@ -511,7 +613,7 @@ impl Pipeline {
         let Ok(query) = Query::read(&upstream.query) else {
             return Step::Drop;
         };
-        let client = Client::of(&query, upstream.transport);
+        let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
         reply(&client, Message::default(), Rcode::SERVFAIL, out)
     }
 }
@@ -708,4 +810,25 @@ fn reply<'a>(client: &Client<'a>, message: Message<'a>, rcode: Rcode, out: &mut 
     client
         .reply(message, rcode, None, out)
         .map_or(Step::Drop, Step::Reply)
+}
+
+/// The reply to a query over its rate that is not dropped (D113): BADCOOKIE with a Server Cookie when it had a
+/// Client Cookie, which a real client takes to retry with it and then no longer limited (RFC 7873 §5.2.3); else
+/// an empty reply with TC=1, which sends it to TCP (RFC 1035 §4.2.1).
+fn slip(client: &Client<'_>, out: &mut [u8]) -> Step {
+    let rcode = if client.cookie.is_some() {
+        Rcode::BADCOOKIE
+    } else {
+        Rcode::NOERROR
+    };
+    let Some(len) = client.reply(Message::default(), rcode, None, out) else {
+        return Step::Drop;
+    };
+    if client.cookie.is_none()
+        && let Some(flags) = out.get_mut(2)
+    {
+        // The high byte of the flags word: TC is in it.
+        *flags |= Flags::TC.bits().to_be_bytes()[0];
+    }
+    Step::Reply(len)
 }

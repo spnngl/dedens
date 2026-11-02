@@ -33,16 +33,20 @@ use dedens_odoh::{
     QueryContext, TargetKey, decrypt_query, decrypt_response, encrypt_query,
 };
 use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
+use dedens_proto::edns::{Cookie, EdnsOption as CookieOption};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, DigestType, EdnsView, EncodeError, Flags, Header, Message,
-    Name, Nsec3HashAlgorithm, Query, Question, Rcode, Record, RecordType, SecAlgorithm, Ttl,
-    message,
+    DecodeErrorKind, DecodedRecord, DigestType, Edns, EdnsView, EncodeError, Flags, Header,
+    Message, Name, Nsec3HashAlgorithm, Query, Question, Rcode, Record, RecordType, SecAlgorithm,
+    Ttl, message,
 };
 use dedens_scenario::QueryFile;
-use dedens_server::{Access, Denial, Forward, Network, Pipeline, Plugin, Stage, Step, Transport};
+use dedens_server::{
+    Access, Cookies, Denial, Forward, Network, Pipeline, Plugin, Rate, RateLimit, RateLimitConfig,
+    Secret, Secrets, Stage, Standing, Step, Transport,
+};
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
 use hickory_proto::rr::{RData as HickoryRData, RecordType as HickoryRecordType};
@@ -302,7 +306,9 @@ pub fn cache_insert(data: &[u8]) {
 /// Arbitrary bytes as a client's query, and as the upstream response to a query for their question, then that query
 /// again, from the cache: whatever the server sends back is a conforming reply under the query's ID, within the
 /// client's UDP payload. A server whose access lists hold no network answers the first input with nothing or REFUSED
-/// under its ID (D91).
+/// under its ID (D91). A server limiting rates and giving cookies (D113) answers the input, sent over UDP from a
+/// source over its rate, with nothing or a conforming reply (TC=1, BADCOOKIE), and a query for the input's question
+/// with a Client Cookie from the bytes of the input gets a Server Cookie that verifies and lets the next through.
 ///
 /// # Panics
 ///
@@ -310,6 +316,7 @@ pub fn cache_insert(data: &[u8]) {
 pub fn serve_query(data: &[u8]) {
     let server = SocketAddr::from(([192, 0, 2, 1], 53));
     let mut out = vec![0; MAX_MESSAGE_LEN];
+    limited_cookied(data, &mut out);
     let denying = Pipeline::default().with_access(Access::new([], [], Denial::Refuse));
     for transport in [Transport::Udp, Transport::Tcp] {
         match denying.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out) {
@@ -365,6 +372,89 @@ pub fn serve_query(data: &[u8]) {
         {
             check_reply(&out[..len], id, transport);
         }
+    }
+}
+
+/// The checks of `serve_query` on a pipeline with a rate limit of one query, slip 1, and cookies.
+fn limited_cookied(data: &[u8], out: &mut [u8]) {
+    let rate = Rate {
+        prefix: 24,
+        per_second: 1,
+        burst: 1,
+    };
+    let limit = RateLimit::new(RateLimitConfig {
+        ipv4: rate,
+        ipv6: Rate { prefix: 56, ..rate },
+        slip: 1,
+        table: 16,
+        ..RateLimitConfig::default()
+    })
+    .expect("a valid limit");
+    let cookies = Cookies::new(
+        Secrets::new(Secret::new([7; 16]), Vec::new()),
+        Arc::new(|| 0),
+    );
+    let pipeline = Pipeline::default()
+        .with_rate_limit(limit)
+        .with_cookies(cookies);
+    let from = IpAddr::from([198, 51, 100, 7]);
+    for _ in 0..3 {
+        if let Step::Reply(len) = pipeline.query(data, Transport::Udp, from, 0, out) {
+            let id = Header::peek(data).expect("a reply goes to a header").id;
+            check_reply(&out[..len], id, Transport::Udp);
+        }
+    }
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let Some(question) = decoded.message.questions.first() else {
+        return;
+    };
+    let mut client = [0; 8];
+    for (byte, input) in client.iter_mut().zip(data) {
+        *byte = *input;
+    }
+    let ask = |cookie: Cookie| {
+        let mut query = Message::query(9, question.clone());
+        query.edns = Some(Edns {
+            options: vec![CookieOption::Cookie(cookie)],
+            ..Edns::default()
+        });
+        query.to_vec().expect("a query fits")
+    };
+    // Another network than the one the input spent, so the bucket holds its one query.
+    let from = IpAddr::from([203, 0, 113, 7]);
+    let Ok(client_cookie) = Cookie::new(client, None) else {
+        return;
+    };
+    let Step::Reply(len) = pipeline.query(&ask(client_cookie), Transport::Udp, from, 0, out) else {
+        return;
+    };
+    check_reply(&out[..len], 9, Transport::Udp);
+    let reply = Message::decode(&out[..len])
+        .expect("a reply decodes")
+        .message;
+    let given = reply
+        .edns
+        .iter()
+        .flat_map(|edns| &edns.options)
+        .find_map(|option| match option {
+            CookieOption::Cookie(cookie) => Some(*cookie),
+            _ => None,
+        })
+        .expect("a Client Cookie is answered with a cookie");
+    let cookies = pipeline.cookies().expect("cookies");
+    assert_eq!(cookies.verify(Some(&given), from), Standing::Valid);
+    // A valid Server Cookie is not limited: the bucket is spent, and the reply is not TC or BADCOOKIE.
+    if let Step::Reply(len) = pipeline.query(&ask(given), Transport::Udp, from, 0, out) {
+        let reply = Message::decode(&out[..len])
+            .expect("a reply decodes")
+            .message;
+        assert_ne!(reply.rcode(), Rcode::BADCOOKIE, "a valid cookie passes");
+        assert!(
+            !reply.header.flags.contains(Flags::TC),
+            "a valid cookie passes"
+        );
     }
 }
 

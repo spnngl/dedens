@@ -11,6 +11,7 @@ mod rfc7873_cookie;
 mod rfc8914_ede;
 
 use std::borrow::Cow;
+use std::mem;
 
 pub use rfc7871_client_subnet::{ClientSubnet, InvalidClientSubnet};
 pub use rfc7873_cookie::{Cookie, InvalidServerCookie};
@@ -381,7 +382,10 @@ pub(crate) fn read_options<'a>(
     rdata: Reader<'a>,
     mut each: impl FnMut(EdnsOption<'a>, Option<InvalidOption>),
 ) -> Result<(), DecodeError> {
-    let mut options = Options { rdata };
+    let mut options = Options {
+        rdata,
+        cookie: false,
+    };
     while let Some((option, invalid)) = options.read()? {
         each(option, invalid);
     }
@@ -389,30 +393,38 @@ pub(crate) fn read_options<'a>(
 }
 
 /// The options of an OPT record that was checked when its message was read, in wire order; an option whose
-/// content is invalid for its code comes as [`EdnsOption::Unknown`] (D9).
+/// content is invalid for its code comes as [`EdnsOption::Unknown`] (D9). Only the first COOKIE option is read: the
+/// others are ignored, valid or not (RFC 7873 §5.2).
 #[derive(Debug, Clone)]
 pub struct Options<'a> {
     rdata: Reader<'a>,
+    /// Whether a COOKIE option was read.
+    cookie: bool,
 }
 
 impl<'a> Options<'a> {
     /// The next option and, when its content is invalid for its code, why it is kept unknown.
     fn read(&mut self) -> Result<Option<(EdnsOption<'a>, Option<InvalidOption>)>, DecodeError> {
-        let rdata = &mut self.rdata;
-        if rdata.is_empty() {
-            return Ok(None);
+        loop {
+            let rdata = &mut self.rdata;
+            if rdata.is_empty() {
+                return Ok(None);
+            }
+            let code = OptionCode(rdata.u16().map_err(rdlength)?);
+            let len = usize::from(rdata.u16().map_err(rdlength)?);
+            let mut data = rdata.sub(len).map_err(rdlength)?;
+            if code == OptionCode::COOKIE && mem::replace(&mut self.cookie, true) {
+                continue;
+            }
+            let mut raw = data;
+            return Ok(Some(match EdnsOption::decode_typed(code, &mut data) {
+                Ok(option) => (option, None),
+                Err(error) => (
+                    EdnsOption::Unknown(UnknownOption::borrowed(code, raw.rest())),
+                    Some(InvalidOption { code, error }),
+                ),
+            }));
         }
-        let code = OptionCode(rdata.u16().map_err(rdlength)?);
-        let len = usize::from(rdata.u16().map_err(rdlength)?);
-        let mut data = rdata.sub(len).map_err(rdlength)?;
-        let mut raw = data;
-        Ok(Some(match EdnsOption::decode_typed(code, &mut data) {
-            Ok(option) => (option, None),
-            Err(error) => (
-                EdnsOption::Unknown(UnknownOption::borrowed(code, raw.rest())),
-                Some(InvalidOption { code, error }),
-            ),
-        }))
     }
 }
 
@@ -459,6 +471,7 @@ impl<'a> EdnsView<'a> {
     pub fn options(&self) -> Options<'a> {
         Options {
             rdata: self.options,
+            cookie: false,
         }
     }
 

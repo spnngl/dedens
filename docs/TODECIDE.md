@@ -65,7 +65,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   fetch at a random time apart from the query. Default: well-known, direct.
 - ODoH target throttle (D79): `dedensd` opens every POST of the media type, an X25519 decapsulation and an AEAD open,
   before it knows the sender; the proxy of RFC 9230 §4 is no authentication, and the limit per address
-  (D90) is the deployment's, in front of `dedensd`. Default: none.
+  (D90; D113 limits UDP only) is the deployment's, in front of `dedensd`. Default: none.
 - ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
   `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
   one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
@@ -101,7 +101,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   deployment shows the need.
 - Validating forwarder (D77): the allowance is one bucket for all clients and has no knob in the configuration
   (`Allowance` defaults), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a P-256
-  one). Default: global, fixed (a limit per source is the deployment's, D90); `dnssec_allowance:` keys when a
+  one). Default: global, fixed (a limit per source is D113's for UDP, the deployment's for the rest, D90); `dnssec_allowance:` keys when a
   deployment hits the default, units weighted by algorithm
   when one signs with P-384 to burn the bucket's CPU.
 - Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a

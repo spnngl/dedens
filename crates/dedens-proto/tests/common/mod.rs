@@ -355,12 +355,19 @@ pub(crate) fn edns() -> impl Strategy<Value = Edns<'static>> {
         any::<u16>(),
         prop::collection::vec(edns_option(), 0..=3),
     )
-        .prop_map(|(udp_payload, ext_rcode, version, flags, options)| Edns {
-            udp_payload,
-            ext_rcode,
-            version,
-            flags: EdnsFlags::from_bits(flags),
-            options,
+        .prop_map(|(udp_payload, ext_rcode, version, flags, mut options)| {
+            // Only the first COOKIE option is read back (RFC 7873 §5.2).
+            let mut cookie = false;
+            options.retain(|option| {
+                !matches!(option, EdnsOption::Cookie(_)) || !std::mem::replace(&mut cookie, true)
+            });
+            Edns {
+                udp_payload,
+                ext_rcode,
+                version,
+                flags: EdnsFlags::from_bits(flags),
+                options,
+            }
         })
 }
 
