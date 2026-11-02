@@ -2419,22 +2419,35 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     did).
   - Oracle: each query of a client ends by its deadline (the tries of its options, and one more each for the
     fallbacks) with a response that decodes, answers its question, and is one of: the data of an upstream server for
-    the question (same response code and records, no more authority or additional record, TTLs no higher than the
-    server's or the cache's `min_ttl`, the SOA of a negative answer, AD as the scenario says); a stale copy (EDE 3,
-    RFC 8914); SERVFAIL without an answer, unless the scenario says the path is up; a response code the scenario
-    accepts; or the failure or I/O error the real client returns. A panic in any task of a host fails the run.
+    the question (same response code and records, each once, no more authority or additional record, TTLs no higher
+    than the server's, or the `floor` of the scenario's rules when it is higher, which must be the `min_ttl` of
+    the pipeline's cache; the SOA of a negative answer; AD as the scenario says; RRSIG, NSEC and NSEC3 records only
+    when the stub set DO, as the upstream server sends them); a stale copy (EDE 3, RFC 8914, its TTLs bounded by
+    the rules' `stale_ttl`, which must be the cache's `stale_answer_ttl`); SERVFAIL, or a response code the
+    scenario accepts (never NOERROR), with no answer, no AD and no record the servers did not send; a SERVFAIL is
+    refused when the scenario says the path is up; or the failure or I/O error the real client returns. A TC
+    response over TCP is a failure. A panic in any task of a host fails the run.
   - Left out, as the compio layer's concern, until it runs on turmoil: socket pools (D50), D108's inboxes, connection
     reuse and idle timeouts (a connection's queries are answered one after the other, in order), D86's shared
-    flights, the cap on connections and on upstream queries, one reading task for each datagram, compio's timers
-    (tokio's, which turmoil advances, stand in) and threads (one thread runs every host). A panic of a host after
-    the last client finished is not seen, and a task that spins without waiting hangs the run: there is no guard.
+    flights, the cap on connections and on upstream queries, `dedensd`'s few reading tasks (here a task answers
+    each datagram), compio's timers (tokio's, which turmoil advances, stand in) and threads (one thread runs every
+    host). The driver forwards over plain DNS only: a pipeline whose forward targets are TLS, QUIC or HTTPS panics.
+    A panic of a host after the last client finished is not seen, and a task that spins without waiting hangs the
+    run: there is no guard.
+  - What goes wrong is injected by the scenario: `Fault`s of the network and of hosts at a time it picks from the
+    seed; for an upstream server, `Answers::faulty` (each response sent, dropped or delayed, from the host's seeded
+    stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`; an attacker on a server's socket that sends
+    what the scenario gives it and may silence the server (`Reaction`). Turmoil's loss is a link going down and
+    coming back, not a per-packet rate; its latency range is what reorders. A validating stage runs on the run's
+    clock (`resolver::wall_clock`) from a start date `Topology::epoch` sets, so the captures of `dedens-dnssec`
+    validate at the time they were made (`dedens-dnssec` is a dev-dependency of the crate).
   - Seeds: one seed drives turmoil's network, the faults a scenario has it pick, and the IDs and cookies of each
     host's queries (SplitMix64, one stream a host). `just check` runs fixed seeds; `DEDENS_SIM_SEED=<n>` one alone;
     `DEDENS_SIM_RUNS=<n>` that many random ones; a failure prints its seed, which becomes a fixed one with a
     comment on what it caught. The run starts at a fixed date (`Topology::epoch` changes it).
   - Determinism, every source that could make one seed's runs differ:
-    - turmoil's rng and host order follow `rng_seed`; its `select!` branch order does not, so every `select!` in
-      the driver is `biased`. Pinned.
+    - turmoil's rng and host order follow `rng_seed`; tokio's `select!` picks the order of its branches from a
+      generator of its own, so every `select!` in the driver is `biased`. Pinned.
     - Hosts are tasks of one thread in `JoinSet`s; IDs, cookies, faults and times come from the seeded streams; the
       driver keeps no `HashMap`; `getrandom` only draws the seeds of `DEDENS_SIM_RUNS`, outside a run. Pinned.
     - Clocks: the cores read none (`Exchange` and `Pipeline` take the time as an argument; checked in
@@ -2455,8 +2468,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     - `seed::in_two_processes` runs a scenario here and in a second process of the test binary and compares the
       digests of the traces (`tests/replay.rs`).
   - Time: the tests of a family run under 2 s in `just check` (debug build), the crate under 10 s; a family over the
-    budget runs fewer fixed seeds, not a smaller scenario. When this was written: `tests/baseline.rs` 1.3 s, the
-    crate 1.4 s (5 s on one test thread).
-  - `just sim runs=100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
+    budget runs fewer fixed seeds, not a smaller scenario.
+  - `just sim 100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
     `sim` job of `.github/workflows/deep.yml` runs it on pull requests (30 minutes), informational, outside the gate
     as `mutants` (D103); the workflow's `loom` job is D135's.

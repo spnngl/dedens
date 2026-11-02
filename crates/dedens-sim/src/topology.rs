@@ -137,9 +137,12 @@ impl Topology {
             let name = format!("upstream-{n}");
             let host = sim.lookup(name.as_str());
             addrs.push(SocketAddr::new(host, PORT));
+            // The streams of the seed: 0 is the resolver's, 1 and up the clients', the top one the picks of the
+            // scenario, and those below it the upstream servers'.
+            let rng = Rc::new(RefCell::new(Rng::new(seed, u64::MAX - 1 - n as u64)));
             let (answers, trace) = (Rc::new(answers), trace.clone());
             sim.host(name, move || {
-                upstream::serve(Rc::clone(&answers), host, trace.clone())
+                upstream::serve(Rc::clone(&answers), host, Rc::clone(&rng), trace.clone())
             });
         }
         let host = sim.lookup("resolver");

@@ -2,29 +2,38 @@
 //! network, then with each fault and the attacker the harness offers used once (D133): every later family starts
 //! from these. The last test has the seed pick the faults.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use dedens_cache::Config;
+use dedens_dnssec::anchor::TrustAnchors;
+use dedens_dnssec::validator::{Limits, Validator};
 use dedens_net::client::ClientError;
-use dedens_net::exchange::{Failure, Options};
+use dedens_net::exchange::Failure;
 use dedens_net::tcp::TcpError;
 use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Message, Rcode, RecordType, Transport};
-use dedens_sim::attacker::{Attacker, Injection};
-use dedens_sim::client::{Carrier, Client};
+use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
+use dedens_server::Validating;
+use dedens_sim::attacker::{Attacker, Injection, Reaction};
+use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server};
-use dedens_sim::resolver::pipeline_with;
-use dedens_sim::seed::{self, Rng, Seed};
+use dedens_sim::resolver::{pipeline_validating, pipeline_with, wall_clock};
+use dedens_sim::seed::{self, Seed};
 use dedens_sim::stub::{Outcome, question};
 use dedens_sim::topology::{Topology, World};
-use dedens_sim::trace::{Event, Trace, What};
-use dedens_sim::upstream::Answers;
+use dedens_sim::trace::{Event, What};
+use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 
 /// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
 const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+
+/// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time, and
+/// the file keeps to its budget.
+
+const FEW: &[u64] = &[0, 7];
 
 /// One client asks `example.com A` `asks` times over `carrier`, through a resolver with one upstream server.
 fn run(seed: Seed, carrier: Carrier, asks: usize) -> Vec<Event> {
@@ -367,32 +376,36 @@ fn a_resolver_that_restarts_answers_the_second_try() {
     });
 }
 
+/// A forgery of `genuine`: the right address and port, the wrong ID, other data.
+fn forge(genuine: &[u8]) -> Vec<u8> {
+    let mut forged = genuine.to_vec();
+    if let Some(id) = forged.first_mut() {
+        *id = id.wrapping_add(1);
+    }
+    if let Some(last) = forged.last_mut() {
+        *last ^= 0xff;
+    }
+    forged
+}
+
 #[test]
 fn forged_and_late_datagrams_from_the_server_do_not_change_the_answer() {
     seed::each(SEEDS, |seed| {
         let attacker = Attacker::new(|seen| {
             let Some(genuine) = seen.genuine else {
-                return Vec::new();
+                return Reaction::beside(Vec::new());
             };
-            // The right address and port, the wrong ID, other data.
-            let mut forged = genuine.to_vec();
-            if let Some(id) = forged.first_mut() {
-                *id = id.wrapping_add(1);
-            }
-            if let Some(last) = forged.last_mut() {
-                *last ^= 0xff;
-            }
-            vec![
+            Reaction::beside(vec![
                 Injection {
                     after: Duration::ZERO,
-                    wire: forged,
+                    wire: forge(genuine),
                 },
                 // The genuine answer again, after the exchange ended.
                 Injection {
                     after: Duration::from_millis(300),
                     wire: genuine.to_vec(),
                 },
-            ]
+            ])
         });
         let events = ask_once(seed, a().attacked_by(attacker), |_| {});
         let injected = events
@@ -450,9 +463,15 @@ fn a_small_edns_size_has_the_stub_ask_again_over_tcp() {
 #[test]
 fn whatever_the_seed_breaks_queries_end_well() {
     seed::each(SEEDS, |seed| {
+        // A server that, on top of what the network does, loses a quarter of its responses and delays another.
         let answers = Answers::new()
             .captured("a")
-            .truncating("truncated", "txt_large");
+            .truncating("truncated", "txt_large")
+            .faulty(|_, rng| match rng.below(4) {
+                0 => Verdict::Drop,
+                1 => Verdict::Delay(SECOND),
+                _ => Verdict::Answer,
+            });
         let mut world = Topology::new().upstream(answers).build(seed);
         let start = world.pick(Duration::ZERO, 2 * SECOND);
         let end = start + world.pick(SECOND, 6 * SECOND);
@@ -539,7 +558,7 @@ fn cookies_seen(seed: Seed, server_cookie: Option<[u8; 8]>) -> Vec<Option<(Vec<u
         record
             .borrow_mut()
             .push(cookie.map(|cookie| (cookie.client().to_vec(), cookie.server().is_some())));
-        Vec::new()
+        Reaction::beside(Vec::new())
     });
     let mut answers = Answers::new()
         .captured("a")
@@ -649,7 +668,7 @@ fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
 
 #[test]
 fn a_crashed_resolver_leaves_a_tcp_query_to_time_out() {
-    seed::each(SEEDS, |seed| {
+    seed::each(FEW, |seed| {
         let mut world = Topology::new().upstream(a()).build(seed);
         world.fault(Duration::ZERO, Fault::Crash(Server::Resolver));
         world.client(async move |stub| {
@@ -673,16 +692,11 @@ fn a_port_nobody_listens_on_refuses_the_connection() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new().upstream(a()).build(seed);
         let resolver = world.resolver;
-        world.client(async move |_| {
-            let host = turmoil::lookup("client-0");
-            let rng = Rc::new(RefCell::new(Rng::new(seed, 99)));
-            let client = Client::new(rng, host, Trace::new());
+        world.client(async move |stub| {
             let query = Message::query(0, question("example.com", RecordType::A));
             let nobody = SocketAddr::new(resolver.ip(), 54);
-            let got = client
-                .exchange(query, nobody, Carrier::Tcp, &Options::default())
-                .await;
-            let Err(ClientError::Tcp(TcpError::Connect(error))) = got else {
+            let got = stub.ask_query(query, nobody, Carrier::Tcp).await?;
+            let Outcome::Io(ClientError::Tcp(TcpError::Connect(error))) = got else {
                 return Err(format!("{got:?}").into());
             };
             assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
@@ -810,6 +824,105 @@ fn a_server_that_refuses_the_connection_is_skipped_for_the_next() {
                 return Err(format!("no answer: {outcome:?}").into());
             };
             assert_eq!(answer.message.answer.len(), 2);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn an_attacker_that_silences_the_server_leaves_the_forgery_alone() {
+    seed::each(FEW, |seed| {
+        let attacker = Attacker::new(|seen| match seen.genuine {
+            Some(genuine) => Reaction::instead(vec![Injection {
+                after: Duration::ZERO,
+                wire: forge(genuine),
+            }]),
+            None => Reaction::instead(Vec::new()),
+        });
+        let events = ask_once(seed, a().attacked_by(attacker), |_| {});
+        // The server did not answer, and the resolver did not take the forgery for its answer.
+        assert_eq!(served(&events), 0, "{events:#?}");
+        assert!(!got_the_records(&events), "{events:#?}");
+    });
+}
+
+#[test]
+fn a_silent_server_ends_in_servfail_or_a_failure() {
+    seed::each(FEW, |seed| {
+        let events = ask_once(seed, a().silent(), |_| {});
+        assert_eq!(served(&events), 0, "{events:#?}");
+        assert!(!got_the_records(&events), "{events:#?}");
+    });
+}
+
+#[test]
+fn a_slow_server_still_answers() {
+    seed::each(SEEDS, |seed| {
+        let events = ask_once(seed, a().faulty(|_, _| Verdict::Delay(SECOND / 2)), |_| {});
+        assert!(got_the_records(&events), "{events:#?}");
+    });
+}
+
+/// Asks `example.com A` over TCP to a server that behaves as `behaviour` over it, and says whether the client got
+/// its records.
+fn tcp_gets_the_records(seed: Seed, behaviour: Behaviour) -> bool {
+    let mut world = Topology::new().upstream(a().tcp(behaviour)).build(seed);
+    let got = Rc::new(Cell::new(false));
+    let reported = Rc::clone(&got);
+    world.client(async move |stub| {
+        let outcome = stub
+            .ask(question("example.com", RecordType::A), Carrier::Tcp)
+            .await?;
+        reported
+            .set(matches!(&outcome, Outcome::Answered(answer) if answer.message.answer.len() == 2));
+        Ok(())
+    });
+    world.run().expect("the run passes its checks");
+    got.get()
+}
+
+#[test]
+fn a_server_that_closes_or_stays_silent_over_tcp_gives_no_records() {
+    seed::each(FEW, |seed| {
+        // One query for each connection: it answers the first.
+        assert!(tcp_gets_the_records(seed, Behaviour::Close(1)));
+        assert!(!tcp_gets_the_records(seed, Behaviour::Close(0)));
+        assert!(!tcp_gets_the_records(seed, Behaviour::Silent));
+    });
+}
+
+#[test]
+fn a_validating_resolver_vouches_for_a_captured_zone_at_the_time_of_the_capture() {
+    seed::each(SEEDS, |seed| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
+        let at: u64 = std::fs::read_to_string(dir.join("captured_at"))
+            .expect("the time of the capture")
+            .trim()
+            .parse()
+            .expect("Unix time in seconds");
+        let mut world = Topology::new()
+            .upstream(Answers::new().directory(&dir))
+            .epoch(UNIX_EPOCH + Duration::from_secs(at))
+            .resolver(|upstreams| {
+                let validator = Validator::new(TrustAnchors::root(), Limits::default());
+                pipeline_validating(upstreams, Validating::new(validator, wall_clock()))
+            })
+            .build(seed);
+        world.client(async move |mut stub| {
+            stub.rules.dnssec = true;
+            stub.rules.authentic = true;
+            let answer = stub
+                .expect(question("cloudflare.com", RecordType::A), Carrier::Udp)
+                .await?;
+            assert!(answer.message.header.flags.contains(Flags::AD));
+            assert!(
+                answer
+                    .message
+                    .answer
+                    .iter()
+                    .any(|record| record.rtype() == RecordType::RRSIG)
+            );
             Ok(())
         });
         world.run().expect("the run passes its checks");

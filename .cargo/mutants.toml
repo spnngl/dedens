@@ -43,11 +43,13 @@ exclude_re = [
   # dedens-sim: a `read` that returns an empty or one-byte message makes the host loop on it without waiting, so the run
   # never ends (a timeout of the mutants run, not a failure).
   'framing\.rs:\d+:\d+: replace read -> io::Result<Vec<u8>> with ',
-  # dedens-sim: a capture decoded and encoded again is the same bytes, so the shortcut for a reply that needs no cut
-  # and no cookie only saves the work.
+  # dedens-sim: a capture decoded and encoded again is the same message; no test asserts the reply's length (D112's
+  # compression may differ from the capture's), so the shortcut for a reply that needs no cut and no cookie only
+  # saves the work.
   'upstream\.rs:\d+:\d+: replace \|\| with && in Answers::answer$',
-  # dedens-sim: a local error of the exchange is an encoding failure, which no scenario can make: the resolver
-  # abandons the question for it as `dedensd` does.
+  # dedens-sim: a local error of the exchange is an encoding failure, or a local socket error (bind failure, no
+  # file descriptor), which no scenario can make and turmoil never produces: the resolver abandons the question for
+  # it as `dedensd` does.
   'resolver\.rs:\d+:\d+: replace match guard error\.is_local\(\) with false in Shared::answer$',
   # dedens-sim: a connection whose reply could not be written is read on until the read fails too: the same end.
   'resolver\.rs:\d+:\d+: replace \|= with &= in connection$',
