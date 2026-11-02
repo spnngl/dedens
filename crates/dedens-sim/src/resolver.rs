@@ -3,7 +3,7 @@
 //!
 //! The pipeline is the scenario's: [`Resolver::build`] makes a new one at each start of the host, as a restarted
 //! `dedensd` has an empty cache. [`pipeline`] is the default, a cache and a forwarder. A cache the scenario builds
-//! must keep `shards: 1` ([`cache_config`]): the shard of a key follows from a hash that is random for each
+//! must keep `shards: 1` ([`pipeline_with`] forces it): the shard of a key follows from a hash that is random for each
 //! process, so with more the entry a full cache evicts could change from one process to another (D133).
 //!
 //! Mirrored: the forward stage's timeout and tries for each upstream query, the client response timer and the
@@ -41,23 +41,14 @@ const OUT: usize = 65535;
 /// Makes the pipeline of a start of the resolver from its upstream servers.
 pub type Build = Rc<dyn Fn(&[SocketAddr]) -> Pipeline>;
 
-/// The cache's configuration the simulation needs: the default, in one shard.
-#[must_use]
-pub fn cache_config() -> Config {
-    Config {
-        shards: 1,
-        ..Config::default()
-    }
-}
-
-/// The default pipeline: a cache of [`cache_config`] and a forwarder to `upstreams`.
+/// The default pipeline: a cache of the default configuration and a forwarder to `upstreams`.
 ///
 /// # Panics
 ///
 /// With no upstream server.
 #[must_use]
 pub fn pipeline(upstreams: &[SocketAddr]) -> Pipeline {
-    pipeline_with(cache_config(), upstreams)
+    pipeline_with(Config::default(), upstreams)
 }
 
 /// A cache of `config`, in one shard whatever `config` says, and a forwarder to `upstreams`.

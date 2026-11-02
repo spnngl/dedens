@@ -10,7 +10,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `src/client.rs`: `Client`, one `Exchange` over turmoil UDP and TCP as the real client runs it (cookies, TCP retried
   once on a new connection, `ClientError`s); `Carrier`.
 - `src/resolver.rs`: `Resolver`, a `Pipeline` served on port 53 as `dedensd`'s `start` and `answer` do (D45's stale
-  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`, `cache_config`.
+  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`.
 - `src/upstream.rs`: `Answers`, `serve`: an upstream server answering from captured responses (cut to the query's
   EDNS size, REFUSED for a question it holds nothing for).
 - `src/oracle.rs`: `Expected`, `Rules`, `judge`: what a client may get.

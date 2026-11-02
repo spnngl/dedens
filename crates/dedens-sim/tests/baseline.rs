@@ -16,7 +16,7 @@ use dedens_proto::{Message, Rcode, RecordType, Transport};
 use dedens_sim::attacker::{Attacker, Injection};
 use dedens_sim::client::{Carrier, Client};
 use dedens_sim::fault::{Fault, Node, Server};
-use dedens_sim::resolver::{cache_config, pipeline_with};
+use dedens_sim::resolver::pipeline_with;
 use dedens_sim::seed::{self, Rng, Seed};
 use dedens_sim::stub::{Outcome, question};
 use dedens_sim::topology::{Topology, World};
@@ -596,7 +596,7 @@ fn the_cache_follows_the_clock() {
                 let config = Config {
                     min_ttl: 1,
                     max_ttl: ttl,
-                    ..cache_config()
+                    ..Config::default()
                 };
                 pipeline_with(config, upstreams)
             })
@@ -702,7 +702,7 @@ fn a_cache_answers_stale_when_the_server_is_out_of_reach() {
                     min_ttl: 1,
                     max_ttl: 2,
                     stale_answer_after_ms: 200,
-                    ..cache_config()
+                    ..Config::default()
                 };
                 pipeline_with(config, upstreams)
             })
@@ -757,5 +757,61 @@ fn a_client_at_an_address_of_its_choice_asks_from_there() {
                 .any(|event| event.host == ip && matches!(event.what, What::Answered { .. })),
             "{events:#?}"
         );
+    });
+}
+
+#[test]
+fn expect_wants_the_data_where_the_path_is_up() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(a()).build(seed);
+        world.client(async move |stub| {
+            let answer = stub
+                .expect(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            assert_eq!(answer.message.answer.len(), 2);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn expect_fails_on_the_servfail_that_ask_allows() {
+    seed::each(SEEDS, |seed| {
+        // The server holds nothing, so the resolver's answer is SERVFAIL: `ask` accepts it, `expect` does not.
+        let mut world = Topology::new().upstream(Answers::new()).build(seed);
+        world.client(async move |stub| {
+            let ask = question("example.com", RecordType::A);
+            assert!(stub.ask(ask.clone(), Carrier::Udp).await.is_ok());
+            assert!(stub.expect(ask, Carrier::Udp).await.is_err());
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn a_server_that_refuses_the_connection_is_a_servfail_not_a_silence() {
+    seed::each(SEEDS, |seed| {
+        // The resolver forwards a query that came over TCP over TCP, to a port nobody listens on: the error is the
+        // network's, not the query's, so the question ends in SERVFAIL and is not abandoned.
+        let mut world = Topology::new()
+            .upstream(a())
+            .resolver(|upstreams| {
+                let nobody = [SocketAddr::new(upstreams[0].ip(), 54)];
+                pipeline_with(Config::default(), &nobody)
+            })
+            .build(seed);
+        world.client(async move |stub| {
+            let outcome = stub
+                .ask(question("example.com", RecordType::A), Carrier::Tcp)
+                .await?;
+            let Outcome::Answered(answer) = outcome else {
+                return Err(format!("no answer: {outcome:?}").into());
+            };
+            assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
     });
 }

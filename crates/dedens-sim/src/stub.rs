@@ -136,6 +136,11 @@ pub fn bound(options: &Options) -> Duration {
     options.timeout * (u32::from(options.tries.get()) + spare)
 }
 
+/// Whether a query that took `elapsed` ended after `bound`.
+fn late(elapsed: Duration, bound: Duration) -> bool {
+    elapsed > bound
+}
+
 impl Stub {
     /// A stub on `host` asking `resolver`.
     #[must_use]
@@ -202,7 +207,7 @@ impl Stub {
             .await;
         let elapsed = started.elapsed();
         let bound = bound(&self.options);
-        if elapsed > bound {
+        if late(elapsed, bound) {
             return Err(CheckError::Late {
                 question: Box::new(question),
                 elapsed,
@@ -321,6 +326,14 @@ mod tests {
 
     use super::*;
     use crate::upstream::captured;
+
+    #[test]
+    fn a_query_is_late_after_its_bound_only() {
+        let bound = Duration::from_secs(3);
+        assert!(!late(Duration::from_millis(2999), bound));
+        assert!(!late(bound, bound));
+        assert!(late(bound + Duration::from_nanos(1), bound));
+    }
 
     fn wire_of(message: &Message<'static>) -> Vec<u8> {
         let mut out = vec![0; 65535];
