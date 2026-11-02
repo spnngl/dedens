@@ -41,3 +41,5 @@ exclude_re = [
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
   'client\.rs:\d+:\d+: replace discover -> Result<Vec<Vec<Box<\[u8\]>>>, ClientError> with ',
 ]
+# Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135).
+exclude_globs = ["apps/dedensd/src/sync/loom_slot.rs"]

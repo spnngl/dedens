@@ -17,8 +17,8 @@ use crate::lists::Store;
 use crate::privileges::Identity;
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
-/// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
-/// one atomic load, and take the new pipeline under the lock only when it changed; a reload wakes them too, so that
+/// The pipeline in use. Serving threads ask [`Current::newer`] before each query: one atomic load, and the new
+/// pipeline under the lock only when the generation changed; a reload wakes them too, so that
 /// an idle thread takes it without a query (D107).
 #[derive(Debug)]
 pub(crate) struct Current {
@@ -45,8 +45,15 @@ impl Current {
     }
 
     /// Bumped by each [`Current::replace`], after the pipeline is.
-    pub(crate) fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// What a thread holding generation `held` takes before a query: `None` while a reload has not replaced the
+    /// pipeline since, else the generation read, with the pipeline of that generation or a later one.
+    pub(crate) fn newer(&self, held: u64) -> Option<(u64, sync::Arc<Pipeline>)> {
+        let generation = self.generation();
+        (generation != held).then(|| (generation, self.get()))
     }
 
     /// The pipeline in use: of [`Current::generation`] or a later one.
@@ -385,7 +392,7 @@ mod loom_tests {
     use loom::thread;
 
     use super::*;
-    use crate::sync::Arc;
+    use crate::sync::{Arc, model};
 
     /// What a serving thread holds: `Thread` in `serve.rs`.
     struct Serving {
@@ -406,12 +413,10 @@ mod loom_tests {
             }
         }
 
-        /// What a query does first, as `Thread::pipeline` does: takes the pipeline when the generation changed.
+        /// What a query does first, as `Thread::pipeline` in `serve.rs`: takes the pipeline of a newer generation.
         fn query(&mut self) {
-            let generation = self.current.generation();
-            if self.generation != generation {
-                self.pipeline = self.current.get();
-                self.generation = generation;
+            if let Some((generation, pipeline)) = self.current.newer(self.generation) {
+                (self.generation, self.pipeline) = (generation, pipeline);
             }
         }
 
@@ -443,7 +448,7 @@ mod loom_tests {
     /// then takes the last one, whichever read the replacement fell between.
     #[test]
     fn a_query_finds_the_last_pipeline_after_a_follow_racing_a_replace() {
-        loom::model(|| {
+        model(|| {
             let current = Arc::new(Current::new(Pipeline::default()));
             let reloading = reload(&current, 1);
             let mut serving = Serving::new(&current);
@@ -457,7 +462,7 @@ mod loom_tests {
     /// after the subscription, and the generation read says so when it came before.
     #[test]
     fn an_idle_follower_takes_the_pipeline_by_its_wake_up() {
-        loom::model(|| {
+        model(|| {
             let current = Arc::new(Current::new(Pipeline::default()));
             let reloading = reload(&current, 1);
             let mut serving = Serving::new(&current);
@@ -471,7 +476,7 @@ mod loom_tests {
     /// follower still ends on the last pipeline.
     #[test]
     fn an_idle_follower_ends_on_the_last_of_two_replaces() {
-        loom::model(|| {
+        model(|| {
             let current = Arc::new(Current::new(Pipeline::default()));
             let reloading = reload(&current, 2);
             let mut serving = Serving::new(&current);
@@ -485,7 +490,7 @@ mod loom_tests {
     /// follower that stays hears it, and the next replacement forgets the one that went.
     #[test]
     fn a_dropped_follower_does_not_cost_the_others_their_wake_up() {
-        loom::model(|| {
+        model(|| {
             let current = Arc::new(Current::new(Pipeline::default()));
             let reloading = reload(&current, 1);
             let leaving = {

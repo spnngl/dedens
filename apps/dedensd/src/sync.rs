@@ -5,6 +5,9 @@
 
 pub(crate) use std::sync::PoisonError;
 
+#[cfg(all(dedens_loom, not(test)))]
+compile_error!("`--cfg dedens_loom` is for the loom tests: `just loom`");
+
 #[cfg(dedens_loom)]
 mod loom_slot;
 
@@ -21,6 +24,15 @@ pub(crate) use loom::sync::atomic::{AtomicU64, Ordering};
 pub(crate) use loom::sync::{Arc, Mutex, MutexGuard};
 #[cfg(dedens_loom)]
 pub(crate) use loom_slot::{Receiver, Sender, TrySendError, slot};
+
+/// `loom::model` up to a preemption bound of four, which keeps `just loom` to seconds: the interleavings of these
+/// tests grow exponentially with it (D135).
+#[cfg(all(dedens_loom, test))]
+pub(crate) fn model(test: impl Fn() + Sync + Send + 'static) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(4);
+    builder.check(test);
+}
 
 /// A channel holding one message at most: a wake-up (`Sender::try_send`, never blocking; `Receiver::recv_async`) or
 /// the one response of a flight. `flume::bounded(1)` in the server.

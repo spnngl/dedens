@@ -63,7 +63,7 @@ impl Flights {
     /// it.
     pub(crate) async fn enter(&self, key: &Key) -> Entered<'_> {
         loop {
-            match self.join(key.clone()) {
+            match self.join(key) {
                 Flight::Lead(lead) => return Entered::Lead(lead),
                 Flight::Follow(response) => {
                     if let Ok(shared) = response.recv_async().await {
@@ -75,9 +75,9 @@ impl Flights {
     }
 
     /// The part of a query asking `key`.
-    fn join(&self, key: Key) -> Flight<'_> {
+    fn join(&self, key: &Key) -> Flight<'_> {
         let mut open = self.open();
-        if let Some(followers) = open.get_mut(&key) {
+        if let Some(followers) = open.get_mut(key) {
             let (sender, receiver) = sync::slot();
             followers.push(sender);
             return Flight::Follow(receiver);
@@ -85,7 +85,7 @@ impl Flights {
         open.insert(key.clone(), Vec::new());
         Flight::Lead(Lead {
             flights: self,
-            key: Some(key),
+            key: Some(key.clone()),
         })
     }
 
@@ -110,7 +110,11 @@ impl Lead<'_> {
         let shared: Shared = response.filter(|_| !followers.is_empty()).map(Arc::from);
         for follower in followers {
             // A follower that is gone does not need it; its slot is never full, one message is sent to each.
-            let _ = follower.try_send(shared.clone());
+            let sent = follower.try_send(shared.clone());
+            debug_assert!(
+                !matches!(sent, Err(sync::TrySendError::Full(_))),
+                "a flight sends one message to each follower"
+            );
         }
     }
 }
@@ -158,11 +162,11 @@ mod tests {
     fn the_first_leads_the_others_follow_and_get_its_response() {
         let flights = Flights::default();
         let key = key("example.", RecordType::DNSKEY);
-        let Flight::Lead(lead) = flights.join(key.clone()) else {
+        let Flight::Lead(lead) = flights.join(&key) else {
             panic!("the first query leads");
         };
         let followers: Vec<_> = (0..3)
-            .map(|_| match flights.join(key.clone()) {
+            .map(|_| match flights.join(&key) {
                 Flight::Follow(receiver) => receiver,
                 Flight::Lead(_) => panic!("a question in flight is followed"),
             })
@@ -175,7 +179,7 @@ mod tests {
             );
         }
         assert!(
-            matches!(flights.join(key), Flight::Lead(_)),
+            matches!(flights.join(&key), Flight::Lead(_)),
             "a landed flight is asked again by the next query"
         );
     }
@@ -184,24 +188,24 @@ mod tests {
     fn a_failure_is_shared_and_a_dropped_lead_frees_the_followers_to_ask() {
         let flights = Flights::default();
         let key = key("example.", RecordType::DS);
-        let Flight::Lead(lead) = flights.join(key.clone()) else {
+        let Flight::Lead(lead) = flights.join(&key) else {
             panic!("the first query leads");
         };
-        let Flight::Follow(failed) = flights.join(key.clone()) else {
+        let Flight::Follow(failed) = flights.join(&key) else {
             panic!("a question in flight is followed");
         };
         lead.finish(None);
         assert_eq!(failed.recv().expect("sent"), None);
 
-        let Flight::Lead(lead) = flights.join(key.clone()) else {
+        let Flight::Lead(lead) = flights.join(&key) else {
             panic!("the first query leads");
         };
-        let Flight::Follow(cancelled) = flights.join(key.clone()) else {
+        let Flight::Follow(cancelled) = flights.join(&key) else {
             panic!("a question in flight is followed");
         };
         drop(lead);
         assert!(cancelled.recv().is_err(), "nothing was sent");
-        assert!(matches!(flights.join(key), Flight::Lead(_)));
+        assert!(matches!(flights.join(&key), Flight::Lead(_)));
     }
 
     #[test]
@@ -221,7 +225,7 @@ mod tests {
         ];
         let leads: Vec<_> = keys
             .into_iter()
-            .map(|key| match flights.join(key) {
+            .map(|key| match flights.join(&key) {
                 Flight::Lead(lead) => lead,
                 Flight::Follow(_) => panic!("each is its own flight"),
             })
@@ -233,13 +237,13 @@ mod tests {
     fn threads_asking_at_once_share_one_flight() {
         let flights = Arc::new(Flights::default());
         let key = key("example.", RecordType::DNSKEY);
-        let Flight::Lead(lead) = flights.join(key.clone()) else {
+        let Flight::Lead(lead) = flights.join(&key) else {
             panic!("the first query leads");
         };
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let (flights, key) = (Arc::clone(&flights), key.clone());
-                thread::spawn(move || match flights.join(key) {
+                thread::spawn(move || match flights.join(&key) {
                     Flight::Follow(receiver) => receiver.recv().ok().flatten(),
                     Flight::Lead(_) => None,
                 })
@@ -297,25 +301,28 @@ mod tests {
     }
 }
 
-/// Every interleaving of the threads that ask one question or two (D135, `just loom`); they end by asking, as
+/// Every interleaving of the threads that ask one question or two (D135, `just loom`). They end by asking, as
 /// `serve.rs` does, so that a query a flight strands is a deadlock loom reports.
 #[cfg(test)]
 #[cfg(dedens_loom)]
 mod loom_tests {
     use dedens_proto::RecordType;
     use loom::future::block_on;
-    use loom::sync::atomic::AtomicUsize;
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::{Arc, Mutex};
     use loom::thread;
 
     use super::*;
-    use crate::sync::{Arc as Shares, Ordering};
+    use crate::sync::model;
 
-    /// A question the threads of a test ask, and the response its lead sends.
+    /// A question the threads of a test ask.
     struct Asking {
         key: Key,
-        response: &'static [u8],
-        /// The leads of `key` at this moment: one at most.
-        leads: AtomicUsize,
+        name: &'static str,
+        /// The leads of `key` between their asking and their landing: one at most.
+        leading: AtomicUsize,
+        /// What the leads of `key` sent, each its own bytes, before landing.
+        sent: Mutex<Vec<Vec<u8>>>,
     }
 
     /// What a query got.
@@ -325,26 +332,36 @@ mod loom_tests {
     }
 
     impl Asking {
-        fn new(name: &str, response: &'static [u8]) -> Shares<Self> {
-            Shares::new(Self {
+        fn new(name: &'static str) -> Arc<Self> {
+            Arc::new(Self {
                 key: key(name, RecordType::DS),
-                response,
-                leads: AtomicUsize::new(0),
+                name,
+                leading: AtomicUsize::new(0),
+                sent: Mutex::new(Vec::new()),
             })
         }
 
-        /// A query as `fetch` in `serve.rs` makes it: asks, and lands the flight with the response at once, or
+        /// The bytes of the next lead, which no other lead of any question sends.
+        fn response(&self) -> Vec<u8> {
+            let mut sent = self.sent.lock().expect("no panic");
+            let response = format!("{}#{}", self.name, sent.len()).into_bytes();
+            sent.push(response.clone());
+            response
+        }
+
+        /// A query as `fetch` in `serve.rs` makes it: asks, and lands the flight with its own bytes at once, or
         /// takes the response of the query that asks.
         fn ask(&self, flights: &Flights) -> Asked {
             match block_on(flights.enter(&self.key)) {
                 Entered::Lead(lead) => {
-                    assert_eq!(self.leads.fetch_add(1, Ordering::SeqCst), 0, "two leads");
+                    assert_eq!(self.leading.fetch_add(1, Ordering::SeqCst), 0, "two leads");
+                    let response = self.response();
                     // Before landing: a query that joins after leads anew, and must find none.
-                    self.leads.fetch_sub(1, Ordering::SeqCst);
-                    lead.finish(Some(self.response));
+                    self.leading.fetch_sub(1, Ordering::SeqCst);
+                    lead.finish(Some(&response));
                     Asked {
                         led: true,
-                        response: Some(Arc::from(self.response)),
+                        response: Some(response.as_slice().into()),
                     }
                 }
                 Entered::Shared(response) => Asked {
@@ -353,21 +370,40 @@ mod loom_tests {
                 },
             }
         }
+
+        /// Every response a query that did not lead holds is what a lead of this question sent.
+        fn assert_shared(&self, asked: &[Asked]) {
+            let sent = self.sent.lock().expect("no panic");
+            for response in asked.iter().filter_map(|asked| asked.response.as_deref()) {
+                assert!(
+                    sent.iter().any(|sent| sent == response),
+                    "a response of its own question"
+                );
+            }
+        }
     }
 
     /// Runs `ask` on a thread of its own.
-    fn spawn_ask(flights: &Shares<Flights>, asking: &Shares<Asking>) -> thread::JoinHandle<Asked> {
-        let (flights, asking) = (Shares::clone(flights), Shares::clone(asking));
+    fn spawn_ask(flights: &Arc<Flights>, asking: &Arc<Asking>) -> thread::JoinHandle<Asked> {
+        let (flights, asking) = (Arc::clone(flights), Arc::clone(asking));
         thread::spawn(move || asking.ask(&flights))
     }
 
-    /// Three queries of one key, in any order: one leads while the others are in flight, and each gets its response;
-    /// one that comes after the flight landed leads anew, and no two lead at once.
+    /// The first query of `asking`, led by the test.
+    fn lead<'a>(flights: &'a Flights, asking: &Asking) -> Lead<'a> {
+        match flights.join(&asking.key) {
+            Flight::Lead(lead) => lead,
+            Flight::Follow(_) => panic!("the first query leads"),
+        }
+    }
+
+    /// Three queries of one key, in any order: one leads while the others are in flight, and each gets the bytes
+    /// of a lead; one that comes after the flight landed leads anew, and no two lead at once.
     #[test]
-    fn queries_of_one_key_share_one_response() {
-        loom::model(|| {
-            let flights = Shares::new(Flights::default());
-            let asking = Asking::new("example.", b"response");
+    fn queries_of_one_key_share_the_response_of_their_lead() {
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let asking = Asking::new("example.");
             let others = [spawn_ask(&flights, &asking), spawn_ask(&flights, &asking)];
             let mut asked = vec![asking.ask(&flights)];
             asked.extend(
@@ -376,9 +412,11 @@ mod loom_tests {
                     .map(|other| other.join().expect("no panic")),
             );
             assert!(asked.iter().any(|asked| asked.led), "someone asked");
-            for asked in asked {
-                assert_eq!(asked.response.as_deref(), Some(asking.response));
-            }
+            assert!(
+                asked.iter().all(|asked| asked.response.is_some()),
+                "each got a response"
+            );
+            asking.assert_shared(&asked);
             assert!(flights.open().is_empty(), "every flight landed");
         });
     }
@@ -387,25 +425,47 @@ mod loom_tests {
     /// the other taking its response, or leading in turn.
     #[test]
     fn a_dropped_lead_frees_its_followers_and_one_asks_again() {
-        loom::model(|| {
-            let flights = Shares::new(Flights::default());
-            let asking = Asking::new("example.", b"response");
-            let Flight::Lead(lead) = flights.join(asking.key.clone()) else {
-                panic!("the first query leads");
-            };
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let asking = Asking::new("example.");
+            let lead = lead(&flights, &asking);
             let followers = [spawn_ask(&flights, &asking), spawn_ask(&flights, &asking)];
             drop(lead);
             let asked: Vec<_> = followers
                 .into_iter()
                 .map(|follower| follower.join().expect("no panic"))
                 .collect();
+            // The dropped lead sent nothing: a response is one a rejoined query led.
             assert!(
                 asked.iter().any(|asked| asked.led),
-                "the dropped lead sent nothing: one of them asked"
+                "one of them asked again"
             );
-            for asked in asked {
-                assert_eq!(asked.response.as_deref(), Some(asking.response));
-            }
+            assert!(
+                asked.iter().all(|asked| asked.response.is_some()),
+                "each got a response"
+            );
+            asking.assert_shared(&asked);
+            assert!(flights.open().is_empty(), "every flight landed");
+        });
+    }
+
+    /// A lead that fails for the server's sake lands with no response, which a follower takes as its own failure; one
+    /// that comes after leads anew.
+    #[test]
+    fn a_failed_lead_gives_its_followers_no_response() {
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let asking = Asking::new("example.");
+            let lead = lead(&flights, &asking);
+            let follower = spawn_ask(&flights, &asking);
+            lead.finish(None);
+            let asked = follower.join().expect("no panic");
+            assert_eq!(
+                asked.led,
+                asked.response.is_some(),
+                "no response unless it led"
+            );
+            asking.assert_shared(&[asked]);
             assert!(flights.open().is_empty(), "every flight landed");
         });
     }
@@ -414,44 +474,59 @@ mod loom_tests {
     /// anew.
     #[test]
     fn a_join_after_the_flight_landed_leads_anew() {
-        loom::model(|| {
-            let flights = Shares::new(Flights::default());
-            let asking = Asking::new("example.", b"response");
-            let Flight::Lead(lead) = flights.join(asking.key.clone()) else {
-                panic!("the first query leads");
-            };
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let asking = Asking::new("example.");
+            let lead = lead(&flights, &asking);
             let racing = spawn_ask(&flights, &asking);
-            lead.finish(Some(asking.response));
+            lead.finish(Some(&asking.response()));
             let asked = racing.join().expect("no panic");
-            assert_eq!(asked.response.as_deref(), Some(asking.response));
+            assert!(asked.response.is_some());
+            asking.assert_shared(&[asked]);
             assert!(
-                matches!(flights.join(asking.key.clone()), Flight::Lead(_)),
+                matches!(flights.join(&asking.key), Flight::Lead(_)),
                 "nothing is in flight any more"
             );
         });
     }
 
-    /// Questions of two keys in flight together: each query gets the response of its own key, the leads being of
-    /// both at once.
+    /// A follower gone before the lead lands, as a cancelled query is, costs the lead and the others nothing.
+    #[test]
+    fn a_follower_that_goes_does_not_stop_the_lead() {
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let asking = Asking::new("example.");
+            let lead = lead(&flights, &asking);
+            let Flight::Follow(going) = flights.join(&asking.key) else {
+                panic!("a question in flight is followed");
+            };
+            let leaving = thread::spawn(move || drop(going));
+            let staying = spawn_ask(&flights, &asking);
+            lead.finish(Some(&asking.response()));
+            leaving.join().expect("no panic");
+            let asked = staying.join().expect("no panic");
+            assert!(asked.response.is_some());
+            asking.assert_shared(&[asked]);
+            assert!(flights.open().is_empty(), "every flight landed");
+        });
+    }
+
+    /// Questions of two keys in flight together: each query gets the bytes of a lead of its own key.
     #[test]
     fn two_keys_never_mix() {
-        loom::model(|| {
-            let flights = Shares::new(Flights::default());
-            let (one, two) = (Asking::new("one.", b"one"), Asking::new("two.", b"two"));
-            let (Flight::Lead(first), Flight::Lead(second)) =
-                (flights.join(one.key.clone()), flights.join(two.key.clone()))
-            else {
-                panic!("the first query of each key leads");
-            };
+        model(|| {
+            let flights = Arc::new(Flights::default());
+            let (one, two) = (Asking::new("one."), Asking::new("two."));
+            let (first, second) = (lead(&flights, &one), lead(&flights, &two));
             let (asking_one, asking_two) = (spawn_ask(&flights, &one), spawn_ask(&flights, &two));
-            first.finish(Some(one.response));
-            second.finish(Some(two.response));
+            first.finish(Some(&one.response()));
+            second.finish(Some(&two.response()));
             let (asked_one, asked_two) = (
                 asking_one.join().expect("no panic"),
                 asking_two.join().expect("no panic"),
             );
-            assert_eq!(asked_one.response.as_deref(), Some(one.response));
-            assert_eq!(asked_two.response.as_deref(), Some(two.response));
+            one.assert_shared(&[asked_one]);
+            two.assert_shared(&[asked_two]);
         });
     }
 }
