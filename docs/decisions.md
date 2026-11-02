@@ -2359,6 +2359,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `subtle` (BSD-3-Clause, no dependencies) is no new crate in the build: rustls already pulls it. Other comparisons
   stay `==`: the Client Cookie of a response (`dedens-net`'s exchange) is checked against a value an off-path forger
   never sees the timing of, an ODoH key id is public, and AEAD tags are checked inside `hpke` and `aes-gcm`.
+- D137 (builds on D22, D43) Rejected: a read lock for the cache's hits. The shard's `Mutex` stays; the 8 threads on
+  one name that took 364 ns a hit against 78.6 ns on one stay as they are (`docs/benchmarks.md`, "Read lock").
+  - Tried: a `std::sync::RwLock` per shard; a hit takes it for reading and writes two atomics of its entry,
+    `freq: AtomicU8` (stored only below `MAX_FREQ`) and `prefetched: AtomicBool` (the hit that wins the swap asks
+    for the prefetch, so one per stored response as D43 has it); an insert, `mark` and `fail` take it for writing.
+  - Why not: 30 rounds of 300 samples, `before` and `after` alternated on an Apple M5 and a 6-vCPU Linux VPS, the
+    medians of 4 and 8 threads on one name moved 1-20% while the rounds of one binary range 3-5x, and `after`
+    won 15-22 of 30 paired rounds: not beyond the spread, the rule the step set. A read lock still writes its lock
+    word, so the cache line moves between the cores as the mutex's did. One thread is within the spread too (the
+    cost the rule bounded). `dedensd` on three cores answering one name over UDP: 365 k/s against 391 k/s, rounds
+    280-414 k/s: nothing seen. A store while 7 threads hit its shard (`insert_under_hits`): faster on the M5,
+    slower on Linux.
+  - Kept: the `insert_under_hits` bench and `tests/cache.rs` `racing_hits_ask_one_prefetch_per_response`, which
+    holds D43's one prefetch per response under racing threads; both pass on the mutex.
+  - Open: a read path that writes no shared line (per-core copies, a lock-free read), and the shard count from
+    `threads`: `docs/TODECIDE.md`.
 
 ## Observability
 

@@ -90,7 +90,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   asking DS and DNSKEY of the servers the trace reached. Default: refused; `+validate @server` is the way to a verdict.
 - Key cache, lock (D86, D92): one `Mutex` over two tables, which a hit takes too (it moves the entry in the LRU
   order). Default: as is; shards by name, or an `RwLock` with a lazier LRU, when `dedensd`'s load tests show the
-  lock contended.
+  lock contended. The answer cache's read lock failed to scale (D137): a reader still writes the lock word, so an
+  `RwLock` here would gain little beside shards.
 - Singleflight (D86): the validator's questions in flight are shared, but each query still verifies what it
   learns, and the client's own question is each query's. A query walking a zone another walks verifies the zone
   again. Default: as is; a `Next::Wait` (the validator asks the caller to park on a zone another validation
@@ -210,8 +211,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   does): we would build IP and UDP headers ourselves; it needs root and per-NIC setup, does no TCP, and cannot
   be measured on loopback. Default: a later optional listener mode, benchmarked between two machines.
 - Cache lock contention: one mutex per shard, and DNS traffic concentrates on few names (8 threads on one
-  name: 364 ns a hit, against about 100 ns on one thread). Default: measure under the server's thread-per-core
-  load first, then pick: read-mostly hot entries, per-core copies, or a lock-free read path.
+  name: 364 ns a hit, against about 100 ns on one thread). A read lock with a hit writing two atomics did not
+  help (D137: inside the spread on two machines; the reader still writes the lock word). Default: as is; per-core
+  copies of hot entries, or a read path that writes no shared line (an epoch or a seqlock), when `dedensd`'s load
+  shows the shard lock waited on.
+- Cache shards from `threads` (D137): `Config::shards` is 64 whatever the core count; `quick_cache` takes 4 a
+  CPU. Default: 64 until `hit_spread` on 16 or more cores shows locks waited on; then a default from `threads`,
+  rounded to a power of two.
 - An encoder that also returns the TTL offsets it wrote, so `Response::build` skips its `message::ttl_offsets` pass
   over the response bytes. Default: add it when that pass shows in a profile of the server.
 - SIMD base64 and hex for DNSSEC keys and signatures in zone text (`text/encoding.rs` decodes a byte at a time
