@@ -18,6 +18,18 @@ Open questions, each with its proposed default. Once answered, record the outcom
   quic://, https:// with a trusted certificate); the cache would then store such answers with a verdict of their
   own, not `Unchecked`. Default: not offered; add when a deployment that cannot validate needs AD.
 
+## Cache
+
+- `MAX_ROTATIONS` (D116) was chosen on Zipf draws of equal-size entries, where every K from 1 gives the ratio of an
+  unbounded eviction. Replay a real capture (a DITL or OARC trace, or a `dedensd` query log) through
+  `crates/dedens-bench/examples/hit_ratio.rs --trace FILE --entries N` and change K only if the ratio moves.
+  Default: 32, as is.
+- A positive answer that loses an authority record to a 512-byte buffer gets TC set (`Response::serve`, as
+  `Message::encode_truncated`, D10), while RFC 2181 §9 says TC is not for "merely because some extra information
+  could have been included". Authority records of a positive answer (the NS set) are such information in most
+  resolvers' reading. Default: as is (a client that sees TC retries over TCP, and gets all of it); change both
+  `encode_truncated` and the cache's cut together if a resolver is shown to prefer a cut without TC.
+
 ## DNSSEC and experimental transports
 
 - ODoQ (Oblivious DNS over QUIC): no RFC exists. Default: dropped; revisit when the IETF publishes one.

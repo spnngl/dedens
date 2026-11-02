@@ -301,6 +301,29 @@ pub fn cache_insert(data: &[u8]) {
         std::slice::from_ref(question),
         "a hit answers the question asked"
     );
+    // A hit cut to the buffer is the whole response encoded into it (D116).
+    let mut whole = vec![0; MAX_MESSAGE_LEN];
+    let Lookup::Hit(all) = cache.lookup(&query, 0, StalePolicy::Never, &mut whole) else {
+        panic!("a response just stored is served whole");
+    };
+    let whole_len = all.len;
+    let all = Message::decode(
+        whole
+            .get(..whole_len)
+            .expect("the hit is within the buffer"),
+    )
+    .expect("a hit decodes");
+    let mut cut = vec![0; size];
+    let encoded = all
+        .message
+        .encode_truncated(&mut cut)
+        .expect("the whole response encodes into the buffer");
+    // `Hit::truncated` is any cut; TC is set only by a cut in the answer or authority section.
+    assert_eq!(
+        (cut.get(..encoded.len), encoded.len < whole_len),
+        (out.get(..hit.len), hit.truncated),
+        "a cut hit is the whole one encoded into the buffer"
+    );
 }
 
 /// Arbitrary bytes as a client's query, and as the upstream response to a query for their question, then that query

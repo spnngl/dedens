@@ -47,7 +47,8 @@
 //!     file: /etc/hosts
 //!   cache:
 //!     type: cache
-//!     capacity: 67108864
+//!     capacity: 67108864               # bytes of memory, entries and what holds them (D116)
+//!     max_entry_bytes: 8192            # a response stored larger is answered, not cached; unset: 8 KiB (D116)
 //!   upstream:
 //!     type: forward
 //!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
@@ -2051,7 +2052,7 @@ mod tests {
 
     #[test]
     fn a_caching_forwarder_reads() {
-        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    max_insecure_ttl: 600\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
+        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    max_insecure_ttl: 600\n    max_entry_bytes: 4096\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
         let config = read(text, env, &Pipeline::default()).unwrap();
         assert_eq!(
             config.listen,
@@ -2061,6 +2062,7 @@ mod tests {
             panic!("a cache stage, then a forward stage")
         };
         assert_eq!(cache.config().max_insecure_ttl, Some(600));
+        assert_eq!(cache.config().max_entry_bytes, Some(4096));
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
     }
 

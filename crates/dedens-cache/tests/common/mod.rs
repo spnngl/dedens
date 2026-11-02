@@ -55,6 +55,13 @@ pub(crate) fn query(id: u16, qname: &str, qtype: RecordType) -> Vec<u8> {
         .expect("a query fits")
 }
 
+/// A query for `qname`/`qtype`, RD set, without EDNS.
+pub(crate) fn query_plain(id: u16, qname: &str, qtype: RecordType) -> Vec<u8> {
+    let mut message = Message::query(id, Question::new(dns(qname), qtype));
+    message.edns = None;
+    message.to_vec().expect("a query fits")
+}
+
 /// A query with the given header flags and DO bit.
 pub(crate) fn query_with(
     id: u16,
@@ -111,13 +118,17 @@ pub(crate) fn insert(
     )
 }
 
-pub(crate) fn small_cache() -> Cache {
-    Cache::new(Config {
+/// A megabyte in four shards.
+pub(crate) fn small_config() -> Config {
+    Config {
         capacity: 1 << 20,
         shards: 4,
         ..Config::default()
-    })
-    .expect("a valid config")
+    }
+}
+
+pub(crate) fn small_cache() -> Cache {
+    Cache::new(small_config()).expect("a valid config")
 }
 
 /// Looks `query` up and decodes what was served.

@@ -4,7 +4,10 @@ mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use common::{T0, a, dns, insert, key_of, lookup, query, query_with, response, small_cache, ttls};
+use common::{
+    T0, a, dns, insert, key_of, lookup, query, query_plain, query_with, response, small_cache,
+    small_config, ttls,
+};
 use dedens_cache::{
     Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
 };
@@ -141,11 +144,14 @@ fn the_budget_holds_and_popular_entries_survive_a_scan() {
     assert!(matches!(lookup(&cache, &hot, T0, NEVER).0, Lookup::Hit(_)));
 }
 
+/// A response over `Config::max_entry_bytes` is not stored (D116), a smaller one is: the limit is on the entry, not
+/// on the shard (L12).
 #[test]
-fn an_entry_over_the_shard_budget_is_refused() {
+fn an_entry_over_max_entry_bytes_is_refused() {
     let cache = Cache::new(Config {
-        capacity: 1024,
-        shards: 1,
+        capacity: 1 << 20,
+        max_entry_bytes: Some(1024),
+        shards: 4,
         ..Config::default()
     })
     .unwrap();
@@ -154,6 +160,30 @@ fn an_entry_over_the_shard_budget_is_refused() {
         insert(&cache, &q, &www(60, 100), T0),
         Err(NotCached::TooLarge)
     );
+    assert!(cache.is_empty());
+    insert(&cache, &q, &www(60, 10), T0).unwrap();
+    assert_eq!(cache.len(), 1);
+}
+
+/// The limit is inclusive: the largest entry stored, one byte less allowed, is stored as it is.
+#[test]
+fn max_entry_bytes_is_inclusive() {
+    let q = query(1, "www.example", RecordType::A);
+    let r = www(60, 40);
+    // Find the size of the entry by search: its key and response as stored.
+    let stores = |max_entry_bytes| {
+        let cache = Cache::new(Config {
+            max_entry_bytes: Some(max_entry_bytes),
+            ..small_config()
+        })
+        .unwrap();
+        insert(&cache, &q, &r, T0).is_ok()
+    };
+    let least = (300..4096)
+        .find(|&max| stores(max))
+        .expect("a size that stores");
+    assert!(!stores(least - 1));
+    assert!(stores(least + 1));
 }
 
 #[test]
@@ -485,6 +515,7 @@ fn store_and_serve(cache: &Cache, name: &str) -> Vec<u8> {
 fn serving_what_was_just_stored_keeps_scan_resistance() {
     let cache = Cache::new(Config {
         capacity: 64 << 10,
+        max_entry_bytes: Some(1024),
         shards: 1,
         ..Config::default()
     })
@@ -524,6 +555,79 @@ fn only_a_stale_hit_leaves_room_for_its_ede_option() {
     };
     assert!(stale.truncated);
     assert!(stale.len <= len - Cache::STALE_ROOM);
+}
+
+/// Only a client with EDNS gets the EDE option of a stale answer: for one without, a stale hit uses all of `out`.
+#[test]
+fn a_stale_hit_leaves_room_only_for_a_query_with_edns() {
+    let cache = small_cache();
+    let (with, without) = (
+        query(1, "www.example", RecordType::A),
+        query_plain(1, "www.example", RecordType::A),
+    );
+    insert(&cache, &with, &www(60, 20), T0).unwrap();
+    let len = served(&cache, &with, T0, 512).0.len;
+    let stale = |q: &[u8], room: usize| {
+        let mut out = vec![0; room];
+        let found = cache.lookup(
+            &Query::read(q).unwrap(),
+            T0 + 61,
+            StalePolicy::Always,
+            &mut out,
+        );
+        let Lookup::Hit(hit) = found else {
+            panic!("expected a stale hit, got {found:?}");
+        };
+        hit
+    };
+    assert!(stale(&with, len).truncated);
+    assert!(!stale(&with, len + Cache::STALE_ROOM).truncated);
+    let whole = stale(&without, len);
+    assert!(!whole.truncated);
+    assert_eq!(whole.len, len);
+}
+
+/// A response too large to store ends what the cache held of its key, the old response, which the new answer
+/// outdates, and the failure hold (D116).
+#[test]
+fn a_response_too_large_clears_what_was_held() {
+    let cache = Cache::new(Config {
+        max_entry_bytes: Some(1024),
+        ..small_config()
+    })
+    .unwrap();
+    let q = query(1, "www.example", RecordType::A);
+    let key = key_of(&q);
+    insert(&cache, &q, &www(60, 1), T0).unwrap();
+    assert!(matches!(lookup(&cache, &q, T0, NEVER).0, Lookup::Hit(_)));
+    assert_eq!(
+        insert(&cache, &q, &www(60, 100), T0 + 1),
+        Err(NotCached::TooLarge)
+    );
+    assert_eq!(lookup(&cache, &q, T0 + 1, NEVER).0, Lookup::Miss);
+    // A failure held, and then a response too large for the entry: the hold ends, as a stored one would end it.
+    assert!(cache.fail(&key, T0 + 2) > 0);
+    assert_eq!(lookup(&cache, &q, T0 + 2, NEVER).0, Lookup::Failed);
+    assert_eq!(
+        insert(&cache, &q, &www(60, 100), T0 + 3),
+        Err(NotCached::TooLarge)
+    );
+    assert_eq!(lookup(&cache, &q, T0 + 3, NEVER).0, Lookup::Miss);
+    // Nothing is stored for a key the cache does not know.
+    let other = query(1, "other.example", RecordType::A);
+    let answer = (0..100).map(|i| a("other.example", 60, i)).collect();
+    let large = response(
+        "other.example",
+        RecordType::A,
+        Rcode::NOERROR,
+        answer,
+        vec![],
+    );
+    assert_eq!(
+        insert(&cache, &other, &large, T0 + 3),
+        Err(NotCached::TooLarge)
+    );
+    assert_eq!(cache.len(), 1);
 }
 
 /// Threads inserting and looking up at once: every hit is whole and for its query, the budget holds.
@@ -623,6 +727,90 @@ fn configs_breaking_the_bounds_are_refused() {
     );
 }
 
+/// An entry of `max_entry_bytes` must fit a shard with its slot, and a failure record must fit an entry (D116).
+#[test]
+fn max_entry_bytes_is_checked_against_the_other_bounds() {
+    let base = small_config;
+    let ConfigError::EntryBytes(longest_key) = Cache::new(Config {
+        max_entry_bytes: Some(0),
+        ..base()
+    })
+    .unwrap_err() else {
+        panic!("expected an entry size error");
+    };
+    Cache::new(Config {
+        max_entry_bytes: Some(longest_key),
+        ..base()
+    })
+    .unwrap();
+    assert_eq!(
+        Config {
+            max_entry_bytes: Some(longest_key - 1),
+            ..base()
+        }
+        .validate(),
+        Err(ConfigError::EntryBytes(longest_key))
+    );
+    // A shard's share under the largest entry: the capacity needed is told, and enough.
+    let ConfigError::Capacity(least) = Cache::new(Config {
+        max_entry_bytes: Some(1 << 20),
+        ..base()
+    })
+    .unwrap_err() else {
+        panic!("expected a capacity error");
+    };
+    assert!(least > 4 * (1 << 20));
+    let config = Config {
+        capacity: least,
+        max_entry_bytes: Some(1 << 20),
+        ..base()
+    };
+    Cache::new(config.clone()).unwrap();
+    assert!(matches!(
+        Config {
+            capacity: least - 4,
+            ..config
+        }
+        .validate(),
+        Err(ConfigError::Capacity(_))
+    ));
+}
+
+/// Unset, `max_entry_bytes` is 8 KiB, or a tenth of a shard's share less a slot when that is less; a capacity whose
+/// tenth cannot hold a failure record is refused, naming the least (D116).
+#[test]
+fn an_unset_max_entry_bytes_follows_the_capacity() {
+    assert_eq!(Config::default().entry_limit(), 8 << 10);
+    let with = |capacity| Config {
+        capacity,
+        shards: 1,
+        ..Config::default()
+    };
+    let ConfigError::Capacity(least) = with(0).validate().unwrap_err() else {
+        panic!("expected a capacity error");
+    };
+    let ConfigError::EntryBytes(longest_key) = Config {
+        max_entry_bytes: Some(0),
+        ..Config::default()
+    }
+    .validate()
+    .unwrap_err() else {
+        panic!("expected an entry size error");
+    };
+    // The least capacity leaves a failure record's size, and one byte of share less is refused.
+    assert_eq!(with(least).validate(), Ok(()));
+    assert_eq!(with(least).entry_limit(), longest_key);
+    assert!(matches!(
+        with(least - 10).validate(),
+        Err(ConfigError::Capacity(_))
+    ));
+    // Between, the limit grows with the share by a tenth, and stops at 8 KiB.
+    let (small, large) = (with(least * 2).entry_limit(), with(least * 4).entry_limit());
+    assert!(longest_key < small && small < large && large < 8 << 10);
+    assert_eq!(with(1 << 30).entry_limit(), 8 << 10);
+    assert_eq!(with(1 << 30).validate(), Ok(()));
+}
+
 /// Each bound is inclusive: the edge values are taken, one past refused.
 #[test]
 fn config_bounds_are_inclusive() {
@@ -697,6 +885,7 @@ fn keys_spread_over_the_shards() {
     // Four shards of 30 entries each: 40 keys fit unless most land in one shard.
     let cache = Cache::new(Config {
         capacity: 4 * 30 * entry,
+        max_entry_bytes: Some(512),
         shards: 4,
         ..Config::default()
     })

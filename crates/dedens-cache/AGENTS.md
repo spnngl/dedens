@@ -9,11 +9,13 @@ Sans-IO: the caller passes the time in seconds, so tests drive the clock. Speed 
 
 ## Invariants
 
-- A hit that fits `out` copies and patches under the shard lock: no decode, no allocation. Slower work (truncation)
-  runs on an `Arc` clone after the lock is released. The `hit` bench of `benches/server.rs` counts allocations;
-  keep it at zero.
+- A hit, whole or cut to `out`, copies and patches under the shard lock: no decode, no allocation
+  (`tests/allocations.rs`; the `hit` bench of `benches/server.rs` counts them too). The cut reads the offsets
+  `Response::build` stored; `tests/rfc2181.rs` holds it to `Message::encode_truncated`, so change both together.
 - Every change to an entry goes through `Shard::update`, which keeps `small_bytes` and `main_bytes` exact; the
-  proptest in `src/shard.rs` (`Shard::check`) asserts it, so extend `check` with any new field that costs bytes.
+  proptest in `src/shard.rs` (`Shard::check`) asserts it, so extend `check` with any new field that costs bytes. What a
+  shard holds counts in its budget (`SLOT_COST` a slot, D116): a new table or queue per entry means raising it, and
+  `tests/memory.rs` (counting allocator, at most 1.05 times `capacity`) says whether it is enough.
 - The shard is picked from bits 40 and up of the hash: `HashMap` takes buckets from the low bits and tags from the
   top 7. A wider shard count or another map must keep those bit ranges apart.
 - Time is `u32` seconds from any origin and may go back: use saturating arithmetic and keep `Response::left` and

@@ -85,7 +85,7 @@ impl Cache {
         let budget = config.capacity / config.shards;
         Ok(Self {
             shards: (0..config.shards)
-                .map(|_| Mutex::new(Shard::new(budget)))
+                .map(|_| Mutex::new(Shard::new(budget, config.entry_limit())))
                 .collect(),
             // Keyed SipHash: names chosen to collide cannot pile up in one shard or slot.
             hasher: RandomState::new(),
@@ -100,8 +100,9 @@ impl Cache {
         &self.config
     }
 
-    /// Bytes a stale hit leaves free at the end of `out`: an EDE option without text, which the caller adds to its
-    /// OPT record (RFC 8914 §2, RFC 8767 §4). A fresh hit uses all of `out`.
+    /// Bytes a stale hit leaves free at the end of `out` for a query with an OPT record: an EDE option without text,
+    /// which the caller adds to its own OPT record (RFC 8914 §2, RFC 8767 §4). A fresh hit, and a stale one for a
+    /// query without EDNS, use all of `out`.
     pub const STALE_ROOM: usize = EDE_LEN;
 
     /// Shortest `out` [`Cache::lookup`] takes: a header and the longest question, what a truncated response
@@ -112,10 +113,10 @@ impl Cache {
     /// Looks the first question of `query` up at time `now` (seconds, any monotonic origin) and writes the
     /// response into `out`, patched for the query: its ID, RD and CD bits, question case, TTLs counted down.
     /// `out` is as long as the response may be, less the OPT record the caller appends, and at least
-    /// [`Cache::MIN_OUT`]; a stale hit leaves its last [`Cache::STALE_ROOM`] bytes free.
+    /// [`Cache::MIN_OUT`]; a stale hit for a query with EDNS leaves its last [`Cache::STALE_ROOM`] bytes free.
     ///
-    /// A hit that fits `out` is copied and patched under the shard's lock, without decoding or allocating. One too
-    /// large is decoded and encoded again without the records that do not fit, after the lock is released.
+    /// A hit is copied and patched under the shard's lock, without decoding or allocating. One too large for
+    /// `out` is cut where `Message::encode_truncated` cuts it, read off the offsets stored with it (D116).
     #[must_use]
     pub fn lookup(
         &self,
@@ -159,82 +160,62 @@ impl Cache {
         };
         let (hash, shard) = self.shard(&key);
         let mut end = out.len();
-        let (freshness, ttl, large, checked) = {
-            let mut shard = lock(shard);
-            let Some(entry) = shard.get(hash, key.as_bytes()) else {
-                return Lookup::Miss;
-            };
-            let nothing = if self.held(entry.hold_until, now) {
-                Lookup::Failed
-            } else {
-                Lookup::Miss
-            };
-            let Some(response) = &entry.response else {
-                return nothing;
-            };
-            let (ttl, freshness) = if now < response.expires {
-                let prefetch =
-                    used && !entry.prefetched && response.ending(now, self.config.prefetch_percent);
-                entry.prefetched |= prefetch;
-                (response.left(now), Freshness::Fresh { prefetch })
-            } else if now < response.stale_until {
-                let allowed = match stale {
-                    StalePolicy::Never => false,
-                    StalePolicy::IfFailing => nothing == Lookup::Failed,
-                    StalePolicy::Always => true,
-                };
-                if !allowed {
-                    return if nothing == Lookup::Failed {
-                        nothing
-                    } else {
-                        Lookup::Expired
-                    };
-                }
-                (self.config.stale_answer_ttl, Freshness::Stale)
-            } else {
-                return nothing;
-            };
-            if matches!(freshness, Freshness::Stale) {
-                end = end.saturating_sub(Self::STALE_ROOM);
-            }
-            let checked = response.checked();
-            let served = response.serve(
-                query,
-                ttl,
-                matches!(freshness, Freshness::Stale),
-                &mut out[..end],
-            );
-            let large = served.is_none().then(|| response.share());
-            if used {
-                entry.hit();
-            }
-            if let Some(len) = served {
-                return Lookup::Hit(Hit {
-                    len,
-                    freshness,
-                    truncated: false,
-                    checked,
-                });
-            }
-            (freshness, ttl, large, checked)
+        let mut shard = lock(shard);
+        let Some(entry) = shard.get(hash, key.as_bytes()) else {
+            return Lookup::Miss;
         };
-        // Too large for the client: the slow path, outside the lock.
-        match large.and_then(|large| {
-            large.serve_truncated(
-                query,
-                ttl,
-                matches!(freshness, Freshness::Stale),
-                &mut out[..end],
-            )
-        }) {
-            Some(encoded) => Lookup::Hit(Hit {
-                len: encoded.len,
-                freshness,
-                truncated: true,
-                checked,
-            }),
-            None => Lookup::Miss,
+        let nothing = if self.held(entry.hold_until, now) {
+            Lookup::Failed
+        } else {
+            Lookup::Miss
+        };
+        let Some(response) = &entry.response else {
+            return nothing;
+        };
+        let (ttl, freshness) = if now < response.expires {
+            let prefetch =
+                used && !entry.prefetched && response.ending(now, self.config.prefetch_percent);
+            entry.prefetched |= prefetch;
+            (response.left(now), Freshness::Fresh { prefetch })
+        } else if now < response.stale_until {
+            let allowed = match stale {
+                StalePolicy::Never => false,
+                StalePolicy::IfFailing => nothing == Lookup::Failed,
+                StalePolicy::Always => true,
+            };
+            if !allowed {
+                return if nothing == Lookup::Failed {
+                    nothing
+                } else {
+                    Lookup::Expired
+                };
+            }
+            (self.config.stale_answer_ttl, Freshness::Stale)
+        } else {
+            return nothing;
+        };
+        // The EDE option rides in the OPT record, which only a client with EDNS gets.
+        if matches!(freshness, Freshness::Stale) && query.edns().is_some() {
+            end = end.saturating_sub(Self::STALE_ROOM);
         }
+        let served = response.serve(
+            query,
+            ttl,
+            matches!(freshness, Freshness::Stale),
+            &mut out[..end],
+        );
+        let checked = response.checked();
+        if used {
+            entry.hit();
+        }
+        served.map_or(Lookup::Miss, |served| {
+            Lookup::Hit(Hit {
+                len: served.len,
+                freshness,
+                truncated: served.truncated,
+                checked,
+            })
+        })
     }
 
     /// Stores `response`, received at `now` in answer to `query`, under the RFC 2308 rules; ends any failure hold
@@ -296,13 +277,23 @@ impl Cache {
         checked: Checked,
         bad: bool,
     ) -> Result<(), NotCached> {
-        let response = Response::build(key, response, now, checked, bad, &self.config)?;
         let (hash, shard) = self.shard(key);
-        let evicted = {
-            let mut shard = lock(shard);
-            if !shard.fits(key.as_bytes().len(), &response) {
+        let response = match Response::build(key, response, now, checked, bad, &self.config) {
+            Err(NotCached::TooLarge) => {
+                // Answered and not stored; an answer the cache holds is stale by it, and a failure held is over.
+                let evicted = lock(shard).update_existing(hash, key.as_bytes(), |entry| {
+                    entry.response = None;
+                    entry.prefetched = false;
+                    entry.failures = 0;
+                    entry.hold_until = 0;
+                });
+                self.metrics.evicted(evicted);
                 return Err(NotCached::TooLarge);
             }
+            built => built?,
+        };
+        let evicted = {
+            let mut shard = lock(shard);
             shard.update(hash, key.as_bytes(), |entry| {
                 entry.response = Some(response);
                 entry.prefetched = false;
@@ -371,7 +362,7 @@ impl Cache {
         self.len() == 0
     }
 
-    /// Bytes taken by the entries, at most `Config::capacity`.
+    /// Bytes taken by the entries and what the shards keep for them (D116), at most `Config::capacity`.
     #[must_use]
     pub fn used(&self) -> usize {
         self.shards.iter().map(|s| lock(s).used()).sum()

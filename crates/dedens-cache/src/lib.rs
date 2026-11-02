@@ -1,9 +1,9 @@
 //! DNS response cache for `dedensd`: shared by threads, sharded, sans-IO.
 //!
-//! A response is checked and encoded once at insert (no OPT, ID 0, one TTL for all records) with the offsets of its TTL fields. A hit that fits the caller's buffer is copied there and its ID,
-//! flags, question case and TTLs patched: no decode, no allocation. A hit too large for the buffer is decoded and
-//! encoded again without the records that do not fit, outside the shard's lock. Time comes in as seconds from the
-//! caller.
+//! A response is checked and encoded once at insert (no OPT, ID 0, one TTL for all records) with the offsets of its
+//! TTL fields and of the cuts that keep the `RRsets` of its additional section whole. A hit is copied into the caller's buffer and its ID, flags, question case and TTLs patched: no decode, no
+//! allocation, one too large for the buffer cut at a record boundary and TC set as RFC 2181 §9 asks (D116). Time
+//! comes in as seconds from the caller.
 //!
 //! RFCs: 2308 (negative caching), 8767 (serve-stale), 9520 (resolution failures), 2181 §5.2/§9, 4343, 6895 §3.1
 //! (meta types are not cached), 7871 §7.3.1 (nor answers for a client subnet), 4035 §3.2.2/§4.7 (the verdict a

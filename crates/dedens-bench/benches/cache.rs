@@ -2,7 +2,8 @@
 //!
 //! `hit` serves real responses on one thread; `hit_hot` has every thread ask one name (one shard lock), and
 //! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response
-//! already decoded, as a forwarder has it.
+//! already decoded, as a forwarder has it; `insert_evicting_hot` is one that must evict from a full shard whose
+//! entries all have the most hits (D116).
 //!
 //! Features `metrics` (counters on, no recorder) and `recorder` (counters on and recorded) measure the cache's
 //! counters (D30).
@@ -16,6 +17,9 @@ use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
 use divan::Bencher;
+
+#[global_allocator]
+static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
 fn main() {
     #[cfg(feature = "recorder")]
@@ -78,6 +82,27 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
     bencher.bench_local(|| hit_once(&cache, &query, &mut out));
 }
 
+/// A hit larger than the client's buffer (512 bytes, no EDNS): answered truncated, as the root DNSKEY set is.
+/// Its time is compared to `hit` of the same case, which copies the response whole.
+#[divan::bench]
+fn hit_truncated(bencher: Bencher<'_, '_>) {
+    let response = wire("txt_large");
+    let query = query_for(&response);
+    let cache = cache();
+    assert!(insert_at_0(&cache, &query, &response), "cacheable");
+    let mut out = out();
+    bencher.bench_local(|| {
+        let query = Query::read(black_box(&query)).expect("a valid query");
+        match cache.lookup(&query, 0, StalePolicy::Never, &mut out) {
+            Lookup::Hit(hit) => {
+                assert!(hit.truncated, "too large for 512 bytes");
+                hit.len
+            }
+            other => unreachable!("expected a hit, got {other:?}"),
+        }
+    });
+}
+
 #[divan::bench(args = CASES)]
 fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let response = wire(case);
@@ -116,6 +141,54 @@ fn hit_hot(bencher: Bencher<'_, '_>) {
     bencher
         .with_inputs(out)
         .bench_refs(|out| hit_once(&cache, &query, out));
+}
+
+/// One insert into a full shard whose every entry sits in main with the most hits: evicting one takes passing over
+/// entries again and again (E8, D116). Each sample is a new cache, built outside the timing; the slowest of them
+/// tells, not the median.
+#[divan::bench(sample_count = 300, sample_size = 1)]
+fn insert_evicting_hot(bencher: Bencher<'_, '_>) {
+    let store = |cache: &Cache, i: usize| {
+        let (query, response) = synthetic(&format!("host{i}.example.com"));
+        assert!(insert_at_0(cache, &query, &response), "cacheable");
+        query
+    };
+    // Entries evicted meanwhile answer with a miss: nothing to count for them.
+    let hit_all = |cache: &Cache, queries: &[Vec<u8>], times: usize| {
+        let mut out = out();
+        for query in queries {
+            let query = Query::read(query).expect("a valid query");
+            for _ in 0..times {
+                black_box(cache.lookup(&query, 0, StalePolicy::Never, &mut out));
+            }
+        }
+    };
+    bencher
+        .with_inputs(|| {
+            let cache = Cache::new(Config {
+                capacity: 1 << 20,
+                shards: 1,
+                ..Config::default()
+            })
+            .expect("a valid config");
+            // Fill the shard, hit each entry once, and insert one more: every entry moves from small to main.
+            let mut queries = vec![];
+            while cache.len() == queries.len() {
+                queries.push(store(&cache, queries.len()));
+            }
+            hit_all(&cache, &queries, 1);
+            let next = store(&cache, queries.len());
+            queries.push(next);
+            // The most hits, for the entries still stored.
+            hit_all(&cache, &queries, 3);
+            let (query, response) = synthetic("new.example.com");
+            (cache, query, response)
+        })
+        // The cache goes out with the result: dropping it is not the insert.
+        .bench_values(|(cache, query, response)| {
+            let stored = insert_at_0(&cache, &query, &response);
+            (cache, stored)
+        });
 }
 
 #[divan::bench(threads = THREADS)]

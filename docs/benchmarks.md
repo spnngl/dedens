@@ -159,6 +159,54 @@ removed `MessageView` read every record in 178/505/1093 ns.
   182-542 against 172-281. No gain: a shard is already larger than a line, so neighbours share one line at its
   edge, and threads meet on a shard's own lock far more often. Not kept.
 
+### Audit step 18 (D116)
+
+Apple M5, `benches/cache.rs`, the load average about 5 from other work on the machine. Three binaries alternated,
+6 rounds of 100 samples each: `before` is `fix/phase4-hardening` with the new benches, `after` the final tree. Fastest
+sample and, in parentheses, the median of the rounds' medians, in ns.
+
+| Bench | before | after |
+|---|---|---|
+| `hit` a | 73.3 (76.6) | 76.0 (79.5) |
+| `hit` mx | 72.7 (76.6) | 74.7 (79.9) |
+| `hit` txt_large | 81.8 (90.3) | 86.4 (91.3) |
+| `hit_hot`, 1 thread | 71.4 (78.5) | 74.0 (78.6) |
+| `hit_truncated` (`txt_large`, 512-byte buffer) | 679.9 (752.6) | 83.8 (98.1) |
+| `insert` a | 181.2 (196.9) | 168.3 (182.4) |
+| `insert` mx | 622.5 (659.2) | 575.6 (607.1) |
+| `insert` txt_large | 959.6 (1001) | 631.7 (678.6) |
+| `insert_evicting_hot` (3 000 hot entries in a full shard) | 34 890 (38 600) | 1 689 (3 313) |
+
+- Truncated hit: 3 allocations (copy, decode, encode) → none, within 1.1x of the hit of the same response that
+  fits whole (the audit asked for 2x). Kept: the offsets stored with the response cost 2 bytes a record and one bit
+  a record of the additional section.
+- Insert: the response is one `Box<[u8]>`, not an `Arc`.
+- Hit: 2-3 ns (3-4%) more on one thread; 4 and 8 threads, with swings of 2x, show no difference. Nothing on the
+  path changed but the layout of `Config` and `Shard`, and `serve` splitting off the offsets before it tests
+  whether the response fits.
+- `insert_evicting_hot`: one insert into a new cache each sample, 300 samples. Without the bound the first eviction
+  passes over every entry three times under the shard lock. Once the bound is spent the eviction takes from small
+  when it holds other entries (D116), so main's hot entries stay: 1.7 µs is the 32 passes, 0.5-0.7 µs when it
+  took main's first entry instead (the tree before the review).
+- Rotations allowed per eviction (`MAX_ROTATIONS`), `examples/hit_ratio.rs`: hit ratio of one shard, entries of
+  one size, 1000 and 10 000 entries, names drawn from 20x as many by Zipf's law (exponent, entries), 100 requests
+  an entry, the first third not counted:
+
+  | K | 0.7, 1000 | 0.9, 1000 | 1.1, 1000 | 0.7, 10 000 | 0.9, 10 000 | 1.1, 10 000 |
+  |---|---|---|---|---|---|---|
+  | 0 | 0.2887 | 0.5225 | 0.7591 | 0.3044 | 0.5680 | 0.8271 |
+  | 1 | 0.3376 | 0.5661 | 0.7896 | 0.3522 | 0.6094 | 0.8493 |
+  | 8, 16, 32, 64, unbounded | 0.3375 | 0.5660 | 0.7895 | 0.3521 | 0.6094 | 0.8493 |
+
+  Any K from 1 gives the ratio of an unbounded eviction to four digits. The names are synthetic.
+- Entry counted: a response of one address under a 14-byte name, 200 bytes → 344 bytes; a shard of the same
+  capacity holds 42% fewer of them. A response of 1.2 KB: about 10% fewer.
+- Memory held (`tests/memory.rs`, 1 MiB over 4 shards, counted by the allocator between operations), most held in
+  each of the workloads, as thousandths of the capacity: small responses 828, responses of every size 967, small
+  then large 982, failure records 704, failures then large 986 (it holds 295 entries; the slab never compacted held
+  24). Before: small, every size, small then large, failures: 1810, 1060, 2060, 1470. The old accounting left the
+  slab, the index, the queues and the ghosts out.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage

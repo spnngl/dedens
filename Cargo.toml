@@ -100,6 +100,8 @@ signal-hook = { version = "0.4.5", default-features = false, features = [
 ] }
 # D42: SO_REUSEPORT, one socket per thread ("all" has it).
 socket2 = { version = "0.6.5", features = ["all"] }
+# D116: the cache's memory tests count the bytes the allocator holds, without `unsafe` of our own.
+stats_alloc = "0.1.10"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 # D30: diagnostics of net, the CLI and dedensd; the CLI prints them as text under -v, dedensd as JSON ("json"
