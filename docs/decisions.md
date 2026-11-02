@@ -245,7 +245,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114, D117) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114, D117, D124) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -1067,7 +1067,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
   change, never by line. Rejected: a
   scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
-- D22 (amended by D114, D116, D118) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
+- D22 (amended by D114, D116, D118, D124) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
   popular ones; a ghost queue of evicted hashes sends a key asked again to main). Whole responses only; an
@@ -1235,7 +1235,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from the configuration (D44). Rejected: one socket shared by all
   threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
-- D43 (amended by D45, D46, D114) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
+- D43 (amended by D45, D46, D114, D124) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
   seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
   is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
   OPT when the query had one; room for the OPT is kept before the lookup, and a stale hit leaves 6 more bytes for
@@ -1639,8 +1639,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     cookie; a limited query costs half a hit.
   - Not done: the limit counts queries, not responses by name; cookies are not required (`require-server-cookie`); a
     Server Cookie is made anew for each reply, not kept until half an hour old (§4.3 SHOULD only).
-- D93 (amends D77) An answer a validating stage proved insecure is cached a day at most, as keys are (D86), not for
-  `max_ttl`'s 7 days: a zone that turns secure gets AD on its answers within a day, as its keys do. The cap is
+- D93 (amends D77; amended by D124) An answer a validating stage proved insecure is cached a day at most, as keys are (D86), not for
+  `max_ttl`'s 7 days (2 since D124): a zone that turns secure gets AD on its answers within a day, as its keys do. The cap is
   `dedens_cache::Config::max_insecure_ttl`, applied by `Response::build` to what `Checked::Insecure` stores, on top
   of `max_ttl` and `max_negative_ttl` (a negative answer is under three hours anyway); `Unchecked` and `Secure`
   keep `max_ttl`, so a secure answer, which the signatures bound, is not shortened. Serve-stale and prefetch see
@@ -1652,6 +1652,33 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   above `max_ttl`. Rejected: capping in `dedens-server`
   (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
   `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
+- D124 (amends D22, D43, D77, D93) The cache keeps a response at least `min_ttl` (default 60 s) and at most `max_ttl`
+  (default 2 days, was 7), so that a flood of short-TTL names is not asked upstream again and again, and stale data is
+  bounded by two days (audit step 23, Unbound's `cache-min-ttl`). `Response::build` raises the smallest TTL of the
+  response to `min_ttl` before the caps (`max_ttl`, `max_negative_ttl`, the insecure cap, `bogus_ttl`): the raised
+  lifetime is the one stored, so a hit serves TTLs counting down from it (D22: every record gets the entry's
+  remaining lifetime, so a record of 3 hours beside one of 10 s is served with the entry's lifetime, as before), and
+  prefetch (D43's tenth of the lifetime), serve-stale and the failure hold start from it with no code of theirs. The
+  hit path is unchanged, so no bench. Negative answers are raised too (RFC 2308 §5), within `max_negative_ttl`.
+  A smallest TTL of 0 is not raised: the answer stays uncached (`NotCached::ZeroTtl`, RFC 1035 §3.2.1, RFC 2181 §8).
+  `min_ttl: 0` turns it off. Refused as `ConfigError::MinTtl` above the least of `max_ttl`, `max_negative_ttl` and the
+  insecure cap, which would otherwise cut the stored TTL under it.
+  - DNSSEC: RFC 4035 §5.3.3 bounds a validated TTL by the signatures' expiration. The cache does not see it: the
+    validator has already lowered the TTLs of the message to the verdict's (D77), and a TTL it lowered for the
+    expiration reads like any short one. So a `Checked::Secure` answer is **not raised**: it keeps the validator's
+    TTL, and a flood of short secure answers is not absorbed (open: `docs/TODECIDE.md`). `Unchecked` and `Insecure`
+    are raised (`Insecure` within its cap, D93); a bogus response keeps `bogus_ttl`, the least of the caps. An insecure
+    answer's TTL may have been lowered by the validator for the keys it walked (D86): the minimum can keep it up to
+    `min_ttl` past that.
+  - RFC deviation: the zone's TTL says how long a record may be reused (RFC 1035 §3.2.1, RFC 2181 §8, RFC 2308 §5);
+    a TTL below `min_ttl` is raised, and clients see the raised one. An owner who shortens a TTL to move traffic waits
+    up to `min_ttl` longer. Hence 60 s, and 0 to turn it off.
+  - Rejected: raising TTL 0 (it forbids caching, and the 0 of an SOA is a zone saying so for a negative answer); a
+    separate minimum for negative answers (Unbound's `cache-min-negttl`; one setting until a deployment asks);
+    raising only the lifetime and serving the zone's TTLs (clients would re-ask at once: the flood stays); bounding
+    `Secure` by a guess of the expiration (a validator change, TODECIDE).
+  - Tests: `dedens-cache/tests/{rfc2308,rfc8767,cache,checked}.rs` on the captured responses of `dedens-proto`, the
+    configuration tests of `apps/dedensd/src/config.rs`. Tests that count the zone's seconds set `min_ttl: 0`.
 - D94 (amends D79, D84, D91; amended by D117) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
   [HOST[:PORT]], timeout_ms}}` makes each `https://` listener forward the requests that name a target. `targets` is
   required and not empty, a port is 443 unless given; a name is read strictly (UTS 46 with STD3 rules and the label

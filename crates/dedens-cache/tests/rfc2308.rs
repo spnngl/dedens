@@ -2,9 +2,12 @@
 
 mod common;
 
-use common::{T0, a, insert, lookup, query, record, response, small_cache, soa, ttls};
-use dedens_cache::{Lookup, NotCached, StalePolicy};
-use dedens_proto::{Flags, Message, RData, Rcode, RecordType};
+use common::{
+    T0, a, captured, insert, lookup, min_cache, query, query_of, record, response, retimed,
+    small_cache, small_config, soa, ttls,
+};
+use dedens_cache::{Cache, Config, Lookup, NotCached, StalePolicy};
+use dedens_proto::{Flags, Message, RData, Rcode, RecordType, Ttl};
 
 const NEVER: StalePolicy = StalePolicy::Never;
 
@@ -94,6 +97,95 @@ fn negative_ttl_is_capped() {
     assert_eq!(ttls(&served.unwrap()), [cache.config().max_negative_ttl]);
 }
 
+/// D124: the smallest TTL of a captured answer (`a.bin`, 29 s) is raised to the minimum, and clients see TTLs
+/// counting down from it; a record that lived longer than the raised lifetime is served with the same TTL
+/// (`cname_chain.bin`: a CNAME of 3557 s with an A of 17 s).
+#[test]
+fn a_short_ttl_is_raised_to_the_minimum_and_counts_down() {
+    for case in ["a", "cname_chain"] {
+        let cache = min_cache(60);
+        let wire = captured(case);
+        let q = query_of(&wire);
+        insert(&cache, &q, &wire, T0).unwrap();
+        let (_, served) = lookup(&cache, &q, T0, NEVER);
+        assert_eq!(ttls(&served.unwrap()), [60, 60], "{case}");
+        let (_, served) = lookup(&cache, &q, T0 + 45, NEVER);
+        assert_eq!(ttls(&served.unwrap()), [15, 15], "{case}");
+        assert_eq!(lookup(&cache, &q, T0 + 60, NEVER).0, Lookup::Expired);
+    }
+}
+
+/// A minimum of 0 is off: the answer lives as long as the zone said.
+#[test]
+fn a_minimum_of_zero_keeps_the_ttl_of_the_zone() {
+    let cache = min_cache(0);
+    let wire = captured("a");
+    let q = query_of(&wire);
+    insert(&cache, &q, &wire, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    assert_eq!(ttls(&served.unwrap()), [29, 29]);
+    assert_eq!(lookup(&cache, &q, T0 + 29, NEVER).0, Lookup::Expired);
+}
+
+/// A TTL above the minimum is left alone.
+#[test]
+fn a_ttl_above_the_minimum_is_kept() {
+    let cache = min_cache(60);
+    let wire = captured("ns");
+    let q = query_of(&wire);
+    insert(&cache, &q, &wire, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    assert_eq!(ttls(&served.unwrap()), [81_811, 81_811]);
+}
+
+/// RFC 1035 §3.2.1, RFC 2181 §8: TTL 0 is for the transaction in hand; the minimum raises only nonzero TTLs, so
+/// a zero among the others, or an SOA that says 0, still keeps the answer out.
+#[test]
+fn the_minimum_does_not_raise_ttl_zero() {
+    let cache = min_cache(60);
+    let wire = captured("a");
+    let q = query_of(&wire);
+    let zero = retimed(&wire, 0, |m| &mut m.answer);
+    assert_eq!(insert(&cache, &q, &zero, T0), Err(NotCached::ZeroTtl));
+
+    let mut one_zero = Message::decode(&wire).unwrap().message;
+    one_zero.answer[1].ttl = Ttl::new(0).unwrap();
+    assert_eq!(
+        insert(&cache, &q, &one_zero.to_vec().unwrap(), T0),
+        Err(NotCached::ZeroTtl)
+    );
+
+    let nodata = captured("nodata");
+    let q = query_of(&nodata);
+    let zero = retimed(&nodata, 0, |m| &mut m.authority);
+    assert_eq!(insert(&cache, &q, &zero, T0), Err(NotCached::ZeroTtl));
+    assert!(cache.is_empty());
+}
+
+/// §5: a negative answer is raised too, and still held by `max_negative_ttl`: a captured NODATA (SOA of 1800 s) to
+/// 2 hours, a captured NXDOMAIN (SOA of a day) to the 3 hours of the cap.
+#[test]
+fn the_minimum_raises_negative_answers_within_the_negative_cap() {
+    let cache = Cache::new(Config {
+        min_ttl: 7_200,
+        ..small_config()
+    })
+    .unwrap();
+    let nodata = captured("nodata");
+    let q = query_of(&nodata);
+    insert(&cache, &q, &nodata, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    assert_eq!(ttls(&served.unwrap()), [7_200]);
+
+    let nxdomain = captured("nxdomain_soa");
+    let q = query_of(&nxdomain);
+    insert(&cache, &q, &nxdomain, T0).unwrap();
+    let (_, served) = lookup(&cache, &q, T0, NEVER);
+    let served = served.unwrap();
+    assert_eq!(served.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(ttls(&served), [cache.config().max_negative_ttl]);
+}
+
 #[test]
 fn positive_ttl_is_capped() {
     let cache = small_cache();
@@ -107,7 +199,7 @@ fn positive_ttl_is_capped() {
     );
     insert(&cache, &q, &r, T0).unwrap();
     let (_, served) = lookup(&cache, &q, T0, NEVER);
-    assert_eq!(ttls(&served.unwrap()), [7 * 86_400]);
+    assert_eq!(ttls(&served.unwrap()), [2 * 86_400]);
 }
 
 /// RFC 1035 §3.2.1: TTL 0 means use for this transaction only.

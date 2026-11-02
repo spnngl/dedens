@@ -40,10 +40,13 @@ pub(crate) fn forwarder() -> Pipeline {
 
 /// A pipeline with a cache of the default settings, then forwarding to [`servers`].
 pub(crate) fn caching() -> Pipeline {
+    caching_with(Config::default())
+}
+
+/// [`caching`] with the cache settings `config`.
+pub(crate) fn caching_with(config: Config) -> Pipeline {
     Pipeline::new(vec![
-        Stage::Cache(Arc::new(
-            Cache::new(Config::default()).expect("the default settings"),
-        )),
+        Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
         Stage::Forward(Forward::new(servers()).expect("servers")),
     ])
 }

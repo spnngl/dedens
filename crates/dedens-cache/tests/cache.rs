@@ -5,8 +5,8 @@ mod common;
 use std::net::{IpAddr, Ipv4Addr};
 
 use common::{
-    T0, a, dns, insert, key_of, lookup, query, query_plain, query_with, response, small_cache,
-    small_config, ttls,
+    T0, a, captured, dns, insert, key_of, lookup, min_cache, query, query_of, query_plain,
+    query_with, response, small_cache, small_config, ttls,
 };
 use dedens_cache::{
     Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
@@ -174,6 +174,23 @@ fn prefetch_is_asked_once_near_expiry() {
     // A new answer re-arms it.
     insert(&cache, &q, &www(100, 1), T0 + 95).unwrap();
     assert_eq!(freshness(T0 + 190), Freshness::Fresh { prefetch: true });
+}
+
+/// D124: the prefetch threshold is a share of the raised lifetime: `a.bin` (29 s) is stored for 60, so prefetch
+/// starts under 6 seconds left, not under 3.
+#[test]
+fn prefetch_counts_from_the_raised_lifetime() {
+    let cache = min_cache(60);
+    let wire = captured("a");
+    let q = query_of(&wire);
+    insert(&cache, &q, &wire, T0).unwrap();
+    let freshness = |now| match lookup(&cache, &q, now, NEVER).0 {
+        Lookup::Hit(hit) => hit.freshness,
+        other => panic!("expected a hit, got {other:?}"),
+    };
+    assert_eq!(freshness(T0 + 30), Freshness::Fresh { prefetch: false });
+    assert_eq!(freshness(T0 + 54), Freshness::Fresh { prefetch: false });
+    assert_eq!(freshness(T0 + 55), Freshness::Fresh { prefetch: true });
 }
 
 #[test]
@@ -550,6 +567,7 @@ fn only_hits_keep_an_entry() {
     let cache = Cache::new(Config {
         capacity: 64 << 10,
         shards: 1,
+        min_ttl: 0,
         ..Config::default()
     })
     .unwrap();

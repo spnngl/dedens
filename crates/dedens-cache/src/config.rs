@@ -42,7 +42,16 @@ pub struct Config {
     pub max_entry_bytes: Option<usize>,
     /// Number of shards, each behind its own lock: a power of two up to 65536, a few per thread.
     pub shards: usize,
-    /// Cap on the TTL of stored records (RFC 8767 §4: 7 days).
+    /// Least TTL of a stored response, so that a flood of short-TTL names is not asked upstream again and again
+    /// (D124): the smallest TTL of its records is raised to it, and clients see TTLs counting down from the raised
+    /// lifetime, as under Unbound's `cache-min-ttl`. Not applied to a response with a TTL of 0, which stays
+    /// uncached ([`NotCached::ZeroTtl`](crate::NotCached::ZeroTtl)), nor to a [`Checked::Secure`](crate::Checked::Secure)
+    /// one, which its signatures' expiration bounds (RFC 4035 §5.3.3); a bogus response keeps `bogus_ttl`. Applies
+    /// to negative answers too. 0 turns it off. At most `max_ttl`, `max_negative_ttl` and the insecure cap, see
+    /// [`Config::insecure_ttl`].
+    pub min_ttl: u32,
+    /// Cap on the TTL of stored records, so that no data is served fresh for longer (D124; RFC 8767 §4 suggests 7
+    /// days): 48 hours.
     pub max_ttl: u32,
     /// Cap on the TTL of negative answers (RFC 2308 §5: 1 to 3 hours).
     pub max_negative_ttl: u32,
@@ -78,7 +87,8 @@ impl Default for Config {
             capacity: 64 << 20,
             max_entry_bytes: None,
             shards: 64,
-            max_ttl: 7 * 86_400,
+            min_ttl: 60,
+            max_ttl: 2 * 86_400,
             max_negative_ttl: 3 * 3_600,
             stale_answer_ttl: 30,
             max_stale: 3 * 86_400,
@@ -126,6 +136,12 @@ pub enum ConfigError {
     /// the cap on every response.
     #[error("the insecure TTL must lie within 1 second and `max_ttl`")]
     InsecureTtl,
+    /// A minimum TTL above `max_ttl`, `max_negative_ttl` or the insecure cap would make the cap meaningless; the
+    /// least of the three is given.
+    #[error(
+        "the minimum TTL must be at most {0}, the least of `max_ttl`, `max_negative_ttl` and the insecure TTL"
+    )]
+    MinTtl(u32),
 }
 
 impl Config {
@@ -200,6 +216,16 @@ impl Config {
             && (ttl == 0 || ttl > self.max_ttl)
         {
             return Err(ConfigError::InsecureTtl);
+        }
+        let mut most = self.max_ttl;
+        if self.max_negative_ttl < most {
+            most = self.max_negative_ttl;
+        }
+        if self.insecure_ttl() < most {
+            most = self.insecure_ttl();
+        }
+        if self.min_ttl > most {
+            return Err(ConfigError::MinTtl(most));
         }
         Ok(())
     }

@@ -2135,7 +2135,7 @@ mod tests {
 
     #[test]
     fn a_caching_forwarder_reads() {
-        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    max_ttl: 3600\n    max_insecure_ttl: 600\n    max_entry_bytes: 4096\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
+        let text = "listen: ['127.0.0.1:${PORT}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    min_ttl: 120\n    max_ttl: 3600\n    max_insecure_ttl: 600\n    max_entry_bytes: 4096\n    stale_answer_after_ms: 0\n  up:\n    type: forward\n    servers: ['192.0.2.1', '192.0.2.2:5353']\n    timeout_ms: 500\n    tries: 1\n";
         let config = read(text, env, &Pipeline::default()).unwrap();
         assert_eq!(
             config.listen,
@@ -2144,6 +2144,7 @@ mod tests {
         let [Stage::Cache(cache), _] = config.pipeline.stages() else {
             panic!("a cache stage, then a forward stage")
         };
+        assert_eq!(cache.config().min_ttl, 120);
         assert_eq!(cache.config().max_insecure_ttl, Some(600));
         assert_eq!(cache.config().max_entry_bytes, Some(4096));
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
@@ -2231,6 +2232,18 @@ mod tests {
                 "stage `c`: the insecure TTL must lie within 1 second and `max_ttl`",
             ),
             (
+                "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    max_ttl: 3600\n    min_ttl: 3601\n",
+                "stage `c`: the minimum TTL must be at most 3600, the least of `max_ttl`, `max_negative_ttl` and the insecure TTL",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    max_negative_ttl: 59\n",
+                "stage `c`: the minimum TTL must be at most 59, the least of `max_ttl`, `max_negative_ttl` and the insecure TTL",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    max_insecure_ttl: 59\n",
+                "stage `c`: the minimum TTL must be at most 59, the least of `max_ttl`, `max_negative_ttl` and the insecure TTL",
+            ),
+            (
                 "listen: ['127.0.0.1:53']\npipeline: [c, h, up]\nstages:\n  c:\n    type: cache\n  h:\n    type: hosts\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
                 "stage `h` comes after a cache stage, whose answers, kept across reloads, would bypass it",
             ),
@@ -2298,7 +2311,7 @@ mod tests {
             stage => unreachable!("{stage:?}"),
         };
         let first = read(&text(""), env, &Pipeline::default()).unwrap().pipeline;
-        let same = read(&text("    max_ttl: 604800\n"), env, &first)
+        let same = read(&text("    max_ttl: 172800\n"), env, &first)
             .unwrap()
             .pipeline;
         assert!(Arc::ptr_eq(&cache(&first), &cache(&same)));
