@@ -157,7 +157,8 @@ impl Response {
         let wire = message.to_vec_without_edns()?;
         // The entry takes more than the wire: refuse before building the rest of it.
         let limit = config.entry_limit();
-        if key.as_bytes().len() + wire.len() > limit {
+        let too_large = |bytes: usize| key.as_bytes().len() + bytes > limit;
+        if too_large(wire.len()) {
             return Err(NotCached::TooLarge);
         }
         let len = u16::try_from(wire.len()).expect("a message is at most 65535 bytes");
@@ -172,7 +173,7 @@ impl Response {
             return Err(NotCached::Violations);
         }
         bytes.extend(whole_cuts(&message.additional));
-        if key.as_bytes().len() + bytes.len() > limit {
+        if too_large(bytes.len()) {
             return Err(NotCached::TooLarge);
         }
         let mut name = [0; MAX_NAME_LEN];
