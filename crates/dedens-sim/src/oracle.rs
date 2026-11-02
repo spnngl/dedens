@@ -3,9 +3,11 @@
 //!
 //! The data is the whole message an upstream server holds for the question. A response must have the same
 //! response code and the same answer records, and no authority or additional record the server did not send; its
-//! TTLs may be lower, as a cache counts them down, and no higher than the cache's floor (`min_ttl`) lifts them to.
-//! A negative answer keeps the SOA the server sent. SERVFAIL without an answer is the defined failure, unless the
-//! scenario says the path is live. DNSSEC records the stub did not ask for (no DO) are not expected.
+//! TTLs may be lower, as a cache counts them down, and no higher than the cache's floor (`min_ttl`) lifts them to,
+//! or its stale answer TTL when the answer is stale. A negative answer keeps the SOA the server sent. SERVFAIL
+//! without an answer is the defined failure, unless the scenario says the path is live; it and the response codes
+//! a scenario accepts carry no answer, no AD, and no authority or additional record the server did not send.
+//! DNSSEC records the stub did not ask for (no DO) are not expected.
 
 use dedens_cache::Config;
 use dedens_proto::edns::{EdnsOption, InfoCode};
@@ -55,8 +57,12 @@ pub struct Rules {
     pub dnssec: bool,
     /// Whether the path to an upstream server is up, so a query must not end in SERVFAIL.
     pub live: bool,
-    /// The TTL a response may carry whatever the data's: the cache's `min_ttl`.
+    /// The TTL a response may carry whatever the data's: the pipeline's cache's `min_ttl`. A scenario that builds
+    /// the cache with another sets it too.
     pub floor: u32,
+    /// The TTL of a stale answer, whatever the data's: the cache's `stale_answer_ttl` (RFC 8767 §4), set as `floor`
+    /// is.
+    pub stale_ttl: u32,
 }
 
 impl Default for Rules {
@@ -67,6 +73,7 @@ impl Default for Rules {
             dnssec: false,
             live: false,
             floor: Config::default().min_ttl,
+            stale_ttl: Config::default().stale_answer_ttl,
         }
     }
 }
@@ -86,34 +93,41 @@ fn same(a: &Record<'_>, b: &Record<'_>) -> bool {
     a.name == b.name && a.class == b.class && a.rdata == b.rdata
 }
 
-/// The records of `held` a stub asking for `question` sees.
-fn visible<'a>(
-    held: &'a [Record<'static>],
-    question: &'a Question<'_>,
-    rules: &'a Rules,
-) -> impl Iterator<Item = &'a Record<'static>> {
-    held.iter().filter(move |record| {
-        rules.dnssec
-            || record.rtype() == question.qtype
-            || !matches!(
-                record.rtype(),
-                RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
-            )
-    })
+/// Whether `record` is one a server sends only to a query with DO, unless it is what `question` asks for (RFC 4035
+/// §3.2.1): the signatures and the proofs of non-existence.
+pub(crate) fn withheld(record: &Record<'_>, question: &Question<'_>) -> bool {
+    record.rtype() != question.qtype
+        && matches!(
+            record.rtype(),
+            RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+        )
 }
 
-/// Checks the records `got` of the section `section` against those `held`: each is one of them with no more TTL
-/// than allowed, and all of them are there when `whole`.
+/// Whether a stub asking for `question` expects `record` of the data.
+fn wanted(record: &Record<'_>, question: &Question<'_>, rules: &Rules) -> bool {
+    rules.dnssec || !withheld(record, question)
+}
+
+/// Checks the records `got` of the section `section` against those `held`: each is a different one of them with no
+/// more TTL than allowed, and every one `wanted` is there when `whole`.
 fn section(
     section: &str,
     held: &[Record<'static>],
     got: &[Record<'_>],
     ceiling: &dyn Fn(&Record<'_>) -> u32,
+    wanted: &dyn Fn(&Record<'_>) -> bool,
     whole: bool,
 ) -> Result<(), String> {
+    let mut used = vec![false; held.len()];
     for record in got {
-        let Some(want) = held.iter().find(|want| same(want, record)) else {
-            return Err(format!("{section}: not held by the server: {record:?}"));
+        let found = held
+            .iter()
+            .enumerate()
+            .find(|(at, want)| !used[*at] && same(want, record));
+        let Some((at, want)) = found else {
+            return Err(format!(
+                "{section}: not held by the server, or repeated: {record:?}"
+            ));
         };
         if record.ttl.get() > ceiling(want) {
             return Err(format!(
@@ -121,8 +135,14 @@ fn section(
                 want.ttl.get()
             ));
         }
+        used[at] = true;
     }
-    if whole && let Some(lost) = held.iter().find(|want| !got.iter().any(|r| same(want, r))) {
+    if whole
+        && let Some((lost, _)) = held
+            .iter()
+            .zip(&used)
+            .find(|(want, used)| !**used && wanted(want))
+    {
         return Err(format!("{section}: missing: {lost:?}"));
     }
     Ok(())
@@ -144,25 +164,84 @@ fn matches(
     }
     // A truncated response holds some of the records (RFC 1035 §4.2.1).
     let cut = message.header.flags.contains(Flags::TC);
-    let ceiling = |want: &Record<'_>| want.ttl.get().max(rules.floor);
-    let answer: Vec<_> = visible(&held.answer, question, rules).cloned().collect();
-    let authority: Vec<_> = visible(&held.authority, question, rules).cloned().collect();
-    let additional: Vec<_> = visible(&held.additional, question, rules)
-        .cloned()
-        .collect();
-    section("answer", &answer, &message.answer, &ceiling, !cut)?;
-    section("authority", &authority, &message.authority, &ceiling, false)?;
+    // A stale answer has the TTL of the stale answer setting, whatever the record's.
+    let lift = if is_stale(message) {
+        rules.stale_ttl
+    } else {
+        0
+    };
+    let ceiling = |want: &Record<'_>| want.ttl.get().max(rules.floor).max(lift);
+    let needed = |record: &Record<'_>| wanted(record, question, rules);
+    section(
+        "answer",
+        &held.answer,
+        &message.answer,
+        &ceiling,
+        &needed,
+        !cut,
+    )?;
+    section(
+        "authority",
+        &held.authority,
+        &message.authority,
+        &ceiling,
+        &needed,
+        false,
+    )?;
     section(
         "additional",
-        &additional,
+        &held.additional,
         &message.additional,
         &ceiling,
+        &needed,
         false,
     )?;
     // A negative answer is cached for the SOA's sake: it keeps it.
     let soa = |records: &[Record<'_>]| records.iter().any(|r| r.rtype() == RecordType::SOA);
-    if !cut && soa(&authority) && !soa(&message.authority) {
+    if !cut && soa(&held.authority) && !soa(&message.authority) {
         return Err("authority: the SOA of the negative answer is missing".into());
+    }
+    Ok(())
+}
+
+/// Checks a response that carries no data, SERVFAIL or a code the scenario accepts: no answer, no AD, and no
+/// authority or additional record the servers did not send for the question.
+fn bare(
+    expected: &[Expected],
+    rules: &Rules,
+    question: &Question<'_>,
+    message: &Message<'_>,
+) -> Result<(), String> {
+    if !message.answer.is_empty() {
+        return Err(format!(
+            "records in the answer of {}: {:?}",
+            message.rcode(),
+            message.answer
+        ));
+    }
+    if message.header.flags.contains(Flags::AD) {
+        return Err(format!(
+            "AD on {}, which vouches for no data",
+            message.rcode()
+        ));
+    }
+    let held: Vec<Record<'static>> = expected
+        .iter()
+        .filter(|held| held.question == *question)
+        .flat_map(|held| {
+            held.answer
+                .iter()
+                .chain(&held.authority)
+                .chain(&held.additional)
+        })
+        .cloned()
+        .collect();
+    let ceiling = |want: &Record<'_>| want.ttl.get().max(rules.floor);
+    for (name, got) in [
+        ("authority", &message.authority),
+        ("additional", &message.additional),
+    ] {
+        section(name, &held, got, &ceiling, &|_| false, false)?;
     }
     Ok(())
 }
@@ -178,22 +257,24 @@ pub fn judge(
     question: &Question<'_>,
     message: &Message<'_>,
 ) -> Result<(), String> {
+    if rules.accept.contains(&Rcode::NOERROR) {
+        return Err("NOERROR is the data's: no scenario accepts it whatever the data".into());
+    }
+    let rcode = message.rcode();
+    if rcode == Rcode::SERVFAIL && message.answer.is_empty() {
+        if rules.live {
+            return Err("SERVFAIL where the path is live".into());
+        }
+        return bare(expected, rules, question, message);
+    }
+    if rules.accept.contains(&rcode) {
+        return bare(expected, rules, question, message);
+    }
     if message.header.flags.contains(Flags::AD) != rules.authentic {
         return Err(format!(
             "AD is {} where the scenario expects {}",
             !rules.authentic, rules.authentic
         ));
-    }
-    let rcode = message.rcode();
-    if rcode == Rcode::SERVFAIL && message.answer.is_empty() {
-        return if rules.live {
-            Err("SERVFAIL where the path is live".into())
-        } else {
-            Ok(())
-        };
-    }
-    if rules.accept.contains(&rcode) {
-        return Ok(());
     }
     let mut why = format!("no server holds data for {question:?}");
     for held in expected.iter().filter(|held| held.question == *question) {
@@ -412,6 +493,97 @@ mod tests {
             ..Rules::default()
         };
         assert_eq!(judged_by(&rules, "a", refuse), Ok(()));
+    }
+
+    #[test]
+    fn a_failure_carries_no_data_nor_vouching() {
+        let fail = |m: &mut Message<'static>| {
+            m.answer.clear();
+            m.authority.clear();
+            m.set_rcode(Rcode::SERVFAIL).expect("a code");
+        };
+        let foreign = captured_message("nxdomain_soa").authority[0].clone();
+        assert!(
+            judged("a", |m| {
+                fail(m);
+                m.authority.push(foreign);
+            })
+            .is_err(),
+            "a record the server never sent"
+        );
+        assert!(
+            judged("a", |m| {
+                fail(m);
+                m.header.flags = m.header.flags.with(Flags::AD);
+            })
+            .is_err(),
+            "AD on SERVFAIL"
+        );
+        // What the server did send, in the section it came in, may stay.
+        assert_eq!(
+            judged("nxdomain_soa", |m| {
+                m.answer.clear();
+                m.set_rcode(Rcode::SERVFAIL).expect("a code");
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_accepted_code_carries_no_data_nor_vouching() {
+        let rules = Rules {
+            accept: vec![Rcode::REFUSED],
+            ..Rules::default()
+        };
+        let refuse = |m: &mut Message<'static>| m.set_rcode(Rcode::REFUSED).expect("a code");
+        assert!(judged_by(&rules, "a", refuse).is_err(), "the answer stays");
+        assert!(
+            judged_by(&rules, "a", |m| {
+                refuse(m);
+                m.answer.clear();
+                m.header.flags = m.header.flags.with(Flags::AD);
+            })
+            .is_err(),
+            "AD"
+        );
+    }
+
+    #[test]
+    fn no_scenario_accepts_noerror_whatever_the_data() {
+        let rules = Rules {
+            accept: vec![Rcode::NOERROR],
+            ..Rules::default()
+        };
+        assert!(judged_by(&rules, "a", |_| {}).is_err());
+    }
+
+    #[test]
+    fn a_record_the_server_sent_once_comes_once() {
+        assert!(judged("a", |m| m.answer.push(m.answer[0].clone())).is_err());
+    }
+
+    #[test]
+    fn a_stale_answer_has_the_stale_ttl() {
+        let ttl = held("a").1.answer[0].ttl.get().max(Rules::default().floor);
+        let rules = Rules {
+            stale_ttl: ttl + 10,
+            ..Rules::default()
+        };
+        let lift = |m: &mut Message<'static>| m.answer[0].ttl = Ttl::from_wire(ttl + 10);
+        let stale = |m: &mut Message<'static>| {
+            lift(m);
+            let mut edns = Edns::default();
+            edns.options.push(EdnsOption::Ede(ExtendedError {
+                code: InfoCode::STALE_ANSWER,
+                text: String::new().into(),
+            }));
+            m.edns = Some(edns);
+        };
+        assert_eq!(judged_by(&rules, "a", stale), Ok(()));
+        // Not stale: the data's TTL is the bound.
+        assert!(judged_by(&rules, "a", lift).is_err());
+        // Stale, but over the stale TTL.
+        assert!(judged_by(&Rules::default(), "a", stale).is_err());
     }
 
     #[test]

@@ -27,8 +27,38 @@ pub struct Injection {
     pub wire: Vec<u8>,
 }
 
-/// What an attacker sends for a datagram it saw.
-type React = dyn Fn(&Seen<'_>) -> Vec<Injection>;
+/// What an attacker does about a datagram it saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    /// What it sends.
+    pub injections: Vec<Injection>,
+    /// Whether the server sends its own answer: `false` is an attacker that has silenced it, so that the
+    /// resolver gets the forgery alone, or nothing.
+    pub genuine: bool,
+}
+
+impl Reaction {
+    /// Sends `injections` beside the server's answer: a race.
+    #[must_use]
+    pub const fn beside(injections: Vec<Injection>) -> Self {
+        Self {
+            injections,
+            genuine: true,
+        }
+    }
+
+    /// Sends `injections` in place of the server's answer.
+    #[must_use]
+    pub const fn instead(injections: Vec<Injection>) -> Self {
+        Self {
+            injections,
+            genuine: false,
+        }
+    }
+}
+
+/// What an attacker does for a datagram it saw.
+type React = dyn Fn(&Seen<'_>) -> Reaction;
 
 /// What the attacker sends for each datagram the server receives over UDP. The test gives it: the attacker has no
 /// knowledge of DNS of its own.
@@ -38,12 +68,12 @@ pub struct Attacker(Rc<React>);
 impl Attacker {
     /// An attacker that sends what `react` returns.
     #[must_use]
-    pub fn new(react: impl Fn(&Seen<'_>) -> Vec<Injection> + 'static) -> Self {
+    pub fn new(react: impl Fn(&Seen<'_>) -> Reaction + 'static) -> Self {
         Self(Rc::new(react))
     }
 
     /// What it sends for `seen`.
-    pub(crate) fn react(&self, seen: &Seen<'_>) -> Vec<Injection> {
+    pub(crate) fn react(&self, seen: &Seen<'_>) -> Reaction {
         (self.0)(seen)
     }
 }

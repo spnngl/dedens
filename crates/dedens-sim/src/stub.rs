@@ -163,27 +163,71 @@ impl Stub {
         }
     }
 
+    /// The query for `question` as the stub's settings shape it: its EDNS size, and DO when it asks for DNSSEC
+    /// records.
+    fn query(&self, question: Question<'static>) -> Message<'static> {
+        let mut query = Message::query(0, question);
+        if let Some(edns) = query.edns.as_mut() {
+            if let Some(payload) = self.payload {
+                edns.udp_payload = payload;
+            }
+            if self.rules.dnssec {
+                edns.flags = EdnsFlags::DO;
+            }
+        }
+        query
+    }
+
     /// Asks the resolver `question` over `carrier`, and records the query and its end in the trace.
     ///
     /// # Errors
     ///
     /// [`CheckError`] when the query breaks a rule; a failed exchange is an [`Outcome`], not an error: the
-    /// network may well lose every packet.
+    /// network may well lose every packet. So is an error of the socket or the connection ([`Outcome::Io`], any
+    /// kind): a scenario that must have none checks for it, as [`Stub::expect`] does.
     pub async fn ask(
         &self,
         question: Question<'static>,
         carrier: Carrier,
     ) -> Result<Outcome, CheckError> {
-        self.ask_by(&self.rules, question, carrier).await
+        let query = self.query(question);
+        self.ask_by(&self.rules, query, self.resolver, carrier)
+            .await
     }
 
-    /// [`Stub::ask`] under `rules`.
+    /// [`Stub::ask`] with a query of the scenario's own making (a cookie, EDNS options, flags) to `server`, which
+    /// need not be the resolver: a port nobody listens on, say. The client sets its ID; the stub's EDNS size and DO
+    /// are not applied.
+    ///
+    /// # Errors
+    ///
+    /// As [`Stub::ask`].
+    ///
+    /// # Panics
+    ///
+    /// When `query` has no question.
+    pub async fn ask_query(
+        &self,
+        query: Message<'static>,
+        server: SocketAddr,
+        carrier: Carrier,
+    ) -> Result<Outcome, CheckError> {
+        self.ask_by(&self.rules, query, server, carrier).await
+    }
+
+    /// [`Stub::ask_query`] under `rules`.
     async fn ask_by(
         &self,
         rules: &Rules,
-        question: Question<'static>,
+        query: Message<'static>,
+        server: SocketAddr,
         carrier: Carrier,
     ) -> Result<Outcome, CheckError> {
+        let question = query
+            .questions
+            .first()
+            .cloned()
+            .expect("a query with a question");
         self.trace.record(
             self.host,
             What::Asked {
@@ -191,19 +235,10 @@ impl Stub {
                 transport: carrier.into(),
             },
         );
-        let mut query = Message::query(0, question.clone());
-        if let Some(edns) = query.edns.as_mut() {
-            if let Some(payload) = self.payload {
-                edns.udp_payload = payload;
-            }
-            if rules.dnssec {
-                edns.flags = EdnsFlags::DO;
-            }
-        }
         let started = Instant::now();
         let result = self
             .client
-            .exchange(query, self.resolver, carrier, &self.options)
+            .exchange(query, server, carrier, &self.options)
             .await;
         let elapsed = started.elapsed();
         let bound = bound(&self.options);
@@ -217,6 +252,15 @@ impl Stub {
         match result {
             Ok(response) => {
                 let message = check(&self.expected, rules, &question, &response.wire)?;
+                // Nothing is cut over TCP (RFC 1035 §4.2.2): a client that got TC there has nowhere to go.
+                if response.transport == Transport::Tcp && message.header.flags.contains(Flags::TC)
+                {
+                    return Err(CheckError::Unexpected {
+                        question: Box::new(question),
+                        why: "TC over TCP".into(),
+                        got: Box::new(message),
+                    });
+                }
                 let stale = is_stale(&message);
                 self.trace.record(
                     self.host,
@@ -274,7 +318,8 @@ impl Stub {
             live: true,
             ..self.rules.clone()
         };
-        match self.ask_by(&live, question.clone(), carrier).await? {
+        let query = self.query(question.clone());
+        match self.ask_by(&live, query, self.resolver, carrier).await? {
             Outcome::Answered(answer) => Ok(answer),
             other => Err(CheckError::Dead {
                 question: Box::new(question),

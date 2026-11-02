@@ -12,8 +12,8 @@
 //!
 //! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
 //! are answered one after the other, in order), the shared flights of D86, the cap on connections and on
-//! upstream queries, one reading task for each datagram, compio's timers (tokio's, which turmoil advances, stand
-//! in) and threads.
+//! upstream queries, the few reading tasks of `dedensd` (here one task answers each datagram, so none is ever
+//! waiting for a reader), compio's timers (tokio's, which turmoil advances, stand in) and threads.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -25,7 +25,7 @@ use std::sync::Arc;
 use dedens_cache::{Cache, Config};
 use dedens_net::exchange::Options;
 use dedens_proto::Transport;
-use dedens_server::{Forward, Pipeline, Stage, Step, Upstream};
+use dedens_server::{Clock, Forward, Pipeline, Stage, Step, Upstream, Validating, Via};
 use tokio::time::{Instant, timeout_at};
 use turmoil::net::TcpStream;
 
@@ -63,6 +63,32 @@ pub fn pipeline_with(mut config: Config, upstreams: &[SocketAddr]) -> Pipeline {
     config.shards = 1;
     let cache = Cache::new(config).expect("the cache's configuration is valid");
     Pipeline::new(vec![Stage::Cache(Arc::new(cache)), Stage::Forward(forward)])
+}
+
+/// [`pipeline`] whose forward stage validates (D77) as `validating` says: its clock is [`wall_clock`] when it is
+/// made with it.
+///
+/// # Panics
+///
+/// With no upstream server.
+#[must_use]
+pub fn pipeline_validating(upstreams: &[SocketAddr], validating: Validating) -> Pipeline {
+    let forward = Forward::new(upstreams.iter().copied())
+        .expect("an upstream server to forward to")
+        .validating(validating);
+    let config = Config {
+        shards: 1,
+        ..Config::default()
+    };
+    let cache = Cache::new(config).expect("the default configuration is valid");
+    Pipeline::new(vec![Stage::Cache(Arc::new(cache)), Stage::Forward(forward)])
+}
+
+/// The wall clock of a host, in seconds since the epoch of the run ([`Topology::epoch`](crate::topology::Topology::epoch)):
+/// what a validating stage reads in place of the system time, as `dedensd` does (D77).
+#[must_use]
+pub fn wall_clock() -> Clock {
+    Arc::new(|| turmoil::since_epoch().map_or(0, |since| since.as_secs()))
 }
 
 /// The resolver's settings, and what its software starts from.
@@ -237,7 +263,9 @@ impl Shared {
         let mut options = Options::default();
         (options.timeout, options.tries) = upstream.patience();
         options.edns_fallback = false;
-        // The servers are plain: asked over the transport of the client (D65).
+        // The servers are plain: asked over the transport of the client (D65). `dedensd`'s `target` also maps the
+        // others (TLS, QUIC, HTTPS) to their transports; the driver has none of them (D133), and a pipeline that
+        // forwards to one stops the run rather than ask it in clear.
         let carrier = if transport == Transport::Udp {
             Carrier::Udp
         } else {
@@ -245,7 +273,13 @@ impl Shared {
         };
         let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
         loop {
-            let server = upstream.server().addr;
+            let target = upstream.server();
+            assert!(
+                matches!(target.via, Via::Plain),
+                "the driver forwards over plain DNS only, not {:?} (D133)",
+                target.via
+            );
+            let server = target.addr;
             self.trace.record(
                 self.host,
                 What::Forwarded {

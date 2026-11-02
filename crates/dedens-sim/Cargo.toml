@@ -18,5 +18,8 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
 turmoil.workspace = true
 
+[dev-dependencies]
+dedens-dnssec.workspace = true
+
 [lints]
 workspace = true

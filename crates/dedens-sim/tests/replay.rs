@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use dedens_proto::RecordType;
-use dedens_sim::attacker::{Attacker, Injection};
+use dedens_sim::attacker::{Attacker, Injection, Reaction};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node};
 use dedens_sim::seed::{self, Seed};
@@ -21,13 +21,15 @@ const SEEDS: &[u64] = &[0, 7, 2026];
 /// seed picks and an attacker that repeats each answer on the server's host.
 fn digest(seed: Seed) -> u64 {
     let attacker = Attacker::new(|seen| {
-        seen.genuine
-            .map(|genuine| Injection {
-                after: Duration::from_millis(5),
-                wire: genuine.to_vec(),
-            })
-            .into_iter()
-            .collect()
+        Reaction::beside(
+            seen.genuine
+                .map(|genuine| Injection {
+                    after: Duration::from_millis(5),
+                    wire: genuine.to_vec(),
+                })
+                .into_iter()
+                .collect(),
+        )
     });
     let answers = Answers::new().captured("a").attacked_by(attacker);
     let mut world = Topology::new().upstream(answers).build(seed);

@@ -10,14 +10,15 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `src/client.rs`: `Client`, one `Exchange` over turmoil UDP and TCP as the real client runs it (cookies, TCP retried
   once on a new connection, `ClientError`s); `Carrier`.
 - `src/resolver.rs`: `Resolver`, a `Pipeline` served on port 53 as `dedensd`'s `start` and `answer` do (D45's stale
-  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`.
+  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`, `pipeline_validating`, `wall_clock`.
 - `src/upstream.rs`: `Answers`, `serve`: an upstream server answering from captured responses (cut to the query's
-  EDNS size, REFUSED for a question it holds nothing for).
+  EDNS size, REFUSED for a question it holds nothing for, no signatures without DO); `Verdict`, `Behaviour`.
 - `src/oracle.rs`: `Expected`, `Rules`, `judge`: what a client may get.
 - `src/stub.rs`: `Stub`, a client asking the resolver, with the oracle's `CheckError`s and `Outcome`s.
+  `ask` accepts any I/O error as `Outcome::Io`: only `expect` and the scenario assert on it.
 - `src/topology.rs`: `Topology`, `World`: hosts, `fault`, `pick`, `choose`, `run`.
 - `src/fault.rs`: `Fault`, `Node`, `Server`: what a scenario does to the network and the hosts.
-- `src/attacker.rs`: `Attacker`, `Injection`: datagrams sent from an upstream server's own socket.
+- `src/attacker.rs`: `Attacker`, `Reaction`, `Injection`: datagrams sent from an upstream server's own socket.
 - `src/trace.rs`: `Trace`, `Event`, `What`, `digest`: what the hosts did, in order, for assertions and for comparing
   runs.
 - `src/port.rs`, `src/framing.rs`: port 53 over UDP and TCP with its tasks; the 2-byte TCP framing.
@@ -34,18 +35,26 @@ What a scenario uses, so that it adds test files and no driver code:
   partition, so the two do not share a link. A lost TCP segment is not sent again: the stream stalls. `Latency`
   draws a message's delay from `min` toward `max` (exponentially, mostly near `min`): messages reorder, TCP segments
   are put back in order. `Repair` does not deliver what `Hold` kept; `Release` does.
-- Attacker: `Answers::attacked_by(Attacker::new(|seen| ..))` returns `Injection { after, wire }`s for each query
-  `seen` (the query, its sender and the genuine answer); they leave from the server's own port 53 socket, so the
-  source address is the server's: a spoofed source is out. turmoil gives ephemeral ports in sequence: a scenario of
+- Attacker: `Answers::attacked_by(Attacker::new(|seen| ..))` returns a `Reaction` for each query `seen` (the query,
+  its sender and the genuine answer): `Reaction::beside(injections)` races the server's answer,
+  `Reaction::instead(injections)` silences it. An `Injection { after, wire }` leaves from the server's own port 53
+  socket, so the source address is the server's: a spoofed source is out. turmoil gives ephemeral ports in sequence: a scenario of
   forged answers that must guess the resolver's port may as well know it.
+- Upstream server faults: `Answers::faulty(|question, rng| Verdict)` sends, drops or delays each response from the
+  host's own seeded stream; `silent` sends none over UDP; `tcp(Behaviour::{Answer, Silent, Close(n)})` answers,
+  ignores or closes after `n` queries of a connection.
 - Resolver: `Topology::resolver(|upstreams| pipeline)` builds the pipeline at each start (stages, access lists, rate
-  limits, cookies, a validator). A cache in it must have `shards: 1`: `pipeline_with` forces it. `Answers::file`,
+  limits, cookies, a validator). A cache in it must have `shards: 1`: `pipeline_with` and `pipeline_validating`
+  force it. A validating stage takes `wall_clock()` as its clock, with `Topology::epoch` at the time of the
+  captures (`captured_at` of `crates/dedens-dnssec/tests/testdata`). The oracle's `Rules::floor` and `stale_ttl`
+  must be the cache's `min_ttl` and `stale_answer_ttl` where the scenario changes them. A forward target other than
+  plain DNS panics. `Answers::file`,
   `directory` hold any captures (`<id>.bin` of `crates/dedens-dnssec/tests/testdata` too); `Answers::cookies` has the
   server set a cookie of its own.
 - Clients start 5 ms into the run, after the hosts bound their ports (turmoil starts hosts in no fixed order, and a
   datagram to a port not bound yet is lost). `World::client`, or `World::client_at(ip, ..)` for sources in chosen networks (outside 192.168.0.0/16,
   where the other hosts are). `Stub::payload` sets the EDNS size of its queries (a small one has the resolver truncate
-  and the stub ask again over TCP), `Stub::options` the tries and timeouts, `Stub::rules` what the oracle accepts
+  and the stub ask again over TCP), `Stub::ask_query` sends a query of its own to any server, `Stub::options` the tries and timeouts, `Stub::rules` what the oracle accepts
   besides the data (`accept` response codes, `authentic` for AD, `dnssec` to set DO, `live`); `Stub::expect` fails on
   SERVFAIL and on no response.
 - Trace: `Sent` (each send of an exchange, with its ID and its count), `Served` (an upstream server answered),
@@ -57,7 +66,8 @@ What a scenario uses, so that it adds test files and no driver code:
 
 Rules for a driver and a scenario:
 
-- Every `select!` is `biased`: turmoil's random branch order is not seeded, and a run must replay.
+- Every `select!` is `biased`: tokio's picks the order of its branches from a generator that is not seeded, and a
+  run must replay.
 - Every task is spawned into a `JoinSet` (`Port::spawn`): a panic in a task fails the run.
 - Scenarios go through `seed::each`, never a literal seed alone.
 - A scenario that needs something the driver lacks adds it to `src/` here, small, rather than a copy in `tests/`.

@@ -2,22 +2,32 @@
 //!
 //! What it answers: the capture for a question it holds, cut to the UDP payload size the query announces (512
 //! bytes without EDNS, RFC 6891 §6.2.3) with TC set when it is longer; REFUSED for another question; nothing to a
-//! message that is no query. It sends an EDNS cookie when told to ([`Answers::cookies`]).
+//! message that is no query. A query without DO gets the capture without its RRSIG, NSEC and NSEC3 records, as a
+//! server sends it (RFC 4035 §3.2.1). It sends an EDNS cookie when told to ([`Answers::cookies`]).
+//!
+//! What goes wrong is the scenario's: [`Answers::faulty`] decides, for each response and from the host's seeded
+//! stream, whether it is sent, dropped or delayed ([`Verdict`]); [`Answers::silent`] sends none over UDP;
+//! [`Answers::tcp`] makes the server answer, ignore or close ([`Behaviour`]); [`Answers::attacked_by`] puts an
+//! attacker on its socket.
 //!
 //! Left out: the zone data of a real server; a scenario that needs it adds a pipeline with a local-data stage here.
 
+use std::cell::RefCell;
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
-use dedens_proto::edns::{Cookie, Edns, EdnsOption};
+use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Question, Rcode, Transport};
 use turmoil::net::{TcpStream, UdpSocket};
 
 use crate::attacker::{Attacker, Injection, Seen};
 use crate::framing;
-use crate::oracle::Expected;
+use crate::oracle::{Expected, withheld};
 use crate::port::{Arrival, Port};
+use crate::seed::Rng;
 use crate::trace::{Trace, What};
 
 /// The size of the buffer a reply is made in: the largest message.
@@ -26,19 +36,97 @@ const OUT: usize = 65535;
 /// What a message that is not cut is allowed over UDP without EDNS (RFC 1035 §4.2.1).
 const PLAIN_PAYLOAD: usize = 512;
 
+/// What a server does with a response it is about to send: the verdict of [`Answers::faulty`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Sends it.
+    Answer,
+    /// Never sends it: a lost response, or a server that does not answer.
+    Drop,
+    /// Sends it after this long, while it goes on answering: a slow server, a response that comes late.
+    Delay(Duration),
+}
+
+/// What a server does over TCP.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Behaviour {
+    /// Answers each query.
+    #[default]
+    Answer,
+    /// Reads the queries of a connection and never answers.
+    Silent,
+    /// Answers this many queries of a connection, then closes it: none, and it closes as it is made.
+    Close(usize),
+}
+
+/// What decides the [`Verdict`] for a question, from the host's own stream of the seed.
+type Decide = dyn Fn(&Question<'static>, &mut Rng) -> Verdict;
+
+#[derive(Clone)]
+struct Fickle(Rc<Decide>);
+
+impl fmt::Debug for Fickle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Fickle(..)")
+    }
+}
+
 /// The responses an upstream server holds, each for a question, and the attacker on its host, if any.
 #[derive(Debug, Default, Clone)]
 pub struct Answers {
     entries: Vec<Entry>,
     attacker: Option<Attacker>,
     cookie: Option<[u8; 8]>,
+    fickle: Option<Fickle>,
+    tcp: Behaviour,
 }
 
+/// A capture, as sent to a query with DO and as sent to one without (RFC 4035 §3.2.1): a server sends the
+/// signatures and the proofs of non-existence only to a client that asks for them.
 #[derive(Debug, Clone)]
 struct Entry {
     question: Question<'static>,
     udp: Vec<u8>,
     tcp: Vec<u8>,
+    plain_udp: Vec<u8>,
+    plain_tcp: Vec<u8>,
+}
+
+impl Entry {
+    fn new(question: Question<'static>, udp: Vec<u8>, tcp: Vec<u8>) -> Self {
+        Self {
+            plain_udp: plain(&udp, &question),
+            plain_tcp: plain(&tcp, &question),
+            question,
+            udp,
+            tcp,
+        }
+    }
+}
+
+/// `wire` without the RRSIG, NSEC and NSEC3 records `question` did not ask for: as it is when it has none.
+fn plain(wire: &[u8], question: &Question<'static>) -> Vec<u8> {
+    let mut message = decode(wire);
+    let size = |message: &Message<'_>| {
+        message.answer.len() + message.authority.len() + message.additional.len()
+    };
+    let held = size(&message);
+    for section in [
+        &mut message.answer,
+        &mut message.authority,
+        &mut message.additional,
+    ] {
+        section.retain(|record| !withheld(record, question));
+    }
+    if size(&message) == held {
+        return wire.to_vec();
+    }
+    let mut out = vec![0; OUT];
+    let len = message
+        .encode(&mut out)
+        .expect("a message it decoded encodes");
+    out.truncate(len);
+    out
 }
 
 /// A response captured from a real server, in `crates/dedens-proto/tests/testdata`.
@@ -98,7 +186,7 @@ impl Answers {
         let (udp, tcp) = (captured(udp), captured(tcp));
         let question = question(&udp);
         assert_eq!(question, self::question(&tcp), "one question");
-        self.entries.push(Entry { question, udp, tcp });
+        self.entries.push(Entry::new(question, udp, tcp));
         self
     }
 
@@ -111,11 +199,7 @@ impl Answers {
     pub fn file(mut self, path: &Path) -> Self {
         let wire = std::fs::read(path).expect("a captured response");
         let question = question(&wire);
-        self.entries.push(Entry {
-            question,
-            udp: wire.clone(),
-            tcp: wire,
-        });
+        self.entries.push(Entry::new(question, wire.clone(), wire));
         self
     }
 
@@ -156,12 +240,44 @@ impl Answers {
         self
     }
 
+    /// Has `decide` rule on each response before it goes out, from the stream of the seed of this host: a server
+    /// that loses, delays or never sends what a scenario tells it to, at random when `decide` draws. The
+    /// attacker's datagrams are not its responses.
+    #[must_use]
+    pub fn faulty(
+        mut self,
+        decide: impl Fn(&Question<'static>, &mut Rng) -> Verdict + 'static,
+    ) -> Self {
+        self.fickle = Some(Fickle(Rc::new(decide)));
+        self
+    }
+
+    /// A server that never answers: [`Verdict::Drop`] for each response, over UDP and TCP.
+    #[must_use]
+    pub fn silent(self) -> Self {
+        self.faulty(|_, _| Verdict::Drop)
+    }
+
+    /// Has the server behave as `behaviour` over TCP: it accepts connections whatever it does with them.
+    #[must_use]
+    pub const fn tcp(mut self, behaviour: Behaviour) -> Self {
+        self.tcp = behaviour;
+        self
+    }
+
     /// Has the server answer a query with a client cookie with it and `server` as the server cookie (RFC 7873
     /// §5.2).
     #[must_use]
     pub const fn cookies(mut self, server: [u8; 8]) -> Self {
         self.cookie = Some(server);
         self
+    }
+
+    /// The verdict on the response to `question`: [`Verdict::Answer`] unless [`Answers::faulty`] says otherwise.
+    fn verdict(&self, question: &Question<'static>, rng: &RefCell<Rng>) -> Verdict {
+        self.fickle.as_ref().map_or(Verdict::Answer, |fickle| {
+            (fickle.0)(question, &mut rng.borrow_mut())
+        })
     }
 
     /// What the server answers, to compare with what clients get: the whole response of each entry.
@@ -195,7 +311,16 @@ impl Answers {
         transport: Transport,
     ) -> Option<Vec<u8>> {
         let tcp = transport == Transport::Tcp;
-        let capture = if tcp { &entry.tcp } else { &entry.udp };
+        let dnssec = query
+            .edns
+            .as_ref()
+            .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO));
+        let capture = match (tcp, dnssec) {
+            (true, true) => &entry.tcp,
+            (true, false) => &entry.plain_tcp,
+            (false, true) => &entry.udp,
+            (false, false) => &entry.plain_udp,
+        };
         let limit = query.edns.as_ref().map_or(PLAIN_PAYLOAD, |edns| {
             usize::from(edns.udp_payload).max(PLAIN_PAYLOAD)
         });
@@ -250,45 +375,89 @@ fn refusal(query: &Message<'static>) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The software of an upstream server host: answers on port 53 until the host crashes.
+/// The software of an upstream server host: answers on port 53 until the host crashes. `rng` is the host's stream of
+/// the seed, for [`Answers::faulty`]; it goes on where it left off when the host restarts.
 ///
 /// # Errors
 ///
 /// A socket that fails, or a task that panics.
-pub async fn serve(answers: Rc<Answers>, host: IpAddr, trace: Trace) -> turmoil::Result {
+pub async fn serve(
+    answers: Rc<Answers>,
+    host: IpAddr,
+    rng: Rc<RefCell<Rng>>,
+    trace: Trace,
+) -> turmoil::Result {
     let mut port = Port::bind().await?;
     loop {
         match port.next().await? {
             Arrival::Datagram { wire, from } => {
                 let reply = answers.reply(&wire, Transport::Udp);
+                let mut genuine = true;
                 if let Some(attacker) = &answers.attacker {
-                    let genuine = reply.as_ref().map(|(reply, _)| reply.as_slice());
                     let seen = Seen {
                         query: &wire,
                         from,
-                        genuine,
+                        genuine: reply.as_ref().map(|(reply, _)| reply.as_slice()),
                     };
-                    for injection in attacker.react(&seen) {
+                    let reaction = attacker.react(&seen);
+                    genuine = reaction.genuine;
+                    for injection in reaction.injections {
                         port.spawn(inject(port.udp(), from, injection, host, trace.clone()));
                     }
                 }
-                if let Some((reply, question)) = reply {
-                    trace.record(
-                        host,
-                        What::Served {
-                            question,
-                            transport: Transport::Udp,
-                            len: reply.len(),
-                        },
-                    );
-                    port.udp().send_to(&reply, from).await.ok();
+                let Some((reply, question)) = reply.filter(|_| genuine) else {
+                    continue;
+                };
+                let sent = Sent {
+                    question,
+                    transport: Transport::Udp,
+                    len: reply.len(),
+                };
+                match answers.verdict(&sent.question, &rng) {
+                    Verdict::Drop => {}
+                    Verdict::Answer => send(&port.udp(), from, &reply, sent, host, &trace).await,
+                    Verdict::Delay(delay) => {
+                        let (socket, trace) = (port.udp(), trace.clone());
+                        port.spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            send(&socket, from, &reply, sent, host, &trace).await;
+                        });
+                    }
                 }
             }
             Arrival::Connection { stream, .. } => {
-                port.spawn(connection(Rc::clone(&answers), stream, host, trace.clone()));
+                let (answers, rng) = (Rc::clone(&answers), Rc::clone(&rng));
+                port.spawn(connection(answers, stream, host, rng, trace.clone()));
             }
         }
     }
+}
+
+/// A response on its way out: what the trace records of it.
+struct Sent {
+    question: Question<'static>,
+    transport: Transport,
+    len: usize,
+}
+
+/// Sends `reply` to `to` from `socket`, and records it.
+async fn send(
+    socket: &UdpSocket,
+    to: SocketAddr,
+    reply: &[u8],
+    sent: Sent,
+    host: IpAddr,
+    trace: &Trace,
+) {
+    trace.record(
+        host,
+        What::Served {
+            question: sent.question,
+            transport: sent.transport,
+            len: sent.len,
+        },
+    );
+    socket.send_to(reply, to).await.ok();
 }
 
 /// Sends `injection` to `to` from the server's socket, after its delay.
@@ -310,12 +479,34 @@ async fn inject(
     socket.send_to(&injection.wire, to).await.ok();
 }
 
-/// Answers the queries of a connection, one at a time, until it closes.
-async fn connection(answers: Rc<Answers>, mut stream: TcpStream, host: IpAddr, trace: Trace) {
-    while let Ok(query) = framing::read(&mut stream).await {
+/// Serves the queries of a connection, one at a time, as [`Answers::tcp`] says, until it closes.
+async fn connection(
+    answers: Rc<Answers>,
+    mut stream: TcpStream,
+    host: IpAddr,
+    rng: Rc<RefCell<Rng>>,
+    trace: Trace,
+) {
+    let mut served = 0;
+    loop {
+        if matches!(answers.tcp, Behaviour::Close(limit) if served >= limit) {
+            return;
+        }
+        let Ok(query) = framing::read(&mut stream).await else {
+            return;
+        };
+        if answers.tcp == Behaviour::Silent {
+            continue;
+        }
         let Some((reply, question)) = answers.reply(&query, Transport::Tcp) else {
             continue;
         };
+        served += 1;
+        match answers.verdict(&question, &rng) {
+            Verdict::Drop => continue,
+            Verdict::Answer => {}
+            Verdict::Delay(delay) => tokio::time::sleep(delay).await,
+        }
         trace.record(
             host,
             What::Served {
@@ -428,6 +619,31 @@ mod tests {
         let wire = query(ask("example.com", RecordType::A), Some(1232), None);
         let (reply, _) = cookies.reply(&wire, Transport::Udp).expect("a reply");
         assert_eq!(client_cookie(&decode(&reply)), None);
+    }
+
+    #[test]
+    fn signatures_come_only_to_a_query_with_do() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
+        let answers = Answers::new().directory(&dir);
+        // Whether the answer holds the A records, and whether it holds their signatures.
+        let got = |do_bit: bool| {
+            let mut message = Message::query(0x1234, ask("cloudflare.com", RecordType::A));
+            let edns = message.edns.as_mut().expect("EDNS");
+            edns.flags = if do_bit {
+                EdnsFlags::DO
+            } else {
+                EdnsFlags::default()
+            };
+            let mut out = vec![0; OUT];
+            let len = message.encode(&mut out).expect("encodes");
+            out.truncate(len);
+            let (reply, _) = answers.reply(&out, Transport::Tcp).expect("a reply");
+            let reply = decode(&reply);
+            let has = |rtype| reply.answer.iter().any(|record| record.rtype() == rtype);
+            (has(RecordType::A), has(RecordType::RRSIG))
+        };
+        assert_eq!(got(true), (true, true));
+        assert_eq!(got(false), (true, false));
     }
 
     #[test]
