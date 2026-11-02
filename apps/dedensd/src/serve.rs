@@ -946,10 +946,18 @@ async fn oblivious(
             };
             return proxied(exchange, response, peer).await;
         }
-        (Route::Target(Kind::Oblivious), Ok(body)) => match target.open(body) {
-            Ok((query, context)) => (Transport::Odoh, Some(context), query),
-            Err(status) => return reject(exchange, status, peer).await,
-        },
+        (Route::Target(Kind::Oblivious), Ok(body)) => {
+            // The target opens it only for a client with budget left, the opening being work an unauthenticated
+            // client makes it do; a source on the rate limit's exempt list pays no network unit (D117, D113).
+            let exempt = thread
+                .pipeline()
+                .rate_limit()
+                .is_some_and(|limit| limit.exempts(peer.ip()));
+            match target.open(peer.ip(), now(), exempt, body) {
+                Ok((query, context)) => (Transport::Odoh, Some(context), query),
+                Err(status) => return reject(exchange, status, peer).await,
+            }
+        }
         (Route::Target(Kind::Dns), Ok(query)) => (Transport::Https, None, query.to_vec()),
     };
     let pipeline = thread.pipeline();

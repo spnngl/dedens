@@ -1,9 +1,12 @@
 //! Oblivious `DoH` (D78): the encryption of a query and a response on the captured response `a` (ID 0), with the
 //! padding RFC 8467 recommends, for the suite of RFC 9230 §9. One call each; the ephemeral key and the
-//! response nonce are fixed bytes, since a CSPRNG's cost is the platform's.
+//! response nonce are fixed bytes, since a CSPRNG's cost is the platform's. The `budget_*` ones are what the target
+//! checks before any of it (D117): a unit of the client network's budget, taken or refused.
 
 use core::convert::Infallible;
 use std::hint::black_box;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use dedens_bench::wire;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
@@ -12,6 +15,7 @@ use dedens_odoh::{
     encrypt_query, encrypt_response, query_padding, response_padding,
 };
 use dedens_proto::{Edns, Message};
+use dedens_server::{Budget, Budgets, MAX_BUDGET, Slot};
 use divan::Bencher;
 
 #[global_allocator]
@@ -131,4 +135,51 @@ fn decrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
     )
     .expect("encrypts");
     bencher.bench_local(|| decrypt_response(&client, black_box(&sealed)).expect("decrypts"));
+}
+
+/// A client outside loopback.
+fn client() -> IpAddr {
+    IpAddr::from([198, 51, 100, 7])
+}
+
+/// A client of a network of its own for each thread that asks: the threads of a contended bench do not share a
+/// bucket.
+fn client_of_thread() -> IpAddr {
+    static NEXT: AtomicU8 = AtomicU8::new(0);
+    thread_local! {
+        static CLIENT: IpAddr = IpAddr::from([198, 51, NEXT.fetch_add(1, Ordering::Relaxed), 7]);
+    }
+    CLIENT.with(|client| *client)
+}
+
+fn budgets(burst: u32) -> Budgets {
+    Budgets::new(Budget {
+        per_second: 1,
+        burst,
+        table: 1 << 16,
+    })
+    .expect("a budget")
+}
+
+/// The check before a decapsulation (D117) that lets it through: the network of the address, keyed and hashed, and a
+/// unit taken; the clock never moves, so the bucket is never refilled. Each thread has a network of its own.
+#[divan::bench(threads = [1, 4])]
+fn budget_admit(bencher: Bencher<'_, '_>) {
+    let budgets = budgets(MAX_BUDGET);
+    bencher.bench(|| budgets.admit(Slot::new(black_box(client_of_thread()), true), 0));
+}
+
+/// The same for a client that spent its budget: what a flood of posts costs the target instead of a decapsulation. Each
+/// thread has a network of its own.
+#[divan::bench(threads = [1, 4])]
+fn budget_refuse(bencher: Bencher<'_, '_>) {
+    let budgets = budgets(0);
+    bencher.bench(|| budgets.admit(Slot::new(black_box(client_of_thread()), true), 0));
+}
+
+/// The same flood from one network on all threads: they share a bucket, whose refusals write nothing.
+#[divan::bench(threads = [1, 4])]
+fn budget_refuse_one_network(bencher: Bencher<'_, '_>) {
+    let budgets = budgets(0);
+    bencher.bench(|| budgets.admit(Slot::new(black_box(client()), true), 0));
 }

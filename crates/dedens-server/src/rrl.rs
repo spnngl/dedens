@@ -13,6 +13,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::access::{Access, Denial, Network};
+use crate::budget::{Net, network};
 use crate::metrics::Limited;
 
 /// The most a bucket holds: its debt is 24 bits.
@@ -210,6 +211,13 @@ impl RateLimit {
         &self.config
     }
 
+    /// Whether `from` is on the exempt list ([`Config::exempt`]): a source whose queries are not limited by
+    /// network, which the per-network budgets of validation and Oblivious `DoH` (D117) leave alone too.
+    #[must_use]
+    pub fn exempts(&self, from: IpAddr) -> bool {
+        self.exempt.permits(from)
+    }
+
     /// What to do with a UDP query from `from` at second `now` (the clock of the cache, D43), counted.
     ///
     /// `can_truncate` is whether a TC=1 answer exists on the transport: without it a slip is a drop, and the slip
@@ -223,22 +231,12 @@ impl RateLimit {
         if self.exempt.permits(from) {
             return Verdict::Pass;
         }
-        // The prefix is 1 to the width: the shifts below are 0 to width - 1.
-        let (family, rate, network) = match from.to_canonical() {
-            IpAddr::V4(address) => (
-                4_u8,
-                self.config.ipv4,
-                u128::from(
-                    u32::from(address) & (u32::MAX << (32 - u32::from(self.config.ipv4.prefix))),
-                ),
-            ),
-            IpAddr::V6(address) => (
-                6_u8,
-                self.config.ipv6,
-                u128::from(address) & (u128::MAX << (128 - u32::from(self.config.ipv6.prefix))),
-            ),
+        let key = network(from, self.config.ipv4.prefix, self.config.ipv6.prefix);
+        let rate = match key {
+            Net::V4(_) => self.config.ipv4,
+            Net::V6(_) => self.config.ipv6,
         };
-        let index = usize::try_from(self.hasher.hash_one((family, network)) & self.mask)
+        let index = usize::try_from(self.hasher.hash_one(key) & self.mask)
             .expect("the mask is below the table length, a usize");
         let bucket = self
             .buckets

@@ -56,6 +56,7 @@
 //!     dnssec: validate                 # off (default) or validate (D77)
 //!     trust_anchors: /etc/dedensd/anchors.zone   # DS or DNSKEY records; default: the root's, bundled
 //!     insecure: [corp.example]         # names not validated, with what is below them (RFC 7646)
+//!     client_share: {rate: 1000, burst: 2000}  # validation units a client network may spend (D117)
 //! ```
 
 use std::collections::BTreeMap;
@@ -77,8 +78,8 @@ use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
 use dedens_proto::{Name, Ttl};
 use dedens_server::{
-    Access, Cookies, Denial, Forward, MAX_BURST, Network, Pipeline, Rate, RateLimit,
-    RateLimitConfig, Secret, Secrets, Stage, Validating, Via,
+    Access, Budget, Budgets, Cookies, DEFAULT_SHARE, Denial, Forward, MAX_BURST, Network, Pipeline,
+    Rate, RateLimit, RateLimitConfig, Secret, Secrets, Stage, Validating, Via,
 };
 use http::uri::PathAndQuery;
 use serde::Deserialize;
@@ -212,6 +213,28 @@ impl RrlFile {
         RateLimit::new(config)
             .map(|limit| Some(Arc::new(limit)))
             .context("`rrl`")
+    }
+}
+
+/// What a client network may spend, as written (D117): a field left out is the default's.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetFile {
+    /// Units a second of a network, a /24 of IPv4 or a /48 of IPv6.
+    rate: Option<NonZeroU32>,
+    /// Units at once.
+    burst: Option<NonZeroU32>,
+}
+
+impl BudgetFile {
+    /// The budget with the fields written, the others from `default`.
+    fn over(file: Option<Self>, default: Budget) -> Budget {
+        let file = file.unwrap_or_default();
+        Budget {
+            per_second: file.rate.map_or(default.per_second, NonZeroU32::get),
+            burst: file.burst.map_or(default.burst, NonZeroU32::get),
+            table: default.table,
+        }
     }
 }
 
@@ -405,6 +428,21 @@ struct OdohFile {
         expect(dead_code, reason = "read by the proxy, built with the odoh feature")
     )]
     proxy: Option<ProxyFile>,
+    /// What all clients may open together: `rate` decapsulations a second and `burst` at once, 10 000 and 20 000
+    /// by default (D117); past them, 503 before the request is parsed or opened.
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the target, built with the odoh feature")
+    )]
+    budget: Option<BudgetFile>,
+    /// What a client network may open, as `dedensd` sees it (a proxy's, D91): `rate` a second and `burst` at once,
+    /// 1000 and 2000 by default (D117); past them, 503 before the request is parsed or opened. Sources on the
+    /// `rrl.exempt` list (D113) have none.
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "read by the target, built with the odoh feature")
+    )]
+    client_budget: Option<BudgetFile>,
 }
 
 /// The Oblivious `DoH` proxy `dedensd` serves as (D94).
@@ -569,6 +607,8 @@ enum StageFile {
     /// `dnssec: validate` (D77) validates what they answer: AD is set for authentic answers only, a bogus one is
     /// SERVFAIL with an extended error. `trust_anchors` is a file of DS or DNSKEY records in zone file format, the
     /// root's bundled ones unless set; `insecure` lists names answered as they are, with their subdomains (RFC 7646).
+    /// `client_share` is what a client network may spend of the validation allowance, in `rate` units a second and
+    /// `burst` at once (D117): a unit is a question upstream or a signature check, about 10 µs.
     Forward {
         servers: Vec<Server>,
         timeout_ms: Option<NonZeroU32>,
@@ -578,6 +618,7 @@ enum StageFile {
         trust_anchors: Option<PathBuf>,
         #[serde(default)]
         insecure: Vec<Insecure>,
+        client_share: Option<BudgetFile>,
     },
     /// Names and addresses (D54): `entries`, lines in the format of `/etc/hosts`, then those of `file`, read
     /// at start and on reload; each record with `ttl` seconds, 3600 unless set; `fallthrough` passing a listed name's
@@ -849,11 +890,13 @@ pub(crate) fn read(
                 dnssec,
                 trust_anchors,
                 insecure,
+                client_share,
             } => {
                 let validation = Validation {
                     dnssec,
                     trust_anchors,
                     insecure,
+                    client_share,
                 };
                 Stage::Forward(forward(
                     name, servers, timeout_ms, tries, validation, previous,
@@ -995,8 +1038,10 @@ fn forward(
         .with_context(|| format!("stage `{name}` has no server"))?;
     match validation.dnssec {
         Dnssec::Off => ensure!(
-            validation.trust_anchors.is_none() && validation.insecure.is_empty(),
-            "stage `{name}`: `trust_anchors` and `insecure` need `dnssec: validate`"
+            validation.trust_anchors.is_none()
+                && validation.insecure.is_empty()
+                && validation.client_share.is_none(),
+            "stage `{name}`: `trust_anchors`, `insecure` and `client_share` need `dnssec: validate`"
         ),
         Dnssec::Validate => {
             let validating = validating(validation.trust_anchors.as_deref(), validation.insecure)?;
@@ -1004,7 +1049,17 @@ fn forward(
                 Stage::Forward(old) => old.validation().filter(|old| old.tag() == validating.tag()),
                 _ => None,
             });
-            forward = forward.validating(kept.cloned().unwrap_or(validating));
+            let mut validating = kept.cloned().unwrap_or(validating);
+            // The shares are not part of what the keys were validated by: a reload that changes them keeps the
+            // key cache and starts the shares' buckets again.
+            let share = BudgetFile::over(validation.client_share, DEFAULT_SHARE);
+            if validating.share() != share {
+                validating = validating.sharing(
+                    Budgets::new(share)
+                        .with_context(|| format!("stage `{name}`: `client_share`"))?,
+                );
+            }
+            forward = forward.validating(validating);
         }
     }
     if let Some(ms) = timeout_ms {
@@ -1044,6 +1099,7 @@ struct Validation {
     dnssec: Dnssec,
     trust_anchors: Option<PathBuf>,
     insecure: Vec<Insecure>,
+    client_share: Option<BudgetFile>,
 }
 
 /// Whether a forward stage validates (D77): `off` or `validate`. The YAML reader takes an unquoted `off` for the
@@ -1133,7 +1189,16 @@ fn section(
         .as_ref()
         .map(|proxy| crate::odoh::proxy::Settings::new(&proxy.targets, proxy.timeout_ms))
         .transpose()?;
-    Ok(Some(crate::odoh::Section::new(odoh.key.as_deref(), proxy)))
+    let default = crate::odoh::Limits::default();
+    let limits = crate::odoh::Limits {
+        client: BudgetFile::over(odoh.client_budget, default.client),
+        global: BudgetFile::over(odoh.budget, default.global),
+    };
+    Ok(Some(crate::odoh::Section::new(
+        odoh.key.as_deref(),
+        proxy,
+        limits,
+    )))
 }
 
 /// The certificate of `tls`, read from its files, when `listen` has an address over TLS, QUIC or HTTP/3.
@@ -1925,6 +1990,44 @@ mod tests {
         assert!(serde_saphyr::from_str::<OdohFile>("proxy:\n  timeout_ms: 100\n").is_err());
     }
 
+    /// D117: the target's limits are the defaults unless `budget` and `client_budget` say; zero is refused.
+    #[cfg(feature = "odoh")]
+    #[test]
+    fn an_odoh_target_has_limits() {
+        let listen = [Listen::Https(
+            "127.0.0.1:443".parse().unwrap(),
+            "/dns-query".into(),
+        )];
+        let section = |text: &str| {
+            let odoh: OdohFile = serde_saphyr::from_str(text).unwrap();
+            section(Some(&odoh), &listen).unwrap().unwrap()
+        };
+        let default = crate::odoh::Section::new(None, None, crate::odoh::Limits::default());
+        assert_eq!(section("{}"), default);
+        let defaults = crate::odoh::Limits::default();
+        let limits = crate::odoh::Limits {
+            client: Budget {
+                per_second: 10,
+                burst: 20,
+                table: defaults.client.table,
+            },
+            global: Budget {
+                per_second: 99,
+                ..defaults.global
+            },
+        };
+        assert_eq!(
+            section("budget: {rate: 99}\nclient_budget: {rate: 10, burst: 20}\n"),
+            crate::odoh::Section::new(None, None, limits)
+        );
+        // A reload compares sections, and warns that a change of `odoh` takes a restart: the limits are part of it.
+        assert_ne!(section("client_budget: {rate: 10}\n"), default);
+        assert_ne!(section("budget: {rate: 10}\n"), default);
+        for bad in ["budget: {burst: 0}\n", "client_budget: {rate: 0}\n"] {
+            assert!(serde_saphyr::from_str::<OdohFile>(bad).is_err(), "{bad}");
+        }
+    }
+
     /// A certificate goes with an address over TLS or QUIC, and the reverse.
     #[test]
     fn tls_listeners_and_a_certificate_go_together() {
@@ -2161,6 +2264,43 @@ mod tests {
             !Arc::ptr_eq(&cache(&insecure), &cache(&back)),
             "validate to off"
         );
+    }
+
+    /// D117: a client network's share of the validation allowance is the default's unless `client_share` says; a
+    /// reload that changes it keeps the key cache (D86); without `dnssec: validate` it is refused, and so are a zero,
+    /// a burst the table cannot hold and a field it does not know.
+    #[test]
+    fn a_client_share_is_set_per_stage_and_reload_keeps_the_keys() {
+        let text = |share: &str| format!("{MINIMAL}    dnssec: validate\n{share}");
+        let validating = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Forward(forward)) => forward.validation().expect("validating").clone(),
+            stage => unreachable!("{stage:?}"),
+        };
+        let first = read(&text(""), env, &Pipeline::default()).unwrap().pipeline;
+        assert_eq!(validating(&first).share(), DEFAULT_SHARE);
+        let wider = read(&text("    client_share: {rate: 50}\n"), env, &first)
+            .unwrap()
+            .pipeline;
+        let share = validating(&wider).share();
+        assert_eq!(
+            (share.per_second, share.burst, share.table),
+            (50, DEFAULT_SHARE.burst, DEFAULT_SHARE.table)
+        );
+        assert!(
+            validating(&first)
+                .validator()
+                .shares_cache(validating(&wider).validator())
+        );
+        for (extra, needle) in [
+            ("client_share: {rate: 0}", "nonzero"),
+            ("client_share: {burst: 2000000000}", "client_share"),
+            ("client_share: {speed: 1}", "speed"),
+        ] {
+            let message = error(&text(&format!("    {extra}\n")));
+            assert!(message.contains(needle), "{extra}: {message}");
+        }
+        let message = error(&format!("{MINIMAL}    client_share: {{rate: 1}}\n"));
+        assert!(message.contains("need `dnssec: validate`"), "{message}");
     }
 
     /// D86: the keys a validator cached stay valid across a reload while its trust anchors and negative anchors

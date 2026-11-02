@@ -19,7 +19,7 @@ use crate::forward::{self, Forward, Server};
 use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
 use crate::rrl::{RateLimit, Verdict};
-use crate::validate::{Check, Outcome, Progress, present};
+use crate::validate::{Admitted, Check, Outcome, Progress, Source, present};
 
 /// A stage of the pipeline (D23).
 #[derive(Debug)]
@@ -90,8 +90,9 @@ pub struct Upstream {
     /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
     stale_after: Option<Duration>,
     purpose: Purpose,
-    /// Whether the response is validated (D77): the forward stage validates, and the client left it to us.
-    validate: bool,
+    /// Whether the response is validated (D77): the forward stage validates, and the client left it to us. The
+    /// admission says which share of the allowance the validation is charged to (D117).
+    validate: Option<Admitted>,
     /// The validation under way, while one of its questions is upstream.
     check: Option<Box<Check>>,
 }
@@ -291,7 +292,14 @@ impl Pipeline {
                 Some(question) if matches!(question.qtype, RecordType::AXFR | RecordType::IXFR) => {
                     Rcode::REFUSED
                 }
-                Some(_) => return self.run(&query, &client, now, out),
+                Some(_) => {
+                    // A connection cannot be spoofed, nor a valid Server Cookie (D113).
+                    let source = Source {
+                        address: from,
+                        proven: transport != Transport::Udp || standing == Standing::Valid,
+                    };
+                    return self.run(&query, &client, source, now, out);
+                }
             }
         };
         reply(&client, Message::default(), rcode, out)
@@ -312,7 +320,14 @@ impl Pipeline {
     /// Runs the stages on a query that passed the core's checks. Without RD, only fresh cached data answers: no
     /// stale data (RFC 8767 §5), no upstream query (RFC 1034 §4.3.1), REFUSED with EDE 20 (Not Authoritative,
     /// RFC 8914 §4.21) otherwise.
-    fn run(&self, query: &Query<'_>, client: &Client<'_>, now: u32, out: &mut [u8]) -> Step {
+    fn run(
+        &self,
+        query: &Query<'_>,
+        client: &Client<'_>,
+        source: Source,
+        now: u32,
+        out: &mut [u8],
+    ) -> Step {
         let recursion = client.header.flags.contains(Flags::RD);
         let stale = if recursion {
             StalePolicy::IfFailing
@@ -336,7 +351,7 @@ impl Pipeline {
                         Looked::Reply { len, refresh } => {
                             if refresh
                                 && let Ok(mut upstream) =
-                                    self.upstream(index, query, client, Some(index))
+                                    self.upstream(index, query, client, (source, now), Some(index))
                             {
                                 upstream.purpose = Purpose::Prefetch;
                                 return Step::Refresh(len, upstream);
@@ -372,12 +387,15 @@ impl Pipeline {
                     return client.truncated(out).map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
-                    let mut upstream = match self.upstream(index, query, client, cache) {
-                        Ok(upstream) => upstream,
-                        Err(Refused::NoServer) => return Step::Drop,
-                        // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
-                        Err(Refused::Shed) => return servfail(client, InfoCode::NOT_READY, out),
-                    };
+                    let mut upstream =
+                        match self.upstream(index, query, client, (source, now), cache) {
+                            Ok(upstream) => upstream,
+                            Err(Refused::NoServer) => return Step::Drop,
+                            // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
+                            Err(Refused::Shed) => {
+                                return servfail(client, InfoCode::NOT_READY, out);
+                            }
+                        };
                     // The client response timer, only when expired data could answer once it runs out.
                     upstream.stale_after = cache
                         .and_then(|index| self.cache(index))
@@ -392,13 +410,14 @@ impl Pipeline {
     }
 
     /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`; none if
-    /// the stage has no server, or validates the query and has its allowance spent (D77), before any question
-    /// is sent or response decoded.
+    /// the stage has no server, or validates the query and finds the allowance spent at second `now`, the global
+    /// one or the share of the network of `source` (D77, D117), before any question is sent or response decoded.
     fn upstream(
         &self,
         from: usize,
         query: &Query<'_>,
         client: &Client<'_>,
+        (source, now): (Source, u32),
         cache: Option<usize>,
     ) -> Result<Box<Upstream>, Refused> {
         let (index, forward) = self
@@ -413,16 +432,19 @@ impl Pipeline {
             .ok_or(Refused::NoServer)?;
         let question = query.question().ok_or(Refused::NoServer)?;
         // CD asks for the data as it is (RFC 4035 §3.2.2), and only class IN has DNSSEC (RFC 4033 §2).
-        let validate = forward.validation().is_some()
-            && !client.header.flags.contains(Flags::CD)
-            && question.qclass == Class::IN;
-        if validate
-            && forward
-                .validation()
-                .is_some_and(|validating| !validating.admit())
-        {
-            return Err(Refused::Shed);
-        }
+        let validating = forward
+            .validation()
+            .filter(|_| !client.header.flags.contains(Flags::CD) && question.qclass == Class::IN);
+        let validate = match validating {
+            Some(validating) => {
+                let exempt = self
+                    .rate_limit
+                    .as_ref()
+                    .is_some_and(|limit| limit.exempts(source.address));
+                Some(validating.admit(source, exempt, now).ok_or(Refused::Shed)?)
+            }
+            None => None,
+        };
         Ok(Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
@@ -540,12 +562,13 @@ impl Pipeline {
                 }
                 check.answer(validating, decoded.as_ref().map(|decoded| &decoded.message));
                 Some(check)
-            } else if upstream.validate {
+            } else if let Some(admitted) = upstream.validate {
                 match (decoded, query.question()) {
                     (Some(decoded), Some(question)) => Some(Box::new(Check::new(
                         validating,
                         question,
                         decoded.into_owned(),
+                        admitted,
                     ))),
                     _ => None,
                 }
@@ -632,7 +655,11 @@ impl Upstream {
             .expect("an upstream's query has a question");
         match &self.check {
             Some(check) => forward::probe(check.asking()),
-            None => forward::request(&Client::of(&query, self.transport), question, self.validate),
+            None => forward::request(
+                &Client::of(&query, self.transport),
+                question,
+                self.validate.is_some(),
+            ),
         }
     }
 

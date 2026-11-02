@@ -8,12 +8,14 @@
 //! slots in [`Check::answer`].
 
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::net::IpAddr;
+use std::sync::Arc;
 
 use dedens_dnssec::validator::{Cost, Next, Validation, Validator, Verdict, covered};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Decoded, Flags, Message, Question, RecordType, Ttl};
 
+use crate::budget::{Budget, Budgets, MAX_BUDGET, Slot};
 use crate::metrics::Metrics;
 
 /// Seconds since the Unix epoch, as signatures count them: read each time a response starts being validated.
@@ -32,6 +34,31 @@ const MAX_CHASES: u8 = 8;
 /// signature check of the slowest key (`docs/benchmarks.md`).
 const BLOCKS_PER_UNIT: u32 = 4096;
 
+/// What a client network may spend of the [`Allowance`] by default, a /24 of IPv4 or a /48 of IPv6 (D117): a tenth
+/// of its rate and burst, so that ten networks spending it together spend it all, over a table of 65 536 buckets,
+/// 512 KiB.
+pub const DEFAULT_SHARE: Budget = Budget {
+    per_second: 1_000,
+    burst: 2_000,
+    table: 1 << 16,
+};
+
+/// Where a query comes from, for the share of the allowance it spends (D117).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Source {
+    pub(crate) address: IpAddr,
+    /// Whether the address cannot be spoofed: a connection, or a valid Server Cookie (D113). The queries of a
+    /// proven address have a share of their own, so that a flood from spoofed sources of its network, which a
+    /// UDP server cannot tell from the network's own, does not shed them.
+    pub(crate) proven: bool,
+}
+
+/// A query admitted: the share it spends of the allowance, if any (D117).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Admitted {
+    share: Option<Slot>,
+}
+
 /// What the queries of all clients may cost a validating forward stage, in units (D77): a client's question
 /// upstream, a question of the validator's, a signature verification, or 4096 SHA-1 blocks of NSEC3 hashing (a
 /// hash of a short name with no salt is one block per iteration, D106). A unit takes about 10
@@ -45,7 +72,12 @@ const BLOCKS_PER_UNIT: u32 = 4096;
 /// (D106): the work past the first debt is one validation step of each query running then, at most 130 units a
 /// step, and `per_query` bounds a query only to within the step that goes over it. The debt is kept down to
 /// `burst` units and no further (the rest is forgiven), so that validation is back `burst / per_second + 1`
-/// seconds after a flood of expensive queries stops, however large it was.
+/// seconds after a flood of expensive queries stops, however large it was. A burst over [`MAX_BUDGET`] is
+/// taken as that.
+///
+/// A client network spends it only up to its share, [`DEFAULT_SHARE`] (D117): a query of a network that spent its
+/// own is shed the same way, counted as `shed_share`, and does not touch the units the others share. Sources on
+/// the rate limit's exempt list (D113) have no share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Allowance {
     /// Units refilled each second: the sustained rate of validation work.
@@ -68,76 +100,18 @@ impl Default for Allowance {
     }
 }
 
-/// The units left of an [`Allowance`], shared by the clones of a [`Validating`].
-#[derive(Debug)]
-struct Bucket {
-    allowance: Allowance,
-    state: Mutex<Tokens>,
-}
-
-#[derive(Debug)]
-struct Tokens {
-    /// Negative in debt.
-    units: i64,
-    /// The latest time the clock read, in seconds: it never goes back, and the bucket is not refilled by it going
-    /// forward again.
-    at: Option<u64>,
-}
-
-impl Bucket {
-    fn new(allowance: Allowance) -> Self {
-        Self {
-            allowance,
-            state: Mutex::new(Tokens {
-                units: i64::from(allowance.burst),
-                at: None,
-            }),
-        }
-    }
-
-    /// Whether a query may start at `now`: some unit is left, after the refill, and is taken.
-    fn admit(&self, now: u64) -> bool {
-        let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(at) = tokens.at.filter(|at| *at < now) {
-            let refill = u64::from(self.allowance.per_second).saturating_mul(now - at);
-            let burst = i64::from(self.allowance.burst);
-            tokens.units = tokens
-                .units
-                .saturating_add(i64::try_from(refill).unwrap_or(i64::MAX))
-                .min(burst);
-        }
-        tokens.at = tokens.at.max(Some(now));
-        let admitted = tokens.units > 0;
-        if admitted {
-            tokens.units = tokens.units.saturating_sub(1);
-        }
-        admitted
-    }
-
-    /// Whether work done left the bucket owing units: a query in this state asks no more questions (D106).
-    fn in_debt(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .units
-            < 0
-    }
-
-    /// Takes `units` of work done, down to a debt of one burst and no further (D106).
-    fn charge(&self, units: u32) {
-        let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let floor = -i64::from(self.allowance.burst);
-        tokens.units = tokens.units.saturating_sub(i64::from(units)).max(floor);
-    }
-}
-
 /// The validator, the clock and the allowance of a forward stage (D77).
 #[derive(Clone)]
 pub struct Validating {
     validator: Validator,
     clock: Clock,
-    bucket: Arc<Bucket>,
-    metrics: Metrics,
+    allowance: Allowance,
+    /// The allowance of all clients: a table of one bucket.
+    bucket: Arc<Budgets>,
+    /// What each client network may spend of it (D117).
+    shares: Arc<Budgets>,
+    /// Boxed: a forward stage holds one, and the stages of a pipeline are of the size of the largest.
+    metrics: Arc<Metrics>,
     tag: Arc<str>,
 }
 
@@ -151,13 +125,19 @@ impl fmt::Debug for Validating {
 
 impl Validating {
     /// Validates with `validator`, at the time `clock` reads.
+    ///
+    /// # Panics
+    ///
+    /// Never: [`DEFAULT_SHARE`] is within the bounds of [`Budgets::new`].
     #[must_use]
     pub fn new(validator: Validator, clock: Clock) -> Self {
         Self {
             validator,
             clock,
-            bucket: Arc::new(Bucket::new(Allowance::default())),
-            metrics: Metrics::new(),
+            allowance: Allowance::default(),
+            bucket: Arc::new(global(Allowance::default())),
+            shares: Arc::new(Budgets::new(DEFAULT_SHARE).expect("the default share is in bounds")),
+            metrics: Arc::new(Metrics::new()),
             tag: Arc::from(""),
         }
     }
@@ -166,8 +146,24 @@ impl Validating {
     /// share one bucket.
     #[must_use]
     pub fn allowing(mut self, allowance: Allowance) -> Self {
-        self.bucket = Arc::new(Bucket::new(allowance));
+        self.allowance = allowance;
+        self.bucket = Arc::new(global(allowance));
         self
+    }
+
+    /// Bounds what each client network may spend of the allowance to `shares` instead of [`DEFAULT_SHARE`] (D117):
+    /// the clones of the result share the buckets. Time counts in seconds of the pipeline's clock, the `now` of
+    /// [`Pipeline::query`](crate::Pipeline::query).
+    #[must_use]
+    pub fn sharing(mut self, shares: Budgets) -> Self {
+        self.shares = Arc::new(shares);
+        self
+    }
+
+    /// The settings of the shares of the client networks.
+    #[must_use]
+    pub fn share(&self) -> Budget {
+        self.shares.config()
     }
 
     /// Names the settings of the validator, the trust anchors and what else it was built from, which it cannot
@@ -191,23 +187,72 @@ impl Validating {
         &self.validator
     }
 
-    pub(crate) const fn metrics(&self) -> &Metrics {
+    pub(crate) fn metrics(&self) -> &Metrics {
         &self.metrics
     }
 
-    /// Whether a query to validate may start: the allowance has units left, one of which the client's question
-    /// costs. Counted when not (D77).
-    pub(crate) fn admit(&self) -> bool {
-        let admitted = self.bucket.admit((self.clock)());
-        if !admitted {
-            self.metrics.shed();
+    /// Whether a query to validate may start at second `now` (the clock of the cache, D43): its share has units
+    /// left, then the allowance has, and one of each is taken for the client's question. Counted when not (D77,
+    /// D117).
+    ///
+    /// The share is taken first, so that a client over it never touches the allowance of the others; its unit is
+    /// given back when the allowance refuses. A source on the rate limit's exempt list (D113), `exempt`, has no
+    /// share.
+    pub(crate) fn admit(&self, source: Source, exempt: bool, now: u32) -> Option<Admitted> {
+        let share = (!exempt).then(|| Slot::new(source.address, source.proven));
+        if let Some(share) = share
+            && !self.shares.admit(share, now)
+        {
+            self.metrics.shed_share();
+            return None;
         }
-        admitted
+        if !self.bucket.admit(Slot::ONLY, now) {
+            if let Some(share) = share {
+                self.shares.refund(share);
+            }
+            self.metrics.shed();
+            return None;
+        }
+        Some(Admitted { share })
+    }
+
+    /// Takes `units` of work done for `admitted` from its share and from the allowance (D106).
+    fn charge(&self, admitted: Admitted, units: u32) {
+        if let Some(share) = admitted.share {
+            self.shares.charge(share, units);
+        }
+        self.bucket.charge(Slot::ONLY, units);
+    }
+
+    /// Counts and tells whether the share of `admitted` or the allowance owes units (D106).
+    fn shed(&self, admitted: Admitted) -> bool {
+        if admitted
+            .share
+            .is_some_and(|share| self.shares.in_debt(share))
+        {
+            self.metrics.shed_share();
+            return true;
+        }
+        if self.bucket.in_debt(Slot::ONLY) {
+            self.metrics.shed();
+            return true;
+        }
+        false
     }
 
     fn start(&self, question: &Question<'_>, response: &Message<'_>) -> Validation {
         self.validator.start(question, response, (self.clock)())
     }
+}
+
+/// The allowance of all clients as one bucket.
+fn global(allowance: Allowance) -> Budgets {
+    Budgets::new(Budget {
+        per_second: allowance.per_second,
+        burst: allowance.burst.min(MAX_BUDGET),
+        table: 1,
+    })
+    .expect("a burst within the bound and one bucket are in bounds")
 }
 
 /// What validation made of a response.
@@ -228,8 +273,9 @@ pub(crate) enum Progress {
     /// Ask [`Check::asking`] of the upstream servers and give the response to [`Check::answer`].
     Ask,
     Done(Outcome),
-    /// The allowance is in debt (D106): stop, with the answer of a query refused at [`Validating::admit`]. Not an
-    /// [`Outcome`]: no verdict, and no failure to hold, as the response is not at fault.
+    /// The allowance or the client's share is in debt (D106, D117): stop, with the answer of a query refused at
+    /// [`Validating::admit`]. Not an [`Outcome`]: no verdict, and no failure to hold, as the response is not at
+    /// fault.
     Shed,
 }
 
@@ -256,6 +302,8 @@ pub(crate) struct Check {
     done: u32,
     /// What the allowance was charged so far, in units.
     charged: u32,
+    /// The share of the allowance the client spends (D117), charged with it.
+    admitted: Admitted,
 }
 
 impl Check {
@@ -264,6 +312,7 @@ impl Check {
         validating: &Validating,
         question: &Question<'_>,
         response: Decoded<'static>,
+        admitted: Admitted,
     ) -> Self {
         Self {
             validation: validating.start(question, &response.message),
@@ -277,6 +326,7 @@ impl Check {
             chases: 0,
             done: 0,
             charged: 0,
+            admitted,
         }
     }
 
@@ -296,19 +346,19 @@ impl Check {
     }
 
     /// What to do next: ask [`Check::asking`], or the outcome. What the query has cost since the last time is
-    /// charged to `validating`'s allowance, after the step: a query past [`Allowance::per_query`] gets no more
-    /// questions, nor one that finds the allowance in debt (D106), which is counted shed.
+    /// charged to `validating`'s allowance and the client's share of it, after the step: a query past
+    /// [`Allowance::per_query`] gets no more questions, nor one that finds either in debt (D106, D117), which is
+    /// counted shed.
     pub(crate) fn next(&mut self, validating: &Validating) -> Progress {
         let progress = self.advance();
         let spent = self.spent();
-        validating.bucket.charge(spent.saturating_sub(self.charged));
+        validating.charge(self.admitted, spent.saturating_sub(self.charged));
         self.charged = spent;
         if matches!(progress, Progress::Ask) {
-            if spent > validating.bucket.allowance.per_query {
+            if spent > validating.allowance.per_query {
                 return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
             }
-            if validating.bucket.in_debt() {
-                validating.metrics.shed();
+            if validating.shed(self.admitted) {
                 return Progress::Shed;
             }
         }
@@ -451,52 +501,40 @@ pub(crate) fn present(
 mod tests {
     use super::*;
 
-    /// D106: the debt stops at one burst. 10 000 queries admitted together, each then charged `per_query`, would
-    /// leave 2.5 million units owed, 256 s of refill; the bucket admits again once `burst / per_second + 1`
-    /// seconds have passed, and not before the debt is paid down to nothing.
+    /// D117: a query the allowance refuses gives back the unit it took of its share, so that the clients of a
+    /// network are not shed for the others' shed queries.
     #[test]
-    fn the_debt_of_a_flood_stops_at_one_burst() {
-        let allowance = Allowance::default();
-        let bucket = Bucket::new(allowance);
-        let start = 1_000;
-        assert!((0..10_000).all(|_| bucket.admit(start)));
-        for _ in 0..10_000 {
-            bucket.charge(allowance.per_query);
-        }
-        let repay = u64::from(allowance.burst / allowance.per_second);
-        assert!(!bucket.admit(start));
-        assert!(!bucket.admit(start + repay));
-        assert!(bucket.admit(start + repay + 1));
-    }
-
-    /// D106: the bucket is in debt once work done took more than it held, and not before.
-    #[test]
-    fn the_bucket_is_in_debt_only_below_zero() {
-        let bucket = Bucket::new(Allowance {
+    fn a_query_the_allowance_refuses_keeps_its_unit_of_the_share() {
+        let validating = Validating::new(
+            Validator::new(
+                dedens_dnssec::anchor::TrustAnchors::root(),
+                dedens_dnssec::validator::Limits::default(),
+            ),
+            Arc::new(|| 0),
+        )
+        .allowing(Allowance {
             per_second: 1,
-            burst: 10,
-            per_query: 256,
-        });
-        assert!(bucket.admit(1));
-        bucket.charge(9);
-        assert!(!bucket.in_debt());
-        bucket.charge(1);
-        assert!(bucket.in_debt());
-    }
-
-    /// D106: a debt within the burst is kept whole, so that the clamp costs a query that owes less nothing.
-    #[test]
-    fn a_debt_within_the_burst_is_repaid_as_owed() {
-        let allowance = Allowance {
-            per_second: 10,
-            burst: 100,
-            per_query: 256,
+            burst: 0,
+            per_query: 1,
+        })
+        .sharing(
+            Budgets::new(Budget {
+                per_second: 1,
+                burst: 1,
+                table: 1,
+            })
+            .expect("a share in bounds"),
+        );
+        let source = Source {
+            address: IpAddr::from([192, 0, 2, 1]),
+            proven: false,
         };
-        let bucket = Bucket::new(allowance);
-        assert!(bucket.admit(1));
-        bucket.charge(150);
-        // 100 - 1 - 150 = -51: five seconds repay 50, which leaves a unit owed; a sixth admits.
-        assert!(!bucket.admit(6));
-        assert!(bucket.admit(7));
+        // The allowance holds nothing; the share's one unit is given back each time.
+        assert!(
+            (0..10).all(|_| validating.admit(source, false, 0).is_none()),
+            "the share is not drained by the shed"
+        );
+        let slot = Slot::new(source.address, source.proven);
+        assert!(validating.shares.admit(slot, 0));
     }
 }

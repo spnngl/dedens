@@ -28,6 +28,7 @@
 )]
 
 mod access;
+mod budget;
 mod cache;
 mod cookie;
 mod forward;
@@ -39,10 +40,11 @@ mod rrl;
 mod validate;
 
 pub use access::{Access, Denial, Network, NetworkError};
+pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use dedens_proto::Transport;
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
 pub use plugin::{Answer, Plugin, Records};
 pub use rrl::{Config as RateLimitConfig, MAX_BURST, Rate, RateLimit, RateLimitError, Verdict};
-pub use validate::{Allowance, Clock, Validating};
+pub use validate::{Allowance, Clock, DEFAULT_SHARE, Validating};

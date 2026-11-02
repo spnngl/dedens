@@ -63,9 +63,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   a one-shot `dedens` fetches each run: `+odoh-config=FILE` is its way out. Alternatives: through the proxy (needs a
   proxy that relays GET), from the target's SVCB record (RFC 9460; the ODoH SVCB parameters are not in an RFC), a
   fetch at a random time apart from the query. Default: well-known, direct.
-- ODoH target throttle (D79): `dedensd` opens every POST of the media type, an X25519 decapsulation and an AEAD open,
-  before it knows the sender; the proxy of RFC 9230 §4 is no authentication, and the limit per address
-  (D90; D113 limits UDP only) is the deployment's, in front of `dedensd`. Default: none.
+- ODoH target limits (D117): a target sees the proxy's address, not the client's (D91), so every client of a proxy
+  spends one network budget. Default: raised by the operator who fronts the target with a busy proxy, or the proxy in
+  `rrl.exempt`; a per-client budget carried in the request, if proxies ever authenticate their clients. Open too: a
+  per-connection limit, a connection opened for each request being as cheap for the client as a request on one; and
+  the QUIC and TLS handshakes of each connection, which no budget bounds before the request.
 - ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
   `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
   one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
@@ -99,11 +101,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   without SOA, TTL 0) is validated again on each query; up to 64 questions hold one upstream slot until a verdict;
   no deadline per query; the dead server is skipped for one query only. Default: as is; a per-query deadline if a
   deployment shows the need.
-- Validating forwarder (D77): the allowance is one bucket for all clients and has no knob in the configuration
-  (`Allowance` defaults), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a P-256
-  one). Default: global, fixed (a limit per source is D113's for UDP, the deployment's for the rest, D90); `dnssec_allowance:` keys when a
-  deployment hits the default, units weighted by algorithm
+- Validating forwarder (D77, D117): the global allowance has no knob in the configuration (`Allowance` defaults;
+  `client_share` is the network's), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a
+  P-256 one). Default: fixed; `dnssec_allowance:` keys when a deployment hits the default, units weighted by algorithm
   when one signs with P-384 to burn the bucket's CPU.
+- Validating forwarder (D117): a network's share does not reserve units for warm validations (2 units), so an
+  attacker's cold validations from the same network shed that network's other unproven queries; and spoofed UDP
+  sources can drain the share of a network they do not hold (proven clients have their own), or spread over networks
+  to drain the global allowance. Default: none; a reserve for warm validations, if a deployment shows the need.
 - Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a
   bare SERVFAIL, with no EDE 22 (No Reachable Authority) or 23 (Network Error). Default: bare.
 
