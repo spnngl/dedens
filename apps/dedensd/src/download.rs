@@ -11,8 +11,10 @@ use std::time::Duration;
 use std::{fs, thread};
 
 use anyhow::{Context, ensure};
-use dedens_plugins::{Lists, Read};
+use dedens_plugins::{Names, Read, Tlds};
 use ureq::tls::{RootCerts, TlsConfig};
+
+use crate::lists::Store;
 
 /// The largest list downloaded, as text, 256 MiB: four times the largest published list read, 2M names in 36 MB.
 const MAX_LIST_LEN: u64 = 256 << 20;
@@ -111,6 +113,9 @@ enum Outcome {
     Failed,
 }
 
+/// A new copy with the names it holds.
+type Saved = (PathBuf, Names);
+
 /// What [`Fetcher::fetch`] found in all its lists.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Fetched {
@@ -140,8 +145,10 @@ impl Fetcher {
 
     /// Downloads each list of `urls` into `dir`, [`PARALLEL`] at a time, logging and counting each result. Returns
     /// when all are done. A download that panics is logged and counts as failed and as changed (it may have saved
-    /// its copy first, and a reload that finds nothing new is cheap); the others go on.
-    pub(crate) fn fetch(&self, urls: &[String], dir: &Path) -> Fetched {
+    /// its copy first, and a reload that finds nothing new is cheap); the others go on. What each new copy holds
+    /// goes to `store`, so that the reload reads no copy again (D120).
+    pub(crate) fn fetch(&self, urls: &[String], dir: &Path, store: &mut Store) -> Fetched {
+        let mut saved = Vec::new();
         let next = AtomicUsize::new(0);
         let changed = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
@@ -151,26 +158,30 @@ impl Fetcher {
                     thread::Builder::new()
                         .name(format!("list-download-{n}"))
                         .spawn_scoped(scope, || {
+                            let mut saved = Vec::new();
                             while let Some(url) = urls.get(next.fetch_add(1, Ordering::Relaxed)) {
                                 // Recorded as each list is done, so a later panic cannot lose a list already saved.
-                                match panic::catch_unwind(AssertUnwindSafe(|| {
-                                    self.report(url, dir)
-                                })) {
-                                    Ok(Outcome::Changed) => changed.store(true, Ordering::Relaxed),
-                                    Ok(Outcome::Unchanged) => {}
-                                    Ok(Outcome::Failed) => failed.store(true, Ordering::Relaxed),
-                                    Err(_) => {
-                                        metrics::counter!(FETCHES, "result" => "error")
-                                            .increment(1);
-                                        tracing::error!(
-                                            url = redacted(url),
-                                            "list download panicked"
-                                        );
-                                        changed.store(true, Ordering::Relaxed);
-                                        failed.store(true, Ordering::Relaxed);
+                                if let Ok((outcome, copy)) =
+                                    panic::catch_unwind(AssertUnwindSafe(|| self.report(url, dir)))
+                                {
+                                    saved.extend(copy);
+                                    match outcome {
+                                        Outcome::Changed => {
+                                            changed.store(true, Ordering::Relaxed);
+                                        }
+                                        Outcome::Unchanged => {}
+                                        Outcome::Failed => {
+                                            failed.store(true, Ordering::Relaxed);
+                                        }
                                     }
+                                } else {
+                                    metrics::counter!(FETCHES, "result" => "error").increment(1);
+                                    tracing::error!(url = redacted(url), "list download panicked");
+                                    changed.store(true, Ordering::Relaxed);
+                                    failed.store(true, Ordering::Relaxed);
                                 }
                             }
+                            saved
                         })
                         .inspect_err(|error| {
                             tracing::error!(%error, "list download thread not started");
@@ -180,36 +191,41 @@ impl Fetcher {
                 })
                 .collect();
             for worker in workers {
-                if worker.join().is_err() {
+                if let Ok(copies) = worker.join() {
+                    saved.extend(copies);
+                } else {
                     changed.store(true, Ordering::Relaxed);
                     failed.store(true, Ordering::Relaxed);
                 }
             }
         });
+        for (copy, names) in saved {
+            store.keep(&copy, names);
+        }
         Fetched {
             changed: changed.load(Ordering::Relaxed),
             failed: failed.load(Ordering::Relaxed),
         }
     }
 
-    /// Downloads the list at `url` into `dir`, logging and counting the result.
-    fn report(&self, url: &str, dir: &Path) -> Outcome {
+    /// Downloads the list at `url` into `dir`, logging and counting the result: with a new copy, what it holds.
+    fn report(&self, url: &str, dir: &Path) -> (Outcome, Option<Saved>) {
         let shown = redacted(url);
         match self.one(url, dir) {
-            Ok(Some(read)) => {
+            Ok(Some((read, names))) => {
                 metrics::counter!(FETCHES, "result" => "changed").increment(1);
                 tracing::info!(
                     url = shown,
-                    names = read.names,
+                    names = read.names + read.duplicates,
                     skipped = read.skipped,
                     "list downloaded"
                 );
-                Outcome::Changed
+                (Outcome::Changed, Some((copy(dir, url), names)))
             }
             Ok(None) => {
                 metrics::counter!(FETCHES, "result" => "unchanged").increment(1);
                 tracing::info!(url = shown, "list unchanged");
-                Outcome::Unchanged
+                (Outcome::Unchanged, None)
             }
             Err(error) => {
                 metrics::counter!(FETCHES, "result" => "error").increment(1);
@@ -218,14 +234,15 @@ impl Fetcher {
                     error = failure(&error),
                     "list download failed, keeping the saved copy"
                 );
-                Outcome::Failed
+                (Outcome::Failed, None)
             }
         }
     }
 
     /// Downloads the list at `url` unless its saved copy in `dir` is the latest version: what it read, or `None`
-    /// when unchanged. The copy is replaced only by a text that reads as a list.
-    fn one(&self, url: &str, dir: &Path) -> anyhow::Result<Option<Read>> {
+    /// when unchanged, and the names of the new copy, read once, here. The copy is replaced only by a text that
+    /// reads as a list.
+    fn one(&self, url: &str, dir: &Path) -> anyhow::Result<Option<(Read, Names)>> {
         let copy = copy(dir, url);
         let tag = tag(&copy);
         // A redirect never takes an `https://` list to `http://`, where anyone on the path could change it.
@@ -255,11 +272,12 @@ impl Fetcher {
             .with_config()
             .limit(self.max_len)
             .read_to_string()?;
-        // Block or allow, a list reads the same way.
-        let read = Lists::check(&text)?;
+        // Block or allow, a list reads the same way; one-label names are for the lists that take them (D118).
+        let names = Names::downloaded(&text);
+        let read = names.check(Tlds::Allow)?;
         fs::create_dir_all(dir).with_context(|| format!("creating `{}`", dir.display()))?;
         save(&copy, &text, version.as_deref())?;
-        Ok(Some(read))
+        Ok(Some((read, names)))
     }
 }
 
@@ -438,7 +456,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut client = Fetcher::new();
         client.max_len = 1024;
-        let fetched = client.fetch(&[url(addr, "list")], dir.path());
+        let fetched = client.fetch(&[url(addr, "list")], dir.path(), &mut Store::default());
         assert!(fetched.failed && !fetched.changed, "{fetched:?}");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -452,11 +470,11 @@ mod tests {
         let mut client = Fetcher::new();
         client.max_len = u64::try_from(text.len()).unwrap();
         let urls = [url(addr, "list")];
-        let fetched = client.fetch(&urls, dir.path());
+        let fetched = client.fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.failed && !fetched.changed, "{fetched:?}");
         // The limit is exclusive: ureq refuses a body of `max_len` bytes.
         client.max_len += 1;
-        let fetched = client.fetch(&urls, dir.path());
+        let fetched = client.fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.changed && !fetched.failed, "{fetched:?}");
         assert_eq!(
             fs::read_to_string(copy(dir.path(), &urls[0])).unwrap(),
@@ -487,7 +505,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let urls = [url(addr, "a"), url(addr, "b")];
-        let fetched = Fetcher::new().fetch(&urls, dir.path());
+        let fetched = Fetcher::new().fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.changed && !fetched.failed, "{fetched:?}");
         assert!(urls.iter().all(|url| copy(dir.path(), url).exists()));
     }
@@ -508,7 +526,7 @@ mod tests {
         let urls: Vec<_> = (0..3 * PARALLEL)
             .map(|n| url(addr, &n.to_string()))
             .collect();
-        let fetched = Fetcher::new().fetch(&urls, dir.path());
+        let fetched = Fetcher::new().fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.changed && !fetched.failed, "{fetched:?}");
         assert!(urls.iter().all(|url| copy(dir.path(), url).exists()));
         assert_eq!(most.load(Ordering::SeqCst), PARALLEL);
@@ -524,7 +542,7 @@ mod tests {
             ok("", list(1).as_bytes())
         });
         let dir = tempfile::tempdir().unwrap();
-        Fetcher::new().fetch(&[url(addr, "list")], dir.path());
+        Fetcher::new().fetch(&[url(addr, "list")], dir.path(), &mut Store::default());
         let seen = seen.lock().unwrap();
         let asked: Vec<_> = seen
             .iter()

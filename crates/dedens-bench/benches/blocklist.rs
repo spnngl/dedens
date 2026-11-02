@@ -8,7 +8,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
-use dedens_plugins::{Action, Blocklist, List, Lists, Origin};
+use dedens_plugins::{Action, Blocklist, List, Lists, Merged, Names, Origin, Tlds};
 use dedens_proto::{Class, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
 use dedens_server::{Forward, Pipeline, Plugin, Stage, Step, Transport};
 
@@ -44,13 +44,27 @@ fn read() -> Lists {
     lists()
 }
 
-/// A downloaded list checked before it is saved, its names counted, not stored.
+/// A downloaded list read once (D120), as the download does before it saves the copy: hashed, sorted and
+/// deduplicated, then judged for a list, its names counted.
 #[divan::bench]
-fn check() -> usize {
+fn parse() -> usize {
     BLOCK
         .into_iter()
-        .map(|text| Lists::check(text).expect("a list").names)
+        .map(|text| {
+            Names::downloaded(text)
+                .check(Tlds::Allow)
+                .expect("a list")
+                .names
+        })
         .sum()
+}
+
+/// A side of lists built from names read already (D120), as a reload builds a stage side one of whose sources
+/// changed: the sources merged into one set, each name once.
+#[divan::bench]
+fn merge(bencher: divan::Bencher<'_, '_>) {
+    let names: Vec<Names> = BLOCK.into_iter().map(Names::downloaded).collect();
+    bencher.bench_local(|| Merged::new(Tlds::Allow, &names).expect("a list"));
 }
 
 /// Names: blocked under a listed parent, allowed under a blocked one, in no list.

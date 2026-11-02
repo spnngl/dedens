@@ -7,7 +7,7 @@ use std::io::Read as _;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dedens_plugins::Lists;
+use dedens_plugins::{Names, Tlds};
 use serde::Deserialize;
 use ureq::tls::{RootCerts, TlsConfig};
 
@@ -192,7 +192,7 @@ impl Format {
     }
 
     /// The format of `line`, none for a comment or a blank line. A line no other format takes is a name:
-    /// [`Lists::check`] tells whether it reads as one.
+    /// [`Names::check`] tells whether it reads as one.
     fn of(line: &str) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with(['#', ';', '!']) {
@@ -707,10 +707,13 @@ fn judge(text: &str, format: Format) -> Result<String, String> {
         return Err(format!("{held} of {lines} lines {format:?}: {formats:?}"));
     }
     if format.is_read() {
-        let read = Lists::check(text).map_err(|e| e.to_string())?;
+        let read = Names::downloaded(text)
+            .check(Tlds::Allow)
+            .map_err(|e| e.to_string())?;
         return Ok(format!(
             "{} names, {} lines skipped",
-            read.names, read.skipped
+            read.names + read.duplicates,
+            read.skipped
         ));
     }
     Ok(format!("{held} of {lines} lines {format:?}"))

@@ -231,7 +231,7 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
 
-## Blocklist (D56, D58, D118)
+## Blocklist (D56, D58, D118, D120)
 
 - `dedensd validate` reading 4 published lists (stevenblack, hagezi light, two hagezi wildcard; 44 MB, 2.29M
   names) and an allowlist, `/usr/bin/time -l`: names as boxed byte strings, 240 MB resident, 0.87 s → their
@@ -242,7 +242,8 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
 - A download checked before it is saved: `read` into throwaway lists (2.29M names: a 37 MB set, its hashes
   buffered first) → `Lists::check`, names counted, not hashed or stored. `benches/blocklist.rs` `check` on the
   three block heads: 15.7 µs fastest, at most 98 B held at once; `read` of the same heads and the allowlist,
-  15-16 µs fastest of 1000 samples both before and after `read` and `check` shared their line reader.
+  15-16 µs fastest of 1000 samples both before and after `read` and `check` shared their line reader. D120
+  replaced `Lists::check` by `Names::check` on names the download parses once (`parse`, below).
 - Suffix walk (D110, audit P4), `benches/blocklist.rs` on the test heads, names of `a.` labels in no list unless
   said. The old and the new bench binaries built from the same tree, run alternately 5 times, 100 samples each:
   the fastest sample of all runs, and in parentheses the median of the runs' medians, in ns. `lookup` is
@@ -293,6 +294,43 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
     decoded the reply and reviewed it: 549 (601) ns, as measured in an earlier round of this work. A hit after a
     reload (another mark) pays that once per entry. A response from upstream pays the review once, before it is
     stored, on top of the decoding it already has.
+- Lists read once, kept across reloads (D120, audit step 19, E3). Apple M5, macOS, release `dedensd`, the old one
+  built from ef75a5b. Six published lists (StevenBlack hosts 2.4 MB, hagezi pro-onlydomains 4.1, light 1.7, multi
+  3.6, ultimate 5.7, TIF 32.7 MB; 49.9 MB, 2.68M lines, 2.14M names, 542k of them listed twice), fetched from
+  their public URLs for the run, not kept in the repo, as the saved copies of the `urls` of one blocklist stage.
+  `ps` RSS sampled every ~20 ms during the reload, `/usr/bin/time -l` maximum resident set. A SIGHUP after the
+  copy of one list (hagezi pro) got a line appended, 3 runs each, old and new alternated; the answers and the
+  logged counts are the same (2 135 862 names, 542 425 duplicates):
+
+  | | before | after |
+  |---|---|---|
+  | lists parsed by that reload | 6 | 1 |
+  | the reload (SIGHUP to `reloaded`) | 0.71-0.77 s | 0.14-0.18 s |
+  | peak RSS over the reload | 119 → 171 MB (+52) | 110 → 148 MB (+37) |
+  | RSS once started | 119 MB | 110 MB |
+  | `validate`, max resident | 120.2 MB, 0.74 s | 111.3 MB, 0.79-0.95 s |
+
+  After, the peak is the new merged set (38 MB: 2^22 buckets of 9 B) built while the old one serves; the store
+  holds 8 B a name of each source (21 MB for these) beside it. Before, the reload read the six copies again (the
+  largest, 32.7 MB, into one `String`). Some runs of the new binary
+  started at 71-73 MB: macOS had compressed its pages; those are left out. A list downloaded (TIF over loopback, a
+  fresh start, measured on the first pass of this step): parsed twice before (to check it, then by the reload that
+  follows, 0.39-0.45 s later) and once now, the reload after the download taking 0.1 ms. The parses and merges are
+  logged (`list parsed`, `lists merged`) and counted by `a_reload_reads_the_lists_that_changed_only` and
+  `a_downloaded_list_is_read_once` (`apps/dedensd/tests`).
+- A stage of many sources, 50 sources of 200 000 random names (`h<16 hex>.example`, 10M names, generated for the
+  run, not kept; a throwaway test, release): parsing all 50 1.86 s; `Merged::new` of the 50 0.29 s; a reload with
+  one source replaced (parse 200k, merge the 50) 0.35 s. A first version looked each source up in turn and
+  counted the names held by earlier sources at every add: 2.1 s for the same 50 sources (measured in the review of
+  that version), and lookups of 0.2-1.5 µs a suffix with 20 large sources (D120, rejected).
+- `benches/blocklist.rs` before (`ef75a5b`) and after, the bench binaries built each, run alternately 3 times, 100
+  samples, the fastest sample, ns (the lists are the 1 KB heads of three block lists and one allow list, so their
+  sets sit in the cache: they say the lookup code is D110's, not what a large stage costs): `lookup` 1 / 3 / 10 /
+  127 labels 9.0 / 39.5 / 56.1 / 225 → 9.0 / 38.5 / 56.1 / 218.5; `lookup_blocked` 10 / 123 90.3 / 257.5 → 90.3 /
+  254.9; `query` `www.example.com.` 119.6 → 120.9; `review` 1 / 4 / 16 hops 101 / 284 / 979 → 100 / 289 / 1031;
+  `hit` 99.4 / 143 → 100 / 144. `read` of the heads 17.6 → 18.7 µs (+6%: the hashes are sorted and deduplicated
+  on the way). `check` (the download's check, 11 µs) is now `parse` (13.7-14.1 µs: it hashes the names, which the
+  reload's second read did); `merge` of the heads into one side 0.47-0.50 µs.
 
 ## DoH core (D82)
 

@@ -9,7 +9,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use dedens_plugins::{
-    Action, Blocklist, LineErrorKind, List, ListError, Lists, MAX_HOPS, Origin, Read, Tlds,
+    Action, Blocklist, LineErrorKind, List, ListError, Lists, MAX_HOPS, Merged, Names, Origin,
+    Read, Tlds,
 };
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{
@@ -328,7 +329,9 @@ fn a_top_level_domain_is_no_plain_entry() {
     assert_eq!(read.map(|read| (read.names, read.skipped)), Ok((2, 1)));
     // A download is checked for its format; the lists reading the saved copy decide on a name of one label.
     assert_eq!(
-        Lists::check(text).map(|read| (read.names, read.skipped)),
+        Names::downloaded(text)
+            .check(Tlds::Allow)
+            .map(|read| (read.names, read.skipped)),
         Ok((3, 0))
     );
     let mut lists = Lists::new();
@@ -521,7 +524,8 @@ fn error_pages_and_adblock_lists_are_not_lists() {
     assert_eq!(lists.names(List::Block), 0);
 }
 
-/// Checking a downloaded text agrees with reading it, duplicates counted as names.
+/// Checking a downloaded text agrees with reading it, duplicates counted as names, for lists taking top-level
+/// domains or not.
 #[test]
 fn a_check_reads_as_a_download_does() {
     let bad = format!("{HAGEZI}{}.example\n", "a".repeat(64));
@@ -529,7 +533,9 @@ fn a_check_reads_as_a_download_does() {
         let read = Lists::new()
             .read(List::Block, Origin::Downloaded, text)
             .map(|read| (read.names + read.duplicates, read.skipped));
-        let checked = Lists::check(text).map(|read| (read.names, read.skipped));
+        let checked = Names::downloaded(text)
+            .check(Tlds::Refuse)
+            .map(|read| (read.names + read.duplicates, read.skipped));
         assert_eq!(checked, read);
     }
 }
@@ -547,6 +553,173 @@ fn a_downloaded_list_half_read_is_a_list() {
     let text = format!("one.example\n{}.example\n", "a".repeat(64));
     let read = Lists::new().read(List::Block, Origin::Downloaded, &text);
     assert_eq!(read.map(|read| (read.names, read.skipped)), Ok((1, 1)));
+}
+
+/// D120: a text read once is added to the lists of any stages, each reading its plain lines of one label as it
+/// says, and reads as `Lists::read` reads it; a text added twice counts its names once.
+#[test]
+fn a_text_read_once_is_added_to_any_lists() {
+    let text = "one.example\ntwo.example\nzip\none.example\n";
+    let names = Names::downloaded(text);
+    let mut refusing = Lists::new();
+    let mut taking = Lists::with_tlds(Tlds::Allow);
+    for (lists, expected) in [
+        (
+            &mut refusing,
+            Lists::new().read(List::Block, Origin::Downloaded, text),
+        ),
+        (
+            &mut taking,
+            Lists::with_tlds(Tlds::Allow).read(List::Block, Origin::Downloaded, text),
+        ),
+    ] {
+        assert_eq!(lists.add(List::Block, &names), expected);
+    }
+    assert_eq!(
+        (refusing.names(List::Block), taking.names(List::Block)),
+        (2, 3)
+    );
+    assert!(!blocked(&with_lists(refusing, Action::Nxdomain), "zip."));
+    assert!(blocked(&with_lists(taking, Action::Nxdomain), "www.zip."));
+    let mut twice = Lists::new();
+    twice.add(List::Block, &names).expect("a list");
+    let again = twice.add(List::Block, &names).expect("a list");
+    assert_eq!((again.names, again.duplicates), (0, 3));
+    assert_eq!(twice.names(List::Block), 2);
+    // Not a list for lists refusing its one-label lines, a list for those taking them.
+    let tlds = Names::downloaded("zip\nmov\nads.example\n");
+    assert_eq!(
+        Lists::new().add(List::Block, &tlds),
+        Err(ListError::NotAList { lines: 3, read: 1 })
+    );
+    assert!(
+        Lists::with_tlds(Tlds::Allow)
+            .add(List::Block, &tlds)
+            .is_ok()
+    );
+}
+
+/// D120: names kept in several texts block and allow as they do read into one: a name listed in one text, allowed by
+/// another, whatever the number of labels of each.
+#[test]
+fn texts_kept_apart_answer_as_one() {
+    let mut lists = Lists::new();
+    for text in ["a.example\n", "b.example\nc.d.example\n", "e.f.g.example\n"] {
+        lists
+            .add(
+                List::Block,
+                &Names::local(Tlds::Refuse, text).expect("a list"),
+            )
+            .expect("added");
+    }
+    for text in ["x.b.example\n", "y.c.d.example\n"] {
+        lists
+            .add(
+                List::Allow,
+                &Names::local(Tlds::Refuse, text).expect("a list"),
+            )
+            .expect("added");
+    }
+    assert_eq!(lists.names(List::Block), 4);
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    for name in [
+        "a.example.",
+        "z.a.example.",
+        "b.example.",
+        "c.d.example.",
+        "h.e.f.g.example.",
+    ] {
+        assert!(blocked(&pipeline, name), "{name}");
+    }
+    for name in [
+        "x.b.example.",
+        "w.x.b.example.",
+        "y.c.d.example.",
+        "f.g.example.",
+    ] {
+        assert!(!blocked(&pipeline, name), "{name}");
+    }
+}
+
+/// D120: the texts of the published lists read apart, in chunks of lines, merged into one set per side answer as the
+/// same texts read into one `Lists`, for lists taking top-level domains or not: the same counts, and the same
+/// answer for each name they hold, its parent and a child of it.
+#[test]
+fn published_lists_read_apart_and_merged_answer_as_read_together() {
+    let blocks = [STEVENBLACK, HAGEZI, WILDCARD];
+    for tlds in [Tlds::Refuse, Tlds::Allow] {
+        let mut together = Lists::with_tlds(tlds);
+        let mut apart = [Vec::new(), Vec::new()];
+        for (list, texts) in [(List::Block, &blocks[..]), (List::Allow, &[REFERRAL][..])] {
+            for text in texts {
+                together
+                    .read(list, Origin::Local, text)
+                    .expect("the list reads");
+                let lines: Vec<&str> = text.lines().collect();
+                for chunk in lines.chunks(37) {
+                    let chunk = format!("{}\n", chunk.join("\n"));
+                    let side = &mut apart[usize::from(list == List::Allow)];
+                    side.push(Names::local(tlds, &chunk).expect("a chunk reads"));
+                }
+            }
+        }
+        // A text listed again in whole: every name of it a duplicate.
+        apart[0].push(Names::local(tlds, STEVENBLACK).expect("the list reads"));
+        together
+            .read(List::Block, Origin::Local, STEVENBLACK)
+            .expect("the list reads");
+        let [block, allow] = apart.map(|sources| Merged::new(tlds, &sources).expect("merged"));
+        let merged = Lists::from_merged(tlds, block, allow);
+        for list in [List::Block, List::Allow] {
+            assert_eq!(merged.names(list), together.names(list));
+            assert_eq!(merged.duplicates(list), together.duplicates(list));
+        }
+        let together = with_lists(together, Action::Nxdomain);
+        let merged = with_lists(merged, Action::Nxdomain);
+        let mut asked = 0;
+        for token in blocks
+            .iter()
+            .chain(&[REFERRAL])
+            .flat_map(|text| text.split_whitespace())
+        {
+            let token = token.strip_prefix("*.").unwrap_or(token);
+            let Some((_, parent)) = token.split_once('.') else {
+                continue;
+            };
+            for name in [token.to_owned(), format!("www.{token}"), parent.to_owned()] {
+                let name = format!("{}.", name.trim_end_matches('.'));
+                if name.parse::<Name<'_>>().is_err() {
+                    continue;
+                }
+                assert_eq!(blocked(&merged, &name), blocked(&together, &name), "{name}");
+                asked += 1;
+            }
+        }
+        assert!(asked > 300, "{asked}");
+    }
+}
+
+/// D120: a local text read as taking top-level domains, added to lists that refuse them, leaves them out.
+#[test]
+fn a_local_text_taking_top_level_domains_adds_none_to_lists_refusing_them() {
+    let names = Names::local(Tlds::Allow, "zip\nads.example\n").expect("a list");
+    let mut refusing = Lists::new();
+    assert_eq!(
+        refusing.add(List::Block, &names).map(|read| read.names),
+        Ok(1)
+    );
+    assert!(!blocked(&with_lists(refusing, Action::Nxdomain), "zip."));
+    let merged = Merged::new(Tlds::Refuse, &[names]).expect("merged");
+    assert_eq!(merged.len(), 1);
+}
+
+/// D120: a downloaded text of which a line fails after a name was read leaves that name out, whole line.
+#[test]
+fn a_line_that_fails_leaves_none_of_its_names() {
+    let text = "0.0.0.0 one.example two.example !bad\nthree.example\n";
+    let names = Names::downloaded(text);
+    assert_eq!(names.len(), 1);
+    assert_eq!(names.check(Tlds::Allow).map(|read| read.skipped), Ok(1));
 }
 
 /// A response captured from a real server, in the `testdata` of `dedens-proto` or `dedens-dnssec`.

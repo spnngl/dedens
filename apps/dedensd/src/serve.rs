@@ -1401,6 +1401,7 @@ mod tests {
         BUSY_PAUSE, BUSY_YIELDS, ERROR_PAUSE, Pause, Receiving, Replies, Slots, TCP_QUEUED, Thread,
         breaks_doq, connection, first_end, follow, udp_queries, write,
     };
+    use crate::lists::Store;
     use crate::reload::Current;
 
     #[test]
@@ -1420,7 +1421,9 @@ mod tests {
     #[test]
     fn a_tcp_query_without_upstream_room_gets_servfail() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
-        let config = crate::config::read(text, |_| None, &Pipeline::default()).expect("read");
+        let config =
+            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
+                .expect("read");
         let thread = Rc::new(Thread::new(
             Arc::new(Current::new(config.pipeline)),
             0,

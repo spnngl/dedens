@@ -76,7 +76,7 @@ use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
 use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
-use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read, Tlds};
+use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds};
 use dedens_proto::{Name, Ttl};
 use dedens_server::{
     Access, Budget, Budgets, Cookies, DEFAULT_SHARE, Denial, Forward, MAX_BURST, Network, Pipeline,
@@ -86,6 +86,7 @@ use http::uri::PathAndQuery;
 use serde::Deserialize;
 
 use crate::download;
+use crate::lists::Store;
 
 /// The configuration file, as written.
 #[derive(Debug, Deserialize)]
@@ -700,7 +701,30 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
 }
 
+impl Sources {
+    fn new(entries: Vec<String>, file: Option<PathBuf>, urls: Vec<Url>) -> Self {
+        Self {
+            entries,
+            file,
+            urls,
+        }
+    }
+}
+
 impl Downloads {
+    /// No list yet, as `settings` say.
+    ///
+    /// # Errors
+    ///
+    /// `refresh_minutes` above a year.
+    fn new(settings: DownloadsFile) -> anyhow::Result<Self> {
+        Ok(Self {
+            urls: Vec::new(),
+            dir: settings.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
+            refresh: refresh(settings.refresh_minutes)?,
+        })
+    }
+
     /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
     fn add(&mut self, urls: impl Iterator<Item = Url>) {
         for Url(url) in urls {
@@ -844,6 +868,20 @@ pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
     previous: &Pipeline,
+    store: &mut Store,
+) -> anyhow::Result<Config> {
+    store.begin();
+    let config = build(text, env, previous, store)?;
+    store.end();
+    Ok(config)
+}
+
+/// [`read`], the lists it reads taken from `store`, and put there.
+fn build(
+    text: &str,
+    env: impl Fn(&str) -> Option<String>,
+    previous: &Pipeline,
+    store: &mut Store,
 ) -> anyhow::Result<Config> {
     let text = interpolate(text, env)?;
     // No snippet of the YAML in an error: it could echo the `urls` (D104). The line and column stay.
@@ -872,11 +910,7 @@ pub(crate) fn read(
     };
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
-    let mut downloads = Downloads {
-        urls: Vec::new(),
-        dir: file.downloads.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
-        refresh: refresh(file.downloads.refresh_minutes)?,
-    };
+    let mut downloads = Downloads::new(file.downloads)?;
     for (index, name) in file.pipeline.iter().enumerate() {
         let Some(stage) = stages.remove(name) else {
             if file.pipeline[..index].contains(name) {
@@ -921,12 +955,13 @@ pub(crate) fn read(
                 ttl,
                 tlds,
             } => {
-                let block = Sources {
-                    entries,
-                    file,
-                    urls,
-                };
-                blocklist(name, block, allow, (action, ttl), tlds, &mut downloads)?
+                let block = Sources::new(entries, file, urls);
+                blocklist(
+                    name,
+                    (block, allow),
+                    (action, ttl, tlds),
+                    (&mut downloads, store),
+                )?
             }
         });
     }
@@ -958,14 +993,12 @@ pub(crate) fn read(
 /// A list that does not read, or a saved copy that exists but cannot be read (D115).
 fn blocklist(
     name: &str,
-    block: Sources,
-    allow: Sources,
-    (action, ttl): (Option<Action>, Option<u32>),
-    tlds: bool,
-    downloads: &mut Downloads,
+    (block, allow): (Sources, Sources),
+    (action, ttl, tlds): (Option<Action>, Option<u32>, bool),
+    (downloads, store): (&mut Downloads, &mut Store),
 ) -> anyhow::Result<Stage> {
     let tlds = if tlds { Tlds::Allow } else { Tlds::Refuse };
-    let lists = lists(name, &block, &allow, tlds, &downloads.dir)
+    let lists = lists(name, &block, &allow, tlds, (&downloads.dir, store))
         .with_context(|| format!("stage `{name}`"))?;
     downloads.add(block.urls.into_iter().chain(allow.urls));
     let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
@@ -1424,9 +1457,10 @@ fn local<P>(
     })
 }
 
-/// The lists of the blocklist stage `stage`, `block` and `allow` read, their downloaded ones from their copies in
-/// `dir`; logs the counts. A list not downloaded yet is empty until it is, so a blocklist fails open until the
-/// first fetch, and a copy that is not a list is left out with a warning: neither stops the server (D115).
+/// The lists of the blocklist stage `stage`, `block` and `allow` taken from `store`, which reads them when they
+/// changed (D120), their downloaded ones from their copies in `dir`; logs the counts. A list not downloaded yet is
+/// empty until it is, so a blocklist fails open until the first fetch, and a copy that is not a list is left out
+/// with a warning: neither stops the server (D115).
 ///
 /// # Errors
 ///
@@ -1437,47 +1471,53 @@ fn lists(
     block: &Sources,
     allow: &Sources,
     tlds: Tlds,
-    dir: &Path,
+    (dir, store): (&Path, &mut Store),
 ) -> anyhow::Result<Lists> {
-    let mut lists = Lists::with_tlds(tlds);
-    let mut duplicates = 0;
-    for (list, sources) in [(List::Block, block), (List::Allow, allow)] {
-        let read = local(&sources.entries, sources.file.as_deref(), |text| {
-            lists.read(list, Origin::Local, text)
-        })?;
-        duplicates += read.duplicates;
-        for Url(url) in &sources.urls {
-            let copy = download::copy(dir, url);
-            match fs::read_to_string(&copy) {
-                Ok(text) => match lists.read(list, Origin::Downloaded, &text) {
-                    Ok(Read {
-                        duplicates: dups, ..
-                    }) => duplicates += dups,
-                    Err(error) => {
-                        tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
-                    }
-                },
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    tracing::info!(
-                        stage,
-                        url = download::redacted(url),
-                        "list not downloaded yet"
-                    );
-                }
+    let block = side(stage, block, tlds, (dir, store))?;
+    let allow = side(stage, allow, tlds, (dir, store))?;
+    tracing::info!(
+        stage,
+        blocked = block.len(),
+        allowed = allow.len(),
+        duplicates = block.duplicates() + allow.duplicates(),
+        "blocklist read"
+    );
+    Ok(Lists::from_merged(tlds, block, allow))
+}
+
+/// The names of `sources` as one set, in the order entries, file, URLs, as [`lists`] says.
+fn side(
+    stage: &str,
+    sources: &Sources,
+    tlds: Tlds,
+    (dir, store): (&Path, &mut Store),
+) -> anyhow::Result<Merged> {
+    let mut names = Vec::from_iter(store.entries(&sources.entries, tlds)?);
+    if let Some(path) = &sources.file {
+        names.push(store.file(path, tlds)?);
+    }
+    for Url(url) in &sources.urls {
+        let copy = download::copy(dir, url);
+        match store.saved(&copy, &download::redacted(url)) {
+            Ok(saved) => match saved.check(tlds) {
+                Ok(_) => names.push(saved),
                 Err(error) => {
-                    return Err(error).with_context(|| format!("reading `{}`", copy.display()));
+                    tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
                 }
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                tracing::info!(
+                    stage,
+                    url = download::redacted(url),
+                    "list not downloaded yet"
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading `{}`", copy.display()));
             }
         }
     }
-    tracing::info!(
-        stage,
-        blocked = lists.names(List::Block),
-        allowed = lists.names(List::Allow),
-        duplicates,
-        "blocklist read"
-    );
-    Ok(lists)
+    store.merged(tlds, &names)
 }
 
 /// `text` with each `${VAR}` replaced by the variable's value, written so that it is one value, never YAML
@@ -1613,9 +1653,19 @@ fn interpolate_line(
 
 #[cfg(test)]
 mod tests {
+    use dedens_plugins::List;
     use dedens_server::Standing;
 
     use super::*;
+
+    /// [`super::read`] with a store of its own.
+    fn read(
+        text: &str,
+        env: impl Fn(&str) -> Option<String>,
+        previous: &Pipeline,
+    ) -> anyhow::Result<Config> {
+        super::read(text, env, previous, &mut Store::default())
+    }
 
     fn env(name: &str) -> Option<String> {
         match name {
@@ -2633,6 +2683,56 @@ mod tests {
         std::fs::create_dir(&copy).unwrap();
         let refused = error(&text);
         assert!(refused.contains("reading `"), "{refused}");
+    }
+
+    /// D120: a list named twice in a stage is one set, its names counted once and listed twice.
+    #[test]
+    fn a_list_named_twice_in_a_stage_is_held_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://lists.example/ads.txt";
+        std::fs::write(
+            download::copy(dir.path(), url),
+            "ads.example\ntrack.example\n",
+        )
+        .unwrap();
+        let twice = Sources::new(Vec::new(), None, vec![Url(url.into()), Url(url.into())]);
+        let mut store = Store::default();
+        let lists = lists(
+            "block",
+            &twice,
+            &Sources::default(),
+            Tlds::Refuse,
+            (dir.path(), &mut store),
+        )
+        .unwrap();
+        assert_eq!(lists.names(List::Block), 2);
+        assert_eq!(lists.duplicates(List::Block), 2);
+    }
+
+    /// D120: a file read as one `tlds` says is not the file read as the other says.
+    #[test]
+    fn a_file_is_read_as_the_stage_says_tlds() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("list.txt");
+        std::fs::write(&file, "zip\nads.example\n").unwrap();
+        let sources = Sources::new(Vec::new(), Some(file), Vec::new());
+        let mut store = Store::default();
+        let mut read = |tlds| {
+            lists(
+                "block",
+                &sources,
+                &Sources::default(),
+                tlds,
+                (dir.path(), &mut store),
+            )
+        };
+        assert_eq!(read(Tlds::Allow).unwrap().names(List::Block), 2);
+        let refused = read(Tlds::Refuse).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("list.txt` line 1"),
+            "{refused:#}"
+        );
+        assert_eq!(read(Tlds::Allow).unwrap().names(List::Block), 2);
     }
 
     /// E5: `threads` is a count from 1 to 1024.

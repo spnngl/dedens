@@ -10,6 +10,7 @@ mod config;
 mod download;
 mod flights;
 mod h3_budget;
+mod lists;
 #[cfg(feature = "odoh")]
 mod odoh;
 mod reload;
@@ -29,6 +30,7 @@ use compio::driver::DriverType;
 use dedens_server::Pipeline;
 
 use crate::config::Config;
+use crate::lists::Store;
 use crate::reload::{Current, Fixed};
 
 /// A DNS server: answers from its cache and forwards the rest to upstream servers.
@@ -74,7 +76,8 @@ fn main() -> anyhow::Result<()> {
     };
     let path = file.display();
     let text = read(&file)?;
-    let config = build(&file, &text, &Pipeline::default())?;
+    let mut store = Store::default();
+    let config = build(&file, &text, &Pipeline::default(), &mut store)?;
     // The key is read here, once: `validate` checks it reads.
     #[cfg(feature = "odoh")]
     let odoh = config
@@ -109,6 +112,7 @@ fn main() -> anyhow::Result<()> {
             odoh: config.odoh.clone(),
         },
         config.downloads,
+        store,
     )
     .context("cannot handle SIGHUP")?;
     #[cfg(feature = "doc")]
@@ -227,8 +231,13 @@ fn read(file: &Path) -> anyhow::Result<String> {
 /// # Errors
 ///
 /// A configuration [`config::read`] refuses.
-fn build(file: &Path, text: &str, previous: &Pipeline) -> anyhow::Result<Config> {
-    config::read(text, |name| std::env::var(name).ok(), previous)
+fn build(
+    file: &Path,
+    text: &str,
+    previous: &Pipeline,
+    store: &mut Store,
+) -> anyhow::Result<Config> {
+    config::read(text, |name| std::env::var(name).ok(), previous, store)
         .with_context(|| format!("in {}", file.display()))
 }
 

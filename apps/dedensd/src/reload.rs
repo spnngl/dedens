@@ -14,6 +14,7 @@ use dedens_server::Pipeline;
 use crate::config::{Downloads, Listen};
 use crate::download::{Fetched, Fetcher, sweep};
 use crate::flights::Flights;
+use crate::lists::Store;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
 /// one atomic load, and take the new pipeline under the lock only when it changed; a reload wakes them too, so that
@@ -168,6 +169,7 @@ pub(crate) fn control(
     current: Arc<Current>,
     fixed: Fixed,
     mut downloads: Downloads,
+    mut store: Store,
 ) -> io::Result<()> {
     let (hangup, hangups) = mpsc::channel::<()>();
     #[cfg(unix)]
@@ -191,7 +193,7 @@ pub(crate) fn control(
                 Duration::MAX
             } else {
                 let fetched = guarded("list download", || {
-                    client.fetch(&downloads.urls, &downloads.dir)
+                    client.fetch(&downloads.urls, &downloads.dir, &mut store)
                 })
                 // A panic may have come after a list was saved: reload, which costs little when nothing changed.
                 .unwrap_or(Fetched {
@@ -199,7 +201,7 @@ pub(crate) fn control(
                     failed: true,
                 });
                 ticks.wait(fetched, downloads.refresh, || {
-                    let new = reload(&file, Read::Last, &mut text, &current, &fixed)?;
+                    let new = reload(&file, Read::Last, &mut text, &current, &fixed, &mut store)?;
                     let refresh = new.refresh;
                     downloads = new;
                     Some(refresh)
@@ -209,7 +211,9 @@ pub(crate) fn control(
             if hangups.recv_timeout(wait).is_ok() {
                 // Those queued meanwhile ask for what this one does (D104).
                 while hangups.try_recv().is_ok() {}
-                if let Some(new) = reload(&file, Read::File, &mut text, &current, &fixed) {
+                if let Some(new) =
+                    reload(&file, Read::File, &mut text, &current, &fixed, &mut store)
+                {
                     downloads = new;
                     // Built from the lists on disk, the pending reload included.
                     ticks.served();
@@ -244,6 +248,7 @@ fn reload(
     text: &mut String,
     current: &Current,
     fixed: &Fixed,
+    store: &mut Store,
 ) -> Option<Downloads> {
     let config = file.display();
     let built = guarded("reload", || {
@@ -251,7 +256,7 @@ fn reload(
             Read::File => crate::read(file)?,
             Read::Last => text.clone(),
         };
-        let new = crate::build(file, &new_text, &current.get())?;
+        let new = crate::build(file, &new_text, &current.get(), store)?;
         *text = new_text;
         anyhow::Ok(new)
     })

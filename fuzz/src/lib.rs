@@ -32,7 +32,9 @@ use dedens_odoh::{
     MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext,
     QueryContext, TargetKey, decrypt_query, decrypt_response, encrypt_query,
 };
-use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Origin};
+use dedens_plugins::{
+    Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Merged, Names, Origin, Tlds,
+};
 use dedens_proto::edns::{Cookie, EdnsOption as CookieOption};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
@@ -752,6 +754,7 @@ pub fn parse_lists(data: &[u8]) {
     };
     blocklist_model(text);
     blocklist_review(text);
+    names_read_once(text);
     let mut lists = Lists::new();
     let (Ok(hosts), Ok(_)) = (
         Hosts::new(text, Ttl::ZERO, false),
@@ -790,6 +793,36 @@ pub fn parse_lists(data: &[u8]) {
             {
                 panic!("{word} {qtype}: the reply does not decode: {error}");
             }
+        }
+    }
+}
+
+/// A downloaded text read once as [`Names`], whole or in two halves, and merged, is what [`Lists::read`] makes of
+/// the text, whole or one half after the other, under either setting of top-level domains (D120): the same
+/// refusals, counts and set size.
+fn names_read_once(text: &str) {
+    let lines = text.split_inclusive('\n');
+    let cut: usize = lines.clone().take(lines.count() / 2).map(str::len).sum();
+    let (head, tail) = text.split_at(cut);
+    for tlds in [Tlds::Refuse, Tlds::Allow] {
+        let mut together = Lists::with_tlds(tlds);
+        let read = together.read(List::Block, Origin::Downloaded, text);
+        let names = Names::downloaded(text);
+        assert_eq!(read, names.check(tlds), "whole, {tlds:?}");
+        let merged = Merged::new(tlds, &[names]);
+        assert_eq!(read.is_ok(), merged.is_ok(), "merged, {tlds:?}");
+        if let Ok(merged) = merged {
+            assert_eq!(merged.len(), together.names(List::Block), "{tlds:?}");
+            assert_eq!(merged.duplicates(), together.duplicates(List::Block));
+        }
+        let mut apart = Lists::with_tlds(tlds);
+        let both =
+            [head, tail].map(|half| apart.read(List::Block, Origin::Downloaded, half).is_ok());
+        let merged = Merged::new(tlds, &[Names::downloaded(head), Names::downloaded(tail)]);
+        assert_eq!(both == [true, true], merged.is_ok(), "halves, {tlds:?}");
+        if let Ok(merged) = merged {
+            assert_eq!(merged.len(), apart.names(List::Block), "{tlds:?}");
+            assert_eq!(merged.duplicates(), apart.duplicates(List::Block));
         }
     }
 }
