@@ -625,9 +625,9 @@ mod tests {
     fn signatures_come_only_to_a_query_with_do() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
         let answers = Answers::new().directory(&dir);
-        // Whether the answer holds the A records, and whether it holds their signatures.
-        let got = |do_bit: bool| {
-            let mut message = Message::query(0x1234, ask("cloudflare.com", RecordType::A));
+        // Whether the response holds data, and whether it holds signatures or proofs, in any section.
+        let got = |name: &str, do_bit: bool| {
+            let mut message = Message::query(0x1234, ask(name, RecordType::A));
             let edns = message.edns.as_mut().expect("EDNS");
             edns.flags = if do_bit {
                 EdnsFlags::DO
@@ -639,11 +639,29 @@ mod tests {
             out.truncate(len);
             let (reply, _) = answers.reply(&out, Transport::Tcp).expect("a reply");
             let reply = decode(&reply);
-            let has = |rtype| reply.answer.iter().any(|record| record.rtype() == rtype);
-            (has(RecordType::A), has(RecordType::RRSIG))
+            let records = || {
+                reply
+                    .answer
+                    .iter()
+                    .chain(&reply.authority)
+                    .chain(&reply.additional)
+            };
+            let signed = |record: &&dedens_proto::Record<'_>| {
+                matches!(
+                    record.rtype(),
+                    RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+                )
+            };
+            (
+                records().any(|record| !signed(&record)),
+                records().any(|record| signed(&record)),
+            )
         };
-        assert_eq!(got(true), (true, true));
-        assert_eq!(got(false), (true, false));
+        // The signatures are in the answer section, or the proofs in the authority one.
+        for name in ["cloudflare.com", "xyzzy-nonexistent-tld"] {
+            assert_eq!(got(name, true), (true, true), "{name}");
+            assert_eq!(got(name, false), (true, false), "{name}");
+        }
     }
 
     #[test]
