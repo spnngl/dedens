@@ -88,6 +88,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114):** HTTP/3, DoH over QUIC
 * **[RFC 9147](https://datatracker.ietf.org/doc/html/rfc9147):** The Datagram Transport Layer Security (DTLS) Protocol Version 1.3, to protect DoC later
 * **[RFC 9156](https://datatracker.ietf.org/doc/html/rfc9156):** DNS Query Name Minimisation to Improve Privacy (Obsoletes RFC 7816)
+* **[RFC 9175](https://datatracker.ietf.org/doc/html/rfc9175):** Constrained Application Protocol (CoAP): Echo, Request-Tag, and Token Processing, the Request-Tag that ties the blocks of a DoC response to their request
 * **[RFC 9180](https://datatracker.ietf.org/doc/html/rfc9180):** Hybrid Public Key Encryption (HPKE), for ODoH
 * **[RFC 9209](https://datatracker.ietf.org/doc/html/rfc9209):** The Proxy-Status HTTP Response Header Field, the errors of an ODoH proxy
 * **[RFC 9230](https://datatracker.ietf.org/doc/html/rfc9230):** Oblivious DNS over HTTPS (ODoH, Experimental), optional, after DoH

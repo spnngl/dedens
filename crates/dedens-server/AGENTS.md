@@ -14,12 +14,17 @@ to the records the verdict covers (the validator ignores the rest, so they must 
 captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. `Allowance` bounds what queries cost
 the validator (D77, `tests/limits.rs`) and each client network's `Budget` share of it (D117, `src/budget.rs`, also
 `dedensd`'s ODoH decapsulations): a query past either is shed in `Pipeline::query`, before any question. Feature
-`metrics` (D30): the validation access, rate limit and cookie counters, `src/metrics.rs`.
+`metrics` (D30): the validation, access, rate limit and cookie counters, `src/metrics.rs` (`tests/metrics.rs`).
 
 `Pipeline::with_access` takes the client access lists (D91, `src/access.rs`): the caller passes the client's address
 to `Pipeline::query`, and a denied one is answered before any stage (`tests/rfc5358.rs`). Without lists, everyone is
-answered.
+answered. Fuzzed by `parse_network` (the networks of a list) and `serve_query`.
 
-`Pipeline::with_rate_limit` and `with_cookies` (D113, `src/rrl.rs`, `src/cookie.rs`) take the UDP rate limit per client
-network and the RFC 9018 Server Cookies; a valid Server Cookie skips the limit. `tests/rrl.rs`, `tests/rfc7873.rs` and
-`tests/rfc9018.rs` (RFC 9018 Appendix A vectors); the cost is in `crates/dedens-bench/benches/rrl.rs`.
+`Pipeline::with_rate_limit` and `with_cookies` (D113, `src/rrl.rs`, `src/cookie.rs`) take the rate limit per client
+network over UDP and DoC and the RFC 9018 Server Cookies; a valid Server Cookie skips the limit. `tests/rrl.rs`,
+`tests/rfc7873.rs` and `tests/rfc9018.rs` (RFC 9018 Appendix A vectors); the cost is in
+`crates/dedens-bench/benches/rrl.rs`.
+
+`Plugin::reviewer` (D118) lets a plugin refuse the responses of the stages after it; a reviewed hit is marked with
+the pipeline's id (`Cache::mark`) and decoded once (`tests/plugin.rs`).
+ANY over UDP and DoC is answered empty with TC (D114, `tests/rfc8482.rs`).

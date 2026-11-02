@@ -25,5 +25,7 @@ present; anything worth keeping goes to `docs/`.
 - Call the justfile's pinned `nightly` the way the justfile does (`rustup which`, `rustup run`): a Homebrew
   cargo may shadow rustup's.
 - A change is done when `just check` (the gate) passes.
+- `just mutants-diff <base>` lists the changed code no test catches, as the pull request's `mutants` job does (D103,
+  informational, outside the gate); a mutant no test can observe goes in `.cargo/mutants.toml` with its reason.
 - Commit per phase step with the `git-commit` skill; the human pushes. CI requires Conventional Commit subjects
   (`type(scope)!: description`; types feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert).
