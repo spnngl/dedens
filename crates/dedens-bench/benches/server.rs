@@ -5,6 +5,7 @@
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use dedens_bench::{CASES, wire};
@@ -99,6 +100,28 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
             &mut out,
         );
         assert!(matches!(step, Step::Reply(_)));
+    });
+}
+
+/// `hit` under the `catch_unwind` that `dedensd` puts around the step of each datagram (D121): the landing pad costs
+/// nothing until a panic, and nothing is allocated.
+#[divan::bench(args = CASES)]
+fn hit_guarded(bencher: Bencher<'_, '_>, case: &str) {
+    let response = wire(case);
+    let query = query_for(&response);
+    let pipeline = caching(&query, &response);
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        let step = catch_unwind(AssertUnwindSafe(|| {
+            pipeline.query(
+                black_box(&query),
+                Transport::Udp,
+                Ipv4Addr::LOCALHOST.into(),
+                0,
+                &mut out,
+            )
+        }));
+        assert!(matches!(step, Ok(Step::Reply(_))));
     });
 }
 

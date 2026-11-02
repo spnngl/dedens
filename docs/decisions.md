@@ -1270,14 +1270,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   with no second reply. A refresh of a fresh entry (D43) has no timer. Rejected: a stale answer without
   resolution going on (the next query would wait again); a second task per query for the timer (the exchange
   future is polled with a deadline, then awaited).
-- D46 Review fixes to D41-D45. A query without RD gets fresh cached data only (RFC 1034 §4.3.1: no recursion;
+- D46 (amended by D121) Review fixes to D41-D45. A query without RD gets fresh cached data only (RFC 1034 §4.3.1: no recursion;
   RFC 8767 §5: no expired data), else REFUSED with EDE 20 (Not Authoritative, RFC 8914 §4.21); it never goes
   upstream, so it cannot start a hold every client shares. Upstream queries set RD (a refresh started by such a
   query too) and copy the client's AD (RFC 6840 §5.7), so AD can come back. `dedensd` turns the EDNS fallback
   off: a response without OPT would be stored for clients with DO (RFC 3225). A failure of ours
   (`ClientError::is_local`: no randomness, no socket, any socket error but the network or server refusing,
   resetting or unreachable) is `Pipeline::abandon`: SERVFAIL, no next server, no hold. The configuration refuses
-  a second cache stage (it would never be filled). A panicking serving thread ends `dedensd` with an error.
+  a second cache stage (it would never be filled). A panicking serving thread ends `dedensd` with an error (a task's panic no longer does: D121).
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
@@ -1465,7 +1465,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   day, fails, so a list that stops or resumes shows. A list `dedensd` does not read is checked on its first
   MiB, its format being in every line. Dates are parsed by hand in the test, a date crate being a dependency for
   three formats.
-- D64 (amended by D104, D107) Review fixes to D44, D47, D54, D55 and D57.
+- D64 (amended by D104, D107, D121) Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
     connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
@@ -1473,8 +1473,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     the bound. A TCP query the thread has no upstream slot for gets SERVFAIL (`Pipeline::abandon`) instead of
     closing the connection; a UDP one is still dropped. A UDP receive that fails right after another waits
     100 ms, as `accept` does, instead of spinning.
-  - Panics: a serving thread waits on the tasks of its sockets, so one that panics (compio catches the panic and
-    keeps it silent) fails the thread, and `dedensd` (D46). The reload thread runs each fetch and each reload
+  - Panics (amended by D121 for tasks and listeners): a serving thread waits on the tasks of its sockets, so one that
+    panics (compio catches the panic and keeps it silent) fails the thread, and `dedensd` (D46). The reload thread runs each fetch and each reload
     under `catch_unwind`: a panic is logged and counts as a failure, and later reloads still run.
   - Configuration (D44): a hosts or blocklist stage after a cache stage is refused: the cache, kept across
     reloads (D55), would keep answering a name a reload newly blocks until its TTL ends. `refresh_minutes` above
@@ -2126,7 +2126,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_validated_response_is_reviewed` (`dedens-server/tests/plugin.rs`); fuzz `parse_lists` runs a chain of
     arbitrary names through a blocklist, a cache and a forward stage, the reply and the hit checked against a
     plain model. Bench: `benches/blocklist.rs` `review`, `hit`.
-- D119 (amends D61, D83, D109; builds on D117) What a QUIC peer can make the server hold, from the audit (S2): h3
+- D119 (amends D61, D83, D109; amended by D121; builds on D117) What a QUIC peer can make the server hold, from the audit (S2): h3
   0.0.8 reads a stream into memory while it waits for the end of a frame whose length the peer declared, and the
   read returns the QUIC credit. A reserved frame of 2^61 bytes on the control stream, or a HEADERS frame of 2^30 on
   each request stream, filled slowly (any packet resets the idle time), is buffered without limit;
@@ -2200,6 +2200,26 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`tests/lists.rs`), `lists::tests` and `config::tests::a_list_named_twice_in_a_stage_is_held_once` (`src`),
     `published_lists_read_apart_and_merged_answer_as_read_together` (`dedens-plugins/tests/blocklist.rs`), fuzz
     `names_read_once`. Numbers in `docs/benchmarks.md`.
+
+- D121 (amends D46, D64, D119; builds on D47, D107) A panic ends one task, a listener loop that ends starts again, and a
+  thread whose runtime panics ends the process (audit S6). compio already catches and hides a task's panic, so the
+  loss was narrower than written: a listener loop that ended, and the runtime.
+  - Tasks and listeners (`isolate.rs`): each task runs under `catch_unwind` (`Origin::spawn`, and `guard_async` for the
+    whole turn of a UDP datagram); a panic is logged with listener, peer and location, counted by
+    `dedensd_task_panics_total{listener}` and never propagated. A panic hook sends uncaught ones to `tracing`, and the
+    log is limited per listener to one a second, with `suppressed`. A query gives back its place on its connection
+    when it panics. Each listener runs under `supervise`: it starts again after 10 ms, doubling to 5 s, from 10 ms
+    after a minute of service (a crash loop pays the pause, a rare panic does not), logged and counted by
+    `dedensd_listener_restarts_total{listener}`. Sockets and endpoints are kept, so a restart rebinds nothing: bind
+    errors stay start errors. Unwinding stays (no `panic = "abort"`).
+  - Runtime or driver panic (`poll_with` on `EBADR`: completions lost): the process logs it and exits 1, for systemd or
+    Kubernetes. A new runtime on the same sockets is rejected: D107 keeps the old ring, whose in-flight receives would
+    take datagrams of sockets still in their `SO_REUSEPORT` group, a share of queries lost with no sign.
+  - Open (`docs/TODECIDE.md`): a panic inside a compio-quic worker is hidden in compio's task; bare `spawn`s in
+    `dedens-net`. Rejected: forking compio.
+  - Tests: `serve.rs` (65 queries panic on one connection, the 66th is answered; a listener panics and answers again;
+    100 restarts under load, Linux), `isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
+    noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
 ## Observability
 

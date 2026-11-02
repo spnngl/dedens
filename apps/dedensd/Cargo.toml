@@ -44,11 +44,16 @@ doc = ["dedens-net/doc"]
 [dev-dependencies]
 dedens-scenario.workspace = true
 flate2.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
 rcgen.workspace = true
 serde_json.workspace = true
 
 [[bench]]
 name = "doh3"
+harness = false
+
+[[bench]]
+name = "udp"
 harness = false
 
 [lints]

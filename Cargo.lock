@@ -1048,6 +1048,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "metrics",
+ "metrics-util",
  "rcgen",
  "serde",
  "serde-saphyr",

@@ -2,7 +2,8 @@
 //! one per TCP connection, and one per query that waits for an upstream server. Replies the pipeline builds at
 //! once go out from the socket's own task; the rest are asked upstream with the thread's `dedens_net` client.
 //! Each thread bounds its upstream queries and TCP connections, each connection its queries in flight, the bytes
-//! of its replies waiting to be written and the time they take to write (D47).
+//! of its replies waiting to be written and the time they take to write (D47). A task that panics ends alone, and
+//! a listener's loop that ends starts again (D121).
 
 use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
@@ -58,6 +59,7 @@ use socket2::{Domain, Socket, Type};
 use crate::config::Listen;
 use crate::flights::{Flight, Flights, Key, Lead};
 use crate::h3_budget::{Budget, Connections};
+use crate::isolate::{BACKOFF, Backoff, Listener, Origin, supervise};
 #[cfg(feature = "odoh")]
 use crate::odoh::proxy::{Forwarder, Proxy};
 #[cfg(feature = "odoh")]
@@ -311,8 +313,8 @@ pub(crate) fn runtime() -> io::Result<Runtime> {
 ///
 /// # Errors
 ///
-/// A socket the runtime cannot take, no certificate for a TLS or QUIC socket, or a task answering on one ended:
-/// it panicked.
+/// A socket the runtime cannot take, no certificate for a TLS or QUIC socket, or a task serving one ended: its
+/// supervisor panicked (D121).
 pub(crate) async fn serve(
     sockets: Sockets,
     current: Arc<Current>,
@@ -340,30 +342,41 @@ pub(crate) async fn serve(
     for bound in sockets {
         let task = match bound {
             Bound::Plain(udp_socket, tcp_listener) => {
-                let socket = UdpSocket::from_std(udp_socket.into())?;
-                tasks.push(spawn(udp(socket, Rc::clone(&thread))));
-                let listener = TcpListener::from_std(tcp_listener.into())?;
-                spawn(tcp(listener, None, Rc::clone(&thread)))
+                let name = Listener::new("udp", local(&udp_socket));
+                let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
+                tasks.push(supervised(name, &thread, move |name, thread| {
+                    udp(Rc::clone(&socket), name.clone(), Rc::clone(thread))
+                }));
+                tcp_task(&thread, tcp_listener, "tcp", None)?
             }
             Bound::Tls(tcp_listener) => {
                 let acceptor = tls::acceptor(certificate()?).map_err(io::Error::other)?;
-                let listener = TcpListener::from_std(tcp_listener.into())?;
-                spawn(tcp(listener, Some(acceptor), Rc::clone(&thread)))
+                tcp_task(&thread, tcp_listener, "tls", Some(acceptor))?
             }
             Bound::Quic(udp_socket) => {
                 let config = tls::quic_server_config(certificate()?).map_err(io::Error::other)?;
-                let endpoint = endpoint(udp_socket, config, 0)?;
-                spawn(quic(endpoint, Service::Quic, Rc::clone(&thread)))
+                quic_task(&thread, "quic", udp_socket, config, 0, Service::Quic)?
             }
             Bound::Https(udp_socket, path) => {
                 let config = tls::h3_server_config(certificate()?).map_err(io::Error::other)?;
-                let endpoint = endpoint(udp_socket, config, H3_UNI_STREAMS)?;
-                spawn(quic(endpoint, Service::Https(path), Rc::clone(&thread)))
+                let service = Service::Https(path);
+                quic_task(
+                    &thread,
+                    "https",
+                    udp_socket,
+                    config,
+                    H3_UNI_STREAMS,
+                    service,
+                )?
             }
             #[cfg(feature = "doc")]
             Bound::Coap(udp_socket, path) => {
-                let socket = UdpSocket::from_std(udp_socket.into())?;
-                spawn(coap::serve(socket, path, Rc::clone(&thread)))
+                let name = Listener::new("coap", local(&udp_socket));
+                let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
+                let coap = Rc::new(coap::Coap::new(socket, &path));
+                supervised(name, &thread, move |name, thread| {
+                    coap::serve(Rc::clone(&coap), name.clone(), Rc::clone(thread))
+                })
             }
         };
         tasks.push(task);
@@ -375,8 +388,76 @@ pub(crate) async fn serve(
     first_end(tasks).await
 }
 
-/// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic, which the runtime
-/// catches and would otherwise keep silent: the thread then fails, and the process.
+/// The address `socket` is bound to, if it says.
+fn local(socket: &Socket) -> Option<SocketAddr> {
+    socket.local_addr().ok()?.as_socket()
+}
+
+/// Spawns [`supervise`] for `listener`, with the loop `serving` makes of the thread each time it starts (D121).
+fn supervised<F: Future<Output = ()> + 'static>(
+    listener: Listener,
+    thread: &Rc<Thread>,
+    serving: impl FnMut(&Listener, &Rc<Thread>) -> F + 'static,
+) -> JoinHandle<()> {
+    supervised_with(BACKOFF, listener, thread, serving)
+}
+
+/// As [`supervised`], with the pauses `backoff`.
+fn supervised_with<F: Future<Output = ()> + 'static>(
+    backoff: Backoff,
+    listener: Listener,
+    thread: &Rc<Thread>,
+    mut serving: impl FnMut(&Listener, &Rc<Thread>) -> F + 'static,
+) -> JoinHandle<()> {
+    let thread = Rc::clone(thread);
+    spawn(async move {
+        supervise(&listener, backoff, || serving(&listener, &thread)).await;
+    })
+}
+
+/// Serves the TCP listener `tcp_listener`, over TLS with `acceptor` if any, as the listener `scheme`. A restarted
+/// loop takes the same listener: a panic leaves it open.
+fn tcp_task(
+    thread: &Rc<Thread>,
+    tcp_listener: Socket,
+    scheme: &str,
+    acceptor: Option<TlsAcceptor>,
+) -> io::Result<JoinHandle<()>> {
+    let name = Listener::new(scheme, local(&tcp_listener));
+    let tcp_listener = Rc::new(TcpListener::from_std(tcp_listener.into())?);
+    Ok(supervised(name, thread, move |name, thread| {
+        let (tcp_listener, acceptor) = (Rc::clone(&tcp_listener), acceptor.clone());
+        tcp(tcp_listener, acceptor, name.clone(), Rc::clone(thread))
+    }))
+}
+
+/// Serves the QUIC endpoint on `udp_socket` as `service`, as the listener `scheme`. A restarted loop takes the same
+/// endpoint: `wait_incoming` ends only once the endpoint is closed, which nothing here does, so the loop does not
+/// end by itself, and a panic leaves the endpoint as it was.
+fn quic_task(
+    thread: &Rc<Thread>,
+    scheme: &str,
+    udp_socket: Socket,
+    config: ServerConfig,
+    uni_streams: u32,
+    service: Service,
+) -> io::Result<JoinHandle<()>> {
+    let name = Listener::new(scheme, local(&udp_socket));
+    let serving = endpoint(udp_socket, config, uni_streams)?;
+    let service = Rc::new(service);
+    Ok(supervised(name, thread, move |name, thread| {
+        quic(
+            serving.clone(),
+            Rc::clone(&service),
+            name.clone(),
+            Rc::clone(thread),
+        )
+    }))
+}
+
+/// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic of their own: the
+/// supervisors catch the panics of their listeners, and the tasks of queries and connections end alone (D121). The
+/// runtime would otherwise keep it silent: the thread then fails, and the process.
 ///
 /// # Errors
 ///
@@ -389,11 +470,10 @@ async fn first_end(tasks: Vec<JoinHandle<()>>) -> io::Result<()> {
 }
 
 /// Answers the queries of one UDP socket with [`UDP_RECEIVES`] tasks, from one stream of datagrams.
-async fn udp(socket: UdpSocket, thread: Rc<Thread>) {
-    let socket = Rc::new(socket);
+async fn udp(socket: Rc<UdpSocket>, listener: Listener, thread: Rc<Thread>) {
     let datagrams = pin!(socket.recv_from_multi());
     let datagrams = Mutex::new(datagrams);
-    let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&socket, &datagrams, &thread));
+    let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&socket, &datagrams, &listener, &thread));
     join_all(tasks).await;
 }
 
@@ -458,6 +538,7 @@ async fn yield_now() {
 async fn udp_queries(
     socket: &Rc<UdpSocket>,
     datagrams: &Mutex<impl Stream<Item = io::Result<RecvFromMultiResult>> + Unpin>,
+    listener: &Listener,
     thread: &Rc<Thread>,
 ) {
     let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
@@ -485,36 +566,54 @@ async fn udp_queries(
             continue;
         };
         let pipeline = thread.pipeline();
-        let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now(), &mut out);
-        // The buffer goes back to the pool before the reply waits to be sent.
-        drop(datagram);
-        let upstream = match step {
-            Step::Reply(len) => {
-                out = send(socket, out, len, peer).await;
-                continue;
-            }
-            Step::Drop => continue,
-            Step::Upstream(upstream) => upstream,
-            Step::Refresh(len, upstream) => {
-                out = send(socket, out, len, peer).await;
-                upstream
-            }
+        // A panic anywhere in the datagram's turn costs this query, not the socket (D121).
+        let stepped = listener
+            .guard_async(peer, udp_step(socket, &pipeline, datagram, peer, &mut out))
+            .await;
+        if out.len() < usize::from(DEFAULT_UDP_PAYLOAD) {
+            // The buffer was out for a send that panicked.
+            out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
+        }
+        let Some(Some(upstream)) = stepped else {
+            continue;
         };
         let Some(slot) = thread.upstream.take() else {
             tracing::debug!(%peer, "too many upstream queries: dropped");
             continue;
         };
         let (socket, thread) = (Rc::clone(socket), Rc::clone(thread));
-        spawn(async move {
+        Origin::new(listener, peer).spawn(async move {
             let deliver = async |reply: Vec<u8>| {
                 let len = reply.len();
                 send(&socket, reply, len, peer).await;
             };
             answer(&thread, &pipeline, upstream, Transport::Udp, deliver).await;
             drop(slot);
-        })
-        .detach();
+        });
     }
+}
+
+/// The turn of one datagram: the pipeline's first step, the reply it makes sent, and the upstream query it leaves, if any.
+/// The datagram's buffer goes back to the pool before the reply waits to be sent.
+async fn udp_step(
+    socket: &UdpSocket,
+    pipeline: &Pipeline,
+    datagram: RecvFromMultiResult,
+    peer: SocketAddr,
+    out: &mut Vec<u8>,
+) -> Option<Box<Upstream>> {
+    let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now(), out);
+    drop(datagram);
+    let (len, upstream) = match step {
+        Step::Reply(len) => (Some(len), None),
+        Step::Drop => (None, None),
+        Step::Upstream(upstream) => (None, Some(upstream)),
+        Step::Refresh(len, upstream) => (Some(len), Some(upstream)),
+    };
+    if let Some(len) = len {
+        *out = send(socket, std::mem::take(out), len, peer).await;
+    }
+    upstream
 }
 
 /// Sends the first `len` bytes of `out` to `peer`, and gives `out` back.
@@ -528,9 +627,14 @@ async fn send(socket: &UdpSocket, out: Vec<u8>, len: usize, peer: SocketAddr) ->
 
 /// Accepts the connections of one TCP listener, up to [`TCP_CONNECTIONS`] at once, over TLS with `acceptor`
 /// (RFC 7858): the handshake must end within [`TCP_IDLE`].
-async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Thread>) {
+async fn tcp(
+    tcp_listener: Rc<TcpListener>,
+    acceptor: Option<TlsAcceptor>,
+    listener: Listener,
+    thread: Rc<Thread>,
+) {
     loop {
-        match listener.accept().await {
+        match tcp_listener.accept().await {
             Ok((stream, peer)) => {
                 // `action: drop` (D91): no slot, no handshake, no reply; `refuse` answers each query.
                 if thread.pipeline().drops(peer.ip()) {
@@ -542,7 +646,8 @@ async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Th
                     continue;
                 };
                 let (acceptor, thread) = (acceptor.clone(), Rc::clone(&thread));
-                spawn(async move {
+                let origin = Origin::new(&listener, peer);
+                origin.clone().spawn(async move {
                     // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
                     let _ = stream.set_nodelay(true);
                     let Some(acceptor) = acceptor else {
@@ -551,7 +656,7 @@ async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Th
                             BufReader::new(reader),
                             writer,
                             Transport::Tcp,
-                            peer.ip(),
+                            &origin,
                             &thread,
                         )
                         .await;
@@ -561,14 +666,13 @@ async fn tcp(listener: TcpListener, acceptor: Option<TlsAcceptor>, thread: Rc<Th
                     match compio::time::timeout(TCP_IDLE, acceptor.accept(stream)).await {
                         Ok(Ok(secured)) => {
                             let (reader, writer) = Polled::halves(secured);
-                            connection(reader, writer, Transport::Tls, peer.ip(), &thread).await;
+                            connection(reader, writer, Transport::Tls, &origin, &thread).await;
                         }
                         Ok(Err(error)) => tracing::debug!(%peer, %error, "TLS handshake failed"),
                         Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
                     }
                     drop(slot);
-                })
-                .detach();
+                });
             }
             Err(error) => {
                 tracing::warn!(%error, "TCP accept");
@@ -587,7 +691,7 @@ async fn connection(
     mut reader: impl Inbound,
     writer: impl Outbound + 'static,
     transport: Transport,
-    from: IpAddr,
+    origin: &Origin,
     thread: &Rc<Thread>,
 ) {
     let (sender, queue) = flume::unbounded::<Vec<u8>>();
@@ -597,7 +701,7 @@ async fn connection(
     };
     // The writer tells the reader there is room again; a stale message only makes it check once more.
     let (room, wait_room) = flume::bounded::<()>(1);
-    let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+    let writing = origin.spawn_joinable(write(writer, queue, Rc::clone(&replies.queued), room));
     // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
     let (pending, done) = flume::bounded::<()>(TCP_PENDING);
     'read: loop {
@@ -610,6 +714,7 @@ async fn connection(
             break;
         };
         let pipeline = thread.pipeline();
+        let from = origin.peer.ip();
         let (upstream, slot) = match start(thread, &pipeline, &query, transport, from, |wire| {
             replies.push(wire)
         }) {
@@ -620,19 +725,28 @@ async fn connection(
         if pending.send_async(()).await.is_err() {
             break;
         }
-        let (replies, done, thread) = (replies.clone(), done.clone(), Rc::clone(thread));
-        spawn(async move {
+        let (replies, place, thread) = (replies.clone(), Place(done.clone()), Rc::clone(thread));
+        origin.clone().spawn(async move {
             let deliver = async |framed| {
                 replies.queue(framed);
             };
             answer(&thread, &pipeline, upstream, transport, deliver).await;
             drop(slot);
-            let _ = done.try_recv();
-        })
-        .detach();
+            drop(place);
+        });
     }
     drop(replies);
     let _ = writing.await;
+}
+
+/// A place of a connection's in-flight queries, given back when dropped: a query that panics gives it back too, else
+/// 64 panics (D121) would leave the connection reading no more.
+struct Place(flume::Receiver<()>);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let _ = self.0.try_recv();
+    }
 }
 
 /// Writes the replies of `queue`, counting down the bytes `queued` and telling `room` once they are
@@ -753,8 +867,7 @@ const H3_UNI_STREAMS: u32 = 16;
 /// Accepts the connections of one QUIC endpoint, up to [`TCP_CONNECTIONS`] at once with those over TCP, and serves
 /// each as `service` says. A client whose address is not validated gets a Retry (RFC 9000 §8.1.2) and no state or
 /// slot: a spoofed source never sees it, so forged Initials cannot fill the slots.
-async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
-    let service = Rc::new(service);
+async fn quic(endpoint: Endpoint, service: Rc<Service>, listener: Listener, thread: Rc<Thread>) {
     while let Some(incoming) = endpoint.wait_incoming().await {
         let peer = incoming.remote_address();
         // `action: drop` (D91): not even a Retry, no slot, no handshake; `refuse` answers each query.
@@ -781,32 +894,33 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
             }
         };
         let (service, thread) = (Rc::clone(&service), Rc::clone(&thread));
-        spawn(async move {
+        let origin = Origin::new(&listener, peer);
+        origin.clone().spawn(async move {
             match connecting.await {
                 Ok(connection) => match &*service {
-                    Service::Quic => streams(&connection, peer.ip(), &thread).await,
+                    Service::Quic => streams(&connection, &origin, &thread).await,
                     Service::Https(path) => {
-                        let budget = thread.h3.register(connection.clone(), peer);
-                        requests(connection, path, peer, &thread, &budget).await;
+                        let budget = thread.h3.register(connection.clone(), &origin);
+                        requests(connection, path, &origin, &thread, &budget).await;
                     }
                 },
                 Err(error) => tracing::debug!(%peer, %error, "QUIC handshake failed"),
             }
             drop(slot);
-        })
-        .detach();
+        });
     }
 }
 
 /// Answers the queries of one QUIC connection (RFC 9250 §4.2), each alone on a stream the client opened, as soon
 /// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned, and a query breaking
 /// the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3).
-async fn streams(connection: &Connection, from: IpAddr, thread: &Rc<Thread>) {
+async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>) {
     while let Ok(Ok((send, mut recv))) =
         compio::time::timeout(TCP_IDLE, connection.accept_bi()).await
     {
         let (connection, thread) = (connection.clone(), Rc::clone(thread));
-        spawn(async move {
+        let from = origin.peer.ip();
+        origin.clone().spawn(async move {
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
             match read {
                 Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, send, from, &thread).await,
@@ -815,8 +929,7 @@ async fn streams(connection: &Connection, from: IpAddr, thread: &Rc<Thread>) {
                 }
                 Ok(Err(_)) | Err(_) => {}
             }
-        })
-        .detach();
+        });
     }
 }
 
@@ -859,10 +972,11 @@ async fn stream(query: &[u8], send: SendStream, from: IpAddr, thread: &Thread) {
 async fn requests(
     connection: Connection,
     path: &Arc<str>,
-    peer: SocketAddr,
+    origin: &Origin,
     thread: &Rc<Thread>,
     budget: &Rc<Budget>,
 ) {
+    let peer = origin.peer;
     let mut requests = match compio::time::timeout(TCP_IDLE, Requests::new(connection)).await {
         Ok(Ok(requests)) => requests,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 setup failed"),
@@ -885,11 +999,10 @@ async fn requests(
         match compio::time::timeout(wait, requests.accept()).await {
             Ok(Ok(Some(pending))) => {
                 let (path, thread, flight) = (Arc::clone(path), Rc::clone(thread), budget.fly());
-                spawn(async move {
+                origin.clone().spawn(async move {
                     request(pending, &path, peer, &thread).await;
                     drop(flight);
-                })
-                .detach();
+                });
                 if let Some(last) = &mut going_away {
                     *last = Instant::now();
                 }
@@ -1376,7 +1489,7 @@ fn now() -> u32 {
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::io;
-    use std::net::Ipv4Addr;
+    use std::net::SocketAddr;
     use std::pin::pin;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -1391,18 +1504,26 @@ mod tests {
     use dedens_net::tls::Trust;
     use dedens_proto::edns::EdnsOption;
     use dedens_proto::{Message, Question, Rcode, RecordType};
-    use dedens_server::{Pipeline, Transport};
+    use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage, Transport};
     use futures_util::Stream;
     use futures_util::future::{Either, select};
     use futures_util::lock::Mutex;
     use futures_util::stream::repeat_with;
+    use metrics_util::debugging::DebuggingRecorder;
 
     use super::{
-        BUSY_PAUSE, BUSY_YIELDS, ERROR_PAUSE, Pause, Receiving, Replies, Slots, TCP_QUEUED, Thread,
-        breaks_doq, connection, first_end, follow, udp_queries, write,
+        BUSY_PAUSE, BUSY_YIELDS, Backoff, ERROR_PAUSE, Pause, Receiving, Replies, Slots,
+        TCP_PENDING, TCP_QUEUED, Thread, UPSTREAM_QUERIES, breaks_doq, connection, first_end,
+        follow, runtime, supervised_with, tcp, udp, udp_queries, write,
     };
+    use crate::isolate::tests::counted;
+    use crate::isolate::{Listener, Origin};
     use crate::lists::Store;
     use crate::reload::Current;
+
+    fn udp_listener() -> Listener {
+        Listener::new("udp", Some(SocketAddr::from(([127, 0, 0, 1], 53))))
+    }
 
     #[test]
     fn a_serving_task_that_panics_fails_the_thread() {
@@ -1441,11 +1562,12 @@ mod tests {
             let serving = spawn(async move {
                 let (stream, _) = listener.accept().await.expect("accepted");
                 let (reader, writer) = stream.into_split();
+                let origin = Origin::new(&udp_listener(), SocketAddr::from(([127, 0, 0, 1], 1)));
                 connection(
                     BufReader::new(reader),
                     writer,
                     Transport::Tcp,
-                    Ipv4Addr::LOCALHOST.into(),
+                    &origin,
                     &thread,
                 )
                 .await;
@@ -1576,7 +1698,8 @@ mod tests {
                     .await
                     .is_ok()
             };
-            let receiving = pin!(udp_queries(&socket, &datagrams, &thread));
+            let name = udp_listener();
+            let receiving = pin!(udp_queries(&socket, &datagrams, &name, &thread));
             let Either::Right((free, _)) = select(receiving, pin!(probe)).await else {
                 panic!("the receiving task never ends");
             };
@@ -1596,7 +1719,8 @@ mod tests {
             let polls = Cell::new(0);
             let datagrams = failing(io::ErrorKind::ResourceBusy, &polls);
             let thread = idle();
-            let receiving = udp_queries(&socket, &datagrams, &thread);
+            let name = udp_listener();
+            let receiving = udp_queries(&socket, &datagrams, &name, &thread);
             let ended = compio::time::timeout(ERROR_PAUSE / 2, receiving).await;
             assert!(ended.is_err(), "the receiving task never ends");
             // The yields, then one try a millisecond (a timer may be late, never early); without a pause it is
@@ -1655,6 +1779,265 @@ mod tests {
         });
         reloading.join().expect("the reload ran");
         assert_eq!(left, 0, "the old pipeline is still held");
+    }
+
+    /// A thread whose pipeline answers `www.example` A at once, with no upstream.
+    fn answering() -> Rc<Thread> {
+        let text = "listen: ['127.0.0.1:53']\npipeline: [hosts]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n";
+        let config =
+            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
+                .expect("read");
+        let current = Arc::new(Current::new(config.pipeline));
+        Rc::new(Thread::new(current, 0, Trust::default()))
+    }
+
+    /// The number of answers `server` gives to `www.example` A over UDP, within five seconds.
+    async fn answers(server: SocketAddr) -> usize {
+        let name = "www.example.".parse().expect("a name");
+        let query = Message::query(1, Question::new(name, RecordType::A))
+            .to_vec()
+            .expect("a query fits");
+        let client = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+        client.send_to(query, server).await.0.expect("sent");
+        let BufResult(received, reply) = compio::time::timeout(
+            Duration::from_secs(5),
+            client.recv_from(Vec::with_capacity(512)),
+        )
+        .await
+        .expect("a reply within 5 s");
+        let len = received.expect("received").0;
+        let reply = Message::decode(&reply[..len]).expect("decodes").message;
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+        reply.answer.len()
+    }
+
+    /// A plugin that answers `www.example` and reviews every response from upstream with a panic, as a bug in a
+    /// plugin or in the pipeline would: a query for another name panics once its response is in.
+    #[derive(Debug)]
+    struct Reviewing;
+
+    impl Plugin for Reviewing {
+        fn answer(&self, query: &dedens_proto::Query<'_>) -> Option<Answer<'_>> {
+            let question = query.question()?;
+            (question.name.to_string() == "www.example.").then_some(Answer {
+                rcode: Rcode::NOERROR,
+                records: None,
+                authoritative: true,
+                error: None,
+            })
+        }
+
+        fn reviewer(&self) -> Option<&dyn Reviewer> {
+            Some(self)
+        }
+    }
+
+    impl Reviewer for Reviewing {
+        fn review(
+            &self,
+            _query: &dedens_proto::Query<'_>,
+            _response: &Message<'_>,
+        ) -> Option<Answer<'_>> {
+            panic!("a bug")
+        }
+    }
+
+    /// An upstream server on loopback, over TCP, as a query over TCP is asked there: it answers every query with
+    /// itself, marked as a response.
+    async fn echoing() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bound");
+        let addr = listener.local_addr().expect("its address");
+        spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                spawn(async move {
+                    while let Ok(mut query) = read_message(&mut stream).await {
+                        query[2] |= 0x80;
+                        let BufResult(sent, _) =
+                            stream.write_all(frame(&query).expect("framed")).await;
+                        if sent.is_err() {
+                            return;
+                        }
+                    }
+                })
+                .detach();
+            }
+        })
+        .detach();
+        addr
+    }
+
+    /// The panics counted so far, adding what `recorder` took before.
+    fn panics_counted(recorder: &DebuggingRecorder, total: &Cell<u64>) -> u64 {
+        let new: u64 = counted(recorder)
+            .iter()
+            .filter(|(metric, ..)| metric == "dedensd_task_panics_total")
+            .map(|(.., count)| count)
+            .sum();
+        total.set(total.get() + new);
+        total.get()
+    }
+
+    /// D121: queries that panic inside `connection()` end alone: each gives its place back, so the 66th query of a
+    /// connection that had 65 panic is read and answered, and the thread goes on serving UDP.
+    #[test]
+    fn queries_that_panic_leave_their_connection_and_the_thread_serving() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .try_init();
+        let recorder = DebuggingRecorder::new();
+        let total = Cell::new(0);
+        metrics::with_local_recorder(&recorder, || {
+            runtime().expect("a runtime").block_on(async {
+                let upstream = echoing().await;
+                let pipeline = Pipeline::new(vec![
+                    Stage::Plugin(Box::new(Reviewing)),
+                    Stage::Forward(Forward::new([upstream]).expect("a server")),
+                ]);
+                let current = Arc::new(Current::new(pipeline));
+                let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, Trust::default()));
+                let udp_socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+                let udp_addr = udp_socket.local_addr().expect("its address");
+                spawn(udp(udp_socket, udp_listener(), Rc::clone(&thread))).detach();
+                let tcp_listener = TcpListener::bind("127.0.0.1:0").await.expect("bound");
+                let tcp_addr = tcp_listener.local_addr().expect("its address");
+                let tcp_task = tcp(Rc::new(tcp_listener), None, udp_listener(), thread);
+                spawn(tcp_task).detach();
+
+                let mut client = TcpStream::connect(tcp_addr).await.expect("connected");
+                let asking = |name: &str, id| {
+                    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+                    frame(&Message::query(id, question).to_vec().expect("a query fits"))
+                        .expect("framed")
+                };
+                for id in 0..=TCP_PENDING {
+                    let id = u16::try_from(id).expect("a small number");
+                    let BufResult(sent, _) = client.write_all(asking("other.example.", id)).await;
+                    sent.expect("sent");
+                }
+                let BufResult(sent, _) = client.write_all(asking("www.example.", 1000)).await;
+                sent.expect("sent");
+                let reply =
+                    compio::time::timeout(Duration::from_secs(5), read_message(&mut client))
+                        .await
+                        .expect("a reply within 5 s")
+                        .expect("a reply");
+                let reply = Message::decode(&reply).expect("decodes").message;
+                assert_eq!((reply.header.id, reply.rcode()), (1000, Rcode::NOERROR));
+                // The panics are those of the 65 queries, counted as the tasks end.
+                let wanted = TCP_PENDING as u64 + 1;
+                let waiting = async {
+                    while panics_counted(&recorder, &total) < wanted {
+                        compio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                };
+                compio::time::timeout(Duration::from_secs(5), waiting)
+                    .await
+                    .expect("65 panics counted within 5 s");
+                assert_eq!(answers(udp_addr).await, 0);
+            });
+        });
+        assert_eq!(total.get(), TCP_PENDING as u64 + 1);
+    }
+
+    /// Pauses of 1 ms, as a test cannot wait for 10 ms doubling.
+    const QUICK: Backoff = Backoff {
+        first: Duration::from_millis(1),
+        max: Duration::from_millis(1),
+        healthy: Duration::from_secs(60),
+    };
+
+    /// D121: a listener loop that panics while it serves starts again on the same socket, which answers again.
+    #[test]
+    fn a_udp_listener_that_panics_is_restarted_on_its_socket() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            runtime().expect("a runtime").block_on(async {
+                let thread = answering();
+                let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+                let server = socket.local_addr().expect("its address");
+                let (poke, poked) = flume::bounded::<()>(1);
+                let mut turns = 0;
+                let supervisor =
+                    supervised_with(QUICK, udp_listener(), &thread, move |name, thread| {
+                        turns += 1;
+                        let first = turns == 1;
+                        let (socket, name, thread) =
+                            (Rc::clone(&socket), name.clone(), Rc::clone(thread));
+                        let poked = poked.clone();
+                        async move {
+                            if first {
+                                let serving = pin!(udp(socket, name, thread));
+                                select(serving, pin!(poked.recv_async())).await;
+                                panic!("a bug");
+                            }
+                            udp(socket, name, thread).await;
+                        }
+                    });
+                assert_eq!(answers(server).await, 1);
+                poke.send(()).expect("the listener waits");
+                assert_eq!(answers(server).await, 1);
+                drop(supervisor);
+            });
+        });
+        let name = "udp://127.0.0.1:53".to_owned();
+        assert_eq!(
+            counted(&recorder),
+            [
+                (
+                    "dedensd_listener_restarts_total".to_owned(),
+                    name.clone(),
+                    1
+                ),
+                ("dedensd_task_panics_total".to_owned(), name, 1),
+            ]
+        );
+    }
+
+    /// D107, D121: on `io_uring`, a loop that ends with its multishot receive in flight, a hundred times over while
+    /// datagrams arrive, still leaves a socket that answers: the kernel's receives, and the buffers they hold, go
+    /// back to the pool as the stream is dropped. Linux only: the other drivers have no such ring.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_udp_listener_restarted_a_hundred_times_under_load_still_answers() {
+        runtime().expect("a runtime").block_on(async {
+            let thread = answering();
+            let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+            let server = socket.local_addr().expect("its address");
+            let mut turns = 0;
+            let supervisor =
+                supervised_with(QUICK, udp_listener(), &thread, move |name, thread| {
+                    turns += 1;
+                    let last = turns > 100;
+                    let (socket, name, thread) =
+                        (Rc::clone(&socket), name.clone(), Rc::clone(thread));
+                    async move {
+                        if last {
+                            udp(socket, name, thread).await;
+                        } else {
+                            let serving = pin!(udp(socket, name, thread));
+                            select(serving, pin!(compio::time::sleep(Duration::from_millis(1))))
+                                .await;
+                            panic!("a bug");
+                        }
+                    }
+                });
+            let flooding = spawn(async move {
+                let client = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+                for _ in 0..500 {
+                    let name = "www.example.".parse().expect("a name");
+                    let query = Message::query(1, Question::new(name, RecordType::A));
+                    client
+                        .send_to(query.to_vec().expect("a query fits"), server)
+                        .await
+                        .0
+                        .expect("sent");
+                    compio::time::sleep(Duration::from_micros(500)).await;
+                }
+            });
+            let _ = flooding.await;
+            assert_eq!(answers(server).await, 1);
+            drop(supervisor);
+        });
     }
 
     #[test]

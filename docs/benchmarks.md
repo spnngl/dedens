@@ -227,6 +227,9 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
   `Pipeline::receive` checking QR, opcode and question of the response (D111), on the message it decodes anyway:
   a/mx/txt_large 0.71/1.26/2.00 µs before, 0.72/1.25/1.88 and 0.67/1.30/1.92 µs after (fastest of 100 samples,
   before between two runs after, same session), 15 allocations before and after: within noise.
+- `hit_guarded` (D121): `hit` inside the `catch_unwind` `dedensd` puts around each UDP datagram's step: a/mx/txt_large
+  medians of `hit` against `hit_guarded`: 104/103/121 against 104/103/122 ns, 104/103/119 against 103/104/117, 114/114/129
+  against 109/112/131 (three runs of both, same session), no allocation: a landing pad costs nothing until a panic.
 - `plugin` (D54): a plugin stage answering two A records it holds, into a 1232-byte buffer: the reply built
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
@@ -410,6 +413,21 @@ larger than that would show.
   75 000 queries a second a 3 s row sends about 40 MiB, so the connection is rotated ten times: GET with 32 in flight
   is 13% slower with rotation (63.7k against 73.0k), POST is equal, the spread of single rounds larger than both. The sweeper's idle cost was not measured apart: one
   wake-up every 20 ms a thread.
+
+## dedensd serving UDP (D121)
+
+`cargo bench -p dedensd --bench udp`: the release `dedensd` on one thread answers one name from its cache over loopback to
+sockets of the bench process (one thread), 3 s a row; the bench executables of the tree before D121 (09220db) and after,
+run alternately, four rounds each. Apple M5, macOS, `poll` driver, a laptop in use: single rounds range over 2.4x.
+
+| in flight | before: median (fastest) | after: median (fastest) |
+|---|---|---|
+| 1 | 35347 (43867) | 30713 (42250) |
+| 32 | 87600 (128907) | 82252 (104998) |
+
+- Within the noise: the rounds of both overlap, the medians differ by 6-13% against a spread of 2.4x, and no round order
+  explains it. A difference under 10% is not shown; io_uring on Linux was not measured (no Linux host), where `just
+  bench-dnsperf` is the check to run.
 
 ## dedensd under dnsperf (D48-D53)
 
