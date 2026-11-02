@@ -671,6 +671,7 @@ dependencies = [
  "ipnet",
  "prefix-trie",
  "siphasher",
+ "subtle",
  "thiserror",
  "zeroize",
 ]
