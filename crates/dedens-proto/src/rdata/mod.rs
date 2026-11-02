@@ -176,6 +176,10 @@ impl<'a> RData<'a> {
     }
 
     /// Calls `f` with the uncompressed wire form of the RDATA.
+    ///
+    /// Every typed RDATA fits [`MAX_RDATA_LEN`] bytes by construction (D125), so encoding into the largest buffer
+    /// does not fail. If it does, whatever the error (a length, or an invariant reported as `BufferFull`), a type
+    /// misses its bound: debug builds assert, release builds hand `f` no bytes.
     pub(crate) fn with_wire<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         // Most RDATA fits on the stack; larger RDATA is written again into a heap buffer 8 times larger each time,
         // so it costs a few times its size, not 64 KiB.
@@ -190,10 +194,13 @@ impl<'a> RData<'a> {
             if self.encode(&mut w).is_ok() {
                 return f(w.written());
             }
-            assert!(
-                large.len() < MAX_RDATA_LEN,
-                "typed RDATA fits 65535 bytes by construction"
-            );
+            if large.len() == MAX_RDATA_LEN {
+                debug_assert!(
+                    false,
+                    "typed RDATA does not encode in 65535 bytes: a type misses its bound (D125)"
+                );
+                return f(&[]);
+            }
             large.resize((large.len() * 8).min(MAX_RDATA_LEN), 0);
         }
     }

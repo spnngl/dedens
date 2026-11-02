@@ -65,6 +65,108 @@ fn decoded(rtype: RecordType, rdata: &[u8]) -> RData<'static> {
     d.record.data().into_owned()
 }
 
+/// RFC 1035 §3.2.1: RDLENGTH is 16 bits. Pins the boundary of each constructor with a long field (D125): the
+/// largest RDATA is a record that reads back, one byte more is refused; `tests/text.rs` checks the same from text.
+/// `Record::new` has nothing to refuse, and this test never reaches the fallback of `RData::with_wire`.
+#[test]
+fn s3_2_1_typed_rdata_up_to_65535_bytes_makes_a_record() {
+    use dedens_proto::rdata::{
+        Caa, Dnskey, Ds, Opaque, Rrsig, SvcParam, SvcParamKey, SvcParams, Svcb,
+    };
+    use dedens_proto::{Class, DigestType, Record, SecAlgorithm, Ttl};
+
+    let longest = name_of(&[&[b'a'; 63], &[b'a'; 63], &[b'a'; 63], &[b'a'; 61]]);
+    assert_eq!(longest.wire_len(), 255);
+    let sig = vec![7; 65262];
+    // Parameters alone hold up to 65532 bytes; `Svcb::new` counts its priority and target besides.
+    let params = |value: usize| {
+        SvcParams::new(vec![SvcParam::Unknown {
+            key: SvcParamKey(9),
+            value: vec![1; value].into(),
+        }])
+    };
+    let largest = [
+        // 255 strings of 255 bytes and one of 254, each behind its length byte.
+        RData::Txt(
+            Txt::new(
+                vec![&[b't'; 255][..]; 255]
+                    .into_iter()
+                    .chain([&[b't'; 254][..]]),
+            )
+            .expect("65535 bytes"),
+        ),
+        RData::Opaque(
+            Opaque::new(RecordType(731), &vec![3; 65535])
+                .expect("65535 bytes")
+                .into_owned(),
+        ),
+        RData::Dnskey(
+            Dnskey::new(256, SecAlgorithm(15), &vec![2; 65531])
+                .expect("65535 bytes")
+                .into_owned(),
+        ),
+        RData::Ds(
+            Ds::new(1, SecAlgorithm(15), DigestType(2), &vec![4; 65531])
+                .expect("65535 bytes")
+                .into_owned(),
+        ),
+        RData::Caa(
+            Caa::new(0, b"issue", &vec![5; 65528])
+                .expect("65535 bytes")
+                .into_owned(),
+        ),
+        RData::Rrsig(
+            Rrsig::new(
+                RecordType::A,
+                SecAlgorithm(15),
+                0,
+                0,
+                0,
+                0,
+                1,
+                longest.clone(),
+                &sig,
+            )
+            .expect("65535 bytes"),
+        ),
+        RData::Svcb(
+            Svcb::new(1, Name::root(), params(65528).expect("65532 bytes")).expect("65535 bytes"),
+        ),
+        // 2 + 255 + 4 + 65274.
+        RData::Svcb(
+            Svcb::new(1, longest.clone(), params(65274).expect("65278 bytes"))
+                .expect("65535 bytes"),
+        ),
+    ];
+    for data in &largest {
+        let record = Record::new(Name::root(), Class::IN, Ttl::ZERO, data);
+        assert_eq!(record.rdata.wire().len(), 65535, "{:?}", data.rtype());
+        assert_eq!(record.data(), *data);
+    }
+    assert!(Txt::new(vec![&[0; 255][..]; 256]).is_err());
+    assert!(Opaque::new(RecordType(731), &vec![0; 65536]).is_err());
+    assert!(Dnskey::new(256, SecAlgorithm(15), &vec![0; 65532]).is_err());
+    assert!(Ds::new(1, SecAlgorithm(15), DigestType(2), &vec![0; 65532]).is_err());
+    assert!(Caa::new(0, b"issue", &vec![0; 65529]).is_err());
+    assert!(
+        Rrsig::new(
+            RecordType::A,
+            SecAlgorithm(15),
+            0,
+            0,
+            0,
+            0,
+            1,
+            Name::root(),
+            &vec![0; 65263]
+        )
+        .is_err()
+    );
+    assert!(params(65529).is_err());
+    let one_over = params(65275).expect("within the limit of the parameters");
+    assert!(Svcb::new(1, longest, one_over).is_err());
+}
+
 #[test]
 fn s3_4_1_a_is_four_octets() {
     assert_eq!(

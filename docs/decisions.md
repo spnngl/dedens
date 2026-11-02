@@ -579,6 +579,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     wire (a date past 2106-02-07 wraps, RFC 4034 §3.1.5; one before 1970 is refused). The delete forms
     (RFC 8078 §4) are read as the RFC writes them, `0 0 0 0` and `0 3 0 0`, and written `0 0 0 00` and
     `0 3 0 AA==`: the payload is one zero byte (`is_delete`), and a lone `0` means that nowhere else.
+- D125 (builds on D28) Every typed RDATA fits 65535 bytes by construction (RFC 1035 §3.2.1: RDLENGTH is 16 bits): each
+  constructor and decoder refuses a longer wire form (each holds a `MAX_RDATA_LEN` check; names are at most 255
+  bytes; names expanded on decode are checked in `Opaque::decode_with`). A new `RData` type keeps this. So
+  `Record::new` and `WireRdata::new` stay infallible, and `RData::with_wire`, which asserted it (audit L17), now
+  debug-asserts it and in release hands `f` no bytes. The test `s3_2_1_typed_rdata_up_to_65535_bytes_makes_a_record`
+  pins the boundary of each constructor with a long field (`Svcb::new` with the longest target included); it
+  never reaches the changed line, and would have passed with the old `assert!`. Rejected: `Record::new` returning
+  `Result` (about 25 callers, an error none can see); a release panic (a length no caller can act on).
 
 ## Transports
 
