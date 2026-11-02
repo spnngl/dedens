@@ -1225,7 +1225,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
   AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
   cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
-- D42 (amended by D45, D47-D49, D52, D65, D66, D84, D115) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
+- D42 (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
   own UDP socket and TCP listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one
   thread elsewhere, where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind
   together. Every socket is bound before any thread starts, so a taken address fails the start. A reply the
@@ -1252,7 +1252,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84, D91, D113, D115, D116) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84, D91, D113, D115, D116, D122) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1376,7 +1376,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`. A plain line
     of one label: D56.
     Any class asked (D110). Formats, duplicates and the allowlist in D56.
-- D55 (amended by D64, D107) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+- D55 (amended by D64, D107, D122) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed (a thread no query reaches takes it when woken by the reload, D107), holding it in
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
@@ -1486,7 +1486,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `http://` URLs stay for a server of one's own. A copy and its `ETag` never disagree: the old tag is removed,
     then the copy and the new tag are each written to a `.part` file, flushed, renamed and the directory flushed;
     the list counts as changed once its copy is renamed, a tag that cannot be written only logged.
-- D104 (amends D57, D64; amended by D120) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
+- D104 (amends D57, D64; amended by D120, D122) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
   - Size: `ureq` is built without `gzip` (`default-features = false`, keeping `rustls` and `platform-verifier`) and
     asks for `Accept-Encoding: identity` (RFC 9110 §12.5.3: no header would let a server send gzip, which is no
     list). The 256 MiB cap counted the compressed bytes, so a gzip body of that size could inflate about a
@@ -1530,7 +1530,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `dedens_net::Client` holds it; changing it logs that it takes a restart). `dedens-server` only carries the
   transport and name (`Server`, `Via`), staying sans-IO. Rejected: transport settings per stage (`transport:
   tls`, `tls_name`), which cannot mix servers.
-- D66 (amends D42, D44; amended by D115) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
+- D66 (amends D42, D44; amended by D115, D122) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
   `tls://` and `quic://`, port 853 unless set; with a top-level `tls: {certificate, key}` of PEM files, required
   with such an address and refused without one. A reload reads the files again and the next handshakes present
   the new certificate (`dedens_net::tls::Presented`, a rustls certificate resolver); a bad file fails the reload.
@@ -1769,7 +1769,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
   table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
   `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
-- D107 (amends D51, D55, D64) Runtime fixes of audit step 04.
+- D107 (amends D51, D55, D64; amended by D122) Runtime fixes of audit step 04.
   - QUIC datagrams (RFC 9221 §3): both the server (`endpoint`) and `Dialer` set `datagram_receive_buffer_size(None)`.
     quinn's default of 1.25 MB made both advertise `max_datagram_frame_size` and buffer DATAGRAM frames nothing
     reads (RFC 9250 uses streams alone). Now a peer sees `max_datagram_size()` as `None`, which the tests check
@@ -1892,7 +1892,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     §4.3, a guess: needs upstream. Truncation says nothing about the data.
   Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/{rfc5452,rfc6891}.rs`,
   `dedens-cache/tests/checked.rs`.
-- D115 (amends D42, D44, D45, D57, D66, D79; amended by D120) Configuration bounds, from the audit (L14, L15, E5): what the file
+- D115 (amends D42, D44, D45, D57, D66, D79; amended by D120, D122) Configuration bounds, from the audit (L14, L15, E5): what the file
   says is held to what the server can bear, and what a variable holds cannot become configuration.
   - Key files. One check, `config::guard_key`, on the open file (no swap between check and read), for the TLS key
     and the ODoH key (D79, which warned on any group or other bit): a key others can access (`& 0o007`) is refused,
@@ -2220,6 +2220,47 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Tests: `serve.rs` (65 queries panic on one connection, the 66th is answered; a listener panics and answers again;
     100 restarts under load, Linux), `isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
+
+- D122 (amends D42, D44, D55, D66, D104, D107, D115) `dedensd` drops root once its sockets are bound, from the audit (S5): a
+  server started as root to bind :53, :443 and :853 kept root while it parsed hostile input.
+  - Configuration: top-level `user:` (a name or a numeric id, number or string) and `group:` (the same; only with
+    `user`). Linux only: `PR_SET_NO_NEW_PRIVS` and the `/proc/PID/status` that the checks read are Linux's, and
+    nothing else is tested; elsewhere either key is refused when the file is read, `validate` included. The target is
+    resolved before any socket is bound, so a name that does not exist, a `user` or a group that is root, or a numeric
+    uid with no passwd entry and no `group` ends the start at once.
+  - Order (`src/privileges.rs`, called from `src/main.rs`): after the sockets are bound and the keys, lists and
+    certificates of the start are read, before the first thread starts (a second thread is refused: `NO_NEW_PRIVS` is
+    inherited by the threads started after it): `initgroups` (the groups that list the user, plus `group`; none for
+    a numeric id with no entry), `setgid`, `setuid`. Then the real, effective and saved ids are read back, no group
+    is root, `setuid(0)` and `setgid(0)` must fail, `PR_SET_NO_NEW_PRIVS` is set and read back, and `CapPrm`,
+    `CapEff` and `CapAmb` of `/proc/self/status` must be 0, or the start ends. The kernel clears them on `setuid`
+    from root, `AmbientCapabilities=CAP_NET_BIND_SERVICE` included, the sockets being bound already.
+  - Root without `user`: a warning, not a refusal (containers, development). Not root with `user`: refused, naming
+    the uid, unless it is the user and the group already running (real, effective and saved ids all the same: a
+    saved id of root is a way back and is refused): nothing is dropped, `NO_NEW_PRIVS` is set, the kept capabilities
+    are logged.
+  - Read again as the user: right after the drop the start reads the configuration, and the files it names, once
+    more as the user; a file it cannot read ends the start with a message naming `user:`, not the first reload.
+  - Reload (D55) runs as the user: the certificate and key (D66), the files of `blocklist` and `hosts` stages,
+    `upstream_ca`, the saved downloads (D104) must be readable by it. The recommended key is `root:<group>` 0640 with
+    `<group>` the user's group, which D115 accepts quietly (as PostgreSQL does a root-owned key: as the user, when it
+    is in the group); others stay refused. A file it cannot read fails the reload, the old configuration keeps
+    serving (D55, D115). A change of `user` or `group` at reload is warned and ignored, as `listen`: `Fixed` in
+    `src/reload.rs`; it compares what is written, so `user: 990` for `user: dedens` warns too.
+  - Downloads directory (D104): with `downloads.urls`, a missing `dir` is made before the drop (parents included,
+    0755), its last directory given to the user by `lchown`; an existing one is never touched (a `dir` that names
+    `/etc` must not be given away), and after the drop the user must be able to create a file in it, or the start ends
+    with the `chown` to run. A `urls` added at reload needs a `dir` writable by the user already. Moving a server from
+    root to `user`: `chown -R` its `/var/cache/dedensd`; the saved copies are 0666 less the umask (`UMask=0077`
+    makes them root's alone).
+  - io_uring (D107): the rings are made after the drop; with `kernel.io_uring_disabled=1` the user must be in
+    `kernel.io_uring_group`, or the threads serve on `poll`, warned at start.
+  - Rejected: dropping capabilities only (`CAP_NET_BIND_SERVICE` kept: uid 0 still owns and reads every file, and
+    the `prctl` keep-caps sequence is more to get wrong than `setuid`); `chroot` (the process needs `/etc`, the
+    certificates and the lists, and the reload must read the real ones; the unit's `ProtectSystem` does it without
+    copies); refusing root without `user` (breaks containers); a privileged helper that passes the sockets (a second
+    process; socket activation does it with no code: `docs/TODECIDE.md`); `user` off Linux (nothing there is tested).
+  - Open (`docs/TODECIDE.md`): the systemd unit, and Kubernetes `securityContext`.
 
 ## Observability
 

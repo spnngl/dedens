@@ -37,6 +37,16 @@ Open questions, each with its proposed default. Once answered, record the outcom
   stream for the connection's life with no bound on a frame. Default: none; add the budget to `Dialer`'s HTTP/3
   connections if a deployment dials servers it does not run.
 
+- Service manager and Kubernetes (D122): `dedensd` drops root itself with `user:`, but a unit should not start it as root at
+  all. A systemd unit: `DynamicUser=yes` or `User=`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
+  `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` (no `user:` in the file: nothing to drop), `NoNewPrivileges=yes`,
+  `ProtectSystem=strict`, `StateDirectory=dedensd` for the downloads `dir` (D104), `ExecReload=kill -HUP $MAINPID`
+  (D55), and a `SystemCallFilter` that allows `io_uring_setup`, `io_uring_enter` and `io_uring_register`, or the threads
+  serve on `poll`. Kubernetes (a later phase) sets `securityContext` instead (`runAsUser`, `runAsNonRoot`, `capabilities`
+  with `NET_BIND_SERVICE`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem`, `fsGroup` for the key files):
+  `user:` is left out there too. Default: write the unit with the packaging phase, and the manifest with the Kubernetes
+  one.
+
 ## Cache
 
 - `MAX_ROTATIONS` (D116) was chosen on Zipf draws of equal-size entries, where every K from 1 gives the ratio of an

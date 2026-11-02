@@ -72,6 +72,12 @@ insta = "1.49"
 ipnet = "2.12.2"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
+# D122: dedensd's privilege drop (`setuid`, `setgid`, `initgroups`, user and group lookup, `PR_SET_NO_NEW_PRIVS`), the
+# libc calls without `unsafe` of our own. Its `setuid` is libc's, which changes every thread.
+nix = { version = "0.31.3", default-features = false, features = [
+  "process",
+  "user",
+] }
 predicates = "3.1.4"
 # D91: the longest-prefix tree of the client access lists.
 prefix-trie = "0.10.1"

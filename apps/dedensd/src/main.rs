@@ -14,6 +14,7 @@ mod isolate;
 mod lists;
 #[cfg(feature = "odoh")]
 mod odoh;
+mod privileges;
 mod reload;
 mod serve;
 
@@ -91,16 +92,24 @@ fn main() -> anyhow::Result<()> {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
     }
+    // Resolved while still root, so a user or a group that does not exist fails the start before any socket is bound.
+    let plan = privileges::resolve(config.user.as_ref()).with_context(|| format!("in {path}"))?;
     config.warn_access(&config.listen);
     isolate::describe();
     isolate::hook();
-    let current = Arc::new(Current::new(config.pipeline));
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let listen = config.listen.clone();
     let presented = config.presented.map(Arc::new);
+    // Everything that needs root is done: the sockets are bound, and the keys and lists of the start are read. Nothing
+    // has started a thread yet, so none keeps root; a reload reads as the user (D122).
+    let (text, store, pipeline, downloads) = match drop_root(plan, &config.downloads, &file)? {
+        Some((text, store, again)) => (text, store, again.pipeline, again.downloads),
+        None => (text, store, config.pipeline, config.downloads),
+    };
+    let current = Arc::new(Current::new(pipeline));
     // Before "serving" is logged: a SIGHUP from then on reloads, never ends the process (D55).
     reload::control(
         file.clone(),
@@ -109,12 +118,13 @@ fn main() -> anyhow::Result<()> {
         Fixed {
             listen: config.listen,
             threads: config.threads,
+            user: config.user,
             trust: config.trust.clone(),
             presented: presented.clone(),
             #[cfg(feature = "odoh")]
             odoh: config.odoh.clone(),
         },
-        config.downloads,
+        downloads,
         store,
     )
     .context("cannot handle SIGHUP")?;
@@ -249,6 +259,37 @@ impl Driver {
 /// A file that does not read.
 fn read(file: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))
+}
+
+/// Applies `plan` (D122). After a drop, the configuration `file` is read again as the user, so that a file it cannot
+/// read fails the start, not the first reload: its text, the store of its lists, and what it says.
+///
+/// # Errors
+///
+/// [`privileges::apply`] failing; after a drop, a file the user cannot read, or a configuration [`build`] refuses with
+/// the files it names read as the user.
+fn drop_root(
+    plan: privileges::Plan,
+    downloads: &config::Downloads,
+    file: &Path,
+) -> anyhow::Result<Option<(String, Store, Config)>> {
+    let dropping = matches!(plan, privileges::Plan::Drop { .. });
+    privileges::apply(
+        plan,
+        (!downloads.urls.is_empty()).then_some(downloads.dir.as_path()),
+    )?;
+    if !dropping {
+        return Ok(None);
+    }
+    let again = || -> anyhow::Result<_> {
+        let text = read(file)?;
+        let mut store = Store::default();
+        let config = build(file, &text, &Pipeline::default(), &mut store)?;
+        Ok((text, store, config))
+    };
+    again()
+        .map(Some)
+        .context("after dropping to `user`, the configuration or a file it names cannot be read: make them readable by it (D122)")
 }
 
 /// The configuration `text`, read from `file`, its cache stage that of `previous` while its settings are the same.
