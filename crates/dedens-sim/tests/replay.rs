@@ -49,5 +49,11 @@ fn digest(seed: Seed) -> u64 {
 
 #[test]
 fn one_seed_gives_one_trace_in_two_processes() {
-    seed::in_two_processes("one_seed_gives_one_trace_in_two_processes", SEEDS, digest);
+    let runs = std::cell::Cell::new(0);
+    seed::in_two_processes("one_seed_gives_one_trace_in_two_processes", SEEDS, |seed| {
+        runs.set(runs.get() + 1);
+        digest(seed)
+    });
+    // The helper runs the scenario, in this process or the child's.
+    assert!(runs.get() > 0);
 }

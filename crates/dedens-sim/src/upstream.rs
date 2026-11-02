@@ -57,7 +57,7 @@ pub(crate) fn captured_message(case: &str) -> Message<'static> {
 }
 
 /// The message of a response: a capture decodes.
-fn decode(wire: &[u8]) -> Message<'static> {
+pub(crate) fn decode(wire: &[u8]) -> Message<'static> {
     Message::decode(wire)
         .expect("a captured response decodes")
         .message

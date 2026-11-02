@@ -108,7 +108,7 @@ impl Topology {
     /// the stages, limits and access rules a scenario tests. It gets the addresses of the upstream servers and
     /// runs each time the resolver starts, a bounce included, so a restart begins with an empty cache.
     ///
-    /// The cache must keep `shards: 1` ([`resolver::cache_config`]): its shards are picked by a hash that
+    /// The cache must keep `shards: 1` ([`resolver::pipeline_with`] forces it): its shards are picked by a hash that
     /// differs from one process to the next, which a trace that must replay cannot have.
     #[must_use]
     pub fn resolver(mut self, build: impl Fn(&[SocketAddr]) -> Pipeline + 'static) -> Self {
@@ -285,6 +285,15 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_client_has_a_host_of_its_own() {
+        let mut world = Topology::new().upstream(Answers::new()).build(Seed(1));
+        world.client(async |_| Ok(()));
+        world.client(async |_| Ok(()));
+        assert_eq!(world.clients, 2);
+        world.run().expect("the clients end");
+    }
 
     #[test]
     fn choices_and_times_stay_in_range_and_follow_the_seed() {

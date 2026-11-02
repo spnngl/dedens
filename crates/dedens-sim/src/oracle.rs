@@ -364,6 +364,42 @@ mod tests {
         assert!(judged("a", |m| m.set_rcode(Rcode::SERVFAIL).expect("a code")).is_err());
     }
 
+    /// A signed answer to an A query: the A records and their RRSIG.
+    fn signed() -> Message<'static> {
+        let wire = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dedens-dnssec/tests/testdata/alg13_a.bin"
+        ))
+        .expect("the capture is there");
+        let mut message = crate::upstream::decode(&wire);
+        // The validation tests' captures set AD only when a validator did.
+        message.header.flags = message.header.flags.without(Flags::AD);
+        message
+    }
+
+    #[test]
+    fn signatures_are_for_the_stubs_that_ask_for_them() {
+        let signed = signed();
+        let question = signed.questions[0].clone();
+        let held = [Expected::of(&signed)];
+        assert!(
+            signed.answer.iter().any(|r| r.rtype() == RecordType::RRSIG),
+            "the capture is signed"
+        );
+        let mut bare = signed.clone();
+        bare.answer.retain(|r| r.rtype() != RecordType::RRSIG);
+        let dnssec = Rules {
+            dnssec: true,
+            ..Rules::default()
+        };
+        let plain = Rules::default();
+        // With DO the signatures come, and are missed when they do not.
+        assert_eq!(judge(&held, &dnssec, &question, &signed), Ok(()));
+        assert!(judge(&held, &dnssec, &question, &bare).is_err());
+        // Without it they are not expected.
+        assert_eq!(judge(&held, &plain, &question, &bare), Ok(()));
+    }
+
     #[test]
     fn other_response_codes_are_for_the_scenario_to_accept() {
         let refuse = |m: &mut Message<'static>| {
