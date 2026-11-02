@@ -9,6 +9,9 @@ nightly := "nightly-2026-10-26"
 rapx_rev := "8d9d0a2f0389f48891b9e8bd3321a70a932e2e90"
 # renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
 unbound_version := "1.26.2"
+# The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
+# `DEDENS_ROUNDS=5` sets its rounds.
+container := env("DEDENS_CONTAINER", "docker")
 
 # List recipes.
 default:
@@ -97,7 +100,7 @@ bench-unbound:
 # from the cache, forward or forward-tcp to a second dedensd without one, or two-sockets (the latency of a UDP port
 # beside a flooded one): just bench-dnsperf HEAD~1 tcp
 bench-dnsperf base="HEAD" mode="udp":
-    docker run --rm --security-opt seccomp=unconfined -v "$(pwd):/src:ro" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
+    {{container}} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -v "$(pwd):/src:ro" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
         -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{base}} {{mode}}
 
 # Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
