@@ -1067,7 +1067,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
   change, never by line. Rejected: a
   scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
-- D22 (amended by D114) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
+- D22 (amended by D114, D116) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
   popular ones; a ghost queue of evicted hashes sends a key asked again to main). Whole responses only; an
@@ -1075,11 +1075,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries only (QR clear, opcode QUERY), not meta types (RFC 6895 §3.1; ANY is cached). `insert` takes the
   client's query and the response the forwarder decoded, never decoding again; the caller asks upstream with
   the query's DO and CD. Checked (RFC 2308, no TC, no violations, no client subnet scope above 0, RFC 7871
-  §7.3.1) and encoded once without OPT, its TTL offsets after it in the same allocation. Negative (NXDOMAIN, or no
+  §7.3.1) and encoded once without OPT, its TTL offsets (and the cuts of D116) after it in the same allocation. Negative (NXDOMAIN, or no
   answer of the type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the
   chain's TTLs within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD
-  only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is encoded
-  again truncated, outside the lock. Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
+  only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
 
@@ -1253,7 +1252,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84, D91, D113, D115) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84, D91, D113, D115, D116) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1927,6 +1926,74 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `threads_default_to_the_cores_on_linux` (`config.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
     Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
 
+- D116 (amends D22, D44) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
+  - Memory (L12). `capacity` counts everything a shard holds: the keys and responses, and `SLOT_COST` for each slot
+    of the slab, live or free. `SLOT_COST` is the sum of what a slot takes in each table at the worst moment of its
+    growth, rounded up to 16: the slab slot (`size_of::<Option<Entry>>()`, one `u64` spare for the cache mark of
+    audit step 16, grown by an eighth at a time); its bucket in the index (a `(u64, u32)` and a control byte, 16
+    buckets for 7 items just after the table doubled); the two queues and the free list (a `u32` each, twice as many
+    places as items); its ghost (a stamp as the index's bucket, and two `(u64, u64)` places of the ghost queue,
+    twice as many as ghosts). The constants are in `shard.rs`; `a_slot_costs_what_the_tables_take_at_worst` finds
+    each one's worst ratio on the real tables. Free slots count too, so the slab cannot take memory the budget does
+    not see; it stops at the slot count the budget allows beside one largest entry. The allocator's own rounding
+    and the transient buffers of an insert and of a compaction are not counted.
+  - A shard that has gone mostly free is compacted (`Shard::compact`): at the end of an insert, when more than half
+    the slots are free, the live entries are renumbered, the slab is rebuilt at its length and the index, the queues
+    and the ghosts give back what they hold. Without it a flood of failure records (a slot and a key) left the
+    slab at its peak, charged for good, and 1 KB responses after it found a tenth of the room. It is O(entries)
+    under the lock, and happens after as many frees as there are live slots, so each insert pays a constant on
+    average. `tests/memory.rs` counts the bytes held by the allocator (`stats_alloc`, a safe dev-dependency: no
+    `unsafe` of ours) over five workloads, the last failures then large responses (it holds at least 80% of the
+    entries the budget allows), and the worst it sees is below the capacity (`docs/benchmarks.md`). It reads the
+    memory between operations, so it does not see the worst growth: the unit test above holds that. Rejected: a rule
+    of thumb of 20-25% on top of the capacity, true for one workload only.
+  - `Config::max_entry_bytes` (`Option<usize>`): the most an entry's key and response take, as stored
+    (`Response::cost`: the wire, 2 bytes a record, and the bits of the cuts). A larger response is answered and not
+    stored (`NotCached::TooLarge`, found by `Response::build` before the lock), and the stored one under that key,
+    its failure count and its hold go (an answer too large to store must not leave an older one to be served, nor
+    a hold to refuse it). It was refused only when it was larger than a whole shard, so one 60 KiB response could
+    empty the small queue, a tenth of the shard, of the entries asked once. Unset, the limit is 8 KiB (about 450 A
+    records), or a tenth of a shard's share of `capacity` less `SLOT_COST` when that is less: no default
+    `capacity` is refused for it. Refused: a set value under the longest key (a failure record is a key and nothing
+    else, so one always fits) or over a shard's share less `SLOT_COST`; a derived one under the longest key, naming
+    the least capacity (`ConfigError::EntryBytes`, `Capacity`). Raising it past a tenth of a shard's share brings the
+    churn back; the doc says so, the code does not refuse. In `dedensd`: `cache: max_entry_bytes`.
+  - The slots count against the budget, so a given `capacity` holds fewer entries: a response of one address under
+    a short name counts 344 bytes, 200 before, 42% fewer of them; one of 1.2 KB about 10% fewer. The old count left
+    the tables out, and the memory it let a cache hold was 1.06x to 2.06x the capacity: `capacity` is now the memory
+    a deployment gives, not the bytes of payload.
+  - Evictions (E8). `Shard::evict` spares an entry of main with hits by sending it to the back and taking a hit
+    off, at most `MAX_ROTATIONS` = 32 times in a call. It passed over an entry up to three times before (3n for n
+    entries, under the shard lock: `insert_evicting_hot`). After the
+    bound the eviction takes from small when it holds entries other than the one coming in, else the front of main,
+    hits or not: an attack of hot names must not push out the entries asked once while the hot ones stay hot
+    (`a_spent_eviction_takes_from_small_before_main`). An entry of small with hits moves to main once and does not
+    count: a warm-up of many hit names, then a scan, must still keep the names
+    (`serving_what_was_just_stored_keeps_scan_resistance`). K is a bound on the work under the lock, not a tuning
+    of the ratio: `examples/hit_ratio.rs` (`docs/benchmarks.md`) gives the same ratio to four digits for any K from
+    1 to unbounded, and lower for 0. 32 keeps the scan short. The sweep is on Zipf draws of equal-size entries, which
+    say little of resolvers' traffic (sizes, bursts, one-off scans): replaying a real
+    capture is in `docs/TODECIDE.md`, and the example reads one (`--trace`). Rejected: aging all entries at once
+    (as much work, in one call), a cap in bytes (an entry costs the same to pass over, large or small).
+  - Truncated hits (P1). A response larger than the client's buffer (no EDNS: 512 bytes) is cut from the stored
+    wire, in the lookup and under the lock, with no allocation: the stored bytes hold, after the wire and the TTL
+    offsets, one bit for each count of additional records that leaves no `RRset` split, built at insert as
+    `Message::encode_truncated` does (D10). The end of each record is its TTL offset, plus 6, plus its RDLENGTH. The
+    cut keeps the records that fit, and only whole `RRset`s of the additional section when only those are lost: the
+    bytes of `encode_truncated`, and TC set exactly when it sets it (an answer or authority record lost).
+    `tests/rfc2181.rs` (RFC 2181 §9) holds the two to each other for random messages and sizes and for every buffer
+    size over the captured responses; the fuzz target `cache_insert` compares the bytes and whether anything was
+    cut. `hit_truncated` allocates nothing and is within 1.1x of a hit that fits whole (the audit asked for 2x;
+    `docs/benchmarks.md`). `Shared`, its `Arc` and the second phase of `Cache::lookup` are gone: a response is one
+    `Box<[u8]>`. A response with a stray OPT record (no TTL offset) is refused as `Violations`. A stale hit
+    leaves room for its EDE option (`STALE_ROOM`) only for a query with EDNS, the only one the server appends it
+    for; without EDNS the whole 512 bytes are the answer's.
+  Tests: `dedens-cache/tests/{memory,allocations,rfc2181}.rs`, `Shard` unit tests
+  (`an_eviction_passes_over_a_bounded_number_of_entries`,
+  `a_spent_eviction_takes_from_small_before_main`, `a_shard_mostly_free_is_compacted`),
+  `tests/cache.rs` (`an_entry_over_max_entry_bytes_is_refused`, `max_entry_bytes_is_inclusive`,
+  `max_entry_bytes_is_checked_against_the_other_bounds`, `an_unset_max_entry_bytes_follows_the_capacity`,
+  `a_response_too_large_clears_what_was_held`, `a_stale_hit_leaves_room_only_for_a_query_with_edns`).
 - D117 (amends D77, D79, D94, D106; builds on D91, D113) Client budgets, from the audit (S3, S14): what one client can
   spend of a shared limit is bounded before the shared limit is. Two places had one budget for all: the validation
   allowance (D77) and the ODoH target's decapsulations (D79).

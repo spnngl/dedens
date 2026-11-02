@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::collections::HashMap;
 
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::header::HEADER_LEN;
@@ -45,8 +45,8 @@ pub enum NotCached {
     /// cache does not key on.
     #[error("an answer for a client subnet is not cached")]
     ClientSubnet,
-    /// The entry would take more than a shard's budget.
-    #[error("the response is larger than a shard's budget")]
+    /// The entry would take more than `Config::entry_limit`, or the response does not encode.
+    #[error("the response is larger than the entry size limit")]
     TooLarge,
 }
 
@@ -77,7 +77,20 @@ pub enum Checked {
 /// TTL in every record.
 #[derive(Debug)]
 pub(crate) struct Response {
-    shared: Shared,
+    /// The response as encoded, then what serving it cut to a small buffer needs, in one allocation:
+    ///
+    /// - the offsets of the TTL fields of its records, two big-endian bytes each, in wire order: the end of a
+    ///   record is its TTL offset + 6 + its RDLENGTH;
+    /// - the cuts of the additional section that leave `RRset`s whole: bit `k` (byte `k / 8`, bit `k % 8`) is set
+    ///   when the first `k` additional records are such a cut (RFC 2181 §9), for `k` up to the record count.
+    bytes: Box<[u8]>,
+    /// Length of the response: the offsets follow.
+    wire: u16,
+    /// End of the question: the shortest a response is cut to.
+    head: u16,
+    /// Number of records, so of offsets.
+    records: u16,
+    checked: Checked,
     /// Lifetime given at insert, in seconds.
     ttl: u32,
     /// When it stops being fresh.
@@ -91,7 +104,7 @@ pub(crate) struct Response {
 impl Response {
     /// What the caller found out about it.
     pub(crate) const fn checked(&self) -> Checked {
-        self.shared.checked
+        self.checked
     }
 
     /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it.
@@ -140,18 +153,35 @@ impl Response {
         }
         // The caller adds its own OPT record to each response served.
         let wire = message.to_vec_without_edns()?;
+        // The entry takes more than the wire: refuse before building the rest of it.
+        let limit = config.entry_limit();
+        if key.as_bytes().len() + wire.len() > limit {
+            return Err(NotCached::TooLarge);
+        }
         let len = u16::try_from(wire.len()).expect("a message is at most 65535 bytes");
-        // The TTL offsets follow the message, big-endian, in the same allocation.
         let records = message.answer.len() + message.authority.len() + message.additional.len();
-        let mut offsets = Vec::with_capacity(2 * records);
-        message::ttl_offsets(&wire, |at| offsets.extend(at.to_be_bytes()))
+        let mut bytes =
+            Vec::with_capacity(wire.len() + 2 * records + message.additional.len() / 8 + 1);
+        bytes.extend_from_slice(&wire);
+        message::ttl_offsets(&wire, |at| bytes.extend(at.to_be_bytes()))
             .expect("the encoder writes messages that decode");
+        if bytes.len() != wire.len() + 2 * records {
+            // An OPT record among the others has no TTL offset: not one a cache stores.
+            return Err(NotCached::Violations);
+        }
+        bytes.extend(whole_cuts(&message.additional));
+        if key.as_bytes().len() + bytes.len() > limit {
+            return Err(NotCached::TooLarge);
+        }
+        let mut name = [0; MAX_NAME_LEN];
+        let head = HEADER_LEN + question.name.to_wire(&mut name).len() + 4;
         Ok(Self {
-            shared: Shared {
-                bytes: wire.iter().chain(&offsets).copied().collect(),
-                wire: len,
-                checked,
-            },
+            bytes: bytes.into_boxed_slice(),
+            wire: len,
+            records: u16::try_from(records)
+                .expect("a message of at most 65535 bytes holds under 65536 records"),
+            head: u16::try_from(head).expect("a question is at most 259 bytes after the header"),
+            checked,
             ttl,
             expires: now.saturating_add(ttl),
             stale_until: now.saturating_add(ttl).saturating_add(stale),
@@ -161,7 +191,7 @@ impl Response {
 
     /// Bytes this response takes in a shard.
     pub(crate) fn cost(&self) -> usize {
-        self.shared.bytes.len()
+        self.bytes.len()
     }
 
     /// Whether under `percent` of its lifetime is left at `now`.
@@ -178,68 +208,140 @@ impl Response {
         self.expires.saturating_sub(now).min(self.ttl)
     }
 
-    /// Copies the response into `out` patched for `query`, every record with TTL `ttl`, `stale` if it expired;
-    /// `None` when it does not fit.
+    /// Copies the response into `out` patched for `query`, every record with TTL `ttl`, `stale` if it expired. One
+    /// too large for `out` is cut where [`Message::encode_truncated`] cuts it (RFC 2181 §9, D10): at the first
+    /// record that does not fit, TC set if it is in the answer or authority section; otherwise at the last cut
+    /// before it that leaves every `RRset` of the additional section whole, TC clear. `None` when not even the
+    /// header and the question fit.
+    ///
+    /// No allocation: the cut is read off the stored offsets, as a response that fits is copied.
     pub(crate) fn serve(
         &self,
         query: &Query<'_>,
         ttl: u32,
         stale: bool,
         out: &mut [u8],
-    ) -> Option<usize> {
-        let wire = self.shared.wire();
-        let out = out.get_mut(..wire.len())?;
-        out.copy_from_slice(wire);
-        self.shared.patch(out, query, ttl, stale);
-        Some(out.len())
-    }
-
-    /// The stored bytes, to truncate once the lock is released.
-    pub(crate) fn share(&self) -> Shared {
-        self.shared.clone()
-    }
-}
-
-/// The bytes of a response then the offsets of their TTL fields, in one allocation shared so that a hit too large
-/// for the client is truncated outside the shard's lock.
-#[derive(Debug, Clone)]
-pub(crate) struct Shared {
-    bytes: Arc<[u8]>,
-    /// Length of the response: the offsets follow, two bytes each.
-    wire: u16,
-    checked: Checked,
-}
-
-impl Shared {
-    fn wire(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.wire)]
-    }
-
-    /// Sets the ID, flags and question case of `query`, and TTL `ttl`, in `out`, a copy of the response. A secure
-    /// one that is `stale` is no longer vouched for: AD is clear (D77).
-    fn patch(&self, out: &mut [u8], query: &Query<'_>, ttl: u32, stale: bool) {
+    ) -> Option<Served> {
+        // A secure response that is `stale` is no longer vouched for: AD is clear (D77).
         let checked = match self.checked {
             Checked::Secure if stale => Checked::Insecure,
             checked => checked,
         };
+        let wire = self.wire();
+        let (ends, cuts) = self.bytes[wire.len()..].split_at(2 * usize::from(self.records));
+        let ends = ends.as_chunks::<2>().0;
+        if let Some(out) = out.get_mut(..wire.len()) {
+            out.copy_from_slice(wire);
+            patch(out, query, checked);
+            set_ttls(out, ttl, offsets_in(ends));
+            return Some(Served {
+                len: out.len(),
+                truncated: false,
+            });
+        }
+        let [answers, authority, _] = self.counts();
+        let sections = answers + authority;
+        // The records that fit whole: their ends are in order.
+        let fit = ends.partition_point(|&at| self.record_end(at) <= out.len());
+        let tc = fit < sections;
+        let kept = if tc {
+            fit
+        } else {
+            sections + whole_cut(cuts, fit - sections)
+        };
+        let len = kept
+            .checked_sub(1)
+            .map_or(usize::from(self.head), |last| self.record_end(ends[last]));
+        let out = out.get_mut(..len)?;
+        out.copy_from_slice(&wire[..len]);
         patch(out, query, checked);
-        set_ttls(out, ttl, offsets_in(&self.bytes[usize::from(self.wire)..]));
+        set_ttls(out, ttl, offsets_in(&ends[..kept]));
+        for (at, count) in [
+            (6, kept.min(answers)),
+            (8, kept.saturating_sub(answers).min(authority)),
+            (10, kept.saturating_sub(sections)),
+        ] {
+            let count = u16::try_from(count).expect("the sections hold at most 65535 records");
+            out[at..at + 2].copy_from_slice(&count.to_be_bytes());
+        }
+        if tc {
+            let word = u16::from_be_bytes([out[2], out[3]]) | Flags::TC.bits();
+            out[2..4].copy_from_slice(&word.to_be_bytes());
+        }
+        Some(Served {
+            len,
+            truncated: true,
+        })
     }
 
-    /// The response patched as [`Response::serve`] does, then encoded again into `out` without the records that
-    /// do not fit (RFC 2181 §9). Allocates: the slow path of a response larger than the client takes.
-    pub(crate) fn serve_truncated(
-        &self,
-        query: &Query<'_>,
-        ttl: u32,
-        stale: bool,
-        out: &mut [u8],
-    ) -> Option<message::Encoded> {
-        let mut full = self.wire().to_vec();
-        self.patch(&mut full, query, ttl, stale);
-        let decoded = Message::decode(&full).ok()?;
-        decoded.message.encode_truncated(out).ok()
+    fn wire(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.wire)]
     }
+
+    /// `[answers, authority, additional]`: the record counts of the stored header.
+    fn counts(&self) -> [usize; 3] {
+        let wire = self.wire();
+        [6, 8, 10].map(|at| usize::from(u16::from_be_bytes([wire[at], wire[at + 1]])))
+    }
+
+    /// Where the record whose TTL field is at offset `ttl_at` ends: after its RDATA, the RDLENGTH 4 bytes into the
+    /// field.
+    fn record_end(&self, ttl_at: [u8; 2]) -> usize {
+        let at = usize::from(u16::from_be_bytes(ttl_at));
+        let wire = self.wire();
+        at + 6 + usize::from(u16::from_be_bytes([wire[at + 4], wire[at + 5]]))
+    }
+}
+
+/// A response [`Response::serve`] wrote.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Served {
+    /// Bytes written.
+    pub(crate) len: usize,
+    /// Cut short of the stored response.
+    pub(crate) truncated: bool,
+}
+
+/// How many additional records to keep, at most `most`, so that no `RRset` has records on both sides of the cut:
+/// the largest such count, from the bits [`Response::bytes`] keeps. Bit 0 is always set.
+fn whole_cut(cuts: &[u8], most: usize) -> usize {
+    let last = most / 8;
+    for (at, &byte) in cuts.iter().enumerate().take(last + 1).rev() {
+        // Bits above `most` do not count in its own byte.
+        let bits = if at == last {
+            byte & (0xFF >> (7 - most % 8))
+        } else {
+            byte
+        };
+        if bits != 0 {
+            return at * 8 + usize::try_from(bits.ilog2()).unwrap_or_default();
+        }
+    }
+    0
+}
+
+/// The bits [`Response::bytes`] keeps for `additional`: one for each count of records, up to all of them, that no
+/// `RRset` (same owner, type and class, RFC 2181 §5) straddles. The rule of `Message::encode_truncated`, which
+/// the `truncation` test holds this to. One hash per record, so that thousands of records are not quadratic.
+fn whole_cuts(additional: &[Record<'_>]) -> Vec<u8> {
+    let mut first_of = HashMap::with_capacity(additional.len());
+    let firsts: Vec<usize> = additional
+        .iter()
+        .enumerate()
+        .map(|(i, r)| *first_of.entry((&r.name, r.rtype(), r.class)).or_insert(i))
+        .collect();
+    let mut cuts = vec![0_u8; additional.len() / 8 + 1];
+    // A cut is whole when no record after it belongs to an `RRset` that starts before it.
+    let mut low = additional.len();
+    for keep in (0..=additional.len()).rev() {
+        if let Some(&first) = firsts.get(keep) {
+            low = low.min(first);
+        }
+        if low >= keep {
+            cuts[keep / 8] |= 1 << (keep % 8);
+        }
+    }
+    cuts
 }
 
 /// Whether `message` is tailored to the client subnet of its query: a client subnet option with a SCOPE
@@ -312,13 +414,9 @@ fn chain_end<'m>(qname: &Name<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
     name
 }
 
-/// The offsets in `bytes`, two big-endian bytes each.
-fn offsets_in(bytes: &[u8]) -> impl Iterator<Item = usize> {
-    bytes
-        .as_chunks()
-        .0
-        .iter()
-        .map(|&at| usize::from(u16::from_be_bytes(at)))
+/// The offsets `ends` hold, two big-endian bytes each.
+fn offsets_in(ends: &[[u8; 2]]) -> impl Iterator<Item = usize> {
+    ends.iter().map(|&at| usize::from(u16::from_be_bytes(at)))
 }
 
 /// Sets TTL `ttl` at every offset.

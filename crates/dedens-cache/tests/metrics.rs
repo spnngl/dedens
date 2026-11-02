@@ -110,6 +110,7 @@ fn serving_what_was_just_stored_counts_no_lookup() {
 fn evictions_count_entries_pushed_out() {
     let (cache, metrics) = recorded(Config {
         capacity: 4096,
+        max_entry_bytes: Some(512),
         shards: 1,
         ..Config::default()
     });

@@ -2,7 +2,8 @@
 
 use thiserror::Error;
 
-use crate::shard::MIN_BUDGET;
+use crate::key::MAX_KEY_LEN;
+use crate::shard::SLOT_COST;
 
 /// Most a resolution failure may be cached (RFC 9520 §3.2, after RFC 2308 §7).
 const MAX_FAILURE_SECS: u32 = 300;
@@ -10,6 +11,9 @@ const MAX_FAILURE_SECS: u32 = 300;
 /// Cap on the TTL of an answer proved insecure unless `max_insecure_ttl` says otherwise (D93): a day, as the key
 /// cache's (D86).
 const INSECURE_TTL: u32 = 86_400;
+
+/// Most bytes of an entry when `Config::max_entry_bytes` is unset and the capacity allows it (D116).
+pub(crate) const DEFAULT_ENTRY_BYTES: usize = 8 << 10;
 
 /// Most shards: bits 40 to 55 of a key's hash pick its shard, as the shard's table takes its buckets from the low
 /// bits and its tags from the top 7.
@@ -24,9 +28,18 @@ pub(crate) const MAX_SHARDS: usize = 1 << 16;
     serde(default, deny_unknown_fields)
 )]
 pub struct Config {
-    /// Memory budget for entries, in bytes, split evenly between shards; each share holds at least the largest
-    /// failure record.
+    /// Memory budget, in bytes, split evenly between shards: the keys and responses of the entries and what the
+    /// shard keeps for each of them (its slot, index and queue places and ghost, D116). The tables' growth steps and
+    /// the transient buffers of an insert are not counted; the worst case of the tables is held by a unit test, the
+    /// typical one by the memory test. Each share holds at least one entry of the most `max_entry_bytes` allows, and
+    /// its slot.
     pub capacity: usize,
+    /// Most bytes one entry holds, its key and response, as stored (a little over the response as sent): a response
+    /// larger is answered and not stored (D116). `None`: 8 KiB, or a tenth of a shard's share of the capacity less a
+    /// slot if that is less, see [`Config::entry_limit`]. Keep an explicit value under a tenth of the share: a larger
+    /// entry takes the small queue over, and the entries behind it leave before they are asked twice. At least the
+    /// longest key, a failure record's size.
+    pub max_entry_bytes: Option<usize>,
     /// Number of shards, each behind its own lock: a power of two up to 65536, a few per thread.
     pub shards: usize,
     /// Cap on the TTL of stored records (RFC 8767 §4: 7 days).
@@ -63,6 +76,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             capacity: 64 << 20,
+            max_entry_bytes: None,
             shards: 64,
             max_ttl: 7 * 86_400,
             max_negative_ttl: 3 * 3_600,
@@ -81,13 +95,18 @@ impl Default for Config {
 
 /// Why a [`Config`] is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// The shard count is not a power of two, or above 65536.
     #[error("the shard count must be a power of two up to 65536, not {0}")]
     Shards(usize),
-    /// A shard's share of the capacity cannot hold one failure record; the least capacity is given.
-    #[error("the capacity must be at least {0} bytes for this shard count")]
+    /// A shard's share of the capacity cannot hold an entry of `max_entry_bytes` and its slot, or, if that is unset,
+    /// a tenth of it holds less than a failure record and its slot; the least capacity is given.
+    #[error("the capacity must be at least {0} bytes for this shard count and entry size")]
     Capacity(usize),
+    /// `max_entry_bytes` is under the longest key, so a failure record might not fit; the least is given.
+    #[error("the entry size must be at least {0} bytes")]
+    EntryBytes(usize),
     /// The failure holds break RFC 9520 §3.2: at least 1 second, at most 5 minutes, the first and the stale
     /// recheck not above the longest.
     #[error(
@@ -120,6 +139,24 @@ impl Config {
         }
     }
 
+    /// The most bytes an entry may hold: `max_entry_bytes`, else 8 KiB, or a tenth of a shard's share of the
+    /// capacity less a slot if that is less (D116). Only meaningful once [`Config::validate`] passes.
+    #[must_use]
+    pub const fn entry_limit(&self) -> usize {
+        if let Some(bytes) = self.max_entry_bytes {
+            return bytes;
+        }
+        let Some(share) = self.capacity.checked_div(self.shards) else {
+            return 0;
+        };
+        let tenth = (share / 10).saturating_sub(SLOT_COST);
+        if tenth < DEFAULT_ENTRY_BYTES {
+            tenth
+        } else {
+            DEFAULT_ENTRY_BYTES
+        }
+    }
+
     /// Checks the settings against each other and the RFCs.
     ///
     /// # Errors
@@ -129,8 +166,19 @@ impl Config {
         if !self.shards.is_power_of_two() || self.shards > MAX_SHARDS {
             return Err(ConfigError::Shards(self.shards));
         }
-        if self.capacity / self.shards < MIN_BUDGET {
-            return Err(ConfigError::Capacity(MIN_BUDGET * self.shards));
+        let share = self.capacity / self.shards;
+        if let Some(bytes) = self.max_entry_bytes {
+            if bytes < MAX_KEY_LEN {
+                return Err(ConfigError::EntryBytes(MAX_KEY_LEN));
+            }
+            let least = SLOT_COST.saturating_add(bytes);
+            if share < least {
+                return Err(ConfigError::Capacity(least.saturating_mul(self.shards)));
+            }
+        } else if self.entry_limit() < MAX_KEY_LEN {
+            // A tenth of the share holds a failure record and its slot.
+            let least = (SLOT_COST + MAX_KEY_LEN) * 10;
+            return Err(ConfigError::Capacity(least.saturating_mul(self.shards)));
         }
         if self.failure_min == 0
             || self.failure_min > self.failure_max

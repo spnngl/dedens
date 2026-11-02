@@ -24,6 +24,7 @@ thiserror.workspace = true
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest.workspace = true
+stats_alloc.workspace = true
 
 [lints]
 workspace = true
