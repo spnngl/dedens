@@ -486,14 +486,33 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   FORMERR. Well-delimited but invalid RDATA or EDNS option is kept opaque with a violation, so typed values
   always hold their invariants; except in types whose names may be compressed (RFC 3597 §4), where it is an
   error, since their pointers mean nothing outside the message.
-- D10 Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered buffers), plus a
-  `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), never into the header, through a fixed
-  open-addressing table matched byte for byte (case kept, no allocation); a record with the owner of the previous
-  one points to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the first
-  record that does not fit; TC only when answer or authority lost records; a cut additional RRset goes whole, since
-  without TC a partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC 6891
-  §7). Header fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day
+- D10 (amended by D112) Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered
+  buffers), plus a `Vec` convenience. Compresses names only in RFC 1035 types (RFC 3597 §4), never into the header,
+  through a fixed open-addressing table matched byte for byte (case kept, no allocation); a record with the owner of
+  the previous one points to it without a lookup, as Unbound does (TXT answer 367 → 170 ns). Truncation stops at the
+  first record that does not fit; TC only when answer or authority lost records; a cut additional RRset goes whole,
+  since without TC a partial RRset passes for complete (RFC 2181 §9); OPT is always kept and opens additional (RFC
+  6891 §7). Header fields too large for their bits are an error, never masked. EDNS UDP payload 1232 (DNS Flag Day
   2020).
+- D112 (amends D10) The encoder's name table is keyed on a hash of the whole suffix, not of the first label and the
+  length, and bounds the work of a lookup. The hash is folded from the root, so each byte of a name is hashed once for
+  all its suffixes; each step multiplies by a constant as wide as two registers and folds the halves, so no flipped
+  bits cancel (`FxHash` steps do, for any seed), from a seed random for each process. A slot keeps an 8-bit tag of the
+  hash beside its offset, a probe reads 8 tags in one word, and a name is compared with the written message only where
+  a tag agrees, at most 4 times for a lookup: names picked to share a tag lose their own compression, not the
+  encoder's time. Names are looked up longest suffix first for 8 suffixes, then by a binary search for the first one
+  held: the table holds every suffix of a name it holds (past its 192 names the shortest stay; a name that crosses
+  what a pointer reaches keeps the suffixes before it, and compresses less), so the encode of a name is O(L log L) in
+  its length L. Why: the first table hashed the first label and the length, so names of a hostile upstream sharing
+  both made a lookup compare with the whole run, and a name of 100 labels cost 100 lookups (`benchmarks.md`: ms
+  against µs for 64 KiB). The seed alone does not stop collisions made for the hash function itself; the cap on
+  comparisons bounds them whatever the hash, and the seed makes them hard to make. Costs: the hash of every suffix of
+  a name, about +17% on the encode of an MX response (+50 ns), less on the others, and 256 bytes more to clear,
+  paid where a response is stored or a plugin answers: a cache hit serves stored bytes, not encoded again (D21).
+  Messages are the same but where a table fills. `Name`'s `Hash` (D7) stays: hashing label by label was slower.
+  Rejected: names keyed by (label, offset of the rest) and looked up from the root (one probe for each shared label:
+  `deep_hit` 3.5x worse, small encodes +23%); a table of 512 slots (small encodes 12-25% slower); a cap on the labels
+  looked up (deep names stay uncompressed).
 - D11 Typed RDATA: A, AAAA, NS, CNAME, SOA, PTR, MX, TXT, SRV, CAA, SVCB, HTTPS, OPT, and the DNSSEC types of
   D70; others opaque until added. The other types with compressible names (RFC 3597 §4: MD MF MB MG MR
   MINFO, RP AFSDB RT SIG PX NXT NAPTR) are parsed by a field layout and kept opaque with their names

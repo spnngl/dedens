@@ -39,6 +39,71 @@ Nanoseconds, `a`/`mx`/`txt_large`.
   instructions, same cycles), `#[inline]` hints (no change); `to_vec` going from 512 bytes straight to 65535
   instead of growing 4 times: zeroing and freeing 64 KiB made `txt_large` 496 → 869-1745 ns.
 
+## Name table and name hash (D112)
+
+`benches/message.rs`, on an Apple M5 running other jobs (noise 30%). `encode_64k`: the most CNAME and MX records,
+alternating, that 64 KiB holds, so both ends of a record are compressed names, of six shapes: `spread` (hosts of a
+zone of 64 names) and five hostile ones: `collisions` (a first label and a length in common, differing one label
+further: what the first table hashed), `chains` (100 one-byte labels before a differing one), `flips` (first labels
+of 63 bytes that differ by bits that cancel in a multiplicative hash of the words, whatever the seed), `deep_fresh`
+(9 labels of their own before 100 one-byte labels and `com`) and `deep_hit` (1 label of its own before them). A bench
+encodes the message its own build fills, so a build that compresses better fits more records. The build before
+(504a2e8) and the build after were run alternately from copies of the binaries of `cargo bench --no-run`, 5 or 6
+rounds each, the lowest median of the rounds (`encode_64k` in µs, the rest in ns):
+
+| Measure | Before | After |
+|---|---|---|
+| `encode_64k` `spread` | 290 | 181 |
+| `encode_64k` `collisions` | 2702 | 183 |
+| `encode_64k` `chains` | 162 600 | 169 |
+| `encode_64k` `flips` | 698 | 251 |
+| `encode_64k` `deep_fresh` | 17 300-23 300 | 3400-4000 |
+| `encode_64k` `deep_hit` | 1630-1810 | 2650-2750 |
+| `encode_dedens_to_vec` `a`/`mx`/`txt_large` | 64/375/483 | 71/451/421 |
+| `encode_dedens_owned` `a`/`mx`/`txt_large` | 52/265/179 | 58/323/179 |
+
+Instructions retired for an encode, steadier than time (`time -l`, an iteration of `encode_dedens_owned` and
+`encode_dedens_to_vec`): `mx` 8108 to 9520 (+17%), `a` 2718 to 2955 (+9%), `txt_large` 13 582 to 13 884 (+2%).
+
+`collisions`, `chains` and `flips` are within 2x of `spread` after the change (1.0x, 0.9x, 1.4x). `deep_*` have
+names of 102 labels, to hash and search: 3.4-4.0 and 2.7 ms for 64 KiB. Before, `deep_fresh` was 5x slower and
+`deep_hit` 1.6x faster: hashing every suffix of a name is what `deep_hit` pays. On a served response the price is the
+same hash, which names of 3 to 5 labels do not save with a lookup that ends early: `mx` (6 names) costs 46-58 ns more
+(+17%), about 1% of the 4.6 µs of a warm validation, and `a` (2 names) 6 ns. Tried and dropped, same runs:
+
+- Names keyed by (label, offset of the rest), looked up from the root, one probe a label, no seed: `chains` 74,
+  `collisions` 131, `flips` 36 µs, `deep_fresh` 2.6 ms, but `deep_hit` 5.2-5.8 ms (3.5x before: a probe for each of
+  the 101 labels) and `mx` 9951 instructions (+23%: 5 probes for a name of 5 labels, 2 with the longest first).
+- A table of 512 slots: fewer long probes, but small encodes 12-25% slower to clear it. A table of 128 names: the
+  hostile shapes within 2x, a third fewer names kept. Labels hashed apart and joined with a rotation: no faster.
+- A seed alone (the first version of the change): bits of two words flipped to cancel in the multiplication, whatever
+  the seed, gave 128 labels one hash and `flips` 1.5 ms against 0.25 now. A hash that folds the 128-bit product and a
+  cap on the comparisons of a lookup close that.
+
+`name_hash` (`RandomState::hash_one`, ns, short/long/packed) and `name_map_get` (a `HashMap<Name, _>` hit, short/long)
+close P3 of the audit as measured: hashing label by label, lowercasing in a 63-byte buffer as it goes, skips the copy
+of 255 bytes and is slower. The variant, as `impl Hash for Name`, against the committed code, 5 rounds:
+
+```rust
+for label in self.labels() {
+    let mut lower = [0_u8; 63];
+    let lower = lower.get_mut(..label.len()).unwrap_or_default();
+    lower.copy_from_slice(label);
+    lower.make_ascii_lowercase();
+    state.write_u8(u8::try_from(label.len()).unwrap_or_default());
+    state.write(lower);
+}
+state.write_u8(0);
+```
+
+| Measure | `Hash` of D7 | Label by label |
+|---|---|---|
+| `name_hash` | 14.9/39.5/18.2 | 31.7/59.3/32.6 |
+| `name_map_get` | 23.2/53.2 | 36.8/75.5 |
+
+The `Hash` stays (D7 unchanged). The key cache (D86, D92) asks two tables, `name_map_get` (23 to 53 ns each) against
+4.6 µs for a warm validation: it stays at two lookups.
+
 ## Unbound (D14)
 
 Unbound 1.26.2, `just bench-unbound` (`-O2`, median of 101 samples), next to `cargo bench -p dedens-bench` in
