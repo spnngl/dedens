@@ -20,7 +20,9 @@ use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, captured, decode, framed, query_for, write_config};
 use compio::io::AsyncWriteExt;
 use compio::quic::crypto::rustls::QuicClientConfig;
-use compio::quic::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig, VarInt};
+use compio::quic::{
+    ClientConfig, Connection, ConnectionError, Endpoint, IdleTimeout, TransportConfig, VarInt,
+};
 use compio::runtime::Runtime;
 use compio::rustls::crypto::ring;
 use compio::rustls::version::TLS13;
@@ -258,6 +260,30 @@ fn a_quic_connection_without_a_query_is_closed_though_pinged() {
             .expect("closed by the server");
         let lasted = start.elapsed();
         assert!(lasted < Duration::from_secs(15), "{lasted:?}");
+    });
+}
+
+/// RFC 9250 §4.2.1, §4.3.3: a query with a Message ID other than 0 is a protocol error: no reply, and the connection is
+/// closed with `DOQ_PROTOCOL_ERROR`, 2.
+#[test]
+fn a_quic_query_with_a_message_id_is_a_protocol_error() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (server, ..) = listening(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
+        let query = framed(&query_for(&captured("a"), 1));
+        send.write_all(query).await.0.expect("the query sent");
+        send.finish().expect("finished");
+        let closed = compio::time::timeout(Duration::from_secs(10), connection.closed())
+            .await
+            .expect("closed by the server");
+        assert!(
+            matches!(&closed, ConnectionError::ApplicationClosed(close) if close.error_code == VarInt::from_u32(2)),
+            "{closed:?}"
+        );
+        assert!(read_message(&mut recv).await.is_err(), "no reply came");
     });
 }
 

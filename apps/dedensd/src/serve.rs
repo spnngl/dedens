@@ -1162,14 +1162,10 @@ async fn forward(
     Box::pin(proxy.forward(&thread.forwarder, destination, body)).await
 }
 
-/// Answers `exchange` with `response` of the proxy role, and counts it (D94).
+/// The label `status` of the proxied count (D94): a status the proxy answers with, else "other".
 #[cfg(feature = "odoh")]
-async fn proxied(
-    exchange: Exchange<Route<&Proxy>>,
-    response: http::Response<Vec<u8>>,
-    peer: SocketAddr,
-) {
-    let status = match response.status() {
+const fn proxied_status(status: StatusCode) -> &'static str {
+    match status {
         StatusCode::OK => "200",
         StatusCode::BAD_REQUEST => "400",
         StatusCode::UNAUTHORIZED => "401",
@@ -1182,7 +1178,17 @@ async fn proxied(
         StatusCode::SERVICE_UNAVAILABLE => "503",
         StatusCode::GATEWAY_TIMEOUT => "504",
         _ => "other",
-    };
+    }
+}
+
+/// Answers `exchange` with `response` of the proxy role, and counts it (D94).
+#[cfg(feature = "odoh")]
+async fn proxied(
+    exchange: Exchange<Route<&Proxy>>,
+    response: http::Response<Vec<u8>>,
+    peer: SocketAddr,
+) {
+    let status = proxied_status(response.status());
     metrics::counter!(ODOH_PROXIED, "status" => status).increment(1);
     sent(exchange.respond_with(response), peer).await;
 }
@@ -1600,6 +1606,24 @@ mod tests {
         assert!(breaks_doq(&query(1, false)));
         assert!(breaks_doq(&query(0, true)));
         assert!(!breaks_doq(b"not a query"));
+    }
+
+    /// D94: each status the proxy answers with has its label in the count, and another is "other".
+    #[cfg(feature = "odoh")]
+    #[test]
+    fn the_proxied_count_is_labelled_by_status() {
+        use http::StatusCode;
+
+        use super::proxied_status;
+
+        for code in [200, 400, 401, 403, 405, 413, 415, 500, 502, 503, 504] {
+            let status = StatusCode::from_u16(code).expect("a status");
+            assert_eq!(proxied_status(status), code.to_string());
+        }
+        for code in [204, 404, 429, 501] {
+            let status = StatusCode::from_u16(code).expect("a status");
+            assert_eq!(proxied_status(status), "other");
+        }
     }
 
     /// A writer that writes once let through by `gate`, recording each batch's length.
