@@ -590,9 +590,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Transports
 
-- D26 `dedens-net` splits like `dedens-proto`: a sans-IO client core (retries, response matching, TC fallback,
-  EDNS fallback, cookies) fed bytes and time, so tests drive drops, delays and forged replies exactly without a
-  server; a thin compio layer moves the bytes, tested over loopback only. Public at both levels: `Client` for
+- D26 (amended by D133) `dedens-net` splits like `dedens-proto`: a sans-IO client core (retries, response matching,
+  TC fallback, EDNS fallback, cookies) fed bytes and time, so tests drive drops, delays and forged replies exactly
+  without a server; a thin compio layer moves the bytes, tested over loopback only (D133: the cores also run over a
+  simulated network, the compio layer still loopback only). Public at both levels: `Client` for
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
@@ -2400,3 +2401,75 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   and log pipelines read fields, not prose), `-v` for debug (dropped messages, retries, fallbacks, `+trace` referrals, a
   span per hop) and `-vv` for trace (every message sent and received), without `env-filter` and its regexes; its
   `dedens: …` errors stay plain output. OpenTelemetry later. Cost in `docs/benchmarks.md`.
+
+## Simulation tests
+
+- D133 (amends D26) Simulation tests: the sans-IO cores run as hosts of a simulated network, `turmoil` 0.7.2 (not
+  `turmoil-net`: hosts crash and bounce, links partition, hold and fail at a rate), so lost, late, reordered and
+  forged packets, partitions and crashes meet the real `Exchange`, `Pipeline` and cache together, and a failing run
+  replays from its seed. A new crate `crates/dedens-sim` (`publish = false`; `turmoil` and `tokio` beside the
+  workspace's crates): a test-only driver in `src/`, one scenario family a `tests/<family>.rs`; no production crate
+  changes. The compio layer stays tested over loopback (D26) until a later step puts it behind a trait and runs it on
+  turmoil.
+  - Driver: it mirrors `dedensd`'s glue (`apps/dedensd/src/serve.rs`, `start` and `answer`) and `dedens-net`'s client.
+    `Client` runs one `Exchange` over turmoil's UDP and TCP (2-byte framing, RFC 1035 §4.2.2; `receive`, `time_out`
+    at the deadline, `lose` on a socket error; IDs, spare IDs and client cookies (RFC 7873) from the host's
+    generator, one cookie a server; `now` is tokio's simulated clock). `Resolver` serves a `Pipeline` (cache,
+    forward) on port 53, asks the upstream servers with that client for `Step::Upstream` and `Step::Refresh`, ends
+    with `receive` or `abandon`, and counts seconds since the host started, as `dedensd`. `Upstream` answers from
+    responses captured from real servers (`crates/dedens-proto/tests/testdata`), with the query's ID, over UDP and
+    TCP. `Topology` builds the hosts from a seed, and from a start date (`Topology::epoch`, for signatures valid for
+    one date). `Trace` records the events in order.
+  - Faults, for the scenario families after this one, which add test files and no driver code: per link, loss,
+    latency and reordering; partition both ways and one way, hold and release, repair; crash and bounce of a host;
+    an attacker on an upstream server's host. All at a time of the run, which `World::pick` draws from the seed
+    (`World::fault`, recorded in the trace). turmoil's links do not lose one packet at a time: loss breaks a link at
+    a rate each tick, losing what is on it, and reordering is a latency drawn from the seed for each message between
+    two bounds. A crash drops a host's software and memory; a bounce starts it again, empty. The attacker shares
+    the server's port 53 socket and sends what the test gives it (forged, duplicated, late) from the server's
+    address: turmoil cannot spoof a source address, so the one attack that is out is a spoofed source.
+  - Oracle: `Stub` checks each query. It ends by its deadline (the tries of its options and one more for TCP), with
+    a response to its question that is well-formed and whose rcode and records (TTLs aside) are those of an
+    upstream server's data for the name, a stale copy of them (EDE 3, RFC 8914) included, or SERVFAIL with no
+    answer, or with a failure of the exchange. A panic in any host task fails the run.
+  - Left out, as the compio layer's concern, for the steps that put it on turmoil: socket pools (D50), D108's
+    inboxes, connection reuse and idle timeouts, D86's shared flights, D45's stale-answer timer, compio's timers
+    (tokio's stand in), threads (one thread runs every host). A connection's queries are answered one after the
+    other; each UDP query runs in a task.
+  - Seeds: one seed drives turmoil's network (latencies, losses, order of hosts), the faults a scenario has it pick,
+    and the IDs and cookies of each host's queries (SplitMix64, one stream a host). Scenarios run fixed seeds in
+    `just check`; `DEDENS_SIM_SEED=<n>` runs that one alone, `DEDENS_SIM_RUNS=<n>` that many random ones; a failure
+    prints `DEDENS_SIM_SEED=<n>`, which becomes a fixed seed of the scenario with a comment on what it caught.
+  - Determinism: every source that could make one seed's runs differ, and how each is handled. A test runs a scenario
+    here and in a second process and compares the digests of the traces (`tests/replay.rs`).
+    - turmoil's rng and the order of its hosts follow `rng_seed`; its `select!` branch order does not, so every
+      `select!` in the driver is `biased`. Pinned.
+    - Hosts are tasks of one thread, in `JoinSet`s: their order is the simulation's. IDs, cookies and faults come from
+      seeded streams. `getrandom` only draws the seeds of `DEDENS_SIM_RUNS`, outside a run. The driver keeps no
+      `HashMap`. Pinned.
+    - Clocks: the cores read none. `Exchange` and `Pipeline` take the time as an argument (checked: no
+      `Instant::now`, `SystemTime::now` or randomness in `dedens-proto`, `-cache`, `-server`, `-dnssec` or
+      `dedens-net`'s `exchange`); the driver passes tokio's simulated one. A core that read the real clock would
+      escape simulated time and is a bug here.
+    - `NEXT_ID` (`crates/dedens-server/src/pipeline.rs`, a process-wide counter): a pipeline's identity for D118's
+      marks, compared only with the pipeline's own entries and one cache a pipeline in the driver. Its value cannot
+      change a trace.
+    - D112's per-process seed of the name table of the encoder: it only picks table slots for compression pointers,
+      and the decoded content is the same. A probe that gives up could change the length of a locally built reply
+      by a few bytes from one process to another, so a scenario must not sit within that margin of a size limit. It
+      cannot be pinned from outside (the production crate's seed is private); the two-process test is the check.
+    - The cache's `RandomState` (shard choice, so which entries a full shard evicts): pinned by one shard
+      (`Config::shards = 1`) in the driver's resolver.
+    - The `RandomState` slots of rate limits and budgets (`rrl.rs`, `budget.rs`): not in the driver's pipeline; the
+      family that adds them sizes the tables so that its clients do not share a slot.
+    - `HashMap` and `HashSet` of `dedens-dnssec` and of the blocklist plugin: not in the driver's pipeline; the
+      family that adds them puts its scenario in `tests/replay.rs`. The ones in `dedens-proto` and `dedens-cache`'s
+      response code are only looked up, never iterated.
+  - Time: the tests of a family under 2 s in `just check` (debug build), the crate under 10 s: `tests/baseline.rs`
+    1.1 s, the whole crate 1.2 s when this was written. A scenario that breaks the budget runs fewer fixed seeds
+    in `just check`, not a smaller scenario.
+  - `just sim runs=100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
+    `sim` job of `.github/workflows/deep.yml` runs it on pull requests (30 minutes), informational, outside the gate
+    as `mutants` (D103); a later step adds its `loom` job to the same workflow.
+  - Tests: `crates/dedens-sim/tests/baseline.rs` (perfect network, each fault and the attacker once, the seed picking
+    faults) and `tests/replay.rs`.

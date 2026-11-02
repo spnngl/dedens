@@ -1,7 +1,8 @@
 name: deep
 
-# The slow checks, informational and outside the gate as `mutants.yml` is (D103): loom's model of dedensd's reload
-# wake-up and query flights (`just loom`, D135).
+# The slow checks, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
+# reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
+# and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133).
 on:
   pull_request:
 
@@ -35,3 +36,20 @@ jobs:
         with:
           workspaces: . -> target/loom
       - run: just loom
+  sim:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      # The stable toolchain alone: the scenarios need no nightly.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: just sim 100

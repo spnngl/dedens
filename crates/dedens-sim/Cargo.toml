@@ -1,0 +1,22 @@
+[package]
+name = "dedens-sim"
+description = "Simulation tests: the sans-IO client and server cores driven over turmoil's simulated network, from a seed."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dedens-cache.workspace = true
+dedens-net.workspace = true
+dedens-proto.workspace = true
+dedens-server.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
+turmoil.workspace = true
+
+[lints]
+workspace = true
