@@ -15,11 +15,12 @@ use compio::net::UdpSocket;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::block::{Block, BlockSize, slice};
 use dedens_net::coap::doc::{
-    add_max_age, etag, more_blocks, path_segments, response, take_max_age,
+    Query, add_max_age, discovery, etag, more_blocks, path_segments, query as doc_query, response,
+    take_max_age,
 };
 use dedens_net::coap::exchange::Failure;
 use dedens_net::coap::link::LinkError;
-use dedens_net::coap::{Code, Message, OptionNumber, Options, Type};
+use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
 use dedens_net::doc::DocError;
 use dedens_net::exchange::{Failure as DnsFailure, Options as DnsOptions, Transport};
 use dedens_proto::Message as Dns;
@@ -601,4 +602,215 @@ fn the_path_of_a_uri_is_its_segments() {
     assert_eq!(segments("/a/b"), ["a", "b"]);
     assert_eq!(segments("/a//b"), ["a", "", "b"]);
     assert_eq!(segments("/a/"), ["a", ""]);
+}
+
+/// The server's request for `/dns/query`, as RFC 9953 §4.1 says: a CON FETCH of a query, in and asking for 553.
+fn fetch() -> Message {
+    let mut options = Options::new();
+    options.push_uri_path(path_segments("/dns/query").iter().map(|segment| &**segment));
+    options.set_content_format(Options::DNS_MESSAGE);
+    options.set_accept(Options::DNS_MESSAGE);
+    Message {
+        kind: Type::Confirmable,
+        code: Code::FETCH,
+        id: 7,
+        token: Token::new(&[7, 7]).expect("a token"),
+        options,
+        payload: QUERY.to_vec(),
+    }
+}
+
+/// A CON GET of `/.well-known/core` asking for the link format, with these Uri-Query options.
+fn well_known(queries: &[&str]) -> Message {
+    let mut options = Options::new();
+    options.push_uri_path([b".well-known".as_slice(), b"core"]);
+    for query in queries {
+        options.insert(OptionNumber::URI_QUERY, query.as_bytes());
+    }
+    options.set_accept(Options::LINK_FORMAT);
+    Message {
+        kind: Type::Confirmable,
+        code: Code::GET,
+        id: 9,
+        token: Token::new(&[9, 9]).expect("a token"),
+        options,
+        payload: Vec::new(),
+    }
+}
+
+/// The payload of the answer of a server at `path` to `request`, or the code of its error, `None` if the request is
+/// not for `/.well-known/core`.
+fn listing(request: &Message, path: &str) -> Option<Result<String, Code>> {
+    let reply = discovery(request, 1, &path_segments(path))?;
+    Some(if reply.code == Code::CONTENT {
+        Ok(String::from_utf8(reply.payload).expect("a link"))
+    } else {
+        Err(reply.code)
+    })
+}
+
+/// RFC 9953 §3.1, RFC 6690 §4, §4.1: a server answers a GET of `/.well-known/core` with its one link, in the link
+/// format, and gives it to a request whose filter on `rt` it matches, a complete value or a prefix.
+#[test]
+fn s3_1_a_server_lists_its_resource_to_a_filter_it_matches() {
+    let reply = discovery(
+        &well_known(&["rt=core.dns"]),
+        1,
+        &path_segments("/dns/query"),
+    )
+    .expect("an answer");
+    assert_eq!(reply.kind, Type::Acknowledgement);
+    assert_eq!(reply.code, Code::CONTENT);
+    assert_eq!(reply.options.content_format(), Some(Options::LINK_FORMAT));
+    assert_eq!(reply.payload, b"</dns/query>;rt=core.dns;ct=553");
+    for queries in [vec![], vec!["rt=core.*"], vec!["rt=*"], vec!["ct=553"]] {
+        let payload = listing(&well_known(&queries), "/dns/query").expect("an answer");
+        assert_eq!(payload.as_deref(), Ok("</dns/query>;rt=core.dns;ct=553"));
+    }
+    for queries in [
+        vec!["rt=core.dns2"],
+        vec!["rt=core.sen"],
+        vec!["rt=core.dns", "rt=x"],
+    ] {
+        let payload = listing(&well_known(&queries), "/dns/query").expect("an answer");
+        assert_eq!(payload.as_deref(), Ok(""), "{queries:?}");
+    }
+}
+
+/// RFC 6690 §4: the request for another path is not one for the list, and neither is a request for a proxy to
+/// make (RFC 7252 §5.7.2).
+#[test]
+fn s3_1_only_a_request_for_the_well_known_core_is_a_discovery() {
+    assert!(discovery(&fetch(), 1, &path_segments("/dns/query")).is_none());
+    let mut other = well_known(&[]);
+    other.options.remove(OptionNumber::URI_PATH);
+    other
+        .options
+        .push_uri_path([b".well-known".as_slice(), b"other"]);
+    assert!(discovery(&other, 1, &path_segments("/dns/query")).is_none());
+    for (number, value) in [
+        (OptionNumber::PROXY_URI, b"coap://dns.example/".as_slice()),
+        (OptionNumber::PROXY_SCHEME, b"coap".as_slice()),
+    ] {
+        let mut request = well_known(&[]);
+        request.options.insert(number, value);
+        assert!(discovery(&request, 1, &path_segments("/dns/query")).is_none());
+    }
+}
+
+/// RFC 7252 §5.8, §5.10.4, §5.10.8, §5.9.2.5: a discovery that cannot be served gets the code of the reason: a method
+/// other than GET is 4.05, an unknown critical option 4.02, another format accepted than the link format 4.06, a
+/// condition the resource does not fulfil 4.12.
+#[test]
+fn s3_1_a_discovery_that_cannot_be_served_gets_an_error_code() {
+    type Change = fn(&mut Message);
+    let cases: [(&str, Change, Code); 6] = [
+        ("a POST", |m| m.code = Code::POST, Code::METHOD_NOT_ALLOWED),
+        (
+            "an unknown critical option",
+            |m| m.options.insert(OptionNumber(2049), [1]),
+            Code::BAD_OPTION,
+        ),
+        (
+            "accepting DNS",
+            |m| m.options.set_accept(Options::DNS_MESSAGE),
+            Code::NOT_ACCEPTABLE,
+        ),
+        (
+            "an If-None-Match",
+            |m| m.options.insert(OptionNumber::IF_NONE_MATCH, []),
+            Code::PRECONDITION_FAILED,
+        ),
+        (
+            "an If-Match with a tag",
+            |m| m.options.insert(OptionNumber::IF_MATCH, [1, 2]),
+            Code::PRECONDITION_FAILED,
+        ),
+        (
+            "no format accepted",
+            |m| m.options.remove(OptionNumber::ACCEPT),
+            Code::CONTENT,
+        ),
+    ];
+    for (what, change, code) in cases {
+        let mut request = well_known(&[]);
+        change(&mut request);
+        let reply = discovery(&request, 1, &path_segments("/dns/query")).expect("an answer");
+        assert_eq!(reply.code, code, "{what}");
+        assert_eq!(reply.token, request.token, "{what}");
+        assert_eq!(reply.payload.is_empty(), code != Code::CONTENT, "{what}");
+    }
+}
+
+/// RFC 3986 §3.3, §4.2, RFC 9953 §3.1: the path in the link is written as a URI path: the bytes `pchar` allows as
+/// they are, the others as `%` and two uppercase hexadecimal digits, one that opens with an empty segment after `/.`.
+#[test]
+fn s3_1_the_link_writes_the_path_as_a_uri_path() {
+    let link = |segments: &[&[u8]]| {
+        let path: Vec<Box<[u8]>> = segments.iter().map(|segment| (*segment).into()).collect();
+        let reply = discovery(&well_known(&[]), 1, &path).expect("an answer");
+        String::from_utf8(reply.payload).expect("a link")
+    };
+    let rest = ">;rt=core.dns;ct=553";
+    assert_eq!(link(&[]), format!("</{rest}"));
+    assert_eq!(link(&[b"dns", b"Query-0"]), format!("</dns/Query-0{rest}"));
+    assert_eq!(
+        link(&[b"-._~!$&'()*+,;=:@"]),
+        format!("</-._~!$&'()*+,;=:@{rest}")
+    );
+    assert_eq!(
+        link(&[b"a b", b"%", b"/?#"]),
+        format!("</a%20b/%25/%2F%3F%23{rest}")
+    );
+    assert_eq!(
+        link(&[&[0xA5, 0x0F, 0xF0, 0x00]]),
+        format!("</%A5%0F%F0%00{rest}")
+    );
+    assert_eq!(link(&[b"", b"a"]), format!("</.//a{rest}"));
+}
+
+/// RFC 7252 §5.7.2, §5.10.1, §5.10.8: a request for a proxy is 5.05 and one for another path 4.04, whatever else is
+/// wrong with it; a condition the resource does not fulfil is 4.12: an If-None-Match, or an If-Match with only
+/// tags, which no representation of the resource has. An empty If-Match, which asks for any, is fulfilled.
+#[test]
+fn s4_3_1_a_request_for_a_proxy_or_with_a_failing_condition_is_refused() {
+    let path = path_segments("/dns/query");
+    assert!(matches!(doc_query(&fetch(), &path), Ok(Query::Dns(body)) if body == QUERY));
+    let mut request = fetch();
+    request
+        .options
+        .insert(OptionNumber::PROXY_URI, b"coap://dns.example/dns/query");
+    assert_eq!(
+        doc_query(&request, &path).err(),
+        Some(Code::PROXYING_NOT_SUPPORTED)
+    );
+    let mut request = fetch();
+    request.options.insert(OptionNumber::PROXY_SCHEME, b"coap");
+    assert_eq!(
+        doc_query(&request, &path).err(),
+        Some(Code::PROXYING_NOT_SUPPORTED)
+    );
+    let mut request = fetch();
+    request.options.insert(OptionNumber::IF_NONE_MATCH, []);
+    assert_eq!(
+        doc_query(&request, &path).err(),
+        Some(Code::PRECONDITION_FAILED)
+    );
+    let mut request = fetch();
+    request.options.insert(OptionNumber::IF_MATCH, [1, 2, 3, 4]);
+    assert_eq!(
+        doc_query(&request, &path).err(),
+        Some(Code::PRECONDITION_FAILED)
+    );
+    request.options.insert(OptionNumber::IF_MATCH, []);
+    assert!(
+        doc_query(&request, &path).is_ok(),
+        "one of the tags is empty"
+    );
+    let mut request = fetch();
+    request.options.insert(OptionNumber::IF_MATCH, []);
+    assert!(
+        doc_query(&request, &path).is_ok(),
+        "an empty tag asks for any"
+    );
 }

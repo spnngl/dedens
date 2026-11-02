@@ -11,7 +11,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
@@ -23,6 +23,7 @@ use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Template;
 use dedens_net::exchange::{Http, Options, Transport};
+use dedens_net::https::{HttpsError, HttpsPool};
 use dedens_net::odoh::{
     CONFIGS_PATH, Entropy, Kind, Lifetime, MAX_BODY, Notice, OdohError, classify, configs_lifetime,
     configs_request, configs_response, names_target, proxy_error, request, response,
@@ -1097,4 +1098,30 @@ async fn s4_3_live_a_stale_key_is_refetched_after_the_401() {
             answered.answer.len()
         );
     }
+}
+
+/// RFC 9114 §3.3: connecting opens the connection, which fails for a certificate that does not hold the name (RFC
+/// 8310 §6.6) and for a server that does not answer in time (D94): before any request goes out.
+#[compio::test]
+async fn s3_3_a_connection_is_made_before_any_request() {
+    let certificates = certificates();
+    let addr = h3_server(&certificates, Rc::new(|_, _| Response::new(Vec::new()))).await;
+    let pool =
+        HttpsPool::new(Duration::from_secs(10)).trusting(Trust::Roots(vec![certificates.ca]));
+    let later = || Instant::now() + Duration::from_secs(5);
+    let name = |name| ServerName::try_from(name).expect("a name");
+    pool.connect(addr, name(NAME), later())
+        .await
+        .expect("a connection");
+    let refused = pool.connect(addr, name("other.example"), later()).await;
+    assert!(matches!(refused, Err(HttpsError::Quic(_))), "{refused:?}");
+    // A socket nobody reads from: the deadline ends the wait.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").expect("a socket");
+    let silent_addr = silent.local_addr().expect("its address");
+    let late = Instant::now() + Duration::from_millis(200);
+    let timed_out = pool.connect(silent_addr, name(NAME), late).await;
+    assert!(
+        matches!(timed_out, Err(HttpsError::TimedOut)),
+        "{timed_out:?}"
+    );
 }
