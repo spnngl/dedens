@@ -5,6 +5,16 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Server forwarder
 
+- A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
+  `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
+  it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio
+  change to surface worker panics, once one is proposed upstream.
+- Bare `spawn`s in `dedens-net` whose panics nothing logs or counts (D121): the upstream UDP pool `crates/dedens-net/src/udp.rs:95`,
+  the read and write halves of a TCP exchange `crates/dedens-net/src/tcp.rs:332` and `:450`, `crates/dedens-net/src/https.rs:223`.
+  compio hides each; the client of a query then times out. Default: a `dedens-net` helper like `Origin::spawn` (a
+  counter by name), once a second user of it exists.
+- Export of `dedensd_task_panics_total` and `dedensd_listener_restarts_total` (D121): no exporter is installed
+  (D30), so the counts go nowhere but the log. Default: with the Prometheus exporter.
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
 - Blocklist lookup of a 127-label name (D110): audit P4 asked it to cost under 3 times one of 3 labels; it costs

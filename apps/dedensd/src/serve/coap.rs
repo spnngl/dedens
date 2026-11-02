@@ -13,12 +13,10 @@ use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Instant;
 
 use compio::BufResult;
 use compio::net::UdpSocket;
-use compio::runtime::spawn;
 use dedens_net::coap::doc::{
     BLOCK_SIZE, Query, discovery, error, more_blocks, path_segments, query, response,
 };
@@ -27,6 +25,7 @@ use dedens_net::coap::{Code, Message, Type};
 use dedens_server::Transport;
 
 use super::{ERROR_PAUSE, Slot, Slots, Started, Thread, answer, start};
+use crate::isolate::{Listener, Origin};
 
 /// The largest request read, in bytes (D105): a datagram over it is read to here and refused 4.13. A query fits the
 /// largest block, 1024 bytes (RFC 7959 §2.2), and the header, token and options of a request take far less than the
@@ -43,9 +42,9 @@ const DEDUP_CAPACITY: NonZeroUsize = NonZeroUsize::new(4096).expect("4096 is not
 /// Responses in blocks remembered per socket for the requests of the next blocks.
 const BLOCKS_CAPACITY: NonZeroUsize = NonZeroUsize::new(64).expect("64 is not zero");
 
-/// What the tasks of one socket share.
-struct Coap {
-    socket: UdpSocket,
+/// What the tasks of one socket share, kept when its loop starts again (D121): a request seen stays seen.
+pub(super) struct Coap {
+    socket: Rc<UdpSocket>,
     /// The path `DoC` is served at.
     path: Vec<Box<[u8]>>,
     /// The CON requests seen, with the replies sent.
@@ -61,6 +60,19 @@ struct Coap {
 }
 
 impl Coap {
+    /// The state of `socket`, serving the resource at `path`.
+    pub(super) fn new(socket: Rc<UdpSocket>, path: &str) -> Self {
+        Self {
+            socket,
+            path: path_segments(path),
+            dedup: RefCell::new(Dedup::new(EXCHANGE_LIFETIME, DEDUP_CAPACITY)),
+            non_dedup: RefCell::new(Dedup::new(NON_LIFETIME, DEDUP_CAPACITY)),
+            blocks: RefCell::new(Blocks::new(EXCHANGE_LIFETIME, BLOCKS_CAPACITY)),
+            ids: Cell::new(first_id()),
+            tasks: Slots::new(TASKS),
+        }
+    }
+
     fn next_id(&self) -> u16 {
         let id = self.ids.get();
         self.ids.set(id.wrapping_add(1));
@@ -134,17 +146,8 @@ fn first_id() -> u16 {
     u16::from_be_bytes(bytes)
 }
 
-/// Answers the requests of `socket` for the resource at `path`, until the end of the process.
-pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>) {
-    let coap = Rc::new(Coap {
-        socket,
-        path: path_segments(&path),
-        dedup: RefCell::new(Dedup::new(EXCHANGE_LIFETIME, DEDUP_CAPACITY)),
-        non_dedup: RefCell::new(Dedup::new(NON_LIFETIME, DEDUP_CAPACITY)),
-        blocks: RefCell::new(Blocks::new(EXCHANGE_LIFETIME, BLOCKS_CAPACITY)),
-        ids: Cell::new(first_id()),
-        tasks: Slots::new(TASKS),
-    });
+/// Answers the requests of `coap`'s socket until the end of the process, as the listener `listener`.
+pub(super) async fn serve(coap: Rc<Coap>, listener: Listener, thread: Rc<Thread>) {
     // One byte more than a request may hold, to tell a datagram that fills the buffer from one cut by it.
     let mut buf = Vec::with_capacity(MAX_REQUEST + 1);
     let mut failing = false;
@@ -217,14 +220,13 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
             continue;
         };
         dedup.borrow_mut().note(peer, message.id, now);
-        spawn(handle(
+        Origin::new(&listener, peer).spawn(handle(
             Rc::clone(&coap),
             Rc::clone(&thread),
             message,
             peer,
             slot,
-        ))
-        .detach();
+        ));
     }
 }
 

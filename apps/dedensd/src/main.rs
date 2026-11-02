@@ -10,6 +10,7 @@ mod config;
 mod download;
 mod flights;
 mod h3_budget;
+mod isolate;
 mod lists;
 #[cfg(feature = "odoh")]
 mod odoh;
@@ -91,6 +92,8 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     config.warn_access(&config.listen);
+    isolate::describe();
+    isolate::hook();
     let current = Arc::new(Current::new(config.pipeline));
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)
@@ -116,25 +119,17 @@ fn main() -> anyhow::Result<()> {
     )
     .context("cannot handle SIGHUP")?;
     #[cfg(feature = "doc")]
-    for listen in listen
-        .iter()
-        .filter(|l| matches!(l, config::Listen::Coap(..)))
-    {
-        tracing::warn!(
-            ?listen,
-            "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
-        );
-    }
+    warn_coap(&listen);
     let threads = sockets.len();
     let (ended, end) = mpsc::channel();
     let (listening, listened) = mpsc::channel();
-    for sockets in sockets {
+    for (index, sockets) in sockets.into_iter().enumerate() {
         let (current, ended) = (Arc::clone(&current), ended.clone());
         let listening = listening.clone();
         let (trust, presented) = (config.trust.clone(), presented.clone());
         #[cfg(feature = "odoh")]
         let odoh = odoh.clone();
-        thread::spawn(move || {
+        let serving = move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
                 let serving = serve::serve(
                     sockets,
@@ -150,23 +145,53 @@ fn main() -> anyhow::Result<()> {
                 // ends once one thread has, and the kernel then closes the ring.
                 serve::runtime().and_then(|runtime| ManuallyDrop::new(runtime).block_on(serving))
             }));
-            let _ =
-                ended.send(served.unwrap_or_else(|_| Err(io::Error::other("a thread panicked"))));
-        });
+            // A panic here is the runtime's, or a driver's: tasks and listeners catch their own (D121).
+            let _ = ended.send(served.unwrap_or_else(|payload| Err(isolate::fatal(&*payload))));
+        };
+        thread::Builder::new()
+            .name(format!("dedensd-{index}"))
+            .spawn(serving)
+            .context("cannot start a thread")?;
     }
     drop((ended, listening));
     // Announced once every thread has its sockets; a thread that failed to start never sends, and `end` has why.
     // `listened` ends once each thread has sent or failed.
     let drivers: Vec<_> = listened.iter().collect();
     if drivers.len() == threads {
-        let driver = Driver::of(&drivers);
-        tracing::info!(config = %path, ?listen, threads, driver = driver.name, "serving");
-        if let Some(warning) = driver.warning(cfg!(target_os = "linux")) {
-            tracing::warn!(driver = driver.name, threads, "{warning}");
-        }
+        announce(&path.to_string(), &listen, &drivers);
     }
     // Threads serve until one fails to start or panics; each sends before ending.
-    end.recv()?.context("cannot serve")
+    match end.recv()? {
+        Ok(()) => Ok(()),
+        // Logged as the rest of what the server says, not only printed: its log is where it is looked for (D121).
+        Err(error) => {
+            tracing::error!(error = format!("{error:#}"), "dedensd ends: cannot serve");
+            std::process::exit(1)
+        }
+    }
+}
+
+/// Warns of each CoAP address in `listen`: DNS there is unprotected (RFC 9953 §6).
+#[cfg(feature = "doc")]
+fn warn_coap(listen: &[config::Listen]) {
+    for listen in listen
+        .iter()
+        .filter(|l| matches!(l, config::Listen::Coap(..)))
+    {
+        tracing::warn!(
+            ?listen,
+            "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
+        );
+    }
+}
+
+/// Logs that the server is serving `listen`, on the `drivers` of its threads, and warns of a driver that is a loss.
+fn announce(config: &str, listen: &[config::Listen], drivers: &[DriverType]) {
+    let (driver, threads) = (Driver::of(drivers), drivers.len());
+    tracing::info!(config, ?listen, threads, driver = driver.name, "serving");
+    if let Some(warning) = driver.warning(cfg!(target_os = "linux")) {
+        tracing::warn!(driver = driver.name, threads, "{warning}");
+    }
 }
 
 /// What the threads' runtimes run on, as logged at start (D107).

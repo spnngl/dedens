@@ -144,6 +144,7 @@ todo = "warn"
 undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
 
+# No `panic = "abort"`: dedensd catches the panic of a task and of a listener, which needs unwinding (D121).
 [profile.release]
 lto = "fat"
 codegen-units = 1

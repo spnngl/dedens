@@ -15,10 +15,10 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use compio::quic::{Connection, VarInt};
-use compio::runtime::spawn;
 use dedens_net::https::H3_EXCESSIVE_LOAD;
 use dedens_net::quic::RECEIVE_WINDOW;
 
+use crate::isolate::Origin;
 use crate::serve::TCP_IDLE;
 
 /// The bytes an HTTP/3 connection may receive before `GOAWAY`: 4 MiB, some 25 000 `DoH` GETs of 170 bytes (measured
@@ -64,6 +64,12 @@ impl Budget {
         Flight(Rc::clone(self))
     }
 
+    /// Closes the connection for taking more than its budget.
+    fn close(&self) {
+        let code = VarInt::from_u64(H3_EXCESSIVE_LOAD).unwrap_or(VarInt::MAX);
+        self.connection.close(code, b"");
+    }
+
     /// Looks at the connection once; `false` when it is closed, or this closes it.
     fn check(&self, now: Instant) -> bool {
         if self.connection.close_reason().is_some() {
@@ -73,8 +79,7 @@ impl Budget {
         let late = self.passed.get().is_some_and(|since| now - since > DRAIN);
         if late || received >= BUDGET + u64::from(RECEIVE_WINDOW) {
             tracing::debug!(peer = %self.peer, received, "HTTP/3 connection over its byte budget: closed");
-            let code = VarInt::from_u64(H3_EXCESSIVE_LOAD).unwrap_or(VarInt::MAX);
-            self.connection.close(code, b"");
+            self.close();
             return false;
         }
         if received >= BUDGET && self.passed.get().is_none() {
@@ -104,35 +109,55 @@ pub(crate) struct Connections {
 }
 
 impl Connections {
-    /// Starts checking `connection` from `peer`; the check ends with the returned budget's last holder.
-    pub(crate) fn register(
-        self: &Rc<Self>,
-        connection: Connection,
-        peer: SocketAddr,
-    ) -> Rc<Budget> {
+    /// Starts checking `connection` from `origin`'s peer; the check ends with the returned budget's last holder. The
+    /// sweep, if it starts, is a task of `origin`'s listener (D121).
+    pub(crate) fn register(self: &Rc<Self>, connection: Connection, origin: &Origin) -> Rc<Budget> {
         let budget = Rc::new(Budget {
             connection,
-            peer,
+            peer: origin.peer,
             passed: Cell::new(None),
             flights: Cell::new(0),
         });
         self.list.borrow_mut().push(Rc::downgrade(&budget));
         if !self.sweeping.replace(true) {
-            spawn(sweep(Rc::clone(self))).detach();
+            origin.clone().spawn(sweep(Rc::clone(self), origin.clone()));
         }
         budget
     }
 }
 
+/// Marks the sweep of its connections as ended, however it ends: a panic must not leave later connections
+/// unchecked, as if a sweep still ran (D121).
+struct Sweep(Rc<Connections>);
+
+impl Drop for Sweep {
+    fn drop(&mut self) {
+        self.0.sweeping.set(false);
+    }
+}
+
 /// Checks the connections of `connections` every [`CHECK`] until none is left.
-async fn sweep(connections: Rc<Connections>) {
+///
+/// A connection whose check panics is closed and left out: the others are still checked.
+async fn sweep(connections: Rc<Connections>, origin: Origin) {
+    let _sweep = Sweep(Rc::clone(&connections));
     loop {
         compio::time::sleep(CHECK).await;
         let now = Instant::now();
         let mut list = connections.list.borrow_mut();
-        list.retain(|budget| budget.upgrade().is_some_and(|budget| budget.check(now)));
+        list.retain(|budget| {
+            let Some(budget) = budget.upgrade() else {
+                return false;
+            };
+            origin
+                .listener()
+                .guard(budget.peer, || budget.check(now))
+                .unwrap_or_else(|| {
+                    budget.close();
+                    false
+                })
+        });
         if list.is_empty() {
-            connections.sweeping.set(false);
             return;
         }
     }
