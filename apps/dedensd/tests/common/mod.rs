@@ -3,6 +3,7 @@
 
 #![allow(dead_code, reason = "each test file uses part of these")]
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dedens_net::tcp::frame;
 use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
@@ -244,6 +245,9 @@ pub(crate) fn validate(text: &str) -> (Option<i32>, String) {
     )
 }
 
+/// How long [`Server::event`] waits for an event before it panics: an event that does not come hangs a test.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A running `dedensd`, killed when dropped.
 pub(crate) struct Server {
     child: Child,
@@ -252,6 +256,9 @@ pub(crate) struct Server {
     pub(crate) config: PathBuf,
     /// Its events, one JSON object a line on stderr (D30).
     events: mpsc::Receiver<Value>,
+    /// The events it logged before "serving", which a thread other than the main one (a list's download, whose reload
+    /// follows) may log first: [`Server::event`] reads them before the rest.
+    early: VecDeque<Value>,
     /// The "serving" event that announced it.
     pub(crate) serving: Value,
     /// Every line it wrote to stderr so far, as written.
@@ -311,10 +318,11 @@ impl Server {
                 addr,
                 config,
                 events,
+                early: VecDeque::new(),
                 serving: Value::Null,
                 log,
             };
-            if let Some(serving) = server.event("serving") {
+            if let Some(serving) = server.next_event("serving", true) {
                 server.serving = serving;
                 return server;
             }
@@ -324,11 +332,40 @@ impl Server {
         }
     }
 
-    /// The next event whose message is `message`, skipping others; `None` once the server exited.
+    /// The next event whose message is `message`, skipping others, those it logged before "serving" first; `None`
+    /// once the server exited.
+    ///
+    /// # Panics
+    ///
+    /// When none comes within [`EVENT_TIMEOUT`].
     pub(crate) fn event(&mut self, message: &str) -> Option<Value> {
-        self.events
-            .iter()
-            .find(|event| event["fields"]["message"] == message)
+        self.next_event(message, false)
+    }
+
+    /// [`Server::event`], which keeps the events it skips for the next call when `keep` is set.
+    fn next_event(&mut self, message: &str, keep: bool) -> Option<Value> {
+        let is_wanted = |event: &Value| event["fields"]["message"] == message;
+        while let Some(event) = self.early.pop_front() {
+            if is_wanted(&event) {
+                return Some(event);
+            }
+        }
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        loop {
+            let received = self
+                .events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+            assert!(
+                !matches!(received, Err(mpsc::RecvTimeoutError::Timeout)),
+                "no {message:?} event within {EVENT_TIMEOUT:?}"
+            );
+            match received {
+                Ok(event) if is_wanted(&event) => return Some(event),
+                Ok(event) if keep => self.early.push_back(event),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
     }
 
     /// Every line the server wrote to stderr so far, events or not.
