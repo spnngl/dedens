@@ -1354,7 +1354,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amended by D64, D110, D118) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amended by D64, D110, D118, D120) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -1388,7 +1388,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   default action between two waits, so a second SIGHUP during a reload would end the process; `arc-swap`,
   whose guards may not be held across an await and whose `Arc` clones share a count between threads. Later:
   watching the file, and upstreams pushed while running (D-Bus, for a systemd-resolved replacement).
-- D56 (amended by D118) Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
+- D56 (amended by D118, D120) Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
   blocks the name and its subdomains, as any entry here does. A plain line holds one name of two labels at least:
   `com` or `*.com` would block a top-level domain, an error in the server's own configuration and a skipped line in a
   downloaded list, unless the stage says `tlds: true` (D118); hosts lines keep leaving one-label names out (D54). Names are host names,
@@ -1402,7 +1402,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
-- D57 (amended by D64, D104, D115, D118) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+- D57 (amended by D64, D104, D115, D118, D120) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
   with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
   never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
   Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
@@ -1417,8 +1417,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   pipeline as a reload does (D55; the cache kept). Counted in
   `dedensd_list_fetches_total{result="changed|unchanged|error"}`. Later, with need: a list swapped alone instead
   of the pipeline, per-list intervals.
-- D58 (amended by D110) A blocklist holds a 64-bit `SipHash` of each name (D110 defines the hash: chained from the
-  root over the lowercase wire labels) under a key drawn per `Lists` (std's `RandomState`), in a `HashSet<u64>`
+- D58 (amended by D110, D120) A blocklist holds a 64-bit `SipHash` of each name (D110 defines the hash: chained from the
+  root over the lowercase wire labels) under a key drawn once per process (std's `RandomState`; D120), in a `HashSet<u64>`
   hashing them no further: 8 bytes a name instead of the name and its allocation. Published lists of 2.29M names:
   110 MB resident instead of 240 MB, read in 0.64 s instead of 0.87 s, lookups as fast (`benches/blocklist.rs`;
   the chain of D110 changed the load time, `docs/benchmarks.md`). A false match needs two names of equal hash
@@ -1426,7 +1426,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dropped (2% of those lists, 0.4 MB). Rejected: names in one buffer with offsets (~55 MB, exact, more code); a
   sorted `Vec<u64>` (18 MB instead of the set's 37 MB, a binary search per label); a trie or FST (a dependency,
   slower to build).
-- D110 (amends D54, D58) The blocklist blocks a name in any class, and finds a name's suffixes in a walk linear in
+- D110 (amends D54, D58; amended by D120) The blocklist blocks a name in any class, and finds a name's suffixes in a walk linear in
   its labels (audit L11, P4).
   Class: it looked up IN queries only, so a query of class ANY (QCLASS 255), NONE, CH or HS for a blocked name
   went to the next stage: the list is a policy on names, and the class is no longer read. `Action::Null` answers A
@@ -1486,7 +1486,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `http://` URLs stay for a server of one's own. A copy and its `ETag` never disagree: the old tag is removed,
     then the copy and the new tag are each written to a `.part` file, flushed, renamed and the directory flushed;
     the list counts as changed once its copy is renamed, a tag that cannot be written only logged.
-- D104 (amends D57, D64) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
+- D104 (amends D57, D64; amended by D120) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
   - Size: `ureq` is built without `gzip` (`default-features = false`, keeping `rustls` and `platform-verifier`) and
     asks for `Accept-Encoding: identity` (RFC 9110 §12.5.3: no header would let a server send gzip, which is no
     list). The 256 MiB cap counted the compressed bytes, so a gzip body of that size could inflate about a
@@ -1892,7 +1892,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     §4.3, a guess: needs upstream. Truncation says nothing about the data.
   Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/{rfc5452,rfc6891}.rs`,
   `dedens-cache/tests/checked.rs`.
-- D115 (amends D42, D44, D45, D57, D66, D79) Configuration bounds, from the audit (L14, L15, E5): what the file
+- D115 (amends D42, D44, D45, D57, D66, D79; amended by D120) Configuration bounds, from the audit (L14, L15, E5): what the file
   says is held to what the server can bear, and what a variable holds cannot become configuration.
   - Key files. One check, `config::guard_key`, on the open file (no swap between check and read), for the TLS key
     and the ODoH key (D79, which warned on any group or other bit): a key others can access (`& 0o007`) is refused,
@@ -2049,7 +2049,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
     `decrypt_query_message` (`odoh.rs`).
 
-- D118 (amends D22, D54, D56, D57, D116) Blocklist targets, from the audit (S13, S15): a name is no longer reached by a CNAME to
+- D118 (amends D22, D54, D56, D57, D116; amended by D120) Blocklist targets, from the audit (S13, S15): a name is no longer reached by a CNAME to
   a blocked one, and a one-label entry no longer blocks a top-level domain unless asked.
   - Response hook (D54). A plugin may also review the responses of the stages after it: `Plugin::reviewer` returns
     `Option<&dyn Reviewer>` (none by default; it must not change over the plugin's life, the pipeline reads it
@@ -2102,7 +2102,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`LineErrorKind::SingleLabel`). The rule is single-sourced in D56. Opt-in: a blocklist stage with `tlds: true`
     reads one-label lines as names, in all its sources, for the lists of top-level domains that exist (`zip`,
     `mov`); the cost is that a mistake blocking `com` is then read as asked. A download is checked, before it is
-    saved, as a format only (`Lists::check`: one-label lines are names), because the stage reading the saved copy
+    saved, as a format only (`Names::check(Tlds::Allow)`: one-label lines are names), because the stage reading the saved copy
     decides: on a stage without `tlds` those lines are skipped and the copy of a list made of them is left out
     with a warning. Hosts-format lines keep leaving one-label names out, as D54 says.
   - Test data. Real captures where a capture holds the shape (`cname_to_insecure`, `dname_answer` and the
@@ -2168,6 +2168,38 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     64 MiB sent, no `H3_EXCESSIVE_LOAD`; green: closed before the sent bytes pass the bound), and
     `s5_2_a_busy_connection_is_rotated_not_closed` (60 000 queries over dedens' own client, all answered, the
     server rotating at least twice). No fuzz target: nothing new is parsed. Bench: `docs/benchmarks.md`.
+- D120 (amends D54, D56, D57, D58, D104, D110, D115, D118) Lists read once, kept across reloads (audit step 19, E3):
+  - Decision. A list is parsed once per load, into `dedens_plugins::Names`: its name hashes sorted and
+    deduplicated (8 bytes a name) with their label counts, one-label lines apart (D118). `dedensd` keeps a `Store`
+    (`src/lists.rs`) across reloads, owned by the thread that reloads, with one `Names` per source: inline
+    `entries` (same text, same `tlds`), a `file` (same `tlds`, and the stamp of the open handle it is read through:
+    size, mtime, device, inode, ctime, as git stamps), a saved copy (the same stamp, or put there by the
+    downloader, which parses a text once, to check it (D57) and to hand it over). A source whose stamp changed, or
+    that cannot be opened (D115), is read again; a source no stage uses is dropped. A stage side (block, allow) is
+    one `Merged` set, the union of its sources, as D110 looks up: the store keeps it for the same sources in the
+    same order and `tlds`, so a stage whose sources did not change keeps its set (stages naming the same sources
+    share one) and a changed list rebuilds only the sets of the stages that use it. The set is sized from the
+    deduplicated union, and the names in more than one source or repeated in one are the logged duplicates (D56).
+  - Rationale (E3, six published lists, 2.68M lines, 2.14M names, as one stage): a reload after one list changed
+    parsed all six and took 0.64-0.80 s (peak +52 MB); it parses one and takes 0.14-0.19 s (peak +37 MB), the
+    downloaded list is parsed once, not twice, and the reload after it reads nothing; lookups are D110's
+    (`docs/benchmarks.md`). One hash key per process, drawn once, so any `Names` fits any `Merged` (D58).
+  - Memory: the store holds 8 B a name of each source (21 MB for those six) beside the merged set of the stages
+    (9 B a bucket, 38 MB); a reload builds the new set while the old one serves. A text is read with
+    `read_to_string`; the 256 MiB bound (D104) is unchanged.
+  - Unchanged: answers, errors (`entry N`, `` `file` line N ``, `reading `copy```), a copy that is missing, not a
+    list or unreadable (D115); a failed reload keeps the store as it was, bar the sources it had read.
+  - Observable: info `list parsed` (`kind` entries, file or saved copy) and `lists merged` (sources, names).
+  - Rejected: a set per source looked up in turn (a lookup costs sources × labels: 0.2-1.5 µs a suffix with 20
+    large sets against 7-46 ns, and keeping the names of duplicates across sets made a reload quadratic: 2.1 s for
+    50 × 200k names against 0.35 s); a Bloom filter in front (more code, still a lookup per source); the
+    content hash of a file (reads every list at every reload, the cost removed); mtime and size alone (a file
+    rewritten within the clock's granularity, or with its time restored, is served stale); sharing the store
+    with the downloader's threads behind a mutex (the workers hand their results back when they are done).
+  - Tests: `a_reload_reads_the_lists_that_changed_only` (`tests/reload.rs`), `a_downloaded_list_is_read_once`
+    (`tests/lists.rs`), `lists::tests` and `config::tests::a_list_named_twice_in_a_stage_is_held_once` (`src`),
+    `published_lists_read_apart_and_merged_answer_as_read_together` (`dedens-plugins/tests/blocklist.rs`), fuzz
+    `names_read_once`. Numbers in `docs/benchmarks.md`.
 
 ## Observability
 

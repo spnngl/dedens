@@ -1,9 +1,11 @@
 //! Names refused to clients, and their subdomains (D54), unless an allowlist lets them through (D56).
 
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 use std::fmt;
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, LazyLock};
 
 use dedens_proto::edns::InfoCode;
 use dedens_proto::name::{MAX_LABELS, MAX_NAME_LEN};
@@ -56,7 +58,7 @@ pub enum Origin {
 }
 
 /// Whether a plain line of one label (`zip`) is a name: it lists a whole top-level domain (D118).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Tlds {
     /// Such a line is refused: a mistake blocking `com` is not worth the lists that would hold one.
     #[default]
@@ -97,18 +99,24 @@ pub enum ListError {
 /// (RFC 4343 §3).
 ///
 /// Each name is held as a 64-bit hash, 8 bytes instead of the name and its allocation (D58), chained from the
-/// root: `h = SipHash(parent ‖ label)`, the label with its length byte, under a key drawn for these lists (as
-/// std's `HashMap`), so that hashing a name hashes each of its suffixes on the way (D110). The key, unknown outside
-/// the process, keeps a client from aiming at a collision. A collision at a label carries to the names below it,
-/// so two names share a hash with a chance of at most 2⁻⁶⁴ per label: a query of a few labels against 2M names
-/// hits a name it does not hold about once in 10¹¹ queries.
+/// root: `h = SipHash(parent ‖ label)`, the label with its length byte, under a key drawn once for the process
+/// (as std's `HashMap` draws its own), so that hashing a name hashes each of its suffixes on the way (D110). The
+/// key, unknown outside the process, keeps a client from aiming at a collision, and the same for every list, so
+/// that the [`Names`] of a text fit any `Lists` (D120). A collision at a label carries to the names below it, so
+/// two names share a hash with a chance of at most 2⁻⁶⁴ per label: a query of a few labels against 2M names hits
+/// a name it does not hold about once in 10¹¹ queries.
+///
+/// Each side is one [`Merged`] set, however many texts it was read from (D120): a lookup asks one set, as D110
+/// counts it.
 #[derive(Default)]
 pub struct Lists {
-    block: Set,
-    allow: Set,
-    keys: RandomState,
+    block: Merged,
+    allow: Merged,
     tlds: Tlds,
 }
+
+/// The key of every hash of every list (D120).
+static KEYS: LazyLock<RandomState> = LazyLock::new(RandomState::new);
 
 /// How many labels a name of a list has: from 1, the root being no name, to [`MAX_LABELS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,26 +166,152 @@ impl LabelCounts {
     }
 }
 
-/// The hashes of the names of a list, and which label counts they have: a suffix of another count is not looked
-/// up, and none longer than the longest name is hashed (D110).
-#[derive(Default)]
-struct Set {
-    hashes: HashSet<u64, BuildHasherDefault<Same>>,
+/// The hashes of the names of a text, sorted, each once, and which label counts they have (D120): 8 bytes a name,
+/// what a reload keeps of a text that did not change.
+struct Hashes {
+    sorted: Box<[u64]>,
     counts: LabelCounts,
 }
 
-impl Set {
+impl Hashes {
+    fn new(mut hashes: Vec<u64>, counts: LabelCounts) -> Self {
+        hashes.sort_unstable();
+        hashes.dedup();
+        Self {
+            sorted: hashes.into_boxed_slice(),
+            counts,
+        }
+    }
+}
+
+impl Hashes {
     fn len(&self) -> usize {
+        self.sorted.len()
+    }
+}
+
+impl fmt::Debug for Hashes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Hashes")
+            .field("names", &self.len())
+            .finish_non_exhaustive()
+    }
+}
+
+type HashSetOf = HashSet<u64, BuildHasherDefault<Same>>;
+
+/// One side of lists, block or allow: the names of any number of texts as one set of hashes, and which label counts
+/// they have, so that a suffix of another count is not looked up, and none longer than the longest name is hashed
+/// (D110). Cloning is cheap: the set is shared, so that stages reading the same texts hold one (D120).
+#[derive(Clone, Default)]
+pub struct Merged {
+    hashes: Arc<HashSetOf>,
+    counts: LabelCounts,
+    /// Names listed more than once, in a text or across texts.
+    duplicates: usize,
+}
+
+impl Merged {
+    /// The names of `sources`, read as lists reading plain lines of one label as `tlds` says, in one set sized
+    /// for the names they hold together, each once (D120).
+    ///
+    /// # Errors
+    ///
+    /// [`ListError::NotAList`] for a downloaded text that [`Names::check`] refuses.
+    pub fn new(tlds: Tlds, sources: &[Names]) -> Result<Self, ListError> {
+        let mut text_duplicates = Vec::with_capacity(sources.len());
+        for names in sources {
+            text_duplicates.push(names.check(tlds)?.duplicates);
+        }
+        let parts: Vec<&[u64]> = sources
+            .iter()
+            .flat_map(|names| names.included(tlds))
+            .map(|hashes| &*hashes.sorted)
+            .collect();
+        let capacity = union_len(&parts);
+        let mut merged = Self {
+            hashes: Arc::new(HashSet::with_capacity_and_hasher(
+                capacity,
+                BuildHasherDefault::default(),
+            )),
+            ..Self::default()
+        };
+        for (names, duplicates) in sources.iter().zip(text_duplicates) {
+            merged.insert(tlds, names, duplicates);
+        }
+        Ok(merged)
+    }
+
+    /// Whether `self` and `other` are one set, shared: a clone, not a set built twice.
+    #[must_use]
+    pub fn shares(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.hashes, &other.hashes)
+    }
+
+    /// How many names it holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.hashes.len()
+    }
+
+    /// Whether it holds no name.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
+    /// How many names were listed more than once.
+    #[must_use]
+    pub const fn duplicates(&self) -> usize {
+        self.duplicates
     }
 
     /// Whether a name of `count` labels hashing to `hash` is held.
     fn holds(&self, count: LabelCount, hash: u64) -> bool {
         self.counts.holds(count) && self.hashes.contains(&hash)
     }
+
+    /// Adds the names of `names` read as `tlds` says, of which `duplicates` were listed twice in the text, and
+    /// returns how many the set held already.
+    fn insert(&mut self, tlds: Tlds, names: &Names, duplicates: usize) -> usize {
+        let hashes = Arc::make_mut(&mut self.hashes);
+        let mut held = 0;
+        for part in names.included(tlds) {
+            self.counts = self.counts.union(part.counts);
+            for &hash in &*part.sorted {
+                held += usize::from(!hashes.insert(hash));
+            }
+        }
+        self.duplicates += duplicates + held;
+        held
+    }
 }
 
-/// The hasher of [`Set`]: its keys are hashes already, uniform, so a key is its own hash.
+/// How many hashes the sorted `parts` hold together, each once: a merge of them, nothing held.
+fn union_len(parts: &[&[u64]]) -> usize {
+    let mut next = vec![0; parts.len()];
+    let mut heads = BinaryHeap::new();
+    for (part, hashes) in parts.iter().enumerate() {
+        if let Some(&hash) = hashes.first() {
+            heads.push(Reverse((hash, part)));
+        }
+    }
+    let mut len = 0;
+    let mut last = None;
+    while let Some(Reverse((hash, part))) = heads.pop() {
+        if last != Some(hash) {
+            len += 1;
+            last = Some(hash);
+        }
+        next[part] += 1;
+        if let Some(&hash) = parts[part].get(next[part]) {
+            heads.push(Reverse((hash, part)));
+        }
+    }
+    len
+}
+
+/// The hasher of [`Merged`]: its keys are hashes already, uniform, so a key is its own hash.
 #[derive(Default)]
 struct Same(u64);
 
@@ -194,6 +328,14 @@ impl Hasher for Same {
 
     fn write_u64(&mut self, hash: u64) {
         self.0 = hash;
+    }
+}
+
+impl fmt::Debug for Merged {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Merged")
+            .field("names", &self.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -242,50 +384,49 @@ impl Lists {
     ///
     /// Never: a name read has a label.
     pub fn read(&mut self, list: List, origin: Origin, text: &str) -> Result<Read, ListError> {
-        let mut counts = LabelCounts::default();
-        let (hashes, skipped) = scan(origin, self.tlds, text, |name| {
-            let mut buf = [0; MAX_NAME_LEN];
-            let (count, hash) = suffixes(&self.keys, text::key(name, &mut buf))
-                .last()
-                .expect("a name read has a label");
-            counts = counts.with(count);
-            hash
-        })?;
-        let set = match list {
-            List::Block => &mut self.block,
-            List::Allow => &mut self.allow,
+        let names = match origin {
+            Origin::Local => Names::local(self.tlds, text)?,
+            Origin::Downloaded => Names::downloaded(text),
         };
-        set.counts = set.counts.union(counts);
-        let mut read = Read {
-            skipped,
-            ..Read::default()
-        };
-        set.hashes.reserve(hashes.len());
-        for hash in hashes {
-            if set.hashes.insert(hash) {
-                read.names += 1;
-            } else {
-                read.duplicates += 1;
-            }
-        }
-        Ok(read)
+        self.add(list, &names)
     }
 
-    /// Whether a downloaded `text` reads as [`Lists::read`] would read it, without hashing or storing its names:
-    /// `names` counts each name read, duplicates included. A line of one label counts: whether it is a name is
-    /// the choice of the lists reading the saved copy ([`Tlds`]), not of the download (D118).
+    /// Adds `names`, a text read already, to `list`: what [`Lists::read`] does after reading, so that a text read
+    /// once can be added to the lists of any number of stages (D120). A downloaded text is judged as these lists
+    /// read plain lines of one label ([`Names::check`]); a local one was read as its `tlds` said.
     ///
     /// # Errors
     ///
-    /// [`ListError::NotAList`] for a text with no lines or fewer than half of them read.
-    pub fn check(text: &str) -> Result<Read, ListError> {
-        // A vector of `()` counts without allocating.
-        let (names, skipped) = scan(Origin::Downloaded, Tlds::Allow, text, |_| ())?;
+    /// [`ListError::NotAList`] for a downloaded text with no lines or fewer than half of them read; `list` is
+    /// unchanged then.
+    pub fn add(&mut self, list: List, names: &Names) -> Result<Read, ListError> {
+        let read = names.check(self.tlds)?;
+        let side = match list {
+            List::Block => &mut self.block,
+            List::Allow => &mut self.allow,
+        };
+        let held = side.insert(self.tlds, names, read.duplicates);
         Ok(Read {
-            names: names.len(),
-            duplicates: 0,
-            skipped,
+            names: read.names - held,
+            duplicates: read.duplicates + held,
+            skipped: read.skipped,
         })
+    }
+
+    /// Lists reading plain lines of one label as `tlds` says, of the sides `block` and `allow` made once from the
+    /// texts of a stage ([`Merged::new`]).
+    #[must_use]
+    pub fn from_merged(tlds: Tlds, block: Merged, allow: Merged) -> Self {
+        Self { block, allow, tlds }
+    }
+
+    /// How many names of `list` were listed more than once, in a text or across texts.
+    #[must_use]
+    pub fn duplicates(&self, list: List) -> usize {
+        match list {
+            List::Block => self.block.duplicates,
+            List::Allow => self.allow.duplicates,
+        }
     }
 
     /// How many names `list` holds.
@@ -300,7 +441,7 @@ impl Lists {
     /// Whether the name `key` or a parent is allowed.
     fn allows(&self, key: text::Key<'_>) -> bool {
         let longest = self.allow.counts.longest();
-        suffixes(&self.keys, key)
+        suffixes(&KEYS, key)
             .take_while(|(count, _)| u32::from(count.get()) <= longest)
             .any(|(count, hash)| self.allow.holds(count, hash))
     }
@@ -312,7 +453,7 @@ impl Lists {
         let Some(shortest) = self.block.counts.shortest() else {
             return false;
         };
-        let walk = suffixes(&self.keys, key);
+        let walk = suffixes(&KEYS, key);
         if u32::from(walk.labels()) < shortest {
             return false;
         }
@@ -333,6 +474,129 @@ impl Lists {
             }
         }
         blocked
+    }
+}
+
+/// The names of one text, read once: the hashes of what [`Lists::read`] would add, kept as a set of their own, so
+/// that the text is read again only when it changes, and the stages naming it share the set (D120). Cloning is
+/// cheap: the sets are shared.
+///
+/// A plain line of one label (`zip`) is kept apart, in a set of top-level domains: whether it is a name is the
+/// choice of the [`Lists`] adding the text ([`Tlds`]), so a downloaded text is read the same for every stage.
+#[derive(Debug, Clone)]
+pub struct Names {
+    origin: Origin,
+    plain: Arc<Hashes>,
+    tlds: Arc<Hashes>,
+    /// Names the text listed twice, those of one label apart.
+    duplicates: usize,
+    /// Lines of names or hosts, comments and blank lines left out.
+    lines: usize,
+    /// Lines of a downloaded text that did not read.
+    skipped: usize,
+    /// Plain lines of one label read, duplicates included.
+    singles: usize,
+}
+
+impl Names {
+    /// Reads a [`Origin::Local`] text as [`Lists::read`] does: plain lines of one label are errors unless `tlds`
+    /// allows them.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError::Line`] for a line that is not a name.
+    pub fn local(tlds: Tlds, text: &str) -> Result<Self, ListError> {
+        Self::parse(Origin::Local, tlds, text).map_err(ListError::from)
+    }
+
+    /// Reads a [`Origin::Downloaded`] text, skipping the lines that are not names; [`Names::check`] says whether
+    /// it is a list.
+    ///
+    /// # Panics
+    ///
+    /// Never: a downloaded text has no error, its lines that do not read are skipped.
+    #[must_use]
+    pub fn downloaded(text: &str) -> Self {
+        Self::parse(Origin::Downloaded, Tlds::Allow, text)
+            .expect("a downloaded text skips its errors")
+    }
+
+    fn parse(origin: Origin, tlds: Tlds, text: &str) -> Result<Self, LineError> {
+        let scanned = scan(origin, tlds, text)?;
+        let singles = scanned.singles.len();
+        let listed = scanned.plain.len();
+        let plain = Hashes::new(scanned.plain, scanned.counts);
+        let tlds = Hashes::new(scanned.singles, LabelCounts::default().with(LabelCount(1)));
+        Ok(Self {
+            origin,
+            duplicates: listed - plain.len(),
+            plain: Arc::new(plain),
+            tlds: Arc::new(tlds),
+            lines: scanned.lines,
+            skipped: scanned.skipped,
+            singles,
+        })
+    }
+
+    /// Whether `self` and `other` are one reading, shared: a clone, not a text read twice.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.plain, &other.plain) && Arc::ptr_eq(&self.tlds, &other.tlds)
+    }
+
+    /// How many names the text holds, duplicates left out.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.plain.len() + self.tlds.len()
+    }
+
+    /// Whether the text holds no name.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The sets of hashes the text adds to lists reading plain lines of one label as `tlds` says: its names, and
+    /// its top-level domains if `tlds` lets them count. A local text read as another `tlds` said has none of them.
+    fn included(&self, tlds: Tlds) -> impl Iterator<Item = &Hashes> {
+        let tlds = (tlds == Tlds::Allow).then_some(&*self.tlds);
+        std::iter::once(&*self.plain)
+            .chain(tlds)
+            .filter(|hashes| hashes.len() > 0)
+    }
+
+    /// What adding the text to lists reading plain lines of one label as `tlds` says would read, before the names
+    /// the lists hold are left out: `names` and `duplicates` of this text alone.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError::NotAList`] for a downloaded text with no lines or fewer than half of them read.
+    pub fn check(&self, tlds: Tlds) -> Result<Read, ListError> {
+        let with_tlds = tlds == Tlds::Allow;
+        let skipped = if with_tlds {
+            self.skipped
+        } else {
+            self.skipped + self.singles
+        };
+        if self.origin == Origin::Downloaded && (self.lines == 0 || skipped * 2 > self.lines) {
+            return Err(ListError::NotAList {
+                lines: self.lines,
+                read: self.lines - skipped,
+            });
+        }
+        let (names, duplicates) = if with_tlds {
+            (
+                self.plain.len() + self.tlds.len(),
+                self.duplicates + self.singles - self.tlds.len(),
+            )
+        } else {
+            (self.plain.len(), self.duplicates)
+        };
+        Ok(Read {
+            names,
+            duplicates,
+            skipped,
+        })
     }
 }
 
@@ -399,37 +663,52 @@ impl Iterator for Suffixes<'_> {
     }
 }
 
-/// What `each` makes of the names of `text`, read as of `origin`, and the lines skipped: the names of a line that
-/// does not read are left out.
-fn scan<T>(
-    origin: Origin,
-    tlds: Tlds,
-    text: &str,
-    mut each: impl FnMut(&Name<'_>) -> T,
-) -> Result<(Vec<T>, usize), ListError> {
-    let mut items = Vec::new();
-    let mut lines = 0;
-    let mut skipped = 0;
+/// The hashes of the names of `text`, read as of `origin`, and the lines it had and skipped: the names of a line that
+/// does not read are left out, whole.
+fn scan(origin: Origin, tlds: Tlds, text: &str) -> Result<Scanned, LineError> {
+    let mut scanned = Scanned::default();
+    // The names of the line being read, added to the text's only once the whole line has read.
+    let mut line_names = Vec::new();
+    let mut buf = [0; MAX_NAME_LEN];
     for (line, fields) in text::lines(text) {
-        lines += 1;
-        let before = items.len();
-        if let Err(error) = read_line(line, fields, tlds, &mut |name| items.push(each(name))) {
-            match origin {
-                Origin::Local => return Err(error.into()),
-                Origin::Downloaded => {
-                    items.truncate(before);
-                    skipped += 1;
+        scanned.lines += 1;
+        line_names.clear();
+        let add = &mut |name: &Name<'_>| {
+            line_names.extend(suffixes(&KEYS, text::key(name, &mut buf)).last());
+        };
+        match read_line(line, fields, tlds, add) {
+            Ok(()) => {
+                for &(count, hash) in &line_names {
+                    if count.get() == 1 {
+                        scanned.singles.push(hash);
+                    } else {
+                        scanned.plain.push(hash);
+                        scanned.counts = scanned.counts.with(count);
+                    }
                 }
             }
+            Err(error) => match origin {
+                Origin::Local => return Err(error),
+                Origin::Downloaded => scanned.skipped += 1,
+            },
         }
     }
-    if origin == Origin::Downloaded && (lines == 0 || skipped * 2 > lines) {
-        return Err(ListError::NotAList {
-            lines,
-            read: lines - skipped,
-        });
-    }
-    Ok((items, skipped))
+    Ok(scanned)
+}
+
+/// What [`scan`] read.
+#[derive(Default)]
+struct Scanned {
+    /// The hashes of the names of two labels or more, as listed.
+    plain: Vec<u64>,
+    /// Their label counts.
+    counts: LabelCounts,
+    /// The hashes of the plain lines of one label, as listed: whether they are names is for the lists to say.
+    singles: Vec<u64>,
+    /// Lines of names or hosts.
+    lines: usize,
+    /// Lines of a downloaded text that did not read.
+    skipped: usize,
 }
 
 /// Calls `add` with each name of a line, read or not.

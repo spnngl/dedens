@@ -185,3 +185,46 @@ fn logged_urls_carry_no_credentials_or_query() {
         );
     }
 }
+
+/// How many lists `server` has read from a saved copy so far.
+fn copies_read(server: &Server) -> usize {
+    server
+        .stderr()
+        .iter()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| {
+            event["fields"]["message"] == "list parsed" && event["fields"]["kind"] == "saved copy"
+        })
+        .count()
+}
+
+/// D120: a list is read once, when it downloads; the reload that follows, a SIGHUP, and a download that finds it
+/// unchanged read no copy again. A start reads the copy it finds.
+#[test]
+fn a_downloaded_list_is_read_once() {
+    let http = Http::start();
+    http.serve(200, "ads.example\n", "v1");
+    let url = format!("http://{}/list", http.addr);
+    let dir = tempfile::tempdir().expect("a directory");
+    let mut server = Server::configured(|listen| blocking(listen, &url, dir.path()));
+    assert!(server.event("list downloaded").is_some());
+    assert!(server.event("reloaded").is_some());
+    assert!(blocks(&server, "ads.example."));
+    // A SIGHUP reloads, then fetches; a list that changed reloads once more.
+    server.hang_up();
+    assert!(server.event("reloaded").is_some());
+    assert!(server.event("list unchanged").is_some());
+    http.serve(200, "tracker.example\n", "v2");
+    server.hang_up();
+    assert!(server.event("reloaded").is_some());
+    assert!(server.event("list downloaded").is_some());
+    assert!(server.event("reloaded").is_some());
+    assert!(blocks(&server, "tracker.example."));
+    assert_eq!(copies_read(&server), 0);
+    drop(server);
+
+    http.serve(304, "", "v2");
+    let server = Server::configured(|listen| blocking(listen, &url, dir.path()));
+    assert!(blocks(&server, "tracker.example."));
+    assert_eq!(copies_read(&server), 1);
+}
