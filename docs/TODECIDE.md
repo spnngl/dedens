@@ -5,6 +5,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Server forwarder
 
+- Plugins that see the client (aardvark-dns's per-network views, `src/backend/mod.rs:62-116`; CoreDNS's `pods
+  verified` and autopath): `Plugin::answer` takes the query alone (`crates/dedens-server/src/plugin.rs:14`), the
+  client address reaches the access check only (D91). Default: pass the address to plugins with the Kubernetes
+  stage, its first user.
+- A domain `dedensd` answers for (aardvark-dns gives NXDOMAIN to unknown names of its domain, never forwards them;
+  CoreDNS for `cluster.local`): the hosts stage passes an unknown name to the next stage
+  (`crates/dedens-plugins/src/hosts.rs:150-158`), so a private domain's misses go upstream. Default: a `zone:`
+  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage.
 - A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio
