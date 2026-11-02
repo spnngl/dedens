@@ -28,7 +28,7 @@ fn s3_a_quic_server_advertises_no_datagram_support() {
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &ca.server_pem).expect("the certificate written");
-    std::fs::write(&key, &ca.key_pem).expect("the key written");
+    common::write_key(&key, &ca.key_pem);
     let server = Server::configured(|listen| {
         format!(
             "listen: ['quic://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",

@@ -219,6 +219,31 @@ pub(crate) fn write_config(text: &str) -> PathBuf {
     path
 }
 
+/// Writes the private key `pem` to `path`, readable by its owner alone: `dedensd` refuses a key others can read (D115).
+pub(crate) fn write_key(path: &std::path::Path, pem: impl AsRef<[u8]>) {
+    std::fs::write(path, pem).expect("the key written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("the key's mode set");
+    }
+}
+
+/// What `dedensd validate` makes of the configuration `text`: its exit code and its stderr.
+pub(crate) fn validate(text: &str) -> (Option<i32>, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_dedensd"))
+        .arg("validate")
+        .arg("--config")
+        .arg(write_config(text))
+        .output()
+        .expect("dedensd runs");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
 /// A running `dedensd`, killed when dropped.
 pub(crate) struct Server {
     child: Child,

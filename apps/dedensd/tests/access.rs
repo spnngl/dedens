@@ -222,7 +222,7 @@ fn serving_https(ca: &certificates::Certificates, access: &str) -> Server {
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &ca.server_pem).expect("the certificate written");
-    std::fs::write(&key, &ca.key_pem).expect("the key written");
+    common::write_key(&key, &ca.key_pem);
     let tls = format!(
         "tls:\n  certificate: '{}'\n  key: '{}'\n{access}",
         certificate.display(),

@@ -1,8 +1,11 @@
-//! The configuration file (D24, D44): YAML, `${VAR}` replaced first, then read into named stages run in the order
-//! `pipeline` lists them.
+//! The configuration file (D24, D44, D115): YAML, `${VAR}` replaced first, then read into named stages run in the
+//! order `pipeline` lists them. A value of `${VAR}` is one value, never YAML: left as it is when plain (letters,
+//! digits, `_./:@+=%~#-`), single-quoted when alone as a value, escaped between the template's own quotes, refused
+//! anywhere else. A TLS or `ODoH` key file readable by others is refused, by its group warned about.
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query"]
+//! threads: 4                       # serving threads, fixed at start, 1 to 1024; default: a core each on Linux, else 1 (D42)
 //! tls:
 //!   certificate: /etc/dedensd/tls/fullchain.pem
 //!   key: /etc/dedensd/tls/key.pem
@@ -48,8 +51,8 @@
 //!   upstream:
 //!     type: forward
 //!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
-//!     timeout_ms: 3000
-//!     tries: 2
+//!     timeout_ms: 3000                 # per try, up to 30000
+//!     tries: 2                         # per server, up to 5
 //!     dnssec: validate                 # off (default) or validate (D77)
 //!     trust_anchors: /etc/dedensd/anchors.zone   # DS or DNSKEY records; default: the root's, bundled
 //!     insecure: [corp.example]         # names not validated, with what is below them (RFC 7646)
@@ -57,11 +60,11 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
-use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fmt, fs, io};
+use std::{fmt, fs, io, thread};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use compio::rustls::pki_types::pem::PemObject as _;
@@ -106,6 +109,8 @@ struct File {
     /// A PEM file of the certificate authorities upstream servers over TLS and QUIC are checked against,
     /// instead of the system's (D65).
     upstream_ca: Option<PathBuf>,
+    /// The serving threads (D115). Default: one per core on Linux, one elsewhere.
+    threads: Option<NonZeroUsize>,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -748,6 +753,8 @@ pub(crate) struct Config {
     pub(crate) listen: Vec<Listen>,
     /// The certificate presented over TLS and QUIC: there when `listen` has such an address.
     pub(crate) presented: Option<Presented>,
+    /// The serving threads, each with its own sockets on every `listen` address (D42, D115).
+    pub(crate) threads: usize,
     /// The Oblivious `DoH` target's settings, there when `odoh` is: the key is read at start only.
     #[cfg(feature = "odoh")]
     pub(crate) odoh: Option<crate::odoh::Section>,
@@ -783,9 +790,11 @@ fn hosts(
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
 /// query on; a second cache stage, which would never be filled; a hosts or blocklist stage after a cache stage,
-/// whose answers a reload keeps; `refresh_minutes` above a year; settings a stage refuses; an `access` network that is
-/// malformed or has bits set past its length, an unknown `action`; `rrl` settings out of bounds, a cookie `secret`
-/// that is not 32 hexadecimal digits, `accept` without a `secret`.
+/// whose answers a reload keeps; `refresh_minutes` above a year; `threads` above 1024, or above 1 off Linux; `timeout_ms`
+/// above 30 s or `tries` above 5 on a forward stage; a TLS key file others can access ([`guard_key`]); a variable
+/// that is neither plain nor alone as a value ([`written`]); a saved list that cannot be read ([`lists`]); settings
+/// a stage refuses; an `access` network that is malformed or has bits set past its length, an unknown `action`;
+/// `rrl` settings out of bounds, a cookie `secret` that is not 32 hexadecimal digits, `accept` without a `secret`.
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -796,6 +805,11 @@ pub(crate) fn read(
     let file: File =
         serde_saphyr::from_str_with_options(&text, serde_saphyr::options! { with_snippet: false })?;
     ensure!(!file.listen.is_empty(), "`listen` has no address");
+    let threads = serving_threads(
+        file.threads,
+        cfg!(target_os = "linux"),
+        thread::available_parallelism().map_or(1, usize::from),
+    )?;
     let presented = presented(&file.listen, file.tls.as_ref())?;
     #[cfg(feature = "odoh")]
     let odoh = section(file.odoh.as_ref(), &file.listen)?;
@@ -864,15 +878,7 @@ pub(crate) fn read(
                     file,
                     urls,
                 };
-                let lists = lists(name, &block, &allow, &downloads.dir)
-                    .with_context(|| format!("stage `{name}`"))?;
-                downloads.add(block.urls.into_iter().chain(allow.urls));
-                let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
-                Stage::Plugin(Box::new(Blocklist::new(
-                    lists,
-                    action.unwrap_or_default(),
-                    ttl,
-                )))
+                blocklist(name, block, allow, (action, ttl), &mut downloads)?
             }
         });
     }
@@ -886,6 +892,7 @@ pub(crate) fn read(
     Ok(Config {
         listen: file.listen,
         presented,
+        threads,
         #[cfg(feature = "odoh")]
         odoh,
         pipeline,
@@ -893,6 +900,30 @@ pub(crate) fn read(
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
+}
+
+/// The blocklist stage `name` of the lists `block` and `allow`, with its `action` and `ttl`; the URLs it downloads are
+/// added to `downloads`.
+///
+/// # Errors
+///
+/// A list that does not read, or a saved copy that exists but cannot be read (D115).
+fn blocklist(
+    name: &str,
+    block: Sources,
+    allow: Sources,
+    (action, ttl): (Option<Action>, Option<u32>),
+    downloads: &mut Downloads,
+) -> anyhow::Result<Stage> {
+    let lists =
+        lists(name, &block, &allow, &downloads.dir).with_context(|| format!("stage `{name}`"))?;
+    downloads.add(block.urls.into_iter().chain(allow.urls));
+    let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
+    Ok(Stage::Plugin(Box::new(Blocklist::new(
+        lists,
+        action.unwrap_or_default(),
+        ttl,
+    ))))
 }
 
 /// Replaces the cache stages of `built` that are those of `previous` with empty ones when the forward stages
@@ -951,7 +982,7 @@ fn cache(name: &str, config: dedens_cache::Config, previous: &Pipeline) -> anyho
 ///
 /// # Errors
 ///
-/// A stage without a server.
+/// A stage without a server, a `timeout_ms` above [`MAX_TIMEOUT_MS`] or `tries` above [`MAX_TRIES`].
 fn forward(
     name: &str,
     servers: Vec<Server>,
@@ -977,9 +1008,17 @@ fn forward(
         }
     }
     if let Some(ms) = timeout_ms {
+        ensure!(
+            ms.get() <= MAX_TIMEOUT_MS,
+            "stage `{name}`: `timeout_ms` is above {MAX_TIMEOUT_MS}, 30 s"
+        );
         forward = forward.with_timeout(Duration::from_millis(u64::from(ms.get())));
     }
     if let Some(tries) = tries {
+        ensure!(
+            tries.get() <= MAX_TRIES,
+            "stage `{name}`: `tries` is above {MAX_TRIES}"
+        );
         forward = forward.with_tries(tries);
     }
     Ok(forward)
@@ -1102,7 +1141,7 @@ fn section(
 /// # Errors
 ///
 /// A certificate without such an address or the reverse, a file that does not read, a chain without a certificate,
-/// a file without a key, or a key that is not the certificate's.
+/// a file without a key, a key file others can access ([`guard_key`]), or a key that is not the certificate's.
 fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<Presented>> {
     let encrypted = listen.iter().any(Listen::encrypted);
     let tls = match (tls, encrypted) {
@@ -1120,15 +1159,55 @@ fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<
         .and_then(Iterator::collect::<Result<Vec<_>, _>>)
         .with_context(|| format!("`tls`: cannot read certificates from {path}"))?;
     ensure!(!chain.is_empty(), "`tls`: no certificate in {path}");
-    let key = PrivateKeyDer::from_pem_file(&tls.key).with_context(|| {
+    let unreadable = || {
         format!(
             "`tls`: cannot read a private key from {}",
             tls.key.display()
         )
-    })?;
+    };
+    let file = fs::File::open(&tls.key).with_context(unreadable)?;
+    guard_key(&file, "`tls`", &tls.key)?;
+    let key = PrivateKeyDer::from_pem_reader(io::BufReader::new(file)).with_context(unreadable)?;
     let presented = Presented::new(chain, key)
         .with_context(|| format!("`tls`: the key does not fit {path}"))?;
     Ok(Some(presented))
+}
+
+/// Checks the private key file `file`, opened from `path` for `setting` (`tls` or `odoh`), on the file itself, so that
+/// no swap of the path comes between the check and the read: the key stays unused when others can access it, and
+/// is warned about when its group can (D115). `ssh` and PostgreSQL refuse a key others can access; the group is
+/// allowed, with a warning, for a key shared through a group such as Debian's `ssl-cert`, as PostgreSQL allows a
+/// root-owned key its group. Off Unix, where the mode says nothing, nothing is checked.
+///
+/// # Errors
+///
+/// A mode that cannot be read, or any permission for others.
+#[cfg(unix)]
+pub(crate) fn guard_key(file: &fs::File, setting: &str, path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let shown = path.display();
+    let mode = file
+        .metadata()
+        .with_context(|| format!("{setting}: cannot read the key {shown}"))?
+        .permissions()
+        .mode()
+        & 0o777;
+    let (group, others) = (mode & 0o070, mode & 0o007);
+    ensure!(
+        others == 0,
+        "{setting}: the key {shown} can be accessed by others (mode {mode:03o}): chmod 600"
+    );
+    if group != 0 {
+        tracing::warn!(key = %shown, mode = format!("{mode:03o}"), "{setting}: the key can be accessed by its group: chmod 600 unless the group is meant to");
+    }
+    Ok(())
+}
+
+/// [`guard_key`] off Unix: nothing to check.
+#[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the signature of the Unix one")]
+pub(crate) fn guard_key(_file: &fs::File, _setting: &str, _path: &Path) -> anyhow::Result<()> {
+    Ok(())
 }
 
 /// The certificate authorities of the PEM file `path`, the system's without one.
@@ -1165,8 +1244,45 @@ const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
 /// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
 const REFRESH_MINUTES: u64 = 1440;
 
+/// The longest `timeout_ms` of a forward stage, 30 s: the cap of the `timeout` option of the system resolver
+/// (`resolv.conf(5)`), between the 4 s a BIND stub resolver starts at and the 45 s ceiling of BIND's backoff
+/// (RFC 1536 §1), and far above the 3 s default. The bound stops a typo (`timeout_ms: 300000000` is 3.5 days)
+/// holding a query, its task and its socket (D115).
+const MAX_TIMEOUT_MS: u32 = 30_000;
+
+/// The most `tries` of a forward stage: the cap of the `attempts` option of the system resolver (`resolv.conf(5)`),
+/// and the default of `outbound-msg-retry` in Unbound. A stage with several servers asks each `tries` times, so
+/// the longest wait for a query is servers × `tries` × `timeout_ms` (D115).
+const MAX_TRIES: u8 = 5;
+
+/// The most `threads` that may be written: each holds a buffer pool of about 1 MiB and, per UDP socket, a
+/// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
+const MAX_THREADS: usize = 1024;
+
 /// The longest `refresh_minutes`: a year, far below the overflow of a `Duration` or an `Instant`.
 const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
+
+/// The serving threads from `threads` as written: that many, or one per core of `cores` on Linux and one elsewhere,
+/// where `SO_REUSEPORT` does not spread queries across the sockets of threads and a second would serve none (D42).
+///
+/// # Errors
+///
+/// Above [`MAX_THREADS`], or above one off Linux.
+fn serving_threads(
+    written: Option<NonZeroUsize>,
+    linux: bool,
+    cores: usize,
+) -> anyhow::Result<usize> {
+    let Some(written) = written.map(NonZeroUsize::get) else {
+        return Ok(if linux { cores } else { 1 });
+    };
+    ensure!(written <= MAX_THREADS, "`threads` is above {MAX_THREADS}");
+    ensure!(
+        linux || written == 1,
+        "`threads` is above 1, and only on Linux does `SO_REUSEPORT` spread queries across threads"
+    );
+    Ok(written)
+}
 
 /// Checks that stage `name`, `stage`, may follow the stages `built`.
 ///
@@ -1237,8 +1353,13 @@ fn local<P>(
 }
 
 /// The lists of the blocklist stage `stage`, `block` and `allow` read, their downloaded ones from their copies in
-/// `dir`; logs the counts. A list not downloaded yet is empty until it is, and a copy that does not read is left
-/// out with a warning: neither stops the server.
+/// `dir`; logs the counts. A list not downloaded yet is empty until it is, so a blocklist fails open until the
+/// first fetch, and a copy that is not a list is left out with a warning: neither stops the server (D115).
+///
+/// # Errors
+///
+/// A copy that exists but cannot be read (permissions, a directory): the start or the reload is refused rather
+/// than serving without the list, which the next fetch would not mend.
 fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::Result<Lists> {
     let mut lists = Lists::new();
     let mut duplicates = 0;
@@ -1281,14 +1402,13 @@ fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::R
     Ok(lists)
 }
 
-/// `text` with each `${VAR}` replaced by the variable's value, `${VAR:-default}` by `default` when it is unset or
-/// empty, and `$$` by `$`; any other `$` stays, and so does a line whose first non-blank character is `#`, a
-/// comment.
+/// `text` with each `${VAR}` replaced by the variable's value, written so that it is one value, never YAML
+/// ([`written`], D115), `${VAR:-default}` by `default` as written when it is unset or empty, and `$$` by `$`; any
+/// other `$` stays, and so does a line whose first non-blank character is `#`, a comment.
 ///
 /// # Errors
 ///
-/// A variable without a value or default, one whose value spans lines (`\n` or `\r`: it would add YAML of its
-/// own), or a `${` left open on its line.
+/// A variable without a value or default, one whose value [`written`] refuses, or a `${` left open on its line.
 fn interpolate(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<String> {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
@@ -1299,6 +1419,75 @@ fn interpolate(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Resu
         }
     }
     Ok(out)
+}
+
+/// How the value of variable `name` is written where `${name}` stands between `before` and `after`, the rest of its
+/// line in the template: a value cannot add YAML of its own (D44, D115).
+/// - A plain value, made of letters, digits and `_./:@+=%~#-` that YAML cannot read as syntax (it does not start
+///   with `#`, `@`, `%`, `---`, `...` or end with `:`, and is not `-` or `?`), is written as it is: ports,
+///   addresses, paths and URLs stay usable anywhere, in a number or in a quoted text.
+/// - Between quotes of the template, it is escaped for them.
+/// - Alone as a value (a whole scalar: after `key:`, `-`, `,` or `[` in a flow, before a `,`, a `]`, a `}`, a
+///   comment or the end of the line), it is written in single quotes.
+///
+/// # Errors
+///
+/// A value spanning lines (`\n` or `\r`), with another control character or a Unicode line separator, which a
+/// YAML reader may take for a line break; one that is not plain and is part of a larger value, for which no
+/// quoting is right.
+fn written(name: &str, value: &str, before: &str, after: &str) -> anyhow::Result<String> {
+    ensure!(
+        !value.contains(['\n', '\r']),
+        "variable `{name}` spans several lines"
+    );
+    ensure!(
+        !value
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')),
+        "variable `{name}` has a control character"
+    );
+    let plain = value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "_./:@+=%~#-".contains(c))
+        && !value.starts_with(['#', '@', '%'])
+        && !value.starts_with("---")
+        && !value.starts_with("...")
+        && !value.ends_with(':')
+        && !matches!(value, "-" | "?");
+    if plain {
+        return Ok(value.to_owned());
+    }
+    if before.ends_with('\'') && after.starts_with('\'') {
+        return Ok(value.replace('\'', "''"));
+    }
+    if before.ends_with('"') && after.starts_with('"') {
+        return Ok(value.replace('\\', "\\\\").replace('"', "\\\""));
+    }
+    ensure!(
+        alone(before, after),
+        "variable `{name}` is not alone as a value and holds text YAML could read as syntax: put `${{{name}}}` alone, or between quotes"
+    );
+    Ok(format!("'{}'", value.replace('\'', "''")))
+}
+
+/// Whether a placeholder between `before` and `after` makes a whole YAML scalar, a mapping's key or value or an
+/// entry of a sequence or of a flow collection. Reads the line of the template only: it is the template author's.
+fn alone(before: &str, after: &str) -> bool {
+    let flow = before.matches(['[', '{']).count() > before.matches([']', '}']).count();
+    let head = before.trim_end();
+    let spaced = head.len() < before.len();
+    let starts = head.is_empty()
+        || (flow && head.ends_with(['[', '{', ',']))
+        || (spaced && head.ends_with(':'))
+        || (spaced && head.chars().all(|c| c == '-' || c.is_whitespace()));
+    let tail = after.trim_start();
+    let ends = tail.is_empty()
+        || (tail.len() < after.len() && tail.starts_with('#'))
+        || (flow && tail.starts_with([',', ']', '}']))
+        || tail
+            .strip_prefix(':')
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+    starts && ends
 }
 
 /// [`interpolate`] for one line, not a comment, appended to `out`.
@@ -1325,17 +1514,16 @@ fn interpolate_line(
                 "`${{{}}}` does not name a variable",
                 &after[..end]
             );
-            let value = match (env(name).filter(|value| !value.is_empty()), default) {
-                (Some(value), _) => value,
-                (None, Some(default)) => default.to_owned(),
+            let after = &after[end + 1..];
+            match (env(name).filter(|value| !value.is_empty()), default) {
+                (Some(value), _) => {
+                    let before = &line[..line.len() - rest.len()];
+                    out.push_str(&written(name, &value, before, after)?);
+                }
+                (None, Some(default)) => out.push_str(default),
                 (None, None) => bail!("variable `{name}` is not set"),
-            };
-            ensure!(
-                !value.contains(['\n', '\r']),
-                "variable `{name}` spans several lines"
-            );
-            out.push_str(&value);
-            rest = &after[end + 1..];
+            }
+            rest = after;
         } else {
             out.push('$');
             rest = &rest[1..];
@@ -1354,6 +1542,14 @@ mod tests {
     fn env(name: &str) -> Option<String> {
         match name {
             "PORT" => Some("5353".to_owned()),
+            "TEXT" => Some("a: b #c".to_owned()),
+            "QUOTE" => Some("it's".to_owned()),
+            "DOUBLE" => Some(r#"say "hi"\"#.to_owned()),
+            "HASH" => Some("#x".to_owned()),
+            "TAB" => Some("a\tb".to_owned()),
+            "NEL" => Some("a\u{85}b".to_owned()),
+            "SEPARATOR" => Some("a\u{2028}b".to_owned()),
+            "URL" => Some("tls://9.9.9.9#dns.quad9.net".to_owned()),
             "EMPTY" => Some(String::new()),
             "LINES" => Some("a\nb".to_owned()),
             "RETURN" => Some("a\rb: c".to_owned()),
@@ -2107,7 +2303,7 @@ mod tests {
     #[test]
     fn yaml_outside_the_model_is_refused() {
         for (text, needle) in [
-            (format!("{MINIMAL}threads: 2\n"), "threads"),
+            (format!("{MINIMAL}workers: 2\n"), "workers"),
             (MINIMAL.replace("servers:", "upstreams:"), "upstreams"),
             (MINIMAL.replace("forward", "rewrite"), "rewrite"),
             (format!("{MINIMAL}  up:\n    type: cache\n"), "up"),
@@ -2121,5 +2317,183 @@ mod tests {
             let message = error(&text);
             assert!(message.contains(needle), "{needle}: {message}");
         }
+    }
+
+    /// D115: a forward stage waits at most 30 s a try and tries at most 5 times a server, the limits of the system
+    /// resolver (`resolv.conf`: `timeout` and `attempts`); the bounds themselves are allowed.
+    #[test]
+    fn forward_patience_is_bounded() {
+        for (extra, message) in [
+            (
+                "timeout_ms: 30001",
+                "stage `up`: `timeout_ms` is above 30000, 30 s",
+            ),
+            ("timeout_ms: 4294967295", "`timeout_ms` is above 30000"),
+            ("tries: 6", "stage `up`: `tries` is above 5"),
+            ("tries: 255", "`tries` is above 5"),
+        ] {
+            let refused = error(&format!("{MINIMAL}    {extra}\n"));
+            assert!(refused.contains(message), "{extra}: {refused}");
+        }
+        let text = format!("{MINIMAL}    timeout_ms: 30000\n    tries: 5\n");
+        assert!(read(&text, env, &Pipeline::default()).is_ok());
+    }
+
+    /// D115: a value is YAML text, not YAML: unless it is plain (letters, digits and `_./:@+=%~#-`), `${VAR}` must
+    /// stand alone as a value, and is quoted there.
+    #[test]
+    fn a_variable_cannot_inject_yaml() {
+        for (text, replaced) in [
+            // Plain values go in as they are, in numbers, addresses and paths.
+            ("port: ${PORT}", "port: 5353"),
+            (
+                "[${URL}, '${URL}']",
+                "[tls://9.9.9.9#dns.quad9.net, 'tls://9.9.9.9#dns.quad9.net']",
+            ),
+            ("'a:${PORT}'", "'a:5353'"),
+            // Anything else is quoted where it stands alone.
+            ("key: ${TEXT}", "key: 'a: b #c'"),
+            ("key: ${TEXT} # note", "key: 'a: b #c' # note"),
+            (
+                "servers: [${TEXT}, ${QUOTE}]",
+                "servers: ['a: b #c', 'it''s']",
+            ),
+            ("{k: ${TEXT}}", "{k: 'a: b #c'}"),
+            ("  - ${HASH}", "  - '#x'"),
+            ("${TEXT}: v", "'a: b #c': v"),
+            ("${TEXT}", "'a: b #c'"),
+            // Inside quotes, escaped for them.
+            ("key: '${QUOTE}'", "key: 'it''s'"),
+            (r#"key: "${QUOTE}""#, r#"key: "it's""#),
+            (r#"key: "${DOUBLE}""#, r#"key: "say \"hi\"\\""#),
+            (r"key: '${DOUBLE}'", r#"key: 'say "hi"\'"#),
+            // A default is the template's own text.
+            ("key: ${NOPE:-a: b}", "key: a: b"),
+        ] {
+            assert_eq!(interpolate(text, env).unwrap(), replaced, "{text}");
+        }
+        for text in [
+            "key: x${TEXT}",
+            "key: ${TEXT}x",
+            "key: 'x ${TEXT}'",
+            "key: ${TEXT}${PORT}",
+            "key: ${QUOTE}'",
+        ] {
+            let refused = interpolate(text, env).expect_err(text).to_string();
+            assert!(refused.contains("not alone"), "{text}: {refused}");
+        }
+        for name in ["TAB", "NEL", "SEPARATOR"] {
+            let refused = interpolate(&format!("k: ${{{name}}}"), env).unwrap_err();
+            assert!(
+                refused.to_string().contains("a control character"),
+                "{name}: {refused}"
+            );
+        }
+        // The injection this stops: two servers from one variable.
+        let injected = MINIMAL.replace("'192.0.2.1'", "${TEXT}");
+        assert!(error(&injected).contains("a: b #c"), "{}", error(&injected));
+    }
+
+    /// D115: whatever the value, `key: ${VAR}` and its quoted and flow forms read as the mapping `key` to exactly
+    /// that text, or are refused: every text of up to three characters from those YAML gives a meaning to.
+    #[test]
+    fn a_value_is_the_text_it_stands_for() {
+        const ALPHABET: [char; 17] = [
+            'a', '\'', '"', '\\', '#', ' ', ':', '-', ',', '[', ']', '{', '}', '!', '&', '*', '?',
+        ];
+        let mut values = vec![String::new()];
+        let mut start = 0;
+        for _ in 0..3 {
+            let end = values.len();
+            for at in start..end {
+                for c in ALPHABET {
+                    values.push(format!("{}{c}", values[at]));
+                }
+            }
+            start = end;
+        }
+        let mut read = 0;
+        for value in values.iter().filter(|value| !value.is_empty()) {
+            let env = |_: &str| Some(value.clone());
+            for (template, flow) in [
+                ("k: ${V}\n", false),
+                ("k: '${V}'\n", false),
+                ("k: \"${V}\"\n", false),
+                ("k: [${V}]\n", true),
+                ("{k: ${V}}\n", false),
+            ] {
+                let Ok(text) = interpolate(template, env) else {
+                    continue;
+                };
+                let parsed = if flow {
+                    serde_saphyr::from_str::<BTreeMap<String, Vec<String>>>(&text)
+                        .map(|map| map.into_iter().map(|(k, v)| (k, v.concat())).collect())
+                } else {
+                    serde_saphyr::from_str::<BTreeMap<String, String>>(&text)
+                };
+                if let Ok(map) = parsed {
+                    assert_eq!(
+                        map,
+                        BTreeMap::from([("k".to_owned(), value.clone())]),
+                        "{text}"
+                    );
+                    read += 1;
+                }
+            }
+        }
+        // Most of them read: the check is no refusal of everything.
+        assert!(read > values.len(), "{read} of {}", values.len() * 5);
+    }
+
+    /// D115: a downloaded list not fetched yet is empty, and a saved copy that does not read stops the start.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_saved_list_refuses_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://lists.example/ads.txt";
+        let text = format!(
+            "listen: ['127.0.0.1:53']\ndownloads:\n  dir: '{}'\npipeline: [block, up]\nstages:\n  block:\n    type: blocklist\n    urls: ['{url}']\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+            dir.path().display()
+        );
+        assert!(
+            read(&text, env, &Pipeline::default()).is_ok(),
+            "no copy yet"
+        );
+        let copy = download::copy(dir.path(), url);
+        std::fs::write(&copy, "not a list: ?\n").unwrap();
+        assert!(read(&text, env, &Pipeline::default()).is_ok(), "no list");
+        std::fs::remove_file(&copy).unwrap();
+        std::fs::create_dir(&copy).unwrap();
+        let refused = error(&text);
+        assert!(refused.contains("reading `"), "{refused}");
+    }
+
+    /// E5: `threads` is a count from 1 to 1024.
+    #[test]
+    fn threads_are_bounded() {
+        for (extra, message) in [
+            ("threads: 0", "nonzero"),
+            ("threads: 1025", "`threads` is above 1024"),
+            ("threads: -1", "invalid"),
+        ] {
+            let refused = error(&format!("{extra}\n{MINIMAL}"));
+            assert!(refused.contains(message), "{extra}: {refused}");
+        }
+        assert!(read(&format!("threads: 1\n{MINIMAL}"), env, &Pipeline::default()).is_ok());
+    }
+
+    /// E5: without `threads`, one per core on Linux and one elsewhere; more than one is refused off Linux.
+    #[test]
+    fn threads_default_to_the_cores_on_linux() {
+        let threads = |written: Option<usize>, linux, cores| {
+            serving_threads(written.and_then(NonZeroUsize::new), linux, cores)
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(threads(None, true, 8), Ok(8));
+        assert_eq!(threads(None, false, 8), Ok(1));
+        assert_eq!(threads(Some(3), true, 8), Ok(3));
+        assert_eq!(threads(Some(1024), true, 8), Ok(1024));
+        assert_eq!(threads(Some(1), false, 8), Ok(1));
+        assert!(threads(Some(2), false, 8).is_err_and(|e| e.contains("Linux")));
     }
 }

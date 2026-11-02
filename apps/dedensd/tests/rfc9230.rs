@@ -55,7 +55,7 @@ fn serving_trusting(
         config.with_extension("ca.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    std::fs::write(&key, &certificates.key_pem).expect("the key written");
+    common::write_key(&key, &certificates.key_pem);
     std::fs::write(&authority, &trusted.ca_pem).expect("the authority written");
     Server::configured(|listen| {
         format!(
@@ -228,7 +228,8 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
 fn a_key_file_fixes_the_configurations() {
     let upstream = Responder::start(&["a"]);
     let ca = certificates();
-    let key = write_config(&format!("{}\n", "5a".repeat(32)));
+    let key = write_config("");
+    common::write_key(&key, format!("{}\n", "5a".repeat(32)));
     let section = format!("odoh:\n  key: '{}'\n", key.display());
     let (one, two) = (
         serving(&ca, &section, upstream.addr),

@@ -38,7 +38,7 @@ fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) 
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    std::fs::write(&key, &certificates.key_pem).expect("the key written");
+    common::write_key(&key, &certificates.key_pem);
     (certificate, key)
 }
 
@@ -118,13 +118,49 @@ fn a_reload_replaces_the_certificate() {
     let (old, new) = (certificates(), certificates());
     let (mut server, certificate, key) = listening(&old, upstream.addr);
     std::fs::write(&certificate, &new.server_pem).expect("the certificate replaced");
-    std::fs::write(&key, &new.key_pem).expect("the key replaced");
+    common::write_key(&key, &new.key_pem);
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     for transport in [Transport::Tls, Transport::Quic] {
         assert!(ask(server.addr, transport, &new).is_ok(), "{transport:?}");
         assert!(ask(server.addr, transport, &old).is_err(), "{transport:?}");
     }
+}
+
+/// D115: a key file others can read stops the start and a reload, which serves the previous configuration on; one
+/// its group can read is warned about.
+#[cfg(unix)]
+#[test]
+fn a_key_readable_by_others_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (mut server, _, key) = listening(&ca, upstream.addr);
+    let text = std::fs::read_to_string(&server.config).expect("its configuration");
+    let mode = |mode| {
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(mode)).expect("mode set");
+    };
+    mode(0o644);
+    let (code, stderr) = common::validate(&text);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("by others"), "{stderr}");
+    server.hang_up();
+    let failed = server
+        .event("reload failed, serving the previous configuration")
+        .expect("the failure logged");
+    let error = failed["fields"]["error"].as_str().expect("its error");
+    assert!(error.contains("by others"), "{error}");
+    assert!(ask(server.addr, Transport::Tls, &ca).is_ok());
+    mode(0o640);
+    let (code, stderr) = common::validate(&text);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("by its group"), "{stderr}");
+    server.hang_up();
+    assert!(server.event("reloaded").is_some());
+    mode(0o600);
+    let (code, stderr) = common::validate(&text);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(!stderr.contains("by its group"), "{stderr}");
 }
 
 /// A UDP relay in front of `server`, and the first byte of each datagram the server sends through it.

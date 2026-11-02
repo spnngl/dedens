@@ -35,7 +35,7 @@ fn serving(certificates: &Certificates, listen_path: &str, upstream: SocketAddr)
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    std::fs::write(&key, &certificates.key_pem).expect("the key written");
+    common::write_key(&key, &certificates.key_pem);
     Server::configured(|listen| {
         format!(
             "listen: ['https://{listen}{listen_path}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
