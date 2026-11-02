@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 554bdb9779e99e9545ed2ee65705f4db1e79c0ae9b5c47a3256a88b9acf5a371 # shrinks to answer = [], authority = [(0, None)], additional = [], per_mille = 0, expired = false
+cc e14f1a34e9e4878ebfb3cb289fbab94eedd3ff1a2993078f5d5be3fe26d045ba # shrinks to answer = [(0, None)], authority = [(0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, Some(0)), (0, None), (0, None), (0, None), (0, None), (0, None)], additional = [(0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None)], per_mille = 267, expired = false

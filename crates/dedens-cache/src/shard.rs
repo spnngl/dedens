@@ -748,6 +748,37 @@ mod tests {
         assert!(ghosts.len() <= 10);
     }
 
+    /// Giving back the memory of the ghosts drops the stale places only: the order of the live ones stays.
+    #[test]
+    fn shrinking_the_ghosts_keeps_the_live_places_in_order() {
+        let mut ghosts = Ghosts::default();
+        for hash in 0..4 {
+            ghosts.remember(hash, 10);
+        }
+        assert!(ghosts.take(1));
+        ghosts.shrink();
+        assert_eq!(ghosts.order.len(), ghosts.len());
+        // The oldest live hash is the first forgotten.
+        ghosts.remember(4, 3);
+        assert!(!ghosts.take(0));
+        assert!([2, 3, 4].into_iter().all(|hash| ghosts.take(hash)));
+    }
+
+    /// Free slots are dropped once they outnumber the live ones, not before: half of them free is left as it is.
+    #[test]
+    fn half_the_slots_free_does_not_compact() {
+        let mut shard = shard(10);
+        for hash in 0..10 {
+            failure(&mut shard, hash);
+        }
+        assert_eq!(shard.slab.len(), 10);
+        // An entry of six failure records' worth of key evicts six, takes one of their slots and frees five.
+        let evicted = shard.update(100, &key(100, 6 * MAX_KEY_LEN), |_| {});
+        shard.check();
+        assert_eq!(evicted, 6);
+        assert_eq!((shard.free.len(), shard.slab.len()), (5, 10));
+    }
+
     /// Entries of the longest key and no response: the failure records of `Cache::fail`.
     fn failure(shard: &mut Shard, hash: u64) {
         shard.update(hash, &[0; MAX_KEY_LEN], |_| {});
