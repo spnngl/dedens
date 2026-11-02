@@ -2415,7 +2415,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     random choice follows one seed. Rejected: `turmoil-net` (no crash or bounce, no per-link faults); `madsim`
     (replaces tokio and the system calls under it for the whole dependency tree); `shuttle` (explores thread
     interleavings, which D135's loom does; the network is what is missing here); running compio on turmoil now (the
-    layer goes behind a seam first, D134); a hand-rolled event loop (the network model is the work turmoil already
+    layer goes behind a seam first, a later decision); a hand-rolled event loop (the network model is the work turmoil already
     did).
   - Oracle: each query of a client ends by its deadline (the tries of its options, and one more each for the
     fallbacks) with a response that decodes, answers its question, and is one of: the data of an upstream server for
