@@ -708,9 +708,11 @@ fn s11_2_forwards_share_a_connection_and_carry_nothing_of_the_client() {
     let ca = certificates();
     let target = recording(&ca, Answers::Message);
     let host = format!("127.0.0.1:{}", target.addr.port());
+    // One serving thread: each thread keeps its own pool of connections to the targets, so the connection is shared
+    // per serving thread, and on Linux, where a thread serves per core, two clients may be served by two threads.
     let proxy = serving(
         &ca,
-        &proxy_section(std::slice::from_ref(&host)),
+        &format!("threads: 1\n{}", proxy_section(std::slice::from_ref(&host))),
         upstream.addr,
     );
     let path = forwarding(&host, "/dns-query");
