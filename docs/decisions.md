@@ -7,7 +7,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 - D1 Crates per [`ARCHITECTURE.md`](../ARCHITECTURE.md), all on `dedens-proto`. CLI and server are separate
   binaries.
-- D2 (amended by D60) Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
+- D2 (amended by D60, D69) Order: unencrypted core DNS first (wire format, UDP, TCP), then DNSSEC and encrypted transports (DoT, DoH,
   DoQ). A stub resolver and CLI first; forwarder, recursive and authoritative servers follow.
 - D3 Own wire format, for full control of RFC behaviour and speed. hickory-dns and NLnet Labs' `domain` are
   reference code only.
@@ -19,7 +19,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
-- D69 (amends D2) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
+- D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
   code is `dedens-dnssec`, sans-IO, the clock passed in. ODoH (RFC 9230) and DoC (RFC 9953) are experimental:
@@ -29,7 +29,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   digest and NSEC3 hash numbers (`SecAlgorithm`, `DigestType`, `Nsec3HashAlgorithm`) print as their IANA
   mnemonic and parse from it or from the bare number, which zone text writes. Open questions this phase
   leaves: [`TODECIDE.md`](TODECIDE.md). Steps: `plan/4-dnssec-experimental/`.
-- D71 (amends D69; amended by D106) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock
+- D71 (amends D69; amended by D73, D106) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock
   through rustls, and `data-encoding` for test and bench data. Policy, after RFC 9904 §3 and RFC 6840 §5.2: validated
   are RSASHA1 and its NSEC3 alias (5, 7), RSASHA256 (8), RSASHA512 (10), ECDSAP256SHA256 (13),
   ECDSAP384SHA384 (14), Ed25519 (15); DS digests SHA-1, SHA-256, SHA-384 (1, 2, 4). Unsupported, so the zone or
@@ -245,7 +245,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114, D117, D124) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -534,7 +534,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D21 `Query`: a query read in place, without the D20 table: header, first question, `EdnsView`, violations;
   checks what `Message::decode` checks (fuzzed against it). `Edns::append` writes an OPT after a message
   already in a buffer, so the server adds EDNS to cached bytes without re-encoding.
-- D28 `Record` keeps its RDATA as checked wire bytes with its type (`WireRdata`), borrowed from the message
+- D28 (supersedes D20) `Record` keeps its RDATA as checked wire bytes with its type (`WireRdata`), borrowed from the message
   (names in it may point elsewhere there) or owned (no pointers); `Record::data()` reads the typed `RData` on
   demand. No hot path reads inside RDATA (the cache serves bytes, a forwarder checks then stores), so decode
   checks every RDATA (D9) and builds nothing; encode copies the bytes, except for the types whose names may be
@@ -620,7 +620,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     response read on its connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
     that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
     the source address of a cookie, costs that try, not the exchange.
-- D31 (amended by D114) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
+- D31 (amended by D68, D114) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
   cookie in it, and owns no randomness or secret (D114: the IDs of changed queries come from the caller too); `0x20`
   takes its random bits as an option, which also turns on the exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
   and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries, and tries lost to a socket error or a slow connection; the TC,
@@ -695,7 +695,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
     §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
     Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
-- D83 (completes D82; amended by D109, D119) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
+- D83 (amends D62; completes D82; amended by D79, D109, D119) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
   QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
   - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
     request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
@@ -713,7 +713,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - `providers.yaml`: `https` URLs are asked over HTTP/3 by `just providers`; `https_h2` holds those of servers
     where HTTP/3 does not answer (November 2026: no `h3` in Alt-Svc, or a handshake that stalls), parsed only,
     until HTTP/2 (D67).
-- D78 (amends D69) ODoH crypto (RFC 9230) is `dedens-odoh`, sans-IO, for the one suite RFC 9230 §9 requires:
+- D78 (amends D69; amended by D79) ODoH crypto (RFC 9230) is `dedens-odoh`, sans-IO, for the one suite RFC 9230 §9 requires:
   DHKEM(X25519, HKDF-SHA256) (0x0020), HKDF-SHA256 (1), AES-128-GCM (1). HPKE (RFC 9180) is the `hpke` crate
   (0.15.1, MIT or Apache-2.0, RustCrypto primitives, features `aes`, `alloc`, `x25519` only, passes `cargo deny`);
   the response's AES-GCM (RFC 9230 §6.2 `derive_secrets`) is `ring`'s, which D71 has already, so two AES-GCM
@@ -1093,7 +1093,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 ## CLI
 
 - D17 (superseded by D36) Query files in JSON or YAML, picked by extension or `--format`.
-- D36 Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
+- D36 (supersedes D17) Query files (`dedens-scenario`), so the server's tests reuse them: one serde model (queries, options,
   optional expectations; a failed one makes `dedens` exit non-zero) read as YAML 1.2 by serde-saphyr, `-` for
   stdin. JSON is YAML 1.2, so JSON files read too, at the price of YAML-worded errors; no input format flag, no
   second reader. `dedens` drops dig's layout (`--dig`): JSON and YAML serve scripts, the human output people, and
@@ -1107,7 +1107,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   RFC 3152). The `resolv.conf` search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a
   debugging tool asks for the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and
   shown as such, with labels mixing scripts flagged (IDN homographs).
-- D32 CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
+- D32 (amended by D76) CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
   `+noopt` → `--opt=false` for an on/off flag only, `+opt=v` → `--opt=v`, `opt` any unique prefix as in dig;
   `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
   anything after `--` alone, then clap parses. One option set for both spellings (clap derived on
@@ -1125,7 +1125,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
   9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
   which leaves the other results.
-- D34 Query file schema (D36): top-level `server` and `options`, then `queries`, each with `id` (the
+- D34 (amended by D76) Query file schema (D36): top-level `server` and `options`, then `queries`, each with `id` (the
   `--save-wire` file name, so no `/`, `\`, `.` or `..`, unique in the file; default `name_type`, `root_type`
   for the root), `name`, `type`, its own `server`/`options`, and `expect`: `rcode`, `flags` that must be set,
   and `answer`/`authority`/`additional` as presentation lines compared as lists in any order, a line written
@@ -1135,7 +1135,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dig's default); `cookie` is `true`, `false` or a fixed cookie in hex, so captures repeat. `+ignore` and
   `+nocookie` need `dedens-net` exchange options `tcp_fallback` and `cookies`.
 - D35 (superseded by D37) `--json` as JSON lines, every field present however empty.
-- D37 `dedens --format human|short|json|yaml` (`+short`, `--json`, `--yaml` its shorthands, one at most), each
+- D37 (supersedes D35; amended by D76) `dedens --format human|short|json|yaml` (`+short`, `--json`, `--yaml` its shorthands, one at most), each
   response printed as it is ready. `human`, the default, is for reading: a status line (question, rcode in color
   and in words unless NOERROR, RTT, server without port 53, transport), then each non-empty section under its
   name, a record's owner shown once per run of the same owner and its TTL as a duration (`45m41s`); `no records`
@@ -1160,7 +1160,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   when N > 1: `sent`, `errors` (left out when 0) and `min_us`/`p50_us`/`p90_us`/`p99_us`/`max_us`, nearest
   rank over the answered round trips; the human format shows them in milliseconds on one line. Exit code 0 when
   any answer came, else the last error's.
-- D40 `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
+- D40 (amended by D76) `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
   refreshes it) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
   the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per hop, until an answer, NXDOMAIN,
   NODATA or an authoritative response. A referral that comes no closer, an error rcode or a lame response sends
@@ -1220,7 +1220,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D111, D114) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -1243,7 +1243,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from the configuration (D44). Rejected: one socket shared by all
   threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
-- D43 (amended by D45, D46, D114, D124) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
+- D43 (amends D41; amended by D45, D46, D77, D114, D124) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
   seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
   is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
   OPT when the query had one; room for the OPT is kept before the lookup, and a stale hit leaves 6 more bytes for
@@ -1260,7 +1260,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84, D91, D113, D115, D116, D122) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (narrows D24; amended by D64-D66, D84, D91, D113, D115, D116, D122) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1268,7 +1268,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Errors: unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
   after a forward stage (which answers every query). `dedensd validate` reads the file and builds the pipeline
   without binding; SIGHUP reloads it (D55). Later, with need: a directory merged, `SECRET[..]`, JSON Schema.
-- D45 (amended by D115) Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
+- D45 (amends D42, D43; amended by D77, D115) Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
   waits `timeout_ms` per query (default 3000, slow authoritative chains take over 1 s) and sends each server
   `tries` queries (default 2), carried on `Upstream` (`Upstream::patience`). A cache stage's
   `stale_answer_after_ms` (default 1800, the RFC's suggestion; 0 waits for resolution) is the client response
@@ -1278,7 +1278,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   with no second reply. A refresh of a fresh entry (D43) has no timer. Rejected: a stale answer without
   resolution going on (the next query would wait again); a second task per query for the timer (the exchange
   future is polled with a deadline, then awaited).
-- D46 (amended by D121) Review fixes to D41-D45. A query without RD gets fresh cached data only (RFC 1034 §4.3.1: no recursion;
+- D46 (amends D41, D43; amended by D121) Review fixes to D41-D45. A query without RD gets fresh cached data only (RFC 1034 §4.3.1: no recursion;
   RFC 8767 §5: no expired data), else REFUSED with EDE 20 (Not Authoritative, RFC 8914 §4.21); it never goes
   upstream, so it cannot start a hold every client shares. Upstream queries set RD (a refresh started by such a
   query too) and copy the client's AD (RFC 6840 §5.7), so AD can come back. `dedensd` turns the EDNS fallback
@@ -1289,7 +1289,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
-- D47 (amended by D64, D91, D113) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
+- D47 (amends D42; amended by D64, D90, D91, D113) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
   replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
@@ -1302,7 +1302,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   no flow control credit keeps the connection for the write time past the idle time at most, and its slot only
   for the idle time. No per-address cap, for TCP either. Constants for now; configuration with need. Client
   allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90; UDP is limited per network by D113).
-- D48 (amended by D123) Several tasks answer on each UDP socket of a thread, so a receive does not wait while one
+- D48 (amends D42; amended by D123) Several tasks answer on each UDP socket of a thread, so a receive does not wait while one
   answers: one task waited for its reply to go out before receiving again. Four at first; two since D123 queued the
   replies, which no task waits to see sent. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
@@ -1311,13 +1311,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   queries). Copying each reply for the writer costs nothing measurable there (copying it twice did not move the
   numbers), so replies keep their copy and the writer task, which reads on while writing and keeps the replies
   of concurrent queries whole.
-- D49 UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
+- D49 (amends D42) UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
   io_uring multishot receive per socket fills them, and the socket's tasks (D48) take turns at its stream
   of datagrams behind a lock, each giving its buffer back before its reply waits to be sent. About 400k →
   480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
   cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
   asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
-- D50 (amended by D108) Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
+- D50 (amends D27; amended by D108) Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
   on first use on port 0 and connected, then kept: a query takes one at random and waits for datagrams with its
   ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
   socket: 16 + 8 bits (RFC 5452 §9.2), against about 32 with a socket per query; cookies (RFC 7873) and `0x20`
@@ -1333,7 +1333,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
   forwarding 155k → 82k). Measured again with D123 (Linux 6.12, six vCPUs, one server core): no better, still
   rejected, and no fallback to write.
-- D52 (superseded by D63) A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
+- D52 (amends D42; superseded by D63) A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
   earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
   configuration: no byte of an earlier reply stays in it, should a bug ever send past the reply's length (the
   encoder writes before it reads, so nothing leaks today). Only these spare buffers are: the buffer each UDP
@@ -1349,7 +1349,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   connections) are gone. Each UDP task keeps its 1232-byte buffer for the replies it makes at once: it is owned
   by the send in flight and reused, and only the reply's length is sent. Forwarding over TCP (`just
   bench-dnsperf HEAD forward-tcp`): 230k-270k → 303k-305k queries/s; over UDP and from the cache unchanged.
-- D53 Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
+- D53 (amends D27) Upstream TCP: the connection's writer task writes the queries queued meanwhile together, up to 65535 bytes,
   as D48's writer does for replies: one write and one wake-up of the server for many. Forwarding over TCP
   (`just bench-dnsperf HEAD forward-tcp`): about 87k → 275k queries/s, average latency 5.7 → 1.8 ms.
 - D108 (amends D27, D50) Bounds on the client's queues and the evidence of a live server. UDP: a query keeps four
@@ -1364,7 +1364,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amended by D64, D110, D118, D120) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amends D23; amended by D64, D110, D118, D120) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -1454,7 +1454,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   reversed labels (D58 rejected a trie: a node per label, 8 bytes a name becomes tens); label offsets alone (the
   hash of each suffix is still computed from its bytes). What stays linear in the labels is finding where each
   label starts, from the front of the wire name; `docs/TODECIDE.md` asks if that is enough. Measures: `docs/benchmarks.md`.
-- D87 Published blocklists live in `docs/blocklists/blocklists.yaml`, as D67's resolvers: a source's facts
+- D87 (amended by D88) Published blocklists live in `docs/blocklists/blocklists.yaml`, as D67's resolvers: a source's facts
   (maintainer, licence, how it is built) and its main lists, each with its URL, what it holds, how often it
   changes and its `format`, measured: names, `*.name` and hosts lines, which `dedensd` reads (D56), adblock rules,
   URLs, and addresses or networks (IP feeds, kept for their information: `dedensd` blocks names, not
@@ -1475,7 +1475,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   day, fails, so a list that stops or resumes shows. A list `dedensd` does not read is checked on its first
   MiB, its format being in every line. Dates are parsed by hand in the test, a date crate being a dependency for
   three formats.
-- D64 (amended by D104, D107, D121) Review fixes to D44, D47, D54, D55 and D57.
+- D64 (amends D44, D47, D54, D55, D57; amended by D104, D107, D121) Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
     more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
     connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
@@ -1531,7 +1531,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`urls` of `Downloads`): two downloads of one URL would save one copy at once.
   - No draining on SIGTERM, by design: an in-flight download is dropped with the process, and its saved copy and
     `ETag` stay consistent as both are replaced atomically (D64).
-- D65 (amends D42) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
+- D65 (amends D42, D44; amended by D84) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
   D61): `IP[:PORT]` over the client's (UDP for a query over UDP, TCP for one over a connection), `tls://` over TLS
   and `quic://` over QUIC, port 853 unless set, `#NAME` for the name the certificate must hold, else the address
   (RFC 8310 §8.1). An address only: a host name would need resolving before `dedensd` can resolve. One stage
@@ -1574,7 +1574,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   non-DNS `dns`; 404 for another path, also `/.well-known/odohconfigs` without `odoh`, and for the other listener's
   path; 405 for PUT and DELETE; 413 for a 70000-byte POST. A request the pipeline cannot parse as a query (a wrong
   label length) is 200 with FORMERR (§4.2.1).
-- D90 (amends D47, D77; superseded by D113 for UDP and DoC: kept for TCP, TLS, QUIC and HTTPS) Rate limits per client address are the deployment's: nftables `hashlimit` or `dnsdist` in
+- D90 (amends D47, D77; superseded by D113 for UDP and DoC: kept for TCP, TLS, QUIC and HTTPS; amended by D91) Rate limits per client address are the deployment's: nftables `hashlimit` or `dnsdist` in
   front of `dedensd` limits queries and connections per address, for UDP, DoQ and DoT alike (a general reverse
   proxy such as nginx `stream` does TCP only, and a proxy hides the client's address unless PROXY protocol or the
   like carries it). `dedensd` keeps what only it can weigh: the validation cost of one query (256 units) and the
@@ -1582,7 +1582,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   per-address connection cap in `dedensd`. RRL (response rate limiting, a defence against reflection) belongs to
   the authoritative phase, where the server answers from its own data; a stub or forwarder has nothing to
   amplify. The client's address enters the pipeline only for the allow and block lists (`docs/TODECIDE.md`).
-- D113 (supersedes D90 for UDP and DoC; amends D47, D91, D105; audit S1; amended by D136) `dedensd` limits the rate
+- D113 (supersedes D90 for UDP and DoC; amends D44, D47, D91, D105; audit S1; amended by D136) `dedensd` limits the rate
   of responses over UDP and DoC per client network, and gives Server Cookies that exempt a client from the limit.
   D90 left both to the deployment on the ground that a forwarder has nothing to amplify; a cache hit answers a
   ~40-byte query with up to 1232 bytes (a 1.2 kB TXT, `benches/server.rs`), to a source address anyone can forge, so a daemon safe by default
@@ -1759,7 +1759,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     listed, was 403: the CLI exits 10 with "the proxy answered HTTP status 403". Not checked live: a client other than
     ours against this proxy, `dns_timeout`, a host with one IP family only.
 
-- D91 (amends D44, D90; amended by D94, D113) Client access lists: `dedensd` answers the networks it is told to, so it is no open
+- D91 (amends D44, D47, D90; amended by D94, D113) Client access lists: `dedensd` answers the networks it is told to, so it is no open
   resolver (RFC 5358 §4). The client's address enters `Pipeline::query` with the transport, from every listener
   (UDP, TCP, TLS, QUIC, DoH, DoC, and ODoH where `dedensd` is the target, the proxy's address being the client's
   there), an IPv4-mapped IPv6 address read as its IPv4 one. A `Pipeline` holds an optional `Access`: the library
