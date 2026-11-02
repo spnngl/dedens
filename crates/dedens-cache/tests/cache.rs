@@ -3,6 +3,8 @@
 mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Barrier;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{
     T0, a, captured, dns, insert, key_of, lookup, min_cache, query, query_of, query_plain,
@@ -174,6 +176,40 @@ fn prefetch_is_asked_once_near_expiry() {
     // A new answer re-arms it.
     insert(&cache, &q, &www(100, 1), T0 + 95).unwrap();
     assert_eq!(freshness(T0 + 190), Freshness::Fresh { prefetch: true });
+}
+
+/// D137: hits share the lock and race for the prefetch: of many at the same moment one asks, once for each response
+/// stored.
+#[test]
+fn racing_hits_ask_one_prefetch_per_response() {
+    const HITTERS: usize = 8;
+    let cache = small_cache();
+    let wire = query(1, "www.example", RecordType::A);
+    let q = Query::read(&wire).unwrap();
+    for _ in 0..200 {
+        insert(&cache, &wire, &www(100, 1), T0).unwrap();
+        let (barrier, asked) = (Barrier::new(HITTERS), AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..HITTERS {
+                scope.spawn(|| {
+                    let mut out = [0; 512];
+                    barrier.wait();
+                    for _ in 0..20 {
+                        // 5 of 100 seconds left: under 10%.
+                        match cache.lookup(&q, T0 + 95, NEVER, &mut out) {
+                            Lookup::Hit(hit) => {
+                                if hit.freshness == (Freshness::Fresh { prefetch: true }) {
+                                    asked.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            other => panic!("expected a hit, got {other:?}"),
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(asked.into_inner(), 1);
+    }
 }
 
 /// D124: the prefetch threshold is a share of the raised lifetime: `a.bin` (29 s) is stored for 60, so prefetch
