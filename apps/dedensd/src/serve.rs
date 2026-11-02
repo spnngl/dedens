@@ -37,7 +37,10 @@ use dedens_net::https::{Exchange, HttpsError, Pending, Requests};
 use dedens_net::odoh::proxy::{Destination, ProxyError, Route, failure, rejection, route};
 #[cfg(feature = "odoh")]
 use dedens_net::odoh::{Kind, MAX_BODY};
-use dedens_net::quic::{DOQ_PROTOCOL_ERROR, QuicError, read_message as read_stream};
+use dedens_net::quic::{
+    DOQ_PROTOCOL_ERROR, QuicError, RECEIVE_WINDOW, STREAM_RECEIVE_WINDOW,
+    read_message as read_stream,
+};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_net::tls::{self, Presented, Trust};
 #[cfg(feature = "odoh")]
@@ -54,6 +57,7 @@ use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
 use crate::flights::{Flight, Flights, Key, Lead};
+use crate::h3_budget::{Budget, Connections};
 #[cfg(feature = "odoh")]
 use crate::odoh::proxy::{Forwarder, Proxy};
 #[cfg(feature = "odoh")]
@@ -61,7 +65,7 @@ use crate::odoh::{self, Target};
 use crate::reload::Current;
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
-const TCP_IDLE: Duration = Duration::from_secs(10);
+pub(crate) const TCP_IDLE: Duration = Duration::from_secs(10);
 
 /// Tasks answering on each UDP socket, taking turns at its datagrams: one waits for the next while the others
 /// answer or send.
@@ -192,6 +196,8 @@ struct Thread {
     client: Client,
     upstream: Slots,
     connections: Slots,
+    /// The HTTP/3 connections whose bytes are counted (D119).
+    h3: Rc<Connections>,
     /// The buffer TCP replies and replies after upstream are made in, of a message's largest size (D63): making
     /// one never waits, so one buffer serves every task, borrowed only while a reply is made and copied out.
     scratch: RefCell<Box<[u8]>>,
@@ -217,6 +223,7 @@ impl Thread {
             client: Client::new().trusting(trust),
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
+            h3: Rc::default(),
             scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
             #[cfg(feature = "odoh")]
             odoh: None,
@@ -710,7 +717,8 @@ fn start(
 /// §5.5.1), with [`TCP_PENDING`] queries in flight at most, and `uni_streams` the client may open: none for DNS over
 /// QUIC (§4.2), [`H3_UNI_STREAMS`] for HTTP/3 (RFC 9114 §6.2). No DATAGRAM frame is read (D107): the receive buffer
 /// is off, so quinn advertises no `max_datagram_frame_size` (RFC 9221 §3) and closes the connection on a DATAGRAM
-/// frame from the peer.
+/// frame from the peer. A peer may send [`RECEIVE_WINDOW`] bytes on the connection and [`STREAM_RECEIVE_WINDOW`] on a
+/// stream before the reader returns credit (D119).
 fn endpoint(socket: Socket, mut config: ServerConfig, uni_streams: u32) -> io::Result<Endpoint> {
     let mut transport = TransportConfig::default();
     transport
@@ -719,6 +727,8 @@ fn endpoint(socket: Socket, mut config: ServerConfig, uni_streams: u32) -> io::R
             u32::try_from(TCP_PENDING).map_or(VarInt::MAX, VarInt::from_u32),
         )
         .max_concurrent_uni_streams(VarInt::from_u32(uni_streams))
+        .receive_window(VarInt::from_u32(RECEIVE_WINDOW))
+        .stream_receive_window(VarInt::from_u32(STREAM_RECEIVE_WINDOW))
         .datagram_receive_buffer_size(None);
     config.transport_config(Arc::new(transport));
     let socket = UdpSocket::from_std(socket.into())?;
@@ -775,7 +785,10 @@ async fn quic(endpoint: Endpoint, service: Service, thread: Rc<Thread>) {
             match connecting.await {
                 Ok(connection) => match &*service {
                     Service::Quic => streams(&connection, peer.ip(), &thread).await,
-                    Service::Https(path) => requests(connection, path, peer, &thread).await,
+                    Service::Https(path) => {
+                        let budget = thread.h3.register(connection.clone(), peer);
+                        requests(connection, path, peer, &thread, &budget).await;
+                    }
                 },
                 Err(error) => tracing::debug!(%peer, %error, "QUIC handshake failed"),
             }
@@ -841,24 +854,68 @@ async fn stream(query: &[u8], send: SendStream, from: IpAddr, thread: &Thread) {
 /// Answers the requests of one HTTP/3 connection (RFC 9114 §4), each alone on a stream the client opened, as
 /// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`], and a new request
 /// must come within it too, as [`streams`] says. Requests go through the pipeline as any query; the client is `peer`.
-async fn requests(connection: Connection, path: &Arc<str>, peer: SocketAddr, thread: &Rc<Thread>) {
+/// Once the connection passed its byte budget (D119) it is sent `GOAWAY` at the next request, and ends when it is
+/// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`].
+async fn requests(
+    connection: Connection,
+    path: &Arc<str>,
+    peer: SocketAddr,
+    thread: &Rc<Thread>,
+    budget: &Rc<Budget>,
+) {
     let mut requests = match compio::time::timeout(TCP_IDLE, Requests::new(connection)).await {
         Ok(Ok(requests)) => requests,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 setup failed"),
         Err(_) => return tracing::debug!(%peer, "HTTP/3 setup timed out"),
     };
+    // Set at `GOAWAY`: the last time a request was taken, then.
+    let mut going_away = None::<Instant>;
     loop {
-        match compio::time::timeout(TCP_IDLE, requests.accept()).await {
-            Ok(Ok(Some(pending))) => {
-                let (path, thread) = (Arc::clone(path), Rc::clone(thread));
-                spawn(async move { request(pending, &path, peer, &thread).await }).detach();
+        if budget.passed() && going_away.is_none() {
+            if let Err(error) = requests.shutdown().await {
+                return tracing::debug!(%peer, %error, "HTTP/3 GOAWAY failed");
             }
-            Ok(Ok(None)) => return,
+            going_away = Some(Instant::now());
+        }
+        let wait = if going_away.is_some() {
+            DRAIN_TICK
+        } else {
+            TCP_IDLE
+        };
+        match compio::time::timeout(wait, requests.accept()).await {
+            Ok(Ok(Some(pending))) => {
+                let (path, thread, flight) = (Arc::clone(path), Rc::clone(thread), budget.fly());
+                spawn(async move {
+                    request(pending, &path, peer, &thread).await;
+                    drop(flight);
+                })
+                .detach();
+                if let Some(last) = &mut going_away {
+                    *last = Instant::now();
+                }
+            }
             Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
-            Err(_) => return tracing::debug!(%peer, "HTTP/3 connection idle"),
+            Ok(Ok(None)) if going_away.is_none() => return,
+            Err(_) if going_away.is_none() => {
+                return tracing::debug!(%peer, "HTTP/3 connection idle");
+            }
+            // After `GOAWAY`, h3 ends `accept` once the client did too: a request it sent before it heard of
+            // `GOAWAY` may still come, to be refused, and dropping `requests` closes the connection.
+            Ok(Ok(None)) | Err(_) => {
+                if budget.quiet() && going_away.is_some_and(|last| last.elapsed() >= DRAIN_QUIET) {
+                    return tracing::debug!(%peer, "HTTP/3 connection drained");
+                }
+                compio::time::sleep(DRAIN_TICK).await;
+            }
         }
     }
 }
+
+/// How long a connection sent `GOAWAY` waits for a request that was in flight, once its own are answered.
+const DRAIN_QUIET: Duration = Duration::from_millis(100);
+
+/// How often a connection sent `GOAWAY` looks for a request still to come, and for the end of its own.
+const DRAIN_TICK: Duration = Duration::from_millis(10);
 
 /// Answers one request: what [`Pending::read`] makes of it if it is no query, else the pipeline's reply, or 400 when
 /// the pipeline drops it, a query too short to be a DNS message (RFC 8484 §4.2.1).
