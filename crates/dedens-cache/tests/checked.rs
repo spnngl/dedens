@@ -83,9 +83,12 @@ fn the_ad_bit_of_upstream_does_not_outlive_the_verdict() {
         store(&cache, true, checked);
         assert!(!ad(&cache, flags, true), "{checked:?}");
     }
+    // No verdict is not secure: the AD of an unvalidated response is upstream's word, never ours (RFC 6840 §5.8,
+    // RFC 4035 §3.2.3), however the client asks.
     let cache = small_cache();
     store(&cache, true, Checked::Unchecked);
-    assert!(ad(&cache, Flags::RD, true), "unchecked: as stored");
+    assert!(!ad(&cache, Flags::RD, true), "unchecked: AD cleared");
+    assert!(!ad(&cache, Flags::RD | Flags::AD, true));
 }
 
 #[test]

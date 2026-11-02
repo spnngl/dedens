@@ -12,7 +12,7 @@
 //! let server: SocketAddr = "192.0.2.53:53".parse()?;
 //! let query = Message::query(0x1234, Question::new(Name::root(), RecordType::NS));
 //! let now = Instant::now();
-//! let exchange = Exchange::start(query, server, Options::default(), now)?;
+//! let exchange = Exchange::start(query, server, Options::default(), [1, 2, 3, 4], now)?;
 //! assert_eq!(exchange.transport(), Transport::Udp);
 //! // Send exchange.wire(), wait until exchange.deadline(); nothing came back:
 //! let deadline = exchange.deadline();
@@ -44,8 +44,9 @@ pub struct Options {
     pub tries: NonZeroU8,
     /// How long to wait for a response to each query. Default: 5 s.
     pub timeout: Duration,
-    /// Whether to query again without EDNS when a server answers an EDNS query with FORMERR or NOTIMP and no OPT
-    /// record (RFC 6891 §7). Never on a timeout (RFC 8906). Default: on.
+    /// Whether to query again without EDNS when a server answers an EDNS query with FORMERR or NOTIMP, its
+    /// question repeated and no OPT record (RFC 6891 §7). Never on a timeout (RFC 8906), once the server sent an
+    /// OPT record, nor for a response without the question (D114). Default: on.
     pub edns_fallback: bool,
     /// Random bits for `0x20` (draft-vixie-dnsext-dns0x20): when set, the case of each letter of the question
     /// names follows these bits, and a response must repeat the names in the same case. Default: off.
@@ -156,6 +157,20 @@ pub enum Failure {
     Encode(#[from] EncodeError),
 }
 
+/// How many queries a fallback changes at most: TC to TCP, EDNS dropped, and two BADCOOKIE (D27).
+pub const SPARE_IDS: usize = 4;
+
+/// What an exchange knows of the server's EDNS (RFC 6891 §7, D114).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdnsState {
+    /// No response yet: a FORMERR or NOTIMP with the question and no OPT record drops EDNS.
+    Untested,
+    /// A response had an OPT record: the server knows EDNS, and no response drops it.
+    Known,
+    /// EDNS was dropped from the query.
+    Dropped,
+}
+
 /// One query to one server: retries, response matching, and the TCP, EDNS and cookie fallbacks (D27).
 #[derive(Debug)]
 pub struct Exchange {
@@ -168,7 +183,9 @@ pub struct Exchange {
     deadline: Instant,
     sends: u16,
     timeouts: u8,
-    edns_dropped: bool,
+    edns: EdnsState,
+    /// The IDs of the queries changed by a fallback, in the order of use (D114).
+    spare_ids: std::array::IntoIter<u16, SPARE_IDS>,
     bad_cookies: u8,
     /// Whether a response was dropped for its cookie.
     forged: bool,
@@ -176,9 +193,10 @@ pub struct Exchange {
 
 impl Exchange {
     /// Starts an exchange: send [`Exchange::wire`] now. The ID, and the cookie when the query has EDNS, are the
-    /// caller's, as are the random bits of [`Options::random_case`]; a query changed by a fallback goes with the
-    /// next ID. Over QUIC and HTTPS, the ID is 0, the stream or the HTTP exchange telling the response (RFC 9250
-    /// §4.2.1, RFC 8484 §4.1).
+    /// caller's, as are the random bits of [`Options::random_case`] and the `spare_ids`, random as well: a query
+    /// changed by a fallback goes with the next of them, in place of the ID before (RFC 5452 §9.2, D114). Over
+    /// QUIC and HTTPS, the ID is 0, the stream or the HTTP exchange telling the response (RFC 9250 §4.2.1,
+    /// RFC 8484 §4.1).
     ///
     /// # Errors
     ///
@@ -187,6 +205,7 @@ impl Exchange {
         query: Message<'_>,
         server: SocketAddr,
         options: Options,
+        spare_ids: [u16; SPARE_IDS],
         now: Instant,
     ) -> Result<Self, EncodeError> {
         let mut query = query.into_owned();
@@ -209,7 +228,8 @@ impl Exchange {
             sent_at: now,
             sends: 1,
             timeouts: 0,
-            edns_dropped: false,
+            edns: EdnsState::Untested,
+            spare_ids: spare_ids.into_iter(),
             bad_cookies: 0,
             forged: false,
         })
@@ -257,7 +277,12 @@ impl Exchange {
     /// A message that is not the response is dropped and the wait goes on (RFC 5452 §9.1): over another transport,
     /// from another address over UDP, unreadable, not a response, or with another ID, opcode or question; with
     /// cookies, one without the client cookie sent or, once the server sent a cookie, without one (RFC 7873 §5.3).
-    /// The question may be missing from FORMERR and NOTIMP only.
+    /// The question may be missing from FORMERR and NOTIMP only; such a response is the response, and never drops
+    /// EDNS (D114).
+    ///
+    /// A truncated response moves the query to TCP, FORMERR or NOTIMP with the question and no OPT record drops
+    /// EDNS, unless the server sent an OPT record before, and BADCOOKIE with a cookie sends it again with that
+    /// cookie. The changed query goes with a spare ID.
     #[must_use]
     pub fn receive(
         mut self,
@@ -286,6 +311,9 @@ impl Exchange {
             self.forged = true;
             return Progress::Wait(self);
         };
+        if response.edns().is_some() && self.edns == EdnsState::Untested {
+            self.edns = EdnsState::Known;
+        }
         if self.options.tcp_fallback
             && response.header().flags.contains(Flags::TC)
             && self.transport == Transport::Udp
@@ -294,13 +322,13 @@ impl Exchange {
             return self.send_changed(Transport::Tcp, now);
         }
         if self.options.edns_fallback
-            && !self.edns_dropped
+            && self.edns == EdnsState::Untested
             && self.query.edns.is_some()
-            && response.edns().is_none()
+            && response.question().is_some()
             && (rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP)
         {
             debug!(server = %self.server, %rcode, "no EDNS in the response: asking again without EDNS");
-            self.edns_dropped = true;
+            self.edns = EdnsState::Dropped;
             self.query.edns = None;
             let transport = self.transport;
             return self.send_changed(transport, now);
@@ -416,11 +444,17 @@ impl Exchange {
         }
     }
 
-    /// Sends the changed query over `transport`, with the next ID so that a late response to the query before
-    /// cannot end the exchange: it would not answer the changed query.
+    /// Sends the changed query over `transport`, with the next spare ID (RFC 5452 §9.2), so that a late response
+    /// to the query before cannot end the exchange: it would not answer the changed query. A spare ID equal to the
+    /// one before, or none left, which four changes at most never use up, is the next one after it.
     fn send_changed(mut self, transport: Transport, now: Instant) -> Progress {
         if !streamed(transport) {
-            self.query.header.id = self.query.header.id.wrapping_add(1);
+            let before = self.query.header.id;
+            self.query.header.id = self
+                .spare_ids
+                .next()
+                .filter(|&id| id != before)
+                .unwrap_or_else(|| before.wrapping_add(1));
         }
         match encode(&mut self.query, transport) {
             Ok(wire) => {

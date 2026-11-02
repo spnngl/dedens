@@ -13,6 +13,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   is, the name is the client's choice but 0.2 µs; store the label offsets in `Name` (a `dedens-proto` change, step
   09) only if a profile of `dedensd` shows the walk.
 
+- `trust_upstream_ad` (D114 clears upstream's AD without `dnssec: validate`): an opt-in per forward stage to pass
+  it on (RFC 4035 §4.9.3), allowed only when every server of the stage is authenticated and encrypted (tls://,
+  quic://, https:// with a trusted certificate); the cache would then store such answers with a verdict of their
+  own, not `Unchecked`. Default: not offered; add when a deployment that cannot validate needs AD.
+
 ## DNSSEC and experimental transports
 
 - ODoQ (Oblivious DNS over QUIC): no RFC exists. Default: dropped; revisit when the IETF publishes one.

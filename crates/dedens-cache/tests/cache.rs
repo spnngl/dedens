@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use common::{T0, a, dns, insert, key_of, lookup, query, query_with, response, small_cache, ttls};
 use dedens_cache::{
-    Cache, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
+    Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
 };
 use dedens_proto::edns::{ClientSubnet, EdnsOption};
 use dedens_proto::{Edns, Flags, Message, Opcode, Query, Rcode, RecordType};
@@ -274,7 +274,7 @@ fn an_answer_for_a_client_subnet_is_refused() {
     insert(&cache, &q, &with_scope(0), T0).unwrap();
 }
 
-/// RFC 6840 §5.8: AD goes only to a client that set AD or DO.
+/// RFC 6840 §5.8: AD goes only to a client that set AD or DO, and only for a response checked secure (D114).
 #[test]
 fn ad_is_served_only_when_asked() {
     let cache = small_cache();
@@ -289,17 +289,44 @@ fn ad_is_served_only_when_asked() {
             .flags
             .contains(Flags::AD)
     };
-    insert(&cache, &query(1, "www.example", RecordType::A), &r, T0).unwrap();
+    let secure = |q: &[u8]| {
+        cache
+            .insert_checked(
+                &Query::read(q).unwrap(),
+                &Message::decode(&r).unwrap(),
+                T0,
+                Checked::Secure,
+            )
+            .unwrap();
+    };
+    secure(&query(1, "www.example", RecordType::A));
     assert!(!ad(Flags::RD, false));
     assert!(ad(Flags::RD.with(Flags::AD), false));
-    insert(
-        &cache,
-        &query_with(1, "www.example", RecordType::A, Flags::RD, true),
-        &r,
-        T0,
-    )
-    .unwrap();
+    secure(&query_with(
+        1,
+        "www.example",
+        RecordType::A,
+        Flags::RD,
+        true,
+    ));
     assert!(ad(Flags::RD, true));
+}
+
+/// D114: the AD bit of a response stored without a verdict is not served, to a client with AD or DO either.
+#[test]
+fn ad_of_an_unchecked_response_is_not_served() {
+    let cache = small_cache();
+    let mut message = Message::decode(&www(60, 1)).unwrap().message.into_owned();
+    message.header.flags = message.header.flags.with(Flags::AD);
+    let q = query_with(1, "www.example", RecordType::A, Flags::RD | Flags::AD, true);
+    insert(&cache, &q, &message.to_vec().unwrap(), T0).unwrap();
+    assert!(
+        !served(&cache, &q, T0, 512)
+            .1
+            .header
+            .flags
+            .contains(Flags::AD)
+    );
 }
 
 /// RFC 1035 §4.1.1: Z is zero in every response served, whatever upstream set.

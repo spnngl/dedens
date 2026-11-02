@@ -4,19 +4,24 @@
 mod common;
 
 use common::{
-    Captures, captured, client_query, decode, forwarder, query_for, run, run_captured, validating,
-    wire, with_flags,
+    Captures, caching, captured, client_query, decode, forwarder, query_for, run, run_captured,
+    validating, wire, with_flags,
 };
 use dedens_proto::{Edns, EdnsFlags, Flags, RecordType};
 use dedens_server::Transport;
 
+/// No validator (D114): the AD bit of an upstream response is never passed on, whatever the client asked, and
+/// whatever the transport to upstream (RFC 6840 §5.8: AD only for data our validator checked; RFC 4035 §3.2.3).
+/// Forwarded, stored and served from the cache, the reply has AD clear.
 #[test]
-fn ad_stays_only_for_queries_with_ad_or_do() {
+fn ad_of_an_unvalidated_upstream_response_is_cleared() {
     let response = with_flags(captured("a"), Flags::AD);
-    for (ad, dnssec, kept) in [
-        (Flags::NONE, false, false),
-        (Flags::AD, false, true),
-        (Flags::NONE, true, true),
+    assert!(decode(&response).header.flags.contains(Flags::AD));
+    for (ad, dnssec) in [
+        (Flags::NONE, false),
+        (Flags::AD, false),
+        (Flags::NONE, true),
+        (Flags::AD, true),
     ] {
         let mut query = query_for(&response);
         query.header.flags = Flags::RD | ad;
@@ -28,19 +33,25 @@ fn ad_stays_only_for_queries_with_ad_or_do() {
             },
             ..Edns::default()
         });
-        let done = run(
-            &forwarder(),
-            &wire(&query),
-            Transport::Udp,
-            &[Some(&response)],
-        );
+        let query = wire(&query);
+        let done = run(&forwarder(), &query, Transport::Udp, &[Some(&response)]);
         assert_eq!(done.requests[0].header.flags, Flags::RD | ad);
-        let wire = done.reply.expect("a reply");
-        assert_eq!(
-            decode(&wire).header.flags.contains(Flags::AD),
-            kept,
-            "AD {ad:?}, DO {dnssec}"
+        let reply = done.reply.expect("a reply");
+        assert!(
+            !decode(&reply).header.flags.contains(Flags::AD),
+            "forwarded, AD {ad:?}, DO {dnssec}"
         );
+
+        // The first query stores the response, the second is a hit.
+        let pipeline = caching();
+        for round in ["miss", "hit"] {
+            let done = run(&pipeline, &query, Transport::Udp, &[Some(&response)]);
+            let reply = done.reply.expect("a reply");
+            assert!(
+                !decode(&reply).header.flags.contains(Flags::AD),
+                "{round}, AD {ad:?}, DO {dnssec}"
+            );
+        }
     }
 }
 

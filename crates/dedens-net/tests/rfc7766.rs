@@ -15,10 +15,11 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     let exchange = expect_send(udp(exchange, &wire(&truncated), now));
     assert_eq!(exchange.transport(), Transport::Tcp);
-    // The query again, with the next ID and the TCP options (tests/rfc7828.rs).
+    // The query again, with another ID (D114) and the TCP options (tests/rfc7828.rs).
     let mut over_tcp = common::sent(&exchange);
     over_tcp.edns.as_mut().expect("EDNS").options.clear();
-    over_tcp.header.id = over_tcp.header.id.wrapping_sub(1);
+    assert_eq!(over_tcp.header.id, common::SPARE_IDS[0]);
+    over_tcp.header.id = query.header.id;
     assert_eq!(over_tcp, query);
     assert_eq!(exchange.sends(), 2);
 

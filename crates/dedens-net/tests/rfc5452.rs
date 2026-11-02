@@ -1,9 +1,12 @@
 //! RFC 5452 §9.1: a response must come from the address queried and repeat the ID and the question; anything else
-//! is dropped and the wait goes on. `0x20` (draft-vixie-dnsext-dns0x20) adds the case of the question.
+//! is dropped and the wait goes on. §9.2: a changed query goes with another ID. `0x20` (draft-vixie-dnsext-dns0x20) adds the case of the question.
 
 mod common;
 
-use common::{expect_response, expect_wait, name, query, response, server, start, t0, udp, wire};
+use common::{
+    SPARE_IDS, expect_response, expect_send, expect_wait, name, query, response, sent, server,
+    start, t0, udp, wire,
+};
 use dedens_net::exchange::{Options, Progress, Transport};
 use dedens_proto::{Class, Flags, Message, Rcode, RecordType};
 use proptest::prelude::*;
@@ -96,6 +99,58 @@ fn formerr_and_notimp_may_leave_the_question_out() {
         ));
         assert_eq!(got.wire, wire(&answer));
     }
+}
+
+/// D114: a FORMERR or NOTIMP without a question is what a server that cannot read the query sends, and what an
+/// off-path forger that guessed the ID sends too: it is the response, never a reason to drop EDNS, DO and the
+/// cookie (RFC 6891 §7 needs the server to say it does not know EDNS).
+#[test]
+fn a_forged_formerr_without_a_question_causes_no_downgrade() {
+    let now = t0();
+    let query = common::query_with_cookie(None);
+    for rcode in [Rcode::FORMERR, Rcode::NOTIMP] {
+        let mut forged = response(&query, rcode);
+        forged.questions.clear();
+        forged.edns = None;
+        let bytes = wire(&forged);
+        let got = expect_response(udp(start(&query, Options::default(), now), &bytes, now));
+        assert_eq!(got.wire, bytes);
+        assert_eq!(got.sends, 1, "{rcode}: no second query");
+        assert_eq!(got.query, wire(&query), "{rcode}: EDNS and cookie kept");
+    }
+}
+
+/// D114, RFC 5452 §9.2: a query changed by a fallback goes with the next spare ID the caller drew, in order, and
+/// never with the ID before, whose late response must not end the exchange.
+#[test]
+fn a_changed_query_goes_with_a_spare_id() {
+    let now = t0();
+    let query = query();
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let mut no_edns = response(&query, Rcode::FORMERR);
+    no_edns.edns = None;
+    let exchange = expect_send(udp(
+        start(&query, Options::default(), now),
+        &wire(&no_edns),
+        now,
+    ));
+    assert_eq!(sent(&exchange).header.id, SPARE_IDS[0]);
+    let mut again = response(&sent(&exchange), Rcode::NOERROR);
+    again.header.flags = again.header.flags.with(Flags::TC);
+    let exchange = expect_send(udp(exchange, &wire(&again), now));
+    assert_eq!(sent(&exchange).header.id, SPARE_IDS[1]);
+    // A spare ID equal to the one before is not used.
+    let mut same = query.clone();
+    same.header.id = SPARE_IDS[0];
+    let mut truncated = response(&same, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let exchange = expect_send(udp(
+        start(&same, Options::default(), now),
+        &wire(&truncated),
+        now,
+    ));
+    assert_ne!(sent(&exchange).header.id, SPARE_IDS[0]);
 }
 
 #[test]

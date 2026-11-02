@@ -242,7 +242,7 @@ impl Cache {
     ///
     /// `query` is the client's: the response is stored under its question and its DO and CD bits ([`Key::of`]).
     /// The caller asked upstream with those bits, so that a response with signatures, or unchecked, only goes to
-    /// clients that asked for it.
+    /// clients that asked for it. The response is [`Checked::Unchecked`]: replies have AD clear (D114).
     ///
     /// # Errors
     ///

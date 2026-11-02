@@ -113,8 +113,9 @@ fn failures_are_held() {
     assert_eq!((reply.rcode(), asked), (Rcode::SERVFAIL, 2));
 }
 
-/// A hit carries the flags of the query it answers (RFC 1035 §4.1.1), not those of the one that stored it: no AD
-/// for a client that did not ask with AD or DO (RFC 6840 §5.8).
+/// A hit carries the flags of the query it answers (RFC 1035 §4.1.1), not those of the one that stored it: RD
+/// only when asked, and no AD even for a client that asks for it, the response having had AD upstream but not been
+/// validated (RFC 6840 §5.8, D114).
 #[test]
 fn a_hit_carries_the_flags_of_its_query() {
     let response = with_flags(captured("a"), Flags::QR | Flags::RD | Flags::RA | Flags::AD);
@@ -122,8 +123,8 @@ fn a_hit_carries_the_flags_of_its_query() {
     let mut query = query_for(&response);
     query.header.flags = Flags::RD | Flags::AD;
     let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
-    assert!(first.header.flags.contains(Flags::AD));
-    query.header.flags = Flags::default();
+    assert_eq!(first.header.flags, Flags::QR | Flags::RD | Flags::RA);
+    query.header.flags = Flags::AD;
     let (reply, asked) = ask(&pipeline, &query, 0, &[]);
     assert_eq!((reply.rcode(), asked), (Rcode::NOERROR, 0));
     assert_eq!(reply.header.flags, Flags::QR | Flags::RA);
