@@ -115,6 +115,7 @@ pub(crate) fn insert(
         &Query::read(query).expect("a valid query"),
         &Message::decode(response).expect("a response that decodes"),
         now,
+        0,
     )
 }
 

@@ -32,13 +32,13 @@ use dedens_odoh::{
     MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext,
     QueryContext, TargetKey, decrypt_query, decrypt_response, encrypt_query,
 };
-use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, Origin};
+use dedens_plugins::{Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Origin};
 use dedens_proto::edns::{Cookie, EdnsOption as CookieOption};
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, DigestType, Edns, EdnsView, EncodeError, Flags, Header,
+    Class, DecodeErrorKind, DecodedRecord, DigestType, Edns, EdnsView, EncodeError, Flags, Header,
     Message, Name, Nsec3HashAlgorithm, Query, Question, Rcode, Record, RecordType, SecAlgorithm,
     Ttl, message,
 };
@@ -284,7 +284,7 @@ pub fn cache_insert(data: &[u8]) {
     query.header.flags = decoded.message.header.flags.without(Flags::QR);
     let query = query.to_vec().expect("a query fits");
     let query = Query::read(&query).expect("an encoded query reads");
-    if cache.insert(&query, &decoded, 0).is_err() {
+    if cache.insert(&query, &decoded, 0, 0).is_err() {
         return;
     }
     let size = usize::from(decoded.message.header.id).max(Cache::MIN_OUT);
@@ -751,6 +751,7 @@ pub fn parse_lists(data: &[u8]) {
         return;
     };
     blocklist_model(text);
+    blocklist_review(text);
     let mut lists = Lists::new();
     let (Ok(hosts), Ok(_)) = (
         Hosts::new(text, Ttl::ZERO, false),
@@ -789,6 +790,116 @@ pub fn parse_lists(data: &[u8]) {
             {
                 panic!("{word} {qtype}: the reply does not decode: {error}");
             }
+        }
+    }
+}
+
+/// The words of `text` that are host names as a chain of CNAME records from the query name, the even words listed
+/// (D118): the review of the response blocks it when one of the
+/// first `MAX_HOPS + 1` targets is a name the plugin blocks as a query name, answers SERVFAIL when the chain goes
+/// on, and lets it through otherwise; the pipeline's reply decodes, asked a second time as well when the cache
+/// answers.
+fn blocklist_review(text: &str) {
+    let block: String = text
+        .split_ascii_whitespace()
+        .step_by(2)
+        .flat_map(|word| [word, "\n"])
+        .collect();
+    let mut lists = Lists::new();
+    if lists.read(List::Block, Origin::Downloaded, &block).is_err() {
+        return;
+    }
+    let reviewing = lists.names(List::Block) > 0;
+    let blocklist = Blocklist::new(lists, Action::Nxdomain, Ttl::ZERO);
+    let targets: Vec<Name<'static>> = text
+        .split_ascii_whitespace()
+        .filter_map(|word| word.parse().ok())
+        .take(MAX_HOPS + 2)
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    // The expected verdict follows the chain through distinct names only: a name twice makes a loop or a shorter
+    // chain, which the reply must survive but is not modelled.
+    let start: Name<'static> = "chain.test.".parse().expect("a name");
+    let owners: HashSet<Vec<Vec<u8>>> = targets
+        .iter()
+        .chain([&start])
+        .map(|name| name.labels().map(<[u8]>::to_ascii_lowercase).collect())
+        .collect();
+    let modelled = owners.len() == targets.len() + 1;
+    let blocked = |name: &Name<'static>| {
+        Message::query(1, Question::new(name.clone(), RecordType::A))
+            .to_vec()
+            .is_ok_and(|wire| Query::read(&wire).is_ok_and(|q| blocklist.answer(&q).is_some()))
+    };
+    let blocks = reviewing && targets.iter().take(MAX_HOPS + 1).any(blocked);
+    let too_long = reviewing && !blocks && targets.len() > MAX_HOPS;
+    let answer = targets
+        .iter()
+        .scan(start.clone(), |owner, target| {
+            let record = Record::new(
+                owner.clone(),
+                Class::IN,
+                Ttl::from_wire(60),
+                &RData::Cname(target.clone()),
+            );
+            *owner = target.clone();
+            Some(record)
+        })
+        .collect();
+    let question = Question::new(start, RecordType::A);
+    let Ok(query) = Message::query(1, question.clone()).to_vec() else {
+        return;
+    };
+    let response = Message {
+        header: Header {
+            id: 1,
+            flags: Flags::QR | Flags::RD | Flags::RA,
+            ..Header::default()
+        },
+        questions: vec![question],
+        answer,
+        ..Message::default()
+    };
+    let Ok(wire) = response.to_vec() else {
+        return;
+    };
+    let pipeline = Pipeline::new(vec![
+        Stage::Plugin(Box::new(blocklist)),
+        Stage::Cache(Arc::new(
+            Cache::new(Config {
+                capacity: 1 << 20,
+                shards: 1,
+                ..Config::default()
+            })
+            .expect("a valid config"),
+        )),
+        Stage::Forward(Forward::new([SocketAddr::from(([192, 0, 2, 53], 53))]).expect("a server")),
+    ]);
+    let mut out = vec![0; 1 << 13];
+    let ask =
+        |out: &mut [u8]| pipeline.query(&query, Transport::Udp, Ipv4Addr::LOCALHOST.into(), 0, out);
+    let Step::Upstream(upstream) = ask(&mut out) else {
+        return;
+    };
+    let Step::Reply(len) = pipeline.receive(upstream, Some(&wire), 0, &mut out) else {
+        return;
+    };
+    let first = Message::decode(&out[..len]).map(|reply| reply.message.rcode());
+    let Ok(first) = first else {
+        panic!("the reply does not decode: {first:?}");
+    };
+    if modelled {
+        assert_eq!(first == Rcode::NXDOMAIN, blocks, "{targets:?}");
+        assert_eq!(first == Rcode::SERVFAIL, too_long, "{targets:?}");
+    }
+    // Asked again: from the cache when the response was kept, as the first time said.
+    if let Step::Reply(len) = ask(&mut out) {
+        let again = Message::decode(&out[..len]).map(|reply| reply.message.rcode());
+        assert!(again.is_ok(), "the cached reply does not decode: {again:?}");
+        if modelled && let Ok(again) = again {
+            assert_eq!(again == Rcode::NXDOMAIN, blocks, "{targets:?}");
         }
     }
 }

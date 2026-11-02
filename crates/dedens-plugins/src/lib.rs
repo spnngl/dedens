@@ -30,6 +30,6 @@ mod blocklist;
 mod hosts;
 mod text;
 
-pub use blocklist::{Action, Blocklist, List, ListError, Lists, Origin, Read};
+pub use blocklist::{Action, Blocklist, List, ListError, Lists, MAX_HOPS, Origin, Read, Tlds};
 pub use hosts::Hosts;
 pub use text::{LineError, LineErrorKind};

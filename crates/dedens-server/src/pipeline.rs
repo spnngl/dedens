@@ -3,6 +3,7 @@
 use std::net::IpAddr;
 use std::num::NonZeroU8;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dedens_cache::{Cache, Checked, Key, StalePolicy};
@@ -42,7 +43,15 @@ pub struct Pipeline {
     access: Option<Access>,
     rate_limit: Option<Arc<RateLimit>>,
     cookies: Option<Cookies>,
+    /// This pipeline's mark in the cache entries it reviewed (D118): not 0, and not another pipeline's.
+    id: u64,
+    /// For each stage, whether a plugin before it reviews responses (`Plugin::reviewer`).
+    reviews: Box<[bool]>,
 }
+
+/// The id of the next pipeline: the marks of cache entries are compared to it, so that a response is reviewed again
+/// after a reload (D118). 0 is the mark of an entry nobody reviewed.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What to do next with a query.
 #[derive(Debug)]
@@ -98,14 +107,26 @@ pub struct Upstream {
 }
 
 impl Pipeline {
-    /// Runs `stages` in order.
+    /// Runs `stages` in order. A plugin's [`Plugin::reviewer`] is asked here and on each response, and must answer
+    /// the same for the life of the plugin (D118).
     #[must_use]
     pub fn new(stages: Vec<Stage>) -> Self {
+        let mut reviewing = false;
+        let reviews = stages
+            .iter()
+            .map(|stage| {
+                let before = reviewing;
+                reviewing |= matches!(stage, Stage::Plugin(plugin) if plugin.reviewer().is_some());
+                before
+            })
+            .collect();
         Self {
             stages: stages.into(),
             access: None,
             rate_limit: None,
             cookies: None,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            reviews,
         }
     }
 
@@ -346,9 +367,9 @@ impl Pipeline {
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
                 Stage::Cache(_) if truncate => {}
-                Stage::Cache(stored) => {
-                    match cache::look(stored, query, client, now, Read::Lookup(stale), out) {
-                        Looked::Reply { len, refresh } => {
+                Stage::Cache(_) => {
+                    match self.look(index, query, client, now, Read::Lookup(stale), out) {
+                        Looked::Reply { len, refresh, .. } => {
                             if refresh
                                 && let Ok(mut upstream) =
                                     self.upstream(index, query, client, (source, now), Some(index))
@@ -461,6 +482,85 @@ impl Pipeline {
         }))
     }
 
+    /// The answer to give instead of `response`, the response to `query`, by the first plugin before the stage
+    /// `before` that reviews it, and the index of that plugin (D118).
+    fn review(
+        &self,
+        before: usize,
+        query: &Query<'_>,
+        response: &Message<'_>,
+    ) -> Option<(usize, Answer<'_>)> {
+        if !*self.reviews.get(before)? {
+            return None;
+        }
+        self.stages
+            .iter()
+            .enumerate()
+            .take(before)
+            .find_map(|(at, stage)| match stage {
+                Stage::Plugin(plugin) => plugin
+                    .reviewer()?
+                    .review(query, response)
+                    .map(|answer| (at, answer)),
+                Stage::Cache(_) | Stage::Forward(_) => None,
+            })
+    }
+
+    /// [`cache::look`] at the cache stage `index`, a hit that a plugin before the stage reviews replaced by its
+    /// answer (D118): the entry may predate the list, which a reload keeps the cache across (D55). The reply is the
+    /// answer then, and no refresh is asked: it would fetch what is blocked.
+    ///
+    /// An entry is reviewed once by a pipeline: a response that passed is marked with the pipeline's id, in the
+    /// cache, and a hit with that mark is served as it is, undecoded. One with another mark (a response stored
+    /// before a reload, or one a plugin would have refused) is decoded and reviewed. A truncated reply is not
+    /// marked: the records it lost were not reviewed. Between a hit and its marking, a response stored by an
+    /// older pipeline with the same mark as the entry seen would take the mark of the new: the older pipeline
+    /// stores only until its in-flight queries end.
+    fn look(
+        &self,
+        index: usize,
+        query: &Query<'_>,
+        client: &Client<'_>,
+        now: u32,
+        read: Read,
+        out: &mut [u8],
+    ) -> Looked {
+        let Some(cache) = self.cache(index) else {
+            return Looked::Miss;
+        };
+        let looked = cache::look(cache, query, client, now, read, out);
+        let Looked::Reply {
+            len,
+            mark,
+            truncated,
+            ..
+        } = looked
+        else {
+            return looked;
+        };
+        if mark == self.id || !self.reviews.get(index).is_some_and(|&reviews| reviews) {
+            return looked;
+        }
+        let Some(decoded) = out.get(..len).and_then(|wire| Message::decode(wire).ok()) else {
+            return looked;
+        };
+        let Some((_, answer)) = self.review(index, query, &decoded.message) else {
+            if !truncated {
+                let _ = cache.mark(query, mark, self.id);
+            }
+            return looked;
+        };
+        match client.answer(query.wire(), &answer, out) {
+            Some(len) => Looked::Reply {
+                len,
+                refresh: false,
+                mark: 0,
+                truncated: false,
+            },
+            None => Looked::Miss,
+        }
+    }
+
     /// The cache stage at `index`.
     fn cache(&self, index: usize) -> Option<&Cache> {
         match self.stages.get(index) {
@@ -481,11 +581,10 @@ impl Pipeline {
         if upstream.purpose != Purpose::Reply {
             return None;
         }
-        let cache = self.cache(upstream.cache?)?;
         let query = Query::read(&upstream.query).ok()?;
         let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
-        let Looked::Reply { len, .. } = cache::look(
-            cache,
+        let Looked::Reply { len, .. } = self.look(
+            upstream.cache?,
             &query,
             &client,
             now,
@@ -524,7 +623,6 @@ impl Pipeline {
             return Step::Drop;
         };
         let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
-        let cache = upstream.cache.and_then(|index| self.cache(index));
         let purpose = upstream.purpose;
         let forward = match self.stages.get(upstream.forward) {
             Some(Stage::Forward(forward)) => Some(forward),
@@ -532,9 +630,11 @@ impl Pipeline {
         };
         let following = forward.and_then(|forward| forward.servers().get(upstream.next));
         let finish = Finish {
+            pipeline: self,
             query: &query,
             client: &client,
-            cache,
+            forward: upstream.forward,
+            cache: upstream.cache,
             purpose,
             now,
         };
@@ -564,6 +664,14 @@ impl Pipeline {
                 Some(check)
             } else if let Some(admitted) = upstream.validate {
                 match (decoded, query.question()) {
+                    // Reviewed before it is validated: a response refused is not worth the questions of the
+                    // validation, and is not stored, which only a validated response is here (D118).
+                    (Some(decoded), _)
+                        if let Some((_, answer)) =
+                            self.review(upstream.forward, &query, &decoded.message) =>
+                    {
+                        return finish.blocked(&answer, out);
+                    }
                     (Some(decoded), Some(question)) => Some(Box::new(Check::new(
                         validating,
                         question,
@@ -596,25 +704,8 @@ impl Pipeline {
                     Progress::Shed => return finish.shed(out),
                 }
             }
-        } else if let Some(mut decoded) = decoded {
-            // No validator: upstream's AD is its word over a channel we cannot vouch for, never ours (RFC 6840
-            // §5.8, RFC 4035 §3.2.3, D114). The cache clears it as well, for a response stored as unchecked.
-            decoded.message.header.flags = decoded.message.header.flags.without(Flags::AD);
-            // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
-            // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
-            // the same.
-            let stored = cache.filter(|cache| cache.insert(&query, &decoded, now).is_ok());
-            if purpose != Purpose::Reply {
-                return Step::Drop;
-            }
-            if let Some(cache) = stored
-                && let Looked::Reply { len, .. } =
-                    cache::look(cache, &query, &client, now, Read::Stored, out)
-            {
-                return Step::Reply(len);
-            }
-            let rcode = decoded.message.rcode();
-            return reply(&client, decoded.message, rcode, out);
+        } else if let Some(decoded) = decoded {
+            return finish.plain(decoded, out);
         }
         if let Some(server) = following {
             upstream.server = server.clone();
@@ -702,14 +793,71 @@ enum Refused {
 
 /// What a response is answered with, and where it goes, once known.
 struct Finish<'a> {
+    pipeline: &'a Pipeline,
     query: &'a Query<'a>,
     client: &'a Client<'a>,
-    cache: Option<&'a Cache>,
+    /// The forward stage the response came from.
+    forward: usize,
+    /// The cache stage before it, if any.
+    cache: Option<usize>,
     purpose: Purpose,
     now: u32,
 }
 
 impl Finish<'_> {
+    /// The cache stage storing the response, if any.
+    fn store(&self) -> Option<&Cache> {
+        self.cache.and_then(|index| self.pipeline.cache(index))
+    }
+
+    /// Ends the query with a response nothing validated (no validator at this forward stage): stored, reviewed and
+    /// replied as D118 says.
+    fn plain(&self, mut decoded: Decoded<'_>, out: &mut [u8]) -> Step {
+        let (pipeline, query, client, now) = (self.pipeline, self.query, self.client, self.now);
+        // No validator: upstream's AD is its word over a channel we cannot vouch for, never ours (RFC 6840
+        // §5.8, RFC 4035 §3.2.3, D114). The cache clears it as well, for a response stored as unchecked.
+        decoded.message.header.flags = decoded.message.header.flags.without(Flags::AD);
+        // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
+        // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
+        // the same.
+        // A response a plugin refuses is stored all the same, unmarked, for the hit to refuse again: not
+        // storing it would send each repeat upstream. Not when the plugin sits after the cache stage, which a
+        // hit does not ask (D118).
+        let blocked = pipeline.review(self.forward, query, &decoded.message);
+        let keep = blocked
+            .as_ref()
+            .is_none_or(|&(at, _)| self.cache.is_some_and(|cache| at < cache));
+        let mark = if blocked.is_none() { pipeline.id } else { 0 };
+        let stored = self
+            .store()
+            .filter(|cache| keep && cache.insert(query, &decoded, now, mark).is_ok());
+        if let Some((_, answer)) = blocked {
+            return self.blocked(&answer, out);
+        }
+        if self.purpose != Purpose::Reply {
+            return Step::Drop;
+        }
+        if let Some(cache) = stored
+            && let Looked::Reply { len, .. } =
+                cache::look(cache, query, client, now, Read::Stored, out)
+        {
+            return Step::Reply(len);
+        }
+        let rcode = decoded.message.rcode();
+        reply(client, decoded.message, rcode, out)
+    }
+
+    /// Ends the query with the `answer` a plugin gave instead of the response (D118): nothing is stored, and the
+    /// client has it unless it was answered already.
+    fn blocked(&self, answer: &Answer<'_>, out: &mut [u8]) -> Step {
+        if self.purpose != Purpose::Reply {
+            return Step::Drop;
+        }
+        self.client
+            .answer(self.query.wire(), answer, out)
+            .map_or(Step::Drop, Step::Reply)
+    }
+
     /// Ends the query with `outcome` for `decoded`, upstream's answer, its TTLs at most `cap` (D77): stored in the
     /// cache stage with what the verdict made of it, and replied unless the client was answered already.
     fn deliver(
@@ -730,11 +878,23 @@ impl Finish<'_> {
         if self.purpose != Purpose::Reply && matches!(checked, Checked::Bogus(_)) {
             return Step::Drop;
         }
+        // A bogus response is not reviewed: it is not served, and its copy for clients that check for themselves
+        // has no mark, so that a hit reviews it.
+        let mark = if matches!(checked, Checked::Bogus(_)) {
+            0
+        } else if let Some((_, answer)) =
+            self.pipeline
+                .review(self.forward, self.query, &decoded.message)
+        {
+            return self.blocked(&answer, out);
+        } else {
+            self.pipeline.id
+        };
         present(&mut decoded.message, outcome, cap, self.client.dnssec());
         let rcode = decoded.message.rcode();
-        let stored = self.cache.filter(|cache| {
+        let stored = self.store().filter(|cache| {
             cache
-                .insert_checked(self.query, &decoded, self.now, checked)
+                .insert_checked(self.query, &decoded, self.now, checked, mark)
                 .is_ok()
         });
         if self.purpose != Purpose::Reply {
@@ -767,13 +927,14 @@ impl Finish<'_> {
         if self.purpose == Purpose::Prefetch {
             return Step::Drop;
         }
-        if let Some(cache) = self.cache
+        if let Some(index) = self.cache
+            && let Some(cache) = self.pipeline.cache(index)
             && let Some(key) = Key::of(self.query)
         {
             cache.fail(&key, self.now);
             if self.purpose == Purpose::Reply
-                && let Looked::Reply { len, .. } = cache::look(
-                    cache,
+                && let Looked::Reply { len, .. } = self.pipeline.look(
+                    index,
                     self.query,
                     self.client,
                     self.now,

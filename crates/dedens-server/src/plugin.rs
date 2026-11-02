@@ -1,4 +1,5 @@
-//! Stages built outside the core (D23, D54): a plugin answers a query from what it holds, or passes it on.
+//! Stages built outside the core (D23, D54): a plugin answers a query from what it holds, or passes it on, and may
+//! review the responses of the stages after it (D118).
 
 use core::fmt;
 
@@ -11,6 +12,26 @@ use dedens_proto::{EncodeError, Message, Name, Query, Question, Rcode, Record, R
 pub trait Plugin: fmt::Debug + Send + Sync {
     /// The answer to `query`, which passed the core's checks and has a question, or `None` to pass it on.
     fn answer(&self, query: &Query<'_>) -> Option<Answer<'_>>;
+
+    /// The plugin as a [`Reviewer`], to see the responses of the stages after it (D118); none by default.
+    ///
+    /// The same for the life of the plugin: a pipeline reads it when it is built, and marks cache entries it
+    /// reviewed. A plugin whose rules change is built again, as a reload does.
+    fn reviewer(&self) -> Option<&dyn Reviewer> {
+        None
+    }
+}
+
+/// A plugin that inspects responses (D118): those a later stage produced, from upstream or from the cache, before
+/// they reach the client or the cache. It only inspects: it may replace a response with an [`Answer`], as
+/// [`Plugin::answer`] gives one. No plugin reviews what a plugin answered itself, nor a replacement.
+///
+/// It runs on every response from upstream and, on a hit, when a plugin before the cache stage reviews and the
+/// entry was not reviewed by this pipeline: [`Reviewer::review`] should be cheap and allocate nothing.
+pub trait Reviewer {
+    /// `None` to let `response`, the response to `query`, go on, or the answer to give instead; the response is
+    /// then not marked reviewed in the cache, and may not be stored (D118).
+    fn review(&self, query: &Query<'_>, response: &Message<'_>) -> Option<Answer<'_>>;
 }
 
 /// What a plugin answers.

@@ -78,29 +78,14 @@ pub(super) const fn is_denial(rtype: RecordType) -> bool {
     )
 }
 
-/// A name in uncompressed wire form, the RDATA of a DNAME (RFC 6672 §2.1).
-fn name_from_wire(mut wire: &[u8]) -> Option<Name<'static>> {
-    let mut labels = Vec::new();
-    loop {
-        let (&len, rest) = wire.split_first()?;
-        if len == 0 {
-            return rest
-                .is_empty()
-                .then(|| Name::from_labels(labels).ok())
-                .flatten();
-        }
-        let (label, rest) = rest.split_at_checked(usize::from(len))?;
-        labels.push(label);
-        wire = rest;
-    }
-}
-
 /// The name a CNAME or DNAME `RRset` leads to: the first record's target.
 fn target(set: &RrSet<'_>) -> Option<Name<'static>> {
     let rdata = set.rdatas().first()?;
     match rdata.data() {
         RData::Cname(name) => Some(name.into_owned()),
-        _ if set.rtype() == RecordType::DNAME => name_from_wire(&rdata.wire()),
+        _ if set.rtype() == RecordType::DNAME => Name::from_uncompressed(&rdata.wire())
+            .ok()
+            .map(Name::into_owned),
         _ => None,
     }
 }

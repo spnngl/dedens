@@ -248,6 +248,23 @@ impl<'a> Name<'a> {
         Self::decode_with(r, false)
     }
 
+    /// Reads `wire`, nothing but a name that is not compressed, as the RDATA of a DNAME (RFC 6672 §2.1); the name
+    /// borrows from `wire`, and nothing is allocated.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] when `wire` is not exactly one name: it ends early, the name is longer than 255 bytes, a
+    /// compression pointer is in it, or bytes follow it.
+    pub fn from_uncompressed(wire: &'a [u8]) -> Result<Self, DecodeError> {
+        let mut r = Reader::new(wire);
+        let name = Self::decode_uncompressed(&mut r)?;
+        if r.is_empty() {
+            Ok(name)
+        } else {
+            Err(r.error(DecodeErrorKind::Invalid("bytes after a name")))
+        }
+    }
+
     fn decode_with(r: &mut Reader<'a>, pointers: bool) -> Result<Self, DecodeError> {
         let msg = r.message();
         let start = r.position();
@@ -709,6 +726,22 @@ mod tests {
             matches!(error.kind, DecodeErrorKind::Invalid(_)),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn a_name_alone_reads_from_its_wire_form() {
+        let name = Name::from_uncompressed(b"\x01a\x02bc\x00").unwrap();
+        assert_eq!(name.to_string(), "a.bc.");
+        assert_eq!(Name::from_uncompressed(b"\x00").unwrap(), Name::root());
+        for wire in [
+            &b""[..],
+            b"\x01a",
+            b"\x01a\x00\x00",
+            b"\x01a\xC0\x00",
+            b"\x40a",
+        ] {
+            assert!(Name::from_uncompressed(wire).is_err(), "{wire:?}");
+        }
     }
 
     #[test]

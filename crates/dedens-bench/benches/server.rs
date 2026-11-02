@@ -128,6 +128,7 @@ fn dnssec_hit(bencher: Bencher<'_, '_>, case: &str, checked: Checked) {
             &Message::decode(&response).expect("decodes"),
             0,
             checked,
+            0,
         )
         .expect("cacheable");
     let mut out = vec![0; 1232];

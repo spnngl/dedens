@@ -231,7 +231,7 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
 
-## Blocklist (D56, D58)
+## Blocklist (D56, D58, D118)
 
 - `dedensd validate` reading 4 published lists (stevenblack, hagezi light, two hagezi wildcard; 44 MB, 2.29M
   names) and an allowlist, `/usr/bin/time -l`: names as boxed byte strings, 240 MB resident, 0.87 s → their
@@ -273,6 +273,26 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
   process, 5 runs alternated: before 0.45-0.85 s, median 0.60 s; after 0.49-0.71 s, median 0.66 s (+10%: a name's
   hash is now a chain of its labels' hashes, not one hash). Memory the same, a set gaining 16 bytes. `read` on
   the test heads, fastest of 5 alternated runs: 16.6-17.7 → 18.1-19.4 µs.
+- Response review (D118), `benches/blocklist.rs` `review` and `hit` on the test heads, after the rebase onto the cache of
+  D116 (the mark is a field of the stored response). Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), release profile
+  with debuginfo, a laptop in use (load average 8.5 at the start, 10.7 at the end of the runs). 5 rounds of one bench
+  binary run one after the other, `hit` (the two pipelines alternating inside it) and `review` in each, 3000
+  samples: fastest sample of all rounds, and in parentheses the median of the rounds' medians, in ns. The load made
+  the means 1.3-2x the medians (outliers of 5-180 µs), and the medians of rounds 2-4 wander by up to 2x; the fastest
+  samples are the figures to compare.
+  - `review` of a response whose chain of 1 / 4 / 16 CNAME records points to unlisted names, the allowlist
+    asked first for the query name: 102.6 (114.3) / 294 (330.5) / 1020 (1124). ~60 ns a hop (the CNAME of the name
+    reached, its target looked up in the lists), ~40 ns once for the allowlist. Each hop reads on from where the
+    last was found: a first version read the whole section at each hop, 1.5 to 2.2 µs for 16 hops (quadratic).
+    Nothing is allocated. The same as before the rebase (98.1 / 278 / 989 fastest, at a lighter load).
+  - `hit`, `Pipeline::query` on a cache hit of the captured `www.ripe.net. A` (two CNAME, their RRSIG, two
+    addresses, 5 records): without a blocklist 82.8 (124.7), with one before the cache 145.6 (163.8). The
+    ~40-60 ns difference is the plugin's lookup of the query name; the entry carries this pipeline's mark, so the
+    reply is not decoded. Before the rebase: 100.6 (106.5) and 140.4 (150.8), so the difference is the same and the
+    cache itself moved (D116) by more than the noise of this load allows to say. Before the mark, every such hit
+    decoded the reply and reviewed it: 549 (601) ns, as measured in an earlier round of this work. A hit after a
+    reload (another mark) pays that once per entry. A response from upstream pays the review once, before it is
+    stored, on top of the decoding it already has.
 
 ## DoH core (D82)
 
