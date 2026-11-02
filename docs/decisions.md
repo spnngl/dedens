@@ -1089,6 +1089,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
+- D140 (builds on D16) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the tracked files
+  (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of `.gitignore`). A decision
+  cited in the text files of `crates/`, `apps/`, `fuzz/` and `docs/` (not RFC archives or captured data) and in the
+  `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A header's `amends`, `supersedes` or
+  `narrows` is matched by the other's `amended by`, `superseded by` or `narrowed by`, and the reverse; a supersession
+  of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each other; `builds on` and
+  `completes` are one-sided, and a clause naming decisions in another form fails. Every path in a Code or Tests cell
+  of `docs/rfc/coverage.md` exists (braces and a `*` in the last component allowed), every `tests/rfcNNNN.rs` has its
+  row, every `AGENTS.md` has its `CLAUDE.md` symlink. Each check runs once on a small broken input in the same file.
+  No `syn`: nothing here parses Rust, string matching does it, with no new dependency. Not checked: that a row lists
+  its test file, or that its status is true.
 
 ## CLI
 

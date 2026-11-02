@@ -9,3 +9,6 @@ git ref, in a mode (`udp`, `tcp`, `forward`, `forward-tcp`, `two-sockets`; see t
 `cargo deny` checks the baselines. `examples/zone.rs` writes the zone for the benches outside Rust.
 `examples/hit_ratio.rs` replays Zipf draws or a trace (`--trace`) through the cache's eviction (D116). Record new
 numbers in `docs/benchmarks.md`.
+
+`tests/repo.rs` is the repository checks (D140): decision numbers cited and their amendments, coverage paths and
+rows, `CLAUDE.md` links.
