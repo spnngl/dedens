@@ -2316,7 +2316,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     cell for each send).
   - Rejected: `SINGLE_ISSUER` with `DEFER_TASKRUN`, with or without `COOP_TASKRUN` (D51 measured again): within
     noise of `COOP_TASKRUN` in all four modes, no fewer enters; so no `EINVAL` fallback to write, and the floor stays 5.19
-    (D107).
+    (D107). Measured again on the final code (2 tasks, 64 queued, five rounds): medians within 0.6% in every mode, and
+    `tcp` 0.0045 → 0.0083 enters a query with `DEFER_TASKRUN`, the other modes equal (`docs/benchmarks.md`).
   - Rejected: `SQPOLL` (D51 again): on the server's core the rates halve; on a core of its own it gains over one core
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
   - Tests: `serve.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
