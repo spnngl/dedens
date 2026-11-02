@@ -191,6 +191,38 @@ proptest! {
         prop_assert_eq!(d.record, rec);
     }
 
+    /// Each question name ends in a pointer to the longest earlier suffix of it, matched byte for byte, which a
+    /// brute-force compressor finds among all the suffixes of the names before it (§4.1.4). 12 names of up to 12
+    /// labels hold fewer suffixes than the table, and the message ends well short of what a pointer reaches.
+    #[test]
+    fn s4_1_4_names_end_in_a_pointer_to_the_longest_earlier_suffix(
+        names in prop::collection::vec(prop::collection::vec(0..4_usize, 1..=12), 1..=12),
+    ) {
+        const LABELS: [&[u8]; 4] = [b"a", b"b", b"A", b"ab"];
+        let mut message = Message::default();
+        let mut expected = HEADER_LEN;
+        let mut earlier = std::collections::HashSet::<Vec<u8>>::new();
+        for indices in &names {
+            let labels: Vec<&[u8]> = indices.iter().map(|&i| LABELS[i]).collect();
+            let suffixes: Vec<(usize, Vec<u8>)> = (0..labels.len())
+                .map(|k| {
+                    let before = labels[..k].iter().map(|l| 1 + l.len()).sum();
+                    let wire = labels[k..].iter().flat_map(|l| [&[u8::try_from(l.len()).unwrap()][..], l].concat()).chain([0]).collect();
+                    (before, wire)
+                })
+                .collect();
+            let whole = suffixes[0].1.len();
+            expected += suffixes
+                .iter()
+                .find(|(_, wire)| earlier.contains(wire))
+                .map_or(whole, |&(before, _)| before + 2);
+            expected += 4;
+            earlier.extend(suffixes.into_iter().map(|(_, wire)| wire));
+            message.questions.push(Question::new(name_of(&labels), RecordType::A));
+        }
+        prop_assert_eq!(message.to_vec().unwrap().len(), expected);
+    }
+
     #[test]
     fn s3_5_every_octet_is_a_decimal_label([a, b, c, d] in any::<[u8; 4]>()) {
         let name = Name::reverse(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
