@@ -791,15 +791,15 @@ fn expect_fails_on_the_servfail_that_ask_allows() {
 }
 
 #[test]
-fn a_server_that_refuses_the_connection_is_a_servfail_not_a_silence() {
+fn a_server_that_refuses_the_connection_is_skipped_for_the_next() {
     seed::each(SEEDS, |seed| {
-        // The resolver forwards a query that came over TCP over TCP, to a port nobody listens on: the error is the
-        // network's, not the query's, so the question ends in SERVFAIL and is not abandoned.
+        // The resolver forwards a query that came over TCP over TCP, first to a port nobody listens on: the error is
+        // the network's, not the query's, so the question goes on to the next server and is not abandoned (D46).
         let mut world = Topology::new()
             .upstream(a())
             .resolver(|upstreams| {
-                let nobody = [SocketAddr::new(upstreams[0].ip(), 54)];
-                pipeline_with(Config::default(), &nobody)
+                let nobody = SocketAddr::new(upstreams[0].ip(), 54);
+                pipeline_with(Config::default(), &[nobody, upstreams[0]])
             })
             .build(seed);
         world.client(async move |stub| {
@@ -809,7 +809,7 @@ fn a_server_that_refuses_the_connection_is_a_servfail_not_a_silence() {
             let Outcome::Answered(answer) = outcome else {
                 return Err(format!("no answer: {outcome:?}").into());
             };
-            assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+            assert_eq!(answer.message.answer.len(), 2);
             Ok(())
         });
         world.run().expect("the run passes its checks");
