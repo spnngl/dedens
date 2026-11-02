@@ -1,11 +1,17 @@
 //! The configuration file (D24, D44, D115): YAML, `${VAR}` replaced first, then read into named stages run in the
 //! order `pipeline` lists them. A value of `${VAR}` is one value, never YAML: left as it is when plain (letters,
 //! digits, `_./:@+=%~#-`), single-quoted when alone as a value, escaped between the template's own quotes, refused
-//! anywhere else. A TLS or `ODoH` key file readable by others is refused, by its group warned about.
+//! anywhere else. A TLS or `ODoH` key file readable by others is refused, by its group warned about. After the drop
+//! (D122) a reload reads as `user`: the files it reads (the certificate and its key, lists, `upstream_ca`, saved
+//! downloads) must be readable by it, and `downloads.dir` writable. The start reads the configuration again as `user`
+//! right after the drop, and ends if it cannot. A reload warns of a change to `user` or `group` as written: `user: 990`
+//! for `user: dedens` warns too.
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query"]
 //! threads: 4                       # serving threads, fixed at start, 1 to 1024; default: a core each on Linux, else 1 (D42)
+//! user: dedens                     # Linux, started as root: run as this user, a name or an id, once the sockets are bound (D122)
+//! group: dedens                    # default: the user's primary group; supplementary groups: those listing the user, plus this one
 //! tls:
 //!   certificate: /etc/dedensd/tls/fullchain.pem
 //!   key: /etc/dedensd/tls/key.pem
@@ -87,6 +93,7 @@ use serde::Deserialize;
 
 use crate::download;
 use crate::lists::Store;
+use crate::privileges::{Account, Identity};
 
 /// The configuration file, as written.
 #[derive(Debug, Deserialize)]
@@ -114,6 +121,10 @@ struct File {
     upstream_ca: Option<PathBuf>,
     /// The serving threads (D115). Default: one per core on Linux, one elsewhere.
     threads: Option<NonZeroUsize>,
+    /// The user to run as once the sockets are bound (D122).
+    user: Option<Account>,
+    /// Its group, instead of the user's own (D122).
+    group: Option<Account>,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -824,6 +835,8 @@ pub(crate) struct Config {
     pub(crate) presented: Option<Presented>,
     /// The serving threads, each with its own sockets on every `listen` address (D42, D115).
     pub(crate) threads: usize,
+    /// Who to run as once the sockets are bound (D122).
+    pub(crate) user: Option<Identity>,
     /// The Oblivious `DoH` target's settings, there when `odoh` is: the key is read at start only.
     #[cfg(feature = "odoh")]
     pub(crate) odoh: Option<crate::odoh::Section>,
@@ -863,7 +876,8 @@ fn hosts(
 /// above 30 s or `tries` above 5 on a forward stage; a TLS key file others can access ([`guard_key`]); a variable
 /// that is neither plain nor alone as a value ([`written`]); a saved list that cannot be read ([`lists`]); settings
 /// a stage refuses; an `access` network that is malformed or has bits set past its length, an unknown `action`;
-/// `rrl` settings out of bounds, a cookie `secret` that is not 32 hexadecimal digits, `accept` without a `secret`.
+/// `rrl` settings out of bounds, a cookie `secret` that is not 32 hexadecimal digits, `accept` without a `secret`;
+/// a `group` without a `user`, a `user` off Linux (D122).
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -893,6 +907,7 @@ fn build(
         cfg!(target_os = "linux"),
         thread::available_parallelism().map_or(1, usize::from),
     )?;
+    let user = Identity::new(file.user, file.group, cfg!(target_os = "linux"))?;
     let presented = presented(&file.listen, file.tls.as_ref())?;
     #[cfg(feature = "odoh")]
     let odoh = section(file.odoh.as_ref(), &file.listen)?;
@@ -976,6 +991,7 @@ fn build(
         listen: file.listen,
         presented,
         threads,
+        user,
         #[cfg(feature = "odoh")]
         odoh,
         pipeline,
@@ -1281,28 +1297,33 @@ fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<
 /// Checks the private key file `file`, opened from `path` for `setting` (`tls` or `odoh`), on the file itself, so that
 /// no swap of the path comes between the check and the read: the key stays unused when others can access it, and
 /// is warned about when its group can (D115). `ssh` and PostgreSQL refuse a key others can access; the group is
-/// allowed, with a warning, for a key shared through a group such as Debian's `ssl-cert`, as PostgreSQL allows a
-/// root-owned key its group. Off Unix, where the mode says nothing, nothing is checked.
+/// allowed, as PostgreSQL allows a root-owned key its group: quietly for a root-owned key whose group the process is
+/// in (`root:dedens` 0640 read by the user `dedens` after the drop of D122, which is read again as that user, or a key
+/// shared through Debian's `ssl-cert`), with a warning otherwise. A process that is root is in no such group, and
+/// reads any key: a root-owned key is not warned about then, the read after the drop is the check. Off Unix, where
+/// the mode says nothing, nothing is checked.
 ///
 /// # Errors
 ///
 /// A mode that cannot be read, or any permission for others.
 #[cfg(unix)]
 pub(crate) fn guard_key(file: &fs::File, setting: &str, path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    use nix::unistd::{Uid, geteuid};
     let shown = path.display();
-    let mode = file
+    let metadata = file
         .metadata()
-        .with_context(|| format!("{setting}: cannot read the key {shown}"))?
-        .permissions()
-        .mode()
-        & 0o777;
+        .with_context(|| format!("{setting}: cannot read the key {shown}"))?;
+    let mode = metadata.mode() & 0o777;
     let (group, others) = (mode & 0o070, mode & 0o007);
     ensure!(
         others == 0,
         "{setting}: the key {shown} can be accessed by others (mode {mode:03o}): chmod 600"
     );
-    if group != 0 {
+    let shared = metadata.uid() == 0
+        && (geteuid() == Uid::from_raw(0) || crate::privileges::in_group(metadata.gid()));
+    if group != 0 && !shared {
         tracing::warn!(key = %shown, mode = format!("{mode:03o}"), "{setting}: the key can be accessed by its group: chmod 600 unless the group is meant to");
     }
     Ok(())
@@ -2762,5 +2783,47 @@ mod tests {
         assert_eq!(threads(Some(1024), true, 8), Ok(1024));
         assert_eq!(threads(Some(1), false, 8), Ok(1));
         assert!(threads(Some(2), false, 8).is_err_and(|e| e.contains("Linux")));
+    }
+
+    /// D122: `user` and `group` are a name or an id, `group` goes with `user`, and a `user` off Linux is refused.
+    #[test]
+    fn a_user_and_a_group_are_read() {
+        let read = |extra: &str| read(&format!("{MINIMAL}{extra}"), env, &Pipeline::default());
+        assert_eq!(read("").unwrap().user, None);
+        assert!(
+            format!("{:#}", read("group: dedens\n").unwrap_err())
+                .contains("`group` needs a `user`")
+        );
+        for (text, user, group) in [
+            ("user: dedens\n", Account::Name("dedens".into()), None),
+            ("user: 1000\n", Account::Id(1000), None),
+            ("user: \'1000\'\n", Account::Id(1000), None),
+            (
+                "user: dedens\ngroup: ssl-cert\n",
+                Account::Name("dedens".into()),
+                Some(Account::Name("ssl-cert".into())),
+            ),
+            (
+                "user: 1000\ngroup: 1001\n",
+                Account::Id(1000),
+                Some(Account::Id(1001)),
+            ),
+        ] {
+            if cfg!(target_os = "linux") {
+                let expected = Identity::new(Some(user), group, true).unwrap();
+                assert_eq!(read(text).unwrap().user, expected, "{text}");
+            } else {
+                let error = format!("{:#}", read(text).unwrap_err());
+                assert!(error.contains("on Linux only"), "{error}");
+            }
+        }
+        for text in [
+            "user: \'\'\n",
+            "user: 4294967295\n",
+            "user: [a]\n",
+            "user: dedens\ngroup: \'\'\n",
+        ] {
+            assert!(read(text).is_err(), "{text}");
+        }
     }
 }

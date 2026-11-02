@@ -53,6 +53,11 @@ jobs:
         with:
           tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }}
       - run: just check
+      # Root and a Linux kernel: dedensd drops to `nobody` after binding :53, and nothing else proves it (D122). `sudo -E`
+      # keeps HOME, so rustup finds its toolchains; the PATH is passed through `env`, which `sudo` would reset.
+      - name: Privileges (root)
+        if: runner.os == 'Linux'
+        run: sudo -E env "PATH=$PATH" cargo test -p dedensd --test privileges -- --ignored
 
   # Build matrix and dependency checks: platform-independent, Linux only.
   deps:

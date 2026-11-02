@@ -15,6 +15,7 @@ use crate::config::{Downloads, Listen};
 use crate::download::{Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 use crate::lists::Store;
+use crate::privileges::Identity;
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
 /// one atomic load, and take the new pipeline under the lock only when it changed; a reload wakes them too, so that
@@ -88,6 +89,8 @@ impl Current {
 pub(crate) struct Fixed {
     pub(crate) listen: Vec<Listen>,
     pub(crate) threads: usize,
+    /// Who the process dropped to (D122): a reload cannot go back to root to become another user.
+    pub(crate) user: Option<Identity>,
     /// What upstream servers are checked against: each thread's client holds it.
     pub(crate) trust: Trust,
     /// The certificate presented over TLS and QUIC, which a reload replaces (D66).
@@ -268,6 +271,9 @@ fn reload(
             }
             if new.threads != fixed.threads {
                 tracing::warn!(%config, "changes to `threads` take a restart");
+            }
+            if new.user != fixed.user {
+                tracing::warn!(%config, "changes to `user` and `group` take a restart");
             }
             if new.trust != fixed.trust {
                 tracing::warn!(%config, "changes to `upstream_ca` take a restart");

@@ -35,3 +35,5 @@ EDE = "EDE"
 gost = "gost"
 Gost = "Gost"
 GOST = "GOST"
+# `CapInh`, the inheritable capabilities of `/proc/PID/status` (D122)
+Inh = "Inh"
