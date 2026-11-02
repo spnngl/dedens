@@ -2330,36 +2330,28 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
   - Tests: `serve.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
     `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`).
-- D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up and of the query
-  flights, the two places where `dedensd`'s threads share state by a protocol of their own (sim step 20). The tests of
-  D107 and D86 run real threads, which pass whenever the scheduler happens not to hit the bad order; loom runs each
-  order.
-  - `src/sync.rs` names the types of `Current` and `Flights`: `Arc` (of the pipeline), `Mutex`, `AtomicU64`, `Ordering`
-    and `slot()`, a channel of one message with `try_send` and `recv_async`: std's and `flume::bounded(1)` in the
-    server (the same types re-exported: no change of behaviour or cost), loom's under `--cfg dedens_loom`, where
-    `sync/loom_slot.rs` is the slot, a loom `Mutex` around the message and the waker, since loom has no channel. So
-    the loom tests prove the protocol of `Current` and `Flights` given a slot that holds one message, wakes its
-    receiver, and closes with either end; not flume's internals. `Flights` sends with `try_send`, which on a fresh
-    channel never finds it full. The `Arc<[u8]>` of a response stays std's (loom's `Arc` holds sized types only).
-  - The loop that makes a query a lead or a follower moved from `fetch` (`serve.rs`) to `Flights::enter`, so the tests
-    run the code of the server, the rejoin when a lead is dropped included.
-  - The cfg is `dedens_loom`, not `loom`: `--cfg loom` also switches tokio's internals in the dependencies. `loom` is a
-    dev-dependency under `cfg(dedens_loom)`; the lint `unexpected_cfgs` declares the cfg. Under it the tests that run
-    sockets and a runtime are left out (`serve.rs`), loom's threads and locks cannot drive them.
-  - Tests, `#[cfg(dedens_loom)]` beside the code. `reload.rs`: a query finds the last pipeline after a `follow`
-    racing a `replace`; an idle follower (no query reaches it) takes the pipeline by its wake-up, after one replace
-    and after two (the second wake-up may fall on a full slot); a follower dropped during a `replace` costs the others
-    nothing and is forgotten. `flights.rs`: three queries of one key share one response and never lead together; a
-    dropped lead frees its followers and one asks again; a join after the flight landed leads anew; two keys never
-    mix. `Current::follow`'s order (subscribe, then the generation, then the pipeline) was checked by mutation: the
-    generation read after the pipeline fails four tests, the subscription after the reads a deadlock (a lost
-    wake-up); `Flights::land` leaving the flight in the map strands the next query, a deadlock in all four.
-  - `just loom` (`RUSTFLAGS="--cfg dedens_loom" cargo test -p dedensd --release --bin dedensd loom`, with its own
-    `CARGO_TARGET_DIR=target/loom` as the cfg rebuilds the dependencies) runs with `LOOM_MAX_PREEMPTIONS=4`: without a
-    bound four of the tests run past a minute (the interleavings of three threads and their locks grow
-    exponentially: 4 → 7 s, 5 → 42 s in all), and a bound of 2-3 already finds the bugs of this kind (the mutations
-    above fail at 4). It is outside `just check`; the `loom` job of `.github/workflows/deep.yml` runs it on pull
-    requests (30 minutes at most), informational as `mutants.yml` is (D103).
+- D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up (`Current`) and of the
+  query flights (`Flights`), the two places where `dedensd`'s threads share state by a protocol of their own. D86's
+  and D107's tests run real threads, which pass whenever the scheduler misses the bad order; loom runs each order.
+  - `src/sync.rs` names the types of those two: std's and `flume::bounded(1)` in the server (the same types
+    re-exported, so no change of behaviour or cost), loom's under `--cfg dedens_loom`. The cfg is `dedens_loom`, not
+    `loom`: `--cfg loom` also switches tokio, `event-listener` and `concurrent-queue` in the dependencies. `loom` is
+    a dev-dependency under that cfg and `unexpected_cfgs` declares it; the tests that run sockets and a runtime
+    are left out under it, and a build of the binary under it fails on purpose.
+  - The slot, the channel of one message of the wake-up and of a flight's response, is `sync/loom_slot.rs` under the
+    cfg: a loom `Mutex` around the message and the waker. So the tests prove the protocol of `Current` and `Flights`
+    given a slot that holds one message, wakes its receiver and closes with either end; not flume's internals.
+    Rejected: flume itself under loom, whose atomics and locks loom cannot see, so no interleaving of it would be
+    tried; `loom::sync::Notify` and `mpsc`, which have no `Future` to receive from, so no query could wait on them
+    as it does in `serve.rs`. The `Arc<[u8]>` of a response stays std's: loom's `Arc` has no `From<&[T]>`.
+  - What the threads run is the server's own code: `Current::newer` (the generation check of `Thread::pipeline`) and
+    `Flights::enter` (the join and rejoin of `fetch`) were moved out of `serve.rs` for it.
+  - `just loom` lints the loom-only code with clippy, then runs the `loom_tests` modules beside the code under
+    `[profile.loom]` (release without LTO, with assertions on: a build in seconds), in its own `target/loom` as the
+    cfg rebuilds the dependencies. The preemption bound is four (`sync::model`): unbounded, the tests of `Flights`
+    run past a minute, and the whole run takes 1.1 s at a bound of 3, 7.4 s at 4, 43 s at 5. It is outside
+    `just check`; the `loom` job of `.github/workflows/deep.yml` runs it on pull requests (30 minutes at most),
+    informational as `mutants.yml` is (D103). `loom_slot.rs` is excluded from `just mutants`: only the cfg builds it.
   - Not modelled: `budget.rs` and `rrl.rs`, where each update is one atomic read-modify-write that sequential tests
     cover, and loom's atomics have no `update` or `try_update`.
 

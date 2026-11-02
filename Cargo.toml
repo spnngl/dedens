@@ -135,7 +135,8 @@ zeroize = "1.9.1"
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
-# D135: dedensd's own cfg for loom, as `--cfg loom` also switches tokio's internals.
+# D135: dedensd's own cfg for loom: `--cfg loom` also switches tokio, event-listener and concurrent-queue to loom's
+# types.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(dedens_loom)"] }
 # docs/decisions.md D15: each crate root forbids unsafe code; a crate with a measured hot path swaps its `forbid`
 # for this `deny` and allows it in that module only, with `// SAFETY:` comments and a Miri job.
@@ -159,6 +160,15 @@ unwrap_used = "warn"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# `just loom` (D135): the release code, built in seconds not minutes, with the assertions on.
+[profile.loom]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug-assertions = true
+overflow-checks = true
+strip = false
 
 # `cargo bench` builds with this profile; keep symbols for profilers.
 [profile.bench]

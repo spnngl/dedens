@@ -254,9 +254,8 @@ impl Thread {
     )]
     fn pipeline(&self) -> Rc<sync::Arc<Pipeline>> {
         let mut held = self.pipeline.borrow_mut();
-        let generation = self.current.generation();
-        if held.0 != generation {
-            *held = (generation, Rc::new(self.current.get()));
+        if let Some((generation, pipeline)) = self.current.newer(held.0) {
+            *held = (generation, Rc::new(pipeline));
         }
         Rc::clone(&held.1)
     }

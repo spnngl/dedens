@@ -150,10 +150,14 @@ mutants-diff base="origin/main" *args:
     git diff "{{base}}...HEAD" > target/mutants/branch.diff
     {{just_executable()}} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
 
-# Loom's model of dedensd's reload wake-up and query flights: every interleaving up to four preemptions (D135),
-# seconds. Its own target dir: the cfg rebuilds the dependencies. Outside `just check`.
+# Loom's model of dedensd's reload wake-up and query flights (D135): lints the code the cfg adds, then tries every
+# interleaving up to four preemptions. Its own target dir: the cfg rebuilds the dependencies. Outside `just check`.
 loom:
-    RUSTFLAGS="--cfg dedens_loom" CARGO_TARGET_DIR=target/loom LOOM_MAX_PREEMPTIONS=4 cargo test -p dedensd --release --bin dedensd loom
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTFLAGS="--cfg dedens_loom" CARGO_TARGET_DIR=target/loom
+    cargo clippy -p dedensd --bin dedensd --profile test -- -D warnings
+    cargo test -p dedensd --profile loom --bin dedensd loom_tests::
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default: just fuzz decode_message 60

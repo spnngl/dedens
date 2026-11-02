@@ -41,8 +41,7 @@ Tests:
 - `tests/access.rs` the access lists over loopback UDP, TCP, DoH and DoC (feature `doc`), their default, their reload
   and the configurations refused (D91).
 - `tests/cookies.rs` that Server Cookies are given and loopback is never rate-limited (D113).
-- The loom tests (`#[cfg(dedens_loom)]` in `src/reload.rs` and `src/flights.rs`) run every interleaving of
-  the reload wake-up and of the flights: `just loom`, outside `just check` (D135).
+- Loom tests beside `src/reload.rs` and `src/flights.rs`: `just loom` (D135).
 - `tests/flights.rs` that queries needing the same DS or DNSKEY of one server at once send it once (D86).
 - `tests/rfc9221.rs` that QUIC advertises no datagram support (D107); `tests/rfc9114.rs` that an HTTP/3 peer declaring
   a frame it never ends is closed and a busy honest connection is rotated, not closed (D119).
