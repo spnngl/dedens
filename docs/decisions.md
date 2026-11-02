@@ -472,9 +472,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   offset with pointers (labels read on demand, pointers checked once), or owned bytes. Rejected: a 255-byte
   inline buffer (about 300 bytes per record); copying compressed names at decode (the allocation borrowing
   removes).
-- D7a Decoding borrows: one set of types with a lifetime, `Message<'static>` is the owned form (`into_owned()`
-  or built by hand). Variable-length values (TXT, SVCB parameters, CAA, opaque RDATA, EDNS options) stay as
-  checked wire bytes read through accessors, so they keep their invariants. Rejected: a borrowed view beside
+- D7a (amended by D139) Decoding borrows: one set of types with a lifetime, `Message<'static>` is the owned form
+  (`into_owned()` or built by hand). Variable-length values (TXT, SVCB parameters, CAA, opaque RDATA, EDNS options)
+  stay as checked wire bytes read through accessors, so they keep their invariants. Rejected: a borrowed view beside
   the owned types (every RDATA type twice); a lazy message (errors at every access).
 - D8 `Message`: header, questions, answer, authority, additional, and EDNS lifted out of additional, so no
   caller searches for the OPT record.
@@ -587,6 +587,21 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   pins the boundary of each constructor with a long field (`Svcb::new` with the longest target included); it
   never reaches the changed line, and would have passed with the old `assert!`. Rejected: `Record::new` returning
   `Result` (about 25 callers, an error none can see); a release panic (a length no caller can act on).
+- D139 (amends D7a; builds on D125) The typed `RData` is one table, `rdata_types!` at the top of `rdata/mod.rs`: a
+  line a type, `Variant(payload) = RecordType constant, codec`, builds the enum and the six matches on it
+  (`into_owned`, `rtype`, `decode_fields`, `encode`, `from_text`, `Display`). Why: `decode_fields` and `from_text` end
+  in `_ =>` for the types outside the table (RFC 3597, kept), so a typed variant missing its arm there read as
+  `Opaque` and compiled; only the type's own tests caught it. Now a variant exists with all its arms or not at all.
+  The codec is the payload type or, for A, AAAA, NS, CNAME and PTR, the module of the type; it gives `decode`,
+  `encode`, `from_text` and `into_owned`. Adding a type: its file with those four and `Display`, each constructor and
+  decoder holding D125's `MAX_RDATA_LEN` check, a line in the table, the rest of `rdata/AGENTS.md`. Costs:
+  cargo-mutants does not mutate code a macro generates, so the six matches are no longer mutated; the text errors of
+  NS, CNAME and PTR say "domain name", not "NS name", "CNAME target", "PTR name". Kept because it deletes 49
+  lines (+142, -191: the table and the macro against the enum and the matches, with `from_text` and `into_owned` added
+  to three codecs); the `message` and `zone` benches move within their spread, so `benchmarks.md` is unchanged.
+  Rejected: a test that every type of the fuzzing seed reads typed from its text and from the wire (+32 lines, built
+  and run against the removed arm): it fails on a missing arm only for a type whose seed line exists, where the table
+  needs no line to be right.
 
 ## Transports
 
