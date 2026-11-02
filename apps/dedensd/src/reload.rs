@@ -86,6 +86,7 @@ impl Current {
 #[derive(Debug)]
 pub(crate) struct Fixed {
     pub(crate) listen: Vec<Listen>,
+    pub(crate) threads: usize,
     /// What upstream servers are checked against: each thread's client holds it.
     pub(crate) trust: Trust,
     /// The certificate presented over TLS and QUIC, which a reload replaces (D66).
@@ -259,6 +260,9 @@ fn reload(
         Ok(new) => {
             if new.listen != fixed.listen {
                 tracing::warn!(%config, "changes to `listen` take a restart");
+            }
+            if new.threads != fixed.threads {
+                tracing::warn!(%config, "changes to `threads` take a restart");
             }
             if new.trust != fixed.trust {
                 tracing::warn!(%config, "changes to `upstream_ca` take a restart");

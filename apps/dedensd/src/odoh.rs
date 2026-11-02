@@ -15,6 +15,7 @@ use http::{Response, StatusCode};
 use zeroize::Zeroizing;
 
 use self::proxy::{Proxy, Settings as ProxySettings};
+use crate::config::guard_key;
 
 pub(crate) mod proxy;
 
@@ -136,15 +137,13 @@ pub(crate) fn seal(context: ResponseContext, wire: &[u8]) -> Result<Response<Vec
 const KEY_FILE_MAX: usize = 4 * SECRET_LEN;
 
 /// The secret in `file`: [`SECRET_LEN`] bytes as hexadecimal digits, surrounding whitespace aside. Read into a buffer
-/// of its size, wiped on drop, so that no copy of the secret is left where a growing buffer was; a file group or
-/// world readable is warned about.
+/// of its size, wiped on drop, so that no copy of the secret is left where a growing buffer was; a file others can
+/// access is refused, one its group can access warned about ([`guard_key`], D115).
 fn read_secret(file: &Path) -> anyhow::Result<Zeroizing<[u8; SECRET_LEN]>> {
     let shown = file.display();
     let mut input =
         File::open(file).with_context(|| format!("`odoh`: cannot read the key {shown}"))?;
-    if exposed(&input).with_context(|| format!("`odoh`: cannot read the key {shown}"))? {
-        tracing::warn!(key = %shown, "`odoh`: the key is readable by others than its owner: chmod 600");
-    }
+    guard_key(&input, "`odoh`", file)?;
     // One byte more than the most, to tell a file that is too long.
     let mut buffer = Zeroizing::new([0; KEY_FILE_MAX + 1]);
     let mut len = 0;
@@ -177,20 +176,6 @@ fn read_secret(file: &Path) -> anyhow::Result<Zeroizing<[u8; SECRET_LEN]>> {
         *byte = high << 4 | low;
     }
     Ok(secret)
-}
-
-/// Whether `file` can be read or written by its group or by others.
-#[cfg(unix)]
-fn exposed(file: &File) -> io::Result<bool> {
-    use std::os::unix::fs::PermissionsExt as _;
-    Ok(file.metadata()?.permissions().mode() & 0o077 != 0)
-}
-
-/// Whether `file` can be read or written by others than its owner: not known off Unix.
-#[cfg(not(unix))]
-#[expect(clippy::unnecessary_wraps, reason = "the signature of the Unix one")]
-fn exposed(_file: &File) -> io::Result<bool> {
-    Ok(false)
 }
 
 /// The value of the hexadecimal digit `digit`.
@@ -244,21 +229,31 @@ mod tests {
         assert!(section(Some("/nonexistent/odoh.key")).target().is_err());
     }
 
-    /// A key file longer than a key and its whitespace is refused, as is one others can read, which is warned about.
+    /// A key file longer than a key and its whitespace is refused, as is one others can access (D115); one its group
+    /// can access is read.
     #[cfg(unix)]
     #[test]
-    fn a_long_key_file_is_refused_and_an_exposed_one_found() {
+    fn a_long_key_file_is_refused_and_an_exposed_one_too() {
         use std::os::unix::fs::PermissionsExt as _;
         let file = secret_file(&format!("{}\n", "ab".repeat(KEY_FILE_MAX)));
         let error = Target::new(Some(file.path())).unwrap_err();
         assert!(format!("{error:#}").contains("longer"), "{error:#}");
         let file = secret_file(&format!("  {}\n\n\n", "ab".repeat(SECRET_LEN)));
         assert!(Target::new(Some(file.path())).is_ok(), "whitespace around");
-        let open = || File::open(file.path()).expect("opens");
-        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600)).expect("set");
-        assert!(!exposed(&open()).expect("metadata"));
-        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o640)).expect("set");
-        assert!(exposed(&open()).expect("metadata"));
+        let mode = |mode| {
+            std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(mode))
+                .expect("set");
+            Target::new(Some(file.path()))
+        };
+        assert!(mode(0o600).is_ok());
+        assert!(mode(0o640).is_ok(), "warned about");
+        for exposed in [0o644, 0o604, 0o602, 0o666] {
+            let error = mode(exposed).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("by others"),
+                "{exposed:o}: {error:#}"
+            );
+        }
     }
 
     #[test]

@@ -733,7 +733,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
-- D79 (amends D69, D78, D83; amended by D94) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
+- D79 (amends D69, D78, D83; amended by D94, D115) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
   through a proxy, `dedensd` serves as a target. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
   - Messages: a client sends the encrypted query by POST to the proxy (RFC 9230 §4.1: media type
     `application/oblivious-dns-message` as content type and accept, `targethost` and `targetpath` in the query of the
@@ -786,7 +786,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     open 400 (§4.3, D78). `GET /.well-known/odohconfigs` answers the configurations with `max-age=3600`, unless the
     listener's own path is that one (the listener wins). Plain DoH stays served at the same path. The key is the
     secret of `odoh.key`, a file of 64 hexadecimal digits (`openssl rand -hex 32`; at most 256 bytes, read into a
-    buffer wiped on drop; a file readable by its group or others is warned about on Unix), else a random one made at
+    buffer wiped on drop; a file others can access is refused and one its group can access warned about on Unix, D115), else a random one made at
     start (so the configurations change at each start). A reload keeps the key and never reads the file again: a
     changed `odoh` section (the key file's path) is ignored with a warning (it takes a restart), and a key file that
     went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
@@ -1207,7 +1207,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
   AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
   cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
-- D42 (amended by D45, D47-D49, D52, D65, D66, D84) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
+- D42 (amended by D45, D47-D49, D52, D65, D66, D84, D115) `dedensd` I/O around D41: one compio thread per core on Linux, each with its
   own UDP socket and TCP listener on every `listen` address (`SO_REUSEPORT`, the kernel spreading queries), one
   thread elsewhere, where `SO_REUSEPORT` does not spread; IPv6 sockets IPv6-only, so `[::]` and `0.0.0.0` bind
   together. Every socket is bound before any thread starts, so a taken address fails the start. A reply the
@@ -1234,7 +1234,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84, D91, D113) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84, D91, D113, D115) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1242,7 +1242,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Errors: unknown fields, duplicate names, a stage listed and not defined, defined and not listed, listed twice or
   after a forward stage (which answers every query). `dedensd validate` reads the file and builds the pipeline
   without binding; SIGHUP reloads it (D55). Later, with need: a directory merged, `SECRET[..]`, JSON Schema.
-- D45 Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
+- D45 (amended by D115) Upstream patience and the client response timer (RFC 8767 §5), changing D42 and D43: a forward stage
   waits `timeout_ms` per query (default 3000, slow authoritative chains take over 1 s) and sends each server
   `tries` queries (default 2), carried on `Upstream` (`Upstream::patience`). A cache stage's
   `stale_answer_after_ms` (default 1800, the RFC's suggestion; 0 waits for resolution) is the client response
@@ -1380,7 +1380,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
-- D57 (amended by D64, D104) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+- D57 (amended by D64, D104, D115) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
   with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
   never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
   Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
@@ -1508,7 +1508,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `dedens_net::Client` holds it; changing it logs that it takes a restart). `dedens-server` only carries the
   transport and name (`Server`, `Via`), staying sans-IO. Rejected: transport settings per stage (`transport:
   tls`, `tls_name`), which cannot mix servers.
-- D66 (amends D42, D44) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
+- D66 (amends D42, D44; amended by D115) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
   `tls://` and `quic://`, port 853 unless set; with a top-level `tls: {certificate, key}` of PEM files, required
   with such an address and refused without one. A reload reads the files again and the next handshakes present
   the new certificate (`dedens_net::tls::Presented`, a rustls certificate resolver); a bad file fails the reload.
@@ -1870,6 +1870,43 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     §4.3, a guess: needs upstream. Truncation says nothing about the data.
   Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/{rfc5452,rfc6891}.rs`,
   `dedens-cache/tests/checked.rs`.
+- D115 (amends D42, D44, D45, D57, D66, D79) Configuration bounds, from the audit (L14, L15, E5): what the file
+  says is held to what the server can bear, and what a variable holds cannot become configuration.
+  - Key files. One check, `config::guard_key`, on the open file (no swap between check and read), for the TLS key
+    and the ODoH key (D79, which warned on any group or other bit): a key others can access (`& 0o007`) is refused,
+    at start and at a reload, which then serves the previous configuration on (D55, D66); one its group can access
+    (`& 0o070`) is read with a warning, for a key shared through a group (Debian's `ssl-cert`). `ssh` and PostgreSQL
+    refuse a key others can access; PostgreSQL allows its group on a root-owned key. Nothing is checked off Unix.
+    A Kubernetes Secret volume is 0644 by default: set `defaultMode` 0400 (or 0440 with `fsGroup`).
+  - Patience (D45). A forward stage's `timeout_ms` is at most 30000 and `tries` at most 5; above, the file is
+    refused. 30 s is the cap of the system resolver's `timeout` (`resolv.conf(5)`), between the 4 s a BIND stub
+    resolver starts at and the 45 s ceiling of BIND's backoff (RFC 1536 §1); 5 is the cap of its `attempts` and
+    Unbound's `outbound-msg-retry` default. A query waits at most servers × `tries` × `timeout_ms` and holds its
+    slot (D47) all that time; a typo (`timeout_ms: 300000000`, 3.5 days, or `tries: 255`) held it for good.
+    The ODoH proxy's `timeout_ms` (D94) is not capped here.
+  - Variables (D44). A `${VAR}` value is one YAML value, never YAML. A plain value (ASCII letters and digits,
+    `_./:@+=%~#-`, not starting with `#`, `@` or `%` or a document marker, not ending in `:`) stays as it is, so
+    ports, addresses, URLs and paths work anywhere, in a number or beside text. Any other value must stand alone
+    as a value (after `key:`, `-`, `[`, `,`, `{`, before the end, a comment, `,`, `]`, `}`) and is written in single
+    quotes, or sit between quotes of the template, and is escaped for them; elsewhere it is refused. A control
+    character or line break is refused. `${VAR:-default}` text is the template's and stays as written. Rejected:
+    quoting every value (breaks a number and a value inside the template's own quotes) and substituting in the
+    parsed tree (loses the line numbers of errors and numbers' types).
+  - Saved lists (D57, D104). A copy that does not exist yet is an empty list, so a blocklist fails open until the
+    first fetch; a copy that is no list is warned about and left out. A copy that exists and cannot be read
+    (permissions, a directory) refuses the start or the reload, as before: serving without the list would not mend
+    when the next fetch runs. Now tested and documented.
+  - `threads` (D42). Serving threads, 1 to 1024, fixed at start (a reload warns, as for `listen`). Default as before:
+    one per core on Linux, one elsewhere; above 1 off Linux is refused, where `SO_REUSEPORT` spreads nothing and a
+    second thread would serve no query. Each thread costs about 1 MiB of buffers, 64 KiB of scratch and a 4 MiB
+    receive buffer per UDP socket, so fewer threads than cores serve a small host; 1024 stops a typo.
+  - Tests: `a_key_readable_by_others_is_refused` (`tests/listeners.rs`: refused, kept on a reload, group warned),
+    `a_long_key_file_is_refused_and_an_exposed_one_too` (`odoh.rs`), `forward_patience_is_bounded`,
+    `a_variable_cannot_inject_yaml`, `a_value_is_the_text_it_stands_for` (every text of up to three characters
+    from an alphabet of YAML's syntax, in five templates: read back as that text or refused, which stands for a
+    fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
+    `threads_default_to_the_cores_on_linux` (`config.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
+    Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
 
 ## Observability
 

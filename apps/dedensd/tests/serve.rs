@@ -31,6 +31,24 @@ fn queries_over_udp_and_tcp_are_forwarded() {
     assert_eq!(reply.answer, upstream.answer);
 }
 
+/// D115: `threads` sets the serving threads, which the "serving" event counts; more than one needs Linux, where
+/// `SO_REUSEPORT` spreads queries.
+#[test]
+fn threads_set_the_serving_threads() {
+    let response = captured("a");
+    let upstream = Responder::start(&["a"]);
+    let threads: u64 = if cfg!(target_os = "linux") { 3 } else { 1 };
+    let server = Server::configured(|listen| {
+        format!(
+            "threads: {threads}\nlisten: ['{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 1000\n    tries: 1\n",
+            upstream.addr
+        )
+    });
+    assert_eq!(server.serving["fields"]["threads"], threads);
+    let reply = ask_udp(server.addr, &query_for(&response, 1));
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+}
+
 #[test]
 fn a_tcp_connection_answers_several_queries() {
     let response = captured("a");

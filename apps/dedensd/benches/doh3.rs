@@ -58,7 +58,7 @@ fn main() {
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    std::fs::write(&key, &certificates.key_pem).expect("the key written");
+    common::write_key(&key, &certificates.key_pem);
     let server = Server::configured(|listen| {
         format!(
             "listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",

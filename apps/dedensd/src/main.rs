@@ -1,8 +1,8 @@
 //! `dedensd`: a DNS server, a caching forwarder for now (D41-D44).
 //!
 //! Listens on each address of its configuration file over UDP and TCP, and runs each query through the stages it
-//! lists. On Linux, one thread per core, each with its own sockets on the same addresses (`SO_REUSEPORT`) and the
-//! kernel spreading queries across them; elsewhere, one thread.
+//! lists. On Linux, `threads` threads, one per core by default, each with its own sockets on the same addresses
+//! (`SO_REUSEPORT`) and the kernel spreading queries across them; elsewhere, one thread (D42, D115).
 
 #![forbid(unsafe_code)]
 
@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
     config.warn_access(&config.listen);
     let current = Arc::new(Current::new(config.pipeline));
     // Every socket is bound before any thread starts, so a taken address fails the start.
-    let sockets = (0..threads())
+    let sockets = (0..config.threads)
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let listen = config.listen.clone();
@@ -101,6 +101,7 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&current),
         Fixed {
             listen: config.listen,
+            threads: config.threads,
             trust: config.trust.clone(),
             presented: presented.clone(),
             #[cfg(feature = "odoh")]
@@ -228,16 +229,6 @@ fn read(file: &Path) -> anyhow::Result<String> {
 fn build(file: &Path, text: &str, previous: &Pipeline) -> anyhow::Result<Config> {
     config::read(text, |name| std::env::var(name).ok(), previous)
         .with_context(|| format!("in {}", file.display()))
-}
-
-/// The serving threads: one per core on Linux, where `SO_REUSEPORT` spreads queries across their sockets; one
-/// elsewhere, where it does not.
-fn threads() -> usize {
-    if cfg!(target_os = "linux") {
-        thread::available_parallelism().map_or(1, usize::from)
-    } else {
-        1
-    }
 }
 
 /// Prints `tracing` events on stderr, in `format`: info, debug with `-v`, trace with `-vv` (D30).

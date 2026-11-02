@@ -89,6 +89,8 @@ def write_certificates(directory):
             pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
         )
     )
+    # dedensd refuses a key that others can read (D115).
+    os.chmod(directory / "key.pem", 0o600)
 
 
 def free_udp_port():
