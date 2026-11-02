@@ -554,6 +554,33 @@ fn coap_doc_discover_that_fails_is_an_error() {
         .stderr(contains("+doc-discover"));
 }
 
+/// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a server
+/// over another transport, or a CoAP one with a path of its own, is not asked for its resource.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_doc_discover_in_a_query_file_needs_a_coap_server_with_no_path() {
+    let (udp, coap) = (
+        Responder::start(&["a"]),
+        Responder::coap(&["a"], "/dns/query"),
+    );
+    let port = coap.addr.port();
+    for server in [
+        udp.addr.to_string(),
+        format!("coap://127.0.0.1:{port}/dns/query"),
+    ] {
+        let file = format!(
+            "server: {server}\noptions: {{doc_discover: true}}\nqueries: [{{name: example.com, type: A}}]"
+        );
+        dedens()
+            .args(["-f", "-", "+short"])
+            .write_stdin(file)
+            .assert()
+            .failure()
+            .stderr(contains("+doc-discover needs a CoAP server with no path"));
+    }
+    assert!(udp.queries().is_empty() && coap.queries().is_empty());
+}
+
 /// D81: CoAP is a server of its own, with its id.
 #[cfg(feature = "doc")]
 #[test]
