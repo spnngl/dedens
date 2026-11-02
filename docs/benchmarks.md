@@ -207,6 +207,44 @@ sample and, in parentheses, the median of the rounds' medians, in ns.
   24). Before: small, every size, small then large, failures: 1810, 1060, 2060, 1470. The old accounting left the
   slab, the index, the queues and the ghosts out.
 
+### Read lock (D137), not kept
+
+`RwLock` per shard, a hit writing two atomics (`freq: AtomicU8`, `prefetched: AtomicBool`), against the `Mutex`.
+Same two binaries of `benches/cache.rs` alternated, `before` at the tree with the `insert_under_hits` bench, `after`
+the read-lock tree; one machine's load average 8-9 from other work (Apple M5, `Timer precision` 41 ns) and an idle
+Linux VPS (6 vCPU, AlmaLinux 10.2, `rust:1` container, 24 ns). Command: `benches/cache.rs --bench --sample-count N
+--color never <filter>` of each binary in turn, one run of each per round. Fastest sample over all rounds and, in
+parentheses, the median of the rounds' medians; then the lowest-highest of those medians, in ns. `hit_hot`: 30
+rounds of 300 samples; the others 10 rounds of 100.
+
+| Bench | M5 before | M5 after | VPS before | VPS after |
+|---|---|---|---|---|
+| `hit` a | 75.9 (124.7; 80-125) | 41.7 (124.7; 79-125) | 206.0 (261.9; 220-285) | 249.6 (261.6; 253-422) |
+| `hit` mx | 79.2 (87.7; 82-91) | 75.3 (85.7; 78-91) | 211.1 (235.6; 233-256) | 228.9 (236.3; 230-245) |
+| `hit` txt_large | 86.4 (96.6; 90-104) | 86.4 (96.9; 89-101) | 243.7 (273.4; 271-287) | 250.7 (262.4; 254-270) |
+| `hit_hot`, 1 thread | 73.3 (86.0; 81-157) | 72.0 (81.1; 76-167) | 219.6 (264.6; 255-392) | 224.2 (261.1; 233-445) |
+| `hit_hot`, 4 threads | 82.7 (208.4; 109-592) | 79.2 (162.2; 114-353) | 254.6 (587.9; 328-832) | 260.5 (490.9; 375-864) |
+| `hit_hot`, 8 threads | 82.8 (257.5; 146-866) | 81.8 (215.2; 135-873) | 252.2 (566.1; 392-870) | 249.0 (518.9; 316-875) |
+| `hit_spread`, 4 threads | 145.6 (314.8; 198-958) | 153.3 (666.4; 218-1228) | 461.6 (1512; 1080-2172) | 522.6 (1372; 1172-1512) |
+| `hit_spread`, 8 threads | 161.2 (541.2; 219-791) | 140.3 (609.2; 281-729) | 600.6 (1488; 1244-2400) | 744.6 (1634; 1475-2072) |
+| `insert_under_hits` (a store, 7 threads hitting its shard) | 199.3 (1622; 242-3692) | 160.8 (586.2; 367-1389) | 643.4 (934.2; 855-1254) | 646.4 (1179; 875-1785) |
+
+The other benches (`insert`, `insert_evicting_hot`, `hit_truncated`) are equal on both machines.
+
+- `hit_hot` at 4 and 8 threads: the medians of the rounds differ by 5-20%, the rounds themselves by 3-5x (4
+  threads, M5 109-592 ns), so the gain is inside the spread. Counting rounds in which `after` beat `before`: M5 16
+  and 15 of 30, VPS 22 and 19 of 30; median ratio of the pairs 0.90 and 0.99 (M5), 0.92 and 0.93 (VPS).
+- Why: a read lock still writes the lock word (on Linux `std`'s reader is a CAS, then a `fetch_sub`), so the
+  line moves between cores as the mutex's did; what a hit avoids is the wait, not the transfer. Bringing 8 threads
+  near one thread's time needs a read path that writes no shared line.
+- `hit` on one thread: equal within the spread on both machines (VPS paired: 6-10 of 10 rounds to `after`).
+- `insert_under_hits`: M5 faster, VPS slower (1 of 10 rounds to `after`, median ratio 1.27): the writer waits for
+  overlapping readers, and `std`'s `RwLock` does not favour it on either. No result to rely on.
+- `just bench-dnsperf`'s UDP hits, one name, queries/s over four rounds (VPS, the server on cores 0-2 (3 threads),
+  dnsperf `-c 8 -T 4 -q 500` on 3-5, 10 s a run; the script as in the repository but for those cores and the one
+  name, kept on the VPS): `before` 394 275, 324 018, 411 768, 336 044 (median 365 160); `after` 400 703, 414 404,
+  380 410, 280 403 (median 390 557). Rounds range 324-412 k against 280-414 k: no difference.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
