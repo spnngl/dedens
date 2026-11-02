@@ -11,13 +11,11 @@ and its EDE code (D73). `denial/`: what verified NSEC and NSEC3 records prove (D
 `Next::Done(Verdict)`. `chain.rs` walks the zones top-down, `response.rs` checks the answer and its denial,
 `section.rs` groups records, `verdict.rs` has the verdict types, `covered.rs` the response cut to what a Secure
 verdict covers (D75), for the CLI and the server alike, `cache.rs` the key cache the validator shares between its
-validations (D86): written by `settle`, read by `zone_of`, only what the data decided. One module per concern;
-tests of RFC behaviour in
-`tests/rfcNNNN.rs`.
+validations (D86): written by `settle`, read by `zone_of`, only what the data decided.
 
 - `tests/testdata/`: real responses from `just capture-dnssec` (the queries of `capture.yaml`), `captured_at`
   the "now" of the tests, `README.md` what each shows and the verdict a validator gives. Read by
-  `tests/captured.rs` and `tests/captured_rrsig.rs`; fuzz seeds. Never edit by hand.
+  `tests/captured.rs` and `tests/captured_rrsig.rs`; fuzz seeds. Regenerate with `just capture-dnssec`.
 - `tests/zones/`: example zones of RFCs read by the tests (RFC 4035 Appendix A; RFC 5155 Appendix A is in
   `dedens-proto`). `tests/common/denial.rs`: helpers of the denial tests; `tests/denial_captured.rs` checks each
   negative capture proves what its rcode says, and lists them: a new capture with a denial goes in its table. The

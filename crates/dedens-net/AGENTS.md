@@ -9,8 +9,10 @@ crate that touches sockets and timers.
   per server (D50), a few datagrams kept per query (D108); `tcp.rs` keeps one connection per server, TCP or TLS,
   writing the queries queued meanwhile together, a bounded queue (D108).
 - `src/tls.rs`: the certificates trusted and the TLS configurations (D60).
-- `src/dial.rs`: the QUIC endpoints and connections of DoQ and DoH, and the per-server slots holding them.
-- `src/quic.rs`: one QUIC connection per server, a stream per query, closed on a response not framed (D61, D109).
+- `src/dial.rs`: the QUIC endpoints and connections of DoQ and DoH, and the per-server slots holding them; the
+  client's receive windows (D119), no QUIC datagrams (D107).
+- `src/quic.rs`: one QUIC connection per server, a stream per query, closed on a response not framed (D61, D109); the
+  receive windows of both sides (`RECEIVE_WINDOW`, `STREAM_RECEIVE_WINDOW`, `CLIENT_RECEIVE_WINDOW`, D119).
 - `src/https.rs`: one HTTP/3 connection per server, a request stream per query, opened again after GOAWAY or a
   close (D83); the `h3` crate's connection driver runs as a task.
 - `src/doh.rs`: the sans-IO core of DoH (D82), for client, server and ODoH, on `http` types, no HTTP version: URI
@@ -29,7 +31,8 @@ crate that touches sockets and timers.
 - `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs, all
   ended at the query's deadline (D109);
   the discovery of the resource by `/.well-known/core` (D95).
-- `src/client.rs`: the exchange run over the transports, with random IDs and cookies per server.
+- `src/client.rs`: the exchange run over the transports, with random IDs, the spare IDs of its fallbacks (D114) and
+  cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
 - `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc9221.rs`, `rfc8484.rs` and `rfc9230.rs`
   against loopback TLS, QUIC and HTTP/3 servers too, with certificates of `tests/common/certificates.rs`. `tests/udp.rs`, `tests/tcp.rs`,

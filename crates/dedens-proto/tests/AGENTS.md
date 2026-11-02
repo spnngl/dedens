@@ -5,6 +5,6 @@ files (`message.rs`, `wire_rdata.rs`, `query.rs`, `text.rs`) for what spans RFCs
 strategies: `common/mod.rs`.
 
 - `testdata/`: real responses from `just capture` (the queries of `capture.yaml`), read by `captured.rs` and
-  used as fuzz seeds. Never edit by hand.
+  used as fuzz seeds. Regenerate with `just capture`.
 - `zones/`: zone files, the RFC examples and `every_type.zone`.
 - `snapshots/`: insta snapshots; accept a reviewed change with `INSTA_UPDATE=always cargo test`.
