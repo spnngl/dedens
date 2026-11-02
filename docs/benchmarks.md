@@ -557,6 +557,28 @@ one core, but two serving threads gain more with the same two cores, and an `SQP
 while idle (1 s here); on the server's core it halves the rates. The first full run of this matrix was
 discarded: a server left running by a failed run had been using the VPS's cores.
 
+The flags again on the final code (`1d6d02c`: two receiving tasks, 64 queued), the same method, five rounds with the
+order of the three rings rotating each round, no query lost and `"driver":"io_uring"` in all 60 runs. The rings
+were set by an environment variable read where the runtime is built (not committed); `TASKRUN_FLAG` stayed on in all
+three, and the second `dedensd` of the forwarding modes kept `COOP_TASKRUN`. The enters come from one run each
+with the histogram on (the front server's thread told from the second one's by its thread ids). Queries/s,
+min-max (median), and `io_uring_enter` a query:
+
+| ring | `udp` | enters | `forward` | enters |
+| --- | --- | --- | --- | --- |
+| `COOP_TASKRUN` (D51) | 185.8k-193.1k (189.2k) | 0.0158 | 37.3k-40.4k (39.3k) | 0.0824 |
+| `SINGLE_ISSUER` + `DEFER_TASKRUN` | 184.7k-191.6k (190.3k) | 0.0160 | 37.3k-42.0k (39.6k) | 0.0824 |
+| the same + `COOP_TASKRUN` | 175.2k-200.7k (189.4k) | 0.0160 | 38.3k-40.1k (39.5k) | 0.0824 |
+
+| ring | `tcp` | enters | `forward-tcp` | enters |
+| --- | --- | --- | --- | --- |
+| `COOP_TASKRUN` (D51) | 774k-829k (807k) | 0.0045 | 57.2k-59.9k (58.4k) | 0.0374 |
+| `SINGLE_ISSUER` + `DEFER_TASKRUN` | 792k-838k (808k) | 0.0083 | 55.3k-61.1k (58.2k) | 0.0370 |
+| the same + `COOP_TASKRUN` | 738k-826k (811k) | 0.0084 | 56.9k-60.7k (58.4k) | 0.0371 |
+
+The medians differ by at most 0.6% in every mode, far inside the ranges: `DEFER_TASKRUN` gains nothing. It
+costs nearly twice the enters over TCP and saves none over UDP or when forwarding. `COOP_TASKRUN` stays (D51, D123).
+
 ## Zone files (D25)
 
 A generated 100 000-record zone: dedens 7.3-7.5 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record
