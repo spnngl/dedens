@@ -3,8 +3,7 @@
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 
@@ -16,6 +15,7 @@ use crate::download::{Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 use crate::lists::Store;
 use crate::privileges::Identity;
+use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
 /// The pipeline in use. Serving threads compare [`Current::generation`] with the one they hold before each query,
 /// one atomic load, and take the new pipeline under the lock only when it changed; a reload wakes them too, so that
@@ -23,9 +23,9 @@ use crate::privileges::Identity;
 #[derive(Debug)]
 pub(crate) struct Current {
     generation: AtomicU64,
-    pipeline: Mutex<Arc<Pipeline>>,
+    pipeline: Mutex<sync::Arc<Pipeline>>,
     /// The wake-up of each serving thread, sent by [`Current::replace`]; see [`Current::follow`].
-    followers: Mutex<Vec<flume::Sender<()>>>,
+    followers: Mutex<Vec<sync::Sender<()>>>,
     /// The validator's questions in flight, for all threads and across reloads (D86).
     flights: Flights,
 }
@@ -34,7 +34,7 @@ impl Current {
     pub(crate) fn new(pipeline: Pipeline) -> Self {
         Self {
             generation: AtomicU64::new(0),
-            pipeline: Mutex::new(Arc::new(pipeline)),
+            pipeline: Mutex::new(sync::Arc::new(pipeline)),
             followers: Mutex::default(),
             flights: Flights::default(),
         }
@@ -50,8 +50,8 @@ impl Current {
     }
 
     /// The pipeline in use: of [`Current::generation`] or a later one.
-    pub(crate) fn get(&self) -> Arc<Pipeline> {
-        Arc::clone(&self.pipeline.lock().unwrap_or_else(PoisonError::into_inner))
+    pub(crate) fn get(&self) -> sync::Arc<Pipeline> {
+        sync::Arc::clone(&self.pipeline.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// What a serving thread starts from: a channel with a message once [`Current::replace`] ran since the last one
@@ -59,8 +59,8 @@ impl Current {
     /// (D107), with the generation and the pipeline in use. In that order, so that a replacement is never missed: one
     /// after the subscription is heard, one before it is in the pipeline, and a generation read before the pipeline
     /// can only be older than it.
-    pub(crate) fn follow(&self) -> (flume::Receiver<()>, u64, Arc<Pipeline>) {
-        let (follower, wake) = flume::bounded(1);
+    pub(crate) fn follow(&self) -> (sync::Receiver<()>, u64, sync::Arc<Pipeline>) {
+        let (follower, wake) = sync::slot();
         self.followers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -69,7 +69,7 @@ impl Current {
     }
 
     pub(crate) fn replace(&self, pipeline: Pipeline) {
-        *self.pipeline.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(pipeline);
+        *self.pipeline.lock().unwrap_or_else(PoisonError::into_inner) = sync::Arc::new(pipeline);
         self.generation.fetch_add(1, Ordering::Release);
         // A full channel holds a wake-up not yet taken, which says as much; one whose thread is gone is dropped.
         self.followers
@@ -78,7 +78,7 @@ impl Current {
             .retain(|follower| {
                 !matches!(
                     follower.try_send(()),
-                    Err(flume::TrySendError::Disconnected(()))
+                    Err(sync::TrySendError::Disconnected(()))
                 )
             });
     }
@@ -372,5 +372,137 @@ mod tests {
         let new = Duration::from_hours(1);
         let wait = ticks.wait(changed, Duration::from_hours(24), || Some(new));
         assert_eq!(wait, new);
+    }
+}
+
+/// Every interleaving of a reload with the threads that follow it (D135, `just loom`): a serving thread ends up
+/// holding the last pipeline, however the generation it reads, the pipeline it takes and the wake-up it hears fall
+/// among the steps of [`Current::replace`].
+#[cfg(test)]
+#[cfg(dedens_loom)]
+mod loom_tests {
+    use loom::future::block_on;
+    use loom::thread;
+
+    use super::*;
+    use crate::sync::Arc;
+
+    /// What a serving thread holds: `Thread` in `serve.rs`.
+    struct Serving {
+        current: Arc<Current>,
+        wake: sync::Receiver<()>,
+        generation: u64,
+        pipeline: sync::Arc<Pipeline>,
+    }
+
+    impl Serving {
+        fn new(current: &Arc<Current>) -> Self {
+            let (wake, generation, pipeline) = current.follow();
+            Self {
+                current: Arc::clone(current),
+                wake,
+                generation,
+                pipeline,
+            }
+        }
+
+        /// What a query does first, as `Thread::pipeline` does: takes the pipeline when the generation changed.
+        fn query(&mut self) {
+            let generation = self.current.generation();
+            if self.generation != generation {
+                self.pipeline = self.current.get();
+                self.generation = generation;
+            }
+        }
+
+        /// The `follow` task of `serve.rs`, which ends here once the thread holds generation `last`: no query comes, a
+        /// wake-up is the only way to the new pipeline. A wake-up that never comes is a deadlock loom reports.
+        fn follow(&mut self, last: u64) {
+            while self.generation < last {
+                block_on(self.wake.recv_async()).expect("`current` keeps the sender");
+                self.query();
+            }
+        }
+
+        fn holds_the_last(&self) -> bool {
+            sync::Arc::ptr_eq(&self.pipeline, &self.current.get())
+        }
+    }
+
+    /// A thread replacing the pipeline `times` times.
+    fn reload(current: &Arc<Current>, times: usize) -> thread::JoinHandle<()> {
+        let current = Arc::clone(current);
+        thread::spawn(move || {
+            for _ in 0..times {
+                current.replace(Pipeline::default());
+            }
+        })
+    }
+
+    /// A follower that starts while the pipeline is replaced reads a generation and a pipeline that fit: a query
+    /// then takes the last one, whichever read the replacement fell between.
+    #[test]
+    fn a_query_finds_the_last_pipeline_after_a_follow_racing_a_replace() {
+        loom::model(|| {
+            let current = Arc::new(Current::new(Pipeline::default()));
+            let reloading = reload(&current, 1);
+            let mut serving = Serving::new(&current);
+            reloading.join().expect("no panic");
+            serving.query();
+            assert!(serving.holds_the_last());
+        });
+    }
+
+    /// A thread no query reaches holds the last pipeline once woken: the wake-up is there when the replacement came
+    /// after the subscription, and the generation read says so when it came before.
+    #[test]
+    fn an_idle_follower_takes_the_pipeline_by_its_wake_up() {
+        loom::model(|| {
+            let current = Arc::new(Current::new(Pipeline::default()));
+            let reloading = reload(&current, 1);
+            let mut serving = Serving::new(&current);
+            serving.follow(1);
+            reloading.join().expect("no panic");
+            assert!(serving.holds_the_last());
+        });
+    }
+
+    /// Two replacements one after the other: the wake-ups may be one, as a full slot holds the second's, and the
+    /// follower still ends on the last pipeline.
+    #[test]
+    fn an_idle_follower_ends_on_the_last_of_two_replaces() {
+        loom::model(|| {
+            let current = Arc::new(Current::new(Pipeline::default()));
+            let reloading = reload(&current, 2);
+            let mut serving = Serving::new(&current);
+            serving.follow(2);
+            reloading.join().expect("no panic");
+            assert!(serving.holds_the_last());
+        });
+    }
+
+    /// A follower that goes while a replacement runs, with its old pipeline: the replacement does not fail, the
+    /// follower that stays hears it, and the next replacement forgets the one that went.
+    #[test]
+    fn a_dropped_follower_does_not_cost_the_others_their_wake_up() {
+        loom::model(|| {
+            let current = Arc::new(Current::new(Pipeline::default()));
+            let reloading = reload(&current, 1);
+            let leaving = {
+                let current = Arc::clone(&current);
+                thread::spawn(move || drop(Serving::new(&current)))
+            };
+            let mut staying = Serving::new(&current);
+            staying.follow(1);
+            reloading.join().expect("no panic");
+            leaving.join().expect("no panic");
+            assert!(staying.holds_the_last());
+            current.replace(Pipeline::default());
+            let followers = current
+                .followers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(followers.len(), 1, "the follower that went is forgotten");
+        });
     }
 }

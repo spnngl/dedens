@@ -49,6 +49,10 @@ metrics-util = { workspace = true, features = ["debugging"] }
 rcgen.workspace = true
 serde_json.workspace = true
 
+# D135: `just loom`.
+[target.'cfg(dedens_loom)'.dev-dependencies]
+loom.workspace = true
+
 [[bench]]
 name = "doh3"
 harness = false

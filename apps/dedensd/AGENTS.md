@@ -17,6 +17,8 @@ source and one merged set per stage side, so that a reload reads the lists that 
 `rrl` and `cookies` (D113), `client_share` and `odoh.budget`/`odoh.client_budget` (D117), and the cache's
 `max_entry_bytes`, `min_ttl` and `max_ttl` (D116, D124) too.
 `src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
+`src/sync.rs` names the `Arc`, `Mutex`, atomics and one-message channel of `reload.rs` and `flights.rs`: std's and
+flume's, loom's under `--cfg dedens_loom` (`just loom`, D135); use it for state those two share between threads.
 `src/odoh.rs`, feature `odoh`, is the Oblivious DoH target on the HTTP/3 listeners: its key, its configurations, and
 opening and sealing messages (D79); `src/odoh/proxy.rs` is its proxy role: the listed targets, their resolution and
 the forward (D94). RFC behaviour belongs in `crates/dedens-server` and its sans-IO tests.
@@ -39,6 +41,8 @@ Tests:
 - `tests/access.rs` the access lists over loopback UDP, TCP, DoH and DoC (feature `doc`), their default, their reload
   and the configurations refused (D91).
 - `tests/cookies.rs` that Server Cookies are given and loopback is never rate-limited (D113).
+- The loom tests (`#[cfg(dedens_loom)]` in `src/reload.rs` and `src/flights.rs`) run every interleaving of
+  the reload wake-up and of the flights: `just loom`, outside `just check` (D135).
 - `tests/flights.rs` that queries needing the same DS or DNSKEY of one server at once send it once (D86).
 - `tests/rfc9221.rs` that QUIC advertises no datagram support (D107); `tests/rfc9114.rs` that an HTTP/3 peer declaring
   a frame it never ends is closed and a busy honest connection is rotated, not closed (D119).

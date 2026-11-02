@@ -70,6 +70,8 @@ idna = "1.1.0"
 insta = "1.49"
 # D91: IP networks (`prefix-trie`'s key type) of the client access lists.
 ipnet = "2.12.2"
+# D135: dedensd's loom tests, under `--cfg dedens_loom` only.
+loom = { version = "0.7.2", features = ["futures"] }
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # D122: dedensd's privilege drop (`setuid`, `setgid`, `initgroups`, user and group lookup, `PR_SET_NO_NEW_PRIVS`), the
@@ -133,6 +135,8 @@ zeroize = "1.9.1"
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
+# D135: dedensd's own cfg for loom, as `--cfg loom` also switches tokio's internals.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(dedens_loom)"] }
 # docs/decisions.md D15: each crate root forbids unsafe code; a crate with a measured hot path swaps its `forbid`
 # for this `deny` and allows it in that module only, with `// SAFETY:` comments and a Miri job.
 unsafe_code = "deny"

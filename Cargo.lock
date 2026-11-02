@@ -1047,6 +1047,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "http",
+ "loom",
  "metrics",
  "metrics-util",
  "nix",
