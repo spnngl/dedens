@@ -14,7 +14,10 @@ use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
 use dedens_proto::{
     DigestType, Edns, EdnsFlags, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm,
 };
-use dedens_server::{Allowance, Forward, Pipeline, Stage, Step, Transport, Validating};
+use dedens_server::{
+    Allowance, Budget as Share, Budgets, DEFAULT_SHARE, Forward, MAX_BUDGET, Pipeline, Stage, Step,
+    Transport, Validating,
+};
 
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]
 mod common;
@@ -406,14 +409,16 @@ static WIRES: LazyLock<HashMap<(Name<'static>, RecordType), Vec<u8>>> = LazyLock
         .collect()
 });
 
-/// A validating forward stage with no cache stage, under `allowance`.
-fn validating_pipeline(validator: Validator, allowance: Allowance) -> Pipeline {
+/// A validating forward stage with no cache stage, under `allowance`, each client network's share being `share`.
+fn validating_pipeline(validator: Validator, allowance: Allowance, share: Share) -> Pipeline {
     let clock = Arc::new(|| *CAPTURED_AT);
     let server = SocketAddr::from(([192, 0, 2, 53], 53));
     Pipeline::new(vec![Stage::Forward(
-        Forward::new([server])
-            .expect("a server")
-            .validating(Validating::new(validator, clock).allowing(allowance)),
+        Forward::new([server]).expect("a server").validating(
+            Validating::new(validator, clock)
+                .allowing(allowance)
+                .sharing(Budgets::new(share).expect("a share in bounds")),
+        ),
     )])
 }
 
@@ -448,6 +453,13 @@ const ENDLESS: Allowance = Allowance {
     per_query: u32::MAX,
 };
 
+/// A share of one client network no bench spends.
+const ENDLESS_SHARE: Share = Share {
+    per_second: u32::MAX,
+    burst: MAX_BUDGET,
+    table: DEFAULT_SHARE.table,
+};
+
 /// The whole pipeline for a query whose zone keys are in no cache: the client's question, then the five of the
 /// validator, the allowance admitting and charging it (D77). No cache stage: each run validates.
 #[divan::bench(threads = [1, 2, 4, 8])]
@@ -459,6 +471,7 @@ fn serve_cold(bencher: divan::Bencher<'_, '_>) {
             validating_pipeline(
                 Validator::new(TrustAnchors::root(), Limits::default()),
                 ENDLESS,
+                ENDLESS_SHARE,
             )
         })
         .bench_local_refs(|pipeline| {
@@ -474,7 +487,7 @@ fn serve_cold(bencher: divan::Bencher<'_, '_>) {
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn serve_warm(bencher: divan::Bencher<'_, '_>) {
     static PIPELINE: LazyLock<Pipeline> =
-        LazyLock::new(|| validating_pipeline(WARM.clone(), ENDLESS));
+        LazyLock::new(|| validating_pipeline(WARM.clone(), ENDLESS, ENDLESS_SHARE));
     let query = client_query();
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
@@ -493,7 +506,28 @@ fn serve_shed(bencher: divan::Bencher<'_, '_>) {
             burst: 0,
             ..Allowance::default()
         };
-        validating_pipeline(WARM.clone(), spent)
+        validating_pipeline(WARM.clone(), spent, ENDLESS_SHARE)
+    });
+    let query = client_query();
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        assert!(matches!(
+            serve(&PIPELINE, black_box(&query), &mut out),
+            Step::Reply(_)
+        ));
+    });
+}
+
+/// A query of a client network that spent its share (D117), the allowance of all untouched: the same SERVFAIL, shed
+/// by the share before the global allowance is asked.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn serve_shed_share(bencher: divan::Bencher<'_, '_>) {
+    static PIPELINE: LazyLock<Pipeline> = LazyLock::new(|| {
+        let spent = Share {
+            burst: 0,
+            ..DEFAULT_SHARE
+        };
+        validating_pipeline(WARM.clone(), ENDLESS, spent)
     });
     let query = client_query();
     let mut out = vec![0; 1232];

@@ -32,8 +32,9 @@ Planned: `dedens-resolver`.
   served from the entry as a hit (D43). A forward stage with `dnssec: validate` puts `dedens-dnssec`'s `Validation`
   between `forward::usable` and `Cache::insert_checked`: each question it asks is one more upstream `Step`, the
   verdict is kept with the entry and sets AD (D77, `crates/dedens-server/src/validate.rs`). A query's cost to the
-  validator is capped and drawn from one shared allowance (SERVFAIL with EDE 14 beyond it); `dedensd` shares the
-  validator's questions in flight across threads (`apps/dedensd/src/flights.rs`, D77, D86).
+  validator is capped and drawn from one shared allowance and the client network's share of it (SERVFAIL with EDE 14
+  beyond either, D117); `dedensd` shares the validator's questions in flight across threads
+  (`apps/dedensd/src/flights.rs`, D77, D86).
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents

@@ -16,7 +16,7 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, captured, decode, query_for, write_config};
@@ -221,6 +221,68 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
     let got = send(one.addr, &ca, post(), b"not a message");
     assert_eq!(got.status, StatusCode::BAD_REQUEST);
     assert_eq!(upstream.queries(), 0);
+}
+
+/// A valid sealed query of the target at `addr`, as a client sends it.
+fn valid_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
+    let parsed = ObliviousDoHConfigs::parse(&configs(addr, ca)).expect("configurations");
+    let mut entropy = Entropy::new().expect("randomness");
+    let (message, _) = encrypt_query(
+        &parsed.configs()[0],
+        &query_for(&captured("a"), 0),
+        0,
+        &mut entropy,
+    )
+    .expect("a query");
+    message.encode()
+}
+
+/// D117, audit S14: posts past a budget are 503 before their body is opened, so the upstream is asked for what was
+/// opened and no more. All clients here are the loopback's, which `rrl.exempt` leaves out of the network budget by
+/// default: the global one bounds them, and the network one once nothing is exempt. (That another network is still
+/// opened is the unit test of `Target::open`.)
+#[test]
+fn d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened() {
+    for config in [
+        "odoh:\n  budget: {rate: 1, burst: 2}\n",
+        "rrl:\n  exempt: []\nodoh:\n  client_budget: {rate: 1, burst: 2}\n",
+    ] {
+        a_flood_is_refused_past_two_posts(config);
+    }
+}
+
+fn a_flood_is_refused_past_two_posts(config: &str) {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving(&ca, config, upstream.addr);
+    let message = valid_query(server.addr, &ca);
+    let post = |body: &[u8]| {
+        let post = request(
+            server.addr,
+            http::Method::POST,
+            "/dns-query",
+            Some(MEDIA_TYPE),
+        );
+        send(server.addr, &ca, post, body).status
+    };
+    let start = Instant::now();
+    let statuses: Vec<_> = (0..20).map(|_| post(&message)).collect();
+    // The bucket holds 2 and refills one a second, so no more than 2 plus the seconds the posts took, and one
+    // for the second that began before them, are opened, however fast the posts are.
+    let bound = 3 + usize::try_from(start.elapsed().as_secs()).expect("seconds");
+    let opened = statuses
+        .iter()
+        .filter(|&&status| status == StatusCode::OK)
+        .count();
+    assert!(
+        (2..=bound).contains(&opened),
+        "{opened} opened of {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&StatusCode::SERVICE_UNAVAILABLE),
+        "a post is refused: {statuses:?}"
+    );
+    assert_eq!(upstream.queries(), opened);
 }
 
 /// D79: a key file fixes the key across restarts; without one each start makes its own.

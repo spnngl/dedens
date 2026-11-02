@@ -458,8 +458,8 @@ cold ones build their own. Median per query, one run.
 | 4 | 113 µs | 6.2 µs | 0.12 µs |
 | 8 | 106 µs | 6.2 µs | 0.11 µs |
 
-Admitting and charging a query costs a clock read and two or three short critical sections, not seen against the 6 µs
-of a warm one, and the lock does not slow eight threads. A shed query costs 0.1 µs: a flood of uncached queries past
+Admitting and charging a query costs a few atomic updates (D117; two critical sections of a `Mutex` before), not seen against the 6 µs
+of a warm one, and eight threads do not slow it. A shed query costs 0.1 µs (0.15 µs since D117): a flood of uncached queries past
 the allowance asks nothing upstream and decodes nothing. A unit (`Allowance`) is about 10 µs at the cold figure (five
 questions and some seven checks, 12 units, 115 µs, no network), 3 µs for an RSA check, 27 µs for ECDSA P-256 and
 340 µs for P-384, the worst case the default `per_second` (10 000, so 0.1 core on the common algorithms, 3.4 on
@@ -526,3 +526,39 @@ The limit adds about 11-20 ns to a hit. A query with a Client Cookie costs about
 `SystemTime::now` and the hash being most of it. A query over its rate is answered in half the time of a hit, and a
 spoofed flood costs the server no allocation with `slip` 0. A slipped reply allocates once (divan's allocation column:
 64 bytes for a TC reply, 160 for BADCOOKIE, which holds the cookie option); no other path allocates.
+
+## Client budgets (D117)
+
+Machine: Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), release profile with debuginfo, a laptop in use, load average 4-7
+over the runs. Rounds interleave, 4 of them, each running in turn `cargo bench -p dedens-bench --bench dnssec -- serve_` on the
+tree before D117 (commit 1346075, in a copy with its own `target`), the same on this one, then `--bench odoh -- query_message`
+on this one and `-- budget`, then `-- query_message` on the first. The cells are the mean of the middle two of the 4 rounds' medians.
+
+`benches/dnssec.rs`, the benches of D77's section with the network's share on the path (cold, warm and shed give the share an
+unlimited rate, so the fixed clock measures what they did and not the share's sheds); `serve_shed_share` is a query shed by its
+network's share (burst 0) with the global allowance unlimited.
+
+| Threads | Cold before / after | Warm before / after | Shed before / after | Shed by the share |
+|---|---|---|---|---|
+| 1 | 107.5 / 106.9 µs | 5.95 / 6.15 µs | 0.166 / 0.167 µs | 0.155 µs |
+| 2 | 106.3 / 106.4 µs | 6.21 / 6.14 µs | 0.120 / 0.146 µs | 0.133 µs |
+| 4 | 106.2 / 105.9 µs | 6.23 / 6.09 µs | 0.117 / 0.148 µs | 0.131 µs |
+| 8 | 105.3 / 105.3 µs | 5.96 / 6.02 µs | 0.119 / 0.146 µs | 0.129 µs |
+
+Cold and warm do not move. A shed query costs about 25 ns more with 2 threads or more (none with 1, where the noise is
+larger than the difference): the share's slot hashed and its word read before the allowance's. The allowance's `Mutex`
+is gone: a query takes no lock.
+
+`benches/odoh.rs`: `decrypt_query_message` is the HPKE open of a query, the cost a flood of posts asks of the target:
+36.7 µs median before and after (34.4-34.7 µs fastest; one round at 52 µs while the machine was busy). `budget_admit` is what
+`Target::open` does first for a client outside loopback, the network keyed and hashed and a unit taken, `budget_refuse` the same with
+the budget spent, each thread on a network of its own: 7.1 ns and 6.1 ns with 1 thread, 7.3 ns and 6.5 ns with 4 (fastest
+6.5 ns and 5.6 ns; a round or two at 20-40 ns while the machine was busy), the table of 2^16 words in the cache of every core.
+`budget_refuse_one_network` has all the threads refused on one network's word, 5.6 ns with 1 thread and 6.2 ns with 4: a refusal
+writes nothing, so the cores do not fight for its line. A refused post costs the target that and its `503`, three orders
+of magnitude below a decapsulation.
+
+A unit of D77 is about 10 µs, so the defaults (`client_share` 1000 a second, burst 2000; `odoh.client_budget` the same) let a
+network spend 1 % of a core on validations (about 80 cold ones a second, 160 in a burst) and 3.7 % of a core on
+decapsulations (1000 a second, 2000 in a burst); the global `odoh.budget` (10 000 a second, burst 20 000) caps all clients at
+37 % of a core. A network's budget is a tenth of the global one for both.

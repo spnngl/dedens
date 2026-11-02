@@ -245,7 +245,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114, D117) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -286,8 +286,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   failed: nothing is held in the cache, or a flood would fail the names it asks for, and the client may ask
   again; a refresh that finds the bucket empty is not made, the reply stands. EDE 14, not 22/23 (those claim an
   upstream or network failure, none was tried, and a client's resolver retries elsewhere and moves the flood), nor
-  5/6 (no DNSSEC verdict was reached). The bucket is global, not per client: the pipeline sees no client address
-  (TODECIDE), so one client can spend what all share. A hit in the cache stage costs no unit, a client with CD
+  5/6 (no DNSSEC verdict was reached). Each client network has a share of it too (D117); the bucket
+  here is the global one. A hit in the cache stage costs no unit, a client with CD
   none; a warm validation (D86) two. Measured: `serve_shed` 0.11 µs, `serve_warm` 6.2 µs, `serve_cold` 110 µs, no
   slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/limits.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
   in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came, for at most `max_insecure_ttl` (D93). `Bogus`: SERVFAIL with the EDE code
@@ -752,7 +752,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
-- D79 (amends D69, D78, D83; amended by D94, D115) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
+- D79 (amends D69, D78, D83; amended by D94, D115, D117) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
   through a proxy, `dedensd` serves as a target. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
   - Messages: a client sends the encrypted query by POST to the proxy (RFC 9230 §4.1: media type
     `application/oblivious-dns-message` as content type and accept, `targethost` and `targetpath` in the query of the
@@ -810,7 +810,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     changed `odoh` section (the key file's path) is ignored with a warning (it takes a restart), and a key file that
     went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
     gains status 401 and counts no configurations GET (not a `DoH` query). The unauthenticated decapsulation per
-    POST has no throttle yet (`docs/TODECIDE.md`).
+    POST is bounded since D117.
   - Not here: HTTP/2. The proxy role is D94's.
   - Checked live (2026-11-01, `dedens @https://TARGET/PATH +odoh-proxy=PROXY example.com A`, the targets and
     relays of `DNSCrypt/dnscrypt-resolvers` `v3/odoh-servers.md` and `odoh-relays.md`): every target below answers
@@ -1647,7 +1647,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   above `max_ttl`. Rejected: capping in `dedens-server`
   (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
   `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
-- D94 (amends D79, D84, D91) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
+- D94 (amends D79, D84, D91; amended by D117) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
   [HOST[:PORT]], timeout_ms}}` makes each `https://` listener forward the requests that name a target. `targets` is
   required and not empty, a port is 443 unless given; a name is read strictly (UTS 46 with STD3 rules and the label
   and 253-byte limits, as A-labels in lower case, one trailing dot dropped) and a name or port that does not read is
@@ -1700,7 +1700,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     resolves, checks and sends.
   - Privacy: no log line at info or below tells a client address and a target together; a failure logs its `error`
     token at debug, with neither. Stats: `dedensd_odoh_proxied_total{status}`, the status one of those above or
-    `other`. No rate limit per client: the deployment's (D90; D113 limits UDP only; D79's throttle in `docs/TODECIDE.md`). The pool keeps
+    `other`. No rate limit per client on the forwards: the deployment's (D90; D113 limits UDP only; the target's decapsulations are D117's). The pool keeps
     a slot per address a listed name resolved to (`docs/TODECIDE.md`).
   - Tests: `apps/dedensd/tests/rfc9230.rs` (a real `dedensd` as proxy to a real one, or to a test HTTP/3 server that
     records what it sees: the client's query answered, the proxy answering as a target too, the target's 200 and its
@@ -1800,10 +1800,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     bench needed. Rejected: a periodic check (a wake-up per thread each period for nothing, and the old one held
     till the next).
 
-- D106 (amends D71, D74, D75, D77) Validation cost counts what it costs: the debt of the admission bucket stops at
+- D106 (amends D71, D74, D75, D77; amended by D117) Validation cost counts what it costs: the debt of the admission bucket stops at
   one burst and a query in debt asks no more, and NSEC3 hashing is counted in SHA-1 blocks, as the salt and the name
   make them.
-  - Debt: `Bucket::charge` (`dedens-server/src/validate.rs`) floors the units at `-burst` (default -20 000). Before,
+  - Debt: `Budgets::charge` (`dedens-server/src/budget.rs`; `Bucket::charge` of `validate.rs` until D117) floors the units at `-burst` (default -20 000). Before,
     2 000 expensive queries admitted together left about -770 000 units and validation shed for about 77 s after the
     flood stopped; now it admits again `burst / per_second + 1` s after (3 s by default: `admit` wants a unit above
     zero, and the clock counts whole seconds). The floor forgives the units above it, so a query is also stopped
@@ -1837,7 +1837,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     verdict of zones that validate today, where counting changes only what a response may cost. Each chased CNAME
     name starts a validation with a fresh `Budget` (D77), so one query may spend 9 of them (the first and
     `MAX_CHASES`), 73 728 blocks, 18 units, 6.6 ms of hashing at most; the `Allowance` charges it as it goes.
-  - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `validate.rs`,
+  - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `budget.rs`,
     `the_debt_of_queries_in_flight_is_at_most_a_burst` and `a_flood_in_flight_asks_no_more_than_the_burst_allows` in
     `dedens-server/tests/limits.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
     `dedens-dnssec/tests/rfc5155.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
@@ -1926,6 +1926,58 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
     `threads_default_to_the_cores_on_linux` (`config.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
     Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
+
+- D117 (amends D77, D79, D94, D106; builds on D91, D113) Client budgets, from the audit (S3, S14): what one client can
+  spend of a shared limit is bounded before the shared limit is. Two places had one budget for all: the validation
+  allowance (D77) and the ODoH target's decapsulations (D79).
+  - One keyed table (`Budgets`, `dedens-server/src/budget.rs`) for both: a client's key is its network, a /24 of
+    IPv4 and a /48 of IPv6 (an IPv4-mapped address counts as IPv4), hashed with a random key into a fixed table
+    of 2^16 words (512 KiB). Memory does not grow with the clients; two networks that collide share a bucket, as
+    in D113. A word is one `AtomicU64`, the last second and the debt of D106; no lock, and a refusal that changes
+    nothing writes nothing, so a flood does not make the cores fight for the line. The global allowance is the
+    same type with one slot, so D106's debt is one piece of code. The prefix is /48 where D113's is /56: a site is
+    given a /48, and a holder of one would otherwise have 256 buckets of work; D113 limits answers, which a
+    holder of many /56 does not gain from the same way.
+  - The key has a proven bit: a connection or a valid Server Cookie (D113) cannot be spoofed, so those queries
+    have a bucket of their own and a flood from spoofed UDP sources of a network does not shed them.
+  - Validation (S3). `Pipeline::query` passes the source (address, proven bit) and its `now` (the cache's clock,
+    D43, monotonic; the validator keeps reading the wall clock for signatures) to `Validating::admit`, which takes
+    one unit of the network's share, then one of the global allowance, and gives the first back if the second
+    refuses. `Check::next` charges both with what the validation spent (D106) and sheds when either is in debt:
+    SERVFAIL with EDE 14, nothing held, counted `verdict="shed_share"` for the share and `verdict="shed"` for
+    the allowance. Cache hits, CD and classes other than IN cost neither, as before. A source on D113's
+    `rrl.exempt` list has no share and still spends the allowance. `client_share: {rate, burst}` on the forward
+    stage, default 1000 and 2000, a tenth of the allowance, so that ten networks at their share spend all of it
+    and no one network can: 2000 units are about 160 cold validations (`docs/benchmarks.md`). A reload keeps the
+    key cache and restarts the shares only when the setting changed.
+  - ODoH (S14). Before `ObliviousDoHMessage::parse` and the HPKE open, `Target::open` takes one unit of the
+    client network's budget (`odoh.client_budget`, default 1000 and 2000: 3.5% of a core at 34.6 µs a
+    decapsulation) and one of the global one (`odoh.budget`, default 10 000 and 20 000: a third of a core), and
+    gives the first back if the second refuses. A QUIC peer completed its handshake: its address is proven.
+    Exempt sources pay no network unit. Past a budget the request is 503 (RFC 9230 §4.3 leaves errors to DoH's),
+    counted `dedensd_odoh_limited_total{budget}` and logged at debug, whatever the body: the refusal says nothing
+    about the message. Read at start with the rest of `odoh` (D79). A target sees its proxy's address, not the
+    client's (D91), and the pipeline its source address likewise: all the clients of one proxy spend one network
+    budget and one validation share, so a target behind a busy proxy raises them, or lists the proxy in
+    `rrl.exempt`.
+  - Why these numbers: a decapsulation is 34.6 µs, a cold validation 12 units of about 10 µs, and taking a unit
+    from the table a few ns (`docs/benchmarks.md`): the check costs thousands of times less than what it guards.
+  - Rejected: a map of clients with eviction (an attacker evicts); tables per thread (a client spreading over
+    threads gets the budget of each); a budget per connection (a connection is cheap to open); places per thread
+    for decapsulations held through the exchange (the open is synchronous on the thread, so places bound the
+    exchanges in flight and not the CPU, and a global budget bounds the CPU; the upstream queries in flight have
+    their own slots); no exemption for validation shares either way (a proxy hiding clients is in `rrl.exempt`, as
+    D113 says).
+  - Limits are in `docs/TODECIDE.md`. Tests: `a_client_over_its_share_cannot_shed_another_client`,
+    `a_proven_client_is_not_shed_by_the_unproven_ones_of_its_network`, `an_exempt_source_has_no_share`
+    (`dedens-server/tests/limits.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
+    (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
+    `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
+    (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/rfc9230.rs`),
+    `a_client_share_is_set_per_stage_and_reload_keeps_the_keys`, `an_odoh_target_has_limits` (`config.rs`). No
+    fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
+    `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
+    `decrypt_query_message` (`odoh.rs`).
 
 ## Observability
 

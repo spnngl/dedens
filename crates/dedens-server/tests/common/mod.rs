@@ -4,7 +4,7 @@
 #![allow(dead_code, reason = "each test file uses part of the helpers")]
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
@@ -280,17 +280,30 @@ pub(crate) fn run_captured_without(
     captures: &Captures,
     dead: Option<SocketAddr>,
 ) -> Run {
+    run_captured_from(
+        pipeline,
+        (Ipv4Addr::LOCALHOST.into(), Transport::Udp),
+        query,
+        now,
+        captures,
+        dead,
+    )
+}
+
+/// [`run_captured_without`] for a client at `from`, over `transport`.
+pub(crate) fn run_captured_from(
+    pipeline: &Pipeline,
+    (from, transport): (IpAddr, Transport),
+    query: &[u8],
+    now: u32,
+    captures: &Captures,
+    dead: Option<SocketAddr>,
+) -> Run {
     let mut out = vec![0; 65535];
     let mut asked = Vec::new();
     let mut requests = Vec::new();
     let mut sent = None;
-    let mut step = pipeline.query(
-        query,
-        Transport::Udp,
-        Ipv4Addr::LOCALHOST.into(),
-        now,
-        &mut out,
-    );
+    let mut step = pipeline.query(query, transport, from, now, &mut out);
     let reply = loop {
         match step {
             Step::Reply(len) => break Some(out[..len].to_vec()),
@@ -326,6 +339,7 @@ pub(crate) fn run_together(
     pipeline: &Pipeline,
     name: &str,
     queries: usize,
+    now: u32,
     captures: &Captures,
 ) -> (usize, Vec<Option<Vec<u8>>>) {
     let query = client_query(name, RecordType::A, Flags::NONE, true);
@@ -343,7 +357,7 @@ pub(crate) fn run_together(
             &query,
             Transport::Udp,
             Ipv4Addr::LOCALHOST.into(),
-            0,
+            now,
             &mut out,
         );
         finish(step, &out, &mut waiting);
@@ -353,7 +367,7 @@ pub(crate) fn run_together(
             requests += 1;
             assert!(requests < 100_000, "the queries ask for ever");
             let response = captures.answer(&upstream.request());
-            let step = pipeline.receive(upstream, response, 0, &mut out);
+            let step = pipeline.receive(upstream, response, now, &mut out);
             finish(step, &out, &mut waiting);
         }
     }
