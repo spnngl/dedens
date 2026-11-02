@@ -3,7 +3,8 @@
 //! `hit` serves real responses on one thread; `hit_hot` has every thread ask one name (one shard lock), and
 //! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response
 //! already decoded, as a forwarder has it; `insert_evicting_hot` is one that must evict from a full shard whose
-//! entries all have the most hits (D116).
+//! entries all have the most hits (D116); `insert_under_hits` one that waits behind threads hitting its shard
+//! (D137).
 //!
 //! Features `metrics` (counters on, no recorder) and `recorder` (counters on and recorded) measure the cache's
 //! counters (D30).
@@ -12,6 +13,7 @@ use std::cell::Cell;
 use std::hash::{BuildHasher, RandomState};
 use std::hint::black_box;
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
@@ -30,6 +32,9 @@ fn main() {
 }
 
 const THREADS: &[usize] = &[1, 4, 8];
+
+/// Threads hitting in `insert_under_hits`.
+const HITTERS: usize = 7;
 
 /// Names in `hit_spread`.
 const SPREAD: usize = 10_000;
@@ -189,6 +194,35 @@ fn insert_evicting_hot(bencher: Bencher<'_, '_>) {
             let stored = insert_at_0(&cache, &query, &response);
             (cache, stored)
         });
+}
+
+/// A store of one name into the only shard while `HITTERS` threads hit another name of it: how long a writer waits
+/// behind readers of the same lock (D137), where `hit_hot` times the readers. They hit until the timing ends.
+#[divan::bench(sample_count = 300)]
+fn insert_under_hits(bencher: Bencher<'_, '_>) {
+    let cache = Cache::new(Config {
+        shards: 1,
+        ..Config::default()
+    })
+    .expect("a valid config");
+    let (hot, response) = synthetic("www.example.com");
+    assert!(insert_at_0(&cache, &hot, &response), "cacheable");
+    let (stored, response) = synthetic("other.example.com");
+    let decoded = Message::decode(&response).expect("decodes");
+    let stored = Query::read(&stored).expect("a valid query");
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..HITTERS {
+            scope.spawn(|| {
+                let mut out = out();
+                while !done.load(Ordering::Relaxed) {
+                    hit_once(&cache, &hot, &mut out);
+                }
+            });
+        }
+        bencher.bench_local(|| cache.insert(&stored, black_box(&decoded), 0, 0).is_ok());
+        done.store(true, Ordering::Relaxed);
+    });
 }
 
 #[divan::bench(threads = THREADS)]
