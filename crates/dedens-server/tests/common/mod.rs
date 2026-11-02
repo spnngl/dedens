@@ -13,6 +13,16 @@ use dedens_dnssec::validator::{Limits, Validator};
 use dedens_proto::{Flags, Message, Name, Rcode, RecordType};
 use dedens_server::{Forward, Pipeline, Stage, Step, Transport, Validating};
 
+/// The bytes `text` writes in hexadecimal, as RFC 9018 Appendix A writes them.
+pub(crate) fn hex(text: &str) -> Vec<u8> {
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII"), 16).expect("hexadecimal")
+        })
+        .collect()
+}
+
 /// The upstream servers of [`forwarder`], in order.
 pub(crate) fn servers() -> Vec<SocketAddr> {
     ["192.0.2.1:53", "192.0.2.2:53"]

@@ -75,6 +75,8 @@ metrics-util = { version = "0.20.4", default-features = false }
 predicates = "3.1.4"
 # D91: the longest-prefix tree of the client access lists.
 prefix-trie = "0.10.1"
+# D113: SipHash-2-4, the MAC of RFC 9018 server cookies.
+siphasher = "1.0.4"
 proptest = "1.12"
 # D71: DNSSEC signature checks and digests; compio's TLS already builds it (the "ring" feature above).
 ring = "0.17.14"

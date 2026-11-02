@@ -2,10 +2,10 @@
 //! failures (D43).
 
 use dedens_cache::{Cache, Checked, Freshness, Lookup, StalePolicy};
-use dedens_proto::edns::{EDE_LEN, InfoCode};
-use dedens_proto::{Edns, Header, Query, Rcode};
+use dedens_proto::edns::InfoCode;
+use dedens_proto::{Header, Query, Rcode};
 
-use crate::reply::{Client, append_opt};
+use crate::reply::Client;
 
 /// How [`look`] reads the cache.
 #[derive(Clone, Copy)]
@@ -49,7 +49,9 @@ pub(crate) fn look(
     let limit = client.limit().min(out.len());
     let edns = client.edns.as_ref().map(|_| client.our_edns());
     // Room is kept for our OPT record; a stale hit leaves room for its EDE option itself (`Cache::STALE_ROOM`).
-    let opt = edns.as_ref().map_or(0, Edns::wire_len);
+    let opt = edns
+        .as_ref()
+        .map_or(0, |edns| edns.wire_len() + client.options_len(None));
     let Some(room) = limit.checked_sub(opt) else {
         return Looked::Miss;
     };
@@ -88,9 +90,9 @@ pub(crate) fn look(
             InfoCode::STALE_ANSWER
         }
     });
-    match append_opt(&edns, error, &mut out[..limit], hit.len) {
+    match client.append_opt(&edns, error, &mut out[..limit], hit.len) {
         Some(len) => Looked::Reply {
-            len: client.pad(out, len, error.map_or(0, |_| EDE_LEN)),
+            len: client.pad(out, len, client.options_len(error)),
             refresh,
         },
         None => Looked::Miss,

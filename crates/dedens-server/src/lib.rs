@@ -29,16 +29,20 @@
 
 mod access;
 mod cache;
+mod cookie;
 mod forward;
 mod metrics;
 mod pipeline;
 mod plugin;
 mod reply;
+mod rrl;
 mod validate;
 
 pub use access::{Access, Denial, Network, NetworkError};
+pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use dedens_proto::Transport;
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
 pub use plugin::{Answer, Plugin, Records};
+pub use rrl::{Config as RateLimitConfig, MAX_BURST, Rate, RateLimit, RateLimitError, Verdict};
 pub use validate::{Allowance, Clock, Validating};

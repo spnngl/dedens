@@ -65,6 +65,29 @@ fn s4_other_lengths_are_kept_unknown() {
     }
 }
 
+/// §5.2: with several COOKIE options in a request only the first is considered, a later one is ignored even if its
+/// length is invalid (so no violation) or its data differs.
+#[test]
+fn s5_2_only_the_first_cookie_option_is_read() {
+    let first = option_wire(10, &CLIENT);
+    for later in [vec![0; 7], vec![9; 41], vec![5; 8], vec![6; 16]] {
+        let mut wire = first.clone();
+        wire.extend(option_wire(10, &later));
+        wire.extend(option_wire(65001, &[1]));
+        let decoded = decode_options(&wire);
+        assert_eq!(decoded.violations, [], "{later:?}");
+        let options = decoded.message.edns.expect("OPT record").options;
+        assert_eq!(
+            options,
+            [
+                EdnsOption::Cookie(Cookie::new(CLIENT, None).unwrap()),
+                EdnsOption::Unknown(UnknownOption::new(OptionCode(65001), &[1]).unwrap())
+            ],
+            "{later:?}"
+        );
+    }
+}
+
 #[test]
 fn s4_a_server_cookie_of_bad_size_cannot_be_built() {
     assert!(Cookie::new(CLIENT, Some(&[0; 7])).is_err());

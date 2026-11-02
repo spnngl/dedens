@@ -13,8 +13,12 @@ sets AD, the upstream's AD is never read, and a secure response is cut by `deden
 to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
 captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. `Allowance` bounds what queries cost
 the validator (D77, `tests/limits.rs`): a query past it is shed in `Pipeline::query`, before any question. Feature `metrics` (D30): the validation
-and access counters, `src/metrics.rs`.
+access, rate limit and cookie counters, `src/metrics.rs`.
 
 `Pipeline::with_access` takes the client access lists (D91, `src/access.rs`): the caller passes the client's address
 to `Pipeline::query`, and a denied one is answered before any stage (`tests/rfc5358.rs`). Without lists, everyone is
 answered.
+
+`Pipeline::with_rate_limit` and `with_cookies` (D113, `src/rrl.rs`, `src/cookie.rs`) take the UDP rate limit per client
+network and the RFC 9018 Server Cookies; a valid Server Cookie skips the limit. `tests/rrl.rs`, `tests/rfc7873.rs` and
+`tests/rfc9018.rs` (RFC 9018 Appendix A vectors); the cost is in `crates/dedens-bench/benches/rrl.rs`.

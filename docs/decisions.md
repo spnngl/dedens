@@ -947,7 +947,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
-- D105 (amends D81) `dedensd` CoAP server limits (audit S7, S9, L10, E7), as D47 bounds the other listeners:
+- D105 (amends D81; amended by D113) `dedensd` CoAP server limits (audit S7, S9, L10, E7), as D47 bounds the other listeners:
   - Replays (RFC 7252 §4.5, §4.8): `Dedup` sends the kept reply again at most `MAX_RETRANSMIT` = 4 times per entry
     (`coap::MAX_RETRANSMIT`, shared with the client's `Params`), the retransmissions a client makes, so every one of a
     client's is answered; then the message is still a duplicate (never processed again) but gets silence, until the
@@ -955,7 +955,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     got a ~1 KB reply for each ~40-byte datagram repeated for `EXCHANGE_LIFETIME`; the same CON sent 100 times is now
     answered 5 times at most. NON requests are deduplicated too, for `NON_LIFETIME` (145 s; §4.5 SHOULD, §4.8.2), with
     no reply kept: a duplicate is dropped. Not covered: a message with a new ID, CON or NON, is a new request, so a
-    spoofed source is amplified as with plain UDP DNS; the rate of a source is D90's, left to the RRL step (audit S1).
+    spoofed source is amplified as with plain UDP DNS; D113 limits the rate of a source network, and sends a source over it nothing.
   - Block2 follow-ups (D81): the response kept in `Blocks` is served at most `(1 + MAX_RETRANSMIT)` times its size in
     bytes (`Found::Spent`, then silence), whatever the message IDs, and a follow-up neither stores it again nor moves its
     clock. Bytes, not blocks: the client picks the block size, a 64-byte client of a 2649-byte answer needs 42 requests,
@@ -1234,7 +1234,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   again on the way back; stage and server indices), so it outlives the query's buffer, and `Pipeline::receive`
   takes it back. Rejected: reading the query again in `dedensd`'s upstream task (a second cache lookup, a miss
   counted twice, and no way to tell a refresh from a reply).
-- D44 (amended by D64-D66, D84, D91) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
+- D44 (amended by D64-D66, D84, D91, D113) `dedensd` configuration, D24 narrowed for the first server: one YAML file (`--config`), as D36's query
   files; `listen` addresses, `pipeline` (stage names in order), `stages` (name to settings
   under `type`: `cache` with `dedens_cache::Config`'s fields, `forward` with `servers`, `IP` meaning port 53),
   `upstream_ca` (D65).
@@ -1263,7 +1263,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
-- D47 (amended by D64, D91) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
+- D47 (amended by D64, D91, D113) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
   replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
@@ -1275,7 +1275,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   answered, and a reply not written within the write time is given up with its stream reset: a client granting
   no flow control credit keeps the connection for the write time past the idle time at most, and its slot only
   for the idle time. No per-address cap, for TCP either. Constants for now; configuration with need. Client
-  allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90).
+  allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90; UDP is limited per network by D113).
 - D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
   one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
@@ -1542,7 +1542,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   non-DNS `dns`; 404 for another path, also `/.well-known/odohconfigs` without `odoh`, and for the other listener's
   path; 405 for PUT and DELETE; 413 for a 70000-byte POST. A request the pipeline cannot parse as a query (a wrong
   label length) is 200 with FORMERR (§4.2.1).
-- D90 (amends D47, D77) Rate limits per client address are the deployment's: nftables `hashlimit` or `dnsdist` in
+- D90 (amends D47, D77; superseded by D113 for UDP and DoC: kept for TCP, TLS, QUIC and HTTPS) Rate limits per client address are the deployment's: nftables `hashlimit` or `dnsdist` in
   front of `dedensd` limits queries and connections per address, for UDP, DoQ and DoT alike (a general reverse
   proxy such as nginx `stream` does TCP only, and a proxy hides the client's address unless PROXY protocol or the
   like carries it). `dedensd` keeps what only it can weigh: the validation cost of one query (256 units) and the
@@ -1550,6 +1550,71 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   per-address connection cap in `dedensd`. RRL (response rate limiting, a defence against reflection) belongs to
   the authoritative phase, where the server answers from its own data; a stub or forwarder has nothing to
   amplify. The client's address enters the pipeline only for the allow and block lists (`docs/TODECIDE.md`).
+- D113 (supersedes D90 for UDP and DoC; amends D47, D91, D105; audit S1) `dedensd` limits the rate of responses over UDP
+  and DoC per client network, and gives Server Cookies that exempt a client from the limit. D90 left both to the
+  deployment on the ground that a forwarder has nothing to amplify; a cache hit answers a ~40-byte query with up to
+  1232 bytes (a 1.2 kB TXT, `benches/server.rs`), to a source address anyone can forge, so a daemon safe by default
+  cannot leave the limit to a firewall it may not have. Decided by the user. TCP, TLS, QUIC and HTTPS stay as D90 says:
+  the handshake proves the address (QUIC answers Initial with Retry, D47) and a per-address cap stays the deployment's.
+  The settings are `rrl` and `cookies` in `apps/dedensd/src/config.rs`, the code `rrl.rs` and `cookie.rs` of
+  `dedens-server`; both are on by default.
+  - What is limited. A UDP query, before any check but the access lists, so a FORMERR is limited too; a REFUSED of the
+    access lists (D91) as well, since the default lists refuse every Internet source and that REFUSED is as spoofable
+    as an answer, and past the limit it is dropped, never truncated. A response (QR set) or a header-less datagram is
+    dropped before, so forged responses spend no bucket. DoC is limited too: unprotected CoAP over UDP is as spoofable,
+    and D105 left the rate of a source to this step. A DoC discovery or DNS query counts; an error does not (it is no
+    larger than its request), nor a request for a later block (no body, Block2 number over 0): it follows a query that
+    counted and D105 bounds it. CoAP has no TC, so a limited DoC request gets nothing, slip or not.
+  - Not limited: connection-oriented transports, as above; sources in `rrl.exempt` (default loopback, which cannot be
+    forged from outside; a proxy or a monitor on another address goes in the list, as BIND's `exempt-clients`); a query
+    with a valid Server Cookie, which proves the address.
+  - Limit. Token bucket per client network, `/24` IPv4 and `/56` IPv6 (BIND `ipv4-prefix-length` and
+    `ipv6-prefix-length`, `doc/arm/reference.rst`; Knot's levels, `src/knot/modules/rrl/functions.c`); IPv4-mapped
+    IPv6 counts as IPv4 (D91). Every query counts whatever the name: Unbound's `ip-ratelimit` does too, and BIND's
+    `responses-per-second` counts identical responses, which its documentation warns hurts recursive servers.
+    Defaults, Knot's (`rate-limit` 50 and `instant-limit` 125 per address, `rrl.c`) times its multipliers for those
+    prefixes (32 for `/24`, 3 for `/56`, `functions.c`): IPv4 1600 a second, burst 4000; IPv6 150, burst 375. A burst
+    left out is 2.5 times the rate; one below the rate is refused at read (the bucket would never fill). BIND and
+    Unbound ship it off; here it is on, because this one protects others. A network sending more than 1600 queries a
+    second gets slips and falls back to TCP or a cookie: raise `rrl.ipv4.rate`, or turn it off.
+  - Slip (BIND `slip`, Knot `slip`). Of the queries over the limit, one in `slip` is answered, the rest dropped. Default
+    2 (BIND's; Knot's is 1), 0 to 10. A deterministic count per bucket, not Knot's random roll, so tests are exact. The
+    answer is an empty reply with TC=1 (RFC 1035 §4.2.1, never larger than the query), or, for a query with a Client
+    Cookie, BADCOOKIE with a fresh Server Cookie (BIND's rule; RFC 7873 §5.2.3): a real client retries with the cookie
+    and is no longer limited. A slip is never larger than its query plus the 16 bytes of the Server Cookie (a test
+    asserts it): at most 1.4 times a 40-byte query, 0.7 averaged over slip 2, where a hit gives up to 30 times.
+  - Table. A fixed array of `table_size` (default 65536, 512 KiB) `AtomicU64` buckets, indexed by a keyed hash of the
+    network (random `RandomState` key, as D22 and D58: an attacker cannot aim at a bucket). Memory never grows, whatever
+    sources are spoofed (BIND bounds its table, `max-table-size` 20000; Knot's is fixed, `table-size`). Networks sharing a
+    slot share a bucket, so a flood from many networks can limit an innocent one at about `table_size` times the rate in
+    all. Rejected: a map with eviction (the flood chooses what stays), a lock per bucket (a CAS loop on one word needs
+    none and no `unsafe`), key tags (the table would hold more than a word per bucket). A reload keeps the `RateLimit`,
+    table and all, while its settings are unchanged: a new one would hand every source a full bucket.
+  - Cookies (RFC 7873 §5.2, RFC 9018). A query with a COOKIE option gets a fresh Server Cookie in its reply, on every
+    transport, after its own cookie is checked: version 1, SipHash-2-4 (`siphasher`) of the Client Cookie, version,
+    reserved bytes, timestamp and client address, so servers of other makes sharing the secret accept it (§4.4;
+    Appendix A.1-A.4 are the tests of `tests/rfc9018.rs`). Valid is version 1, 16 bytes, from at most an hour ago and
+    five minutes ahead (§4.3), hash matching one of the secrets; reserved bytes are hashed as received (§4.2). Only the
+    first COOKIE option of a request counts (RFC 7873 §5.2; `Options` in `dedens-proto` skips the others). A cookie is
+    not forwarded upstream.
+  - Invalid Server Cookie: answered normally, with a fresh cookie, as a Client Cookie alone (RFC 7873 §5.2.4, §5.2.3
+    option 3), not BADCOOKIE: a stub whose cookie went stale (restart, secret change, anycast skew) would get no
+    answer without a retry, and BIND does the same by default (`require-server-cookie no`). The cookie only buys the
+    exemption from the limit. A bad length stays FORMERR (§5.2.2); a cookie and no question is a request for a cookie
+    (§5.4): NOERROR with it, BADCOOKIE if the Server Cookie sent was invalid.
+  - Secrets (RFC 9018 §5). `cookies.secret` (32 hexadecimal digits, quoted in YAML, `${VAR}` keeps it out of the file)
+    and `cookies.accept` (others accepted) roll as §5 says for anycast: stage 1 secret OLD, accept NEW; stage 2 secret
+    NEW, accept OLD; stage 3 secret NEW. Without them, one random secret is drawn at the first read of the
+    configuration and kept for the process, so a reload keeps cookies good and a restart makes them invalid once.
+    Rejected: a master from which a secret per day is derived (a rotation by itself): a secret that
+    changes at restart or by configuration gives no less (a cookie's timestamp bounds its life to an hour) and the
+    code is twice as long. `accept` without `secret` is an error. `Secret` is zeroed on drop and prints nothing.
+  - Counted: `dedensd_rrl_limited_total{action=slip|drop}` (CoAP counts under `drop`) and
+    `dedensd_cookies_total{outcome=none|client_only|invalid|valid}`.
+  - Cost (`benches/rrl.rs`, `docs/benchmarks.md`): about 11-20 ns on a cache hit for the limit, 50-60 ns more for a
+    cookie; a limited query costs half a hit.
+  - Not done: the limit counts queries, not responses by name; cookies are not required (`require-server-cookie`); a
+    Server Cookie is made anew for each reply, not kept until half an hour old (§4.3 SHOULD only).
 - D93 (amends D77) An answer a validating stage proved insecure is cached a day at most, as keys are (D86), not for
   `max_ttl`'s 7 days: a zone that turns secure gets AD on its answers within a day, as its keys do. The cap is
   `dedens_cache::Config::max_insecure_ttl`, applied by `Response::build` to what `Checked::Insecure` stores, on top
@@ -1616,7 +1681,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     resolves, checks and sends.
   - Privacy: no log line at info or below tells a client address and a target together; a failure logs its `error`
     token at debug, with neither. Stats: `dedensd_odoh_proxied_total{status}`, the status one of those above or
-    `other`. No rate limit per client: the deployment's (D90, D79's throttle in `docs/TODECIDE.md`). The pool keeps
+    `other`. No rate limit per client: the deployment's (D90; D113 limits UDP only; D79's throttle in `docs/TODECIDE.md`). The pool keeps
     a slot per address a listed name resolved to (`docs/TODECIDE.md`).
   - Tests: `apps/dedensd/tests/rfc9230.rs` (a real `dedensd` as proxy to a real one, or to a test HTTP/3 server that
     records what it sees: the client's query answered, the proxy answering as a target too, the target's 200 and its
@@ -1635,7 +1700,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     listed, was 403: the CLI exits 10 with "the proxy answered HTTP status 403". Not checked live: a client other than
     ours against this proxy, `dns_timeout`, a host with one IP family only.
 
-- D91 (amends D44, D90; amended by D94) Client access lists: `dedensd` answers the networks it is told to, so it is no open
+- D91 (amends D44, D90; amended by D94, D113) Client access lists: `dedensd` answers the networks it is told to, so it is no open
   resolver (RFC 5358 §4). The client's address enters `Pipeline::query` with the transport, from every listener
   (UDP, TCP, TLS, QUIC, DoH, DoC, and ODoH where `dedensd` is the target, the proxy's address being the client's
   there), an IPv4-mapped IPv6 address read as its IPv4 one. A `Pipeline` holds an optional `Access`: the library

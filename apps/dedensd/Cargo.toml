@@ -21,7 +21,7 @@ dedens-proto.workspace = true
 dedens-server = { workspace = true, features = ["metrics", "serde"] }
 flume.workspace = true
 futures-util.workspace = true
-getrandom = { workspace = true, optional = true }
+getrandom.workspace = true
 http.workspace = true
 metrics.workspace = true
 serde.workspace = true
@@ -38,8 +38,8 @@ signal-hook.workspace = true
 
 [features]
 # D69: experimental transports, off by default.
-odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:getrandom", "dep:zeroize"]
-doc = ["dedens-net/doc", "dep:getrandom"]
+odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:zeroize"]
+doc = ["dedens-net/doc"]
 
 [dev-dependencies]
 dedens-scenario.workspace = true

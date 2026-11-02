@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use dedens_proto::edns::{
-    DEFAULT_UDP_PAYLOAD, EDE_LEN, EdnsOption, ExtendedError, InfoCode, OptionCode,
+    Cookie, DEFAULT_UDP_PAYLOAD, EDE_LEN, EdnsOption, ExtendedError, InfoCode, OptionCode,
 };
 use dedens_proto::header::HEADER_LEN;
 use dedens_proto::wire::MAX_MESSAGE_LEN;
@@ -26,6 +26,9 @@ const PADDING_BLOCK: usize = 468;
 /// The code and length of an EDNS option, before its data (RFC 6891 §6.1.2).
 const OPTION_HEAD: usize = 4;
 
+/// The length of a Client Cookie (RFC 7873 §4).
+const COOKIE_CLIENT_LEN: usize = 8;
+
 /// The client of a query, as its reply needs it.
 #[derive(Debug, Clone)]
 pub(crate) struct Client<'q> {
@@ -33,6 +36,8 @@ pub(crate) struct Client<'q> {
     pub(crate) question: Option<Question<'q>>,
     pub(crate) edns: Option<EdnsView<'q>>,
     pub(crate) transport: Transport,
+    /// The cookie our reply carries: the client's, with the Server Cookie we made for it (D113).
+    pub(crate) cookie: Option<Cookie>,
 }
 
 impl<'q> Client<'q> {
@@ -43,7 +48,14 @@ impl<'q> Client<'q> {
             question: query.question().cloned(),
             edns: query.edns().cloned(),
             transport,
+            cookie: None,
         }
+    }
+
+    /// The same client, whose reply carries `cookie` (D113).
+    pub(crate) const fn with_cookie(mut self, cookie: Option<Cookie>) -> Self {
+        self.cookie = cookie;
+        self
     }
 
     /// The client of a query read no further than its header: the reply has no question and no OPT record
@@ -54,6 +66,7 @@ impl<'q> Client<'q> {
             question: None,
             edns: None,
             transport,
+            cookie: None,
         }
     }
 
@@ -80,6 +93,7 @@ impl<'q> Client<'q> {
         message.questions.extend(self.question.clone());
         message.edns = self.edns.as_ref().map(|_| {
             let mut edns = self.our_edns();
+            edns.options.extend(self.cookie.map(EdnsOption::Cookie));
             edns.options.extend(error.map(|code| {
                 EdnsOption::Ede(ExtendedError {
                     code,
@@ -94,7 +108,7 @@ impl<'q> Client<'q> {
         let limit = self.limit().min(out.len());
         let len = message.encode_truncated(&mut out[..limit]).ok()?.len;
         Some(if self.edns.is_some() {
-            self.pad(out, len, error.map_or(0, |_| EDE_LEN))
+            self.pad(out, len, self.options_len(error))
         } else {
             len
         })
@@ -126,7 +140,7 @@ impl<'q> Client<'q> {
             None => {}
         }
         let error = answer.error.filter(|_| edns.is_some());
-        let opt = edns.as_ref().map_or(0, Edns::wire_len) + error.map_or(0, |_| EDE_LEN);
+        let opt = edns.as_ref().map_or(0, Edns::wire_len) + self.options_len(error);
         let at = HEADER_LEN + question.name.wire_len() + 4;
         let limit = self.limit().min(out.len());
         let records = answer
@@ -151,10 +165,51 @@ impl<'q> Client<'q> {
         out[4..12].copy_from_slice(&[0, 1, an_hi, an_lo, 0, 0, 0, 0]);
         out[at..len].copy_from_slice(records);
         match edns {
-            Some(edns) => append_opt(&edns, error, out, len)
-                .map(|len| self.pad(out, len, error.map_or(0, |_| EDE_LEN))),
+            Some(edns) => self
+                .append_opt(&edns, error, out, len)
+                .map(|len| self.pad(out, len, self.options_len(error))),
             None => Some(len),
         }
+    }
+
+    /// The bytes of options our OPT record carries for this client, after its RDLENGTH: the COOKIE option (D113)
+    /// and the extended `error`, if any.
+    pub(crate) fn options_len(&self, error: Option<InfoCode>) -> usize {
+        self.cookie.map_or(0, |cookie| {
+            OPTION_HEAD + COOKIE_CLIENT_LEN + cookie.server().map_or(0, <[u8]>::len)
+        }) + error.map_or(0, |_| EDE_LEN)
+    }
+
+    /// Appends `edns`, which has no option, to the message of `len` bytes in `out`, with the COOKIE option of the
+    /// client (RFC 7873 §5.2.3) and the extended `error` if any (RFC 8914 §2, no text), and returns the new
+    /// length; `None` when `out` cannot hold them. Allocates nothing.
+    pub(crate) fn append_opt(
+        &self,
+        edns: &Edns<'_>,
+        error: Option<InfoCode>,
+        out: &mut [u8],
+        len: usize,
+    ) -> Option<usize> {
+        let start = edns.append(out, len).ok()?;
+        let mut end = start;
+        if let Some(cookie) = &self.cookie {
+            let server = cookie.server().unwrap_or_default();
+            let size = u16::try_from(COOKIE_CLIENT_LEN + server.len()).ok()?;
+            let [code_hi, code_lo] = u16::from(OptionCode::COOKIE).to_be_bytes();
+            let [size_hi, size_lo] = size.to_be_bytes();
+            end = put(out, end, &[code_hi, code_lo, size_hi, size_lo])?;
+            end = put(out, end, &cookie.client())?;
+            end = put(out, end, server)?;
+        }
+        if let Some(code) = error {
+            let [option_hi, option_lo] = u16::from(OptionCode::EDE).to_be_bytes();
+            let [hi, lo] = u16::from(code).to_be_bytes();
+            end = put(out, end, &[option_hi, option_lo, 0, 2, hi, lo])?;
+        }
+        // The OPT record ends with its RDLENGTH, 0: the options become its RDATA.
+        let rdlength = u16::try_from(end - start).ok()?.to_be_bytes();
+        put(out, start - 2, &rdlength)?;
+        Some(end)
     }
 
     /// Pads the reply of `len` bytes in `out`, which ends with our OPT record and its `rdata` bytes of options, to
@@ -240,22 +295,9 @@ impl<'q> Client<'q> {
     }
 }
 
-/// Appends `edns`, which has no option, to the message of `len` bytes in `out`, with the extended `error` if any
-/// (RFC 8914 §2, no text), and returns the new length; `None` when `out` cannot hold them. Allocates nothing.
-pub(crate) fn append_opt(
-    edns: &Edns<'_>,
-    error: Option<InfoCode>,
-    out: &mut [u8],
-    len: usize,
-) -> Option<usize> {
-    let len = edns.append(out, len).ok()?;
-    let Some(code) = error else {
-        return Some(len);
-    };
-    // The OPT record ends with its RDLENGTH, 0: the option becomes its RDATA.
-    let [option_hi, option_lo] = u16::from(OptionCode::EDE).to_be_bytes();
-    let [hi, lo] = u16::from(code).to_be_bytes();
-    out.get_mut(len - 2..len + EDE_LEN)?
-        .copy_from_slice(&[0, 6, option_hi, option_lo, 0, 2, hi, lo]);
-    Some(len + EDE_LEN)
+/// Copies `bytes` into `out` at `at`, returning the end; `None` when they do not fit.
+fn put(out: &mut [u8], at: usize, bytes: &[u8]) -> Option<usize> {
+    let end = at.checked_add(bytes.len())?;
+    out.get_mut(at..end)?.copy_from_slice(bytes);
+    Some(end)
 }

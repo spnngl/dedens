@@ -232,6 +232,10 @@ pub(super) async fn serve(socket: UdpSocket, path: Arc<str>, thread: Rc<Thread>)
 /// asks for `/.well-known/core` ([`discovery`], D95), else the error [`query`] finds in it, else the pipeline's
 /// reply, or 4.00 when the pipeline drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a
 /// later block is answered from the response kept for it, unless the lists now deny the client (a reload), or 4.00.
+/// A discovery or a DNS query from a network over its rate is answered with nothing (D113: the answer is bigger than
+/// the request, as over UDP). The rest are not counted: an error is no bigger than its request, and a later block is
+/// asked for after a DNS query that was, and is bounded by D105.
+///
 /// The `_slot` is the request's place among [`TASKS`], given back at the end.
 async fn handle(
     coap: Rc<Coap>,
@@ -244,11 +248,20 @@ async fn handle(
     if pipeline.drops(peer.ip()) {
         return;
     }
+    let limited = || pipeline.limits(peer.ip(), super::now());
     if let Some(reply) = discovery(&request, coap.next_id(), &coap.path) {
+        if limited() {
+            return;
+        }
         return coap.reply(&request, peer, reply).await;
     }
     let query = match query(&request, &coap.path) {
-        Ok(Query::Dns(query)) => query,
+        Ok(Query::Dns(query)) => {
+            if limited() {
+                return;
+            }
+            query
+        }
         Ok(Query::Block(requested)) => {
             let tag = request.options.request_tag();
             // Past what a response may be asked for, nothing is sent (D105).
