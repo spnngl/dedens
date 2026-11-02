@@ -54,7 +54,7 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "io",
   "std",
 ] }
-# D27: query IDs and client cookies.
+# D27: query IDs and client cookies; D133: the random seeds of the simulation tests.
 getrandom = "0.4.3"
 hickory-proto = { version = "0.26.3", default-features = false }
 # D82: the request and response types of DoH, shared by `h2` and `h3`.
@@ -114,6 +114,8 @@ stats_alloc = "0.1.10"
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
+# D133: the simulation tests' tasks and clock; turmoil runs a current-thread runtime per host.
+tokio = { version = "1.54.1", default-features = false }
 # D30: diagnostics of net, the CLI and dedensd; the CLI prints them as text under -v, dedensd as JSON ("json"
 # there), without env-filter and its regexes.
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
@@ -122,6 +124,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
   "fmt",
   "std",
 ] }
+# D133: the simulated network the simulation tests run the sans-IO cores on; hosts crash and bounce, links partition.
+turmoil = "0.7.2"
 unicode-script = "0.5.8"
 # D57: dedensd's list downloads, blocking on a thread of their own; the OS trust store ("platform-verifier"). No
 # "gzip", see D104.
