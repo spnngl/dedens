@@ -9,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// # Errors
 ///
 /// The stream's, or [`io::ErrorKind::InvalidInput`] for a message longer than 65535 bytes.
-pub(crate) async fn write(stream: &mut (impl AsyncWrite + Unpin), wire: &[u8]) -> io::Result<()> {
+pub async fn write(stream: &mut (impl AsyncWrite + Unpin), wire: &[u8]) -> io::Result<()> {
     let len = u16::try_from(wire.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "message over 65535 bytes"))?;
     let mut framed = Vec::with_capacity(wire.len() + 2);
@@ -23,7 +23,7 @@ pub(crate) async fn write(stream: &mut (impl AsyncWrite + Unpin), wire: &[u8]) -
 /// # Errors
 ///
 /// The stream's: [`io::ErrorKind::UnexpectedEof`] when it closed.
-pub(crate) async fn read(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u8>> {
+pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u8>> {
     let mut len = [0; 2];
     stream.read_exact(&mut len).await?;
     let mut wire = vec![0; usize::from(u16::from_be_bytes(len))];

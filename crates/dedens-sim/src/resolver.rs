@@ -1,20 +1,32 @@
-//! The resolver host: a [`Pipeline`] of a cache and a forwarder served over UDP and TCP, as `dedensd` serves it
-//! (D42, D43, D45, D46; `apps/dedensd/src/serve.rs`: `start` and `answer`).
+//! The resolver host: a [`Pipeline`] served over UDP and TCP, as `dedensd` serves it (D42, D43, D45, D46;
+//! `apps/dedensd/src/serve.rs`: `start` and `answer`).
 //!
-//! Left out, for step 10 (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a
-//! connection's queries are answered one after the other), the shared flights of D86, the stale-answer timer of
-//! D45 and compio's timers (tokio's, which turmoil advances, stand in).
+//! The pipeline is the scenario's: [`Resolver::build`] makes a new one at each start of the host, as a restarted
+//! `dedensd` has an empty cache. [`pipeline`] is the default, a cache and a forwarder. A cache the scenario builds
+//! must keep `shards: 1` ([`cache_config`]): the shard of a key follows from a hash that is random for each
+//! process, so with more the entry a full cache evicts could change from one process to another (D133).
+//!
+//! Mirrored: the forward stage's timeout and tries for each upstream query, the client response timer and the
+//! stale reply it sends (D45), a failure of the query itself that abandons the question (D46), and the
+//! connections `action: drop` refuses (D91).
+//!
+//! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
+//! are answered one after the other, in order), the shared flights of D86, the cap on connections and on
+//! upstream queries, one reading task for each datagram, compio's timers (tokio's, which turmoil advances, stand
+//! in) and threads.
 
 use std::cell::RefCell;
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
-use dedens_net::exchange::{Failure, Options};
+use dedens_net::exchange::Options;
 use dedens_proto::Transport;
 use dedens_server::{Forward, Pipeline, Stage, Step, Upstream};
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 use turmoil::net::TcpStream;
 
 use crate::client::{Carrier, Client};
@@ -26,9 +38,44 @@ use crate::trace::{Trace, What};
 /// The size of the buffer a reply is made in: the largest message.
 const OUT: usize = 65535;
 
-/// The resolver's settings, and what its software starts from: a new [`Pipeline`] with an empty cache at each
-/// start, as a restarted `dedensd` has.
-#[derive(Debug, Clone)]
+/// Makes the pipeline of a start of the resolver from its upstream servers.
+pub type Build = Rc<dyn Fn(&[SocketAddr]) -> Pipeline>;
+
+/// The cache's configuration the simulation needs: the default, in one shard.
+#[must_use]
+pub fn cache_config() -> Config {
+    Config {
+        shards: 1,
+        ..Config::default()
+    }
+}
+
+/// The default pipeline: a cache of [`cache_config`] and a forwarder to `upstreams`.
+///
+/// # Panics
+///
+/// With no upstream server.
+#[must_use]
+pub fn pipeline(upstreams: &[SocketAddr]) -> Pipeline {
+    pipeline_with(cache_config(), upstreams)
+}
+
+/// A cache of `config`, in one shard whatever `config` says, and a forwarder to `upstreams`.
+///
+/// # Panics
+///
+/// With no upstream server, or a configuration the cache refuses.
+#[must_use]
+pub fn pipeline_with(mut config: Config, upstreams: &[SocketAddr]) -> Pipeline {
+    let forward =
+        Forward::new(upstreams.iter().copied()).expect("an upstream server to forward to");
+    config.shards = 1;
+    let cache = Cache::new(config).expect("the cache's configuration is valid");
+    Pipeline::new(vec![Stage::Cache(Arc::new(cache)), Stage::Forward(forward)])
+}
+
+/// The resolver's settings, and what its software starts from.
+#[derive(Clone)]
 pub struct Resolver {
     /// The upstream servers, asked in turn.
     pub upstreams: Vec<SocketAddr>,
@@ -36,6 +83,16 @@ pub struct Resolver {
     pub rng: Rc<RefCell<Rng>>,
     /// The events of the run.
     pub trace: Trace,
+    /// Makes the pipeline of each start.
+    pub build: Build,
+}
+
+impl fmt::Debug for Resolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Resolver")
+            .field("upstreams", &self.upstreams)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the tasks of one start share.
@@ -54,19 +111,11 @@ impl Resolver {
     ///
     /// # Errors
     ///
-    /// A socket that fails, a task that panics, or no upstream server.
+    /// A socket that fails, or a task that panics.
     pub async fn serve(&self, host: IpAddr) -> turmoil::Result {
-        let forward = Forward::new(self.upstreams.iter().copied()).ok_or("no upstream server")?;
         let shared = Rc::new(Shared {
-            pipeline: Pipeline::new(vec![
-                // One shard: the shard of a key follows from a hash that is random for each process (D133).
-                Stage::Cache(Arc::new(Cache::new(Config {
-                    shards: 1,
-                    ..Config::default()
-                })?)),
-                Stage::Forward(forward),
-            ]),
-            client: Client::new(Rc::clone(&self.rng)),
+            pipeline: (self.build)(&self.upstreams),
+            client: Client::new(Rc::clone(&self.rng), host, self.trace.clone()),
             started: Instant::now(),
             host,
             trace: self.trace.clone(),
@@ -94,6 +143,11 @@ impl Resolver {
                     });
                 }
                 Arrival::Connection { stream, peer } => {
+                    // `action: drop` (D91): no reply, and no connection kept.
+                    if shared.pipeline.drops(peer.ip()) {
+                        drop(stream);
+                        continue;
+                    }
                     port.spawn(connection(Rc::clone(&shared), stream, peer));
                 }
             }
@@ -126,6 +180,33 @@ impl Shared {
         u32::try_from(self.started.elapsed().as_secs()).unwrap_or(u32::MAX)
     }
 
+    /// The entries and bytes of the cache, if the pipeline has one.
+    fn held(&self) -> Option<(usize, usize)> {
+        self.pipeline.stages().iter().find_map(|stage| match stage {
+            Stage::Cache(cache) => Some((cache.len(), cache.used())),
+            _ => None,
+        })
+    }
+
+    /// Hands `reply` to `deliver`, and notes it.
+    async fn send(
+        &self,
+        transport: Transport,
+        reply: &[u8],
+        stale: bool,
+        deliver: &mut impl AsyncFnMut(&[u8]),
+    ) {
+        self.trace.record(
+            self.host,
+            What::Replied {
+                transport,
+                len: reply.len(),
+                stale,
+            },
+        );
+        deliver(reply).await;
+    }
+
     /// Carries out the first `step` of a query that came over `transport`: replies are handed to `deliver`, made
     /// in `out`.
     async fn start(
@@ -137,13 +218,13 @@ impl Shared {
     ) {
         let upstream = match step {
             Step::Reply(len) => {
-                deliver(&out[..len]).await;
+                self.send(transport, &out[..len], false, &mut deliver).await;
                 return;
             }
             Step::Drop => return,
             // The cached answer goes out, then the cache is refreshed.
             Step::Refresh(len, upstream) => {
-                deliver(&out[..len]).await;
+                self.send(transport, &out[..len], false, &mut deliver).await;
                 upstream
             }
             Step::Upstream(upstream) => upstream,
@@ -153,7 +234,8 @@ impl Shared {
 
     /// Asks the upstream servers for `upstream` in turn, as `dedensd`'s `answer`: each with the forward stage's
     /// timeout and tries, EDNS kept (a response without it would be stored for clients asking for DNSSEC
-    /// records, RFC 3225), until the pipeline has a reply or none.
+    /// records, RFC 3225), until the pipeline has a reply or none. When the client response timer runs out first,
+    /// expired data goes out and resolution goes on (D45, RFC 8767 §5).
     async fn answer(
         &self,
         mut upstream: Box<Upstream>,
@@ -161,17 +243,18 @@ impl Shared {
         out: &mut [u8],
         mut deliver: impl AsyncFnMut(&[u8]),
     ) {
+        let mut options = Options::default();
+        (options.timeout, options.tries) = upstream.patience();
+        options.edns_fallback = false;
+        // The servers are plain: asked over the transport of the client (D65).
+        let carrier = if transport == Transport::Udp {
+            Carrier::Udp
+        } else {
+            Carrier::Tcp
+        };
+        let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
         loop {
             let server = upstream.server().addr;
-            let mut options = Options::default();
-            (options.timeout, options.tries) = upstream.patience();
-            options.edns_fallback = false;
-            // The servers are plain: asked over the transport of the client (D65).
-            let carrier = if transport == Transport::Udp {
-                Carrier::Udp
-            } else {
-                Carrier::Tcp
-            };
             self.trace.record(
                 self.host,
                 What::Forwarded {
@@ -179,22 +262,44 @@ impl Shared {
                     transport: carrier.into(),
                 },
             );
-            let result = self
-                .client
-                .exchange(upstream.request(), server, carrier, &options)
-                .await;
+            let result = 'ask: {
+                let mut exchange =
+                    pin!(
+                        self.client
+                            .exchange(upstream.request(), server, carrier, &options)
+                    );
+                if let Some(at) = stale_at {
+                    // A reborrow: the exchange goes on after the timer.
+                    if let Ok(done) = timeout_at(at, exchange.as_mut()).await {
+                        break 'ask done;
+                    }
+                    stale_at = None;
+                    if let Some(len) = self.pipeline.stale(&mut upstream, self.now(), out) {
+                        self.send(transport, &out[..len], true, &mut deliver).await;
+                    }
+                }
+                exchange.await
+            };
+            let before = self.held();
             let step = match result {
                 Ok(response) => {
                     self.pipeline
                         .receive(upstream, Some(&response.wire), self.now(), out)
                 }
                 // Not sent: the failure is local (`ClientError::is_local`, D46).
-                Err(Failure::Encode(_)) => self.pipeline.abandon(&upstream, out),
+                Err(error) if error.is_local() => self.pipeline.abandon(&upstream, out),
                 Err(_) => self.pipeline.receive(upstream, None, self.now(), out),
             };
+            let after = self.held();
+            if after != before
+                && let Some((entries, bytes)) = after
+            {
+                self.trace
+                    .record(self.host, What::Stored { entries, bytes });
+            }
             match step {
                 Step::Reply(len) | Step::Refresh(len, _) => {
-                    deliver(&out[..len]).await;
+                    self.send(transport, &out[..len], false, &mut deliver).await;
                     return;
                 }
                 Step::Drop => return,

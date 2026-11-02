@@ -1,33 +1,70 @@
 //! A run's hosts: clients, one resolver and the upstream servers, on a simulated network that a seed shapes.
 
 use std::cell::RefCell;
+use std::fmt;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dedens_server::Pipeline;
 use turmoil::Sim;
 
 use crate::client::Client;
 use crate::fault::Fault;
-use crate::resolver::Resolver;
+use crate::oracle::Expected;
+use crate::resolver::{self, Build, Resolver};
 use crate::seed::{Rng, Seed};
 use crate::stub::Stub;
 use crate::trace::{Event, Trace, What};
-use crate::upstream::{self, Answers, Expected};
+use crate::upstream::{self, Answers};
 
 /// The port of the resolver and of the upstream servers.
 const PORT: u16 = 53;
 
-/// The longest a run lasts in simulated time: more than the longest query (three tries of five seconds, a try
-/// more for TCP) and the resolver's own tries behind it.
+/// The longest a run lasts in simulated time, by default: more than the longest query (three tries of five
+/// seconds, a try more for each fallback) and the resolver's own tries behind it.
 const DURATION: Duration = Duration::from_secs(120);
 
+/// How long into a run the clients start: the hosts have bound their ports by then, as a server that has been up
+/// before its clients. turmoil starts hosts in no fixed order, and a datagram or a connection to a port not bound yet
+/// is lost or refused.
+const START: Duration = Duration::from_millis(5);
+
+/// The start of a run by default, 2026-01-01T00:00:00Z: the same in every run, so that the clocks of the hosts
+/// (`turmoil::since_epoch`) do not depend on when the test runs.
+const EPOCH: Duration = Duration::from_hours(490_896);
+
 /// Which hosts a run has; [`Topology::build`] makes them.
-#[derive(Debug, Default)]
 pub struct Topology {
     upstreams: Vec<Answers>,
-    epoch: Option<SystemTime>,
+    epoch: SystemTime,
+    duration: Duration,
+    repair_rate: Option<f64>,
+    pipeline: Build,
+}
+
+impl fmt::Debug for Topology {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Topology")
+            .field("upstreams", &self.upstreams)
+            .field("epoch", &self.epoch)
+            .field("duration", &self.duration)
+            .field("repair_rate", &self.repair_rate)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Topology {
+    fn default() -> Self {
+        Self {
+            upstreams: Vec::new(),
+            epoch: UNIX_EPOCH + EPOCH,
+            duration: DURATION,
+            repair_rate: None,
+            pipeline: Rc::new(resolver::pipeline),
+        }
+    }
 }
 
 impl Topology {
@@ -45,10 +82,37 @@ impl Topology {
     }
 
     /// Starts the simulation at `epoch` by the clocks of its hosts (`turmoil::since_epoch`), as signatures in
-    /// captured zones are valid for some date only; by default, one turmoil picks.
+    /// captured zones are valid for some date only; by default, 2026-01-01.
     #[must_use]
     pub const fn epoch(mut self, epoch: SystemTime) -> Self {
-        self.epoch = Some(epoch);
+        self.epoch = epoch;
+        self
+    }
+
+    /// Ends the run, with an error, after `duration` of simulated time; by default, two minutes.
+    #[must_use]
+    pub const fn duration(mut self, duration: Duration) -> Self {
+        self.duration = duration;
+        self
+    }
+
+    /// The probability for a link that [`Fault::Loss`] broke to be repaired by each message sent on it; by
+    /// default 1, turmoil's. turmoil has no setter for it during a run, so it holds from the start.
+    #[must_use]
+    pub const fn repair_rate(mut self, rate: f64) -> Self {
+        self.repair_rate = Some(rate);
+        self
+    }
+
+    /// Makes `build` the resolver's pipeline instead of [`resolver::pipeline`] (a cache and a forwarding stage):
+    /// the stages, limits and access rules a scenario tests. It gets the addresses of the upstream servers and
+    /// runs each time the resolver starts, a bounce included, so a restart begins with an empty cache.
+    ///
+    /// The cache must keep `shards: 1` ([`resolver::cache_config`]): its shards are picked by a hash that
+    /// differs from one process to the next, which a trace that must replay cannot have.
+    #[must_use]
+    pub fn resolver(mut self, build: impl Fn(&[SocketAddr]) -> Pipeline + 'static) -> Self {
+        self.pipeline = Rc::new(build);
         self
     }
 
@@ -59,10 +123,11 @@ impl Topology {
         let mut builder = turmoil::Builder::new();
         builder
             .rng_seed(seed.0)
-            .simulation_duration(DURATION)
+            .epoch(self.epoch)
+            .simulation_duration(self.duration)
             .enable_random_order();
-        if let Some(epoch) = self.epoch {
-            builder.epoch(epoch);
+        if let Some(rate) = self.repair_rate {
+            builder.repair_rate(rate);
         }
         let mut sim = builder.build();
         let trace = Trace::new();
@@ -82,6 +147,7 @@ impl Topology {
             upstreams: addrs.clone(),
             rng: Rc::new(RefCell::new(Rng::new(seed, 0))),
             trace: trace.clone(),
+            build: self.pipeline,
         };
         sim.host("resolver", move || {
             let resolver = resolver.clone();
@@ -96,6 +162,7 @@ impl Topology {
             picks: Rng::new(seed, u64::MAX),
             resolver: SocketAddr::new(host, PORT),
             upstreams: addrs,
+            named: 0,
             clients: 0,
         }
     }
@@ -113,6 +180,7 @@ pub struct World {
     pub resolver: SocketAddr,
     /// The addresses of the upstream servers, in the order of the topology.
     pub upstreams: Vec<SocketAddr>,
+    named: usize,
     clients: u64,
 }
 
@@ -142,12 +210,6 @@ impl World {
         &mut self.sim
     }
 
-    /// The trace, which fills as the run goes.
-    #[must_use]
-    pub fn trace(&self) -> &Trace {
-        &self.trace
-    }
-
     /// Adds a client host (`client-<n>`) that runs `body` with its [`Stub`]. An error from `body` fails the
     /// run.
     pub fn client<F, Fut>(&mut self, body: F)
@@ -155,22 +217,49 @@ impl World {
         F: FnOnce(Stub) -> Fut,
         Fut: Future<Output = turmoil::Result> + 'static,
     {
-        let name = format!("client-{}", self.clients);
+        let name = format!("client-{}", self.named);
+        self.named += 1;
         let host = self.sim.lookup(name.as_str());
+        self.add(name, host, body);
+    }
+
+    /// Adds a client host at the address `ip`: a scenario with many sources, in networks of its choice, for the
+    /// resolver's access rules and limits. The addresses of the other hosts are 192.168.0.0/16 and up, in the
+    /// order of their creation; pick `ip` outside it.
+    pub fn client_at<F, Fut>(&mut self, ip: IpAddr, body: F)
+    where
+        F: FnOnce(Stub) -> Fut,
+        Fut: Future<Output = turmoil::Result> + 'static,
+    {
+        self.add(ip, ip, body);
+    }
+
+    fn add<F, Fut>(&mut self, name: impl turmoil::ToIpAddr, host: IpAddr, body: F)
+    where
+        F: FnOnce(Stub) -> Fut,
+        Fut: Future<Output = turmoil::Result> + 'static,
+    {
         // The resolver's is the stream 0.
         self.clients += 1;
         let rng = Rc::new(RefCell::new(Rng::new(self.seed, self.clients)));
         let stub = Stub::new(
-            Client::new(rng),
+            Client::new(rng, host, self.trace.clone()),
             host,
             self.resolver,
             self.trace.clone(),
             Rc::clone(&self.expected),
         );
-        self.sim.client(name, body(stub));
+        let body = body(stub);
+        self.sim.client(name, async move {
+            tokio::time::sleep(START).await;
+            body.await
+        });
     }
 
     /// Runs until every client has finished, making the faults at their times, and returns the events of the run.
+    ///
+    /// A panic of a host after the last client finished is not seen, and a task of a host that spins without
+    /// waiting never lets the run end: the driver has none, and a hang is the signal.
     ///
     /// # Errors
     ///

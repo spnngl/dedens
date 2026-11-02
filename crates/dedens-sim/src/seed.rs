@@ -87,6 +87,53 @@ pub fn each(fixed: &[u64], scenario: impl Fn(Seed)) {
     }
 }
 
+/// The variable that has a test binary run as the second process of [`in_two_processes`]: a seed.
+const CHILD_VAR: &str = "DEDENS_SIM_PRINT_DIGEST";
+
+/// What the second process prints before the digest.
+const DIGEST_PREFIX: &str = "trace-digest=";
+
+/// The digest in the output of a second process. Under one test thread, `cargo test` prints `test <name> ... `
+/// before the output of the test, on the same line.
+fn digest_in(output: &str) -> Option<u64> {
+    let (_, after) = output.split_once(DIGEST_PREFIX)?;
+    u64::from_str_radix(after.split_whitespace().next()?, 16).ok()
+}
+
+/// Checks that one seed gives one trace in every process (D133): runs `digest` of each of [`Seed::chosen`] here
+/// and in a new process of the test binary, and compares. What the cores draw per process (hash seeds, counters)
+/// must not show in a trace.
+///
+/// Call it from a test named `test`, alone in its function: the second process runs that test, and `in_two_processes`
+/// then prints the digest of the seed in `DEDENS_SIM_PRINT_DIGEST` and returns instead of spawning.
+///
+/// # Panics
+///
+/// When the second process fails, prints no digest, or prints another one, and as `digest` does.
+#[expect(
+    clippy::print_stdout,
+    reason = "the first process reads the digest on the standard output of the second"
+)]
+pub fn in_two_processes(test: &str, fixed: &[u64], digest: impl Fn(Seed) -> u64) {
+    if let Ok(seed) = std::env::var(CHILD_VAR) {
+        let seed = Seed(seed.trim().parse().expect("a seed"));
+        println!("{DIGEST_PREFIX}{:016x}", digest(seed));
+        return;
+    }
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    each(fixed, |seed| {
+        let output = std::process::Command::new(&exe)
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_VAR, seed.0.to_string())
+            .output()
+            .expect("the test binary runs");
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let there = digest_in(&stdout).expect("the second process printed its digest");
+        assert_eq!(there, digest(seed), "{stdout}");
+    });
+}
+
 /// A generator of numbers from a seed (SplitMix64): the IDs and cookies of the queries of a host, and the times
 /// and places of faults. Shared between the runs of a host that crashed and restarted, so its queries go on with
 /// new IDs.
@@ -157,6 +204,23 @@ mod tests {
             Seed::choose(&[], None, Some("-1"), || 0),
             Err(SeedError::Runs("-1".to_owned()))
         );
+    }
+
+    #[test]
+    fn the_digest_is_found_after_the_name_of_the_test() {
+        let one_thread = "running 1 test\ntest a_test ... trace-digest=00000000000000ff\nok\n";
+        assert_eq!(digest_in(one_thread), Some(0xff));
+        assert_eq!(
+            digest_in("trace-digest=0123456789abcdef\n"),
+            Some(0x0123_4567_89ab_cdef)
+        );
+        assert_eq!(digest_in("running 1 test\nok\n"), None);
+        assert_eq!(digest_in("trace-digest=xyz\n"), None);
+    }
+
+    #[test]
+    fn random_seeds_differ() {
+        assert_ne!(random(), random());
     }
 
     #[test]
