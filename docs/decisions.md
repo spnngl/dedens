@@ -1582,10 +1582,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   per-address connection cap in `dedensd`. RRL (response rate limiting, a defence against reflection) belongs to
   the authoritative phase, where the server answers from its own data; a stub or forwarder has nothing to
   amplify. The client's address enters the pipeline only for the allow and block lists (`docs/TODECIDE.md`).
-- D113 (supersedes D90 for UDP and DoC; amends D47, D91, D105; audit S1) `dedensd` limits the rate of responses over UDP
-  and DoC per client network, and gives Server Cookies that exempt a client from the limit. D90 left both to the
-  deployment on the ground that a forwarder has nothing to amplify; a cache hit answers a ~40-byte query with up to
-  1232 bytes (a 1.2 kB TXT, `benches/server.rs`), to a source address anyone can forge, so a daemon safe by default
+- D113 (supersedes D90 for UDP and DoC; amends D47, D91, D105; audit S1; amended by D136) `dedensd` limits the rate
+  of responses over UDP and DoC per client network, and gives Server Cookies that exempt a client from the limit.
+  D90 left both to the deployment on the ground that a forwarder has nothing to amplify; a cache hit answers a
+  ~40-byte query with up to 1232 bytes (a 1.2 kB TXT, `benches/server.rs`), to a source address anyone can forge, so a daemon safe by default
   cannot leave the limit to a firewall it may not have. Decided by the user. TCP, TLS, QUIC and HTTPS stay as D90 says:
   the handshake proves the address (QUIC answers Initial with Retry, D47) and a per-address cap stays the deployment's.
   The settings are `rrl` and `cookies` in `apps/dedensd/src/config.rs`, the code `rrl.rs` and `cookie.rs` of
@@ -2354,6 +2354,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     informational as `mutants.yml` is (D103). `loom_slot.rs` is excluded from `just mutants`: only the cfg builds it.
   - Not modelled: `budget.rs` and `rrl.rs`, where each update is one atomic read-modify-write that sequential tests
     cover, and loom's atomics have no `update` or `try_update`.
+- D136 (amends D113) A Server Cookie's hash is compared with `subtle`'s `ConstantTimeEq`, not a hand-written fold of
+  XORs: the fold was constant-time only as long as the optimizer kept it so, `subtle` puts a barrier in its way.
+  `subtle` (BSD-3-Clause, no dependencies) is no new crate in the build: rustls already pulls it. Other comparisons
+  stay `==`: the Client Cookie of a response (`dedens-net`'s exchange) is checked against a value an off-path forger
+  never sees the timing of, an ODoH key id is public, and AEAD tags are checked inside `hpke` and `aes-gcm`.
 
 ## Observability
 

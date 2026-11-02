@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 use dedens_proto::edns::Cookie;
 use siphasher::sip::SipHasher24;
+use subtle::ConstantTimeEq as _;
 use zeroize::Zeroize as _;
 
 use crate::metrics::Cookied;
@@ -200,12 +201,9 @@ impl Cookies {
         let fields = [version, r1, r2, r3];
         let client = cookie.client();
         let verifies = |secret: &Secret| {
+            // Constant time, so the time taken says nothing of how many bytes were right (D136).
             let expected = mac(secret, client, fields, stamp, from);
-            // Every byte compared, so the time taken says nothing of how many were right.
-            hash.iter()
-                .zip(expected)
-                .fold(0, |different, (a, b)| different | (a ^ b))
-                == 0
+            bool::from(hash.as_slice().ct_eq(expected.as_slice()))
         };
         let Secrets { current, accepted } = &self.secrets;
         if verifies(current) || accepted.iter().any(verifies) {

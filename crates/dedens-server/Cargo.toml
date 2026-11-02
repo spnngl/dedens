@@ -23,6 +23,7 @@ metrics = { workspace = true, optional = true }
 prefix-trie.workspace = true
 serde = { workspace = true, optional = true }
 siphasher.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
