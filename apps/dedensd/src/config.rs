@@ -76,7 +76,7 @@ use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
 use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::{Presented, Trust};
-use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read};
+use dedens_plugins::{Action, Blocklist, Hosts, List, ListError, Lists, Origin, Read, Tlds};
 use dedens_proto::{Name, Ttl};
 use dedens_server::{
     Access, Budget, Budgets, Cookies, DEFAULT_SHARE, Denial, Forward, MAX_BURST, Network, Pipeline,
@@ -635,7 +635,8 @@ enum StageFile {
     /// Names blocked with their subdomains (D54, D56): `entries`, one name, `*.name` or a line in the format of
     /// `/etc/hosts` each, then those of `file`, read at start and on reload, then those of `urls`, downloaded (D57),
     /// unless they or a parent are in `allow`; answered as `action` says, `nxdomain` unless set, the addresses of
-    /// `null` with `ttl` seconds, 3600 unless set.
+    /// `null` with `ttl` seconds, 3600 unless set. A plain line of one label (`zip`) is refused as a mistake, unless
+    /// `tlds` is set: then it blocks, or allows, the whole top-level domain, in each list of the stage (D118).
     Blocklist {
         #[serde(default)]
         entries: Vec<String>,
@@ -646,6 +647,8 @@ enum StageFile {
         allow: Sources,
         action: Option<Action>,
         ttl: Option<u32>,
+        #[serde(default)]
+        tlds: bool,
     },
 }
 
@@ -916,13 +919,14 @@ pub(crate) fn read(
                 allow,
                 action,
                 ttl,
+                tlds,
             } => {
                 let block = Sources {
                     entries,
                     file,
                     urls,
                 };
-                blocklist(name, block, allow, (action, ttl), &mut downloads)?
+                blocklist(name, block, allow, (action, ttl), tlds, &mut downloads)?
             }
         });
     }
@@ -957,10 +961,12 @@ fn blocklist(
     block: Sources,
     allow: Sources,
     (action, ttl): (Option<Action>, Option<u32>),
+    tlds: bool,
     downloads: &mut Downloads,
 ) -> anyhow::Result<Stage> {
-    let lists =
-        lists(name, &block, &allow, &downloads.dir).with_context(|| format!("stage `{name}`"))?;
+    let tlds = if tlds { Tlds::Allow } else { Tlds::Refuse };
+    let lists = lists(name, &block, &allow, tlds, &downloads.dir)
+        .with_context(|| format!("stage `{name}`"))?;
     downloads.add(block.urls.into_iter().chain(allow.urls));
     let ttl = Ttl::from_wire(ttl.unwrap_or(PLUGIN_TTL));
     Ok(Stage::Plugin(Box::new(Blocklist::new(
@@ -1426,8 +1432,14 @@ fn local<P>(
 ///
 /// A copy that exists but cannot be read (permissions, a directory): the start or the reload is refused rather
 /// than serving without the list, which the next fetch would not mend.
-fn lists(stage: &str, block: &Sources, allow: &Sources, dir: &Path) -> anyhow::Result<Lists> {
-    let mut lists = Lists::new();
+fn lists(
+    stage: &str,
+    block: &Sources,
+    allow: &Sources,
+    tlds: Tlds,
+    dir: &Path,
+) -> anyhow::Result<Lists> {
+    let mut lists = Lists::with_tlds(tlds);
     let mut duplicates = 0;
     for (list, sources) in [(List::Block, block), (List::Allow, allow)] {
         let read = local(&sources.entries, sources.file.as_deref(), |text| {
@@ -2335,6 +2347,19 @@ mod tests {
             !validator(&same).shares_cache(&validator(&insecure)),
             "negative anchor added"
         );
+    }
+
+    /// D118: a plain line of one label is refused unless the stage says `tlds`.
+    #[test]
+    fn blocklists_take_top_level_domains_when_told() {
+        let text = |tlds: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [block, up]\nstages:\n  block:\n    type: blocklist\n    entries: [zip, ads.example]\n{tlds}  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        assert!(error(&text("")).contains("entry 1"));
+        assert!(error(&text("    tlds: false\n")).contains("entry 1"));
+        assert!(read(&text("    tlds: true\n"), env, &Pipeline::default()).is_ok());
     }
 
     #[test]

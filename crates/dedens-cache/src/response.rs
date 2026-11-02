@@ -99,6 +99,8 @@ pub(crate) struct Response {
     pub(crate) stale_until: u32,
     /// Failed validation: never refreshed ahead of its end.
     bad: bool,
+    /// What the caller marked it with (`Cache::insert`): opaque here, 0 if nothing.
+    pub(crate) mark: u64,
 }
 
 impl Response {
@@ -186,6 +188,7 @@ impl Response {
             expires: now.saturating_add(ttl),
             stale_until: now.saturating_add(ttl).saturating_add(stale),
             bad,
+            mark: 0,
         })
     }
 

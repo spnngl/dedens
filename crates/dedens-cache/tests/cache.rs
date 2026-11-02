@@ -51,6 +51,92 @@ fn a_hit_is_patched_for_the_query() {
 }
 
 #[test]
+fn a_mark_follows_the_stored_response() {
+    let cache = small_cache();
+    let asked = query(1, "www.example", RecordType::A);
+    let query = Query::read(&asked).unwrap();
+    let wire = www(60, 1);
+    let decoded = Message::decode(&wire).unwrap();
+    let mark = |cache: &Cache| match cache.lookup(&query, T0 + 1, NEVER, &mut [0; 512]) {
+        Lookup::Hit(hit) => hit.mark,
+        other => panic!("expected a hit, got {other:?}"),
+    };
+    // Stored unmarked, marked once: only a caller that saw the mark it replaces sets it.
+    cache.insert(&query, &decoded, T0, 0).unwrap();
+    assert_eq!(mark(&cache), 0);
+    assert!(!cache.mark(&query, 7, 9));
+    assert!(cache.mark(&query, 0, 9));
+    assert_eq!(mark(&cache), 9);
+    // A response stored meanwhile takes its own mark.
+    cache.insert(&query, &decoded, T0, 3).unwrap();
+    assert!(!cache.mark(&query, 9, 11));
+    assert_eq!(mark(&cache), 3);
+    // Nothing stored, nothing to mark.
+    let other = query_with(1, "none.example", RecordType::A, Flags::NONE, false);
+    let other = Query::read(&other).unwrap();
+    assert!(!cache.mark(&other, 0, 1));
+}
+
+/// The mark goes with its entry when the shard is compacted (D116): a large response evicts most of the small ones
+/// and leaves their slots free, the entries left are renumbered.
+#[test]
+fn a_mark_survives_a_compaction() {
+    let cache = Cache::new(Config {
+        capacity: 100_000,
+        shards: 1,
+        max_entry_bytes: Some(60_000),
+        ..Config::default()
+    })
+    .unwrap();
+    let marked = |name: &str, mark| {
+        let asked = query(1, name, RecordType::A);
+        let small = response(
+            name,
+            RecordType::A,
+            Rcode::NOERROR,
+            (0..60).map(|i| a(name, 60, i)).collect(),
+            vec![],
+        );
+        let decoded = Message::decode(&small).unwrap();
+        cache
+            .insert(&Query::read(&asked).unwrap(), &decoded, T0, mark)
+            .unwrap();
+    };
+    for n in 0..100_u64 {
+        marked(&format!("n{n}.example"), n + 1);
+    }
+    let large = query(1, "large.example", RecordType::A);
+    let wire = (0..3_000_u16)
+        .map(|i| a("large.example", 60, u8::try_from(i % 250).unwrap()))
+        .collect();
+    let wire = response("large.example", RecordType::A, Rcode::NOERROR, wire, vec![]);
+    cache
+        .insert(
+            &Query::read(&large).unwrap(),
+            &Message::decode(&wire).unwrap(),
+            T0,
+            99,
+        )
+        .unwrap();
+    let mark_of = |asked: &[u8]| match cache.lookup(
+        &Query::read(asked).unwrap(),
+        T0,
+        NEVER,
+        &mut [0; 4096],
+    ) {
+        Lookup::Hit(hit) => Some(hit.mark),
+        _ => None,
+    };
+    assert_eq!(mark_of(&large), Some(99));
+    // Under 30 entries are left (a compaction ran: 47 slots of 71 were free), each with the mark it had.
+    assert!(cache.len() < 30, "{} entries left", cache.len());
+    for n in 0..100_u64 {
+        let asked = query(1, &format!("n{n}.example"), RecordType::A);
+        assert!(mark_of(&asked).is_none_or(|mark| mark == n + 1));
+    }
+}
+
+#[test]
 fn keys_ignore_case_but_not_type_class_do_or_cd() {
     let q = |name, qtype, flags, dnssec_ok| key_of(&query_with(1, name, qtype, flags, dnssec_ok));
     let plain = q("www.example", RecordType::A, Flags::RD, false);
@@ -326,6 +412,7 @@ fn ad_is_served_only_when_asked() {
                 &Message::decode(&r).unwrap(),
                 T0,
                 Checked::Secure,
+                0,
             )
             .unwrap();
     };
@@ -600,11 +687,15 @@ fn a_response_too_large_clears_what_was_held() {
     let key = key_of(&q);
     insert(&cache, &q, &www(60, 1), T0).unwrap();
     assert!(matches!(lookup(&cache, &q, T0, NEVER).0, Lookup::Hit(_)));
+    // The mark leaves with the response it was on.
+    let read = Query::read(&q).unwrap();
+    assert!(cache.mark(&read, 0, 5));
     assert_eq!(
         insert(&cache, &q, &www(60, 100), T0 + 1),
         Err(NotCached::TooLarge)
     );
     assert_eq!(lookup(&cache, &q, T0 + 1, NEVER).0, Lookup::Miss);
+    assert!(!cache.mark(&read, 5, 6));
     // A failure held, and then a response too large for the entry: the hold ends, as a stored one would end it.
     assert!(cache.fail(&key, T0 + 2) > 0);
     assert_eq!(lookup(&cache, &q, T0 + 2, NEVER).0, Lookup::Failed);

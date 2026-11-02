@@ -1067,7 +1067,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
   change, never by line. Rejected: a
   scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
-- D22 (amended by D114, D116) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
+- D22 (amended by D114, D116, D118) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
   popular ones; a ghost queue of evicted hashes sends a key asked again to main). Whole responses only; an
@@ -1354,7 +1354,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amended by D64, D110) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amended by D64, D110, D118) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -1364,7 +1364,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   holds the name's data as local knowledge (RFC 1035 §4.1.1, RFC 9499 §6), clear when it applies a policy.
   Plugins answer queries without RD too: their data is local. Rejected: a stage enum per plugin in the core
   (each plugin would grow `dedens-server`); plugins writing the reply themselves (each would redo D41's flags,
-  OPT and sizing). Files are read at start and on each reload (D55).
+  OPT and sizing). A plugin may also refuse the response of a stage after it (D118). Files are read at start and
+  on each reload (D55).
   - `hosts`: lines in the `/etc/hosts` format, inline then from a file; A, AAAA and the PTR of each address to
     its first name, TTL 3600 unless set (as `CoreDNS`); a listed name asked another type has no data (RFC 2308
     §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
@@ -1372,7 +1373,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     their subdomains; `action` NXDOMAIN (default), NODATA, REFUSED or the unspecified address, each with EDE 15
     Blocked (RFC 8914 §4.16), AA clear. Of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1`, `::1` count,
     without names of one label or starting with `localhost`: such files open with their host's own entries
-    (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`.
+    (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`. A plain line
+    of one label: D56.
     Any class asked (D110). Formats, duplicates and the allowlist in D56.
 - D55 (amended by D64, D107) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
@@ -1386,8 +1388,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   default action between two waits, so a second SIGHUP during a reload would end the process; `arc-swap`,
   whose guards may not be held across an await and whose `Arc` clones share a count between threads. Later:
   watching the file, and upstreams pushed while running (D-Bus, for a systemd-resolved replacement).
-- D56 Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
-  blocks the name and its subdomains, as any entry here does. A plain line holds one name. Names are host names,
+- D56 (amended by D118) Blocklist contents. `*.name`, hagezi's format for Blocky, is read as `name`: Blocky's documentation says it
+  blocks the name and its subdomains, as any entry here does. A plain line holds one name of two labels at least:
+  `com` or `*.com` would block a top-level domain, an error in the server's own configuration and a skipped line in a
+  downloaded list, unless the stage says `tlds: true` (D118); hosts lines keep leaving one-label names out (D54). Names are host names,
   not zone-file names, which read nearly anything (`<html>`, `||ads.example^`, URLs) so that an error page passed
   as a list: ASCII letters, digits, `-` and `_` between dots, a label not all digits (no address is a name), an
   optional trailing dot, `*.` only first; no escapes, no root (`.`, `@`). Hosts lines leave out addresses as
@@ -1398,7 +1402,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   from the server's own configuration must all read; downloaded ones (`Origin::Downloaded`) skip lines that do
   not, and the text is refused when it has none or fewer than half read, as an error page served with status
   200 does (numa's rule). Adblock syntax (`||name^`, `@@`) later, with need.
-- D57 (amended by D64, D104, D115) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
+- D57 (amended by D64, D104, D115, D118) `dedensd` downloads blocklist and allowlist `urls` (`https://`, or `http://` for a server of one's own)
   with `ureq` 3, blocking, on the thread that reloads on SIGHUP: off the query path, and one thread so a refresh
   never swaps in a pipeline older than a reload's. Rejected: `cyper`, compio's client (hyper, a 0.10 beta).
   Certificates are checked against the OS trust store (`rustls-platform-verifier`); list hosts are resolved by
@@ -1925,12 +1929,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
     `threads_default_to_the_cores_on_linux` (`config.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
     Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
-
-- D116 (amends D22, D44) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
+- D116 (amends D22, D44; amended by D118) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
   - Memory (L12). `capacity` counts everything a shard holds: the keys and responses, and `SLOT_COST` for each slot
     of the slab, live or free. `SLOT_COST` is the sum of what a slot takes in each table at the worst moment of its
-    growth, rounded up to 16: the slab slot (`size_of::<Option<Entry>>()`, one `u64` spare for the cache mark of
-    audit step 16, grown by an eighth at a time); its bucket in the index (a `(u64, u32)` and a control byte, 16
+    growth, rounded up to 16: the slab slot (`size_of::<Option<Entry>>()`, the `u64` cache mark of D118 in its
+    response, grown by an eighth at a time); its bucket in the index (a `(u64, u32)` and a control byte, 16
     buckets for 7 items just after the table doubled); the two queues and the free list (a `u32` each, twice as many
     places as items); its ghost (a stamp as the index's bucket, and two `(u64, u64)` places of the ghost queue,
     twice as many as ghosts). The constants are in `shard.rs`; `a_slot_costs_what_the_tables_take_at_worst` finds
@@ -2045,6 +2048,84 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
     `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
     `decrypt_query_message` (`odoh.rs`).
+
+- D118 (amends D22, D54, D56, D57, D116) Blocklist targets, from the audit (S13, S15): a name is no longer reached by a CNAME to
+  a blocked one, and a one-label entry no longer blocks a top-level domain unless asked.
+  - Response hook (D54). A plugin may also review the responses of the stages after it: `Plugin::reviewer` returns
+    `Option<&dyn Reviewer>` (none by default; it must not change over the plugin's life, the pipeline reads it
+    once when built), and `Reviewer::review(query, response)` inspects the decoded response and may return an
+    `Answer`, which replaces it. It cannot alter a response, only refuse it, so D54's rule (a plugin answers from
+    local data) holds. It runs on a response of the forward stage after the plugin and on a hit of a cache stage
+    after it. A plugin's own answer never reaches it (the pipeline returns at once), nor does a replacement, and
+    no plugin reviews any plugin's answer. A refused response from a prefetch or a stale refresh (D45) is
+    dropped. One refused hit may set the entry's prefetch flag without a prefetch following: harmless, and the
+    hit still counts in the cache metrics.
+  - Where it runs, what is stored. A validating forward stage (D77): the first upstream response is reviewed
+    before the validation starts (a refused one is not worth its DS and DNSKEY questions; its admission's unit stays
+    taken, D117: the response was read and reviewed), and the validated
+    answer again, for the validator's chase may have lengthened the chain; a refused response is never stored,
+    since only a validated one is stored there. A stage without validator: the response is reviewed before it is
+    stored; a refused one is stored all the same, unmarked, and refused again on each hit, as the block answer
+    itself is never cached (a block action may change at a reload, a response is the cache's only unit): not
+    storing it would send each repeat upstream. Not stored when the refusing plugin is after the cache stage,
+    which a hit does not ask.
+  - Cost of a hit. The cache's reply is wire bytes, and `dedens-proto` has no allocation-free walker, so a hit
+    reviewed decodes it. Each pipeline takes an id from a process-wide counter (a reload builds a new pipeline, so
+    a new id); a response that passed the review is stored with the id as the cache's opaque mark (`Cache::insert`,
+    `Hit::mark`), and a hit with the pipeline's id is served as it is, without decoding. A hit with another mark
+    (stored before a reload, or unmarked) is decoded and reviewed once, then marked (`Cache::mark`, set only if
+    the entry still has the mark that was read). Per stage, the pipeline knows when no plugin before it reviews, and
+    a hit there is served as before. The race left: a query in flight from an older pipeline stores a response
+    marked with its old id between a hit and its marking, which then takes the new id; it passed the older
+    pipeline's review, whose lists are those of the previous configuration: one query's response, until its TTL.
+    The mark is a field of the entry's response, so `SLOT_COST` counts it through `size_of::<Option<Entry>>()` (the
+    `u64` D116 had reserved for it is that field, not an extra); a compaction moves entries whole and keeps it, and
+    an insert refused as too large clears the response and its mark with it (`a_mark_follows_the_stored_response`
+    and `a_response_too_large_clears_what_was_held` hold both).
+    Rejected: (b) an allocation-free walker in `dedens-proto` read on each hit (a public wire-walking API to
+    maintain, and a cost on every hit, not once per entry); (c) flushing the cache when the lists change (a cold
+    cache on each list refresh and SIGHUP, a thundering herd upstream). Numbers in `docs/benchmarks.md`.
+  - Blocklist. The chain is followed from the query name: each hop is the CNAME owned by the name reached, whose
+    target is looked up as a query name is, allowlist included (D56); a DNAME above that name (RFC 6672 §2.1, its
+    RDATA read by `Name::from_uncompressed`, a malformed one left to the client) has its target looked up too,
+    and the DNAME with the CNAME synthesized from it (RFC 6672 §2.2) is one hop. Records on no chain are
+    ignored, and so is a second CNAME for one name (RFC 1034 §3.6.2). The first blocked target gives the reply of a
+    blocked query name for the client's question, EDE 15 Blocked included. At most `MAX_HOPS` (16, above any
+    mainstream resolver's chain limit) hops are followed; a response whose chain goes on after them, or loops,
+    is answered SERVFAIL (EDE 0 Other), not Blocked: a client following it would reach names nobody looked up.
+    A query name the allowlist lets through is not reviewed (one lookup): the user allowed it, and what it points
+    to is the list's decision at the name's owner's request. Not looked at: targets of MX, SRV, NS, SVCB and HTTPS
+    records (a query for those names is a query for a name of the list when the client follows them), and records
+    outside the answer section. Not checked against Pi-hole's behaviour here: no source access in this work.
+  - One label (S15). A plain line of one label (`com`, `*.com`) is an error in the server's own configuration,
+    a skipped line (counted in `Read::skipped`) in a downloaded list (D56), whose line number the error carries
+    (`LineErrorKind::SingleLabel`). The rule is single-sourced in D56. Opt-in: a blocklist stage with `tlds: true`
+    reads one-label lines as names, in all its sources, for the lists of top-level domains that exist (`zip`,
+    `mov`); the cost is that a mistake blocking `com` is then read as asked. A download is checked, before it is
+    saved, as a format only (`Lists::check`: one-label lines are names), because the stage reading the saved copy
+    decides: on a stage without `tlds` those lines are skipped and the copy of a list made of them is left out
+    with a warning. Hosts-format lines keep leaving one-label names out, as D54 says.
+  - Test data. Real captures where a capture holds the shape (`cname_to_insecure`, `dname_answer` and the
+    `dedens-proto` chains); the chains of 16, 17 hops and the loop are hand-built: no real server sends so long
+    a chain.
+  - Rejected: reviewing in the plugin's `answer` (it sees the query only; a CNAME comes from upstream); checking
+    the chain by recursion (D54: no upstream from a plugin); a reviewer chain applied to every stage (a plugin
+    after the forward stage cannot have seen the response).
+  - Tests: `a_listed_cname_target_blocks_the_response`, `a_listed_dname_target_blocks_the_response`,
+    `the_allowlist_decides_for_targets_as_for_names`, `a_blocked_response_is_answered_as_the_action_says`,
+    `a_blocklist_of_allowed_names_only_reviews_nothing`, `a_chain_over_the_bound_is_servfail`,
+    `a_dname_and_its_cname_are_one_hop`, `a_chain_to_a_listed_name_is_not_served`,
+    `a_top_level_domain_is_no_plain_entry`, `a_top_level_domain_is_an_entry_when_the_lists_take_them`,
+    `a_hosts_line_leaves_a_top_level_domain_out` (`dedens-plugins/tests/blocklist.rs`);
+    `blocklists_take_top_level_domains_when_told` (`config.rs`); `a_mark_follows_the_stored_response`
+    (`dedens-cache/tests/cache.rs`); `tests/rfc6672.rs` (`Name::from_uncompressed`);
+    `a_response_a_plugin_replaces_is_stored_and_refused_on_a_hit`,
+    `a_response_a_plugin_after_the_cache_replaces_is_not_stored`,
+    `a_response_no_plugin_replaces_is_cached_and_reviewed_once`, `a_reload_reviews_an_entry_again_once`,
+    `a_plugin_does_not_review_its_own_answers`, `a_plugin_after_the_forward_stage_is_not_asked`,
+    `a_validated_response_is_reviewed` (`dedens-server/tests/plugin.rs`); fuzz `parse_lists` runs a chain of
+    arbitrary names through a blocklist, a cache and a forward stage, the reply and the hit checked against a
+    plain model. Bench: `benches/blocklist.rs` `review`, `hit`.
 
 ## Observability
 

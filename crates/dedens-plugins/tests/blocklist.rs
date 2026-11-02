@@ -8,10 +8,14 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use dedens_plugins::{Action, Blocklist, LineErrorKind, List, ListError, Lists, Origin, Read};
+use dedens_plugins::{
+    Action, Blocklist, LineErrorKind, List, ListError, Lists, MAX_HOPS, Origin, Read, Tlds,
+};
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Class, Flags, Message, Name, Question, RData, Rcode, RecordType, Ttl};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_proto::{
+    Class, Flags, Message, Name, Query, Question, RData, Rcode, Record, RecordType, Ttl,
+};
+use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step, Transport};
 
 const STEVENBLACK: &str = include_str!("testdata/stevenblack.hosts");
 const HAGEZI: &str = include_str!("testdata/hagezi-light.txt");
@@ -184,12 +188,12 @@ fn null_records_answer_in_and_any_only() {
 fn the_deepest_names_are_looked_up() {
     let deepest = "a.".repeat(127);
     let parent = "a.".repeat(126);
-    let pipeline = pipeline(&format!("{deepest}\ncom\n"), Action::Nxdomain);
+    let pipeline = pipeline(&format!("{deepest}\nexample.com\n"), Action::Nxdomain);
     assert!(blocked(&pipeline, &deepest));
     assert!(!blocked(&pipeline, &parent));
-    let below = format!("{}com.", "a.".repeat(125));
+    let below = format!("{}example.com.", "a.".repeat(121));
     assert!(blocked(&pipeline, &below));
-    let other = format!("{}org.", "a.".repeat(125));
+    let other = format!("{}example.org.", "a.".repeat(121));
     assert!(!blocked(&pipeline, &other));
 }
 
@@ -222,7 +226,7 @@ fn label_boundaries_count() {
 /// blocked ones does not matter to names outside it: the walk goes on as far as the allowlist needs (D110).
 #[test]
 fn an_allowed_name_deeper_than_the_blocked_ones_wins() {
-    let mut lists = lists("com\n");
+    let mut lists = lists("example.com\n");
     lists
         .read(List::Allow, Origin::Local, "a.b.c.d.example.com\n")
         .expect("the allowlist reads");
@@ -230,19 +234,25 @@ fn an_allowed_name_deeper_than_the_blocked_ones_wins() {
     assert!(!blocked(&pipeline, "a.b.c.d.example.com."));
     assert!(!blocked(&pipeline, "x.a.b.c.d.example.com."));
     assert!(blocked(&pipeline, "b.c.d.example.com."));
-    assert!(blocked(&pipeline, "z.a.b.c.d.example.net.com."));
+    assert!(blocked(&pipeline, "z.a.b.c.d.other.example.com."));
 }
 
-/// An allowed name of a few labels lets a name 123 labels under it through.
+/// An allowed name of a few labels lets a name 119 labels under it through.
 #[test]
 fn a_deep_name_under_an_allowed_parent_is_not_blocked() {
-    let mut lists = lists("com\n");
+    let mut lists = lists("example.com\n");
     lists
-        .read(List::Allow, Origin::Local, "ok.com\n")
+        .read(List::Allow, Origin::Local, "ok.example.com\n")
         .expect("the allowlist reads");
     let pipeline = with_lists(lists, Action::Nxdomain);
-    assert!(!blocked(&pipeline, &format!("{}ok.com.", "a.".repeat(123))));
-    assert!(blocked(&pipeline, &format!("{}no.com.", "a.".repeat(123))));
+    assert!(!blocked(
+        &pipeline,
+        &format!("{}ok.example.com.", "a.".repeat(119))
+    ));
+    assert!(blocked(
+        &pipeline,
+        &format!("{}no.example.com.", "a.".repeat(119))
+    ));
 }
 
 #[test]
@@ -288,10 +298,81 @@ fn names_are_host_names() {
         .read(
             List::Block,
             Origin::Local,
-            "_dmarc.ads-1.example.\n*.ADS.example\n123.example\nzip\n0.0.0.0 0.0.0.0\n",
+            "_dmarc.ads-1.example.\n*.ADS.example\n123.example\nzip.example\n0.0.0.0 0.0.0.0\n",
         )
         .expect("host names");
     assert_eq!(read.names, 4);
+}
+
+/// A plain line of one label, `com` or `*.com`, would block or allow a whole top-level domain: a local text is
+/// refused with its line, in either list, and a downloaded one skips it, counted (D118, S15.b).
+#[test]
+fn a_top_level_domain_is_no_plain_entry() {
+    for (list, field) in [
+        (List::Block, "com"),
+        (List::Block, "*.com"),
+        (List::Block, "COM."),
+        (List::Allow, "com"),
+    ] {
+        let mut lists = Lists::new();
+        let result = lists.read(list, Origin::Local, &format!("ads.example\n# c\n{field}\n"));
+        assert!(
+            matches!(&result, Err(ListError::Line(e)) if e.line == 3
+                && matches!(&e.kind, LineErrorKind::SingleLabel(f) if f == field)),
+            "{field}: {result:?}"
+        );
+        assert_eq!(lists.names(list), 0);
+    }
+    let text = "one.example\ntwo.example\ncom\n";
+    let read = Lists::new().read(List::Block, Origin::Downloaded, text);
+    assert_eq!(read.map(|read| (read.names, read.skipped)), Ok((2, 1)));
+    // A download is checked for its format; the lists reading the saved copy decide on a name of one label.
+    assert_eq!(
+        Lists::check(text).map(|read| (read.names, read.skipped)),
+        Ok((3, 0))
+    );
+    let mut lists = Lists::new();
+    lists
+        .read(List::Block, Origin::Downloaded, text)
+        .expect("most lines read");
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    assert!(!blocked(&pipeline, "com."));
+    assert!(!blocked(&pipeline, "example.com."));
+}
+
+/// A list of top-level domains is read by lists made for it (`tlds`): `zip` is a name then, in a plain list only
+/// (D118).
+#[test]
+fn a_top_level_domain_is_an_entry_when_the_lists_take_them() {
+    let mut lists = Lists::with_tlds(Tlds::Allow);
+    let read = lists
+        .read(List::Block, Origin::Local, "zip\n*.mov\nads.example\n")
+        .expect("top-level domains read");
+    assert_eq!((read.names, read.skipped), (3, 0));
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    assert!(blocked(&pipeline, "zip."));
+    assert!(blocked(&pipeline, "www.example.zip."));
+    assert!(blocked(&pipeline, "mov."));
+    assert!(!blocked(&pipeline, "example.com."));
+}
+
+/// The exception: a hosts line leaves a name of one label out, as before. Hosts files list the host's own
+/// entries (`127.0.0.1 localhost`, `255.255.255.255 broadcasthost`), which no list of someone else's should fail
+/// on; the name is not blocked, so no top-level domain is (D54, D118).
+#[test]
+fn a_hosts_line_leaves_a_top_level_domain_out() {
+    let mut lists = Lists::new();
+    let read = lists
+        .read(
+            List::Block,
+            Origin::Local,
+            "0.0.0.0 com\n127.0.0.1 localhost broadcasthost\n0.0.0.0 ads.example\n",
+        )
+        .expect("hosts lines read");
+    assert_eq!((read.names, read.skipped), (1, 0));
+    let pipeline = with_lists(lists, Action::Nxdomain);
+    assert!(!blocked(&pipeline, "example.com."));
+    assert!(blocked(&pipeline, "ads.example."));
 }
 
 /// A byte order mark at the head of a text is no part of its first line.
@@ -466,4 +547,277 @@ fn a_downloaded_list_half_read_is_a_list() {
     let text = format!("one.example\n{}.example\n", "a".repeat(64));
     let read = Lists::new().read(List::Block, Origin::Downloaded, &text);
     assert_eq!(read.map(|read| (read.names, read.skipped)), Ok((1, 1)));
+}
+
+/// A response captured from a real server, in the `testdata` of `dedens-proto` or `dedens-dnssec`.
+fn capture(crate_name: &str, id: &str) -> Message<'static> {
+    let path = format!(
+        "{}/../{crate_name}/tests/testdata/{id}.bin",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let wire = std::fs::read(path).expect("a capture");
+    Message::decode(&wire)
+        .expect("a capture decodes")
+        .message
+        .into_owned()
+}
+
+/// The captures whose answers hold a CNAME or a DNAME, with the question each answers (D118).
+fn chains() -> Vec<Message<'static>> {
+    vec![
+        // `www.ripe.net.` CNAME `www.ripe.net.edgekey.net.` CNAME `e337066.dscb.akamaiedge.net.`
+        capture("dedens-dnssec", "cname_to_insecure"),
+        // `www.icann.org.` CNAME `www.icann.org.cdn.cloudflare.net.`
+        capture("dedens-dnssec", "cname_cross_zone"),
+        // `www.github.com.` CNAME `github.com.`, and its address.
+        capture("dedens-proto", "cname_chain"),
+        // `dname.sidnlabs.nl.` DNAME `example.nl.`, and the CNAME made from it.
+        capture("dedens-dnssec", "dname_answer"),
+    ]
+}
+
+/// The targets of the CNAME records of `response`, as text.
+fn targets(response: &Message<'_>) -> Vec<String> {
+    response
+        .answer
+        .iter()
+        .filter_map(|r| match r.data() {
+            RData::Cname(target) => Some(target.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn blocklist(block: &str, allow: &str, action: Action) -> Blocklist {
+    let mut lists = lists(block);
+    lists
+        .read(List::Allow, Origin::Local, allow)
+        .expect("the allowlist reads");
+    Blocklist::new(lists, action, Ttl::from_wire(60))
+}
+
+/// The answer `blocklist` gives instead of `response`, to a query for the question of `response` (as the one
+/// asked), if any.
+fn review<'b>(blocklist: &'b Blocklist, response: &Message<'_>) -> Option<Answer<'b>> {
+    let question = response.questions.first().expect("a question").clone();
+    let query = Message::query(7, question).to_vec().expect("a query fits");
+    let query = Query::read(&query).expect("a query reads");
+    blocklist.reviewer()?.review(&query, response)
+}
+
+/// S13: a target of a chain listed, as `t.site. CNAME ads.example.` with `ads.example` blocked, blocks the
+/// response, as a query for the target does, whichever of the captured chains and whichever of its hops (D118).
+#[test]
+fn a_listed_cname_target_blocks_the_response() {
+    for response in chains() {
+        let targets = targets(&response);
+        assert!(!targets.is_empty(), "{:?}", response.questions);
+        for target in &targets {
+            let blocklist = blocklist(&format!("{target}\n"), "", Action::Nxdomain);
+            let answer = review(&blocklist, &response).expect(target);
+            assert_eq!(answer.rcode, Rcode::NXDOMAIN, "{target}");
+            assert_eq!(answer.error, Some(InfoCode::BLOCKED));
+            assert!(!answer.authoritative);
+            // A parent of the target blocks it as well.
+            let (_, parent) = target
+                .split_once('.')
+                .expect("a target of two labels at least");
+            if parent.trim_end_matches('.').contains('.') {
+                let blocklist = blocklist_of(parent);
+                assert!(review(&blocklist, &response).is_some(), "{parent}");
+            }
+        }
+        let other = blocklist("ads.example\n", "", Action::Nxdomain);
+        assert!(review(&other, &response).is_none(), "{targets:?}");
+    }
+}
+
+fn blocklist_of(block: &str) -> Blocklist {
+    blocklist(&format!("{block}\n"), "", Action::Nxdomain)
+}
+
+/// A DNAME blocks as a CNAME does: the response of `dname_answer` with its synthesized CNAME left out holds
+/// `example.nl.` as the DNAME's target only (RFC 6672 §2.1).
+#[test]
+fn a_listed_dname_target_blocks_the_response() {
+    let mut response = capture("dedens-dnssec", "dname_answer");
+    assert_eq!(
+        targets(&response),
+        ["wWw.example.nl."],
+        "as the server wrote it, 0x20 included"
+    );
+    response.answer.retain(|r| r.rtype() != RecordType::CNAME);
+    assert!(
+        response
+            .answer
+            .iter()
+            .any(|r| r.rtype() == RecordType::DNAME)
+    );
+    assert!(review(&blocklist_of("example.nl"), &response).is_some());
+    assert!(review(&blocklist_of("www.example.nl"), &response).is_none());
+    assert!(review(&blocklist_of("ads.example"), &response).is_none());
+}
+
+/// The allowlist lets a target through as it lets a query name: itself and its subdomains. A query name the
+/// allowlist lets through is not reviewed at all, so that it can be unblocked without allowing what it points to
+/// (D118).
+#[test]
+fn the_allowlist_decides_for_targets_as_for_names() {
+    let response = capture("dedens-dnssec", "cname_to_insecure");
+    let listed = "akamaiedge.net\n";
+    for (allow, passes) in [
+        ("e337066.dscb.akamaiedge.net\n", true),
+        ("dscb.akamaiedge.net\n", true),
+        ("akamaiedge.net\n", true),
+        ("other.akamaiedge.net\n", false),
+        ("www.ripe.net\n", true),
+        ("ripe.net\n", true),
+    ] {
+        let blocklist = blocklist(listed, allow, Action::Nxdomain);
+        assert_eq!(review(&blocklist, &response).is_none(), passes, "{allow}");
+    }
+}
+
+/// The reply is the one of the action, as for a blocked query name: each action, and the null addresses for the
+/// question's type, whatever the chain.
+#[test]
+fn a_blocked_response_is_answered_as_the_action_says() {
+    let response = capture("dedens-dnssec", "cname_to_insecure");
+    for (action, rcode, records) in [
+        (Action::Nxdomain, Rcode::NXDOMAIN, false),
+        (Action::Nodata, Rcode::NOERROR, false),
+        (Action::Refused, Rcode::REFUSED, false),
+        (Action::Null, Rcode::NOERROR, true),
+    ] {
+        let blocklist = blocklist("akamaiedge.net\n", "", action);
+        let answer = review(&blocklist, &response).expect("blocked");
+        assert_eq!((answer.rcode, answer.records.is_some()), (rcode, records));
+        assert_eq!(answer.error, Some(InfoCode::BLOCKED));
+    }
+}
+
+/// No name listed, nothing to review: the plugin leaves responses to go undecoded.
+#[test]
+fn a_blocklist_of_allowed_names_only_reviews_nothing() {
+    let none = Blocklist::new(Lists::new(), Action::Nxdomain, Ttl::from_wire(60));
+    assert!(none.reviewer().is_none());
+    let allow_only = blocklist("", "ads.example\n", Action::Nxdomain);
+    assert!(allow_only.reviewer().is_none());
+    assert!(blocklist_of("ads.example").reviewer().is_some());
+}
+
+/// Hops are counted along the chain from the query name: up to [`MAX_HOPS`] are followed, more is SERVFAIL, not
+/// Blocked, whatever the chain points to; records on no chain are not hops (D118). No capture has so long a chain:
+/// these are made of records of the shape of `cname_to_insecure`'s.
+#[test]
+fn a_chain_over_the_bound_is_servfail() {
+    let blocklist = blocklist_of("ads.example");
+    let cname = |from: &str, to: &str| {
+        let owner: Name<'static> = from.parse().expect("a name");
+        let target: Name<'static> = to.parse().expect("a name");
+        Record::new(owner, Class::IN, Ttl::from_wire(60), &RData::Cname(target))
+    };
+    let chain = |hops: usize| {
+        let answer = (0..hops)
+            .map(|i| {
+                cname(
+                    &format!("n{i}.chain.test."),
+                    &format!("n{}.chain.test.", i + 1),
+                )
+            })
+            .collect();
+        Message {
+            questions: vec![Question::new(
+                "n0.chain.test.".parse().expect("a name"),
+                RecordType::A,
+            )],
+            answer,
+            ..Message::default()
+        }
+    };
+    assert!(review(&blocklist, &chain(MAX_HOPS)).is_none());
+    let long = review(&blocklist, &chain(MAX_HOPS + 1)).expect("too long");
+    assert_eq!(long.rcode, Rcode::SERVFAIL);
+    assert_ne!(long.error, Some(InfoCode::BLOCKED));
+    // Unrelated records are not hops.
+    let mut response = chain(MAX_HOPS);
+    response
+        .answer
+        .extend((0..40).map(|i| cname(&format!("x{i}.other.test."), "y.other.test.")));
+    assert!(review(&blocklist, &response).is_none());
+    // The target of the hop past the limit is looked at, and the chain is not followed further.
+    response
+        .answer
+        .push(cname("n16.chain.test.", "ads.example."));
+    assert!(review(&blocklist, &response).is_some_and(|a| a.rcode == Rcode::NXDOMAIN));
+    // A loop is a chain that never ends.
+    let looped = Message {
+        answer: vec![
+            cname("n0.chain.test.", "n1.chain.test."),
+            cname("n1.chain.test.", "n0.chain.test."),
+        ],
+        ..chain(0)
+    };
+    assert!(review(&blocklist, &looped).is_some_and(|a| a.rcode == Rcode::SERVFAIL));
+}
+
+/// A DNAME and the CNAME made from it are one hop (RFC 6672 §2.2), and the chain goes on from the target of the CNAME:
+/// the capture holds a DNAME and the CNAME made from it, and the listed name is found through either.
+#[test]
+fn a_dname_and_its_cname_are_one_hop() {
+    let response = capture("dedens-dnssec", "dname_answer");
+    let types = response
+        .answer
+        .iter()
+        .map(Record::rtype)
+        .collect::<Vec<_>>();
+    assert!(types.contains(&RecordType::DNAME) && types.contains(&RecordType::CNAME));
+    assert!(review(&blocklist_of("example.nl"), &response).is_some());
+    assert!(review(&blocklist_of("ads.example"), &response).is_none());
+}
+
+/// The answer of a pipeline whose upstream gives `response` to a query for the question of `response`.
+fn resolve(pipeline: &Pipeline, response: &Message<'_>) -> Message<'static> {
+    let wire = response.to_vec().expect("a response fits");
+    let question = response.questions.first().expect("a question").clone();
+    let query = Message::query(7, question).to_vec().expect("a query fits");
+    let mut out = vec![0; 65535];
+    let Step::Upstream(upstream) = pipeline.query(
+        &query,
+        Transport::Udp,
+        Ipv4Addr::LOCALHOST.into(),
+        0,
+        &mut out,
+    ) else {
+        unreachable!("the query name is not listed")
+    };
+    let Step::Reply(len) = pipeline.receive(upstream, Some(&wire), 0, &mut out) else {
+        unreachable!("a reply")
+    };
+    Message::decode(&out[..len])
+        .expect("the reply decodes")
+        .message
+        .into_owned()
+}
+
+/// S13 end to end: `www.ripe.net.` is not listed, but its chain ends in a listed name: NXDOMAIN with EDE Blocked
+/// instead of the addresses of the tracker; a list that holds none of the chain leaves the response as it is.
+#[test]
+fn a_chain_to_a_listed_name_is_not_served() {
+    let response = capture("dedens-dnssec", "cname_to_insecure");
+    let pipeline = pipeline("akamaiedge.net\n", Action::Nxdomain);
+    let reply = resolve(&pipeline, &response);
+    assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NXDOMAIN, 0));
+    let options = reply.edns.expect("our OPT record").options;
+    assert!(
+        matches!(&options[..], [EdnsOption::Ede(e)] if e.code == InfoCode::BLOCKED),
+        "{options:?}"
+    );
+    let pipeline = pipeline_of("ads.example\n");
+    let reply = resolve(&pipeline, &response);
+    assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NOERROR, 5));
+}
+
+fn pipeline_of(text: &str) -> Pipeline {
+    pipeline(text, Action::Nxdomain)
 }

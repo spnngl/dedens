@@ -18,8 +18,14 @@ pub(crate) enum Read {
 
 /// Outcome of looking a query up.
 pub(crate) enum Looked {
-    /// The reply is in `out[..len]`; `refresh` asks to resolve the query again in the background.
-    Reply { len: usize, refresh: bool },
+    /// The reply is in `out[..len]`; `refresh` asks to resolve the query again in the background. `mark` is the one
+    /// the entry carries (`Cache::insert`), `truncated` whether the reply lost records to the client's limit.
+    Reply {
+        len: usize,
+        refresh: bool,
+        mark: u64,
+        truncated: bool,
+    },
     /// Resolution failed recently and the hold is on: SERVFAIL (RFC 9520 §3.2).
     Failed,
     /// The entry is an answer that failed validation, for a client that did not disable checking: SERVFAIL with
@@ -81,6 +87,8 @@ pub(crate) fn look(
         return Looked::Reply {
             len: hit.len,
             refresh,
+            mark: hit.mark,
+            truncated: hit.truncated,
         };
     };
     let error = (hit.freshness == Freshness::Stale).then(|| {
@@ -94,6 +102,8 @@ pub(crate) fn look(
         Some(len) => Looked::Reply {
             len: client.pad(out, len, client.options_len(error)),
             refresh,
+            mark: hit.mark,
+            truncated: hit.truncated,
         },
         None => Looked::Miss,
     }

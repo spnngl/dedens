@@ -59,7 +59,7 @@ fn request(cache: &Cache, name: &str, query: &[u8], out: &mut [u8]) -> bool {
     }
     let wire = response_of(name);
     let decoded = Message::decode(&wire).expect("decodes");
-    cache.insert(&read, &decoded, 0).expect("cacheable");
+    cache.insert(&read, &decoded, 0, 0).expect("cacheable");
     false
 }
 
@@ -69,7 +69,7 @@ fn entry_cost(name: &str) -> usize {
     let (query, wire) = (query_of(name), response_of(name));
     let read = Query::read(&query).expect("valid");
     let decoded = Message::decode(&wire).expect("decodes");
-    probe.insert(&read, &decoded, 0).expect("cacheable");
+    probe.insert(&read, &decoded, 0, 0).expect("cacheable");
     probe.used()
 }
 

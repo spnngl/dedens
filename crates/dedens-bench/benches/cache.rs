@@ -57,7 +57,7 @@ fn query_for(response: &[u8]) -> Vec<u8> {
 fn insert_at_0(cache: &Cache, query: &[u8], response: &[u8]) -> bool {
     let query = Query::read(query).expect("a valid query");
     let decoded = Message::decode(response).expect("decodes");
-    cache.insert(&query, &decoded, 0).is_ok()
+    cache.insert(&query, &decoded, 0, 0).is_ok()
 }
 
 /// Looks `query` up at time 0, when it was stored: every record has TTL 1 or more, so it is fresh.
@@ -110,7 +110,7 @@ fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let query = query_for(&response);
     let query = Query::read(&query).expect("a valid query");
     let cache = cache();
-    bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0).is_ok());
+    bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0, 0).is_ok());
 }
 
 fn synthetic(name: &str) -> (Vec<u8>, Vec<u8>) {

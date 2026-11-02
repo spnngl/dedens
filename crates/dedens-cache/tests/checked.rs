@@ -38,6 +38,7 @@ fn store_ttl(cache: &Cache, ttl: u32, upstream_ad: bool, dnssec_ok: bool, checke
             &Message::decode(&wire).expect("a response"),
             T0,
             checked,
+            0,
         )
         .expect("a cacheable response");
 }

@@ -13,8 +13,8 @@ use crate::response::Response;
 // What a slot of the slab takes in each table, at the worst moment of its growth (D116: why these, and what the
 // memory test holds them to). `a_slot_costs_what_the_tables_take_at_worst` checks each against the real tables.
 
-/// A slab slot: an entry and a `u64` spare, grown by an eighth at a time.
-const SLAB: usize = (size_of::<Option<Entry>>() + size_of::<u64>()) * 9 / 8;
+/// A slab slot: an entry, the cache mark of its response included (D118), grown by an eighth at a time.
+const SLAB: usize = size_of::<Option<Entry>>() * 9 / 8;
 /// An index bucket just after the table doubled: 16 buckets for 7 items, and a control byte each.
 const INDEX: usize = ((size_of::<(u64, u32)>() + 1) * 16).div_ceil(7);
 /// The two queues and the free list, each at most twice as long as needed.

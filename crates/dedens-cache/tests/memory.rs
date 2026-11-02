@@ -38,7 +38,7 @@ fn insert_of(cache: &Cache, i: usize, records: u8) {
     let decoded = Message::decode(&wire).expect("a response that decodes");
     let asked = Query::read(&asked).expect("a valid query");
     // Over `Config::max_entry_bytes` for some: answered, not stored.
-    let _ = cache.insert(&asked, &decoded, T0);
+    let _ = cache.insert(&asked, &decoded, T0, 0);
     if i.is_multiple_of(3) {
         let mut out = vec![0; 8192];
         let _ = cache.lookup(&asked, T0, StalePolicy::Never, &mut out);

@@ -1,12 +1,15 @@
 //! The blocklist plugin (D56, D58, D110) on the heads of published lists: reading them, `Pipeline::query` for a
 //! blocked name, an allowed one under a blocked parent, and one in no list, which goes upstream, and the lookup
-//! alone (`Plugin::answer`) for names of 1 to 127 labels.
+//! alone (`Plugin::answer`) for names of 1 to 127 labels. D118: the review of a response (`Reviewer::review`) on
+//! CNAME chains of 1 to 16 hops, and a cache hit with and without the blocklist reviewing it.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
+use dedens_cache::{Cache, Config};
 use dedens_plugins::{Action, Blocklist, List, Lists, Origin};
-use dedens_proto::{Message, Query, Question, RecordType, Ttl};
+use dedens_proto::{Class, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
 use dedens_server::{Forward, Pipeline, Plugin, Stage, Step, Transport};
 
 #[global_allocator]
@@ -123,5 +126,79 @@ fn lookup_answer(bencher: divan::Bencher<'_, '_>, name: &str, lists: Lists, bloc
     let query = Query::read(&wire).expect("a query");
     bencher.bench_local(|| {
         assert_eq!(blocklist.answer(black_box(&query)).is_some(), blocked);
+    });
+}
+
+/// A response to `n0.chain.test. A` made of a chain of `hops` CNAME records, none of them listed: every target is
+/// looked up.
+fn chain(hops: usize) -> Message<'static> {
+    let name = |i: usize| -> Name<'static> { format!("n{i}.chain.test.").parse().expect("a name") };
+    Message {
+        questions: vec![Question::new(name(0), RecordType::A)],
+        answer: (0..hops)
+            .map(|i| {
+                Record::new(
+                    name(i),
+                    Class::IN,
+                    Ttl::from_wire(60),
+                    &RData::Cname(name(i + 1)),
+                )
+            })
+            .collect(),
+        ..Message::default()
+    }
+}
+
+/// The review (D118) of a response with a chain of `hops` CNAME records, against the lists of the heads: the
+/// cost a response from upstream, or a hit, pays on top of its decoding. 16 are the most checked.
+#[divan::bench(args = [1, 4, 16])]
+fn review(bencher: divan::Bencher<'_, '_>, hops: usize) {
+    let blocklist = Blocklist::new(lists(), Action::Nxdomain, Ttl::ZERO);
+    let reviewer = blocklist.reviewer().expect("names to block");
+    let response = chain(hops);
+    let wire = response.questions[0].clone();
+    let query = Message::query(7, wire).to_vec().expect("a query fits");
+    let query = Query::read(&query).expect("a query");
+    bencher.bench_local(|| {
+        assert!(
+            reviewer
+                .review(black_box(&query), black_box(&response))
+                .is_none()
+        );
+    });
+}
+
+/// A cache hit on the captured `www.ripe.net. A` (a chain of two CNAME records, their signature and two
+/// addresses), `Pipeline::query` whole: with the blocklist before the cache, which decodes the reply and reviews
+/// it, and without (a pipeline of the cache alone).
+#[divan::bench(args = [true, false])]
+fn hit(bencher: divan::Bencher<'_, '_>, reviewed: bool) {
+    let upstream = SocketAddr::from(([192, 0, 2, 53], 53));
+    let mut stages = Vec::new();
+    if reviewed {
+        let blocklist = Blocklist::new(lists(), Action::Nxdomain, Ttl::ZERO);
+        stages.push(Stage::Plugin(Box::new(blocklist)));
+    }
+    let cache = Arc::new(Cache::new(Config::default()).expect("the default settings"));
+    stages.push(Stage::Cache(cache));
+    stages.push(Stage::Forward(Forward::new([upstream]).expect("a server")));
+    let pipeline = Pipeline::new(stages);
+    let name = "www.ripe.net.".parse().expect("a name");
+    let query = Message::query(7, Question::new(name, RecordType::A))
+        .to_vec()
+        .expect("a query fits");
+    let response = include_bytes!("../../dedens-dnssec/tests/testdata/cname_to_insecure.bin");
+    let mut out = vec![0; 1232];
+    let client = Ipv4Addr::LOCALHOST.into();
+    let Step::Upstream(asked) = pipeline.query(&query, Transport::Udp, client, 0, &mut out) else {
+        unreachable!("a cache miss")
+    };
+    assert!(matches!(
+        pipeline.receive(asked, Some(&response[..]), 0, &mut out),
+        Step::Reply(_)
+    ));
+    bencher.bench_local(|| {
+        let step = pipeline.query(black_box(&query), Transport::Udp, client, 0, &mut out);
+        assert!(matches!(step, Step::Reply(_)));
     });
 }

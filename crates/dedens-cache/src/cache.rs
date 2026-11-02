@@ -49,6 +49,8 @@ pub struct Hit {
     /// What the caller found out about the response when it stored it (D77). A [`Checked::Bogus`] hit holds the
     /// data it was stored with, which the caller does not serve.
     pub checked: Checked,
+    /// The mark the response was stored with, or set by [`Cache::mark`]: 0 if none.
+    pub mark: u64,
 }
 
 /// Outcome of [`Cache::lookup`].
@@ -204,7 +206,7 @@ impl Cache {
             matches!(freshness, Freshness::Stale),
             &mut out[..end],
         );
-        let checked = response.checked();
+        let (checked, mark) = (response.checked(), response.mark);
         if used {
             entry.hit();
         }
@@ -214,6 +216,7 @@ impl Cache {
                 freshness,
                 truncated: served.truncated,
                 checked,
+                mark,
             })
         })
     }
@@ -223,7 +226,8 @@ impl Cache {
     ///
     /// `query` is the client's: the response is stored under its question and its DO and CD bits ([`Key::of`]).
     /// The caller asked upstream with those bits, so that a response with signatures, or unchecked, only goes to
-    /// clients that asked for it. The response is [`Checked::Unchecked`]: replies have AD clear (D114).
+    /// clients that asked for it. The response is [`Checked::Unchecked`]: replies have AD clear (D114). `mark` is
+    /// kept with it, opaque to the cache: [`Hit::mark`] gives it back, 0 for a caller that marks nothing.
     ///
     /// # Errors
     ///
@@ -233,8 +237,9 @@ impl Cache {
         query: &Query<'_>,
         response: &Decoded<'_>,
         now: u32,
+        mark: u64,
     ) -> Result<(), NotCached> {
-        self.insert_checked(query, response, now, Checked::Unchecked)
+        self.insert_checked(query, response, now, Checked::Unchecked, mark)
     }
 
     /// [`Cache::insert`] of a response the caller validated (D77): `checked` is kept with it and sets the AD bit of
@@ -253,20 +258,42 @@ impl Cache {
         response: &Decoded<'_>,
         now: u32,
         checked: Checked,
+        mark: u64,
     ) -> Result<(), NotCached> {
         let key = Key::of(query).ok_or(NotCached::Query)?;
         let bad = matches!(checked, Checked::Bogus(_));
-        self.store(&key, response, now, checked, bad)?;
+        self.store(&key, response, now, (checked, mark), bad)?;
         if bad {
             self.store(
                 &key.with_checking_disabled(),
                 response,
                 now,
-                Checked::Insecure,
+                (Checked::Insecure, mark),
                 bad,
             )?;
         }
         Ok(())
+    }
+
+    /// Sets the mark of the response stored for `query` to `mark`, if it is `seen` still: the caller read `seen` in
+    /// a [`Hit`] and has checked the response since. A response stored meanwhile keeps its own mark. Returns
+    /// whether the mark was set.
+    #[must_use]
+    pub fn mark(&self, query: &Query<'_>, seen: u64, mark: u64) -> bool {
+        let Some(key) = Key::of(query) else {
+            return false;
+        };
+        let (hash, shard) = self.shard(&key);
+        lock(shard)
+            .get(hash, key.as_bytes())
+            .and_then(|entry| entry.response.as_mut())
+            .is_some_and(|response| {
+                let found = response.mark == seen;
+                if found {
+                    response.mark = mark;
+                }
+                found
+            })
     }
 
     fn store(
@@ -274,11 +301,11 @@ impl Cache {
         key: &Key,
         response: &Decoded<'_>,
         now: u32,
-        checked: Checked,
+        (checked, mark): (Checked, u64),
         bad: bool,
     ) -> Result<(), NotCached> {
         let (hash, shard) = self.shard(key);
-        let response = match Response::build(key, response, now, checked, bad, &self.config) {
+        let mut response = match Response::build(key, response, now, checked, bad, &self.config) {
             Err(NotCached::TooLarge) => {
                 // Answered and not stored; an answer the cache holds is stale by it, and a failure held is over.
                 let evicted = lock(shard).update_existing(hash, key.as_bytes(), |entry| {
@@ -292,6 +319,7 @@ impl Cache {
             }
             built => built?,
         };
+        response.mark = mark;
         let evicted = {
             let mut shard = lock(shard);
             shard.update(hash, key.as_bytes(), |entry| {

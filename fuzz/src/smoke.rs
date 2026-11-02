@@ -7,6 +7,7 @@
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::{Entry, TARGETS};
 
@@ -123,6 +124,16 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             b"example.com a.b.c.d.e.example.com b.example.net x.y.example.com Z.B.EXAMPLE.net 127.0.0.1"
                 .to_vec(),
         ),
+        // A chain of names, the even ones listed (D118), and one of more names than are checked.
+        (
+            "blocklist chain".into(),
+            b"ads.example a.b.example t.example c.d.example".to_vec(),
+        ),
+        (
+            "blocklist long chain".into(),
+            b"a.example b.example c.example d.example e.example f.example g.example h.example i.example j.example k.example l.example m.example n.example o.example p.example q.example r.example"
+                .to_vec(),
+        ),
         // CoAP discovery: the listing of RFC 6690 §5.5, and the paths a `DoC` server may hold (D95).
         (
             "link format".into(),
@@ -208,6 +219,7 @@ fn every_target_survives_seeds_and_mutations() {
     let seeds = seeds();
     assert!(!seeds.is_empty(), "no seeds, run just capture");
     for (target, entry) in TARGETS {
+        let started = Instant::now();
         for (name, seed) in &seeds {
             for (label, input) in variants(name, seed) {
                 run(target, *entry, &label, &input);
@@ -216,6 +228,8 @@ fn every_target_survives_seeds_and_mutations() {
         for (label, input) in edge_cases() {
             run(target, *entry, &label, &input);
         }
+        // Seen with `--nocapture`: a target whose time grows is a cost to look at before a fuzz run is.
+        println!("{target}: {:?}", started.elapsed());
     }
 }
 

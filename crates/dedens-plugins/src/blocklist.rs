@@ -7,8 +7,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::InfoCode;
 use dedens_proto::name::{MAX_LABELS, MAX_NAME_LEN};
-use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, TextErrorKind, Ttl};
-use dedens_server::{Answer, Plugin, Records};
+use dedens_proto::{
+    Class, Message, Name, Query, Question, RData, Rcode, Record, RecordType, TextErrorKind, Ttl,
+};
+use dedens_server::{Answer, Plugin, Records, Reviewer};
 
 use crate::text::{self, LineError, LineErrorKind};
 
@@ -53,6 +55,16 @@ pub enum Origin {
     Downloaded,
 }
 
+/// Whether a plain line of one label (`zip`) is a name: it lists a whole top-level domain (D118).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tlds {
+    /// Such a line is refused: a mistake blocking `com` is not worth the lists that would hold one.
+    #[default]
+    Refuse,
+    /// Such a line is a name, for lists of top-level domains (`zip`, `mov`).
+    Allow,
+}
+
 /// What reading a text added.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Read {
@@ -95,6 +107,7 @@ pub struct Lists {
     block: Set,
     allow: Set,
     keys: RandomState,
+    tlds: Tlds,
 }
 
 /// How many labels a name of a list has: from 1, the root being no name, to [`MAX_LABELS`].
@@ -200,6 +213,15 @@ impl Lists {
         Self::default()
     }
 
+    /// Empty lists reading plain lines of one label as `tlds` says.
+    #[must_use]
+    pub fn with_tlds(tlds: Tlds) -> Self {
+        Self {
+            tlds,
+            ..Self::default()
+        }
+    }
+
     /// Adds the names of `text` to `list`: one per line, or lines in the format of `/etc/hosts`
     /// (`0.0.0.0 ads.example`), `#` starting a comment. A name may start with `*.`, as in the lists made for
     /// Blocky (`*.ads.example`), where it means the name and its subdomains, as any name here does. Of hosts
@@ -207,7 +229,9 @@ impl Lists {
     /// their names neither addresses, those of one label nor those starting with `localhost`: such files start
     /// with the entries of their host (`127.0.0.1 localhost`, `::1 ip6-loopback`, `0.0.0.0 0.0.0.0`). Lines of
     /// other addresses are left out. Names are host names, not the root: HTML or Adblock rules (`||ads.example^`)
-    /// do not read.
+    /// do not read. A plain line of one label (`com`) does not read either, as it would list a whole top-level
+    /// domain, unless the lists were made [`Lists::with_tlds`] [`Tlds::Allow`] (D118); hosts lines are the
+    /// exception, their one-label names being the host's own.
     ///
     /// # Errors
     ///
@@ -219,7 +243,7 @@ impl Lists {
     /// Never: a name read has a label.
     pub fn read(&mut self, list: List, origin: Origin, text: &str) -> Result<Read, ListError> {
         let mut counts = LabelCounts::default();
-        let (hashes, skipped) = scan(origin, text, |name| {
+        let (hashes, skipped) = scan(origin, self.tlds, text, |name| {
             let mut buf = [0; MAX_NAME_LEN];
             let (count, hash) = suffixes(&self.keys, text::key(name, &mut buf))
                 .last()
@@ -248,14 +272,15 @@ impl Lists {
     }
 
     /// Whether a downloaded `text` reads as [`Lists::read`] would read it, without hashing or storing its names:
-    /// `names` counts each name read, duplicates included.
+    /// `names` counts each name read, duplicates included. A line of one label counts: whether it is a name is
+    /// the choice of the lists reading the saved copy ([`Tlds`]), not of the download (D118).
     ///
     /// # Errors
     ///
     /// [`ListError::NotAList`] for a text with no lines or fewer than half of them read.
     pub fn check(text: &str) -> Result<Read, ListError> {
         // A vector of `()` counts without allocating.
-        let (names, skipped) = scan(Origin::Downloaded, text, |_| ())?;
+        let (names, skipped) = scan(Origin::Downloaded, Tlds::Allow, text, |_| ())?;
         Ok(Read {
             names: names.len(),
             duplicates: 0,
@@ -270,6 +295,14 @@ impl Lists {
             List::Block => self.block.len(),
             List::Allow => self.allow.len(),
         }
+    }
+
+    /// Whether the name `key` or a parent is allowed.
+    fn allows(&self, key: text::Key<'_>) -> bool {
+        let longest = self.allow.counts.longest();
+        suffixes(&self.keys, key)
+            .take_while(|(count, _)| u32::from(count.get()) <= longest)
+            .any(|(count, hash)| self.allow.holds(count, hash))
     }
 
     /// Whether the name `key` is blocked: it or a parent is listed, and neither is allowed. Its suffixes are
@@ -370,6 +403,7 @@ impl Iterator for Suffixes<'_> {
 /// does not read are left out.
 fn scan<T>(
     origin: Origin,
+    tlds: Tlds,
     text: &str,
     mut each: impl FnMut(&Name<'_>) -> T,
 ) -> Result<(Vec<T>, usize), ListError> {
@@ -379,7 +413,7 @@ fn scan<T>(
     for (line, fields) in text::lines(text) {
         lines += 1;
         let before = items.len();
-        if let Err(error) = read_line(line, fields, &mut |name| items.push(each(name))) {
+        if let Err(error) = read_line(line, fields, tlds, &mut |name| items.push(each(name))) {
             match origin {
                 Origin::Local => return Err(error.into()),
                 Origin::Downloaded => {
@@ -402,6 +436,7 @@ fn scan<T>(
 fn read_line<'t>(
     line: usize,
     mut fields: impl Iterator<Item = &'t str>,
+    tlds: Tlds,
     add: &mut impl FnMut(&Name<'_>),
 ) -> Result<(), LineError> {
     let first = fields.next().unwrap_or_default();
@@ -418,6 +453,12 @@ fn read_line<'t>(
         }
         Err(_) => {
             let name = name(line, first)?;
+            if name.label_count() < 2 && tlds == Tlds::Refuse {
+                return Err(LineError {
+                    line,
+                    kind: LineErrorKind::SingleLabel(first.to_owned()),
+                });
+            }
             if let Some(extra) = fields.next() {
                 return Err(LineError {
                     line,
@@ -470,8 +511,16 @@ fn name(line: usize, field: &str) -> Result<Name<'static>, LineError> {
     Name::from_labels(host.split('.').map(str::as_bytes)).map_err(|e| error(TextErrorKind::Name(e)))
 }
 
+/// The most hops of a chain that are followed (D118): 16, above any mainstream resolver's chain limit. A response
+/// whose chain goes on after them is answered SERVFAIL, its targets past the first hop beyond unchecked: a client
+/// following it would reach names nobody looked up.
+pub const MAX_HOPS: usize = 16;
+
 /// A plugin answering queries for blocked names as its [`Action`] says, whatever their class (D110); other names go
-/// to the next stage.
+/// to the next stage. It also reviews the responses of the stages after it (D118): one whose chain of CNAME and
+/// DNAME records, followed from the query name, leads to a blocked name is answered as a query for it is, so that a
+/// name cannot be reached by a CNAME to a blocked one, as `t.site. CNAME ads.example.`. The names are checked as
+/// the query name is, the allowlist included, and a query name the allowlist lets through is not reviewed.
 #[derive(Debug)]
 pub struct Blocklist {
     lists: Lists,
@@ -481,7 +530,8 @@ pub struct Blocklist {
 }
 
 impl Blocklist {
-    /// Blocks the names of `lists`; `ttl` is that of the records of [`Action::Null`].
+    /// Blocks the names of `lists`, and the responses whose CNAME and DNAME targets are blocked (up to
+    /// [`MAX_HOPS`] of them); `ttl` is that of the records of [`Action::Null`].
     ///
     /// # Panics
     ///
@@ -503,13 +553,30 @@ impl Blocklist {
     }
 }
 
-impl Plugin for Blocklist {
-    fn answer(&self, query: &Query<'_>) -> Option<Answer<'_>> {
-        let question = query.question()?;
+impl Blocklist {
+    fn blocks(&self, name: &Name<'_>) -> bool {
         let mut buf = [0; MAX_NAME_LEN];
-        if !self.lists.blocks(text::key(&question.name, &mut buf)) {
-            return None;
+        self.lists.blocks(text::key(name, &mut buf))
+    }
+
+    /// Whether the name is allowed, itself or a parent.
+    fn allows(&self, name: &Name<'_>) -> bool {
+        let mut buf = [0; MAX_NAME_LEN];
+        self.lists.allows(text::key(name, &mut buf))
+    }
+
+    /// SERVFAIL for a chain over [`MAX_HOPS`]: not blocked, and not a response to serve.
+    const fn too_long() -> Answer<'static> {
+        Answer {
+            rcode: Rcode::SERVFAIL,
+            records: None,
+            authoritative: false,
+            error: Some(InfoCode::OTHER),
         }
+    }
+
+    /// The reply to a query for a blocked name, `question` being the client's.
+    fn blocked(&self, question: &Question<'_>) -> Answer<'_> {
         let (rcode, records) = match self.action {
             Action::Nxdomain => (Rcode::NXDOMAIN, None),
             Action::Nodata => (Rcode::NOERROR, None),
@@ -524,12 +591,88 @@ impl Plugin for Blocklist {
                 },
             ),
         };
-        Some(Answer {
+        Answer {
             rcode,
             records,
             authoritative: false,
             error: Some(InfoCode::BLOCKED),
-        })
+        }
+    }
+}
+
+impl Plugin for Blocklist {
+    fn answer(&self, query: &Query<'_>) -> Option<Answer<'_>> {
+        let question = query.question()?;
+        self.blocks(&question.name).then(|| self.blocked(question))
+    }
+
+    /// Only with names to block: a response is not decoded for nothing.
+    fn reviewer(&self) -> Option<&dyn Reviewer> {
+        (self.lists.names(List::Block) > 0).then_some(self)
+    }
+}
+
+impl Reviewer for Blocklist {
+    /// Follows the chain of CNAME records from the query name, a hop for each owned by the name reached, and checks
+    /// each target, and the target of each DNAME above that name: the DNAME and the CNAME synthesized from it
+    /// (RFC 6672 §2.2) make one hop. Records on no chain are ignored, and so is a second CNAME of a name
+    /// (RFC 1034 §3.6.2 allows one). At most [`MAX_HOPS`] hops. A chain is written in order, so each hop starts
+    /// reading where the last was found and stops at its CNAME: a response costs its records, not [`MAX_HOPS`]
+    /// times them, unless it holds a DNAME, which asks the whole section at each hop.
+    fn review(&self, query: &Query<'_>, response: &Message<'_>) -> Option<Answer<'_>> {
+        let question = query.question()?;
+        if self.allows(&question.name) {
+            return None;
+        }
+        let records = &response.answer;
+        let whole = records.iter().any(|r| r.rtype() == RecordType::DNAME);
+        let mut current = question.name.clone();
+        let mut from = 0;
+        for _ in 0..=MAX_HOPS {
+            let mut next = None;
+            for offset in 0..records.len() {
+                let at = (from + offset) % records.len();
+                let Some(record) = records.get(at) else {
+                    break;
+                };
+                let target = match record.rtype() {
+                    RecordType::CNAME if next.is_none() && record.name == current => {
+                        match record.data() {
+                            RData::Cname(target) => {
+                                from = at + 1;
+                                target
+                            }
+                            _ => continue,
+                        }
+                    }
+                    // The target of a DNAME above `current`, not `current` itself (RFC 6672 §2.1): the rewrite of
+                    // the names below its owner.
+                    RecordType::DNAME
+                        if current.is_within(&record.name) && current != record.name =>
+                    {
+                        match record.data() {
+                            RData::Opaque(data) => match Name::from_uncompressed(data.data()) {
+                                Ok(target) if self.blocks(&target) => {
+                                    return Some(self.blocked(question));
+                                }
+                                _ => continue,
+                            },
+                            _ => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+                if self.blocks(&target) {
+                    return Some(self.blocked(question));
+                }
+                next = Some(target);
+                if !whole {
+                    break;
+                }
+            }
+            current = next?;
+        }
+        Some(Self::too_long())
     }
 }
 

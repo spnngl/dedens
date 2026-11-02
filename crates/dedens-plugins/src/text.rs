@@ -28,6 +28,9 @@ pub enum LineErrorKind {
     /// A field that is not a domain name.
     #[error("`{0}` is not a domain name: {1}")]
     Name(String, TextErrorKind),
+    /// A name of one label in a plain list: it would block, or allow, a whole top-level domain (D118).
+    #[error("`{0}` is one label, a whole top-level domain")]
+    SingleLabel(String),
     /// A field after the one name a line holds.
     #[error("`{0}` after the name")]
     Extra(String),
