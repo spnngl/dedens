@@ -156,7 +156,10 @@ fn a_key_readable_by_others_is_refused() {
     mode(0o640);
     let (code, stderr) = common::validate(&text);
     assert_eq!(code, Some(0), "{stderr}");
-    assert!(stderr.contains("by its group"), "{stderr}");
+    // The key is owned by the user running the test. `guard_key` warns of its group unless the key is root-owned and
+    // the process is root (which reads any key, the read after the drop being the check), so as root it stays quiet.
+    let warned = !nix::unistd::geteuid().is_root();
+    assert_eq!(stderr.contains("by its group"), warned, "{stderr}");
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     mode(0o600);
