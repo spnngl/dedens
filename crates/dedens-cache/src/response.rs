@@ -60,7 +60,8 @@ impl From<EncodeError> for NotCached {
 /// which sets the AD bit of every reply it serves, or makes it a bogus one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Checked {
-    /// Not validated: the AD bit is as stored.
+    /// Not validated: replies have AD clear, whatever the response said. Only a verdict of ours makes an answer
+    /// authentic (RFC 6840 §5.8, RFC 4035 §3.2.3, D114); unlike [`Checked::Insecure`], the TTL is not capped.
     #[default]
     Unchecked,
     /// Validated and secure: replies have AD (to a client that asked for it, RFC 6840 §5.7).
@@ -344,9 +345,8 @@ fn patch(out: &mut [u8], query: &Query<'_>, checked: Checked) {
         };
     }
     flags = match checked {
-        Checked::Unchecked => flags,
         Checked::Secure => flags.with(Flags::AD),
-        Checked::Insecure | Checked::Bogus(_) => flags.without(Flags::AD),
+        Checked::Unchecked | Checked::Insecure | Checked::Bogus(_) => flags.without(Flags::AD),
     };
     // AD only to a client that asked for it with AD or DO (RFC 6840 §5.8).
     let dnssec_ok = query

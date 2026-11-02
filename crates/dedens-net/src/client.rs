@@ -474,7 +474,10 @@ impl Client {
         if asked.transport == Transport::Coap {
             asked.tries = NonZeroU8::MIN;
         }
-        let exchange = Exchange::start(query, server, asked, Instant::now())?;
+        // The IDs of the queries a fallback changes (RFC 5452 §9.2, D114).
+        let spare = self.random.borrow_mut().take::<8>()?;
+        let spare_ids = [0, 2, 4, 6].map(|at| u16::from_be_bytes([spare[at], spare[at + 1]]));
+        let exchange = Exchange::start(query, server, asked, spare_ids, Instant::now())?;
         let mut progress = if slow {
             exchange.lose(Instant::now())
         } else {
@@ -581,7 +584,7 @@ impl Client {
         }
         let Some(link) = target.link(transport) else {
             let channel = udp.expect("an exchange over UDP started over UDP, which took a socket");
-            // A fallback sends the query with the next ID (D27).
+            // A fallback sends the query with another ID (D114).
             if let Some(&[high, low]) = exchange.wire().get(..2) {
                 channel.expect(u16::from_be_bytes([high, low]));
             }

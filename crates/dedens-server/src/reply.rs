@@ -100,6 +100,15 @@ impl<'q> Client<'q> {
         })
     }
 
+    /// Writes the reply that only truncates, TC set, no record: the question and our OPT record, as
+    /// [`Client::reply`] writes them with NOERROR (RFC 8482 §4.4, RFC 7766 §3). `None` when `out` cannot hold them.
+    pub(crate) fn truncated(&self, out: &mut [u8]) -> Option<usize> {
+        let len = self.reply(Message::default(), Rcode::NOERROR, None, out)?;
+        let [high, _] = Flags::TC.bits().to_be_bytes();
+        out[2] |= high;
+        Some(len)
+    }
+
     /// Writes a plugin's `answer` to the query `wire` into `out` as the reply, and returns its length; `None` when
     /// `out` cannot hold the header, the question and the OPT record. Allocates nothing.
     ///

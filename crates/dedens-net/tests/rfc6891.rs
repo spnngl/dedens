@@ -4,11 +4,11 @@
 mod common;
 
 use common::{
-    expect_response, expect_send, expect_wait, query, query_with_cookie, response, sent, start, t0,
-    udp, wire,
+    SPARE_IDS, expect_response, expect_send, expect_wait, query, query_with_cookie, response, sent,
+    server, start, t0, udp, wire,
 };
-use dedens_net::exchange::Options;
-use dedens_proto::{Message, Rcode};
+use dedens_net::exchange::{Options, Transport};
+use dedens_proto::{Flags, Message, Rcode};
 
 /// The response of a server without EDNS: `rcode` and no OPT record.
 fn without_edns(query: &Message<'_>, rcode: Rcode) -> Vec<u8> {
@@ -27,9 +27,9 @@ fn formerr_or_notimp_without_opt_drops_edns_once() {
         let plain = sent(&exchange);
         assert_eq!(plain.edns, None);
         assert_eq!(plain.questions, query.questions);
-        // The changed query goes with the next ID: a late response to the first cannot end the exchange.
+        // The changed query goes with another ID (D114): a late response to the first cannot end the exchange.
         let mut header = query.header;
-        header.id = query.header.id.wrapping_add(1);
+        header.id = SPARE_IDS[0];
         assert_eq!(plain.header, header);
         assert_eq!(exchange.sends(), 2);
         let late = without_edns(&query, rcode);
@@ -41,6 +41,27 @@ fn formerr_or_notimp_without_opt_drops_edns_once() {
         assert_eq!(got.wire, answer);
         assert_eq!(got.query, wire(&plain));
     }
+}
+
+/// D114: a server that sent OPT knows EDNS: a later FORMERR without one is a forgery or a glitch, not a reason
+/// to drop EDNS.
+#[test]
+fn no_downgrade_once_the_server_showed_edns() {
+    let now = t0();
+    let query = query();
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let exchange = expect_send(udp(
+        start(&query, Options::default(), now),
+        &wire(&truncated),
+        now,
+    ));
+    let asked = sent(&exchange);
+    assert!(asked.edns.is_some());
+    let answer = without_edns(&asked, Rcode::FORMERR);
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, answer.clone(), now));
+    assert_eq!(got.wire, answer);
+    assert_eq!(got.sends, 2);
 }
 
 #[test]

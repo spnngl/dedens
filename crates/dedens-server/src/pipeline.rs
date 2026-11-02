@@ -154,6 +154,10 @@ impl Pipeline {
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
     /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
     /// a forwarder does not do. Responses are dropped, never answered.
+    ///
+    /// A query for ANY over UDP or CoAP is answered by the forward stage with a truncated, empty response, never
+    /// forwarded nor cached; the other transports forward it (RFC 8482 §4.4, D114). A forward stage never passes
+    /// upstream's AD on without a verdict of its own (RFC 6840 §5.8, D114).
     pub fn query(
         &self,
         wire: &[u8],
@@ -214,10 +218,18 @@ impl Pipeline {
         } else {
             StalePolicy::Never
         };
+        // ANY over UDP and CoAP is truncated by the forward stage, never answered from the cache, which keeps no
+        // transport in its keys (RFC 8482 §4.4, D114).
+        let truncate = matches!(client.transport, Transport::Udp | Transport::Coap)
+            && client
+                .question
+                .as_ref()
+                .is_some_and(|q| q.qtype == RecordType::ANY);
         let mut cache = None;
         let mut expired = false;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
+                Stage::Cache(_) if truncate => {}
                 Stage::Cache(stored) => {
                     match cache::look(stored, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh } => {
@@ -254,6 +266,9 @@ impl Pipeline {
                             out,
                         )
                         .map_or(Step::Drop, Step::Reply);
+                }
+                Stage::Forward(_) if truncate => {
+                    return client.truncated(out).map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
                     let mut upstream = match self.upstream(index, query, client, cache) {
@@ -456,7 +471,10 @@ impl Pipeline {
                     Progress::Shed => return finish.shed(out),
                 }
             }
-        } else if let Some(decoded) = decoded {
+        } else if let Some(mut decoded) = decoded {
+            // No validator: upstream's AD is its word over a channel we cannot vouch for, never ours (RFC 6840
+            // §5.8, RFC 4035 §3.2.3, D114). The cache clears it as well, for a response stored as unchecked.
+            decoded.message.header.flags = decoded.message.header.flags.without(Flags::AD);
             // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
             // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
             // the same.

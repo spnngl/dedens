@@ -77,8 +77,11 @@ pub(crate) fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
 }
 
+/// The IDs of the queries a fallback changes: the exchange takes them in this order.
+pub(crate) const SPARE_IDS: [u16; 4] = [0x5a5a, 0xa5a5, 0x1234, 0xfedc];
+
 pub(crate) fn start(query: &Message<'_>, options: Options, now: Instant) -> Exchange {
-    Exchange::start(query.clone(), server(), options, now).expect("the query encodes")
+    Exchange::start(query.clone(), server(), options, SPARE_IDS, now).expect("the query encodes")
 }
 
 /// Hands `bytes` from the server over UDP to `exchange`.

@@ -245,7 +245,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D106) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D106, D114) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -298,7 +298,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   not replace good data still in the cache. `Indeterminate`: SERVFAIL with EDE, not cached: the failure hold of D43 (RFC 9520)
   starts, which may outlast 60 s once repeated. A question unanswered by every server is indeterminate, not bogus.
   Cache: an entry records `Checked` (`Unchecked`, `Secure`, `Insecure`, `Bogus(code)`) beside the response; a hit
-  sets or clears AD from it (clear on a secure entry served stale: expired data is no longer vouched for by the
+  sets or clears AD from it (only `Secure` sets it, D114; clear on a secure entry served stale: expired data is no longer vouched for by the
   signatures), and nothing else of DNSSEC is in the cache. A reload keeps the cache stage only while every forward
   stage validates the same way (`Validating::tagged`: dnssec mode, trust anchor text, negative anchors, set by
   `config.rs`): else entries from another validator, or none, would be served under the old AD and verdicts. It stores each response whole under the
@@ -569,7 +569,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
-- D27 (amended by D50, D53, D108) Client behaviour:
+- D27 (amended by D50, D53, D108, D114) Client behaviour:
   - UDP: a pool of sockets per server (D50); a random ID from `getrandom`, drawn 256 bytes at a time: a call costs
     846 ns on macOS, 14 ns on Linux (vDSO).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
@@ -577,7 +577,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     randomization of the question is an option, off by default as in Unbound.
   - dig's defaults: 3 tries, 5 s each. TC over UDP is retried over TCP. EDNS is dropped once on FORMERR or
     NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off. A query
-    changed by a fallback goes with the next ID, so a late response to the query before cannot end the exchange.
+    changed by a fallback goes with another ID, so a late response to the query before cannot end the exchange
+    (D114 says how the ID is drawn and when EDNS is dropped).
   - Cookies (RFC 7873 §5): the client cookie drawn from `getrandom` once per pair of source and server
     addresses, a memoized random function of both as §4.1 asks, without a hash to pick; server cookies kept
     per server for the life of the client, including the fresh one of a BADCOOKIE; BADCOOKIE retried with it
@@ -592,12 +593,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     response read on its connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
     that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
     the source address of a cookie, costs that try, not the exchange.
-- D31 The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and cookie in
-  it, and owns no randomness or secret; `0x20` takes its random bits as an option, which also turns on the
-  exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
+- D31 (amended by D114) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
+  cookie in it, and owns no randomness or secret (D114: the IDs of changed queries come from the caller too); `0x20`
+  takes its random bits as an option, which also turns on the exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
   and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries, and tries lost to a socket error or a slow connection; the TC,
   EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
-  alone may leave the question out; once a server has sent a cookie, a response without one is dropped, even
+  alone may leave the question out (D114); once a server has sent a cookie, a response without one is dropped, even
   without OPT (RFC 7873 §5.3 MUST), at the price of timeouts if that server loses cookie support mid-process.
 - D68 (amends D31) An exchange that runs out of tries after dropping a response for its cookie fails as
   `Forged`, not `TimedOut`: "no response after N queries, responses with a wrong cookie dropped (RFC 7873
@@ -1047,7 +1048,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
   change, never by line. Rejected: a
   scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
-- D22 Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
+- D22 (amended by D114) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
   popular ones; a ghost queue of evicted hashes sends a key asked again to main). Whole responses only; an
@@ -1193,7 +1194,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D111) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D111, D114) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -1216,7 +1217,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from the configuration (D44). Rejected: one socket shared by all
   threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
-- D43 (amended by D45, D46) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
+- D43 (amended by D45, D46, D114) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
   seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
   is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
   OPT when the query had one; room for the OPT is kept before the lookup, and a stale hit leaves 6 more bytes for
@@ -1769,6 +1770,41 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   message is read: `miss` bench a/mx/txt_large 0.67-0.72/1.25-1.30/1.88-1.92 µs against 0.71/1.26/2.00 µs before,
   15 allocations in both. Rejected: leaving the check to `dedens-net` (the audit's L1: an unchecked transport
   sends uncached replies out as they came).
+
+- D114 (amends D22, D27, D31, D41, D43, D77) Checks on what answers carry (audit step 15; L2, L3, S1.2):
+  - AD is ours alone (L2): set only on data our validator checked secure, which is `dnssec: validate` (D77); RFC 6840
+    §5.8, RFC 4035 §3.2.3. A forward stage without a validator clears upstream's AD in `Pipeline::receive`, over any
+    transport, and the cache keeps such a response as `Checked::Unchecked`, which serves AD clear like `Insecure`
+    (its TTL stays uncapped, D93). RFC 4035 §4.9.3 lets a stub trust AD from a trusted recursive server over a
+    secure channel; rejected here, as the configuration says nothing of which servers are trusted, a stage may mix
+    plain and encrypted ones, and the cache would then serve one server's AD for another's data. Migration: a
+    forward to `tls://9.9.9.9` with `dnssec: off` no longer passes AD; set `dnssec: validate`. An opt-in
+    `trust_upstream_ad` is in `docs/TODECIDE.md`.
+  - Fallbacks (L3). A query changed by a fallback (TC to TCP, EDNS dropped, BADCOOKIE) goes with another ID (RFC
+    5452 §9.2); it was the next one, which a forger that saw one ID guessed. `Exchange::start` takes four spare IDs
+    from the caller, the most such changes in one exchange, and `Client` draws them at random with the first ID, so the
+    exchange stays sans-IO (D31). A spare ID equal to the one before is not used. EDNS is dropped (RFC 6891 §7) only
+    on a FORMERR or NOTIMP that has the question and no OPT, and never once a response of the exchange had an OPT
+    (`EdnsState`). A FORMERR or NOTIMP without the question is the response: no downgrade, no second query. This
+    does not make the downgrade unforgeable: a forger still needs the ID and the port (RFC 5452 §9 is the defence),
+    and now the question too, in its case when `0x20` is on, which a question-less response spared it. Cost: a legacy
+    server that answers an EDNS query with FORMERR and no question is no longer asked again without EDNS; its
+    FORMERR is the result, and `+noedns` asks without.
+  - ANY (S1.2): a query of QTYPE ANY over UDP or CoAP is answered by the forward stage, after the plugins (which
+    keep their local answers) and the RD check, with NOERROR, TC set and no record: the question and our OPT, so
+    never larger than the query. No upstream query, no cache read or write: the cache key has no transport, so
+    the entry a TCP client stored would answer UDP clients in full. The client asks again over TCP (RFC 7766 §3).
+    Over TCP, TLS, QUIC, HTTPS and ODoH ANY is answered as any query, from upstream or the cache: RFC 8482 §4.4
+    lets a responder differ per transport, and those transports show the source address. The class is not
+    looked at: ANY of QCLASS CH or ANY is truncated like one of IN. An empty, truncated response is not one of
+    the modes of RFC 8482 §4.1-4.3, only a use of §4.4's freedom with RFC 7766's retry.
+  - ANY, limits: a client that does not retry over TCP, such as DoC over CoAP (D81, no TCP), gets no ANY answer
+    at all; ANY to a resolver is a diagnostic, and over TCP it works.
+  - ANY, rejected: §4.2, a synthesized HINFO (or §4.1, one cached RRset): it needs a record for names that do not
+    exist or are CNAMEs, a signature for DO, and a TTL, each a new claim by a forwarder that does not know the zone;
+    §4.3, a guess: needs upstream. Truncation says nothing about the data.
+  Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/{rfc5452,rfc6891}.rs`,
+  `dedens-cache/tests/checked.rs`.
 
 ## Observability
 
