@@ -57,9 +57,14 @@ pub fn pipeline(upstreams: &[SocketAddr]) -> Pipeline {
 ///
 /// With no upstream server, or a configuration the cache refuses.
 #[must_use]
-pub fn pipeline_with(mut config: Config, upstreams: &[SocketAddr]) -> Pipeline {
+pub fn pipeline_with(config: Config, upstreams: &[SocketAddr]) -> Pipeline {
     let forward =
         Forward::new(upstreams.iter().copied()).expect("an upstream server to forward to");
+    cached(config, forward)
+}
+
+/// A cache of `config` in one shard, then `forward`.
+fn cached(mut config: Config, forward: Forward) -> Pipeline {
     config.shards = 1;
     let cache = Cache::new(config).expect("the cache's configuration is valid");
     Pipeline::new(vec![Stage::Cache(Arc::new(cache)), Stage::Forward(forward)])
@@ -76,12 +81,7 @@ pub fn pipeline_validating(upstreams: &[SocketAddr], validating: Validating) -> 
     let forward = Forward::new(upstreams.iter().copied())
         .expect("an upstream server to forward to")
         .validating(validating);
-    let config = Config {
-        shards: 1,
-        ..Config::default()
-    };
-    let cache = Cache::new(config).expect("the default configuration is valid");
-    Pipeline::new(vec![Stage::Cache(Arc::new(cache)), Stage::Forward(forward)])
+    cached(Config::default(), forward)
 }
 
 /// The wall clock of a host, in seconds since the epoch of the run ([`Topology::epoch`](crate::topology::Topology::epoch)):

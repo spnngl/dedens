@@ -20,9 +20,10 @@ use dedens_server::Validating;
 use dedens_sim::attacker::{Attacker, Injection, Reaction};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server};
+use dedens_sim::framing;
 use dedens_sim::resolver::{pipeline_validating, pipeline_with, wall_clock};
 use dedens_sim::seed::{self, Seed};
-use dedens_sim::stub::{Outcome, question};
+use dedens_sim::stub::{CheckError, Outcome, question};
 use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
@@ -888,6 +889,49 @@ fn a_server_that_closes_or_stays_silent_over_tcp_gives_no_records() {
         assert!(tcp_gets_the_records(seed, Behaviour::Close(1)));
         assert!(!tcp_gets_the_records(seed, Behaviour::Close(0)));
         assert!(!tcp_gets_the_records(seed, Behaviour::Silent));
+    });
+}
+
+#[test]
+fn a_server_closes_a_connection_after_the_queries_it_was_told_to_answer() {
+    seed::each(FEW, |seed| {
+        let mut world = Topology::new()
+            .upstream(a().tcp(Behaviour::Close(2)))
+            .build(seed);
+        let server = world.upstreams[0];
+        world.client(async move |_| {
+            let mut stream = turmoil::net::TcpStream::connect(server).await?;
+            let mut wire = vec![0; 512];
+            let len =
+                Message::query(1, question("example.com", RecordType::A)).encode(&mut wire)?;
+            wire.truncate(len);
+            let mut answered = 0;
+            for _ in 0..3 {
+                framing::write(&mut stream, &wire).await.ok();
+                answered += usize::from(framing::read(&mut stream).await.is_ok());
+            }
+            assert_eq!(answered, 2);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn a_truncated_response_over_tcp_is_refused_by_the_stub() {
+    seed::each(FEW, |seed| {
+        // A server whose capture has TC set answers over TCP with it.
+        let mut world = Topology::new()
+            .upstream(Answers::new().captured("truncated"))
+            .build(seed);
+        let server = world.upstreams[0];
+        world.client(async move |stub| {
+            let query = Message::query(0, question("google.com", RecordType::TXT));
+            let got = stub.ask_query(query, server, Carrier::Tcp).await;
+            assert!(matches!(got, Err(CheckError::Unexpected { .. })), "{got:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
     });
 }
 

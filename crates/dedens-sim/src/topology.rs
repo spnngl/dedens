@@ -137,9 +137,7 @@ impl Topology {
             let name = format!("upstream-{n}");
             let host = sim.lookup(name.as_str());
             addrs.push(SocketAddr::new(host, PORT));
-            // The streams of the seed: 0 is the resolver's, 1 and up the clients', the top one the picks of the
-            // scenario, and those below it the upstream servers'.
-            let rng = Rc::new(RefCell::new(Rng::new(seed, u64::MAX - 1 - n as u64)));
+            let rng = Rc::new(RefCell::new(Rng::new(seed, upstream_stream(n))));
             let (answers, trace) = (Rc::new(answers), trace.clone());
             sim.host(name, move || {
                 upstream::serve(Rc::clone(&answers), host, Rc::clone(&rng), trace.clone())
@@ -162,7 +160,7 @@ impl Topology {
             trace,
             expected,
             faults: Vec::new(),
-            picks: Rng::new(seed, u64::MAX),
+            picks: Rng::new(seed, PICKS),
             resolver: SocketAddr::new(host, PORT),
             upstreams: addrs,
             named: 0,
@@ -285,9 +283,29 @@ impl World {
     }
 }
 
+/// The streams of the seed: 0 is the resolver's, 1 and up the clients', [`PICKS`] the picks of the scenario, and
+/// those below it the upstream servers'.
+const PICKS: u64 = u64::MAX;
+
+/// The stream of the upstream server `n`.
+fn upstream_stream(n: usize) -> u64 {
+    PICKS - 1 - n as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_two_hosts_share_a_stream() {
+        let streams: Vec<u64> = (0..4).map(upstream_stream).chain([PICKS]).collect();
+        let mut distinct = streams.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), streams.len(), "{streams:?}");
+        // Apart from the resolver's (0) and the clients' (1 and up).
+        assert!(streams.iter().all(|stream| *stream > u64::MAX / 2));
+    }
 
     #[test]
     fn each_client_has_a_host_of_its_own() {

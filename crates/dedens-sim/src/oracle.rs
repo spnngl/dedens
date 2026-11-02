@@ -496,6 +496,24 @@ mod tests {
     }
 
     #[test]
+    fn only_signatures_and_proofs_are_withheld_from_a_query_without_do() {
+        let signed = signed();
+        let question = signed.questions[0].clone();
+        let [a, .., rrsig] = signed.answer.as_slice() else {
+            panic!("the capture is an answer and its signature");
+        };
+        assert_eq!(rrsig.rtype(), RecordType::RRSIG);
+        assert!(!withheld(a, &question));
+        assert!(withheld(rrsig, &question));
+        // Another type that is not asked for stays: the SOA of a negative answer.
+        let soa = &captured_message("nxdomain_soa").authority[0];
+        assert!(!withheld(soa, &question));
+        // What is asked for stays.
+        let asked = crate::stub::question("cloudflare.com", RecordType::RRSIG);
+        assert!(!withheld(rrsig, &asked));
+    }
+
+    #[test]
     fn a_failure_carries_no_data_nor_vouching() {
         let fail = |m: &mut Message<'static>| {
             m.answer.clear();
