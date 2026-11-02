@@ -83,6 +83,20 @@ impl Forwarder {
         }
     }
 
+    /// The address kept for `target` while `now` is before the end of the time it is used for.
+    fn recall(&self, target: &Target, now: Instant) -> Option<SocketAddr> {
+        let resolved = self.resolved.borrow();
+        let &(addr, until) = resolved.get(target)?;
+        (now < until).then_some(addr)
+    }
+
+    /// Keeps `addr`, checked at `now`, for `target`, for [`RESOLVED_FOR`].
+    fn remember(&self, target: &Target, addr: SocketAddr, now: Instant) {
+        self.resolved
+            .borrow_mut()
+            .insert(target.clone(), (addr, now + RESOLVED_FOR));
+    }
+
     /// A place among the forwards in flight, if any is left.
     fn enter(&self) -> Option<InFlight<'_>> {
         let count = self.in_flight.get();
@@ -180,9 +194,7 @@ async fn address(
         Host::Address(ip) => return Ok(SocketAddr::new(*ip, target.port().get())),
         Host::Name(name) => name,
     };
-    if let Some(&(addr, until)) = forwarder.resolved.borrow().get(target)
-        && Instant::now() < until
-    {
+    if let Some(addr) = forwarder.recall(target, Instant::now()) {
         return Ok(addr);
     }
     let resolved = compio::time::timeout_at(
@@ -200,10 +212,7 @@ async fn address(
         .into_iter()
         .find(|addr| is_global(addr.ip()))
         .ok_or(ProxyError::DestinationIpProhibited)?;
-    forwarder
-        .resolved
-        .borrow_mut()
-        .insert(target.clone(), (addr, Instant::now() + RESOLVED_FOR));
+    forwarder.remember(target, addr, Instant::now());
     Ok(addr)
 }
 
@@ -287,8 +296,10 @@ mod tests {
             "100::1",
             "2001:db8::1",
             "2001::1",
+            "2001:1ff::1",
             "2002::1",
             "3fff::1",
+            "3fff:fff::1",
             "fc00::1",
             "fd12::1",
             "fe80::1",
@@ -314,6 +325,7 @@ mod tests {
             "2606:4700:4700::1111",
             "2620:fe::fe",
             "2001:200::1",
+            "3fff:1000::1",
             "2001:4860:4860::8888",
             "::ffff:1.1.1.1",
             "64:ff9b::101:101",
@@ -321,6 +333,45 @@ mod tests {
             let ip = global.parse().expect("an address");
             assert!(is_global(ip), "{global}");
         }
+    }
+
+    /// D94: a forward takes a place, given back when it ends, and there are `MAX_FORWARDS` of them.
+    #[test]
+    fn forwards_in_flight_are_counted_up_to_the_most() {
+        let forwarder = Forwarder::new(Trust::default());
+        let mut places = (0..MAX_FORWARDS)
+            .map(|_| forwarder.enter().expect("a place"))
+            .collect::<Vec<_>>();
+        assert_eq!(forwarder.in_flight.get(), MAX_FORWARDS);
+        assert!(forwarder.enter().is_none());
+        drop(places.pop());
+        assert_eq!(forwarder.in_flight.get(), MAX_FORWARDS - 1);
+        let place = forwarder.enter();
+        assert!(place.is_some());
+        assert!(forwarder.enter().is_none());
+        drop(place);
+        drop(places);
+        assert_eq!(forwarder.in_flight.get(), 0);
+    }
+
+    /// D94: the address a name resolved to is used for `RESOLVED_FOR`, from when it was checked, and not after.
+    #[test]
+    fn a_resolved_address_is_used_for_a_minute() {
+        let forwarder = Forwarder::new(Trust::default());
+        let target = "odoh.example".parse::<Target>().expect("a target");
+        let addr = SocketAddr::from(([1, 1, 1, 1], 443));
+        let checked = Instant::now();
+        assert_eq!(forwarder.recall(&target, checked), None);
+        forwarder.remember(&target, addr, checked);
+        let second = Duration::from_secs(1);
+        for at in [checked, checked + RESOLVED_FOR.saturating_sub(second)] {
+            assert_eq!(forwarder.recall(&target, at), Some(addr));
+        }
+        for at in [checked + RESOLVED_FOR, checked + RESOLVED_FOR + second] {
+            assert_eq!(forwarder.recall(&target, at), None);
+        }
+        let other = "other.example".parse::<Target>().expect("a target");
+        assert_eq!(forwarder.recall(&other, checked), None);
     }
 
     /// Settings need a target and read each as `HOST[:PORT]`; the order and repeats of the list change nothing.

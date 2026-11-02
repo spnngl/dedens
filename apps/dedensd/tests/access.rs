@@ -163,6 +163,40 @@ fn a_reload_changes_the_lists() {
     assert!(silent_udp(server.addr));
 }
 
+/// D91: the start warns of access lists that answer little or nothing: none on a wildcard address, which listens on
+/// public interfaces too, and written ones allowing nothing; not of none on a loopback one, nor of lists that allow
+/// a network.
+#[test]
+fn access_lists_that_answer_little_or_nothing_are_warned_of() {
+    let warned = |listen: &str, access: &str| {
+        let server = Server::configured(|at| {
+            hosts(&format!("{:?}", at.replace("127.0.0.1", listen)), access)
+        });
+        server
+            .stderr()
+            .iter()
+            .filter(|line| line.contains("\"WARN\""))
+            .filter(|line| line.contains("`access`"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let unset = warned("0.0.0.0", "");
+    assert!(
+        matches!(unset.as_slice(), [line] if line.contains("no `access` configured")),
+        "{unset:?}"
+    );
+    assert_eq!(warned("127.0.0.1", ""), Vec::<String>::new());
+    let none = warned("127.0.0.1", "access:\n  allow: []\n");
+    assert!(
+        matches!(none.as_slice(), [line] if line.contains("`access` allows no network")),
+        "{none:?}"
+    );
+    assert_eq!(
+        warned("0.0.0.0", "access:\n  allow: [\x270.0.0.0/0\x27]\n"),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn a_network_that_is_no_network_stops_the_start() {
     let validate = |access: &str| {
