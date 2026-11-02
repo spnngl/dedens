@@ -251,7 +251,9 @@ fn an_entry_over_max_entry_bytes_is_refused() {
     assert_eq!(cache.len(), 1);
 }
 
-/// The limit is inclusive: the largest entry stored, one byte less allowed, is stored as it is.
+/// The limit is inclusive: an entry of exactly `max_entry_bytes` is stored, one byte less allowed is refused. An
+/// entry is the key, the response without its OPT record, 2 bytes for each record (where its TTL is) and the cuts of
+/// the additional section, 1 byte for up to 7 records.
 #[test]
 fn max_entry_bytes_is_inclusive() {
     let q = query(1, "www.example", RecordType::A);
@@ -268,6 +270,12 @@ fn max_entry_bytes_is_inclusive() {
     let least = (300..4096)
         .find(|&max| stores(max))
         .expect("a size that stores");
+    let wire = Message::decode(&r)
+        .unwrap()
+        .message
+        .to_vec_without_edns()
+        .unwrap();
+    assert_eq!(least, key_of(&q).as_bytes().len() + wire.len() + 2 * 40 + 1);
     assert!(!stores(least - 1));
     assert!(stores(least + 1));
 }

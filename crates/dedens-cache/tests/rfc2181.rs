@@ -185,3 +185,50 @@ fn a_truncated_hit_of_a_captured_response_is_the_response_encoded_into_the_buffe
         "{cut} cuts: {tc_set} with TC, {tc_clear} without"
     );
 }
+
+/// More than eight additional records, each an `RRset` of its own: every count of them is a whole cut, kept in the
+/// bytes of the stored cuts past the first, so a buffer holding some of them gets as many as `encode_truncated` keeps.
+#[test]
+fn a_cut_past_the_eighth_additional_record_is_where_encode_truncated_cuts() {
+    let cache = Cache::new(dedens_cache::Config::default()).unwrap();
+    let q = query(9, "www.example", RecordType::A);
+    let mut message = Message::decode(&response(
+        "www.example",
+        RecordType::A,
+        Rcode::NOERROR,
+        vec![a("www.example", 60, 0)],
+        vec![],
+    ))
+    .unwrap()
+    .message
+    .into_owned();
+    message.additional = (0..100)
+        .map(|i| a(&format!("host{i}.example"), 60, i))
+        .collect();
+    let wire = message.to_vec().unwrap();
+    insert(&cache, &q, &wire, T0).unwrap();
+    let mut full = vec![0; 65_535];
+    let Lookup::Hit(whole) = lookup_in(&cache, &q, T0, StalePolicy::Never, &mut full) else {
+        panic!("a hit");
+    };
+    let full = &full[..whole.len];
+    let mut kept = Vec::new();
+    for size in Cache::MIN_OUT..whole.len {
+        let mut out = vec![0; size];
+        let found = lookup_in(&cache, &q, T0, StalePolicy::Never, &mut out);
+        let want = expected(full, size).expect("a response that fits the least buffer");
+        let Lookup::Hit(Hit { len, truncated, .. }) = found else {
+            panic!("{size}: expected a hit, got {found:?}");
+        };
+        assert_eq!(&out[..len], &want[..], "{size}");
+        assert!(truncated);
+        kept.push(
+            Message::decode(&out[..len])
+                .unwrap()
+                .message
+                .additional
+                .len(),
+        );
+    }
+    assert!(kept.iter().any(|&count| count > 8), "kept {kept:?}");
+}
