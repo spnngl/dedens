@@ -242,3 +242,29 @@ fn a_target_that_is_not_a_path_on_the_server_is_refused() {
         );
     }
 }
+
+/// RFC 6690 §2: an error tells the byte where the text leaves the grammar.
+#[test]
+fn a_syntax_error_tells_the_byte_it_is_at() {
+    for (text, at) in [
+        ("/a", 0),
+        ("</a> </b>", 5),
+        ("</a>;rt=\"x", 10),
+        ("</a>,", 5),
+    ] {
+        assert!(
+            matches!(parse(text.as_bytes()), Err(LinkError::Syntax { at: found, .. }) if found == at),
+            "{text:?}: {:?}",
+            parse(text.as_bytes())
+        );
+    }
+}
+
+/// RFC 3986 §3.1: a scheme is a letter, then letters, digits, `+`, `-` and `.`: a colon after anything else is in a
+/// path.
+#[test]
+fn a_colon_after_a_path_character_is_no_scheme() {
+    assert_eq!(path("dns/a:b").as_deref(), Ok("/.well-known/dns/a:b"));
+    assert_eq!(path("1a:b").as_deref(), Ok("/.well-known/1a:b"));
+    assert_eq!(path("a b:c").as_deref(), Ok("/.well-known/a b:c"));
+}

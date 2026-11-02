@@ -539,6 +539,8 @@ pub fn forwarded(head: &Response<()>, body: Vec<u8>) -> Response<Vec<u8>> {
 mod tests {
     use std::io;
 
+    use compio::quic::ConnectionClose;
+
     use super::*;
     use crate::odoh::{MAX_BODY, proxy_error};
 
@@ -856,5 +858,82 @@ mod tests {
         );
         assert_eq!(ConnectionTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(ProxyError::DnsTimeout.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// RFC 9001 §4.8: a handshake that fails, by the alert or by the close that carries it, is a TLS error; RFC 9000
+    /// §20.1: `CONNECTION_REFUSED` is a refusal; any other end is a connection that ended.
+    #[test]
+    fn s20_1_a_failed_connection_is_told_by_its_error_code() {
+        use ProxyError::{ConnectionRefused, ConnectionTerminated, TlsProtocolError};
+        let close = |error_code| {
+            ConnectionError::ConnectionClosed(ConnectionClose {
+                error_code,
+                frame_type: None,
+                reason: <_>::default(),
+            })
+        };
+        // The alert 40, handshake_failure, and the ends of the crypto range.
+        for alert in [0, 40, 255] {
+            let code = TransportErrorCode::crypto(alert);
+            assert_eq!(
+                connection(&ConnectionError::TransportError(code.into())),
+                TlsProtocolError
+            );
+            assert_eq!(connection(&close(code)), TlsProtocolError);
+        }
+        let other = TransportErrorCode::PROTOCOL_VIOLATION;
+        assert_eq!(
+            connection(&ConnectionError::TransportError(other.into())),
+            ConnectionTerminated
+        );
+        assert_eq!(connection(&close(other)), ConnectionTerminated);
+        assert_eq!(
+            connection(&close(TransportErrorCode::CONNECTION_REFUSED)),
+            ConnectionRefused
+        );
+        assert_eq!(
+            connection(&ConnectionError::TimedOut),
+            ProxyError::ConnectionTimeout
+        );
+        assert_eq!(connection(&ConnectionError::Reset), ConnectionTerminated);
+    }
+
+    /// RFC 3986 §3.3, §3.4: a path and query is made of its characters and of `%` before two hexadecimal digits.
+    #[test]
+    fn s3_3_a_path_is_made_of_the_characters_of_a_path() {
+        for text in [
+            "/",
+            "/q?x=1&y=a:b@c",
+            "/%41",
+            "/a%2Fb",
+            "/%7e%7E",
+            "/-._~!$&'()*+,;=",
+        ] {
+            assert!(is_path_and_query(text), "{text}");
+        }
+        for text in [
+            "/%", "/%4", "/%4z", "/%z4", "/%zz", "/a b", "/a#b", "/\"", "/é", "/[]",
+        ] {
+            assert!(!is_path_and_query(text), "{text}");
+        }
+    }
+
+    /// RFC 9209 §2.1.5: the details tell what is denied: the target, or the client.
+    #[test]
+    fn s2_1_5_a_denial_says_what_is_denied() {
+        assert_eq!(
+            ProxyError::HttpRequestDenied.details(),
+            Some("target host or port not listed")
+        );
+        assert_eq!(
+            ProxyError::ClientDenied.details(),
+            Some("client not allowed")
+        );
+        assert_eq!(ProxyError::DnsError.details(), None);
+        let response = failure(StatusCode::FORBIDDEN, ProxyError::ClientDenied);
+        assert_eq!(
+            response.headers()[PROXY_STATUS],
+            "dedensd; error=http_request_denied; details=\"client not allowed\""
+        );
     }
 }

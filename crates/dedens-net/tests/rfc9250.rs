@@ -31,8 +31,10 @@ enum Serve {
     Framed,
     /// Each response without its length.
     Unframed,
-    /// Framed, but the connection closed at its second stream, that query unanswered.
-    ClosingAtSecond,
+    /// Framed, but the connection closed at its stream of this number, that query unanswered.
+    ClosingAt(u32),
+    /// Framed, but from the second stream of a connection on, without the length.
+    UnframedAfterFirst,
     /// More bytes than a response holds, the stream left open.
     Endless,
     /// Framed, padded to the most a response holds: 65535 bytes.
@@ -90,7 +92,7 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                         Err(_) => return,
                     };
                     streams += 1;
-                    if serve == Serve::ClosingAtSecond && streams == 2 {
+                    if serve == Serve::ClosingAt(streams) {
                         connection.close(VarInt::from_u32(0), b"going away");
                         return;
                     }
@@ -106,6 +108,7 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                     let response = answer(&bytes[2..], Vec::new());
                     let response = match serve {
                         Serve::Unframed => response,
+                        Serve::UnframedAfterFirst if streams > 1 => response,
                         Serve::Endless => vec![0; 70_000],
                         Serve::Largest => {
                             let short =
@@ -114,9 +117,10 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                             assert_eq!(padded.len(), 65_535);
                             frame(&padded).expect("framed")
                         }
-                        Serve::Framed | Serve::ClosingAtSecond | Serve::Silent => {
-                            frame(&response).expect("framed")
-                        }
+                        Serve::Framed
+                        | Serve::ClosingAt(_)
+                        | Serve::UnframedAfterFirst
+                        | Serve::Silent => frame(&response).expect("framed"),
                     };
                     let BufResult(written, _) = send.write_all(response).await;
                     if serve == Serve::Endless {
@@ -304,13 +308,47 @@ async fn s4_2_a_stream_longer_than_a_response_is_refused() {
 #[compio::test]
 async fn s5_5_a_closed_reused_connection_is_replaced_once() {
     let certificates = certificates();
-    let (addr, seen) = quic_server(&certificates, Serve::ClosingAtSecond).await;
+    let (addr, seen) = quic_server(&certificates, Serve::ClosingAt(2)).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let (query, options) = (query(), quic());
     let ask = || client.exchange(query.clone(), named(addr, NAME), &options);
     ask().await.expect("a response");
     ask().await.expect("a response on a new connection");
     assert_eq!(seen.connections.get(), 2);
+}
+
+/// D27: a connection found closed on its first query is not a reused one that went stale: the query is not asked
+/// again.
+#[compio::test]
+async fn a_fresh_connection_closed_at_its_first_query_is_not_replaced() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::ClosingAt(1)).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let error = client.exchange(query(), named(addr, NAME), &quic()).await;
+    assert!(
+        matches!(error, Err(ClientError::Quic(QuicError::Stream(_)))),
+        "{error:?}"
+    );
+    assert_eq!(seen.connections.get(), 1);
+}
+
+/// RFC 9250 §4.3.3, D27, D109: a framing error on a reused connection closes it, and that is no staleness: the query
+/// is not asked again.
+#[compio::test]
+async fn a_framing_error_on_a_reused_connection_is_not_asked_again() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::UnframedAfterFirst).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let (query, options) = (query(), quic());
+    let ask = || client.exchange(query.clone(), named(addr, NAME), &options);
+    ask().await.expect("a response");
+    let error = ask().await;
+    assert!(
+        matches!(error, Err(ClientError::Quic(QuicError::Framing))),
+        "{error:?}"
+    );
+    assert_eq!(seen.connections.get(), 1);
+    assert_eq!(seen.streams.borrow().len(), 2);
 }
 
 /// RFC 9250 §4.3.3: the server may open no stream; the client allows none.
