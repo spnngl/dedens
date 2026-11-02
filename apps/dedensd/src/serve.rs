@@ -1,6 +1,7 @@
 //! The sockets of one thread and the tasks answering on them (D42): a task per UDP socket and per TCP listener,
 //! one per TCP connection, and one per query that waits for an upstream server. Replies the pipeline builds at
-//! once go out from the socket's own task; the rest are asked upstream with the thread's `dedens_net` client.
+//! once are queued for the socket's sender, one more future of its task (D123); the rest are asked upstream with
+//! the thread's `dedens_net` client.
 //! Each thread bounds its upstream queries and TCP connections, each connection its queries in flight, the bytes
 //! of its replies waiting to be written and the time they take to write (D47). A task that panics ends alone, and
 //! a listener's loop that ends starts again (D121).
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use compio::BufResult;
-use compio::buf::{IntoInner, IoBuf};
+use compio::buf::{IntoInner, IoBuf, Slice};
 use compio::driver::op::RecvFromMultiResult;
 use compio::driver::{DriverType, ProactorBuilder};
 use compio::io::{AsyncWriteExt, BufReader};
@@ -50,8 +51,9 @@ use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, OptionCode};
 use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{Message, Query};
 use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
-use futures_util::future::{join_all, select_all};
+use futures_util::future::{join, join_all, select_all};
 use futures_util::lock::Mutex;
+use futures_util::stream::FuturesUnordered;
 use futures_util::{Stream, StreamExt};
 use http::StatusCode;
 use socket2::{Domain, Socket, Type};
@@ -69,9 +71,13 @@ use crate::reload::Current;
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 pub(crate) const TCP_IDLE: Duration = Duration::from_secs(10);
 
-/// Tasks answering on each UDP socket, taking turns at its datagrams: one waits for the next while the others
-/// answer or send.
-const UDP_RECEIVES: usize = 4;
+/// Tasks answering on each UDP socket, taking turns at its datagrams: with the replies queued, 1, 2 and 4 serve
+/// alike within noise, and two keep one free to take a datagram while the other answers (D48, D123).
+const UDP_RECEIVES: usize = 2;
+
+/// Replies a UDP socket holds queued for its sender, as many in flight at most, and as many spare buffers kept: a
+/// task with a reply waits for room in the queue (D123).
+const UDP_SENDS: usize = 64;
 
 /// Datagrams a thread holds received and not yet answered, in buffers made once: on Linux, `io_uring` fills them
 /// without a receive asked for each datagram, and leaves the rest in the socket while all are taken. A power of
@@ -344,8 +350,15 @@ pub(crate) async fn serve(
             Bound::Plain(udp_socket, tcp_listener) => {
                 let name = Listener::new("udp", local(&udp_socket));
                 let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
+                // Made here, not in `udp`, so a restart of the loop keeps it (D123).
+                let outbox = Rc::new(Outbox::new());
                 tasks.push(supervised(name, &thread, move |name, thread| {
-                    udp(Rc::clone(&socket), name.clone(), Rc::clone(thread))
+                    udp(
+                        Rc::clone(&socket),
+                        Rc::clone(&outbox),
+                        name.clone(),
+                        Rc::clone(thread),
+                    )
                 }));
                 tcp_task(&thread, tcp_listener, "tcp", None)?
             }
@@ -469,12 +482,90 @@ async fn first_end(tasks: Vec<JoinHandle<()>>) -> io::Result<()> {
     }
 }
 
-/// Answers the queries of one UDP socket with [`UDP_RECEIVES`] tasks, from one stream of datagrams.
-async fn udp(socket: Rc<UdpSocket>, listener: Listener, thread: Rc<Thread>) {
+/// Answers the queries of one UDP socket with [`UDP_RECEIVES`] tasks, from one stream of datagrams, and sends the
+/// replies from one more future of its task (D123). `outbox` is the socket's, made with it: it outlives this loop,
+/// so after a restart (D121) the replies of queries still waiting for upstream go out as before.
+async fn udp(socket: Rc<UdpSocket>, outbox: Rc<Outbox>, listener: Listener, thread: Rc<Thread>) {
     let datagrams = pin!(socket.recv_from_multi());
     let datagrams = Mutex::new(datagrams);
-    let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&socket, &datagrams, &listener, &thread));
-    join_all(tasks).await;
+    let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&datagrams, &outbox, &listener, &thread));
+    join(join_all(tasks), send_replies(&socket, &outbox)).await;
+}
+
+/// A reply on its way out of a UDP socket: a slice of a buffer, so its length never passes the buffer's, and the
+/// peer it is for.
+struct Outgoing {
+    reply: Slice<Vec<u8>>,
+    peer: SocketAddr,
+}
+
+/// The replies the tasks of one UDP socket hand to its sender, and the buffers it gives back to make the next in.
+/// It holds both ends of the queue, so queueing never fails, and the sender can start again on it.
+struct Outbox {
+    queue: flume::Sender<Outgoing>,
+    outgoing: flume::Receiver<Outgoing>,
+    spare: RefCell<Vec<Vec<u8>>>,
+}
+
+impl Outbox {
+    /// An empty outbox: [`UDP_SENDS`] replies wait in its queue.
+    fn new() -> Self {
+        let (queue, outgoing) = flume::bounded(UDP_SENDS);
+        let spare = RefCell::new(Vec::new());
+        Self {
+            queue,
+            outgoing,
+            spare,
+        }
+    }
+
+    /// A buffer of [`DEFAULT_UDP_PAYLOAD`] bytes: a spare one if there is, else a new one.
+    fn buffer(&self) -> Vec<u8> {
+        let spare = self.spare.borrow_mut().pop();
+        spare.unwrap_or_else(|| vec![0; usize::from(DEFAULT_UDP_PAYLOAD)])
+    }
+
+    /// Queues the first `len` bytes of `buffer` for `peer`, once there is room.
+    async fn push(&self, buffer: Vec<u8>, len: usize, peer: SocketAddr) {
+        let reply = buffer.slice(..len);
+        // The outbox holds the receiver too: sending cannot fail.
+        let _ = self.queue.send_async(Outgoing { reply, peer }).await;
+    }
+
+    /// Keeps a buffer a reply was sent from, if it is one of [`Outbox::buffer`]'s.
+    fn give_back(&self, buffer: Vec<u8>) {
+        let mut spare = self.spare.borrow_mut();
+        if buffer.len() == usize::from(DEFAULT_UDP_PAYLOAD) && spare.len() < UDP_SENDS {
+            spare.push(buffer);
+        }
+    }
+}
+
+/// Sends what `outbox` queues, [`UDP_SENDS`] at once at most, never ends. The tasks answering queue replies without
+/// waiting for them to go out, so one turn of the runtime sends all they made in one submission, not one for each
+/// task (`io_uring_enter` 0.255 → 0.005 a query, D123).
+async fn send_replies(socket: &UdpSocket, outbox: &Outbox) {
+    let mut incoming = outbox.outgoing.clone().into_stream();
+    let mut sending = FuturesUnordered::new();
+    poll_fn(|cx| {
+        loop {
+            while sending.len() < UDP_SENDS
+                && let Poll::Ready(Some(Outgoing { reply, peer })) = incoming.poll_next_unpin(cx)
+            {
+                sending.push(send(socket, reply, peer));
+            }
+            // A send that ended makes room for a reply the queue already holds, which wakes no one.
+            let mut ended = false;
+            while let Poll::Ready(Some(buffer)) = sending.poll_next_unpin(cx) {
+                outbox.give_back(buffer);
+                ended = true;
+            }
+            if !ended {
+                break Poll::<()>::Pending;
+            }
+        }
+    })
+    .await;
 }
 
 /// Receives that failed in a row on one task of a UDP socket, which decide how long it waits before the next (D107).
@@ -534,14 +625,14 @@ async fn yield_now() {
 }
 
 /// Answers queries from `datagrams`, one after the other; the lock passes the stream to the next task once a
-/// datagram is taken.
+/// datagram is taken. Replies are queued in `outbox` (D123).
 async fn udp_queries(
-    socket: &Rc<UdpSocket>,
     datagrams: &Mutex<impl Stream<Item = io::Result<RecvFromMultiResult>> + Unpin>,
+    outbox: &Rc<Outbox>,
     listener: &Listener,
     thread: &Rc<Thread>,
 ) {
-    let mut out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
+    let mut out = outbox.buffer();
     let mut receiving = Receiving::Fine;
     loop {
         // The lock is given back at the end of this statement, before any pause (D107).
@@ -568,12 +659,8 @@ async fn udp_queries(
         let pipeline = thread.pipeline();
         // A panic anywhere in the datagram's turn costs this query, not the socket (D121).
         let stepped = listener
-            .guard_async(peer, udp_step(socket, &pipeline, datagram, peer, &mut out))
+            .guard_async(peer, udp_step(outbox, &pipeline, datagram, peer, &mut out))
             .await;
-        if out.len() < usize::from(DEFAULT_UDP_PAYLOAD) {
-            // The buffer was out for a send that panicked.
-            out = vec![0; usize::from(DEFAULT_UDP_PAYLOAD)];
-        }
         let Some(Some(upstream)) = stepped else {
             continue;
         };
@@ -581,11 +668,11 @@ async fn udp_queries(
             tracing::debug!(%peer, "too many upstream queries: dropped");
             continue;
         };
-        let (socket, thread) = (Rc::clone(socket), Rc::clone(thread));
+        let (outbox, thread) = (Rc::clone(outbox), Rc::clone(thread));
         Origin::new(listener, peer).spawn(async move {
             let deliver = async |reply: Vec<u8>| {
                 let len = reply.len();
-                send(&socket, reply, len, peer).await;
+                outbox.push(reply, len, peer).await;
             };
             answer(&thread, &pipeline, upstream, Transport::Udp, deliver).await;
             drop(slot);
@@ -596,7 +683,7 @@ async fn udp_queries(
 /// The turn of one datagram: the pipeline's first step, the reply it makes sent, and the upstream query it leaves, if any.
 /// The datagram's buffer goes back to the pool before the reply waits to be sent.
 async fn udp_step(
-    socket: &UdpSocket,
+    outbox: &Outbox,
     pipeline: &Pipeline,
     datagram: RecvFromMultiResult,
     peer: SocketAddr,
@@ -611,14 +698,16 @@ async fn udp_step(
         Step::Refresh(len, upstream) => (Some(len), Some(upstream)),
     };
     if let Some(len) = len {
-        *out = send(socket, std::mem::take(out), len, peer).await;
+        outbox
+            .push(std::mem::replace(out, outbox.buffer()), len, peer)
+            .await;
     }
     upstream
 }
 
-/// Sends the first `len` bytes of `out` to `peer`, and gives `out` back.
-async fn send(socket: &UdpSocket, out: Vec<u8>, len: usize, peer: SocketAddr) -> Vec<u8> {
-    let BufResult(sent, out) = socket.send_to(out.slice(..len), peer).await;
+/// Sends `reply` to `peer`, and gives its buffer back, to [`send_replies`].
+async fn send(socket: &UdpSocket, reply: Slice<Vec<u8>>, peer: SocketAddr) -> Vec<u8> {
+    let BufResult(sent, out) = socket.send_to(reply, peer).await;
     if let Err(error) = sent {
         tracing::debug!(%error, %peer, "UDP send");
     }
@@ -1512,15 +1601,16 @@ mod tests {
     use dedens_proto::{Message, Question, Rcode, RecordType};
     use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage, Transport};
     use futures_util::Stream;
-    use futures_util::future::{Either, select};
+    use futures_util::future::{Either, join, select};
     use futures_util::lock::Mutex;
     use futures_util::stream::repeat_with;
     use metrics_util::debugging::DebuggingRecorder;
+    use socket2::{Domain, Socket, Type};
 
     use super::{
-        BUSY_PAUSE, BUSY_YIELDS, Backoff, ERROR_PAUSE, Pause, Receiving, Replies, Slots,
-        TCP_PENDING, TCP_QUEUED, Thread, UPSTREAM_QUERIES, breaks_doq, connection, first_end,
-        follow, runtime, supervised_with, tcp, udp, udp_queries, write,
+        BUSY_PAUSE, BUSY_YIELDS, Backoff, ERROR_PAUSE, Outbox, Pause, Receiving, Replies, Slots,
+        TCP_PENDING, TCP_QUEUED, Thread, UDP_SENDS, UPSTREAM_QUERIES, breaks_doq, connection,
+        first_end, follow, runtime, send_replies, supervised_with, tcp, udp, udp_queries, write,
     };
     use crate::isolate::tests::counted;
     use crate::isolate::{Listener, Origin};
@@ -1711,7 +1801,6 @@ mod tests {
     fn a_udp_receive_failing_twice_pauses_only_its_task() {
         let runtime = Runtime::new().expect("a runtime");
         runtime.block_on(async {
-            let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
             let polls = Cell::new(0);
             let datagrams = failing(io::ErrorKind::Other, &polls);
             let thread = idle();
@@ -1723,7 +1812,8 @@ mod tests {
                     .is_ok()
             };
             let name = udp_listener();
-            let receiving = pin!(udp_queries(&socket, &datagrams, &name, &thread));
+            let outbox = Rc::new(Outbox::new());
+            let receiving = pin!(udp_queries(&datagrams, &outbox, &name, &thread));
             let Either::Right((free, _)) = select(receiving, pin!(probe)).await else {
                 panic!("the receiving task never ends");
             };
@@ -1739,12 +1829,12 @@ mod tests {
     fn a_udp_receive_without_a_free_buffer_is_tried_again_without_spinning() {
         let runtime = Runtime::new().expect("a runtime");
         runtime.block_on(async {
-            let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
             let polls = Cell::new(0);
             let datagrams = failing(io::ErrorKind::ResourceBusy, &polls);
             let thread = idle();
             let name = udp_listener();
-            let receiving = udp_queries(&socket, &datagrams, &name, &thread);
+            let outbox = Rc::new(Outbox::new());
+            let receiving = udp_queries(&datagrams, &outbox, &name, &thread);
             let ended = compio::time::timeout(ERROR_PAUSE / 2, receiving).await;
             assert!(ended.is_err(), "the receiving task never ends");
             // The yields, then one try a millisecond (a timer may be late, never early); without a pause it is
@@ -1773,6 +1863,145 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(receiving.failed(true), Pause::Sleep(BUSY_PAUSE));
         }
+    }
+
+    /// D123: a socket holds [`UDP_SENDS`] replies for its sender, and the task queueing one more waits for room.
+    #[test]
+    fn a_full_outbox_makes_the_next_reply_wait() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let outbox = Outbox::new();
+            let peer = SocketAddr::from(([127, 0, 0, 1], 9));
+            for _ in 0..UDP_SENDS {
+                outbox.push(outbox.buffer(), 1, peer).await;
+            }
+            let waits = compio::time::timeout(
+                Duration::from_millis(50),
+                outbox.push(outbox.buffer(), 1, peer),
+            )
+            .await;
+            assert!(waits.is_err(), "a reply went past the queue's bound");
+        });
+    }
+
+    /// A socket bound on loopback, whose datagram queue holds several thousand small ones.
+    fn client() -> UdpSocket {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).expect("a socket");
+        socket.set_recv_buffer_size(4 << 20).expect("a buffer size");
+        socket
+            .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .expect("bound");
+        UdpSocket::from_std(socket.into()).expect("a socket for the runtime")
+    }
+
+    /// Receives `count` replies of two bytes, a number each, and says which numbers came.
+    async fn numbers(client: &UdpSocket, count: usize) -> Vec<bool> {
+        let mut seen = vec![false; count];
+        for _ in 0..count {
+            let BufResult(received, buffer) = client.recv_from(vec![0; 512]).await;
+            assert_eq!(received.expect("received").0, 2);
+            seen[usize::from(u16::from_be_bytes([buffer[0], buffer[1]]))] = true;
+        }
+        seen
+    }
+
+    /// Queues the reply `number` for `peer`.
+    async fn queue_number(outbox: &Outbox, number: usize, peer: SocketAddr) {
+        let mut buffer = outbox.buffer();
+        buffer[..2].copy_from_slice(&u16::try_from(number).expect("fits").to_be_bytes());
+        outbox.push(buffer, 2, peer).await;
+    }
+
+    /// D123: every reply queued reaches its peer, more than the sender holds in flight, and the buffers it sent come
+    /// back to make the next replies in.
+    #[test]
+    fn queued_replies_are_all_sent_and_their_buffers_reused() {
+        const REPLIES: usize = 3 * UDP_SENDS;
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let client = client();
+            let peer = client.local_addr().expect("its address");
+            let outbox = Outbox::new();
+            let queueing = async {
+                for number in 0..REPLIES {
+                    queue_number(&outbox, number, peer).await;
+                }
+            };
+            let both = pin!(join(queueing, numbers(&client, REPLIES)));
+            let sending = pin!(send_replies(&server, &outbox));
+            let within = compio::time::timeout(Duration::from_secs(5), select(both, sending));
+            let Either::Left((((), seen), _)) = within.await.expect("every reply within 5 s")
+            else {
+                panic!("the sender never ends");
+            };
+            assert!(seen.iter().all(|seen| *seen), "a reply never came");
+            assert!(!outbox.spare.borrow().is_empty(), "no buffer came back");
+            assert!(outbox.spare.borrow().len() <= UDP_SENDS);
+        });
+    }
+
+    /// D123: a send that fails costs its reply, not the sender nor the replies behind it.
+    #[test]
+    fn a_failed_send_costs_only_its_reply() {
+        const REPLIES: usize = 10;
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let client = client();
+            let peer = client.local_addr().expect("its address");
+            let outbox = Outbox::new();
+            // An IPv6 peer, from an IPv4 socket: the kernel refuses it.
+            let refused = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 9));
+            outbox.push(outbox.buffer(), 2, refused).await;
+            for number in 0..REPLIES {
+                queue_number(&outbox, number, peer).await;
+            }
+            let sending = send_replies(&server, &outbox);
+            let receiving =
+                compio::time::timeout(Duration::from_secs(5), numbers(&client, REPLIES));
+            let Either::Left((seen, _)) = select(pin!(receiving), pin!(sending)).await else {
+                panic!("the sender never ends");
+            };
+            let seen = seen.expect("every reply within 5 s");
+            assert!(seen.iter().all(|seen| *seen), "a reply never came");
+        });
+    }
+
+    /// D121, D123: the outbox outlives the sender, so replies queued while no sender runs, as between a listener
+    /// loop's end and its restart, go out when the next one starts.
+    #[test]
+    fn a_new_sender_sends_what_the_last_one_left_queued() {
+        const REPLIES: usize = 10;
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let client = client();
+            let peer = client.local_addr().expect("its address");
+            let outbox = Outbox::new();
+            // A sender that ends: dropped by a restart.
+            let first =
+                compio::time::timeout(Duration::from_millis(20), send_replies(&server, &outbox));
+            assert!(first.await.is_err(), "the sender never ends");
+            // Queueing waits for no sender, whatever the sender's end.
+            let queued = compio::time::timeout(Duration::from_millis(50), async {
+                for number in 0..REPLIES {
+                    queue_number(&outbox, number, peer).await;
+                }
+            });
+            queued.await.expect("queued at once");
+            let sending = send_replies(&server, &outbox);
+            let receiving =
+                compio::time::timeout(Duration::from_secs(5), numbers(&client, REPLIES));
+            let Either::Left((seen, _)) = select(pin!(receiving), pin!(sending)).await else {
+                panic!("the sender never ends");
+            };
+            assert!(
+                seen.expect("every reply within 5 s")
+                    .iter()
+                    .all(|seen| *seen)
+            );
+        });
     }
 
     /// D107: a thread no query reaches takes the pipeline a reload made, and so lets go of the old one (and its
@@ -1921,7 +2150,8 @@ mod tests {
                 let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, Trust::default()));
                 let udp_socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
                 let udp_addr = udp_socket.local_addr().expect("its address");
-                spawn(udp(udp_socket, udp_listener(), Rc::clone(&thread))).detach();
+                let outbox = Rc::new(Outbox::new());
+                spawn(udp(udp_socket, outbox, udp_listener(), Rc::clone(&thread))).detach();
                 let tcp_listener = TcpListener::bind("127.0.0.1:0").await.expect("bound");
                 let tcp_addr = tcp_listener.local_addr().expect("its address");
                 let tcp_task = tcp(Rc::new(tcp_listener), None, udp_listener(), thread);
@@ -1979,22 +2209,23 @@ mod tests {
                 let thread = answering();
                 let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
                 let server = socket.local_addr().expect("its address");
+                let outbox = Rc::new(Outbox::new());
                 let (poke, poked) = flume::bounded::<()>(1);
                 let mut turns = 0;
                 let supervisor =
                     supervised_with(QUICK, udp_listener(), &thread, move |name, thread| {
                         turns += 1;
                         let first = turns == 1;
-                        let (socket, name, thread) =
-                            (Rc::clone(&socket), name.clone(), Rc::clone(thread));
+                        let (socket, outbox) = (Rc::clone(&socket), Rc::clone(&outbox));
+                        let (name, thread) = (name.clone(), Rc::clone(thread));
                         let poked = poked.clone();
                         async move {
                             if first {
-                                let serving = pin!(udp(socket, name, thread));
+                                let serving = pin!(udp(socket, outbox, name, thread));
                                 select(serving, pin!(poked.recv_async())).await;
                                 panic!("a bug");
                             }
-                            udp(socket, name, thread).await;
+                            udp(socket, outbox, name, thread).await;
                         }
                     });
                 assert_eq!(answers(server).await, 1);
@@ -2027,18 +2258,19 @@ mod tests {
             let thread = answering();
             let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
             let server = socket.local_addr().expect("its address");
+            let outbox = Rc::new(Outbox::new());
             let mut turns = 0;
             let supervisor =
                 supervised_with(QUICK, udp_listener(), &thread, move |name, thread| {
                     turns += 1;
                     let last = turns > 100;
-                    let (socket, name, thread) =
-                        (Rc::clone(&socket), name.clone(), Rc::clone(thread));
+                    let (socket, outbox) = (Rc::clone(&socket), Rc::clone(&outbox));
+                    let (name, thread) = (name.clone(), Rc::clone(thread));
                     async move {
                         if last {
-                            udp(socket, name, thread).await;
+                            udp(socket, outbox, name, thread).await;
                         } else {
-                            let serving = pin!(udp(socket, name, thread));
+                            let serving = pin!(udp(socket, outbox, name, thread));
                             select(serving, pin!(compio::time::sleep(Duration::from_millis(1))))
                                 .await;
                             panic!("a bug");

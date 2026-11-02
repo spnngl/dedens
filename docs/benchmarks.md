@@ -471,6 +471,92 @@ one core answering four names from its cache, dnsperf on six, 10 s a run, two ro
   not repeated in round 2. The scenario cannot show the U2 gain; the unit tests (`serve.rs`) do, with a stream
   that fails on every poll.
 
+### UDP send queue and `io_uring` flags (D123, D51)
+
+Machine: a VPS with six Haswell vCPUs shared with other tenants (a Grafana runs there), AlmaLinux 10.2, Linux 6.12 with
+`kernel.io_uring_disabled` set to 0 for the sessions, podman rootless; every run's log says `"driver":"io_uring"`.
+`dedensd` on core 0, dnsperf (`-c 8 -T 4 -q 500`) on cores 2-5 (3-5 forwarding, the second `dedensd` on 2), 8 s a
+run, five rounds, the variants alternating within each round, no query lost in any run. `io_uring_enter` a query
+comes from an ftrace histogram on `syscalls:sys_enter_io_uring_enter` over the server's threads (`perf` and
+`strace` are not installed). The noise is 3-5% on a path a change does not touch (TCP, forwarding over TCP), larger
+on the others (a round of the UDP base in the ring session fell to 139.9k). `run.sh` alternates base and tree as
+well, so the first claim reruns with `DEDENS_CONTAINER=podman DEDENS_BACK_CPU=2 DEDENS_LOAD_CPUS=3-5
+DEDENS_ROUNDS=5 just bench-dnsperf 8ce176f udp` (and `forward`); the other variants took environment switches that
+are not in the tree.
+
+Queries/s, min-max (median), and `io_uring_enter` a query, `8ce176f` (before) against the queue with two
+receiving tasks and 256 queued (the kept 64: the `UDP_SENDS` table below), one session:
+
+| mode | before | after | enters before → after |
+| --- | --- | --- | --- |
+| `udp` | 151.2k-169.5k (163.1k) | 171.3k-197.2k (190.8k) | 0.255 → 0.006 |
+| `forward` | 33.1k-36.7k (35.5k) | 39.0k-42.3k (41.0k) | 0.082 → 0.066 |
+| `tcp` | 793k-811k (803k) | 727k-822k (779k) | 0.0046 → 0.0046 |
+| `forward-tcp` | 56.1k-59.4k (57.4k) | 56.1k-60.9k (56.8k) | 0.0374 → 0.0374 |
+
+Average latency over UDP 3.0 → 2.5 ms, forwarding 14.1 → 12.1 ms. Over UDP the medians rose 11-17% and forwarding
+10-17% in four sessions: the one above and three earlier ones, `d215d31` against the queue with four receiving tasks
+(169.9k → 193.0k, 171.3k → 191.5k, 172.0k → 191.6k over UDP; 35.8k → 41.9k, 36.0k → 39.7k, 35.7k → 39.4k
+forwarding), against 163.1k → 190.8k and 35.5k → 41.0k above. A detached
+task for each reply instead of the queue (`spawn`, `d215d31` base): 0.033 enters a query over UDP, 160.2k-187.0k
+(180.9k), forwarding 31.6k-35.5k (32.7k) against 30.4k-36.1k (33.2k) for the base in that session.
+
+Tasks receiving on a socket, with the queue (`UDP_RECEIVES`), UDP over eleven rounds and forwarding over five:
+
+| tasks | `udp` | `forward` |
+| --- | --- | --- |
+| 1 | 164.4k-204.2k (197.1k) | 35.3k-41.7k (39.5k) |
+| 2 | 185.1k-199.8k (194.3k) | 38.6k-42.0k (41.3k) |
+| 4 | 181.7k-194.8k (189.6k) | 36.9k-41.8k (41.2k) |
+
+Equal within noise; two are kept (D123). Without the queue D48 measured 1 task at 310k and 4 at 415k: a task waited
+for its send then.
+
+Replies queued for the sender, `UDP_SENDS`, with the queue and two tasks, in a session of its own:
+
+| queued | `udp` | enters | `forward` | enters |
+| --- | --- | --- | --- | --- |
+| 16 | 174.2k-185.9k (180.0k) | 0.063 | 33.7k-36.8k (36.0k) | 0.084 |
+| 32 | 182.1k-197.1k (185.0k) | 0.032 | 36.4k-38.2k (36.5k) | 0.083 |
+| 64 | 179.3k-197.6k (192.4k) | 0.016 | 35.2k-39.3k (37.4k) | 0.082 |
+| 256 | 189.3k-197.5k (196.0k) | 0.006 | 34.3k-41.8k (37.9k) | 0.066 |
+
+Only 256 keeps the forwarding gain (the other session's 256: 41.0k). 64 is the one kept, for the latency below
+(D123).
+
+Two sockets (`two-sockets`, D107), `8ce176f` and the final code, four rounds of each in `run.sh`, the first socket
+flooded by eight clients on cores 2-5, the second asked at 2000 queries/s on core 1 (`DEDENS_BACK_CPU=1`, which
+the mode leaves free); then four rounds of the same by a script, with `UDP_SENDS` 64 and 16. Two ranges in a cell:
+`run.sh`, script.
+
+| | second socket, average latency | its maximum | flood, queries/s (script) |
+| --- | --- | --- | --- |
+| `8ce176f` | 0.10-0.37 ms; 0.10-0.70 ms | 3.7-124 ms; 7.4-90 ms | 153k-166k |
+| 256 queued | 1.19-1.42 ms; 1.23-2.09 ms | 11-85 ms; 10-97 ms | 176k-194k |
+| 64 | 0.53-1.28 ms | 11-141 ms | 169k-196k |
+| 16 | 0.21-0.30 ms | 7-158 ms | 155k-184k |
+
+No query lost on either socket in any run. The second socket's average latency rises about tenfold with the queue
+(the flood's sends go out in batches of up to 256 ahead of its reply in the same submission); the maximum does not.
+64 is kept: it halves that latency, keeps most of the UDP gain and gives the forwarding gain away (D123).
+
+The rings, medians over five rounds, without the queue (`await`) → with it (4 receiving tasks, 256 queued), in
+queries/s:
+
+| ring | `udp` | `forward` | `tcp` | `forward-tcp` |
+| --- | --- | --- | --- | --- |
+| `COOP_TASKRUN` (D51) | 171.3k → 191.5k | 36.0k → 39.7k | 803k → 808k | 56.8k → 56.8k |
+| `SINGLE_ISSUER` + `DEFER_TASKRUN` | 173.8k → 193.4k | 35.2k → 39.7k | 784k → 770k | 57.1k → 58.7k |
+| the same + `COOP_TASKRUN` | 166.5k → 196.0k | 34.8k → 38.9k | 788k → 777k | 58.3k → 58.6k |
+| `SQPOLL`, thread on the server's core | 96.3k → 161.8k | 23.3k → 24.0k | 457k → 450k | 28.0k → 27.5k |
+| `SQPOLL`, thread on core 1 | 200.0k → 250.5k | 54.7k → 58.7k | 975k → 1.08M | 65.7k → 65.4k |
+| two serving threads, cores 0-1 (no `SQPOLL`) | 279.7k → 306.5k | 75.9k → 71.1k | 995k → 1.13M | 113.8k → 118.6k |
+
+`DEFER_TASKRUN` is within noise of `COOP_TASKRUN` and no fewer enters. `SQPOLL` on a core of its own gains over
+one core, but two serving threads gain more with the same two cores, and an `SQPOLL` thread spins its core
+while idle (1 s here); on the server's core it halves the rates. The first full run of this matrix was
+discarded: a server left running by a failed run had been using the VPS's cores.
+
 ## Zone files (D25)
 
 A generated 100 000-record zone: dedens 7.3-7.5 ms, `domain` 9.8 ms, hickory-proto 54 ms (it also builds record

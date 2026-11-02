@@ -1294,8 +1294,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   no flow control credit keeps the connection for the write time past the idle time at most, and its slot only
   for the idle time. No per-address cap, for TCP either. Constants for now; configuration with need. Client
   allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90; UDP is limited per network by D113).
-- D48 Four tasks answer on each UDP socket of a thread, so a receive stays posted while one answers or sends:
-  one task waited for its reply to go out before receiving again. `just bench-dnsperf` (Linux, io_uring, one
+- D48 (amended by D123) Several tasks answer on each UDP socket of a thread, so a receive does not wait while one
+  answers: one task waited for its reply to go out before receiving again. Four at first; two since D123 queued the
+  replies, which no task waits to see sent. `just bench-dnsperf` (Linux, io_uring, one
   core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
   415k, 8 and 16 no better. A TCP connection's writer writes the replies queued meanwhile together, up to 65535
   bytes: one write a reply held TCP to about 185k queries/s, batches reach about 1.8M (dnsperf pipelines 500
@@ -1303,7 +1304,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   numbers), so replies keep their copy and the writer task, which reads on while writing and keeps the replies
   of concurrent queries whole.
 - D49 UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
-  io_uring multishot receive per socket fills them, and the socket's four tasks (D48) take turns at its stream
+  io_uring multishot receive per socket fills them, and the socket's tasks (D48) take turns at its stream
   of datagrams behind a lock, each giving its buffer back before its reply waits to be sent. About 400k →
   480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
   cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
@@ -1318,11 +1319,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   it, each counting it as a lost try; errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
-- D51 (amended by D107) The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
+- D51 (amended by D107, D123) The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
   Linux 5.19, the floor for `io_uring`: older kernels serve on `poll`, with a warning at start, D107): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
-  forwarding 155k → 82k).
+  forwarding 155k → 82k). Measured again with D123 (Linux 6.12, six vCPUs, one server core): no better, still
+  rejected, and no fallback to write.
 - D52 (superseded by D63) A TCP query answered after upstream writes its reply into a 65535-byte buffer the thread kept from an
   earlier one (up to 32, 2 MiB), not a new one. The buffer is zeroed first unless `zero_buffers: false` in the
   configuration: no byte of an earlier reply stays in it, should a bug ever send past the reply's length (the
@@ -1331,7 +1333,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   bytes past the current one's length; whether to zero or drop them is open. Forwarding over TCP (`just bench-dnsperf HEAD forward-tcp`):
   84k zeroing new buffers → 90k-92k reusing them unzeroed; zeroing them again costs part of it (79k-88k against
   87k-90k). Rejected: skipping the zeroing of new buffers (uninitialized memory behind `unsafe`).
-- D63 (supersedes D52) A `dedensd` thread makes its TCP replies and its replies after upstream in one 65535-byte
+- D63 (supersedes D52; amended by D123) A `dedensd` thread makes its TCP replies and its replies after upstream in one 65535-byte
   buffer, allocated at its start, and copies each reply's bytes out to send them: behind its length for TCP, as
   framing already copied it. Making a reply never waits, so the buffer is borrowed only meanwhile and one serves
   every task. Only a reply's bytes leave it, never those of an earlier reply, so there is nothing to zero:
@@ -2261,6 +2263,37 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     copies); refusing root without `user` (breaks containers); a privileged helper that passes the sockets (a second
     process; socket activation does it with no code: `docs/TODECIDE.md`); `user` off Linux (nothing there is tested).
   - Open (`docs/TODECIDE.md`): the systemd unit, and Kubernetes `securityContext`.
+- D123 (amends D48, D51, D63; builds on D107, D121) Replies to UDP queries go through a queue and one sender a
+  socket, the tasks answering on it drop from four to two, and the `io_uring` flags of D51 stay (audit P2, P12). Each
+  of D48's tasks waited for its reply to go out before receiving again, so each reply cost its own `io_uring_enter`.
+  Now `Outbox` (`serve.rs`), made with the socket beside its supervised loop so a restart (D121) keeps it, takes the
+  replies, made at once or after upstream, in a bounded queue (64, `flume`) that `send_replies`, one more future of
+  the socket's task, sends from, up to 64 at once: the replies of one turn of the runtime go out in one submission.
+  A task whose reply finds the queue full waits, so nothing grows. The reply buffers move with the replies (D63: a
+  task's buffer is no longer owned by its send) and come back as spare ones, at most 64 of 1232 bytes: a socket
+  holds at most 2 + 64 queued + 64 sending buffers, 130 × 1232 B ≈ 160 KB a thread, of which 79 KB stay after a
+  burst.
+  - Measured (VPS, Linux 6.12, one server core, five rounds, base and tree alternating; `docs/benchmarks.md`): with
+    64 queued, cache hits over UDP 192.4k queries/s median against 163.1k-172.0k for the base over four sessions,
+    `io_uring_enter` a query 0.255 → 0.016; forwarding within noise (37.4k against 35.5k-36.0k, 0.082 enters); TCP and
+    forwarding over TCP unchanged, no query lost. 256 queued gave UDP +11-17% (0.006 enters) and forwarding +10-17%
+    (0.066). Two tasks serve as well as four with the queue (1, 2, 4: 197k, 194k, 190k medians over UDP, 39.5k-41.3k
+    forwarding, within noise): a receive no longer waits on a send, so two are kept, not one, for a query that takes long.
+  - Why 64, not 256: under a flood on one port the average latency of a second port on the same core rises from
+    0.1-0.4 ms to 0.5-1.3 ms with 64 queued, 1.2-2.1 ms with 256 (D107's scenario, `two-sockets`: its reply waits
+    behind up to that many of the flood's in one submission); no query is lost. 64 keeps most of the UDP gain and a
+    quarter of the memory; the forwarding gain of 256 is given up for the latency of a port beside a flooded one. 16
+    gives the latency back (0.2-0.3 ms) and most of the UDP gain too (180k).
+  - Rejected: a detached task for each reply (`spawn`), on the measurement alone: 0.033 enters a query over UDP, no
+    gain forwarding (every reply allocates a task, as the queue allocates a `FuturesUnordered` one, and compio a
+    cell for each send).
+  - Rejected: `SINGLE_ISSUER` with `DEFER_TASKRUN`, with or without `COOP_TASKRUN` (D51 measured again): within
+    noise of `COOP_TASKRUN` in all four modes, no fewer enters; so no `EINVAL` fallback to write, and the floor stays 5.19
+    (D107).
+  - Rejected: `SQPOLL` (D51 again): on the server's core the rates halve; on a core of its own it gains over one core
+    but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
+  - Tests: `serve.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
+    `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`).
 
 ## Observability
 
