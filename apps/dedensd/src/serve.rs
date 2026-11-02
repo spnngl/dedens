@@ -197,9 +197,13 @@ struct Thread {
     reloads: sync::Receiver<()>,
     /// The pipeline taken from `current`, with its generation; behind an `Rc`, so a query holding it touches no
     /// count shared with other threads.
-    #[expect(
-        clippy::redundant_allocation,
-        reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+    // Loom's `Arc` is not clippy's.
+    #[cfg_attr(
+        not(dedens_loom),
+        expect(
+            clippy::redundant_allocation,
+            reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+        )
     )]
     pipeline: RefCell<(u64, Rc<sync::Arc<Pipeline>>)>,
     client: Client,
@@ -240,9 +244,13 @@ impl Thread {
     }
 
     /// The pipeline for a query: the one taken last, unless a reload replaced it since.
-    #[expect(
-        clippy::redundant_allocation,
-        reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+    // Loom's `Arc` is not clippy's.
+    #[cfg_attr(
+        not(dedens_loom),
+        expect(
+            clippy::redundant_allocation,
+            reason = "an `Arc` count is shared with every thread, an `Rc` one not"
+        )
     )]
     fn pipeline(&self) -> Rc<sync::Arc<Pipeline>> {
         let mut held = self.pipeline.borrow_mut();

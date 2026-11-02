@@ -1,6 +1,7 @@
-name: loom
+name: deep
 
-# Loom's model of dedensd's reload wake-up and query flights (`just loom`): informational, outside the gate (D135).
+# The slow checks, informational and outside the gate as `mutants.yml` is (D103): loom's model of dedensd's reload
+# wake-up and query flights (`just loom`, D135).
 on:
   pull_request:
 

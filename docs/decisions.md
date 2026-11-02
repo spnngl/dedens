@@ -2353,13 +2353,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     dropped lead frees its followers and one asks again; a join after the flight landed leads anew; two keys never
     mix. `Current::follow`'s order (subscribe, then the generation, then the pipeline) was checked by mutation: the
     generation read after the pipeline fails four tests, the subscription after the reads a deadlock (a lost
-    wake-up).
+    wake-up); `Flights::land` leaving the flight in the map strands the next query, a deadlock in all four.
   - `just loom` (`RUSTFLAGS="--cfg dedens_loom" cargo test -p dedensd --release --bin dedensd loom`, with its own
     `CARGO_TARGET_DIR=target/loom` as the cfg rebuilds the dependencies) runs with `LOOM_MAX_PREEMPTIONS=4`: without a
     bound four of the tests run past a minute (the interleavings of three threads and their locks grow
     exponentially: 4 → 7 s, 5 → 42 s in all), and a bound of 2-3 already finds the bugs of this kind (the mutations
-    above fail at 4). It is outside `just check`; `.github/workflows/loom.yml` runs it on pull requests, informational
-    as `mutants.yml` is (D103).
+    above fail at 4). It is outside `just check`; the `loom` job of `.github/workflows/deep.yml` runs it on pull
+    requests (30 minutes at most), informational as `mutants.yml` is (D103).
   - Not modelled: `budget.rs` and `rrl.rs`, where each update is one atomic read-modify-write that sequential tests
     cover, and loom's atomics have no `update` or `try_update`.
 
