@@ -99,6 +99,37 @@ fn a_denied_response_or_stub_is_not_answered() {
     assert_eq!(reply.questions.len(), 0);
 }
 
+/// What the pipeline says of a client, to a caller that serves it something else than a query (D91): `denial` tells the
+/// action of a denied client, `drops` whether it gets nothing, `denies` whether it is denied at all.
+#[test]
+fn the_access_lists_tell_what_is_done_to_a_client() {
+    let denied = addr("192.0.2.1");
+    let allowed = addr("10.1.2.3");
+    let said = |denial| {
+        let pipeline = serving(Access::new(nets(["10.0.0.0/8"]), [], denial));
+        [denied, allowed].map(|from| {
+            (
+                pipeline.denial(from),
+                pipeline.drops(from),
+                pipeline.denies(from),
+            )
+        })
+    };
+    assert_eq!(
+        said(Denial::Refuse),
+        [(Some(Denial::Refuse), false, true), (None, false, false)]
+    );
+    assert_eq!(
+        said(Denial::Drop),
+        [(Some(Denial::Drop), true, true), (None, false, false)]
+    );
+    let open = Pipeline::default();
+    assert_eq!(
+        (open.denial(denied), open.drops(denied), open.denies(denied)),
+        (None, false, false)
+    );
+}
+
 #[test]
 fn a_pipeline_without_access_answers_everyone() {
     let pipeline = Pipeline::default();
