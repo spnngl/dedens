@@ -2330,6 +2330,38 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
   - Tests: `serve.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
     `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`).
+- D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up and of the query
+  flights, the two places where `dedensd`'s threads share state by a protocol of their own (sim step 20). The tests of
+  D107 and D86 run real threads, which pass whenever the scheduler happens not to hit the bad order; loom runs each
+  order.
+  - `src/sync.rs` names the types of `Current` and `Flights`: `Arc` (of the pipeline), `Mutex`, `AtomicU64`, `Ordering`
+    and `slot()`, a channel of one message with `try_send` and `recv_async`: std's and `flume::bounded(1)` in the
+    server (the same types re-exported: no change of behaviour or cost), loom's under `--cfg dedens_loom`, where
+    `sync/loom_slot.rs` is the slot, a loom `Mutex` around the message and the waker, since loom has no channel. So
+    the loom tests prove the protocol of `Current` and `Flights` given a slot that holds one message, wakes its
+    receiver, and closes with either end; not flume's internals. `Flights` sends with `try_send`, which on a fresh
+    channel never finds it full. The `Arc<[u8]>` of a response stays std's (loom's `Arc` holds sized types only).
+  - The loop that makes a query a lead or a follower moved from `fetch` (`serve.rs`) to `Flights::enter`, so the tests
+    run the code of the server, the rejoin when a lead is dropped included.
+  - The cfg is `dedens_loom`, not `loom`: `--cfg loom` also switches tokio's internals in the dependencies. `loom` is a
+    dev-dependency under `cfg(dedens_loom)`; the lint `unexpected_cfgs` declares the cfg. Under it the tests that run
+    sockets and a runtime are left out (`serve.rs`), loom's threads and locks cannot drive them.
+  - Tests, `#[cfg(dedens_loom)]` beside the code. `reload.rs`: a query finds the last pipeline after a `follow`
+    racing a `replace`; an idle follower (no query reaches it) takes the pipeline by its wake-up, after one replace
+    and after two (the second wake-up may fall on a full slot); a follower dropped during a `replace` costs the others
+    nothing and is forgotten. `flights.rs`: three queries of one key share one response and never lead together; a
+    dropped lead frees its followers and one asks again; a join after the flight landed leads anew; two keys never
+    mix. `Current::follow`'s order (subscribe, then the generation, then the pipeline) was checked by mutation: the
+    generation read after the pipeline fails four tests, the subscription after the reads a deadlock (a lost
+    wake-up).
+  - `just loom` (`RUSTFLAGS="--cfg dedens_loom" cargo test -p dedensd --release --bin dedensd loom`, with its own
+    `CARGO_TARGET_DIR=target/loom` as the cfg rebuilds the dependencies) runs with `LOOM_MAX_PREEMPTIONS=4`: without a
+    bound four of the tests run past a minute (the interleavings of three threads and their locks grow
+    exponentially: 4 → 7 s, 5 → 42 s in all), and a bound of 2-3 already finds the bugs of this kind (the mutations
+    above fail at 4). It is outside `just check`; `.github/workflows/loom.yml` runs it on pull requests, informational
+    as `mutants.yml` is (D103).
+  - Not modelled: `budget.rs` and `rrl.rs`, where each update is one atomic read-modify-write that sequential tests
+    cover, and loom's atomics have no `update` or `try_update`.
 
 ## Observability
 

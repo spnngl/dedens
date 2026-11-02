@@ -59,7 +59,7 @@ use http::StatusCode;
 use socket2::{Domain, Socket, Type};
 
 use crate::config::Listen;
-use crate::flights::{Flight, Flights, Key, Lead};
+use crate::flights::{Entered, Flights, Key, Lead};
 use crate::h3_budget::{Budget, Connections};
 use crate::isolate::{BACKOFF, Backoff, Listener, Origin, supervise};
 #[cfg(feature = "odoh")]
@@ -67,6 +67,7 @@ use crate::odoh::proxy::{Forwarder, Proxy};
 #[cfg(feature = "odoh")]
 use crate::odoh::{self, Target};
 use crate::reload::Current;
+use crate::sync;
 
 /// How long a TCP connection stays open without a query (RFC 7766 §6.2.3).
 pub(crate) const TCP_IDLE: Duration = Duration::from_secs(10);
@@ -193,14 +194,14 @@ const TCP_WRITE: Duration = Duration::from_secs(10);
 struct Thread {
     current: Arc<Current>,
     /// A message each time a reload replaced the pipeline, for [`follow`].
-    reloads: flume::Receiver<()>,
+    reloads: sync::Receiver<()>,
     /// The pipeline taken from `current`, with its generation; behind an `Rc`, so a query holding it touches no
     /// count shared with other threads.
     #[expect(
         clippy::redundant_allocation,
         reason = "an `Arc` count is shared with every thread, an `Rc` one not"
     )]
-    pipeline: RefCell<(u64, Rc<Arc<Pipeline>>)>,
+    pipeline: RefCell<(u64, Rc<sync::Arc<Pipeline>>)>,
     client: Client,
     upstream: Slots,
     connections: Slots,
@@ -243,7 +244,7 @@ impl Thread {
         clippy::redundant_allocation,
         reason = "an `Arc` count is shared with every thread, an `Rc` one not"
     )]
-    fn pipeline(&self) -> Rc<Arc<Pipeline>> {
+    fn pipeline(&self) -> Rc<sync::Arc<Pipeline>> {
         let mut held = self.pipeline.borrow_mut();
         let generation = self.current.generation();
         if held.0 != generation {
@@ -1517,19 +1518,9 @@ async fn fetch<'a>(
     let flights: &Flights = thread.current.flights();
     let mut lead = None;
     if let Some(key) = key {
-        loop {
-            match flights.join(key.clone()) {
-                Flight::Lead(flight) => {
-                    lead = Some(flight);
-                    break;
-                }
-                Flight::Follow(response) => {
-                    if let Ok(shared) = response.recv_async().await {
-                        return Fetched::Shared(shared);
-                    }
-                    // Its query ended without a response: ask again, as the first of those left.
-                }
-            }
+        match flights.enter(&key).await {
+            Entered::Lead(flight) => lead = Some(flight),
+            Entered::Shared(response) => return Fetched::Shared(response),
         }
     }
     Fetched::Own(thread.client.exchange(request, target, options).await, lead)
@@ -1580,7 +1571,9 @@ fn now() -> u32 {
     u32::try_from(START.elapsed().as_secs()).unwrap_or(u32::MAX)
 }
 
+// The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
 #[cfg(test)]
+#[cfg(not(dedens_loom))]
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::io;

@@ -17,6 +17,7 @@ mod odoh;
 mod privileges;
 mod reload;
 mod serve;
+mod sync;
 
 use std::io::{self, IsTerminal, Write};
 use std::mem::ManuallyDrop;
