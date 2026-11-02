@@ -640,7 +640,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     address, `[ADDRESS]:PORT` or with its zone, is taken as such before any name; a name for TLS is made only
     over TLS or QUIC.
   - Tests make their certificates with rcgen at run time, so no private key is checked in.
-- D61 (amended by D109) DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
+- D61 (amended by D109, D119) DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
   One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
   opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
   (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
@@ -687,7 +687,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
     §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
     Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
-- D83 (completes D82; amended by D109) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
+- D83 (completes D82; amended by D109, D119) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
   QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
   - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
     request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
@@ -1006,7 +1006,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     they hold no DNS data, and what they check is the server's count and bounds (AGENTS.md's real-data rule is for
     the DNS content, which the existing captures keep). Fuzz: `parse_coap` asserts the options cap, and `coap_doc` the
     replays per message ID and `more_blocks` against the reply.
-- D109 (amends D61, D81, D83) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
+- D109 (amends D61, D81, D83; amended by D119) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
   by the query's deadline (audit step 06):
   - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
     8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `https.rs`), where h3 states none; a response with a larger header section
@@ -2126,6 +2126,48 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_validated_response_is_reviewed` (`dedens-server/tests/plugin.rs`); fuzz `parse_lists` runs a chain of
     arbitrary names through a blocklist, a cache and a forward stage, the reply and the hit checked against a
     plain model. Bench: `benches/blocklist.rs` `review`, `hit`.
+- D119 (amends D61, D83, D109; builds on D117) What a QUIC peer can make the server hold, from the audit (S2): h3
+  0.0.8 reads a stream into memory while it waits for the end of a frame whose length the peer declared, and the
+  read returns the QUIC credit. A reserved frame of 2^61 bytes on the control stream, or a HEADERS frame of 2^30 on
+  each request stream, filled slowly (any packet resets the idle time), is buffered without limit;
+  `max_field_section_size` (D109) is checked only once the frame is whole. Quinn's defaults (1.25 MB a stream, no
+  limit a connection) bound nothing either.
+  - Windows (RFC 9000 §4.1), `dedens-net/src/quic.rs`. The server's QUIC endpoint (DoQ and HTTP/3):
+    `RECEIVE_WINDOW` and `STREAM_RECEIVE_WINDOW`, sized from the largest DNS message, 65535 bytes behind its
+    two-byte length (RFC 9250 §4.2) plus the HTTP/3 framing: one stream holds one message whole, a connection holds
+    a few, with the control and QPACK streams. A larger message waits for credit, it is not refused. The client's
+    (`Dialer`): `STREAM_RECEIVE_WINDOW` and `CLIENT_RECEIVE_WINDOW`, larger, since the replies of every client of a
+    forwarder share one connection to an upstream (D61, D83) and the window over the round trip caps its throughput.
+    The windows bound what is in flight, not what h3 buffers (above).
+  - Budget (`apps/dedensd/src/h3_budget.rs`): the server counts the bytes an HTTP/3 connection received (quinn's
+    `stats().udp_rx.bytes`, the datagrams, before they are decrypted) and, at `BUDGET`, sends `GOAWAY` (RFC 9114
+    §5.2, h3's `Connection::shutdown(0)`): the connection rotates, as a long one does, and the memory h3 holds for
+    it goes with it. It is closed with `H3_EXCESSIVE_LOAD` (0x107, §8.1, §10.5) once it passes `BUDGET` plus
+    `RECEIVE_WINDOW`, or does not end `DRAIN` after `GOAWAY`. An honest client is not cut: the requests accepted
+    before `GOAWAY` are answered (the connection ends only once none is in flight), and dedens' client opens a new
+    connection for the next query (`https.rs`: a rejected or closed connection is set aside, not reused).
+  - Bound: one sweeper task per serving thread (`Thread::h3`) checks its HTTP/3 connections every `CHECK` (quinn has
+    no event for bytes received), whatever their number; it ends when none is left, and holds them weakly, so a
+    connection is checked as long as its service or a request on it lives. A peer returning its credit at once sends
+    `RECEIVE_WINDOW` a round trip, so a connection is closed holding at most `BUDGET` + `RECEIVE_WINDOW` × (1 +
+    `CHECK` / round trip): 9.25 MiB at a round trip of 1 ms, 4.5 MiB at 20 ms. Per thread, `TCP_CONNECTIONS` times
+    that: 2.3 GiB and 1.1 GiB, reached only by 256 attackers each past Retry; before D119 it had no limit. `BUDGET` trades that
+    memory against rotation: a client at 1 000 queries a second changes connection every 25 s. DoQ needs no budget: a stream is read up to one message, within `TCP_IDLE`.
+  - Costs: a datagram counted before decryption means junk addressed to a connection can make it rotate, which costs
+    its client a handshake. Rejected: a maximum lifetime (bounds time, not bytes: an attacker's rate is the window
+    over the round trip, so a minute holds gigabytes); a hard close at `BUDGET` (it kills the requests of an honest
+    connection in flight, which lost queries in the first version); a timer per connection (a task for each; one
+    per thread does as well); a budget of the bytes of unfinished frames (h3 does not tell); the windows alone (h3
+    reads on); a budget on the client's side (the servers it dials are its operator's choice; open in
+    `docs/TODECIDE.md`).
+  - The h3 fix (hyperium/h3 branch, not in 0.0.8): a declared length above a bound is refused before the frame is
+    buffered (RFC 9114 §7.1, §10.5), unknown frames are discarded as they arrive. The budget goes when a release
+    carries it (`docs/TODECIDE.md`).
+  - Tests (`apps/dedensd/tests/rfc9114.rs`): `s10_5_a_control_frame_that_never_ends_closes_the_connection`,
+    `s10_5_request_headers_that_never_end_close_the_connection` (written first, red without the budget: 27 MiB and
+    64 MiB sent, no `H3_EXCESSIVE_LOAD`; green: closed before the sent bytes pass the bound), and
+    `s5_2_a_busy_connection_is_rotated_not_closed` (60 000 queries over dedens' own client, all answered, the
+    server rotating at least twice). No fuzz target: nothing new is parsed. Bench: `docs/benchmarks.md`.
 
 ## Observability
 

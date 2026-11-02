@@ -9,6 +9,7 @@
 mod config;
 mod download;
 mod flights;
+mod h3_budget;
 #[cfg(feature = "odoh")]
 mod odoh;
 mod reload;

@@ -18,6 +18,15 @@ Open questions, each with its proposed default. Once answered, record the outcom
   quic://, https:// with a trusted certificate); the cache would then store such answers with a verdict of their
   own, not `Unchecked`. Default: not offered; add when a deployment that cannot validate needs AD.
 
+- HTTP/3 byte budget (D119): `dedensd` sends `GOAWAY` to an HTTP/3 connection after `BUDGET` bytes received, as h3
+  0.0.8 buffers a frame of any declared length. A fix is written for hyperium/h3 (a declared length above a bound is
+  refused before the frame is buffered, unknown frames discarded). Default: replace the budget (`src/h3_budget.rs` and
+  its sweeper) by the fix once an h3 release with it is in compio's `h3` feature and `tests/rfc9114.rs` passes
+  without it; keep the windows. Until then the rotation of honest connections stays.
+- The client's side of the same (D119): the server a client dials is trusted by its operator, but h3 reads its control
+  stream for the connection's life with no bound on a frame. Default: none; add the budget to `Dialer`'s HTTP/3
+  connections if a deployment dials servers it does not run.
+
 ## Cache
 
 - `MAX_ROTATIONS` (D116) was chosen on Zipf draws of equal-size entries, where every K from 1 gives the ratio of an

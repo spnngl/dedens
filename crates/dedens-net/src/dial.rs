@@ -14,7 +14,7 @@ use compio::quic::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportCon
 use compio::rustls::pki_types::ServerName;
 use futures_util::lock::Mutex;
 
-use crate::quic::QuicError;
+use crate::quic::{self, QuicError};
 use crate::tls::{self, Trust};
 use crate::udp::unspecified;
 
@@ -99,6 +99,9 @@ impl Dialer {
             .max_idle_timeout(IdleTimeout::try_from(self.idle).ok())
             .max_concurrent_bidi_streams(VarInt::from_u32(0))
             .max_concurrent_uni_streams(VarInt::from_u32(self.server_streams))
+            // The credit a server has: a throughput cap, as the replies of many clients share the connection (D119).
+            .receive_window(VarInt::from_u32(quic::CLIENT_RECEIVE_WINDOW))
+            .stream_receive_window(VarInt::from_u32(quic::STREAM_RECEIVE_WINDOW))
             // No DATAGRAM frame is read (D107): no `max_datagram_frame_size` is advertised (RFC 9221 §3).
             .datagram_receive_buffer_size(None);
         config.transport_config(Arc::new(transport));

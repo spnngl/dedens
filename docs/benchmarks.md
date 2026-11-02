@@ -348,6 +348,31 @@ loopback, 3 s a row, one run, the connection and the cache warm.
   limit. With 32 at once 0.77x (GET) and 0.62x (POST) of that server's, the client and `dedensd` each on one
   core and `dedensd` also decoding, looking in its cache and encoding.
 
+### The windows and the byte budget (D119)
+
+`cargo bench -p dedensd --bench doh3` and `-p dedens-net --bench transports`, the bench executables of the tree before
+D119 (7d88de1) and after run alternately, five rounds each, the median of the five. Apple M5, macOS 27.2, rustc 1.99.1
+(Homebrew), a laptop in use, load average 6-10 from other work: single rounds range over 1.5x, so only a difference
+larger than that would show.
+
+| Row | in flight | before | after | after, `BUDGET` not reached |
+|---|---|---|---|---|
+| `doh3` GET | 1 | 6231 | 6306 | 6681 |
+| `doh3` GET | 32 | 67091 | 63749 | 73045 |
+| `doh3` POST | 1 | 6466 | 6829 | 6469 |
+| `doh3` POST | 32 | 73331 | 75908 | 74825 |
+| `transports` DoQ | 1 | 7616 | 7198 | |
+| `transports` DoQ | 32 | 163701 | 150061 | |
+| `transports` DoH3 GET | 1 | 6745 | 6700 | |
+| `transports` DoH3 GET | 32 | 74069 | 69909 | |
+| `transports` DoH3 POST | 1 | 6724 | 6823 | |
+| `transports` DoH3 POST | 32 | 84437 | 84533 | |
+
+- No difference beyond the noise. The last column is `doh3` with `BUDGET` raised to 2^40 (one run of five rounds): at
+  75 000 queries a second a 3 s row sends about 40 MiB, so the connection is rotated ten times: GET with 32 in flight
+  is 13% slower with rotation (63.7k against 73.0k), POST is equal, the spread of single rounds larger than both. The sweeper's idle cost was not measured apart: one
+  wake-up every 20 ms a thread.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on

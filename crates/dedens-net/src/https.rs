@@ -27,6 +27,9 @@ use crate::tls::{self, Trust};
 /// RFC 9204 §4.2), with room for the reserved types a peer may open (RFC 9114 §6.2.3).
 const SERVER_STREAMS: u32 = 16;
 
+/// `H3_EXCESSIVE_LOAD`: the peer's load on the connection is more than it will bear (RFC 9114 §8.1, §10.5).
+pub const H3_EXCESSIVE_LOAD: u64 = Code::H3_EXCESSIVE_LOAD.value();
+
 /// The header section of a request a server reads, at most: a GET's URI of up to 65535 bytes and room for its other
 /// fields (RFC 9114 §4.2.2, §7.2.4.1).
 const MAX_FIELD_SECTION: u64 = 80 << 10;
@@ -185,6 +188,9 @@ impl HttpsPool {
             let (open, reused) = self.connection(&server).await?;
             match ask(&open, request, limit).await {
                 Err(error) if reused && open.dropped(&error) => {
+                    // The server refuses this connection's requests from now on, as it said or by closing: the
+                    // retry, and the requests behind it, take another.
+                    open.going_away.set(true);
                     let (fresh, _) = self.connection(&server).await?;
                     ask(&fresh, request, limit).await
                 }
@@ -343,6 +349,17 @@ impl Requests {
     pub async fn accept(&mut self) -> Result<Option<Pending>, HttpsError> {
         let resolver = self.inner.accept().await.map_err(HttpsError::Connection)?;
         Ok(resolver.map(Pending))
+    }
+
+    /// Tells the client that no request past those taken will be: `GOAWAY` (RFC 9114 §5.2). A request that was in
+    /// flight is refused with `H3_REQUEST_REJECTED`, and the client makes it on another connection; the ones taken
+    /// are answered. The connection is closed when `self` is dropped (h3 does that), so keep it until they are.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpsError::Connection`] when the connection closed.
+    pub async fn shutdown(&mut self) -> Result<(), HttpsError> {
+        self.inner.shutdown(0).await.map_err(HttpsError::Connection)
     }
 }
 

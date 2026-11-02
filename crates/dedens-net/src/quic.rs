@@ -25,6 +25,19 @@ const DOQ_REQUEST_CANCELLED: u32 = 0x3;
 /// The most a response stream holds: the two-byte length, then the message (RFC 9250 §4.2).
 const MAX_STREAM: usize = 2 + 65535;
 
+/// The bytes a QUIC peer may send on one stream before the reader returns credit (RFC 9000 §4.1; D119): a
+/// whole message and its length (`MAX_STREAM`) with room for the HTTP/3 frames around a message (RFC 9114 §7.1).
+pub const STREAM_RECEIVE_WINDOW: u32 = 80 << 10;
+
+/// The bytes a client may send on all streams of a connection to `dedensd` before the server returns credit (RFC 9000
+/// §4.1; D119): three full messages in flight, and the control and QPACK streams (RFC 9114 §6.2). Queries are small.
+pub const RECEIVE_WINDOW: u32 = 256 << 10;
+
+/// The bytes a server may send on all streams of a connection to a client's before it returns credit (RFC 9000
+/// §4.1; D119): the replies of a forwarder's clients share one connection to an upstream (D61, D83), a reply being up
+/// to [`STREAM_RECEIVE_WINDOW`], so the window is a throughput cap, 8 times the server's, not a memory bound.
+pub const CLIENT_RECEIVE_WINDOW: u32 = 2 << 20;
+
 /// Why a QUIC exchange failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
