@@ -43,13 +43,49 @@ pub enum What {
         answers: usize,
         /// The transport the response came over: TCP after a truncated one over UDP.
         transport: Transport,
+        /// Bytes of the response.
+        len: usize,
     },
-    /// A client's query ended without a response.
+    /// A client's query ended without a response: every try went unanswered.
     Failed {
         /// The question.
         question: Question<'static>,
         /// Why.
         failure: Failure,
+    },
+    /// A client's query ended in an error other than a timeout, such as a connection refused or reset.
+    Errored {
+        /// The question.
+        question: Question<'static>,
+        /// The error, as text.
+        error: String,
+    },
+    /// A client or the resolver sent a query: one for each try, and one more for a fallback.
+    Sent {
+        /// The server it goes to.
+        server: SocketAddr,
+        /// Its ID.
+        id: u16,
+        /// Queries of the exchange so far, this one included.
+        sends: u16,
+        /// The transport it goes over.
+        transport: Transport,
+    },
+    /// What the resolver's cache holds changed with a response from an upstream server.
+    Stored {
+        /// Entries held after.
+        entries: usize,
+        /// Bytes used after.
+        bytes: usize,
+    },
+    /// The resolver sent a reply to a client.
+    Replied {
+        /// The transport it goes over.
+        transport: Transport,
+        /// Bytes of the reply.
+        len: usize,
+        /// Whether it is the expired data of the client response timer (D45).
+        stale: bool,
     },
     /// The resolver sent an upstream server a query.
     Forwarded {
@@ -64,6 +100,8 @@ pub enum What {
         question: Question<'static>,
         /// The transport it came over.
         transport: Transport,
+        /// Bytes of the answer.
+        len: usize,
     },
     /// The attacker on an upstream server's host sent a datagram to `to`.
     Injected {
@@ -131,6 +169,7 @@ mod tests {
                 rcode,
                 answers: 2,
                 transport: Transport::Udp,
+                len: 90,
             },
         }]
     }

@@ -19,7 +19,8 @@
 pub mod attacker;
 pub mod client;
 pub mod fault;
-mod framing;
+pub mod framing;
+pub mod oracle;
 mod port;
 pub mod resolver;
 pub mod seed;

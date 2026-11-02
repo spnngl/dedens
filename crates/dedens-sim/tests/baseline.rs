@@ -2,17 +2,25 @@
 //! network, then with each fault and the attacker the harness offers used once (D133): every later family starts
 //! from these. The last test has the seed pick the faults.
 
+use std::cell::RefCell;
+use std::net::SocketAddr;
+use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use dedens_net::exchange::Failure;
-use dedens_proto::{Rcode, RecordType, Transport};
+use dedens_cache::Config;
+use dedens_net::client::ClientError;
+use dedens_net::exchange::{Failure, Options};
+use dedens_net::tcp::TcpError;
+use dedens_proto::edns::EdnsOption;
+use dedens_proto::{Message, Rcode, RecordType, Transport};
 use dedens_sim::attacker::{Attacker, Injection};
-use dedens_sim::client::Carrier;
+use dedens_sim::client::{Carrier, Client};
 use dedens_sim::fault::{Fault, Node, Server};
-use dedens_sim::seed::{self, Seed};
+use dedens_sim::resolver::{cache_config, pipeline_with};
+use dedens_sim::seed::{self, Rng, Seed};
 use dedens_sim::stub::{Outcome, question};
 use dedens_sim::topology::{Topology, World};
-use dedens_sim::trace::{Event, What};
+use dedens_sim::trace::{Event, Trace, What};
 use dedens_sim::upstream::Answers;
 
 /// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
@@ -26,11 +34,11 @@ fn run(seed: Seed, carrier: Carrier, asks: usize) -> Vec<Event> {
     let mut world = Topology::new().upstream(answers).build(seed);
     world.client(async move |stub| {
         for _ in 0..asks {
-            let Outcome::Answered(answer) = stub
+            let outcome = stub
                 .ask(question("example.com", RecordType::A), carrier)
-                .await?
-            else {
-                return Err("no answer".into());
+                .await?;
+            let Outcome::Answered(answer) = outcome else {
+                return Err(format!("no answer: {outcome:?}").into());
             };
             assert_eq!(answer.transport, Transport::from(carrier));
             // The captured response holds two A records.
@@ -70,6 +78,17 @@ fn second_query_comes_from_the_cache() {
         for carrier in [Carrier::Udp, Carrier::Tcp] {
             let events = run(seed, carrier, 2);
             assert_eq!(served(&events), 1, "{carrier:?}: {events:#?}");
+            // The answer went into the cache once, and the second query was replied from it.
+            let stored = events
+                .iter()
+                .filter(|e| matches!(e.what, What::Stored { .. }))
+                .count();
+            assert_eq!(stored, 1, "{carrier:?}: {events:#?}");
+            let replied = events
+                .iter()
+                .filter(|e| matches!(e.what, What::Replied { .. }))
+                .count();
+            assert_eq!(replied, 2, "{carrier:?}: {events:#?}");
         }
     });
 }
@@ -107,24 +126,49 @@ fn resolver_asks_again_over_tcp_when_the_upstream_truncates() {
 }
 
 #[test]
-fn no_upstream_answer_ends_in_servfail_or_failure() {
+fn an_upstream_that_refuses_ends_in_servfail() {
     seed::each(SEEDS, |seed| {
-        // The upstream server holds nothing: it never answers.
+        // The upstream server holds nothing: it answers REFUSED.
         let mut world = Topology::new().upstream(Answers::new()).build(seed);
         world.client(async move |stub| {
-            match stub
+            let outcome = stub
                 .ask(question("example.com", RecordType::A), Carrier::Udp)
-                .await?
-            {
-                Outcome::Answered(answer) => {
-                    assert_eq!(answer.message.rcode(), dedens_proto::Rcode::SERVFAIL);
-                }
-                Outcome::Failed(Failure::TimedOut { .. }) => {}
-                Outcome::Failed(other) => return Err(format!("{other}").into()),
-            }
+                .await?;
+            let Outcome::Answered(answer) = outcome else {
+                return Err(format!("no answer: {outcome:?}").into());
+            };
+            assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+            assert_eq!(answer.message.answer, Vec::new());
             Ok(())
         });
         world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn an_upstream_that_is_out_of_reach_ends_in_servfail_or_a_failure() {
+    seed::each(SEEDS, |seed| {
+        let events = ask_once(seed, a(), |world| {
+            world.fault(Duration::ZERO, Fault::Partition(LINK.0, LINK.1));
+        });
+        let ends = ends(&events);
+        assert_eq!(ends.len(), 1, "{events:#?}");
+        assert!(
+            matches!(
+                ends[0],
+                What::Answered {
+                    rcode: Rcode::SERVFAIL,
+                    answers: 0,
+                    ..
+                } | What::Failed {
+                    failure: Failure::TimedOut { .. },
+                    ..
+                }
+            ),
+            "{events:#?}"
+        );
+        // Nothing the resolver sent arrived.
+        assert_eq!(served(&events), 0, "{events:#?}");
     });
 }
 
@@ -178,14 +222,34 @@ fn got_the_records(events: &[Event]) -> bool {
     })
 }
 
-fn ended(events: &[Event]) -> bool {
+/// How the queries of the clients ended.
+fn ends(events: &[Event]) -> Vec<&What> {
     events
         .iter()
-        .any(|event| matches!(event.what, What::Answered { .. } | What::Failed { .. }))
+        .map(|event| &event.what)
+        .filter(|what| {
+            matches!(
+                what,
+                What::Answered { .. } | What::Failed { .. } | What::Errored { .. }
+            )
+        })
+        .collect()
+}
+
+/// The most sends any exchange of the run made: how often a query was tried.
+fn most_sends(events: &[Event]) -> u16 {
+    events
+        .iter()
+        .filter_map(|event| match event.what {
+            What::Sent { sends, .. } => Some(sends),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[test]
-fn a_lossy_link_ends_in_an_answer_or_a_failure() {
+fn a_lossy_link_ends_in_the_records_or_a_failure_the_resolver_names() {
     seed::each(SEEDS, |seed| {
         let events = ask_once(seed, a(), |world| {
             world.fault(
@@ -193,11 +257,29 @@ fn a_lossy_link_ends_in_an_answer_or_a_failure() {
                 Fault::Loss {
                     a: LINK.0,
                     b: LINK.1,
-                    rate: 0.01,
+                    rate: 0.5,
                 },
             );
         });
-        assert!(ended(&events), "{events:#?}");
+        let ends = ends(&events);
+        assert_eq!(ends.len(), 1, "{events:#?}");
+        // The loss is between the resolver and the server: the stub's own link is fine, so the resolver answers,
+        // the records when a try got through, SERVFAIL when none did.
+        assert!(
+            matches!(
+                ends[0],
+                What::Answered {
+                    rcode: Rcode::NOERROR,
+                    answers: 2,
+                    ..
+                } | What::Answered {
+                    rcode: Rcode::SERVFAIL,
+                    answers: 0,
+                    ..
+                }
+            ),
+            "{events:#?}"
+        );
     });
 }
 
@@ -273,13 +355,15 @@ fn a_held_query_arrives_when_released() {
 fn a_resolver_that_restarts_answers_the_second_try() {
     seed::each(SEEDS, |seed| {
         let events = ask_once(seed, a(), |world| {
-            let crash = world.pick(Duration::ZERO, Duration::from_millis(50));
+            // Before the stub's first query, which is 5 ms into the run.
+            let crash = world.pick(Duration::ZERO, Duration::from_millis(4));
             let bounce = crash + world.pick(SECOND, 2 * SECOND);
             world.fault(crash, Fault::Crash(Server::Resolver));
             world.fault(bounce, Fault::Bounce(Server::Resolver));
         });
         // The stub's second try, after 5 s, finds it back, with an empty cache.
         assert!(got_the_records(&events), "{events:#?}");
+        assert_eq!(most_sends(&events), 2, "{events:#?}");
     });
 }
 
@@ -436,32 +520,242 @@ fn whatever_the_seed_breaks_queries_end_well() {
     });
 }
 
+/// The cookies in the queries the upstream server gets, in order: the client cookie, and whether it came with a
+/// server cookie.
+fn cookies_seen(seed: Seed, server_cookie: Option<[u8; 8]>) -> Vec<Option<(Vec<u8>, bool)>> {
+    let queries = Rc::new(RefCell::new(Vec::new()));
+    let record = Rc::clone(&queries);
+    let attacker = Attacker::new(move |seen| {
+        let query = Message::decode(seen.query).expect("a query");
+        let cookie = query
+            .message
+            .edns
+            .iter()
+            .flat_map(|edns| &edns.options)
+            .find_map(|option| match option {
+                EdnsOption::Cookie(cookie) => Some(*cookie),
+                _ => None,
+            });
+        record
+            .borrow_mut()
+            .push(cookie.map(|cookie| (cookie.client().to_vec(), cookie.server().is_some())));
+        Vec::new()
+    });
+    let mut answers = Answers::new()
+        .captured("a")
+        .truncating("truncated", "txt_large")
+        .attacked_by(attacker);
+    if let Some(cookie) = server_cookie {
+        answers = answers.cookies(cookie);
+    }
+    let mut world = Topology::new().upstream(answers).build(seed);
+    world.client(async move |stub| {
+        for (name, qtype) in [
+            ("example.com", RecordType::A),
+            ("google.com", RecordType::TXT),
+        ] {
+            stub.ask(question(name, qtype), Carrier::Udp).await?;
+        }
+        Ok(())
+    });
+    world.run().expect("the run passes its checks");
+    queries.take()
+}
+
 #[test]
-fn queries_carry_a_client_cookie_of_the_seed() {
-    let cookies = |seed| {
-        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let record = std::rc::Rc::clone(&seen);
-        let attacker = Attacker::new(move |seen| {
-            let query = dedens_proto::Message::decode(seen.query).expect("a query");
-            let cookie = query
-                .message
-                .edns
-                .iter()
-                .flat_map(|edns| &edns.options)
-                .find_map(|option| match option {
-                    dedens_proto::edns::EdnsOption::Cookie(cookie) => Some(*cookie),
-                    _ => None,
-                });
-            record
-                .borrow_mut()
-                .push(cookie.map(|cookie| cookie.client()));
-            Vec::new()
+fn the_resolver_sends_a_client_cookie_of_the_seed_and_returns_the_servers() {
+    let first = cookies_seen(Seed(1), Some([7; 8]));
+    // The first query has the client cookie alone; the server answers with its own, which the next one carries.
+    assert!(
+        matches!(first.as_slice(), [Some((_, false)), Some((_, true)), ..]),
+        "{first:?}"
+    );
+    assert_eq!(
+        first[0].as_ref().map(|c| &c.0),
+        first[1].as_ref().map(|c| &c.0)
+    );
+    assert_eq!(first, cookies_seen(Seed(1), Some([7; 8])));
+    assert_ne!(first[0], cookies_seen(Seed(2), Some([7; 8]))[0]);
+    // A server that sets no cookie of its own has none returned.
+    let without = cookies_seen(Seed(1), None);
+    assert!(
+        without
+            .iter()
+            .all(|cookie| matches!(cookie, Some((_, false)))),
+        "{without:?}"
+    );
+}
+
+#[test]
+fn the_cache_follows_the_clock() {
+    seed::each(SEEDS, |seed| {
+        let ttl = 5;
+        let mut world = Topology::new()
+            .upstream(a())
+            .resolver(move |upstreams| {
+                let config = Config {
+                    min_ttl: 1,
+                    max_ttl: ttl,
+                    ..cache_config()
+                };
+                pipeline_with(config, upstreams)
+            })
+            .build(seed);
+        world.client(async move |stub| {
+            for pause in [SECOND, Duration::from_secs(u64::from(ttl) + 1)] {
+                stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+                    .await?;
+                tokio::time::sleep(pause).await;
+            }
+            stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            Ok(())
         });
-        ask_once(seed, a().attacked_by(attacker), |_| {});
-        seen.take()
-    };
-    let first = cookies(Seed(1));
-    assert!(matches!(first.as_slice(), [Some(_), ..]), "{first:?}");
-    assert_eq!(first, cookies(Seed(1)));
-    assert_ne!(first, cookies(Seed(2)));
+        let events = world.run().expect("the run passes its checks");
+        // The first and the third ask reach the server: the entry of the first had expired for the third.
+        assert_eq!(served(&events), 2, "{events:#?}");
+    });
+}
+
+#[test]
+fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(a()).build(seed);
+        for _ in 0..2 {
+            world.client(async move |stub| {
+                stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+                    .await?;
+                Ok(())
+            });
+        }
+        let events = world.run().expect("the run passes its checks");
+        let hosts: std::collections::BTreeSet<_> = events
+            .iter()
+            .filter(|event| matches!(event.what, What::Answered { .. }))
+            .map(|event| event.host)
+            .collect();
+        assert_eq!(hosts.len(), 2, "{events:#?}");
+        let ids: std::collections::BTreeSet<_> = events
+            .iter()
+            .filter_map(|event| match event.what {
+                What::Sent { id, .. } if hosts.contains(&event.host) => Some((event.host, id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 2, "{events:#?}");
+        assert!(served(&events) <= 2, "{events:#?}");
+    });
+}
+
+#[test]
+fn a_crashed_resolver_leaves_a_tcp_query_to_time_out() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(a()).build(seed);
+        world.fault(Duration::ZERO, Fault::Crash(Server::Resolver));
+        world.client(async move |stub| {
+            // The first step of the run is the crash.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let outcome = stub
+                .ask(question("example.com", RecordType::A), Carrier::Tcp)
+                .await?;
+            assert!(
+                matches!(outcome, Outcome::Failed(Failure::TimedOut { sends: 3 })),
+                "{outcome:?}"
+            );
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn a_port_nobody_listens_on_refuses_the_connection() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(a()).build(seed);
+        let resolver = world.resolver;
+        world.client(async move |_| {
+            let host = turmoil::lookup("client-0");
+            let rng = Rc::new(RefCell::new(Rng::new(seed, 99)));
+            let client = Client::new(rng, host, Trace::new());
+            let query = Message::query(0, question("example.com", RecordType::A));
+            let nobody = SocketAddr::new(resolver.ip(), 54);
+            let got = client
+                .exchange(query, nobody, Carrier::Tcp, &Options::default())
+                .await;
+            let Err(ClientError::Tcp(TcpError::Connect(error))) = got else {
+                return Err(format!("{got:?}").into());
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+#[test]
+fn a_cache_answers_stale_when_the_server_is_out_of_reach() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new()
+            .upstream(a())
+            .resolver(|upstreams| {
+                let config = Config {
+                    min_ttl: 1,
+                    max_ttl: 2,
+                    stale_answer_after_ms: 200,
+                    ..cache_config()
+                };
+                pipeline_with(config, upstreams)
+            })
+            .build(seed);
+        world.fault(SECOND, Fault::Partition(LINK.0, LINK.1));
+        world.client(async move |stub| {
+            let first = stub
+                .ask(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            let Outcome::Answered(first) = first else {
+                return Err(format!("{first:?}").into());
+            };
+            assert!(!first.stale);
+            // The entry has expired, and the server cannot be asked again.
+            tokio::time::sleep(3 * SECOND).await;
+            let second = stub
+                .ask(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            let Outcome::Answered(second) = second else {
+                return Err(format!("{second:?}").into());
+            };
+            assert!(second.stale, "{second:?}");
+            assert_eq!(second.message.answer.len(), 2);
+            // The resolver's timer (D45) sent it, well before the stub's own timeout.
+            assert!(second.elapsed < SECOND, "{:?}", second.elapsed);
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.what, What::Replied { stale: true, .. })),
+            "{events:#?}"
+        );
+    });
+}
+
+#[test]
+fn a_client_at_an_address_of_its_choice_asks_from_there() {
+    seed::each(SEEDS, |seed| {
+        let ip = std::net::IpAddr::from([10, 1, 2, 3]);
+        let mut world = Topology::new().upstream(a()).build(seed);
+        world.client_at(ip, async move |stub| {
+            stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.host == ip && matches!(event.what, What::Answered { .. })),
+            "{events:#?}"
+        );
+    });
 }
