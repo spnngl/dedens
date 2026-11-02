@@ -580,6 +580,48 @@ mod tests {
         assert_eq!(report.violations.len(), 1, "{:?}", report.violations);
     }
 
+    /// The report of an exchange says how the response came: the server, the transport, the round trip, the queries
+    /// sent, the size of the last one and the HTTP response (D37).
+    #[test]
+    fn an_exchanged_report_says_how_the_response_came() {
+        use std::time::{Duration, Instant};
+
+        use dedens_net::exchange::{Exchange, Options, Progress};
+
+        let wire = CAPTURED[0].1;
+        let decoded = dedens_proto::Message::decode(wire).expect("captured");
+        let question = decoded.message.questions[0].clone();
+        let query = dedens_proto::Message::query(decoded.message.header.id, question);
+        let server: SocketAddr = "192.0.2.53:53".parse().expect("an address");
+        let sent = Instant::now();
+        let exchange = Exchange::start(query, server, Options::default(), [1, 2, 3, 4], sent)
+            .expect("an encoded query");
+        let progress = exchange.receive(
+            server,
+            exchange::Transport::Udp,
+            wire.to_vec(),
+            sent + Duration::from_millis(7),
+        );
+        let Progress::Done(Ok(response)) = progress else {
+            panic!("{progress:?}");
+        };
+        let report = Report::exchanged("nsid".parse().expect("an id"), server, &response, &decoded);
+        assert_eq!(
+            report.exchange,
+            Some(ExchangeReport {
+                server,
+                transport: Transport::Udp,
+                rtt_us: 7000,
+                sends: 1,
+                query_size: response.query.len(),
+                http: None,
+                doc_path: None,
+            })
+        );
+        assert_eq!(report.size, wire.len());
+        assert_eq!(report.header.id, decoded.message.header.id);
+    }
+
     #[test]
     fn control_characters_of_extra_text_are_escaped() {
         assert_eq!(printable("a\u{1b}[2J\r\nb é"), "a\\u{1b}[2J\\r\\nb é");
