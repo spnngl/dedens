@@ -22,7 +22,8 @@ use dedens_proto::{Message, Opcode, Rcode};
 fn queries_over_udp_and_tcp_are_forwarded() {
     let response = captured("a");
     let upstream = decode(&response);
-    let server = Server::start(Responder::start(&["a"]).addr, "");
+    // No minimum TTL: the records come back as captured.
+    let server = Server::start(Responder::start(&["a"]).addr, "    min_ttl: 0\n");
     let reply = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
     assert_eq!(reply.answer, upstream.answer);
@@ -163,7 +164,11 @@ fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
 fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     let response = captured("a");
     let upstream = Responder::slow("a", 3, Duration::from_millis(500));
-    let server = Server::start(upstream.addr, "    stale_answer_after_ms: 200\n");
+    // No minimum TTL, which would keep the 3 seconds of the answer fresh for a minute.
+    let server = Server::start(
+        upstream.addr,
+        "    min_ttl: 0\n    stale_answer_after_ms: 200\n",
+    );
     let first = ask_udp(server.addr, &query_for(&response, 1));
     assert_eq!(errors(&first), []);
     // Past the TTL, upstream answers 500 ms late, within the 1 s timeout: expired data answers once the 200 ms

@@ -111,7 +111,8 @@ impl Response {
 
     /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it.
     /// `bad` data failed validation: it lives at most `Config::bogus_ttl`, never stale (RFC 4035 §4.7). An
-    /// insecure one lives at most `Config::insecure_ttl` (D93).
+    /// insecure one lives at most `Config::insecure_ttl` (D93). Unless secure, it lives at least `Config::min_ttl`
+    /// (D124), within the caps.
     pub(crate) fn build(
         key: &Key,
         decoded: &Decoded<'_>,
@@ -144,7 +145,13 @@ impl Response {
         if for_subnet(message) {
             return Err(NotCached::ClientSubnet);
         }
-        let mut ttl = lifetime(message, question, rcode, config)?;
+        // A secure answer is not raised: only the validator knows how long its signatures hold (D124).
+        let floor = if checked == Checked::Secure {
+            0
+        } else {
+            config.min_ttl
+        };
+        let mut ttl = lifetime(message, question, rcode, floor, config)?;
         if checked == Checked::Insecure {
             ttl = ttl.min(config.insecure_ttl());
         }
@@ -358,16 +365,20 @@ fn for_subnet(message: &Message<'_>) -> bool {
     })
 }
 
-/// How long `message`, answering `question`, may be cached: the smallest TTL of its records, within `max_ttl`.
+/// How long `message`, answering `question`, may be cached: the smallest TTL of its records, raised to `floor`
+/// (D124), within `max_ttl`. A smallest TTL of 0 is not raised: the answer is not cached (RFC 1035 §3.2.1, RFC 2181
+/// §8). The raise keeps data past the time its zone allows (RFC 1035 §3.2.1: how long a record may be cached): a
+/// deviation, chosen by the operator.
 ///
 /// A negative answer (RFC 2308 §2: NXDOMAIN, or NODATA, NOERROR without a record of the type asked, both maybe
-/// after a CNAME chain) lives at most as long as its SOA's TTL and MINIMUM allow and `max_negative_ttl` (§5), the
-/// records of the chain included. The SOA must be at or above the name the answer ends at: the zone that denies
-/// it (§2.1, §2.2).
+/// after a CNAME chain) lives at most as long as its SOA's TTL and MINIMUM allow, the records of the chain included,
+/// raised to `floor` as well and within `max_negative_ttl` (§5). The SOA must be at or above the name the answer
+/// ends at: the zone that denies it (§2.1, §2.2).
 fn lifetime(
     message: &Message<'_>,
     question: &Question<'_>,
     rcode: Rcode,
+    floor: u32,
     config: &Config,
 ) -> Result<u32, NotCached> {
     let records = || {
@@ -382,7 +393,7 @@ fn lifetime(
         .answer
         .iter()
         .any(|r| question.qtype == RecordType::ANY || r.rtype() == question.qtype);
-    let ttl = if rcode == Rcode::NXDOMAIN || !answered {
+    let (smallest, cap) = if rcode == Rcode::NXDOMAIN || !answered {
         let end = chain_end(&question.name, &message.answer);
         let soa = message
             .authority
@@ -393,14 +404,17 @@ fn lifetime(
                 _ => None,
             })
             .ok_or(NotCached::NoSoa)?;
-        smallest.min(soa).min(config.max_negative_ttl)
+        (smallest.min(soa), config.max_negative_ttl)
     } else {
-        smallest.min(config.max_ttl)
+        (smallest, config.max_ttl)
     };
-    if ttl == 0 {
+    if smallest == 0 {
         return Err(NotCached::ZeroTtl);
     }
-    Ok(ttl)
+    match smallest.max(floor).min(cap) {
+        0 => Err(NotCached::ZeroTtl),
+        ttl => Ok(ttl),
+    }
 }
 
 /// The name a CNAME chain from `qname` ends at, following the CNAME records of `answer` in order, as servers

@@ -9,9 +9,10 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::{
-    Captures, captured, client_query, decode, dns, forwarder, query_for, run, servers, validating,
-    wire,
+    Captures, caching_with, captured, client_query, decode, dns, forwarder, query_for, run,
+    servers, validating, wire,
 };
+use dedens_cache::Config;
 use dedens_proto::{Class, Flags, Message, Opcode, Rcode, RecordType};
 use dedens_server::{Step, Transport};
 
@@ -132,7 +133,11 @@ fn a_mismatch_is_not_cached() {
     let bad = altered("a", |message| {
         message.questions[0].name = dns("other.example.");
     });
-    let pipeline = common::caching();
+    // The records come back as captured: no minimum TTL raises them.
+    let pipeline = caching_with(Config {
+        min_ttl: 0,
+        ..Config::default()
+    });
     let query = wire(&query_for(&good));
     let first = run(
         &pipeline,

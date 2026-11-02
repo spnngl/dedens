@@ -5,6 +5,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Server forwarder
 
+- Minimum TTL of secure answers (D124): `min_ttl` does not raise a `Checked::Secure` answer, as the cache cannot tell a
+  TTL the validator lowered for the signatures' expiration (RFC 4035 §5.3.3) from a short one. Raising them needs the
+  verdict to carry the expiration (`dedens-dnssec` `Verdict`, `denial`) so the cache may floor up to it. Default: as
+  is, until a deployment's secure short-TTL names show in the upstream load.
 - A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio

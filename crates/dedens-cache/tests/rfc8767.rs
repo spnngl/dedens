@@ -2,7 +2,10 @@
 
 mod common;
 
-use common::{T0, a, insert, key_of, lookup, query, response, small_cache, ttls};
+use common::{
+    T0, a, captured, insert, key_of, lookup, min_cache, query, query_of, response, small_cache,
+    ttls,
+};
 use dedens_cache::{Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::{Rcode, RecordType};
 
@@ -71,6 +74,24 @@ fn stale_data_answers_while_resolution_fails() {
 #[test]
 fn stale_data_is_dropped_after_max_stale() {
     let (cache, q) = cached();
+    let end = T0 + 60 + cache.config().max_stale;
+    assert!(freshness(lookup(&cache, &q, end - 1, StalePolicy::Always).0).is_some());
+    assert_eq!(lookup(&cache, &q, end, StalePolicy::Always).0, Lookup::Miss);
+}
+
+/// D124: a captured answer of 29 s, raised to 60 s, is fresh for 60 and then kept stale for `max_stale` from there.
+#[test]
+fn stale_data_starts_where_the_raised_lifetime_ends() {
+    let cache = min_cache(60);
+    let wire = captured("a");
+    let q = query_of(&wire);
+    insert(&cache, &q, &wire, T0).expect("a cacheable answer");
+    let (found, served) = lookup(&cache, &q, T0 + 59, StalePolicy::Always);
+    assert_eq!(freshness(found), Some(Freshness::Fresh { prefetch: true }));
+    assert_eq!(ttls(&served.unwrap()), [1, 1]);
+    let (found, served) = lookup(&cache, &q, T0 + 60, StalePolicy::Always);
+    assert_eq!(freshness(found), Some(Freshness::Stale));
+    assert_eq!(ttls(&served.unwrap()), [30, 30]);
     let end = T0 + 60 + cache.config().max_stale;
     assert!(freshness(lookup(&cache, &q, end - 1, StalePolicy::Always).0).is_some());
     assert_eq!(lookup(&cache, &q, end, StalePolicy::Always).0, Lookup::Miss);

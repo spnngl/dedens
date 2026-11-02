@@ -119,17 +119,64 @@ pub(crate) fn insert(
     )
 }
 
-/// A megabyte in four shards.
+/// A megabyte in four shards, without a minimum TTL: the tests count seconds below its default; those of `min_ttl`
+/// set it.
 pub(crate) fn small_config() -> Config {
     Config {
         capacity: 1 << 20,
         shards: 4,
+        min_ttl: 0,
         ..Config::default()
     }
 }
 
 pub(crate) fn small_cache() -> Cache {
     Cache::new(small_config()).expect("a valid config")
+}
+
+/// [`small_config`] with `min_ttl`.
+pub(crate) fn min_cache(min_ttl: u32) -> Cache {
+    Cache::new(Config {
+        min_ttl,
+        ..small_config()
+    })
+    .expect("a valid config")
+}
+
+/// A response captured from a real server, in `crates/dedens-proto/tests/testdata`.
+pub(crate) fn captured(case: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/../dedens-proto/tests/testdata/{case}.bin",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("a captured response")
+}
+
+/// The query a captured response answers: its question, RD set, EDNS without DO.
+pub(crate) fn query_of(response: &[u8]) -> Vec<u8> {
+    let question = Message::decode(response)
+        .expect("a captured response decodes")
+        .message
+        .questions
+        .swap_remove(0)
+        .into_owned();
+    Message::query(1, question).to_vec().expect("a query fits")
+}
+
+/// `response` with TTL `ttl` on the records of the section `pick` gives, `pick` leaving the others as captured.
+pub(crate) fn retimed(
+    response: &[u8],
+    ttl: u32,
+    pick: impl for<'a> Fn(&'a mut Message<'static>) -> &'a mut Vec<Record<'static>>,
+) -> Vec<u8> {
+    let mut message = Message::decode(response)
+        .expect("a captured response decodes")
+        .message
+        .into_owned();
+    for record in pick(&mut message) {
+        record.ttl = Ttl::new(ttl).expect("a TTL under 2^31");
+    }
+    message.to_vec().expect("a response fits")
 }
 
 /// Looks `query` up and decodes what was served.
