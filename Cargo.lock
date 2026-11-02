@@ -1023,6 +1023,7 @@ dependencies = [
  "prefix-trie",
  "serde",
  "siphasher",
+ "subtle",
  "thiserror",
  "zeroize",
 ]

@@ -784,6 +784,9 @@ The limit adds about 11-20 ns to a hit. A query with a Client Cookie costs about
 spoofed flood costs the server no allocation with `slip` 0. A slipped reply allocates once (divan's allocation column:
 64 bytes for a TC reply, 160 for BADCOOKIE, which holds the cookie option); no other path allocates.
 
+D136 (`subtle`'s compare of the hash), `valid_cookie` back to back, same command, 3 runs each, 2026-11-02: before
+176.9-184.7 fastest, 186.8-190.9 median; after 179.7-185.6, 190.3-191.2. Within noise.
+
 ## Client budgets (D117)
 
 Machine: Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), release profile with debuginfo, a laptop in use, load average 4-7
