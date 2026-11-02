@@ -4,6 +4,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
+use crate::text::{Fields, TextError};
 use crate::wire::{Reader, Writer};
 
 pub(super) fn decode<'a>(r: &mut Reader<'a>) -> Result<Name<'a>, DecodeError> {
@@ -12,4 +13,12 @@ pub(super) fn decode<'a>(r: &mut Reader<'a>) -> Result<Name<'a>, DecodeError> {
 
 pub(super) fn encode(name: &Name<'_>, w: &mut Writer<'_>) -> Result<(), EncodeError> {
     w.put_name_compressed(name)
+}
+
+pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Name<'static>, TextError> {
+    f.name("domain name")
+}
+
+pub(super) fn into_owned(name: Name<'_>) -> Name<'static> {
+    name.into_owned()
 }
