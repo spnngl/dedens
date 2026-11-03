@@ -959,7 +959,7 @@ impl Reviewer for Blocklist {
 mod tests {
     use std::hash::{BuildHasher, BuildHasherDefault};
 
-    use super::Same;
+    use super::{Same, union_len};
 
     /// A key is a hash already: it is its own.
     #[test]
@@ -969,5 +969,12 @@ mod tests {
             same.hash_one(0x0123_4567_89ab_cdef_u64),
             0x0123_4567_89ab_cdef
         );
+    }
+
+    /// The size of a merged set is that of the union of its parts: each hash once, however many parts hold it.
+    #[test]
+    fn the_union_counts_each_hash_once() {
+        assert_eq!(union_len(&[&[1, 3, 5], &[2, 3], &[], &[5, 8]]), 5);
+        assert_eq!(union_len(&[]), 0);
     }
 }
