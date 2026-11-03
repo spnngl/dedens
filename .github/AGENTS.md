@@ -10,4 +10,4 @@ runs. `actionlint` and `zizmor` lint these files.
 `deep.yml` is the other informational workflow, with three jobs: `loom` runs `just loom` (D135), `sim` runs
 `just sim 100`, the simulation scenarios under random seeds (D133), and `careful` runs `just careful address`
 (D144). `ci.yml` runs dedensd's root-only `privileges` tests with `sudo` (D122). Scheduled: `fuzz.yml`, a job per
-fuzz target, and `advisories.yml` (D141); `rapx.yml` weekly (D16).
+fuzz target, and `advisories.yml` (D141); weekly, `rapx.yml` (D16) and `kani.yml` (D145).

@@ -1164,6 +1164,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the real tests. Leak checks are off: a leak is no memory error. The sanitizer is Linux-only: cargo-careful's
   sanitized builds fail to link on macOS, where `just careful` runs without one: from cold, about 7 min for the
   1799 tests, all passing (2026-11-03). Its own target dir: the checked standard library rebuilds every crate.
+- D145 (builds on D16) Kani proves dedens-proto's wire decoders for every small input, weekly and manual, outside
+  the gate (`kani.yml`, `just kani`); the proofs are `crates/dedens-proto/src/proofs.rs`, under `cfg(kani)`, so
+  they reach the crate's own decoders. `name_decoding`: a name read at any position past the header of any
+  message of up to 12 more bytes, compressed or not, never panics, stops (Kani checks every loop's bound) and
+  ends inside the input. `header_peeking`: any input of up to 13 bytes. `header_round_trip`: every 12-byte
+  header encodes back to itself. Fuzzing samples inputs of any length; Kani covers every input within its bounds,
+  edges included. The bounds follow the cost: 12 bytes take 8 min, a try at 20 did not end in 20; at 14 bytes,
+  `Message::decode` was still unrolling every RDATA decoder after 30 min and stays with the fuzzer. Headers take
+  3-5 s, `just kani` 8 min (2026-11-03, a loaded laptop). Weekly, not in the gate: minutes a proof, and a nightly
+  and CBMC of Kani's own (`just kani-install`).
 
 ## CLI
 
