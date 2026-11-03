@@ -7,12 +7,17 @@ mod common;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use common::{captured, forwarder, query_for, wire};
-use dedens_proto::Edns;
+use common::{
+    Captures, captured, captured_at, client_query, forwarder, query_for, run_captured,
+    validating_under, wire,
+};
+use dedens_dnssec::anchor::TrustAnchors;
+use dedens_dnssec::validator::{Limits, Validator};
 use dedens_proto::edns::{Cookie, EdnsOption};
+use dedens_proto::{Edns, Flags, RecordType};
 use dedens_server::{
-    Access, Clock, Cookies, Denial, Network, Rate, RateLimit, RateLimitConfig, Secret, Secrets,
-    Transport,
+    Access, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit, RateLimitConfig,
+    Secret, Secrets, Transport, Validating,
 };
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
@@ -155,5 +160,45 @@ fn cookies_are_counted_by_outcome() {
             ("none".to_owned(), 1),
             ("valid".to_owned(), 2),
         ]
+    );
+}
+
+/// `dedens_validations_total{verdict}` counts the responses validated by verdict: a cold validation costs more than
+/// a share of 2 units, so it stops once the share is in debt, and the next query of the network finds it so (D117).
+#[test]
+fn a_query_over_its_share_is_counted_as_shed_by_the_share() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let limits = Limits {
+        key_cache: 0,
+        ..Limits::default()
+    };
+    let validating = metrics::with_local_recorder(&recorder, || {
+        Validating::new(
+            Validator::new(TrustAnchors::root(), limits),
+            Arc::new(captured_at),
+        )
+        .sharing(
+            Budgets::new(Budget {
+                per_second: 1,
+                burst: 2,
+                table: 1 << 8,
+            })
+            .expect("a share in bounds"),
+        )
+    });
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    for _ in 0..2 {
+        // A fresh cache each time: nothing is held between the two.
+        drop(run_captured(
+            &validating_under(validating.clone()),
+            &query,
+            0,
+            &Captures::new(),
+        ));
+    }
+    assert_eq!(
+        counted(&snapshotter, "dedens_validations_total", "verdict"),
+        [("shed_share".to_owned(), 2)]
     );
 }

@@ -4,11 +4,12 @@
 mod common;
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use common::{caching, captured, decode, forwarder, query_for, reply, run, wire};
-use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{Edns, Message, Rcode};
-use dedens_server::{Step, Transport};
+use dedens_server::{Clock, Cookies, Secret, Secrets, Step, Transport};
 
 /// The query of the `a` capture, with EDNS and, when `padded`, an empty Padding option.
 fn query(padded: bool) -> Message<'static> {
@@ -122,6 +123,30 @@ fn stale_answers_are_padded_after_their_extended_error() {
     let options = decode(&wire).edns.expect("an OPT record").options;
     assert!(
         matches!(options.as_slice(), [EdnsOption::Ede(ede), EdnsOption::Padding(_)] if ede.code == InfoCode::STALE_ANSWER),
+        "{options:?}"
+    );
+}
+
+/// Padding comes after the COOKIE option (RFC 7873 §5.2.3) the reply carries, which the OPT record's length counts.
+#[test]
+fn a_reply_with_a_cookie_is_padded_after_it() {
+    let clock: Clock = Arc::new(|| 1_559_731_985);
+    let secret: Secret = "e5e973e5a6b2a43f48e7dc849e37bfcf"
+        .parse()
+        .expect("a secret");
+    let pipeline = forwarder().with_cookies(Cookies::new(Secrets::new(secret, vec![]), clock));
+    let mut query = query(true);
+    let client = Cookie::new([1; 8], None).expect("a cookie");
+    let edns = query.edns.as_mut().expect("EDNS");
+    edns.options.insert(0, EdnsOption::Cookie(client));
+    let response = captured("a");
+    let wire = reply(&pipeline, &wire(&query), Transport::Tls, Some(&response));
+    assert_eq!(wire.len() % 468, 0);
+    let reread = decode(&wire);
+    assert_eq!(reread.answer, decode(&response).answer);
+    let options = reread.edns.expect("an OPT record").options;
+    assert!(
+        matches!(options.as_slice(), [EdnsOption::Cookie(cookie), EdnsOption::Padding(_)] if cookie.client() == client.client() && cookie.server().is_some()),
         "{options:?}"
     );
 }

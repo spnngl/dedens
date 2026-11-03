@@ -86,6 +86,12 @@ fn a_fresh_hit_that_just_fits_is_whole() {
     assert_eq!(asked, 0);
     assert!(!reply.header.flags.contains(Flags::TC));
     assert_eq!(reply.answer.len(), whole_answer);
+    // A byte less, and the room kept for our OPT record leaves records out: still a hit, with TC.
+    query.edns.as_mut().expect("EDNS").udp_payload = fits - 1;
+    let (reply, asked) = ask(&pipeline, &query, 0, &[]);
+    assert_eq!(asked, 0);
+    assert!(reply.header.flags.contains(Flags::TC));
+    assert!(reply.answer.len() < whole_answer);
 }
 
 #[test]

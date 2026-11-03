@@ -10,14 +10,15 @@ use std::sync::Arc;
 
 use common::{
     Captures, captured_at, client_query, decode, run_captured, run_captured_from, run_together,
-    validating_under,
+    validating_under, wire,
 };
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Rcode, RecordType};
 use dedens_server::{
-    Allowance, Budget, Budgets, Pipeline, RateLimit, RateLimitConfig, Transport, Validating,
+    Allowance, Budget, Budgets, Clock, Cookies, Pipeline, RateLimit, RateLimitConfig, Secret,
+    Secrets, Transport, Validating,
 };
 
 /// The second the queries start at, far from 0 so that a clock gone back can be tried.
@@ -213,6 +214,25 @@ fn a_query_that_costs_more_than_its_limit_has_no_verdict() {
     assert_eq!(reply.rcode(), Rcode::SERVFAIL);
 }
 
+/// D77: `per_query` is the most a query may spend, not a bound it must stay under: a cold validation of
+/// `cloudflare.com.` has spent 8 units when it asks its last question, and a limit of 8 lets it ask; at 2, the
+/// query that has spent 3 by its second question asks no more.
+#[test]
+fn a_query_may_spend_its_limit_and_no_more() {
+    let limited = |per_query| {
+        validating_under(validating(Allowance {
+            per_query,
+            ..allowance(1_000_000)
+        }))
+    };
+    let (_, reply) = ask(&limited(8), "cloudflare.com.", START);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(reply.header.flags.contains(Flags::AD));
+    let (questions, reply) = ask(&limited(2), "cloudflare.com.", START);
+    assert_eq!(questions, 2, "the client's question and one more");
+    assert_eq!(error(&reply), Some(InfoCode::DNSSEC_INDETERMINATE));
+}
+
 /// The clients of D117's tests, one /24 apart or together.
 fn address(text: &str) -> IpAddr {
     text.parse().expect("an address")
@@ -350,6 +370,42 @@ fn a_proven_client_is_not_shed_by_the_unproven_ones_of_its_network() {
         START,
     );
     assert!(questions > 0, "the connection is validated");
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert!(reply.header.flags.contains(Flags::AD));
+}
+
+/// D117, RFC 7873 §5.2.5: a valid Server Cookie proves a UDP source as a connection does, so the client has the
+/// proven share of its network, which a flood without cookies does not spend.
+#[test]
+fn a_udp_client_with_a_valid_cookie_is_not_shed_by_the_unproven_ones() {
+    let validating = sharing(200);
+    assert!(spend_the_share(&validating, None, address("198.51.100.7")));
+    let client = address("198.51.100.8");
+    let clock: Clock = Arc::new(|| u64::from(START));
+    let secret: Secret = "e5e973e5a6b2a43f48e7dc849e37bfcf"
+        .parse()
+        .expect("a secret");
+    let cookies = Cookies::new(Secrets::new(secret, vec![]), clock);
+    let cookie = cookies.issue([7; 8], client);
+    let mut query = decode(&client_query(
+        "nlnetlabs.nl.",
+        RecordType::A,
+        Flags::NONE,
+        true,
+    ))
+    .into_owned();
+    let edns = query.edns.as_mut().expect("EDNS");
+    edns.options.push(EdnsOption::Cookie(cookie));
+    let done = run_captured_from(
+        &validating_under(validating).with_cookies(cookies),
+        (client, Transport::Udp),
+        &wire(&query),
+        START,
+        &Captures::new(),
+        None,
+    );
+    assert!(!done.requests.is_empty(), "the proven client is validated");
+    let reply = decode(&done.reply.expect("a reply")).into_owned();
     assert_eq!(reply.rcode(), Rcode::NOERROR);
     assert!(reply.header.flags.contains(Flags::AD));
 }

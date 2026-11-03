@@ -537,4 +537,14 @@ mod tests {
         let slot = Slot::new(source.address, source.proven);
         assert!(validating.shares.admit(slot, 0));
     }
+
+    /// D106: a verification is a unit, and so is each started 4096 SHA-1 blocks of NSEC3 hashing.
+    #[test]
+    fn the_work_counts_verifications_and_started_units_of_hashing() {
+        let mut cost = Cost::default();
+        assert_eq!(work(cost), 0);
+        cost.verifications = 5;
+        cost.nsec3_blocks = BLOCKS_PER_UNIT + 1;
+        assert_eq!(work(cost), 7);
+    }
 }
