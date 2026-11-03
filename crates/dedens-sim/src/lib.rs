@@ -3,9 +3,9 @@
 //! test-only driver, under a seed. Lost, late, reordered and forged packets, partitions and crashes meet the real
 //! exchange, pipeline and cache; a failing run replays with `DEDENS_SIM_SEED=<n>`.
 //!
-//! The driver mirrors `dedensd`'s glue, `apps/dedensd/src/serve.rs`, and `dedens-net`'s client: the [`client`], the
-//! [`resolver`] host and the [`upstream`] host; [`topology`] builds a run, [`stub`] checks its queries, and
-//! [`trace`] records it.
+//! The driver mirrors `dedensd`'s glue, `apps/dedensd/src/serve.rs`, and runs `dedens-net`'s own client on the
+//! simulated network (D134): the [`client`] on [`io::Sim`], the [`resolver`] host, the [`upstream`] and [`dot`]
+//! hosts; [`topology`] builds a run, [`stub`] checks its queries, and [`trace`] records it.
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -18,8 +18,10 @@
 
 pub mod attacker;
 pub mod client;
+pub mod dot;
 pub mod fault;
 pub mod framing;
+pub mod io;
 pub mod oracle;
 mod port;
 pub mod resolver;

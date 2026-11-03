@@ -1029,12 +1029,14 @@ dependencies = [
 name = "dedens-sim"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "dedens-cache",
  "dedens-dnssec",
  "dedens-net",
  "dedens-proto",
  "dedens-server",
  "getrandom 0.4.3",
+ "rcgen",
  "thiserror",
  "tokio",
  "turmoil",

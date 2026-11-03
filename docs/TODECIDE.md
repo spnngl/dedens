@@ -25,6 +25,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (D30), so the counts go nowhere but the log. Default: with the Prometheus exporter.
 - Upstream TCP: a connection pool per upstream (size, idle timeout, reuse across workers) instead of D27's one
   connection per server? Default: decide with the forwarder's load tests.
+- The TCP pool gives up connecting at its idle timeout, `TCP_IDLE` = 10 s (`crates/dedens-net/src/client.rs:42`,
+  `run` in `crates/dedens-net/src/tcp.rs`), whatever the exchange's tries and timeout (3 × 5 s by default). A
+  server that drops SYNs ends the exchange in `TcpError::Connect(TimedOut)` 10 s in, during the third try, not in
+  `Failure::TimedOut { sends: 3 }` at 15 s; other options give either. D134's simulation found it:
+  `a_tcp_query_to_a_crashed_resolver_gives_up_connecting_at_the_idle_timeout`, `crates/dedens-sim/tests/baseline.rs`.
+  Default: connect within the try's deadline, and count a connection that does not open as a timed-out try.
 - Blocklist lookup of a 127-label name (D110): audit P4 asked it to cost under 3 times one of 3 labels; it costs
   5 times (`benches/blocklist.rs` `lookup`, `docs/benchmarks.md`), 15 times less than before. The rest is the walk
   that finds where each label starts: a name is read from its front, label by label, ~1.3 ns each. Default: as

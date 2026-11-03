@@ -7,12 +7,18 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 
 - `src/seed.rs`: `Seed`, `each` (runs a scenario under the fixed seeds, `DEDENS_SIM_SEED` or `DEDENS_SIM_RUNS`, and
   prints a failing seed), `in_two_processes`, `Rng` (IDs, cookies and fault times of a host).
-- `src/client.rs`: `Client`, one `Exchange` over turmoil UDP and TCP as the real client runs it (cookies, TCP retried
-  once on a new connection, `ClientError`s); `Carrier`.
+- `src/io.rs`: `Sim`, `dedens_net::io::Io` on turmoil: the host's seeded `Rng` for IDs and cookies, the paused tokio
+  clock, `Glitches` (the next sends or receives of a host's UDP sockets fail), a `Sent` event for each try of an
+  exchange; turmoil's sockets in compio's owned-buffer traits.
+- `src/client.rs`: `Client`, `dedens_net::client::Client<Sim>`: the real pools, cookies and retries, over turmoil;
+  `Carrier` (UDP, TCP, TLS).
+- `src/dot.rs`: a DNS-over-TLS server host (rustls over the simulated stream), `World::dot_server`.
 - `src/resolver.rs`: `Resolver`, a `Pipeline` served on port 53 as `dedensd`'s `start` and `answer` do (D45's stale
   timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`, `pipeline_forwarding`, `pipeline_validating`, `wall_clock`.
 - `src/upstream.rs`: `Answers`, `serve`: an upstream server answering from captured responses (cut to the query's
-  EDNS size, REFUSED for a question it holds nothing for, no signatures without DO); `Verdict`, `Behaviour`.
+  EDNS size, REFUSED for a question it holds nothing for, no signatures without DO); `Verdict`, `Behaviour`. Over TCP
+  it reads a connection's queries as they come and answers each in a task of its own, pipelining (RFC 7766
+  §6.2.1.1): a delayed answer does not hold the ones behind it on a pooled connection.
 - `src/oracle.rs`: `Expected`, `Rules`, `judge`: what a client may get.
 - `src/stub.rs`: `Stub`, a client asking the resolver, with the oracle's `CheckError`s and `Outcome`s.
   `ask` accepts any I/O error as `Outcome::Io`: only `expect` and the scenario assert on it.
@@ -30,6 +36,9 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/forged.rs`: forged and duplicated responses from an attacker on the upstream's host; the seed draws them.
 - `tests/limits.rs`: many clients in a few networks on one resolver under rate limit, cookies, validation shares and
   access list; two seeded properties.
+- `tests/pools.rs`: the client's own pools against servers it addresses (`World::client_direct`, no stub): connections
+  opened, reused, closed when idle (D27), the inbox of a query (D108), socket errors, DNS over TLS (fixed
+  certificates, so that it replays).
 - `tests/dnssec.rs`: validation of captured signed responses: AD, cache, bogus data, the start date, the cost limits
   and loss on the chain's questions, which the seed picks.
 
@@ -65,11 +74,14 @@ What a scenario uses, so that it adds test files and no driver code:
   and the stub ask again over TCP), `Stub::ask_query` sends a query of its own to any server, `Stub::options` the tries and timeouts, `Stub::rules` what the oracle accepts
   besides the data (`accept` response codes, `authentic` for AD, `dnssec` to set DO, `live`); `Stub::expect` fails on
   SERVFAIL and on no response.
-- Trace: `Sent` (each send of an exchange, with its ID and its count), `Served` (an upstream server answered),
-  `Stored` (the cache grew), `Replied` (the resolver answered, stale or not), `Answered`, `Failed`, `Errored`,
-  `Injected`, `Fault`, with the length of each message.
+- Trace: `Sent` (each try of an exchange, with its ID and its count), `Received` (an upstream server read a query off
+  a connection), `Served` (an upstream server answered), `Stored` (the cache grew), `Replied` (the resolver answered,
+  stale or not), `Answered`, `Failed`, `Errored`, `Injected`, `Fault`, with the length of each message.
 - `Topology::epoch` sets the start date (`turmoil::since_epoch`, for signatures valid for one date; 2026-01-01 by
   default), `duration` the length of a run, `repair_rate` the loss's repair.
+- `World::client_direct(|client| ..)` gives a scenario the bare `Client` (no stub, no oracle) to ask servers it
+  addresses itself; `Answers::connections()` counts the TCP connections a server accepted, `Client::glitches()` fails
+  the next sends or receives of its UDP sockets.
 - `World::sim` for what `Fault` does not say.
 
 Rules for a driver and a scenario:

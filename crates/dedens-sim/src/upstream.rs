@@ -12,7 +12,7 @@
 //!
 //! Left out: the zone data of a real server; a scenario that needs it adds a pipeline with a local-data stage here.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Question, Rcode, Transport};
+use tokio::task::JoinSet;
 use turmoil::net::{TcpStream, UdpSocket};
 
 use crate::attacker::{Attacker, Injection, Seen};
@@ -79,6 +80,8 @@ pub struct Answers {
     cookie: Option<[u8; 8]>,
     fickle: Option<Fickle>,
     tcp: Behaviour,
+    /// The connections the host accepted, over every start of it and in every clone of these answers.
+    connections: Rc<Cell<usize>>,
 }
 
 /// A capture, as sent to a query with DO and as sent to one without (RFC 4035 §3.2.1): a server sends the
@@ -258,6 +261,18 @@ impl Answers {
         self.faulty(|_, _| Verdict::Drop)
     }
 
+    /// The number of TCP connections the server accepted so far, to read after the run: how a pool reuses its
+    /// connections (D27). Clones of these answers share it.
+    #[must_use]
+    pub fn connections(&self) -> Rc<Cell<usize>> {
+        Rc::clone(&self.connections)
+    }
+
+    /// Notes an accepted connection.
+    pub(crate) fn accepted(&self) {
+        self.connections.set(self.connections.get() + 1);
+    }
+
     /// Has the server behave as `behaviour` over TCP: it accepts connections whatever it does with them.
     #[must_use]
     pub const fn tcp(mut self, behaviour: Behaviour) -> Self {
@@ -289,7 +304,11 @@ impl Answers {
 
     /// The response to the query `wire`, with its ID, and the question it answers; none for what a server does
     /// not answer: a message that is no query.
-    fn reply(&self, wire: &[u8], transport: Transport) -> Option<(Vec<u8>, Question<'static>)> {
+    pub(crate) fn reply(
+        &self,
+        wire: &[u8],
+        transport: Transport,
+    ) -> Option<(Vec<u8>, Question<'static>)> {
         let query = Message::decode(wire).ok()?.message.into_owned();
         if query.header.flags.contains(Flags::QR) {
             return None;
@@ -426,6 +445,7 @@ pub async fn serve(
                 }
             }
             Arrival::Connection { stream, .. } => {
+                answers.accepted();
                 let (answers, rng) = (Rc::clone(&answers), Rc::clone(&rng));
                 port.spawn(connection(answers, stream, host, rng, trace.clone()));
             }
@@ -479,22 +499,33 @@ async fn inject(
     socket.send_to(&injection.wire, to).await.ok();
 }
 
-/// Serves the queries of a connection, one at a time, as [`Answers::tcp`] says, until it closes.
+/// Serves the queries of a connection as [`Answers::tcp`] says, until it closes: each query is read as it comes, and
+/// a delayed response does not hold the ones behind it (RFC 7766 §6.2.1.1, as a pipelining server does), so a
+/// pooled connection does not stall on one slow answer. The delayed responses go out before the connection closes.
 async fn connection(
     answers: Rc<Answers>,
-    mut stream: TcpStream,
+    stream: TcpStream,
     host: IpAddr,
     rng: Rc<RefCell<Rng>>,
     trace: Trace,
 ) {
+    let (mut reader, writer) = stream.into_split();
+    let writer = Rc::new(tokio::sync::Mutex::new(writer));
+    let mut delayed = JoinSet::new();
     let mut served = 0;
     loop {
         if matches!(answers.tcp, Behaviour::Close(limit) if served >= limit) {
-            return;
+            break;
         }
-        let Ok(query) = framing::read(&mut stream).await else {
-            return;
+        let Ok(query) = framing::read(&mut reader).await else {
+            break;
         };
+        trace.record(
+            host,
+            What::Received {
+                transport: Transport::Tcp,
+            },
+        );
         if answers.tcp == Behaviour::Silent {
             continue;
         }
@@ -502,21 +533,32 @@ async fn connection(
             continue;
         };
         served += 1;
-        match answers.verdict(&question, &rng) {
+        let delay = match answers.verdict(&question, &rng) {
             Verdict::Drop => continue,
-            Verdict::Answer => {}
-            Verdict::Delay(delay) => tokio::time::sleep(delay).await,
-        }
-        trace.record(
-            host,
-            What::Served {
-                question,
-                transport: Transport::Tcp,
-                len: reply.len(),
-            },
-        );
-        if framing::write(&mut stream, &reply).await.is_err() {
-            return;
+            Verdict::Answer => Duration::ZERO,
+            Verdict::Delay(delay) => delay,
+        };
+        let (writer, trace) = (Rc::clone(&writer), trace.clone());
+        delayed.spawn_local(async move {
+            tokio::time::sleep(delay).await;
+            trace.record(
+                host,
+                What::Served {
+                    question,
+                    transport: Transport::Tcp,
+                    len: reply.len(),
+                },
+            );
+            // A closed connection loses the response, as a server's does.
+            framing::write(&mut *writer.lock().await, &reply).await.ok();
+        });
+    }
+    // A response task that panicked panics the connection's, which fails the run (`Port::next`).
+    while let Some(done) = delayed.join_next().await {
+        if let Err(error) = done
+            && error.is_panic()
+        {
+            std::panic::resume_unwind(error.into_panic());
         }
     }
 }

@@ -861,8 +861,18 @@ fn whatever_the_links_lose_and_delay_queries_end_well() {
                 assert!(u32::from(sends) <= FORWARD_TRIES + 1, "{events:#?}");
             }
         }
-        let sent = run.sent_by_the_resolver().len();
-        assert!(run.served() <= sent, "{events:#?}");
+        // A UDP send is answered once at most. Over TCP the pool sends a query again when its connection closes
+        // before the response (D27), which no try counts: each query the server read is answered once at most.
+        let sent = run.sent_by_the_resolver();
+        let over = |transport| sent.iter().filter(|(_, sent)| *sent == transport).count();
+        assert!(
+            run.served_over(Transport::Udp) <= over(Transport::Udp),
+            "{events:#?}"
+        );
+        let received = run.count(
+            |what| matches!(what, What::Received { transport } if *transport == Transport::Tcp),
+        );
+        assert!(run.served_over(Transport::Tcp) <= received, "{events:#?}");
     });
 }
 

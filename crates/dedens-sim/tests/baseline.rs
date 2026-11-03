@@ -667,7 +667,7 @@ fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
 }
 
 #[test]
-fn a_crashed_resolver_leaves_a_tcp_query_to_time_out() {
+fn a_tcp_query_to_a_crashed_resolver_gives_up_connecting_at_the_idle_timeout() {
     seed::each(FEW, |seed| {
         let mut world = Topology::new().upstream(a()).build(seed);
         world.fault(Duration::ZERO, Fault::Crash(Server::Resolver));
@@ -677,10 +677,12 @@ fn a_crashed_resolver_leaves_a_tcp_query_to_time_out() {
             let outcome = stub
                 .ask(question("example.com", RecordType::A), Carrier::Tcp)
                 .await?;
-            assert!(
-                matches!(outcome, Outcome::Failed(Failure::TimedOut { sends: 3 })),
-                "{outcome:?}"
-            );
+            // The pool gives up connecting at its idle timeout (10 s), during the third try of five seconds: a
+            // connection that cannot be opened ends the exchange (D27). Open question in docs/TODECIDE.md.
+            let Outcome::Io(ClientError::Tcp(TcpError::Connect(error))) = outcome else {
+                return Err(format!("{outcome:?}").into());
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
             Ok(())
         });
         world.run().expect("the run passes its checks");
