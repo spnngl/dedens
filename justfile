@@ -7,6 +7,9 @@ nightly := "nightly-2026-10-26"
 # A commit of RAPx's main: its fix for async closures (safer-rust/RAPx#319) is in no release yet (0.7.65 predates it).
 # Back to a crates.io version once one has it.
 rapx_rev := "8d9d0a2f0389f48891b9e8bd3321a70a932e2e90"
+# Kani brings a nightly and CBMC of its own (`just kani-install`).
+# renovate: datasource=crate depName=kani-verifier
+kani_version := "0.68.0"
 # renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
 unbound_version := "1.26.2"
 # The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
@@ -319,6 +322,16 @@ rapx *args="check -f -m":
     rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
     CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{ nightly }} cargo rapx {{ args }}
+
+# Install the pinned Kani, then its nightly and CBMC into ~/.kani.
+kani-install:
+    cargo install --locked kani-verifier@{{kani_version}}
+    cargo kani setup
+
+# Kani's proofs of dedens-proto's wire decoders for every small input (D145), outside the gate: all by default, one
+# with `just kani --harness name_decoding`. Its own target dir, target/kani.
+kani *args:
+    cargo kani -p dedens-proto {{args}}
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:

@@ -25,6 +25,9 @@ pub mod text;
 pub mod transport;
 pub mod wire;
 
+#[cfg(kani)]
+mod proofs;
+
 pub use codes::{Class, DigestType, Nsec3HashAlgorithm, Opcode, Rcode, RecordType, SecAlgorithm};
 pub use edns::{Edns, EdnsFlags, EdnsView};
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
