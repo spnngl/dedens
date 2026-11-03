@@ -230,3 +230,18 @@ impl Drop for Stream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CLIENT_RECEIVE_WINDOW, MAX_STREAM, RECEIVE_WINDOW, STREAM_RECEIVE_WINDOW};
+
+    /// The windows are sized as D119 sets: a stream takes a whole message, a server connection three streams and
+    /// the control and QPACK streams, a client connection 8 times the server's.
+    #[test]
+    fn the_receive_windows_hold_what_d119_sizes() {
+        let stream = u32::try_from(MAX_STREAM).expect("a stream size");
+        assert!(STREAM_RECEIVE_WINDOW >= stream);
+        const { assert!(RECEIVE_WINDOW > 3 * STREAM_RECEIVE_WINDOW) };
+        assert_eq!(CLIENT_RECEIVE_WINDOW, 8 * RECEIVE_WINDOW);
+    }
+}
