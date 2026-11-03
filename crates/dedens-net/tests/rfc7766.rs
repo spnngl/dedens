@@ -1,9 +1,12 @@
-//! RFC 7766 §5 and RFC 1035 §4.2.1: a truncated response over UDP sends the query again over TCP.
+//! RFC 7766 §5 and RFC 1035 §4.2.1: a truncated response over UDP sends the query again over TCP. §10: without
+//! delay.
 
 mod common;
 
+use common::loopback::listen;
 use common::{expect_response, expect_send, query, response, server, start, t0, udp, wire};
 use dedens_net::exchange::{Options, Transport};
+use dedens_net::io::{Compio, Io, Stream};
 use dedens_proto::{Flags, Rcode};
 
 #[test]
@@ -69,4 +72,13 @@ fn over_tcp_the_source_address_is_the_connection() {
     let other = "198.51.100.1:4242".parse().expect("a socket address");
     let full = wire(&response(&query, Rcode::NOERROR));
     expect_response(exchange.receive(other, Transport::Tcp, full.clone(), now));
+}
+
+/// RFC 7766 §10: a connection sends its queries without delay, `TCP_NODELAY` set on compio's stream.
+#[compio::test]
+async fn s10_a_connection_sends_without_delay() {
+    let (_listener, addr) = listen().await;
+    let stream = Compio.tcp_connect(addr).await.expect("a connection");
+    Stream::set_nodelay(&stream, true).expect("no delay");
+    assert!(stream.nodelay().expect("the option"));
 }

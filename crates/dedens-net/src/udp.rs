@@ -311,10 +311,117 @@ impl<N: Io> Drop for UdpQuery<N> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::future::{Future, pending, ready};
+    use std::io;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
-    use super::{INBOX, UdpPool, Waiting};
+    use compio::BufResult;
+    use compio::buf::{IoBuf, IoBufMut};
+    use compio::net::TcpStream;
+    use compio::runtime::JoinHandle;
+
+    use super::{INBOX, UdpPool, Waiting, receive};
+    use crate::io::{Compio, Io, TimedOut, Udp};
+
+    /// The receives a [`Refusing`] socket fails before it waits forever.
+    const FAILS: usize = 4;
+
+    /// A socket whose receives fail at once, [`FAILS`] times, as after ICMP port unreachables.
+    #[derive(Debug, Default)]
+    struct Refusing {
+        /// When each receive came.
+        receives: RefCell<Vec<Instant>>,
+    }
+
+    impl Udp for Refusing {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Err(io::ErrorKind::NotConnected.into())
+        }
+
+        fn connect(&self, _: SocketAddr) -> impl Future<Output = io::Result<()>> {
+            ready(Err(io::ErrorKind::Unsupported.into()))
+        }
+
+        async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
+            if self.receives.borrow().len() == FAILS {
+                return pending().await;
+            }
+            self.receives.borrow_mut().push(Compio.now());
+            BufResult(Err(io::ErrorKind::ConnectionRefused.into()), buffer)
+        }
+
+        fn send<B: IoBuf>(&self, buffer: B) -> impl Future<Output = BufResult<usize, B>> {
+            ready(BufResult(Err(io::ErrorKind::Unsupported.into()), buffer))
+        }
+    }
+
+    /// Compio with [`Refusing`] sockets.
+    #[derive(Debug, Clone)]
+    struct Refused;
+
+    impl Io for Refused {
+        type Udp = Refusing;
+        type Stream = TcpStream;
+        type Task = JoinHandle<()>;
+
+        fn now(&self) -> Instant {
+            Compio.now()
+        }
+
+        fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
+            Compio.spawn(task)
+        }
+
+        async fn timeout_at<F: Future>(
+            &self,
+            deadline: Instant,
+            future: F,
+        ) -> Result<F::Output, TimedOut> {
+            Compio.timeout_at(deadline, future).await
+        }
+
+        fn random(&self, bytes: &mut [u8]) -> io::Result<()> {
+            Compio.random(bytes)
+        }
+
+        fn udp_bind(&self, _: SocketAddr) -> impl Future<Output = io::Result<Self::Udp>> {
+            ready(Ok(Refusing::default()))
+        }
+
+        fn tcp_connect(&self, _: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> {
+            ready(Err(io::ErrorKind::Unsupported.into()))
+        }
+    }
+
+    /// A receive that fails right after one that failed waits 10 ms first: a socket failing on every receive does
+    /// not spin.
+    #[compio::test]
+    async fn an_error_after_an_error_pauses_the_receiving() {
+        let socket = Rc::new(Refusing::default());
+        let _receiving = Refused.spawn(receive(Refused, Rc::clone(&socket), Rc::default()));
+        for _ in 0..100 {
+            if socket.receives.borrow().len() == FAILS {
+                break;
+            }
+            let _ = Refused
+                .timeout_at(Refused.now() + Duration::from_millis(10), pending::<()>())
+                .await;
+        }
+        let receives = socket.receives.borrow();
+        assert_eq!(receives.len(), FAILS);
+        // The first error, then each one after it.
+        let gaps: Vec<Duration> = receives[1..]
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect();
+        assert!(
+            gaps.iter().all(|&gap| gap >= Duration::from_millis(10)),
+            "{gaps:?}"
+        );
+    }
 
     /// A query dropped stops waiting: the socket keeps no waiter of it, which would hold its datagrams forever.
     #[compio::test]

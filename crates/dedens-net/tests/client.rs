@@ -2,16 +2,22 @@
 
 mod common;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use common::certificates::{NAME, certificates, named};
 use common::cookie_of;
 use common::loopback::{answer, id, listen, responders, udp_responder};
+use compio::BufResult;
+use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use compio::rustls::DEFAULT_VERSIONS;
+use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Failure, Options, Transport};
-use dedens_net::tcp::TcpError;
+use dedens_net::tcp::{TcpError, frame};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{Message, Rcode};
@@ -53,7 +59,7 @@ async fn a_truncated_response_is_asked_again_over_tcp() {
 }
 
 /// RFC 5452 §9.2, D114: the query asked again goes with a spare ID, each of its two bytes random. Four IDs whose
-/// bytes all match have a chance of 2^-32.
+/// bytes all match have a chance of 2^-32, four equal IDs 2^-48.
 #[compio::test]
 async fn the_spare_ids_are_random_in_both_bytes() {
     let server = responders(
@@ -80,6 +86,8 @@ async fn the_spare_ids_are_random_in_both_bytes() {
             .any(|id| id.to_be_bytes()[0] != id.to_be_bytes()[1]),
         "{ids:04x?}"
     );
+    // An ID equal to the first query's is replaced by the next one: its bytes differ even when nothing is random.
+    assert!(ids.windows(2).any(|pair| pair[0] != pair[1]), "{ids:04x?}");
 }
 
 /// RFC 7873 §5.1, §5.3: the client cookie stays for the server, its server cookie comes back to it.
@@ -234,6 +242,48 @@ async fn a_handshake_slower_than_a_try_costs_one_try() {
         ),
         "{result:?}"
     );
+}
+
+/// D27: without a cookie, nothing waits for the connection's address: each try queues its query, which goes once
+/// the handshake ends, the first one's too.
+#[compio::test]
+async fn without_cookies_a_slow_handshake_takes_every_query() {
+    let certificates = certificates();
+    let acceptor = TlsAcceptor::from(Arc::new(certificates.config(DEFAULT_VERSIONS, b"dot")));
+    let (listener, addr) = listen().await;
+    let read = Rc::new(Cell::new(0_u32));
+    let count = Rc::clone(&read);
+    compio::runtime::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("a connection");
+        // Slower than a try.
+        compio::time::sleep(Duration::from_millis(450)).await;
+        let mut tls = acceptor.accept(stream).await.expect("a handshake");
+        while let Ok(len) = tls.read_u16().await {
+            let BufResult(read, query) = tls.read_exact(Vec::with_capacity(len.into())).await;
+            if read.is_err() {
+                return;
+            }
+            count.set(count.get() + 1);
+            let BufResult(written, _) = tls
+                .write_all(frame(&answer_plainly(&query)).expect("framed"))
+                .await;
+            written.expect("the client reads");
+            tls.flush().await.expect("a flush");
+        }
+    })
+    .detach();
+    let mut options = Options::default();
+    options.transport = Transport::Tls;
+    options.cookies = false;
+    options.timeout = Duration::from_millis(300);
+    options.tries = 4.try_into().expect("not zero");
+    let response = Client::new()
+        .trusting(Trust::Roots(vec![certificates.ca]))
+        .exchange(common::query(), named(addr, NAME), &options)
+        .await
+        .expect("a response");
+    assert!(response.sends >= 2, "{}", response.sends);
+    assert_eq!(read.get(), u32::from(response.sends));
 }
 
 #[test]
