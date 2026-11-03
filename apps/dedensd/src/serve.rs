@@ -1632,6 +1632,27 @@ mod tests {
     }
 
     #[test]
+    fn a_socket_names_its_listener_by_its_address() {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).expect("a socket");
+        let asked = SocketAddr::from(([127, 0, 0, 1], 0));
+        socket.bind(&asked.into()).expect("bound");
+        let bound = super::local(&socket).expect("its address");
+        assert_eq!(bound.ip(), asked.ip());
+        assert_ne!(bound.port(), 0);
+    }
+
+    #[test]
+    fn a_yield_lets_the_other_tasks_run() {
+        let ran = Rc::new(Cell::new(false));
+        Runtime::new().expect("a runtime").block_on(async {
+            let flag = Rc::clone(&ran);
+            spawn(async move { flag.set(true) }).detach();
+            super::yield_now().await;
+            assert!(ran.get());
+        });
+    }
+
+    #[test]
     fn a_serving_task_that_panics_fails_the_thread() {
         let runtime = Runtime::new().expect("a runtime");
         let ended = runtime.block_on(async {

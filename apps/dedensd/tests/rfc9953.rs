@@ -542,38 +542,48 @@ fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
 
 /// D105: a response kept for the next blocks is served `1 + MAX_RETRANSMIT` times its size in bytes of blocks, then
 /// not at all: a client asking for the same block with a new message ID each time (a spoofed source does, for it
-/// costs it no more than a datagram) gets about five readings of the response, then silence.
+/// costs it no more than a datagram) gets about five readings of the response, then silence. A block with more after
+/// it counts the same: asking for it keeps the response no longer.
 #[test]
 fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
     let upstream = Responder::start(&["txt_large"]);
     let server = serving(upstream.addr);
     let query = query_for(&captured("txt_large"), 0);
-    let socket = client();
-    let mut first = fetch(1, &query);
-    first.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
-    let first = send_from(&socket, server.addr, &first).expect("a response");
-    let follow = |id| {
-        let mut request = fetch(id, &[]);
-        request.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
-        request
-            .options
-            .set_block2(Block::new(1, false, BlockSize::MAX).expect("a block"));
-        request
-    };
-    let second = send_from(&socket, server.addr, &follow(2)).expect("a response");
-    assert_eq!(second.code, Code::CONTENT);
-    let (head, tail) = (first.payload.len(), second.payload.len());
-    assert_eq!(head, 1024);
-    let mut replies = 1;
-    for id in 3..100 {
-        if send_from(&socket, server.addr, &follow(id)).is_none() {
-            break;
+    // From a client of its own, the first block, then block 1 of `size` again and again: the replies to those, and
+    // the length of the last.
+    let readings = |size| {
+        let socket = client();
+        let mut first = fetch(1, &query);
+        first.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
+        let first = send_from(&socket, server.addr, &first).expect("a response");
+        assert_eq!(first.payload.len(), 1024);
+        let follow = |id| {
+            let mut request = fetch(id, &[]);
+            request.options.insert(OptionNumber::REQUEST_TAG, [1, 2]);
+            request
+                .options
+                .set_block2(Block::new(1, false, size).expect("a block"));
+            request
+        };
+        let (mut replies, mut block) = (0, 0);
+        for id in 2..1000 {
+            let Some(reply) = send_from(&socket, server.addr, &follow(id)) else {
+                break;
+            };
+            assert_eq!(reply.code, Code::CONTENT);
+            (replies, block) = (replies + 1, reply.payload.len());
         }
-        replies += 1;
-    }
-    // The response is `head + tail` bytes, and every request takes `tail` off five times that.
-    assert_eq!(replies, 5 * (head + tail) / tail);
-    assert_eq!(upstream.queries(), 1);
+        (replies, block)
+    };
+    let (replies, tail) = readings(BlockSize::MAX);
+    // The response is `1024 + tail` bytes, and every request takes `tail` off five times that.
+    let len = 1024 + tail;
+    assert_eq!(replies, 5 * len / tail);
+    let (replies, block) = readings(BlockSize::new(2).expect("64 bytes"));
+    assert_eq!(block, 64);
+    assert_eq!(replies, 5 * len / 64);
+    // The first block of each client only.
+    assert_eq!(upstream.queries(), 2);
 }
 
 /// RFC 9953 §4.3.2: the TTLs in the response, less their least, and that least as the Max-Age, reach the client

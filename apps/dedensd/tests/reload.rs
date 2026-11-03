@@ -42,6 +42,12 @@ fn a_reload_serves_the_new_configuration() {
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     assert_eq!(addresses(&server), ["192.0.2.2".parse::<IpAddr>().unwrap()]);
+    // Nothing that takes a restart changed: nothing to warn of.
+    let stderr = server.stderr();
+    assert!(
+        !stderr.iter().any(|line| line.contains("take a restart")),
+        "{stderr:?}"
+    );
 }
 
 #[test]

@@ -316,6 +316,7 @@ pub(crate) mod tests {
     use std::cell::Cell;
     use std::panic::panic_any;
     use std::pin::pin;
+    use std::sync::{Arc, Mutex, PoisonError};
 
     use futures_util::future::select;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
@@ -378,6 +379,88 @@ pub(crate) mod tests {
         assert_eq!(capped, BACKOFF.max);
         assert_eq!(BACKOFF.pause(Some(capped), short), BACKOFF.max);
         assert_eq!(BACKOFF.pause(Some(capped), long), BACKOFF.first);
+    }
+
+    #[test]
+    fn a_listener_is_named_by_its_scheme_and_address() {
+        assert_eq!(listener().to_string(), "udp://127.0.0.1:53");
+        assert_eq!(Listener::new("coap", None).to_string(), "coap://");
+    }
+
+    #[test]
+    fn the_counters_are_described() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            metrics::counter!(PANICS).increment(1);
+            metrics::counter!(RESTARTS).increment(1);
+        });
+        let mut described: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .map(|(key, _, description, _)| (key.key().name().to_owned(), description.is_some()))
+            .collect();
+        described.sort();
+        assert_eq!(
+            described,
+            [(RESTARTS.to_owned(), true), (PANICS.to_owned(), true)]
+        );
+    }
+
+    /// The messages of the events logged on this thread while `body` runs.
+    fn logged(body: impl FnOnce()) -> Vec<String> {
+        #[derive(Clone, Default)]
+        struct Written(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Written {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let written = Written::default();
+        let writer = written.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, body);
+        let bytes = written.0.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(|line| {
+                let event: serde_json::Value = serde_json::from_str(line).expect("an event");
+                event["fields"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// D121: the hook logs a panic no catch has; one a catch has is logged by the catch alone, and the thread is no
+    /// longer under it once the catch ends.
+    #[test]
+    fn the_hook_logs_the_panics_no_catch_has() {
+        let previous = panic::take_hook();
+        hook();
+        let messages = logged(|| {
+            let caught = listener().guard(PEER, || panic_any::<&str>("caught"));
+            assert_eq!(caught, None::<()>);
+            assert!(catch_unwind(|| panic_any::<&str>("uncaught")).is_err());
+        });
+        panic::set_hook(previous);
+        assert_eq!(
+            messages,
+            ["task panicked: dropped, the listener goes on", "panic"]
+        );
     }
 
     #[test]
