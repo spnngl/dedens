@@ -57,8 +57,14 @@ exclude_re = [
   'replace < with <= in Config::(insecure_ttl|entry_limit)$',
   # Read only when root drops to `user` (D122): seen by the #[ignore]d root tests of privileges.rs, outside this job.
   'config\.rs:\d+:\d+: (delete ! in Downloads::written_dir|replace Downloads::written_dir -> .* with None)$',
+  # target is given CNAME or DNAME sets only, and a CNAME's RDATA always decodes as RData::Cname, never opaque.
+  'section\.rs:\d+:\d+: replace match guard set\.rtype\(\) == RecordType::DNAME with true in target$',
   # Equal values: either is the lesser.
   'config\.rs:\d+:\d+: replace < with <= in lesser$',
+  # A plugin's stage index is never the cache stage's: `<` and `<=` agree.
+  'pipeline\.rs:\d+:\d+: replace < with <= in Finish<._>::plain$',
+  # Zeroing a dropped secret is memory hygiene: reading the bytes after the drop takes `unsafe`, no test's.
+  'cookie\.rs:\d+:\d+: replace <impl Drop for Secret>::drop with \(\)$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
   'link\.rs:\d+:\d+: replace \| with \^ in decode$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
