@@ -55,6 +55,8 @@ exclude_re = [
   'replace \| with \^ in Response::serve$',
   # At the limit both branches give the same value: the insecure TTL, and the default entry size.
   'replace < with <= in Config::(insecure_ttl|entry_limit)$',
+  # Equal values: either is the lesser.
+  'config\.rs:\d+:\d+: replace < with <= in lesser$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
   'link\.rs:\d+:\d+: replace \| with \^ in decode$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
