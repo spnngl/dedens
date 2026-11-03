@@ -1105,7 +1105,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D142 (amends D103) The pull request's mutants in shards, for pull requests changing Rust, manifests, the lock
   file, `.cargo/mutants.toml`, the justfile or the workflow: a `plan` job lists the diff's mutants without building
   (`--list`) and asks for one shard per 40, up to 8 (the account runs 20 jobs at once, `ci.yml` about 8), warning
-  past 1400 (about 40 s each fills a shard's 120 min); each shard job runs `just mutants` over the plan's diff, so
+  past 4000 (about 40 s each fills a shard's 350 min, under hosted runners' 6 h); each shard job runs `just mutants` over the plan's diff, so
   all agree on the list, with `--shard k/n` (cargo-mutants' default `slice`: neighbouring mutants, so warm
   incremental builds) and `--baseline=skip`, as `ci.yml`'s `just check` runs the unmutated tests of the same commit;
   a `summary` job lists every shard's missed and timed-out mutants on the run's page (GitHub shows 10 of

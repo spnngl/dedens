@@ -60,8 +60,8 @@ jobs:
           count=$(( (mutants + 39) / 40 ))
           count=$(( count > 8 ? 8 : count ))
           echo "$mutants mutants, $count shards" >> "$GITHUB_STEP_SUMMARY"
-          # About 40 s a mutant: past 1400, shards may reach their 120 min.
-          if (( mutants > 1400 )); then echo "::warning::$mutants mutants: shards may time out"; fi
+          # About 40 s a mutant: past 4000, shards may reach their 350 min (hosted runners stop at 360).
+          if (( mutants > 4000 )); then echo "::warning::$mutants mutants: shards may time out"; fi
           echo "count=$count" >> "$GITHUB_OUTPUT"
           # A matrix may not be empty, even in a job its `if` skips.
           echo "shards=$(jq -nc --argjson n "$count" '[range([$n, 1] | max)]')" >> "$GITHUB_OUTPUT"
@@ -79,7 +79,7 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: 350
     permissions:
       contents: read
     env:
