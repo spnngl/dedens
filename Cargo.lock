@@ -464,8 +464,7 @@ dependencies = [
 [[package]]
 name = "compio-buf"
 version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b51a2c35873865376ed4cdb6cfeb602b6cf569815f017ddd7bd8f86ad49b34c7"
+source = "git+https://github.com/spnngl/compio?rev=8b82dbc8d76f0731f086fa90334c7db40053db50#8b82dbc8d76f0731f086fa90334c7db40053db50"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -475,8 +474,7 @@ dependencies = [
 [[package]]
 name = "compio-driver"
 version = "0.12.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "293e8086a35f52b5002402937cf4e69b5e414917e511c29c5e7ba2cebe6ef7b3"
+source = "git+https://github.com/spnngl/compio?rev=8b82dbc8d76f0731f086fa90334c7db40053db50#8b82dbc8d76f0731f086fa90334c7db40053db50"
 dependencies = [
  "bitflags 2.13.2",
  "cfg_aliases",
@@ -534,8 +532,7 @@ dependencies = [
 [[package]]
 name = "compio-log"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd867f29de59e4eff577dfeee3744cb0a264249f3faaf11945e8be79a3c3c62"
+source = "git+https://github.com/spnngl/compio?rev=8b82dbc8d76f0731f086fa90334c7db40053db50#8b82dbc8d76f0731f086fa90334c7db40053db50"
 dependencies = [
  "tracing",
 ]
@@ -1268,7 +1265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2596,7 +2593,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2654,7 +2651,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3038,7 +3035,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3541,7 +3538,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

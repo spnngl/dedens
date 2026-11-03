@@ -1865,7 +1865,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
   table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
   `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
-- D107 (amends D51, D55, D64; amended by D122) Runtime fixes of audit step 04.
+- D107 (amends D51, D55, D64; amended by D122, D147) Runtime fixes of audit step 04.
   - QUIC datagrams (RFC 9221 §3): both the server (`endpoint`) and `Dialer` set `datagram_receive_buffer_size(None)`.
     quinn's default of 1.25 MB made both advertise `max_datagram_frame_size` and buffer DATAGRAM frames nothing
     reads (RFC 9250 uses streams alone). Now a peer sees `max_datagram_size()` as `None`, which the tests check
@@ -1877,8 +1877,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     field (`io_uring`, `poll`, or `mixed` if the threads differ), and on Linux a thread on `poll` is a warning at
     start, with the count of threads on it. compio's own logging (its `enable_log` feature) stays off: it
     instruments the driver's hot path, unmeasured. `tests/serve.rs` expects `io_uring` on Linux, unless
-    `DEDENS_TEST_ALLOW_POLL` is set (a container whose seccomp filter refuses it); the fallback itself is not
-    tested, as it needs a kernel or a filter refusing the ring.
+    `DEDENS_TEST_ALLOW_POLL` is set (a container whose seccomp filter refuses it); the fallback itself is tested
+    by forcing it (D147).
   - UDP receive (amends D64): the pause after a failed receive is per task, and the lock on the socket's stream is
     released before it, so the socket's other tasks keep receiving. A first error is retried at once and a second
     in a row after 100 ms, as D64 has it. `ResourceBusy` (`ENOBUFS`: the pool's 256 buffers, D49, are held by
@@ -1898,6 +1898,15 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     the largest), until its next query. The hot path is unchanged: one atomic load of the generation per query, no
     bench needed. Rejected: a periodic check (a wake-up per thread each period for nothing, and the old one held
     till the next).
+- D147 (amends D107) On Linux's `poll` fallback, UDP queries were answered with nothing: compio-driver 0.12.5's
+  fused driver did not pass `set_result` on to the `poll` side of an operation, so `recv_from_multi` (D49) gave
+  each datagram a length of 0 and the pipeline dropped it. TCP, DoT, DoQ, DoH and CoAP read otherwise and were
+  answered. Any host refusing the ring hit it: Docker's default seccomp profile, `kernel.io_uring_disabled`. Fixed
+  in compio (commit `8b82dbc` on `spnngl/compio` branch `fix/fusion-poll-set-result-v0.19`, on top of 0.19.2), taken
+  through `[patch.crates-io]` of `compio-driver` at that commit, the one git source `deny.toml` allows, until a
+  compio release has the fix; then the patch goes. Rejected: reading one datagram at a time on `poll` in dedensd
+  (a second receive path to keep). `serve.rs` tests the fallback by building the runtime on `poll`
+  (`a_udp_socket_answers_on_the_poll_driver`), which every Linux and macOS run of the gate does.
 
 - D106 (amends D71, D74, D75, D77; amended by D117) Validation cost counts what it costs: the debt of the admission bucket stops at
   one burst and a query in debt asks no more, and NSEC3 hashing is counted in SHA-1 blocks, as the salt and the name

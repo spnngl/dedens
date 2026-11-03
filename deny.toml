@@ -31,3 +31,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# D147: compio's fix for UDP on Linux's `poll` fallback, until a release has it.
+allow-git = ["https://github.com/spnngl/compio"]

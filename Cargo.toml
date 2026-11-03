@@ -176,6 +176,13 @@ debug-assertions = true
 overflow-checks = true
 strip = false
 
+# D147: compio's fix for UDP on Linux's `poll` fallback, until a release has it. The driver's git checkout takes
+# compio-buf and compio-log from its own tree, so they come from it too, or two copies of each would clash.
+[patch.crates-io]
+compio-buf = { git = "https://github.com/spnngl/compio", rev = "8b82dbc8d76f0731f086fa90334c7db40053db50" }
+compio-driver = { git = "https://github.com/spnngl/compio", rev = "8b82dbc8d76f0731f086fa90334c7db40053db50" }
+compio-log = { git = "https://github.com/spnngl/compio", rev = "8b82dbc8d76f0731f086fa90334c7db40053db50" }
+
 # `cargo bench` builds with this profile; keep symbols for profilers.
 [profile.bench]
 strip = false
