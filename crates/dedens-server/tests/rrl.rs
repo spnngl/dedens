@@ -204,6 +204,7 @@ fn loopback_is_not_limited() {
 }
 
 /// A proxy on another address hides its clients behind its own: the operator exempts it, and loopback no longer.
+/// The pipeline's limit tells the two apart.
 #[test]
 fn only_the_exempt_networks_are_not_limited() {
     let mut config = config(0);
@@ -216,6 +217,10 @@ fn only_the_exempt_networks_are_not_limited() {
         assert_eq!(udp(&pipeline, "127.0.0.1", 10), Fate::Passed);
     }
     assert_eq!(udp(&pipeline, "127.0.0.1", 10), Fate::Dropped);
+    let limit = pipeline.rate_limit().expect("its rate limit");
+    let exempts = |from: &str| limit.exempts(from.parse().expect("an address"));
+    assert!(exempts("203.0.113.9"));
+    assert!(!exempts("127.0.0.1"));
 }
 
 /// The default access lists deny every Internet source, so a spoofed one would get a REFUSED each time: the

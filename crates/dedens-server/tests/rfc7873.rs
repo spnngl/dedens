@@ -125,7 +125,27 @@ fn an_invalid_server_cookie_is_answered_with_a_fresh_one() {
     assert_eq!(decode(&answer).rcode(), Rcode::NOERROR);
     assert!(!decode(&answer).answer.is_empty(), "the real answer");
     let fresh = cookie_of(&answer).expect("a cookie");
-    assert_eq!(cookies().verify(Some(&fresh), LOOPBACK), Standing::Valid);
+    let verified = pipeline
+        .cookies()
+        .map(|cookies| cookies.verify(Some(&fresh), LOOPBACK));
+    assert_eq!(verified, Some(Standing::Valid));
+}
+
+/// §5.2.2: a query that breaks a rule, here two questions (RFC 9619 §4), is FORMERR with no cookie, though its
+/// own is well-formed.
+#[test]
+fn a_query_breaking_a_rule_is_formerr_without_a_cookie() {
+    let pipeline = forwarder().with_cookies(cookies());
+    let mut query = query_for(&captured("a"));
+    query.questions.push(query.questions[0].clone());
+    let answer = reply(
+        &pipeline,
+        &with_cookie(query, &client_only()),
+        Transport::Udp,
+        None,
+    );
+    assert_eq!(decode(&answer).rcode(), Rcode::FORMERR);
+    assert_eq!(cookie_of(&answer), None);
 }
 
 /// The request sent upstream carries no cookie of ours or the client's: they are for the hop they were made for.
