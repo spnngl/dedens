@@ -7,7 +7,9 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use dedens_net::client::ClientError;
 use dedens_net::exchange::Failure;
+use dedens_net::tcp::TcpError;
 use dedens_proto::{Rcode, RecordType};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server};
@@ -347,10 +349,14 @@ fn a_crashed_resolver_goes_silent() {
                 let outcome = stub
                     .ask(question("example.com", RecordType::A), carrier)
                     .await?;
-                assert!(
-                    matches!(outcome, Outcome::Failed(Failure::TimedOut { sends: 3 })),
-                    "{outcome:?}"
-                );
+                match (carrier, &outcome) {
+                    (Carrier::Udp, Outcome::Failed(Failure::TimedOut { sends: 3 })) => {}
+                    // The stalled query closed the connection, and the host is down: the new one never opens, and
+                    // the pool's idle timeout ends the exchange (D27).
+                    (Carrier::Tcp, Outcome::Io(ClientError::Tcp(TcpError::Connect(error))))
+                        if error.kind() == std::io::ErrorKind::TimedOut => {}
+                    _ => return Err(format!("{carrier:?}: {outcome:?}").into()),
+                }
                 Ok(())
             });
             let events = world.run().expect("the run passes its checks");

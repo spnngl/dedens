@@ -5,12 +5,15 @@ use std::fmt;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dedens_net::tls::Presented;
 use dedens_server::Pipeline;
 use turmoil::Sim;
 
 use crate::client::Client;
+use crate::dot;
 use crate::fault::Fault;
 use crate::oracle::Expected;
 use crate::resolver::{self, Build, Resolver};
@@ -164,6 +167,7 @@ impl Topology {
             resolver: SocketAddr::new(host, PORT),
             upstreams: addrs,
             named: 0,
+            dots: 0,
             clients: 0,
         }
     }
@@ -182,6 +186,7 @@ pub struct World {
     /// The addresses of the upstream servers, in the order of the topology.
     pub upstreams: Vec<SocketAddr>,
     named: usize,
+    dots: usize,
     clients: u64,
 }
 
@@ -222,6 +227,44 @@ impl World {
         self.named += 1;
         let host = self.sim.lookup(name.as_str());
         self.add(name, host, body);
+    }
+
+    /// Adds a client host (`client-<n>`) that runs `body` with a bare [`Client`] and no stub: the oracle checks
+    /// nothing, for scenarios about the client itself (its pools, its connections, its sockets) against servers it
+    /// addresses on its own. An error from `body` fails the run.
+    pub fn client_direct<F, Fut>(&mut self, body: F)
+    where
+        F: FnOnce(Client) -> Fut,
+        Fut: Future<Output = turmoil::Result> + 'static,
+    {
+        let name = format!("client-{}", self.named);
+        self.named += 1;
+        let host = self.sim.lookup(name.as_str());
+        self.clients += 1;
+        let rng = Rc::new(RefCell::new(Rng::new(self.seed, self.clients)));
+        let body = body(Client::new(rng, host, self.trace.clone()));
+        self.sim.client(name, async move {
+            tokio::time::sleep(START).await;
+            body.await
+        });
+    }
+
+    /// Adds a DNS-over-TLS server host (`dot-<n>`, port [`dot::PORT`]) answering from `answers` with the
+    /// certificate `presented`, and returns its address.
+    pub fn dot_server(&mut self, answers: Answers, presented: Arc<Presented>) -> SocketAddr {
+        let name = format!("dot-{}", self.dots);
+        self.dots += 1;
+        let host = self.sim.lookup(name.as_str());
+        let (answers, trace) = (Rc::new(answers), self.trace.clone());
+        self.sim.host(name, move || {
+            dot::serve(
+                Rc::clone(&answers),
+                host,
+                Arc::clone(&presented),
+                trace.clone(),
+            )
+        });
+        SocketAddr::new(host, dot::PORT)
     }
 
     /// Adds a client host at the address `ip`: a scenario with many sources, in networks of its choice, for the

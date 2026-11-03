@@ -103,6 +103,11 @@ pub enum What {
         /// Bytes of the answer.
         len: usize,
     },
+    /// An upstream server read a query off a TCP or TLS connection, whether it answers it or not.
+    Received {
+        /// The transport it came over.
+        transport: Transport,
+    },
     /// The attacker on an upstream server's host sent a datagram to `to`.
     Injected {
         /// Who it went to: the sender of the query.

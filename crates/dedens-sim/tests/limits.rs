@@ -901,6 +901,7 @@ impl Scene {
                 clients,
                 &Fate::answered(Rcode::NOERROR, Transport::Tcp, 1, 0),
             ),
+            (Carrier::Tls, _) => unreachable!("the limits scenarios speak UDP and TCP"),
         }
     }
 }

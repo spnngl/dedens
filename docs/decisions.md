@@ -2460,19 +2460,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Simulation tests
 
-- D133 (amends D26) Simulation tests: the sans-IO cores run as hosts of a simulated network, `turmoil` 0.7.2, so
-  lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`, `Pipeline` and cache
-  together, and a failing run replays from its seed. A crate `crates/dedens-sim` (`publish = false`): a test-only
-  driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve.rs`, `start` and `answer`) and
-  `dedens-net`'s client, and one scenario family a `tests/<family>.rs`. No production crate changes. The compio
-  layer stays tested over loopback (D26). What the driver offers, what a scenario uses and the rules for both are
+- D133 (amends D26; amended by D134) Simulation tests: the sans-IO cores run as hosts of a simulated network,
+  `turmoil` 0.7.2, so lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`,
+  `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
+  (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve.rs`,
+  `start` and `answer`) and runs `dedens-net`'s own client (D134), and one scenario family a `tests/<family>.rs`.
+  The compio layer of the server stays tested over loopback (D26). What the driver offers, what a scenario uses and the rules for both are
   in `crates/dedens-sim/AGENTS.md`.
   - Why turmoil: hosts crash and bounce, links partition, hold, lose and reorder, the clock is simulated and every
     random choice follows one seed. Rejected: `turmoil-net` (no crash or bounce, no per-link faults); `madsim`
     (replaces tokio and the system calls under it for the whole dependency tree); `shuttle` (explores thread
-    interleavings, which D135's loom does; the network is what is missing here); running compio on turmoil now (the
-    layer goes behind a seam first, a later decision); a hand-rolled event loop (the network model is the work turmoil already
-    did).
+    interleavings, which D135's loom does; the network is what is missing here); running compio on turmoil as it is
+    (D134 puts the client's side behind a seam); a hand-rolled event loop (the network model is the work turmoil
+    already did).
   - Oracle: each query of a client ends by its deadline (the tries of its options, and one more each for the
     fallbacks) with a response that decodes, answers its question, and is one of: the data of an upstream server for
     the question (same response code and records, each once, no more authority or additional record, TTLs no higher
@@ -2483,11 +2483,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     scenario accepts (never NOERROR), with no answer, no AD and no record the servers did not send; a SERVFAIL is
     refused when the scenario says the path is up; or the failure or I/O error the real client returns. A TC
     response over TCP is a failure. A panic in any task of a host fails the run.
-  - Left out, as the compio layer's concern, until it runs on turmoil: socket pools (D50), D108's inboxes, connection
-    reuse and idle timeouts (a connection's queries are answered one after the other, in order), D86's shared
-    flights, the cap on connections and on upstream queries, `dedensd`'s few reading tasks (here a task answers
-    each datagram), compio's timers (tokio's, which turmoil advances, stand in) and threads (one thread runs every
-    host). The driver forwards over plain DNS only: a pipeline whose forward targets are TLS, QUIC or HTTPS panics.
+  - Left out, as the server's compio layer's concern: D86's shared flights, the cap on connections and on upstream
+    queries, `dedensd`'s few reading tasks (here a task answers each datagram), compio's timers (tokio's, which
+    turmoil advances, stand in) and threads (one thread runs every host). The client's socket pools (D50), D108's
+    inboxes, connection reuse and idle timeouts run on turmoil since D134. The driver forwards over plain DNS only: a pipeline whose forward targets are TLS, QUIC or HTTPS panics.
     A panic of a host after the last client finished is not seen, and a task that spins without waiting hangs the
     run: there is no guard.
   - What goes wrong is injected by the scenario: `Fault`s of the network and of hosts at a time it picks from the
@@ -2528,8 +2527,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - `just sim 100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
     `sim` job of `.github/workflows/deep.yml` runs it on pull requests (30 minutes), informational, outside the gate
     as `mutants` (D103); the workflow's `loom` job is D135's.
-- D134 (amends D26) The client side of the compio layer behind a seam, `dedens_net::io::Io`, so that a simulation
-  can run the real `UdpPool` (D50, D108), `TcpPool` (D27, D53) and `Client` on its own network and clock.
+- D134 (amends D26, D133) The client side of the compio layer behind a seam, `dedens_net::io::Io`, so that a
+  simulation can run the real `UdpPool` (D50, D108), `TcpPool` (D27, D53) and `Client` on its own network and clock.
   - `crates/dedens-net/src/io.rs`: `Io` (`now`; `timeout_at`, the one timer, a pause being a timeout on a future
     that never ends; `spawn`; `random`; `udp_bind`; `tcp_connect`; and `sending`, a hook with no body for a trace)
     and the `Udp` and `Stream` traits. Buffers are owned as compio's (`BufResult`) and a stream's halves are
@@ -2555,3 +2554,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     queries waiting on a TCP connection are a `BTreeMap`, so that a close wakes them in ID order: in a `HashMap`,
     seeded per process, two replies at one instant swapped (`an_attacked_run_replays_in_two_processes`, seed 7,
     `crates/dedens-sim/tests/forged.rs`, once the simulation runs the real pool).
+  - In `dedens-sim` (D133): `io::Sim` implements `Io` on turmoil, from the host's seeded `Rng`, tokio's paused clock
+    and turmoil's sockets, a stream's tokio halves copied through a buffer into compio's traits; the driver's client
+    is `Client<Sim>`, so every family runs the real pools. `tests/pools.rs` reaches what the sans-IO exchange could
+    not: connections opened, reused, closed when idle (D27), the inbox of a query (D108), socket errors,
+    and DNS over TLS, rustls over the simulated stream. Its certificates are fixed (Ed25519 keys from fixed bytes),
+    so a run over TLS replays from its seed: rustls' own draws change bytes on the wire, not lengths or times.
+  - What the real client changed in the families: an upstream server reads a TCP connection's queries as they
+    come and answers each in a task of its own, as the pool pipelines (RFC 7766 §6.2.1.1); a TCP query to a
+    host that does not answer ends in `TcpError::Connect(TimedOut)` at the pool's idle timeout (`docs/TODECIDE.md`);
+    the IDs are drawn in another order, which changed some fixed seeds.
