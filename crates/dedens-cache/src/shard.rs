@@ -554,6 +554,8 @@ mod tests {
             worst = worst.max(ghosts.order.capacity() * size_of::<(u64, u64)>());
         }
         assert!(worst <= PLACES * most, "{worst} > {}", PLACES * most);
+        // The terms are rounded up, never down.
+        const { assert!(SLAB + INDEX + LISTS + STAMPS + PLACES <= SLOT_COST) };
     }
 
     /// Puts the failure records of `hashes` in main, hit as often as they count.
@@ -612,6 +614,38 @@ mod tests {
             shard.get(1_000, &[0; MAX_KEY_LEN]).is_none(),
             "the oldest cold entry stays"
         );
+    }
+
+    /// Small holding a tenth of the budget is not over it: the rotations come first, and once main has no hit left
+    /// its oldest entry goes, not small's.
+    #[test]
+    fn small_at_a_tenth_of_the_budget_waits_for_the_rotations() {
+        let mut shard = shard(10);
+        make_hot(&mut shard, 0..9);
+        failure(&mut shard, 1_000);
+        assert_eq!(shard.small_bytes, shard.budget / 10);
+        assert_eq!(failure_evictions(&mut shard, 1_001), 1);
+        shard.check();
+        assert_eq!(shard.main.len(), 8, "an entry of main went");
+        assert!(shard.get(1_000, &[0; MAX_KEY_LEN]).is_some());
+    }
+
+    /// A slot freed is charged already: an entry that needs the room of three takes three evictions, from main while
+    /// small holds under a tenth of the budget, and the entry of small stays.
+    #[test]
+    fn the_slot_an_entry_takes_over_is_counted_once() {
+        let mut shard = shard(20);
+        for hash in 0..19 {
+            // A ghost goes to main.
+            shard.ghosts.remember(hash, usize::MAX);
+            failure(&mut shard, hash);
+        }
+        failure(&mut shard, 1_000);
+        assert_eq!((shard.main.len(), shard.small.len()), (19, 1));
+        assert_eq!(shard.update(1_001, &key(1_001, 3 * MAX_KEY_LEN), |_| {}), 3);
+        shard.check();
+        assert_eq!(shard.main.len(), 16);
+        assert!(shard.get(1_000, &[0; MAX_KEY_LEN]).is_some());
     }
 
     /// Updates the failure record of `hash`, returning the number evicted.
