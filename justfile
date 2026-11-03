@@ -17,10 +17,11 @@ container := env("DEDENS_CONTAINER", "docker")
 default:
     @just --list
 
-# Install the pinned stable (rust-toolchain.toml) and the pinned nightly's rustfmt.
+# Install the pinned stable (rust-toolchain.toml) and the pinned nightly's rustfmt and standard library sources
+# (`just careful`).
 toolchains:
     rustup toolchain install
-    rustup toolchain install {{ nightly }} --profile minimal --component rustfmt
+    rustup toolchain install {{ nightly }} --profile minimal --component rustfmt,rust-src
 
 # The gate of every change: format, spelling, unused dependencies, lint, docs, tests.
 check: (rustfmt "--check")
@@ -186,6 +187,19 @@ loom:
     export RUSTFLAGS="--cfg dedens_loom" CARGO_TARGET_DIR=target/loom
     cargo clippy -p dedensd --bin dedensd --profile test -- -D warnings
     cargo test -p dedensd --profile loom --bin dedensd loom_tests::
+
+# The workspace's tests on a standard library built with its debug assertions and UB checks (cargo-careful, pinned
+# nightly, D144), under a sanitizer when given: just careful address (Linux: cargo-careful's sanitized builds fail to
+# link on macOS). Own target dir. Outside `just check`.
+careful sanitizer="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The pinned nightly's own cargo and rustc first: cargo-careful builds the standard library with them.
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    export PATH="$(dirname "$rustc"):$PATH" CARGO_TARGET_DIR=target/careful
+    # No leak check: a leak is no memory error, and the `LazyLock`s and threads still alive at exit would report.
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+    cargo careful test {{ if sanitizer == "" { "" } else { "-Zcareful-sanitizer=" + sanitizer } }} --workspace --all-features
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4

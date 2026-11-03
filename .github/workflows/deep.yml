@@ -2,7 +2,8 @@ name: deep
 
 # The slow checks, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
 # reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
-# and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133).
+# and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133); `careful` runs the tests on a
+# checked standard library under AddressSanitizer (`just careful address`, D144).
 on:
   pull_request:
 
@@ -16,6 +17,8 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
+  # renovate: datasource=crate depName=cargo-careful
+  CARGO_CAREFUL_VERSION: "0.4.10"
 
 jobs:
   loom:
@@ -53,3 +56,24 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: just sim 100
+  careful:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: just toolchains
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> target/careful
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-careful@${{ env.CARGO_CAREFUL_VERSION }}
+      - run: just careful address
