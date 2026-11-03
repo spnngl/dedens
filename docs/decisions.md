@@ -605,10 +605,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Transports
 
-- D26 (amended by D133) `dedens-net` splits like `dedens-proto`: a sans-IO client core (retries, response matching,
-  TC fallback, EDNS fallback, cookies) fed bytes and time, so tests drive drops, delays and forged replies exactly
-  without a server; a thin compio layer moves the bytes, tested over loopback only (D133: the cores also run over a
-  simulated network, the compio layer still loopback only). Public at both levels: `Client` for
+- D26 (amended by D133, D134) `dedens-net` splits like `dedens-proto`: a sans-IO client core (retries, response
+  matching, TC fallback, EDNS fallback, cookies) fed bytes and time, so tests drive drops, delays and forged replies
+  exactly without a server; a thin compio layer moves the bytes, tested over loopback (D133: the cores also run over
+  a simulated network; D134: the client's pools are generic over a seam, `Io`). Public at both levels: `Client` for
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
@@ -2528,3 +2528,25 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - `just sim 100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
     `sim` job of `.github/workflows/deep.yml` runs it on pull requests (30 minutes), informational, outside the gate
     as `mutants` (D103); the workflow's `loom` job is D135's.
+- D134 (amends D26) The client side of the compio layer behind a seam, `dedens_net::io::Io`, so that a simulation
+  can run the real `UdpPool` (D50, D108), `TcpPool` (D27, D53) and `Client` on its own network and clock.
+  - `crates/dedens-net/src/io.rs`: `Io` (`now`; `timeout_at`, the one timer, a pause being a timeout on a future
+    that never ends; `spawn`; `random`; `udp_bind`; `tcp_connect`; and `sending`, a hook with no body for a trace)
+    and the `Udp` and `Stream` traits. Buffers are owned as compio's (`BufResult`) and a stream's halves are
+    compio's `AsyncRead` and `AsyncWrite`, which a substitute implements: the seam abstracts the runtime, not
+    compio's I/O traits, so the pools' reads and writes do not change and there is no second set of buffer traits.
+  - Production: `Compio` is zero-sized, each method one `#[inline]` forwarder; `UdpPool<N>`, `TcpPool<N>` and
+    `Client<N = Compio>` are generic, `Client::new()` is `Client<Compio>`, and `dedensd` and `dedens` name nothing
+    else: one instance of each, no `dyn`. Cost in `docs/benchmarks.md`.
+  - An instance (`&self`) for each host, not a static one, so that a simulation holds a host's seeded RNG and trace.
+    `Io::random` is the client's only entropy (IDs, the UDP socket's pick, cookies). A `Task` cancels on drop, as
+    compio's `JoinHandle` does.
+  - Only the UDP and TCP pools and the exchange loop: the QUIC, HTTPS, ODoH and DoC transports of `Client<N>` still
+    call compio and run on its runtime alone, their deadlines taken from `N::now()`.
+  - Gate: clippy's `disallowed-methods` (`crates/dedens-net/clippy.toml`: the clock, compio's timers and spawns,
+    `getrandom`, and opening a socket) is denied in `udp.rs`, `tcp.rs` and `client.rs`, so only `io.rs` reads a
+    clock, draws entropy, spawns or opens a socket for them. The lint is allowed in the rest of the workspace (QUIC,
+    HTTPS, ODoH, CoAP and DoC still call compio, D26), clippy having no scope finer than a crate's file.
+  - Left out: the serving loop of `dedensd` (D42, D121, D123: `UdpSocket`, `TcpListener`, the multishot receive
+    and the send queue go behind the seam in a later decision), the QUIC family (`compio-quic` has its own endpoint
+    and clock: DoQ, DoH/3, ODoH), DoC.

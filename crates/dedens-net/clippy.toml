@@ -1,0 +1,33 @@
+# The workspace's clippy.toml (the root `clippy.toml`), repeated: a crate's file replaces it, so a change there is
+# made here too.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+
+# D134: `udp.rs`, `tcp.rs` and `client.rs` deny `clippy::disallowed_methods` (the lint is off elsewhere, see the
+# workspace's Cargo.toml): the clock, tasks, timers, randomness and sockets of the pools go through `io::Io`, so a
+# simulated one can stand in. `io.rs` holds the one call of each.
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "use `Io::now`" },
+  { path = "std::time::SystemTime::now", reason = "use `Io::now`: a simulation runs its own clock" },
+  { path = "getrandom::fill", reason = "use `Io::random`" },
+  { path = "getrandom::fill_uninit", reason = "use `Io::random`" },
+  { path = "getrandom::u32", reason = "use `Io::random`" },
+  { path = "getrandom::u64", reason = "use `Io::random`" },
+  { path = "compio::runtime::spawn", reason = "use `Io::spawn`" },
+  { path = "compio::runtime::spawn_at", reason = "use `Io::spawn`" },
+  { path = "compio::runtime::spawn_blocking", reason = "no blocking task in the pools" },
+  { path = "compio::runtime::Runtime::spawn", reason = "use `Io::spawn`" },
+  { path = "compio::time::sleep", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::sleep_until", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::interval", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::interval_at", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::timeout", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::timeout_at", reason = "use `Io::timeout_at`" },
+  { path = "compio::net::UdpSocket::bind", reason = "use `Io::udp_bind`" },
+  { path = "compio::net::TcpStream::connect", reason = "use `Io::tcp_connect`" },
+  { path = "compio::net::TcpSocket::connect", reason = "use `Io::tcp_connect`" },
+  { path = "compio::net::TcpListener::bind", reason = "the pools listen on nothing" },
+]

@@ -5,7 +5,10 @@ crate that touches sockets and timers.
 
 - `src/exchange.rs`: the sans-IO exchange of one query (D26, D27, D31), fed bytes and time; no socket, no clock,
   no randomness.
-- `src/udp.rs`, `src/tcp.rs`: the transports, thin over compio; `udp.rs` muxes queries on a pool of sockets
+- `src/io.rs`: the seam (D134): `Io`, the clock, tasks, timers, randomness and sockets the UDP and TCP pools and
+  `Client` use; `Compio` is production, `dedens-sim` supplies another. `clippy.toml` bans the direct calls in
+  `udp.rs`, `tcp.rs` and `client.rs`.
+- `src/udp.rs`, `src/tcp.rs`: the transports, thin over `Io`; `udp.rs` muxes queries on a pool of sockets
   per server (D50), a few datagrams kept per query (D108); `tcp.rs` keeps one connection per server, TCP or TLS,
   writing the queries queued meanwhile together, a bounded queue (D108).
 - `src/tls.rs`: the certificates trusted and the TLS configurations (D60).

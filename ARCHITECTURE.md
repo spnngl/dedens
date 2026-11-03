@@ -10,7 +10,7 @@
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures (`crypto/`; `rrsig/`: an `RRset` by its RRSIG and DNSKEY, a DNSKEY `RRset` by its DS), denial of existence, chain of trust and the verdict on a response (`validator`) | none (sans-IO), time passed in |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69): configurations, message encryption | none (sans-IO) |
-| `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over a sans-IO exchange; the sans-IO cores of DoH (D82) and CoAP (D80); Oblivious DoH over HTTP/3, `odoh` feature (D79); `resolv.conf` | sockets, timers |
+| `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over a sans-IO exchange; the client's UDP and TCP pools generic over the `Io` seam, `Compio` in production (D134); the sans-IO cores of DoH (D82) and CoAP (D80); Oblivious DoH over HTTP/3, `odoh` feature (D79); `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
 | `crates/dedens-sim` | Simulation tests (D133): the sans-IO client and server cores as hosts of a seeded turmoil network | simulated |

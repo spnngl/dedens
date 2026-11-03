@@ -424,6 +424,54 @@ sockets and the connection warm. The query is `example.com. A`, the response tha
 | TCP | 1 | 28742 | 28508 | 24569 |
 | TCP | 32 | 248517 | 242478 | 222508 |
 
+### After the seam (D134)
+
+The bench executables of the tree before the seam and after it (`Client<Compio>`: `UdpPool`, `TcpPool` and `Client`
+generic over `Io`, `Compio` zero-sized) run alternately, four rounds each, the median of the four, on the machine and
+the load above. The rounds of one build range over 1.4x, so this rules out only a regression of more than about 40%:
+
+| Transport | in flight | before | after |
+|---|---|---|---|
+| UDP | 1 | 23737 | 23327 |
+| UDP | 32 | 72219 | 74758 |
+| TCP | 1 | 23152 | 26210 |
+| TCP | 32 | 214429 | 216932 |
+
+`just bench-dnsperf <base> forward` and `forward-tcp` on the VPS run when the serving loop goes behind the seam too
+(left out of D134).
+
+### Build and binary (D134)
+
+`cargo build --release -p dedensd -p dedens --timings` from a clean target directory, before and after, on the same
+machine under load (load average 11-13: the wall times, 2m01s and 2m45s, are not comparable, the builds not running
+alone):
+
+| | before | after |
+|---|---|---|
+| `dedens-net` compile | 3.8 s | 2.8 s |
+| `dedensd` compile (codegen) | 59.4 s | 61.2 s |
+| `dedens` compile (codegen) | 59.0 s | 59.5 s |
+| `dedensd` size | 6,235,984 bytes | 6,153,184 bytes (-1.3%) |
+| `dedens` size | 5,107,920 bytes | 5,107,872 bytes |
+
+The generics stop at `Client<Compio>`: `dedensd` and `dedens` name `Client` and get the `Compio` default, one
+instance of each pool. `dedensd`'s `__text` is 73,792 bytes smaller (-1.6%), not from code the seam removed: the
+symbols of the binary built unstripped (`CARGO_PROFILE_RELEASE_STRIP=false`) show fat LTO inlining differently
+across crates, the largest `ReadExact` over a TLS read half (`futures_util`, 16,136 to 1,384 bytes), then `core`
+(-12,844), `compio-net` and `compio-driver` (-17,056) and `rustls` (-11,500). The client's own functions, into which
+the pools' code is inlined, move by a few percent:
+
+| Function (`dedens-net`) | before | after |
+|---|---|---|
+| `Client::step` (UDP and TCP queries inlined) | 23,500 | 24,760 |
+| `Client::run` | 17,856 | 18,368 |
+| `udp::receive`'s task | 4,712 | 5,844 |
+| `TcpPool::connection` | 4,072 | 4,100 |
+| `TcpPool::exchange`'s timeout | 2,552 | 2,616 |
+| `tcp::run` and its timeout | 28,160 | 25,396 |
+
+`cargo-show-asm` was not installed: these are symbol sizes in bytes, not instructions.
+
 ## dedensd serving DoH over HTTP/3 (D84)
 
 `cargo bench -p dedensd --bench doh3`: the release `dedensd` on a macOS host (one serving thread) answers one name from

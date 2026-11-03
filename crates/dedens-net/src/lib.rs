@@ -36,6 +36,7 @@ pub mod doc;
 pub mod doh;
 pub mod exchange;
 pub mod https;
+pub mod io;
 #[cfg(feature = "odoh")]
 pub mod odoh;
 pub mod quic;
