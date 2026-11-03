@@ -193,16 +193,17 @@ loom:
 
 # The workspace's tests on a standard library built with its debug assertions and UB checks (cargo-careful, pinned
 # nightly, D144), under a sanitizer when given: just careful address (Linux: cargo-careful's sanitized builds fail to
-# link on macOS). Own target dir. Outside `just check`.
-careful sanitizer="":
+# link on macOS); one package's alone when named: just careful address dedens-net. Own target dir. Outside
+# `just check`.
+careful sanitizer="" package="":
     #!/usr/bin/env bash
     set -euo pipefail
     # The pinned nightly's own cargo and rustc first: cargo-careful builds the standard library with them.
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH" CARGO_TARGET_DIR=target/careful
     # No leak check: a leak is no memory error, and the `LazyLock`s and threads still alive at exit would report.
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
-    cargo careful test {{ if sanitizer == "" { "" } else { "-Zcareful-sanitizer=" + sanitizer } }} --workspace --all-features
+    cargo careful test {{ if sanitizer == "" { "" } else { "-Zcareful-sanitizer=" + sanitizer } }} {{ if package == "" { "--workspace" } else { "-p " + package } }} --all-features
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
@@ -325,13 +326,13 @@ rapx *args="check -f -m":
 
 # Install the pinned Kani, then its nightly and CBMC into ~/.kani.
 kani-install:
-    cargo install --locked kani-verifier@{{kani_version}}
+    cargo install --locked kani-verifier@{{ kani_version }}
     cargo kani setup
 
 # Kani's proofs of dedens-proto's wire decoders for every small input (D145), outside the gate: all by default, one
 # with `just kani --harness name_decoding`. Its own target dir, target/kani.
 kani *args:
-    cargo kani -p dedens-proto {{args}}
+    cargo kani -p dedens-proto {{ args }}
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:
