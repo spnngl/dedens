@@ -814,3 +814,27 @@ fn s4_3_1_a_request_for_a_proxy_or_with_a_failing_condition_is_refused() {
         "an empty tag asks for any"
     );
 }
+
+/// A request with no body asks for a later block of a response it got (RFC 7959 §2.4): a Block2 past the first.
+/// One asking for the first block, or for none, has no query.
+#[test]
+fn an_empty_request_asks_for_a_later_block() {
+    let path = path_segments("/dns/query");
+    let size = BlockSize::new(2).expect("64 bytes");
+    let asking = |block: Option<u32>| {
+        let mut request = fetch();
+        request.payload.clear();
+        if let Some(num) = block {
+            request
+                .options
+                .set_block2(Block::new(num, false, size).expect("a block"));
+        }
+        doc_query(&request, &path).map(|query| match query {
+            Query::Block(block) => Some(block.num()),
+            Query::Dns(_) => None,
+        })
+    };
+    assert_eq!(asking(Some(1)), Ok(Some(1)));
+    assert_eq!(asking(Some(0)), Err(Code::BAD_REQUEST));
+    assert_eq!(asking(None), Err(Code::BAD_REQUEST));
+}

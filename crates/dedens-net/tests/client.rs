@@ -52,6 +52,36 @@ async fn a_truncated_response_is_asked_again_over_tcp() {
     assert_eq!(response.sends, 2);
 }
 
+/// RFC 5452 §9.2, D114: the query asked again goes with a spare ID, each of its two bytes random. Four IDs whose
+/// bytes all match have a chance of 2^-32.
+#[compio::test]
+async fn the_spare_ids_are_random_in_both_bytes() {
+    let server = responders(
+        |query| {
+            let mut truncated = answer_plainly(query);
+            truncated[2] |= 0x02;
+            Some(truncated)
+        },
+        answer_plainly,
+    )
+    .await;
+    let client = Client::new();
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        let response = client
+            .exchange(common::query(), server, &Options::default())
+            .await
+            .expect("a response");
+        assert_eq!(response.transport, Transport::Tcp);
+        ids.push(id(&response.query));
+    }
+    assert!(
+        ids.iter()
+            .any(|id| id.to_be_bytes()[0] != id.to_be_bytes()[1]),
+        "{ids:04x?}"
+    );
+}
+
 /// RFC 7873 §5.1, §5.3: the client cookie stays for the server, its server cookie comes back to it.
 #[compio::test]
 async fn the_server_cookie_goes_back_to_its_server() {

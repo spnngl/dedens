@@ -311,7 +311,33 @@ impl<N: Io> Drop for UdpQuery<N> {
 
 #[cfg(test)]
 mod tests {
-    use super::{INBOX, Waiting};
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::rc::Rc;
+
+    use super::{INBOX, UdpPool, Waiting};
+
+    /// A query dropped stops waiting: the socket keeps no waiter of it, which would hold its datagrams forever.
+    #[compio::test]
+    async fn a_dropped_query_leaves_no_waiter() {
+        let pool = UdpPool::new(1);
+        let server = SocketAddr::from((Ipv4Addr::LOCALHOST, 53));
+        let (query, other) = (
+            pool.query(server, 0, 7).await.expect("a socket"),
+            pool.query(server, 0, 8).await.expect("a socket"),
+        );
+        let mux = Rc::clone(&query.mux);
+        drop(query);
+        let ids: Vec<u16> = mux
+            .waiting
+            .borrow()
+            .queries
+            .iter()
+            .map(|waiter| waiter.id)
+            .collect();
+        assert_eq!(ids, [8]);
+        drop(other);
+        assert!(mux.waiting.borrow().queries.is_empty());
+    }
 
     /// A query keeps [`INBOX`] datagrams, no more, and what is sent to one takes no room from another.
     #[test]

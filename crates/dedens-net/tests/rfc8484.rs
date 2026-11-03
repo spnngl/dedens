@@ -22,7 +22,7 @@ use dedens_net::doh::{
     server_response, wire,
 };
 use dedens_net::exchange::{Failure, Http, Options, Transport};
-use dedens_net::https::HttpsError;
+use dedens_net::https::{HttpsError, Requests};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, RData, Rcode, RecordType};
@@ -1099,6 +1099,49 @@ async fn s5_2_a_goaway_moves_queries_to_a_new_connection() {
     }
     assert_eq!(seen.connections.get(), 3);
     assert_eq!(seen.requests.borrow().len(), 3);
+}
+
+/// RFC 9114 §5.2: the `GOAWAY` of our server's [`Requests::shutdown`] after each answer moves each query to a new
+/// connection.
+#[compio::test]
+async fn s5_2_our_server_shutting_down_sends_a_goaway() {
+    let certificates = certificates();
+    let config = certificates.config(&[&TLS13], b"h3");
+    let endpoint = ServerBuilder::new_with_rustls_server_config(config)
+        .bind("127.0.0.1:0")
+        .await
+        .expect("a QUIC endpoint");
+    let addr = endpoint.local_addr().expect("its address");
+    let connections = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&connections);
+    compio::runtime::spawn(async move {
+        while let Some(incoming) = endpoint.wait_incoming().await {
+            let counted = Rc::clone(&counted);
+            compio::runtime::spawn(async move {
+                let Ok(connection) = incoming.accept().expect("a connection").await else {
+                    return;
+                };
+                counted.set(counted.get() + 1);
+                let mut requests = Requests::new(connection).await.expect("HTTP/3");
+                while let Ok(Some(pending)) = requests.accept().await {
+                    let exchange = pending.read("/dns-query").await.expect("a request");
+                    let response = answer(exchange.query().expect("a query"), Vec::new());
+                    exchange.respond(response).await.expect("the client reads");
+                    requests.shutdown().await.expect("a GOAWAY");
+                }
+            })
+            .detach();
+        }
+    })
+    .detach();
+    let client = trusting(certificates);
+    for _ in 0..3 {
+        client
+            .exchange(query(), named(addr, NAME), &https(Method::Get))
+            .await
+            .expect("a response");
+    }
+    assert_eq!(connections.get(), 3);
 }
 
 /// D83: a connection the server closed is opened again for the next query.
