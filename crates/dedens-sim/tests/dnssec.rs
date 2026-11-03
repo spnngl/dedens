@@ -43,9 +43,9 @@ const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
 const ONE: &[u64] = &[0];
-/// [`ONE`], and a seed whose links take no time where the shed query starts: the server answers the query before
+/// [`ONE`], and seeds whose links take no time where the shed query starts: the server answers the query before
 /// at that instant, which `Run::served_for` counted for the shed query when it went by time.
-const SHED: &[u64] = &[0, 954_528_015_640_862_262];
+const SHED: &[u64] = &[0, 954_528_015_640_862_262, 721_027_006_700_900_320];
 
 /// What a zone's answer is, with no fault: the verdict of the validator, which sets AD for the first only (D114).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -895,7 +895,7 @@ fn a_client_over_its_share_is_shed_with_its_network_and_the_others_are_answered(
     const GREEDY: &str = "198.51.100.7";
     const NEIGHBOUR: &str = "198.51.100.200";
     const OTHER: &str = "203.0.113.9";
-    seed::each(ONE, |seed| {
+    seed::each(SHED, |seed| {
         let spending = spending(
             Allowance::default(),
             Budget {
