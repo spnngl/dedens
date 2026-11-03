@@ -25,6 +25,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/baseline.rs`: perfect network, then each fault and the attacker once, then the seed picking the faults.
 - `tests/partition.rs`: upstream servers and clients cut off, healed and held; the seed cuts and heals links.
 - `tests/replay.rs`: one seed in two processes gives one trace.
+- `tests/loss.rs`: loss, delay and reordering on the stub's and the upstream's links; the seed picking both.
 
 What a scenario uses, so that it adds test files and no driver code:
 
