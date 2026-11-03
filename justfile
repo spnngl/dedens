@@ -20,7 +20,7 @@ default:
 # Install the pinned stable (rust-toolchain.toml) and the pinned nightly's rustfmt.
 toolchains:
     rustup toolchain install
-    rustup toolchain install {{nightly}} --profile minimal --component rustfmt
+    rustup toolchain install {{ nightly }} --profile minimal --component rustfmt
 
 # The gate of every change: format, spelling, lint, docs, tests.
 check: (rustfmt "--check")
@@ -41,9 +41,9 @@ fmt: rustfmt
 rustfmt *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    rustfmt="$(rustup which --toolchain {{nightly}} rustfmt)"
-    RUSTFMT="$rustfmt" cargo fmt --all {{args}}
-    RUSTFMT="$rustfmt" cargo fmt --manifest-path fuzz/Cargo.toml {{args}}
+    rustfmt="$(rustup which --toolchain {{ nightly }} rustfmt)"
+    RUSTFMT="$rustfmt" cargo fmt --all {{ args }}
+    RUSTFMT="$rustfmt" cargo fmt --manifest-path fuzz/Cargo.toml {{ args }}
 
 # Every feature combination of every crate builds (cargo-hack).
 hack:
@@ -60,13 +60,13 @@ minimal-versions:
     backup=$(mktemp)
     cp Cargo.lock "$backup"
     trap 'mv "$backup" Cargo.lock' EXIT
-    rustup run {{nightly}} cargo update -Z direct-minimal-versions
+    rustup run {{ nightly }} cargo update -Z direct-minimal-versions
     cargo check --workspace --all-targets --all-features
 
 # Advisories, licenses, duplicate crates and sources (cargo-deny, deny.toml), or the checks named: just deny advisories
 deny *checks:
-    cargo deny check {{checks}}
-    cargo deny --manifest-path fuzz/Cargo.toml check {{checks}}
+    cargo deny check {{ checks }}
+    cargo deny --manifest-path fuzz/Cargo.toml check {{ checks }}
 
 # Benchmarks against other DNS libraries (D14): Rust ones with divan, then Go's miekg/dns, the codec of
 # CoreDNS, when Go is installed. Unbound: `just bench-unbound`.
@@ -80,10 +80,10 @@ bench-unbound:
     #!/usr/bin/env bash
     set -euo pipefail
     out="$(pwd)/target/unbound"
-    src="$out/release-{{unbound_version}}"
+    src="$out/release-{{ unbound_version }}"
     if [ ! -f "$src/.libs/libunbound.a" ]; then
         rm -rf "$src"
-        git clone --quiet --depth 1 --branch "release-{{unbound_version}}" https://github.com/NLnetLabs/unbound.git "$src"
+        git clone --quiet --depth 1 --branch "release-{{ unbound_version }}" https://github.com/NLnetLabs/unbound.git "$src"
         flags=(--disable-flto)
         if command -v brew >/dev/null; then flags+=("--with-ssl=$(brew --prefix openssl@3)"); fi
         if [ "$(uname)" = Darwin ]; then flags+=("--with-libexpat=$(xcrun --show-sdk-path)/usr"); fi
@@ -102,8 +102,8 @@ bench-unbound:
 # (D138), under perf: its report lands in target/profile/<mode>.txt; kernel names need `kernel.perf_event_paranoid` 1 and `kernel.kptr_restrict` 0 (run.sh).
 bench-dnsperf base="HEAD" mode="udp":
     mkdir -p target/profile
-    {{container}} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
-        -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{base}} {{mode}}
+    {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
+        -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{ base }} {{ mode }}
 
 # Where a bench spends its time (D138): the bench target `bench` (`server`, `cache`, ...) built with symbols (the
 # bench profile keeps line tables), run under samply with divan's `filter`, a substring of the path (`just profile
@@ -116,16 +116,16 @@ profile bench filter="":
         echo "samply is missing: cargo install --locked samply" >&2
         exit 1
     fi
-    exe="$(cargo bench --bench "{{bench}}" --no-run 2>&1 | tee /dev/stderr | sed -n 's/^ *Executable .* (\(.*\))$/\1/p')"
+    exe="$(cargo bench --bench "{{ bench }}" --no-run 2>&1 | tee /dev/stderr | sed -n 's/^ *Executable .* (\(.*\))$/\1/p')"
     if [ -z "$exe" ] || [ "$(printf '%s\n' "$exe" | wc -l)" -ne 1 ]; then
-        echo "profile: '{{bench}}' is not the name of exactly one bench target" >&2
+        echo "profile: '{{ bench }}' is not the name of exactly one bench target" >&2
         exit 1
     fi
-    filter="{{filter}}"
+    filter="{{ filter }}"
     # Divan stops at 100 samples, about a second of samples for a hit: ask for five seconds a function.
     export DIVAN_MIN_TIME="${DIVAN_MIN_TIME:-5}"
     mkdir -p target/profile
-    out="target/profile/{{bench}}${filter:+-${filter//[^[:alnum:]]/-}}.json.gz"
+    out="target/profile/{{ bench }}${filter:+-${filter//[^[:alnum:]]/-}}.json.gz"
     samply record --save-only --output "$out" -- "$exe" --bench ${filter:+"$filter"}
     echo "profile written: open it with 'samply load $out'"
 
@@ -173,8 +173,8 @@ mutants-diff base="origin/main" *args:
     set -euo pipefail
     shift
     mkdir -p target/mutants
-    git diff "{{base}}...HEAD" > target/mutants/branch.diff
-    {{just_executable()}} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
+    git diff "{{ base }}...HEAD" > target/mutants/branch.diff
+    {{ just_executable() }} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
 
 # Loom's model of dedensd's reload wake-up and query flights (D135): lints the code the cfg adds, then tries every
 # interleaving up to four preemptions. Its own target dir: the cfg rebuilds the dependencies. Outside `just check`.
@@ -192,42 +192,47 @@ fuzz target="decode_message" seconds="300" fork="0":
     set -euo pipefail
     # The pinned nightly's own cargo and rustc first: cargo-fuzz needs `-Z` flags, and rustup proxies would pick
     # the stable of rust-toolchain.toml.
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
+    # The host's target, named: cargo-fuzz defaults to the one it was built for, musl for a cargo-binstall download,
+    # where AddressSanitizer cannot link (D141).
+    host="$(rustc -vV | sed -n 's/^host: //p')"
     cd fuzz
     # The first corpus directory is the one libFuzzer writes to; the captured responses and zone files only seed it.
-    mkdir -p "corpus/{{target}}"
+    mkdir -p "corpus/{{ target }}"
     # A target with a token dictionary in dicts/ gets it.
     dict=""
-    if [[ -f "dicts/{{target}}.dict" ]]; then dict="-dict=dicts/{{target}}.dict"; fi
-    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} -fork={{fork}} $dict
+    if [[ -f "dicts/{{ target }}.dict" ]]; then dict="-dict=dicts/{{ target }}.dict"; fi
+    cargo fuzz run --target "$host" {{ target }} "corpus/{{ target }}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{ seconds }} -fork={{ fork }} $dict
 
 # Shrink a target's corpus to the inputs that add coverage (libFuzzer's `-merge=1`).
 fuzz-cmin target:
     #!/usr/bin/env bash
     set -euo pipefail
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
+    host="$(rustc -vV | sed -n 's/^host: //p')"
     cd fuzz
-    cargo fuzz cmin {{target}} "corpus/{{target}}"
+    cargo fuzz cmin --target "$host" {{ target }} "corpus/{{ target }}"
 
 # Every fuzz target for `seconds` each, in turn (the scheduled CI job runs them in parallel, D141).
 fuzz-all seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
+    host="$(rustc -vV | sed -n 's/^host: //p')"
     cd fuzz
     for target in $(cargo fuzz list); do
         mkdir -p "corpus/$target"
         dict=""
         if [[ -f "dicts/$target.dict" ]]; then dict="-dict=dicts/$target.dict"; fi
-        cargo fuzz run "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} $dict
+        cargo fuzz run --target "$host" "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{ seconds }} $dict
     done
 
 # Every simulation scenario under `runs` random seeds (D133); a failure prints its `DEDENS_SIM_SEED=<n>`.
 sim runs="100":
-    DEDENS_SIM_RUNS={{runs}} cargo test -p dedens-sim --test '*'
+    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test '*'
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
 fuzz-smoke:
@@ -237,7 +242,7 @@ fuzz-smoke:
 # those with the ids given.
 [private]
 capture-to dir *ids:
-    cargo run -p dedens -- -f {{dir}}/capture.yaml --save-wire {{dir}} {{ prepend("--only=", ids) }}
+    cargo run -p dedens -- -f {{ dir }}/capture.yaml --save-wire {{ dir }} {{ prepend("--only=", ids) }}
 
 # Capture fresh responses into crates/dedens-proto/tests/testdata/: the queries of its capture.yaml, or those
 # with the ids given.
@@ -253,7 +258,7 @@ capture-dnssec:
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     cp "$dir/capture.yaml" "$tmp/"
-    {{just_executable()}} capture-to "$tmp"
+    {{ just_executable() }} capture-to "$tmp"
     date +%s > "$tmp/captured_at"
     rm -f "$dir"/*.bin
     cp "$tmp"/*.bin "$tmp/captured_at" "$dir/"
@@ -284,9 +289,9 @@ rapx-install:
         z3="$(brew --prefix z3)"
         export Z3_SYS_Z3_HEADER="$z3/include/z3.h" LIBRARY_PATH="$z3/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
     fi
-    rustup toolchain install {{nightly}} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
-    RUSTC="$rustc" rustup run {{nightly}} cargo install --git https://github.com/safer-rust/RAPx --rev {{rapx_rev}} rapx --locked
+    rustup toolchain install {{ nightly }} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
+    RUSTC="$rustc" rustup run {{ nightly }} cargo install --git https://github.com/safer-rust/RAPx --rev {{ rapx_rev }} rapx --locked
 
 # RAPx static analysis, outside the gate: use-after-free, double free and leaks by default; `just rapx opt` for
 # optimization hints. Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
@@ -295,9 +300,9 @@ rapx *args="check -f -m":
     set -euo pipefail
     # The nightly's own cargo first in PATH: RAPx calls `cargo`, which `rustup run` leaves to a Homebrew cargo
     # ahead in PATH, and the dependencies it builds don't load in RAPx's rustc.
-    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    rustc="$(rustup which --toolchain {{ nightly }} rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
-    CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{nightly}} cargo rapx {{args}}
+    CARGO_TARGET_DIR=target/rapx RUSTC="$rustc" rustup run {{ nightly }} cargo rapx {{ args }}
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:
