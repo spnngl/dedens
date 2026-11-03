@@ -10,7 +10,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `src/client.rs`: `Client`, one `Exchange` over turmoil UDP and TCP as the real client runs it (cookies, TCP retried
   once on a new connection, `ClientError`s); `Carrier`.
 - `src/resolver.rs`: `Resolver`, a `Pipeline` served on port 53 as `dedensd`'s `start` and `answer` do (D45's stale
-  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`, `pipeline_validating`, `wall_clock`.
+  timer, `abandon`, D91's drops); `pipeline`, `pipeline_with`, `pipeline_forwarding`, `pipeline_validating`, `wall_clock`.
 - `src/upstream.rs`: `Answers`, `serve`: an upstream server answering from captured responses (cut to the query's
   EDNS size, REFUSED for a question it holds nothing for, no signatures without DO); `Verdict`, `Behaviour`.
 - `src/oracle.rs`: `Expected`, `Rules`, `judge`: what a client may get.
@@ -23,6 +23,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
   runs.
 - `src/port.rs`, `src/framing.rs`: port 53 over UDP and TCP with its tasks; the 2-byte TCP framing.
 - `tests/baseline.rs`: perfect network, then each fault and the attacker once, then the seed picking the faults.
+- `tests/partition.rs`: upstream servers and clients cut off, healed and held; the seed cuts and heals links.
 - `tests/replay.rs`: one seed in two processes gives one trace.
 
 What a scenario uses, so that it adds test files and no driver code:
@@ -44,8 +45,8 @@ What a scenario uses, so that it adds test files and no driver code:
   host's own seeded stream; `silent` sends none over UDP; `tcp(Behaviour::{Answer, Silent, Close(n)})` answers,
   ignores or closes after `n` queries of a connection.
 - Resolver: `Topology::resolver(|upstreams| pipeline)` builds the pipeline at each start (stages, access lists, rate
-  limits, cookies, a validator). A cache in it must have `shards: 1`: `pipeline_with` and `pipeline_validating`
-  force it. A validating stage takes `wall_clock()` as its clock, with `Topology::epoch` at the time of the
+  limits, cookies, a validator). A cache in it must have `shards: 1`: `pipeline_with`, `pipeline_forwarding` (a `Forward` of the
+  scenario's timeout and tries) and `pipeline_validating` force it. A validating stage takes `wall_clock()` as its clock, with `Topology::epoch` at the time of the
   captures (`captured_at` of `crates/dedens-dnssec/tests/testdata`). The oracle's `Rules::floor` and `stale_ttl`
   must be the cache's `min_ttl` and `stale_answer_ttl` where the scenario changes them. A forward target other than
   plain DNS panics. `Answers::file`,
