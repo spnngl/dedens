@@ -30,6 +30,8 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/forged.rs`: forged and duplicated responses from an attacker on the upstream's host; the seed draws them.
 - `tests/limits.rs`: many clients in a few networks on one resolver under rate limit, cookies, validation shares and
   access list; two seeded properties.
+- `tests/dnssec.rs`: validation on captured signed responses: AD, cache, loss on the chain's questions, bogus data, the start date, the cost
+  limits; the seed picking the loss on the chain's questions.
 
 What a scenario uses, so that it adds test files and no driver code:
 
