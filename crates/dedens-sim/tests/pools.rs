@@ -6,7 +6,7 @@
 //! Each scenario has the client host speak to a server host on its own, with no stub and no oracle.
 
 use std::cell::Cell;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -387,5 +387,70 @@ fn a_socket_error_costs_a_try() {
             .collect::<Vec<_>>();
         // The failed send's try, then the next exchange's, then the third's two: the receive error cost a try.
         assert_eq!(sends, [1, 1, 1, 2], "{events:#?}");
+    });
+}
+
+/// A client that drops its pools lets their connections go at once, its tasks cancelled with them, not at the idle
+/// timeout (10 s): the server sees the connection end.
+#[test]
+fn a_dropped_client_closes_its_connections() {
+    seed::each(ONE, |seed| {
+        let answers = upstream();
+        let ended = answers.ended();
+        let mut world = Topology::new().upstream(answers).build(seed);
+        let server = world.upstreams[0];
+        world.client_direct(async move |client| {
+            client
+                .exchange(ask(), server, Carrier::Tcp, &Options::default())
+                .await?;
+            assert_eq!(ended.get(), 0);
+            drop(client);
+            tokio::time::sleep(SECOND).await;
+            assert_eq!(ended.get(), 1);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+/// Each client host is a host of its own, its IDs drawn from a stream of its own: two clients asking once each send
+/// two IDs.
+#[test]
+fn two_clients_are_two_hosts_drawing_their_own_ids() {
+    seed::each(FEW, |seed| {
+        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let server = world.upstreams[0];
+        for _ in 0..2 {
+            world.client_direct(async move |client| {
+                client
+                    .exchange(ask(), server, Carrier::Udp, &Options::default())
+                    .await?;
+                Ok(())
+            });
+        }
+        let events = world.run().expect("the run passes its checks");
+        let sent: Vec<(IpAddr, u16)> = events
+            .iter()
+            .filter_map(|event| match event.what {
+                What::Sent { id, .. } => Some((event.host, id)),
+                _ => None,
+            })
+            .collect();
+        let [(one, first), (other, second)] = sent.as_slice() else {
+            panic!("{events:#?}");
+        };
+        assert_ne!(one, other);
+        assert_ne!(first, second, "{events:#?}");
+    });
+}
+
+/// Each DNS-over-TLS server is a host of its own, at its own address.
+#[test]
+fn two_dot_servers_are_two_hosts() {
+    seed::each(ONE, |seed| {
+        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let one = world.dot_server(upstream(), certificates(0).1);
+        let other = world.dot_server(upstream(), certificates(0).1);
+        assert_ne!(one, other);
     });
 }
