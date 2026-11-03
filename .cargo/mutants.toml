@@ -18,6 +18,9 @@ exclude_re = [
   'tcp\.rs:\d+:\d+: replace < with <= in read$',
   # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same.
   'replace <impl Outbound for (TcpStream|Half<W>)>::close with \(\)',
+  # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
+  # again, so the test hangs, the mutant seen only as a timeout (12 min a run).
+  'udp\.rs:\d+:\d+: replace UdpQuery(<N>)?::recv -> io::Result<Option<Vec<u8>>> with Ok\(Some\(vec!\[[01]?\]\)\)$',
   # The default trace hook does nothing: its body only marks the argument used.
   'io\.rs:\d+:\d+: replace Io::sending with \(\)$',
   # How queries are batched into one write is not seen by the server; equal `Instant`s never happen.
