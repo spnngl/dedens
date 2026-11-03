@@ -10,5 +10,9 @@ git ref, in a mode (`udp`, `tcp`, `forward`, `forward-tcp`, `two-sockets`; see t
 `examples/hit_ratio.rs` replays Zipf draws or a trace (`--trace`) through the cache's eviction (D116). Record new
 numbers in `docs/benchmarks.md`.
 
+Where time goes (D138): `just profile <bench> [filter]` runs a bench target under samply, and `DEDENS_PERF=1 just
+bench-dnsperf` runs the working tree's `dedensd` under perf in the container (not a base-against-tree run); both write to
+`target/profile/`.
+
 `tests/repo.rs` is the repository checks (D140): decision numbers cited and their amendments, coverage paths and
 rows, `CLAUDE.md` links.
