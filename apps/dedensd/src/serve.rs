@@ -308,7 +308,15 @@ impl Drop for Slot {
 ///
 /// A runtime the OS refuses.
 pub(crate) fn runtime() -> io::Result<Runtime> {
+    runtime_on(None)
+}
+
+/// [`runtime`] on `driver`, or on the one compio picks when `None`.
+fn runtime_on(driver: Option<DriverType>) -> io::Result<Runtime> {
     let mut proactor = ProactorBuilder::new();
+    if let Some(driver) = driver {
+        proactor.driver_type(driver);
+    }
     proactor
         .buffer_pool_size(UDP_BUFFERS)
         .buffer_pool_buffer_len(UDP_BUFFER_LEN)
@@ -1591,6 +1599,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use compio::BufResult;
+    use compio::driver::DriverType;
     use compio::driver::op::RecvFromMultiResult;
     use compio::io::{AsyncWriteExt, BufReader};
     use compio::net::{TcpListener, TcpStream, UdpSocket};
@@ -1610,7 +1619,8 @@ mod tests {
     use super::{
         BUSY_PAUSE, BUSY_YIELDS, Backoff, ERROR_PAUSE, Outbox, Pause, Receiving, Replies, Slots,
         TCP_PENDING, TCP_QUEUED, Thread, UDP_SENDS, UPSTREAM_QUERIES, breaks_doq, connection,
-        first_end, follow, runtime, send_replies, supervised_with, tcp, udp, udp_queries, write,
+        first_end, follow, runtime, runtime_on, send_replies, supervised_with, tcp, udp,
+        udp_queries, write,
     };
     use crate::isolate::tests::counted;
     use crate::isolate::{Listener, Origin};
@@ -2246,6 +2256,26 @@ mod tests {
                 ("dedensd_task_panics_total".to_owned(), name, 1),
             ]
         );
+    }
+
+    /// D107, D147: on the `poll` driver, which compio falls back to where the ring cannot be made (a container's
+    /// default seccomp profile), a UDP query is answered: its datagram keeps its length.
+    #[test]
+    fn a_udp_socket_answers_on_the_poll_driver() {
+        runtime_on(Some(DriverType::Poll))
+            .expect("a runtime")
+            .block_on(async {
+                assert_eq!(
+                    Runtime::with_current(Runtime::driver_type),
+                    DriverType::Poll
+                );
+                let thread = answering();
+                let socket = Rc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bound"));
+                let server = socket.local_addr().expect("its address");
+                let serving = spawn(udp(socket, Rc::new(Outbox::new()), udp_listener(), thread));
+                assert_eq!(answers(server).await, 1);
+                drop(serving);
+            });
     }
 
     /// D107, D121: on `io_uring`, a loop that ends with its multishot receive in flight, a hundred times over while
