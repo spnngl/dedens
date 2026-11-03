@@ -314,8 +314,8 @@ struct State {
     failure: Option<TcpError>,
     /// The last query sent or response received.
     last: Instant,
-    /// The last response read: a frame no query waits for is not one (D108).
-    read: Instant,
+    /// The last response read, none yet: a frame no query waits for is not one (D108).
+    read: Option<Instant>,
     /// The idle timeout; zero once the server asked for no more queries (RFC 7828 §3.2.2).
     idle: Duration,
 }
@@ -341,7 +341,7 @@ impl State {
 
     /// Closes the open connection when nothing was read since `sent`, when a query that went then timed out.
     fn stalled(&mut self, sent: Instant) {
-        if self.local.is_some() && self.read < sent {
+        if self.local.is_some() && self.read.is_none_or(|read| read < sent) {
             self.close();
         }
     }
@@ -359,7 +359,7 @@ impl<N: Io> Connection<N> {
             local: None,
             failure: None,
             last: now,
-            read: now,
+            read: None,
             idle,
         }));
         let task = io.spawn(run(
@@ -664,7 +664,7 @@ async fn read<N: Io>(io: N, mut stream: impl Inbound, state: Rc<RefCell<State>>)
             continue;
         };
         state.last = io.now();
-        state.read = state.last;
+        state.read = Some(state.last);
         if let Some(timeout) = keepalive(&message)
             && timeout < state.idle
         {

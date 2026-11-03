@@ -2557,7 +2557,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - In `dedens-sim` (D133): `io::Sim` implements `Io` on turmoil, from the host's seeded `Rng`, tokio's paused clock
     and turmoil's sockets, a stream's tokio halves copied through a buffer into compio's traits; the driver's client
     is `Client<Sim>`, so every family runs the real pools. `tests/pools.rs` reaches what the sans-IO exchange could
-    not: connections opened, reused, closed when idle (D27), the inbox of a query (D108), socket errors,
+    not: connections opened, reused, closed when idle or stalled (D27), the inbox of a query (D108), socket errors,
     and DNS over TLS, rustls over the simulated stream. Its certificates are fixed (Ed25519 keys from fixed bytes),
     so a run over TLS replays from its seed: rustls' own draws change bytes on the wire, not lengths or times.
   - What the real client changed in the families: an upstream server reads a TCP connection's queries as they

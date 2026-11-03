@@ -279,6 +279,29 @@ fn an_idle_connection_closes_after_the_idle_timeout() {
     });
 }
 
+/// A server that reads queries and never answers: each try times out, and the connection, from which nothing was
+/// read since the query went, is dropped as stalled (D108), so the next try opens another.
+#[test]
+fn a_stalled_connection_is_dropped_after_a_try() {
+    seed::each(ONE, |seed| {
+        let answers = upstream().tcp(Behaviour::Silent);
+        let connections = answers.connections();
+        let mut world = Topology::new().upstream(answers).build(seed);
+        let server = world.upstreams[0];
+        world.client_direct(async move |client| {
+            let got = client
+                .exchange(ask(), server, Carrier::Tcp, &Options::default())
+                .await;
+            let Err(ClientError::Exchange(Failure::TimedOut { sends: 3 })) = got else {
+                return Err(format!("{got:?}").into());
+            };
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert_eq!(connections.get(), 3, "{events:#?}");
+    });
+}
+
 /// Datagrams with a query's ID that fill its inbox (four, D108) crowd out the answer behind them: the try ends
 /// at its timeout and the next one has a new ID and its own inbox. A flood of three leaves room.
 #[test]
