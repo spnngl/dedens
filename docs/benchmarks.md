@@ -437,6 +437,10 @@ the load above. The rounds of one build range over 1.4x, so this rules out only 
 | TCP | 1 | 23152 | 26210 |
 | TCP | 32 | 214429 | 216932 |
 
+The queries waiting on a TCP connection in a `BTreeMap` rather than a `HashMap` (D134, determinism): TCP, 32 in flight,
+four alternating rounds under load average 12-15, medians 196077 (`BTreeMap`) and 194622 (`HashMap`) queries/s, the
+rounds over 2x apart: no difference that shows.
+
 `just bench-dnsperf <base> forward` and `forward-tcp` on the VPS run when the serving loop goes behind the seam too
 (left out of D134).
 

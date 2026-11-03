@@ -2550,3 +2550,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Left out: the serving loop of `dedensd` (D42, D121, D123: `UdpSocket`, `TcpListener`, the multishot receive
     and the send queue go behind the seam in a later decision), the QUIC family (`compio-quic` has its own endpoint
     and clock: DoQ, DoH/3, ODoH), DoC.
+  - Determinism: a seeded simulation replays only if the pools act in the same order on every run. Their hash maps
+    are looked up, never iterated where the order shows (`State::busy` only asks whether any query waits), and the
+    queries waiting on a TCP connection are a `BTreeMap`, so that a close wakes them in ID order: in a `HashMap`,
+    seeded per process, two replies at one instant swapped (`an_attacked_run_replays_in_two_processes`, seed 7,
+    `crates/dedens-sim/tests/forged.rs`, once the simulation runs the real pool).
