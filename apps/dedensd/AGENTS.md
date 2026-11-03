@@ -45,6 +45,9 @@ Tests:
 - `tests/flights.rs` that queries needing the same DS or DNSKEY of one server at once send it once (D86).
 - `tests/rfc9221.rs` that QUIC advertises no datagram support (D107); `tests/rfc9114.rs` that an HTTP/3 peer declaring
   a frame it never ends is closed and a busy honest connection is rotated, not closed (D119).
+- `tests/rfc7766.rs` that a broken TCP frame (a length with no message, half a length, a message trickling in, a length
+  of 0) costs no CPU (`ps` time of the server) and leaves other clients served, and that a malformed message gets FORMERR
+  on a connection that stays (D47).
 - `tests/privileges.rs` checks `user`, the refusals and the user already running; its `#[ignore]`d tests, run as root
   on Linux (CI: `sudo -E env "PATH=$PATH" cargo test -p dedensd --test privileges -- --ignored`), check that every
   thread has the user's four ids, no root group, no capability, `NoNewPrivs` 1, that :53 answers over UDP and TCP, that
