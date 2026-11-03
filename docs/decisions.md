@@ -1094,18 +1094,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D141 (builds on D16) Scheduled checks. Fuzzing: `fuzz.yml` runs each night every target in a job of its own (a
   matrix over `fuzz/fuzz_targets/`, `fail-fast: false`, so a crash stops its own target only), five minutes with
   libFuzzer's `-fork` on every core of the runner, from that target's corpus; `just fuzz-cmin` (`-merge=1`) then
-  keeps the inputs that add coverage, saved under a key per run; a crash uploads that target's inputs. Before: the 25
+  keeps the inputs that add coverage, saved under a key per run, after a crash too; a crash uploads that target's
+  inputs. Before: the 25
   targets in turn on one core, 60 s each, the first crash skipping the rest, the corpus only growing. Advisories:
   `advisories.yml` runs `just deny advisories` each day: an advisory against a crate no pull request touches would
   otherwise wait for the next pull request. Rejected: `rust-audit-check-action` (cargo-audit reads the RustSec
   database cargo-deny already reads, and wants to write issues); a toolchain action (`just toolchains` reads
   `rust-toolchain.toml` and the pinned nightly); Depot's shards of one target merged by a later job (a job per
   target already spreads the work, and each merges its own corpus).
-- D142 (amends D103) The pull request's mutants in shards: a `plan` job lists the diff's mutants without building
-  (`--list`) and asks for one shard per 40, up to 8; each shard job runs `just mutants-diff` with `--shard k/n`
-  (cargo-mutants' default `slice`: neighbouring mutants, so warm incremental builds) and `--baseline=skip`, as
-  `ci.yml`'s `just check` runs the unmutated tests of the same commit; a `summary` job lists every shard's missed
-  and timed-out mutants on the run's page. A shard with one fails (red), still outside the gate. Before: one job,
+- D142 (amends D103) The pull request's mutants in shards, for pull requests changing Rust, manifests, the lock
+  file, `.cargo/mutants.toml`, the justfile or the workflow: a `plan` job lists the diff's mutants without building
+  (`--list`) and asks for one shard per 40, up to 8 (the account runs 20 jobs at once, `ci.yml` about 8), warning
+  past 1400 (about 40 s each fills a shard's 120 min); each shard job runs `just mutants` over the plan's diff, so
+  all agree on the list, with `--shard k/n` (cargo-mutants' default `slice`: neighbouring mutants, so warm
+  incremental builds) and `--baseline=skip`, as `ci.yml`'s `just check` runs the unmutated tests of the same commit;
+  a `summary` job lists every shard's missed and timed-out mutants on the run's page (GitHub shows 10 of
+  cargo-mutants' annotations per step). A shard with one fails (red), still outside the gate. Before: one job,
   every mutant in turn, 120 min at most, the outcomes in an artifact only.
 - D22 (amended by D114, D116, D118, D124) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
