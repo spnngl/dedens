@@ -98,10 +98,36 @@ bench-unbound:
 
 # dedensd under dnsperf on Linux (io_uring) in a container, the working tree against `base`, in `mode`: udp or tcp
 # from the cache, forward or forward-tcp to a second dedensd without one, or two-sockets (the latency of a UDP port
-# beside a flooded one): just bench-dnsperf HEAD~1 tcp
+# beside a flooded one): just bench-dnsperf HEAD~1 tcp. `DEDENS_PERF=1` profiles the working tree's server instead
+# (D138), under perf: its report lands in target/profile/<mode>.txt; kernel names need `kernel.perf_event_paranoid` 1 and `kernel.kptr_restrict` 0 (run.sh).
 bench-dnsperf base="HEAD" mode="udp":
-    {{container}} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -v "$(pwd):/src:ro" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
+    mkdir -p target/profile
+    {{container}} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
         -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{base}} {{mode}}
+
+# Where a bench spends its time (D138): the bench target `bench` (`server`, `cache`, ...) built with symbols (the
+# bench profile keeps line tables), run under samply with divan's `filter`, a substring of the path (`just profile
+# server hit::`), sampled, never instrumented, five seconds a function (`DIVAN_MIN_TIME`). Writes target/profile/<bench>[-<filter>].json.gz and says how to open it. Local, on macOS
+# or Linux. dedensd under load on Linux: `DEDENS_PERF=1 just bench-dnsperf`.
+profile bench filter="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v samply >/dev/null; then
+        echo "samply is missing: cargo install --locked samply" >&2
+        exit 1
+    fi
+    exe="$(cargo bench --bench "{{bench}}" --no-run 2>&1 | tee /dev/stderr | sed -n 's/^ *Executable .* (\(.*\))$/\1/p')"
+    if [ -z "$exe" ] || [ "$(printf '%s\n' "$exe" | wc -l)" -ne 1 ]; then
+        echo "profile: '{{bench}}' is not the name of exactly one bench target" >&2
+        exit 1
+    fi
+    filter="{{filter}}"
+    # Divan stops at 100 samples, about a second of samples for a hit: ask for five seconds a function.
+    export DIVAN_MIN_TIME="${DIVAN_MIN_TIME:-5}"
+    mkdir -p target/profile
+    out="target/profile/{{bench}}${filter:+-${filter//[^[:alnum:]]/-}}.json.gz"
+    samply record --save-only --output "$out" -- "$exe" --bench ${filter:+"$filter"}
+    echo "profile written: open it with 'samply load $out'"
 
 # Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
 cov:
