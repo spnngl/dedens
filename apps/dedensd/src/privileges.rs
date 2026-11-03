@@ -351,36 +351,43 @@ mod os {
         }
     }
 
-    /// The real, effective and saved user ids, and the group ids, of the process.
-    #[cfg(target_os = "linux")]
+    /// The real, effective and saved user ids, and the group ids, of the process; off Linux there is no saved id to
+    /// read, the effective one stands for it. One function for both, so that the tests on Linux reach its mutants.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(clippy::unnecessary_wraps, reason = "the signature of the Linux one")
+    )]
     fn resolved() -> anyhow::Result<([u32; 3], [u32; 3])> {
-        let uid = nix::unistd::getresuid().context("getresuid")?;
-        let gid = nix::unistd::getresgid().context("getresgid")?;
-        Ok((
-            [uid.real, uid.effective, uid.saved].map(Uid::as_raw),
-            [gid.real, gid.effective, gid.saved].map(Gid::as_raw),
-        ))
-    }
-
-    /// Off Linux there is no saved id to read: the real and the effective ones.
-    #[cfg(not(target_os = "linux"))]
-    #[expect(clippy::unnecessary_wraps, reason = "the signature of the Linux one")]
-    fn resolved() -> anyhow::Result<([u32; 3], [u32; 3])> {
-        let uid = [nix::unistd::getuid(), nix::unistd::geteuid()].map(Uid::as_raw);
-        let gid = [nix::unistd::getgid(), nix::unistd::getegid()].map(Gid::as_raw);
-        Ok(([uid[0], uid[1], uid[1]], [gid[0], gid[1], gid[1]]))
+        #[cfg(target_os = "linux")]
+        let ids = {
+            let uid = nix::unistd::getresuid().context("getresuid")?;
+            let gid = nix::unistd::getresgid().context("getresgid")?;
+            (
+                [uid.real, uid.effective, uid.saved].map(Uid::as_raw),
+                [gid.real, gid.effective, gid.saved].map(Gid::as_raw),
+            )
+        };
+        #[cfg(not(target_os = "linux"))]
+        let ids = {
+            let uid = [nix::unistd::getuid(), nix::unistd::geteuid()].map(Uid::as_raw);
+            let gid = [nix::unistd::getgid(), nix::unistd::getegid()].map(Gid::as_raw);
+            ([uid[0], uid[1], uid[1]], [gid[0], gid[1], gid[1]])
+        };
+        Ok(ids)
     }
 
     /// The supplementary groups of the process; none off Linux, where `nix` does not have `getgroups` on every OS.
-    #[cfg(target_os = "linux")]
-    fn supplementary() -> anyhow::Result<Vec<Gid>> {
-        nix::unistd::getgroups().context("getgroups")
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    #[expect(clippy::unnecessary_wraps, reason = "the signature of the Linux one")]
-    fn supplementary() -> anyhow::Result<Vec<Gid>> {
-        Ok(Vec::new())
+    /// One function for both, as [`resolved`].
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(clippy::unnecessary_wraps, reason = "the signature of the Linux one")
+    )]
+    pub(super) fn supplementary() -> anyhow::Result<Vec<Gid>> {
+        #[cfg(target_os = "linux")]
+        let groups = nix::unistd::getgroups().context("getgroups")?;
+        #[cfg(not(target_os = "linux"))]
+        let groups = Vec::new();
+        Ok(groups)
     }
 
     /// Whether the process is in the group `gid`, as its own or a supplementary one.
@@ -397,6 +404,11 @@ mod os {
     /// can go back to.
     pub(crate) fn ids() -> anyhow::Result<Ids> {
         let (uid, gid) = resolved()?;
+        effective(uid, gid)
+    }
+
+    /// [`ids`] of the real, effective and saved user ids `uid` and group ids `gid`.
+    pub(super) fn effective(uid: [u32; 3], gid: [u32; 3]) -> anyhow::Result<Ids> {
         if uid[1] != 0 {
             ensure!(
                 uid.iter().all(|id| *id == uid[1]) && gid.iter().all(|id| *id == gid[1]),
@@ -442,7 +454,7 @@ mod os {
         not(target_os = "linux"),
         expect(clippy::unnecessary_wraps, reason = "the signature of the Linux one")
     )]
-    fn no_new_privs() -> anyhow::Result<()> {
+    pub(super) fn no_new_privs() -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         {
             nix::sys::prctl::set_no_new_privs().context("PR_SET_NO_NEW_PRIVS")?;
@@ -510,50 +522,10 @@ mod os {
     }
 }
 
+/// In a file of its own, which the mutation tests leave out: they run where it is not built (D142).
 #[cfg(not(unix))]
-mod os {
-    //! No users to drop to: `user` is refused when the configuration is read.
-
-    use std::path::Path;
-
-    use super::{Account, Accounts, Caps, Ids, Member};
-
-    #[derive(Debug)]
-    pub(crate) struct System;
-
-    impl Accounts for System {
-        fn user(&self, _account: &Account) -> anyhow::Result<Member> {
-            anyhow::bail!("no users here")
-        }
-
-        fn group(&self, _account: &Account) -> anyhow::Result<u32> {
-            anyhow::bail!("no groups here")
-        }
-    }
-
-    /// Nobody to be: not root.
-    #[expect(clippy::unnecessary_wraps, reason = "the signature of the Unix one")]
-    pub(crate) const fn ids() -> anyhow::Result<Ids> {
-        Ok(Ids { uid: 1, gid: 1 })
-    }
-
-    /// No groups.
-    pub(crate) const fn in_group(_gid: u32) -> bool {
-        false
-    }
-
-    pub(super) fn prepare(_dir: &Path, _uid: u32, _gid: u32) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub(super) fn seal() -> anyhow::Result<Caps> {
-        Ok(Caps::default())
-    }
-
-    pub(super) fn drop_to(_member: &Member, _gid: u32) -> anyhow::Result<()> {
-        anyhow::bail!("dropping privileges is Linux only")
-    }
-}
+#[path = "privileges/not_unix.rs"]
+mod os;
 
 pub(crate) use os::{System, ids, in_group};
 
@@ -766,9 +738,10 @@ mod tests {
                 ambient: 3
             }
         );
+        let caps = Caps::read(&status("1", "2", "3"));
         assert_eq!(
-            Caps::read(&status("1", "2", "3")).effective(),
-            "0000000000000002"
+            [caps.permitted(), caps.effective(), caps.ambient()],
+            ["0000000000000001", "0000000000000002", "0000000000000003"]
         );
         // Unreadable is not a capability: the check is a belt, `setuid(0)` failing is the proof.
         assert!(Caps::read("Uid:\t990\n").none());
@@ -781,6 +754,125 @@ mod tests {
         assert!(alone("Name:\tdedensd\nThreads:\t1\n"));
         assert!(!alone("Name:\tdedensd\nThreads:\t3\n"));
         assert!(alone("Name:\tdedensd\n"));
+    }
+
+    /// D122: the process is who its effective ids say; one that is not root must have one id of each kind, root may
+    /// have others: it can become anyone.
+    #[cfg(unix)]
+    #[test]
+    fn the_ids_must_agree_unless_root() {
+        let me = Ids {
+            uid: nix::unistd::geteuid().as_raw(),
+            gid: nix::unistd::getegid().as_raw(),
+        };
+        assert_eq!(ids().unwrap(), me);
+        let dedens = Ids { uid: 990, gid: 990 };
+        assert_eq!(os::effective([990; 3], [990; 3]).unwrap(), dedens);
+        assert_eq!(
+            os::effective([1000, 0, 1000], [5, 990, 7]).unwrap(),
+            Ids { uid: 0, gid: 990 }
+        );
+        for (uid, gid) in [
+            ([990, 990, 0], [990; 3]),
+            ([0, 990, 990], [990; 3]),
+            ([990; 3], [990, 990, 0]),
+        ] {
+            let error = os::effective(uid, gid).unwrap_err();
+            assert!(
+                error.to_string().contains("ids of the process differ"),
+                "{error}"
+            );
+        }
+    }
+
+    /// D122: the process is in its own group and in its supplementary ones, as `/proc` lists them, and in no other.
+    #[cfg(unix)]
+    #[test]
+    fn the_process_is_in_its_groups_only() {
+        let own = nix::unistd::getegid().as_raw();
+        assert!(in_group(own));
+        #[cfg(target_os = "linux")]
+        let held = {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let held: Vec<u32> = field(&status, "Groups")
+                .unwrap()
+                .split_whitespace()
+                .map(|gid| gid.parse().unwrap())
+                .collect();
+            let supplementary = os::supplementary().unwrap();
+            assert_eq!(
+                supplementary
+                    .into_iter()
+                    .map(nix::unistd::Gid::as_raw)
+                    .collect::<Vec<_>>(),
+                held
+            );
+            held
+        };
+        #[cfg(not(target_os = "linux"))]
+        let held = Vec::new();
+        for gid in &held {
+            assert!(in_group(*gid), "{gid}");
+        }
+        let other = (1..u32::MAX)
+            .find(|gid| *gid != own && !held.contains(gid))
+            .unwrap();
+        assert!(!in_group(other), "{other}");
+    }
+
+    /// D122: sealing and dropping are refused from a second thread, before anything changes: the threads started
+    /// before would keep the privileges.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_second_thread_refuses_the_seal_and_the_drop() {
+        let me = ids().unwrap();
+        let member = Member {
+            uid: me.uid,
+            entry: None,
+        };
+        let (stop, wait) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(move || wait.recv());
+            for error in [
+                apply(Plan::Already, None).unwrap_err(),
+                os::drop_to(&member, me.gid).unwrap_err(),
+            ] {
+                assert!(
+                    error.to_string().contains("more than one thread"),
+                    "{error}"
+                );
+            }
+            drop(stop);
+        });
+    }
+
+    /// D122: `NO_NEW_PRIVS` is set, as the kernel reads it back; any process may set it on itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_new_privileges_is_set() {
+        os::no_new_privs().unwrap();
+        assert!(nix::sys::prctl::get_no_new_privs().unwrap());
+    }
+
+    /// D122: a downloads directory that cannot be made is an error, one that exists is not; the drop stops there.
+    #[cfg(unix)]
+    #[test]
+    fn a_downloads_directory_that_cannot_be_made_stops_the_drop() {
+        let root = tempfile::tempdir().unwrap();
+        // Longer than a file name may be, even for root.
+        let dir = root.path().join("d".repeat(300));
+        let me = ids().unwrap();
+        let error = os::prepare(&dir, me.uid, me.gid).unwrap_err();
+        assert!(error.to_string().starts_with("cannot give"), "{error}");
+        let plan = Plan::Drop {
+            user: Member {
+                uid: me.uid,
+                entry: None,
+            },
+            gid: me.gid,
+        };
+        let error = apply(plan, Some(&dir)).unwrap_err();
+        assert!(error.to_string().starts_with("cannot give"), "{error}");
     }
 
     /// D122: a directory that exists is left as it is, one that is missing is made, 0755.
