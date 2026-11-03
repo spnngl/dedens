@@ -4,6 +4,14 @@ name: mutants
 # outside the gate. Whole-workspace runs stay local (D103).
 on:
   pull_request:
+    # Only what can change a mutant or its outcome.
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .cargo/mutants.toml
+      - .github/workflows/mutants.yml
+      - justfile
 
 # A new push cancels the running check.
 concurrency:
@@ -19,7 +27,8 @@ env:
   CARGO_MUTANTS_VERSION: "27.1.0"
 
 jobs:
-  # Counts the diff's mutants, without building, and splits them in shards of about 40, up to 8.
+  # Counts the diff's mutants, without building, and splits them in shards of about 40, up to 8 (the account runs 20
+  # jobs at once, ci.yml needs about 8). Each shard reads this job's diff, so all agree on the list.
   plan:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -51,9 +60,15 @@ jobs:
           count=$(( (mutants + 39) / 40 ))
           count=$(( count > 8 ? 8 : count ))
           echo "$mutants mutants, $count shards" >> "$GITHUB_STEP_SUMMARY"
+          # About 40 s a mutant: past 1400, shards may reach their 120 min.
+          if (( mutants > 1400 )); then echo "::warning::$mutants mutants: shards may time out"; fi
           echo "count=$count" >> "$GITHUB_OUTPUT"
           # A matrix may not be empty, even in a job its `if` skips.
           echo "shards=$(jq -nc --argjson n "$count" '[range([$n, 1] | max)]')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutants-diff
+          path: target/mutants/branch.diff
 
   # A shard fails on a missed mutant or a timeout (exit 2 or 3), as a whole run would.
   shard:
@@ -64,7 +79,7 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
@@ -74,12 +89,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: mutants-diff
+          path: diff
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           # renovate: datasource=github-releases depName=casey/just
           just-version: "1.59.0"
-      - run: just toolchains
+      # The stable of rust-toolchain.toml; the pinned nightly serves no mutant.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: . -> target/mutants/target
@@ -88,10 +107,9 @@ jobs:
           tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
       # No baseline: ci.yml's `just check` runs the unmutated tests of the same commit.
       - env:
-          BASE_REF: ${{ github.base_ref }}
           SHARD: ${{ matrix.shard }}
           COUNT: ${{ needs.plan.outputs.count }}
-        run: just mutants-diff "origin/$BASE_REF" --shard "$SHARD/$COUNT" --baseline=skip
+        run: just mutants --in-diff "$PWD/diff/branch.diff" --shard "$SHARD/$COUNT" --baseline=skip
       - name: Keep the outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
