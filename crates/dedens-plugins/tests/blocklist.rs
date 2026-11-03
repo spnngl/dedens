@@ -831,6 +831,20 @@ fn a_listed_dname_target_blocks_the_response() {
     assert!(review(&blocklist_of("ads.example"), &response).is_none());
 }
 
+/// The order of the records in the section does not change what a response leads to: with the CNAME written before
+/// the DNAME it was made from, the DNAME's target is still checked, though the CNAME's target is allowed.
+#[test]
+fn a_dname_after_its_cname_is_checked() {
+    let mut response = capture("dedens-dnssec", "dname_answer");
+    let blocklist = blocklist("example.nl\n", "www.example.nl\n", Action::Nxdomain);
+    assert!(review(&blocklist, &response).is_some(), "as captured");
+    response
+        .answer
+        .sort_by_key(|r| r.rtype() != RecordType::CNAME);
+    assert_eq!(response.answer[0].rtype(), RecordType::CNAME);
+    assert!(review(&blocklist, &response).is_some(), "the CNAME first");
+}
+
 /// The allowlist lets a target through as it lets a query name: itself and its subdomains. A query name the
 /// allowlist lets through is not reviewed at all, so that it can be unblocked without allowing what it points to
 /// (D118).
