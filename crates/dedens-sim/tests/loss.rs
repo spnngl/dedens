@@ -8,7 +8,7 @@
 //! - What the exchange does with a late response, a changed query and a spare ID, one message at a time:
 //!   `crates/dedens-net/tests/rfc1035.rs` (`a_late_response_to_an_earlier_try_is_taken`), `rfc5452.rs`
 //!   (`a_changed_query_goes_with_a_spare_id`) and `rfc7766.rs`.
-//! - Queries pipelined on one TCP connection are the compio layer's (D134, `crates/dedens-net/tests/tcp.rs`); the
+//! - Queries pipelined on one TCP connection are the compio layer's (`crates/dedens-net/tests/tcp.rs`); the
 //!   driver here serves a connection's queries in order, one at a time.
 //!
 //! The sim client opens a socket for each exchange and reads no UDP once an exchange moved to TCP, so a late datagram
