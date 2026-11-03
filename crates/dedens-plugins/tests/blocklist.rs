@@ -474,6 +474,25 @@ fn duplicates_are_counted_once() {
     ));
 }
 
+/// The lists count the names listed more than once, twice in a text or held from an earlier text, per list.
+#[test]
+fn the_lists_count_their_duplicates() {
+    let mut lists = Lists::new();
+    lists
+        .read(
+            List::Block,
+            Origin::Local,
+            "a.example\nA.example.\nb.example\n",
+        )
+        .expect("the names read");
+    assert_eq!(lists.duplicates(List::Block), 1);
+    lists
+        .read(List::Block, Origin::Local, "b.example\nc.example\n")
+        .expect("the names read");
+    assert_eq!(lists.duplicates(List::Block), 2);
+    assert_eq!(lists.duplicates(List::Allow), 0);
+}
+
 /// A downloaded list skips the lines that are not names, and is refused when most are, as is an error page.
 #[test]
 fn downloaded_lists_skip_lines_that_are_not_names() {
@@ -713,6 +732,40 @@ fn a_local_text_taking_top_level_domains_adds_none_to_lists_refusing_them() {
     assert_eq!(merged.len(), 1);
 }
 
+/// D120: a merged set holds each name once and counts the others, in a text or across texts; its clones share it,
+/// a set merged again from the same texts does not.
+#[test]
+fn a_merged_set_counts_its_duplicates_and_is_shared_by_its_clones() {
+    let first = Names::local(Tlds::Refuse, "a.example\nA.example.\nb.example\n").expect("a list");
+    let second = Names::local(Tlds::Refuse, "b.example\nc.example\n").expect("a list");
+    let sources = [first, second];
+    let merged = Merged::new(Tlds::Refuse, &sources).expect("merged");
+    assert_eq!((merged.len(), merged.duplicates()), (3, 2));
+    assert!(!merged.is_empty());
+    assert!(merged.shares(&merged.clone()));
+    assert!(!merged.shares(&Merged::new(Tlds::Refuse, &sources).expect("merged")));
+    assert!(Merged::new(Tlds::Refuse, &[]).expect("merged").is_empty());
+}
+
+/// D120: a text's names, top-level domains included, each once; its clones are the same reading, the text read again
+/// another.
+#[test]
+fn names_are_counted_once_and_shared_by_their_clones() {
+    let text = "zip\nads.example\nzip\n";
+    let names = Names::local(Tlds::Allow, text).expect("a list");
+    assert_eq!(names.len(), 2);
+    assert!(!names.is_empty());
+    assert_eq!(
+        names
+            .check(Tlds::Allow)
+            .map(|read| (read.names, read.duplicates)),
+        Ok((2, 1))
+    );
+    assert!(names.same(&names.clone()));
+    assert!(!names.same(&Names::local(Tlds::Allow, text).expect("a list")));
+    assert!(Names::downloaded("").is_empty());
+}
+
 /// D120: a downloaded text of which a line fails after a name was read leaves that name out, whole line.
 #[test]
 fn a_line_that_fails_leaves_none_of_its_names() {
@@ -829,6 +882,22 @@ fn a_listed_dname_target_blocks_the_response() {
     assert!(review(&blocklist_of("example.nl"), &response).is_some());
     assert!(review(&blocklist_of("www.example.nl"), &response).is_none());
     assert!(review(&blocklist_of("ads.example"), &response).is_none());
+}
+
+/// A DNAME rewrites the names below its owner, not the owner itself (RFC 6672 §2.1): the DNAME of `dname_answer`
+/// answering a query for its owner leads nowhere, whatever its target.
+#[test]
+fn a_dname_does_not_redirect_its_owner() {
+    let mut response = capture("dedens-dnssec", "dname_answer");
+    let owner = response
+        .answer
+        .iter()
+        .find(|r| r.rtype() == RecordType::DNAME)
+        .expect("a DNAME")
+        .name
+        .clone();
+    response.questions = vec![Question::new(owner, RecordType::DNAME)];
+    assert!(review(&blocklist_of("example.nl"), &response).is_none());
 }
 
 /// The order of the records in the section does not change what a response leads to: with the CNAME written before
