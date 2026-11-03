@@ -26,6 +26,25 @@ exclude_re = [
   # The label counts only save work (D110): a count held with no name, or no skip of a name shorter than the shortest
   # blocked one, finds nothing in the hashes either.
   'replace LabelCounts::(holds -> bool with true|shortest -> Option<u32> with Some\([01]\))',
+  # A text's empty set of hashes adds no hash, only a label count, which finds nothing in the hashes either.
+  'replace > with >= in Names::included$',
+  # A reading's two sets are made together and cloned together: one is never shared without the other.
+  'replace && with \|\| in Names::same$',
+  # The review: an answer with no DNAME holds nothing to read after the CNAME of a hop (a second CNAME of a name is
+  # ignored), and one of DNAMEs only has no CNAME to stop at. By column too: the function's other `==` is caught.
+  'blocklist\.rs:\d+:54: replace == with != in <impl Reviewer for Blocklist>::review$',
+  # A hop that starts at the CNAME the last one followed, not after it, finds the same: that CNAME is of the name
+  # before (a loop to itself aside, whose name's second CNAME RFC 1034 §3.6.2 forbids).
+  'replace \+ with \* in <impl Reviewer for Blocklist>::review$',
+  # The name hash (D112): or-ing the product's halves only biases its bits, which names are compared in full past.
+  # By column: the function's other `^` is caught.
+  'wire\.rs:\d+:32: replace \^ with \| in mix$',
+  # A label of 8 bytes is one word either way; one of a multiple of 8 mixes its last word twice, the same for
+  # every name; `w << 8` has no low bits for `|` and `^` to tell apart.
+  'wire\.rs:\d+:\d+: replace (> with >=|< with <=|\| with \^) in fold$',
+  # The midpoint stays in `low..high` for `low` of at least LONGEST_FIRST: the search finds the same suffix, in
+  # more lookups.
+  'wire\.rs:\d+:\d+: replace - with / in Writer<.a>::put_name_found$',
   # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
   'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
   # Read by dedensd only, whose tests do not run for a mutant of dedens-server.
