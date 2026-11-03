@@ -2,8 +2,9 @@ name: deep
 
 # The slow checks, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
 # reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
-# and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133); `careful` runs the tests on a
-# checked standard library under AddressSanitizer, a job per package (`just careful address`, D144).
+# a job per scenario file, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133);
+# `careful` runs the tests on a checked standard library under AddressSanitizer, a job per package (`just careful
+# address`, D144).
 on:
   pull_request:
 
@@ -39,11 +40,30 @@ jobs:
         with:
           workspaces: . -> target/loom
       - run: just loom
+  # One sim job per scenario file: all of them in one job outlast 30 minutes on a slow runner.
+  scenarios:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - id: list
+        run: echo "list=$(basename -s .rs crates/dedens-sim/tests/*.rs | jq -Rnc '[inputs]')" >> "$GITHUB_OUTPUT"
   sim:
+    needs: scenarios
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJSON(needs.scenarios.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -55,7 +75,11 @@ jobs:
       # The stable toolchain alone: the scenarios need no nightly.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: just sim 100
+        with:
+          key: ${{ matrix.test }}
+      - run: just sim 100 "$TEST"
+        env:
+          TEST: ${{ matrix.test }}
   # One careful job per package: the workspace's tests under AddressSanitizer outlast any one job.
   packages:
     runs-on: ubuntu-26.04
