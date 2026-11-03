@@ -44,5 +44,6 @@ crate that touches sockets and timers.
   `rfc6690.rs` reads the link lists of the RFC. `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP
   server on loopback. The one ignored test of `rfc9230.rs` asks public ODoH targets (`just odoh-live`).
 
-`benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`).
+`benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`);
+`benches/pools.rs` the UDP and TCP pools of the `Client` (`--bench pools`).
 Measure a transport change with `just bench-dnsperf <base> forward` or `forward-tcp`.

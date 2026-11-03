@@ -410,6 +410,20 @@ one after another over one connection.
   at once 0.47x (GET) and 0.61x (POST) of DoQ's rate, the one thread running both ends. A GET builds a URI with the
   query in base64url and its server parses it; POST sends the query as a body.
 
+## Client UDP and TCP pools
+
+`cargo bench -p dedens-net --bench pools`: queries a second of one `Client` over its UDP socket pool (D50) and its one
+TCP connection (D27) against loopback servers (`benches/pools.rs`), client and servers on one thread, 3 s a row, the
+sockets and the connection warm. The query is `example.com. A`, the response that query echoed with QR and RA set.
+`in flight` loops ask one after another. Three runs in a row on an Apple M5 (10 cores) under load (load average 9, other builds running), so about 20% of noise between runs:
+
+| Transport | in flight | run 1 | run 2 | run 3 |
+|---|---|---|---|---|
+| UDP | 1 | 25267 | 28651 | 27914 |
+| UDP | 32 | 86741 | 90251 | 70316 |
+| TCP | 1 | 28742 | 28508 | 24569 |
+| TCP | 32 | 248517 | 242478 | 222508 |
+
 ## dedensd serving DoH over HTTP/3 (D84)
 
 `cargo bench -p dedensd --bench doh3`: the release `dedensd` on a macOS host (one serving thread) answers one name from

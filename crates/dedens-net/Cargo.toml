@@ -36,6 +36,10 @@ proptest.workspace = true
 rcgen.workspace = true
 
 [[bench]]
+name = "pools"
+harness = false
+
+[[bench]]
 name = "transports"
 harness = false
 
