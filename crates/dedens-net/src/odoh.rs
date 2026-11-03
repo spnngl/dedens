@@ -310,6 +310,7 @@ pub struct Lifetime {
 }
 
 /// How long the configurations in a response with `headers` are kept, as of `now` (RFC 9111 §4.2.1, §5.2.2).
+/// `Cache-Control` is read as bytes: a quoted argument may hold obs-text (§5.2), which hides no other directive.
 ///
 /// The age is the larger of `Age` and `now` less `Date`, so a clock behind the target's makes it large and the
 /// lifetime short: the hour [`Lifetime::keep`] never goes under.
@@ -320,21 +321,21 @@ pub fn configs_lifetime(headers: &HeaderMap, now: SystemTime) -> Lifetime {
     for directive in headers
         .get_all(CACHE_CONTROL)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
+        .flat_map(|value| value.as_bytes().split(|&byte| byte == b','))
     {
-        let (name, argument) = match directive.split_once('=') {
-            Some((name, argument)) => (name, Some(argument)),
-            None => (directive, None),
-        };
-        match (name.trim().to_ascii_lowercase().as_str(), argument) {
-            ("no-store", _) | ("no-cache", None) => forbidden = true,
-            ("max-age", Some(argument)) if max_age.is_none() => {
+        let mut parts = directive.splitn(2, |&byte| byte == b'=');
+        let name = parts
+            .next()
+            .unwrap_or_default()
+            .trim_ascii()
+            .to_ascii_lowercase();
+        match (name.as_slice(), parts.next()) {
+            (b"no-store", _) | (b"no-cache", None) => forbidden = true,
+            (b"max-age", Some(argument)) if max_age.is_none() => {
                 max_age = Some(
-                    argument
-                        .trim()
-                        .trim_matches('"')
-                        .parse::<u64>()
+                    str::from_utf8(argument.trim_ascii())
+                        .ok()
+                        .and_then(|argument| argument.trim_matches('"').parse::<u64>().ok())
                         .unwrap_or(0),
                 );
             }

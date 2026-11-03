@@ -244,6 +244,24 @@ fn the_lifetime_of_configurations() {
     assert_eq!(lifetime(&[]), kept(HOUR));
 }
 
+/// RFC 9111 §5.2: a `no-store` beside a quoted argument holding obs-text is still read; the `read_odoh_http` fuzz
+/// target found the whole field skipped as not UTF-8.
+#[test]
+fn obs_text_in_cache_control_hides_no_directive() {
+    let mut headers = HeaderMap::new();
+    let control = HeaderValue::from_bytes(b"private=\"\x82\", no-store, max-age=7200")
+        .expect("obs-text is allowed");
+    headers.insert(CACHE_CONTROL, control);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    assert_eq!(
+        configs_lifetime(&headers, now),
+        Lifetime {
+            keep: HOUR,
+            forbidden: true
+        }
+    );
+}
+
 /// RFC 9111 §4.2.3: a `Date` far before the client's clock, or after it, is no reason to keep the configurations
 /// less than an hour, nor more than a day.
 #[test]
