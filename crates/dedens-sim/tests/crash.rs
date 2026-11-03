@@ -1,0 +1,504 @@
+//! A host that crashes or restarts in the middle of an exchange costs a try, never a hang or a wrong answer
+//! (D27, D31, D41, D45, D133).
+//!
+//! `baseline.rs` crashes the resolver before the first query and has a crashed host in its seven-way property;
+//! here the host goes down while queries are in flight, on each of the three hosts, over UDP and TCP.
+
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+
+use dedens_net::exchange::Failure;
+use dedens_proto::{Rcode, RecordType};
+use dedens_sim::client::Carrier;
+use dedens_sim::fault::{Fault, Node, Server};
+use dedens_sim::seed::{self, Seed};
+use dedens_sim::stub::{Outcome, question};
+use dedens_sim::topology::{Topology, World};
+use dedens_sim::trace::{self, Event, What};
+use dedens_sim::upstream::{Answers, Verdict};
+
+const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+
+/// Seeds for the scripts that run over both carriers or wait out the client's tries.
+const FEW: &[u64] = &[0, 7];
+
+const SECOND: Duration = Duration::from_secs(1);
+
+const MS: Duration = Duration::from_millis(1);
+
+/// An upstream server holding `example.com A`, and `google.com TXT` (truncated over UDP, whole over TCP).
+fn upstream() -> Answers {
+    Answers::new()
+        .captured("a")
+        .truncating("truncated", "txt_large")
+}
+
+/// [`upstream`], answering each query after a second: a query it got is in flight for that long.
+fn slow() -> Answers {
+    upstream().faulty(|_, _| Verdict::Delay(SECOND))
+}
+
+/// The queries of the scripts: one of each of the two captures.
+const QUESTIONS: [(&str, RecordType); 2] = [
+    ("example.com", RecordType::A),
+    ("google.com", RecordType::TXT),
+];
+
+/// Two clients, each asking one of [`QUESTIONS`] over `carrier` and expecting records.
+fn clients_expecting_records(world: &mut World, carrier: Carrier) {
+    for (name, qtype) in QUESTIONS {
+        world.client(async move |stub| {
+            let answer = stub.expect(question(name, qtype), carrier).await?;
+            assert_eq!(answer.message.rcode(), Rcode::NOERROR);
+            assert!(!answer.message.answer.is_empty(), "{answer:?}");
+            Ok(())
+        });
+    }
+}
+
+/// Every message of the link takes 10 ms. A host restarting at the very instant a peer connects to it refuses the
+/// connection, which the client does not retry; the scripts that restart a host under a TCP connection keep clear
+/// of that instant with a link that never takes less.
+fn steady(world: &mut World, a: Node, b: Node) {
+    let at = Duration::ZERO;
+    let ten = 10 * MS;
+    world.fault(
+        at,
+        Fault::Latency {
+            a,
+            b,
+            min: ten,
+            max: ten,
+        },
+    );
+}
+
+/// How many events `what` picks from `host`.
+fn count(events: &[Event], host: IpAddr, what: impl Fn(&What) -> bool) -> usize {
+    events
+        .iter()
+        .filter(|event| event.host == host && what(&event.what))
+        .count()
+}
+
+fn served(events: &[Event], host: IpAddr) -> usize {
+    count(events, host, |what| matches!(what, What::Served { .. }))
+}
+
+/// How many times the resolver forwarded a query to `server`.
+fn forwarded(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize {
+    count(
+        events,
+        resolver,
+        |what| matches!(what, What::Forwarded { server: to, .. } if *to == server),
+    )
+}
+
+/// How many queries the clients asked, and how many ended.
+fn asked_and_ended(events: &[Event]) -> (usize, usize) {
+    let asked = events
+        .iter()
+        .filter(|event| matches!(event.what, What::Asked { .. }))
+        .count();
+    let ended = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.what,
+                What::Answered { .. } | What::Failed { .. } | What::Errored { .. }
+            )
+        })
+        .count();
+    (asked, ended)
+}
+
+/// With two upstream servers, the first crashing under queries in flight (UDP exchanges the resolver retries, TCP
+/// connections it never hears from again), the forward stage asks the second (D41) and the client gets records.
+#[test]
+fn a_crashed_upstream_is_left_for_the_next() {
+    for carrier in [Carrier::Udp, Carrier::Tcp] {
+        seed::each(FEW, |seed| {
+            let mut world = Topology::new()
+                .upstream(slow())
+                .upstream(upstream())
+                .build(seed);
+            let at = world.pick(100 * MS, 900 * MS);
+            world.fault(at, Fault::Crash(Server::Upstream(0)));
+            let (resolver, first, second) =
+                (world.resolver.ip(), world.upstreams[0], world.upstreams[1]);
+            clients_expecting_records(&mut world, carrier);
+            let events = world.run().expect("the run passes its checks");
+            // The answer it was holding never left the crashed host.
+            assert_eq!(served(&events, first.ip()), 0, "{events:#?}");
+            assert!(forwarded(&events, resolver, second) >= 2, "{events:#?}");
+        });
+    }
+}
+
+/// One upstream server that crashes and comes back: the resolver's second send of the query (D45: two tries
+/// of 3 s each) reaches it, and the client needs no second try of its own.
+#[test]
+fn a_bounced_upstream_answers_the_second_send_of_the_resolver() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(slow()).build(seed);
+        let crash = world.pick(100 * MS, 800 * MS);
+        let back = crash + world.pick(100 * MS, 500 * MS);
+        world.fault(crash, Fault::Crash(Server::Upstream(0)));
+        world.fault(back, Fault::Bounce(Server::Upstream(0)));
+        let (resolver, upstream) = (world.resolver.ip(), world.upstreams[0].ip());
+        world.client(async move |stub| {
+            let answer = stub
+                .expect(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            assert!(answer.elapsed < 5 * SECOND, "{answer:?}");
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        // The query of the crashed host is lost; the one after the bounce is answered.
+        assert_eq!(served(&events, upstream), 1, "{events:#?}");
+        assert_eq!(
+            count(&events, resolver, |what| matches!(
+                what,
+                What::Sent { sends: 2, .. }
+            )),
+            1,
+            "{events:#?}"
+        );
+    });
+}
+
+/// The only upstream server stays down: the resolver gives up on it and answers SERVFAIL, in its two tries
+/// (D45), not at the client's deadline.
+#[test]
+fn an_upstream_that_stays_down_ends_in_servfail() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(slow()).build(seed);
+        let at = world.pick(100 * MS, 900 * MS);
+        world.fault(at, Fault::Crash(Server::Upstream(0)));
+        world.client(async move |stub| {
+            let outcome = stub
+                .ask(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            let Outcome::Answered(answer) = outcome else {
+                return Err(format!("no answer: {outcome:?}").into());
+            };
+            assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+            assert!(answer.elapsed < 8 * SECOND, "{answer:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+/// An upstream server that restarts while the resolver waits on a TCP connection: the connection closes, the
+/// resolver opens a new one (D27) and the same exchange is answered, no new try spent.
+#[test]
+fn a_bounced_upstream_gets_one_new_connection() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(slow()).build(seed);
+        steady(&mut world, Node::Resolver, Node::Upstream(0));
+        let at = world.pick(100 * MS, 800 * MS);
+        world.fault(at, Fault::Bounce(Server::Upstream(0)));
+        let (resolver, upstream) = (world.resolver.ip(), world.upstreams[0]);
+        clients_expecting_records(&mut world, Carrier::Tcp);
+        let events = world.run().expect("the run passes its checks");
+        // One exchange each, and no second send.
+        assert_eq!(forwarded(&events, resolver, upstream), 2, "{events:#?}");
+        assert_eq!(
+            count(&events, resolver, |what| matches!(
+                what,
+                What::Sent { sends, .. } if *sends > 1
+            )),
+            0,
+            "{events:#?}"
+        );
+        assert_eq!(served(&events, upstream.ip()), 2, "{events:#?}");
+    });
+}
+
+/// A server that closes the connection twice, the new one included, fails the exchange (D31): the resolver
+/// asks the next server when there is one, and answers SERVFAIL when there is not.
+#[test]
+fn a_second_close_fails_the_exchange() {
+    for backup in [false, true] {
+        seed::each(SEEDS, |seed| {
+            let mut topology = Topology::new().upstream(slow());
+            if backup {
+                topology = topology.upstream(upstream());
+            }
+            let mut world = topology.build(seed);
+            steady(&mut world, Node::Resolver, Node::Upstream(0));
+            // It restarts every 300 ms for two seconds: no connection lives the second it takes to be answered, and
+            // the new one of the exchange is one of them.
+            let first = world.pick(100 * MS, 400 * MS);
+            for step in 0..7 {
+                world.fault(first + step * 300 * MS, Fault::Bounce(Server::Upstream(0)));
+            }
+            let (resolver, upstreams) = (world.resolver.ip(), world.upstreams.clone());
+            world.client(async move |stub| {
+                let outcome = stub
+                    .ask(question("example.com", RecordType::A), Carrier::Tcp)
+                    .await?;
+                let Outcome::Answered(answer) = outcome else {
+                    return Err(format!("no answer: {outcome:?}").into());
+                };
+                assert!(answer.elapsed < 4 * SECOND, "{answer:?}");
+                let rcode = if backup {
+                    Rcode::NOERROR
+                } else {
+                    Rcode::SERVFAIL
+                };
+                assert_eq!(answer.message.rcode(), rcode, "{answer:?}");
+                Ok(())
+            });
+            let events = world.run().expect("the run passes its checks");
+            assert_eq!(forwarded(&events, resolver, upstreams[0]), 1, "{events:#?}");
+            assert_eq!(served(&events, upstreams[0].ip()), 0, "{events:#?}");
+            if backup {
+                assert_eq!(forwarded(&events, resolver, upstreams[1]), 1, "{events:#?}");
+            }
+        });
+    }
+}
+
+/// The resolver restarts with a UDP query in flight: the query dies with it, the client's second try is
+/// answered by the new resolver, and the response the upstream server sent the old one goes nowhere.
+#[test]
+fn a_bounced_resolver_answers_the_clients_second_try() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(slow()).build(seed);
+        let at = world.pick(100 * MS, 800 * MS);
+        world.fault(at, Fault::Bounce(Server::Resolver));
+        let upstream = world.upstreams[0].ip();
+        world.client(async move |stub| {
+            let answer = stub
+                .expect(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            // Nothing answers before the second try (5 s): not the response the upstream sent the old resolver.
+            assert!(answer.elapsed >= 5 * SECOND, "{answer:?}");
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert_eq!(served(&events, upstream), 2, "{events:#?}");
+    });
+}
+
+/// The resolver restarts with a TCP query in flight: the connection closes, the client opens a new one (D27) and
+/// is answered, long before a timeout.
+#[test]
+fn a_bounced_resolver_gets_one_new_connection() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(slow()).build(seed);
+        steady(&mut world, Node::Client(0), Node::Resolver);
+        let at = world.pick(100 * MS, 800 * MS);
+        world.fault(at, Fault::Bounce(Server::Resolver));
+        world.client(async move |stub| {
+            let answer = stub
+                .expect(question("example.com", RecordType::A), Carrier::Tcp)
+                .await?;
+            assert!(answer.elapsed < 3 * SECOND, "{answer:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+/// A restarted resolver has an empty cache: what it held it asks for again, and keeps again.
+#[test]
+fn a_bounced_resolver_fills_its_cache_again() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new().upstream(upstream()).build(seed);
+        world.fault(3 * SECOND, Fault::Bounce(Server::Resolver));
+        let (resolver, upstream) = (world.resolver.ip(), world.upstreams[0].ip());
+        world.client(async move |stub| {
+            // Asked, kept, answered from the cache, then the bounce at 3 s, then the same again.
+            for pause in [SECOND, 2 * SECOND, SECOND, SECOND] {
+                stub.expect(question("example.com", RecordType::A), Carrier::Udp)
+                    .await?;
+                tokio::time::sleep(pause).await;
+            }
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert_eq!(served(&events, upstream), 2, "{events:#?}");
+        let stored: Vec<_> = events
+            .iter()
+            .filter(|event| event.host == resolver)
+            .filter_map(|event| match event.what {
+                What::Stored { entries, .. } => Some(entries),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stored, [1, 1], "{events:#?}");
+    });
+}
+
+/// The resolver crashes under a query and stays down: the client gets nothing, tries three times and gives up,
+/// and the resolver does nothing more.
+#[test]
+fn a_crashed_resolver_goes_silent() {
+    for carrier in [Carrier::Udp, Carrier::Tcp] {
+        seed::each(FEW, |seed| {
+            let mut world = Topology::new().upstream(slow()).build(seed);
+            let at = world.pick(100 * MS, 800 * MS);
+            world.fault(at, Fault::Crash(Server::Resolver));
+            let resolver = world.resolver.ip();
+            world.client(async move |stub| {
+                let outcome = stub
+                    .ask(question("example.com", RecordType::A), carrier)
+                    .await?;
+                assert!(
+                    matches!(outcome, Outcome::Failed(Failure::TimedOut { sends: 3 })),
+                    "{outcome:?}"
+                );
+                Ok(())
+            });
+            let events = world.run().expect("the run passes its checks");
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.host != resolver || event.at <= at + 100 * MS),
+                "{events:#?}"
+            );
+        });
+    }
+}
+
+/// A query's answer, the way the stream below needs it: whether the clients got records.
+fn got_records(what: &What) -> bool {
+    matches!(
+        what,
+        What::Answered {
+            rcode: Rcode::NOERROR,
+            answers: 1..,
+            ..
+        }
+    )
+}
+
+/// The seed picks a host, a moment and whether it comes back, and a stream of queries over UDP or TCP runs
+/// through it; the stub's checks pass, and each query:
+///
+/// - ends: an answer, or the failure of a client that tried;
+/// - finds the crashed host silent while it is down;
+/// - is answered with records when it starts after the host is back, or when the other upstream server is up;
+/// - never finds a cache the restart should have emptied.
+#[test]
+fn whatever_the_seed_crashes_queries_end_well() {
+    seed::each(SEEDS, |seed| {
+        let mut world = Topology::new()
+            .upstream(upstream().faulty(|_, rng| {
+                if rng.below(2) == 0 {
+                    Verdict::Delay(SECOND)
+                } else {
+                    Verdict::Answer
+                }
+            }))
+            .upstream(upstream())
+            .duration(600 * SECOND)
+            .build(seed);
+        let resolver = world.resolver.ip();
+        let (server, host) = match world.choose(3) {
+            0 => (Server::Resolver, resolver),
+            1 => (Server::Upstream(0), world.upstreams[0].ip()),
+            _ => (Server::Upstream(1), world.upstreams[1].ip()),
+        };
+        let at = world.pick(Duration::ZERO, 6 * SECOND);
+        let back = (world.choose(2) == 0).then(|| at + world.pick(500 * MS, 4 * SECOND));
+        world.fault(at, Fault::Crash(server));
+        if let Some(back) = back {
+            world.fault(back, Fault::Bounce(server));
+        }
+        let carrier = if world.choose(2) == 0 {
+            Carrier::Udp
+        } else {
+            Carrier::Tcp
+        };
+        let pause = world.pick(100 * MS, 3 * SECOND);
+        world.client(async move |stub| {
+            for (name, qtype) in QUESTIONS.into_iter().cycle().take(6) {
+                stub.ask(question(name, qtype), carrier).await?;
+                tokio::time::sleep(pause).await;
+            }
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        let (asked, ended) = asked_and_ended(&events);
+        assert_eq!((asked, ended), (6, 6), "{events:#?}");
+        // The crashed host does nothing while it is down; a reply already on the wire (100 ms) may still land.
+        let down = |event: &Event| event.at > at && back.is_none_or(|back| event.at < back);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.host != host || !down(event)),
+            "{events:#?}"
+        );
+        let asks: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.what, What::Asked { .. }))
+            .collect();
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.what,
+                    What::Answered { .. } | What::Failed { .. } | What::Errored { .. }
+                )
+            })
+            .collect();
+        for (ask, end) in asks.iter().zip(&ends) {
+            // With the resolver and one upstream server up, the stream gets records, late at worst.
+            let up =
+                server != Server::Resolver || back.is_some_and(|back| ask.at >= back + 100 * MS);
+            assert!(!up || got_records(&end.what), "{ask:?} {end:?} {events:#?}");
+        }
+        if server == Server::Resolver {
+            // What a dead resolver sent is on the wire for 100 ms, no more.
+            assert!(
+                ends.iter().all(|end| {
+                    !matches!(end.what, What::Answered { .. })
+                        || end.at <= at + 100 * MS
+                        || back.is_some_and(|back| end.at >= back)
+                }),
+                "{events:#?}"
+            );
+            // The cache died with it: the first thing it keeps afterwards is the first entry.
+            let first = events
+                .iter()
+                .filter(|event| event.host == resolver)
+                .find_map(|event| match event.what {
+                    What::Stored { entries, .. } if back.is_some_and(|back| event.at >= back) => {
+                        Some(entries)
+                    }
+                    _ => None,
+                });
+            assert!(first.is_none_or(|entries| entries == 1), "{events:#?}");
+        }
+    });
+}
+
+/// The digest of the trace of a run where each host of the topology goes down under UDP queries in flight, at times
+/// the seed picks.
+fn digest(seed: Seed) -> u64 {
+    let mut world = Topology::new()
+        .upstream(slow())
+        .upstream(upstream())
+        .build(seed);
+    let upstream = world.pick(100 * MS, 900 * MS);
+    let resolver = world.pick(100 * MS, 900 * MS);
+    world.fault(upstream, Fault::Crash(Server::Upstream(0)));
+    world.fault(resolver, Fault::Bounce(Server::Resolver));
+    clients_expecting_records(&mut world, Carrier::Udp);
+    trace::digest(&world.run().expect("the run passes its checks"))
+}
+
+#[test]
+fn one_seed_gives_one_trace_in_two_processes() {
+    let runs = std::cell::Cell::new(0);
+    seed::in_two_processes("one_seed_gives_one_trace_in_two_processes", FEW, |seed| {
+        runs.set(runs.get() + 1);
+        digest(seed)
+    });
+    // The helper runs the scenario, in this process or the child's.
+    assert!(runs.get() > 0);
+}
