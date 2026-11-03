@@ -4,12 +4,11 @@ all_features = true
 # nextest: dedensd's suite takes half the time; it runs no doctests (D103).
 test_tool = "nextest"
 # Mutants no test can observe, or that hang the tests (a timeout costs 240 s each). Matched by file, change and
-# function, never by line, so an edit elsewhere keeps them matching. Checked 2026-11-02 at 43f6d87.
+# function, never by line, so an edit elsewhere keeps them matching; a function made generic matches with or without
+# its parameters (`Client(<N>)?`). Checked 2026-11-03 at 92db76d.
 exclude_re = [
   # `Debug` output is for logs and failing tests: no test reads it.
   '<impl (fmt::)?Debug for ',
-  # The local address is read but used for the cookie only; reading it without cookies changes nothing seen.
-  'replace match guard options\.cookies with true in Client::run',
   # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
@@ -17,8 +16,10 @@ exclude_re = [
   # Equal `Instant`s, an idle timeout equal to the current one: neither happens in a test.
   'replace < with <= in State::stalled',
   'tcp\.rs:\d+:\d+: replace < with <= in read$',
-  # Dropping the stream closes it too.
-  'replace <impl Outbound for TcpStream>::close with \(\)',
+  # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same.
+  'replace <impl Outbound for (TcpStream|Half<W>)>::close with \(\)',
+  # The default trace hook does nothing: its body only marks the argument used.
+  'io\.rs:\d+:\d+: replace Io::sending with \(\)$',
   # How queries are batched into one write is not seen by the server; equal `Instant`s never happen.
   'tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
   # `Same` hashes `u64` keys through `write_u64`; `write` is never called.
@@ -76,6 +77,9 @@ exclude_re = [
   # compression may differ from the capture's), so the shortcut for a reply that needs no cut and no cookie only
   # saves the work.
   'upstream\.rs:\d+:\d+: replace \|\| with && in Answers::answer$',
+  # dedens-sim: turmoil's flush does nothing (it buffers no write), and its write half sends the FIN when dropped, which
+  # it is right after the shutdown.
+  'dedens-sim/src/io\.rs:\d+:\d+: replace <impl AsyncWrite for SimWrite>::(flush|shutdown) -> io::Result<\(\)> with Ok\(\(\)\)$',
   # dedens-sim: a local error of the exchange is an encoding failure, or a local socket error (bind failure, no
   # file descriptor), which no scenario can make and turmoil never produces: the resolver abandons the question for
   # it as `dedensd` does.
@@ -91,8 +95,10 @@ exclude_re = [
   'privileges\.rs:\d+:\d+: replace os::groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
-# Unix, where the mutants shards do not run.
+# Unix, where the mutants shards do not run; Kani's harnesses, built only under `cfg(kani)` and checked by `just kani`
+# (D145).
 exclude_globs = [
   "apps/dedensd/src/sync/loom_slot.rs",
   "apps/dedensd/src/privileges/not_unix.rs",
+  "crates/dedens-proto/src/proofs.rs",
 ]
