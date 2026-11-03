@@ -8,6 +8,10 @@
 //! (RFC 7766 §6.2.3, RFC 7828 §3.2.2, RFC 7858 §3.4); and a reader that reads each message whole, however the
 //! stream is cut (RFC 7766 §8), and hands it to the query waiting for its ID. Queries queue before the connection
 //! is up, so concurrent queries to a server share one connection.
+//!
+//! Generic over [`Io`] (D134): time, tasks and sockets come from it; TLS runs over its streams.
+
+#![deny(clippy::disallowed_methods)]
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
@@ -17,9 +21,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
+use compio::io::util::Splittable;
 use compio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use compio::net::TcpStream;
-use compio::runtime::JoinHandle;
 use compio::rustls::pki_types::ServerName;
 use compio::tls::{TlsConnector, TlsStream};
 use dedens_proto::Query;
@@ -27,6 +30,7 @@ use dedens_proto::edns::EdnsOption;
 use futures_util::io::{AsyncReadExt as _, AsyncWriteExt as _, ReadHalf, WriteHalf};
 
 use crate::exchange::after;
+use crate::io::{Compio, Io, Stream};
 use crate::tls::{self, Trust};
 
 /// Why a TCP or TLS exchange failed.
@@ -106,20 +110,30 @@ impl From<SocketAddr> for Link {
 
 /// TCP and TLS connections, one per server, opened on first use and closed when idle (D27).
 #[derive(Debug)]
-pub struct TcpPool {
+pub struct TcpPool<N: Io = Compio> {
+    io: N,
     idle: Duration,
     trust: Trust,
     /// Built at the first TLS connection.
     tls: OnceCell<TlsConnector>,
-    connections: RefCell<HashMap<Link, Connection>>,
+    connections: RefCell<HashMap<Link, Connection<N>>>,
 }
 
 impl TcpPool {
-    /// No connection yet; each closes after `idle` without a query waiting, and gives up connecting after `idle`.
-    /// TLS trusts the system's certificate authorities.
+    /// No connection yet, on compio; each closes after `idle` without a query waiting, and gives up connecting after
+    /// `idle`. TLS trusts the system's certificate authorities.
     #[must_use]
     pub fn new(idle: Duration) -> Self {
+        Self::with_io(Compio, idle)
+    }
+}
+
+impl<N: Io> TcpPool<N> {
+    /// As [`TcpPool::new`], on `io`.
+    #[must_use]
+    pub fn with_io(io: N, idle: Duration) -> Self {
         Self {
+            io,
             idle,
             trust: Trust::System,
             tls: OnceCell::new(),
@@ -161,8 +175,8 @@ impl TcpPool {
             for _ in 0..2 {
                 // Held while the query waits: a connection replaced in the pool lives until its queries are answered.
                 let connection = self.connection(&link)?;
-                let sent = Instant::now();
-                let response = match connection.send(wire) {
+                let sent = self.io.now();
+                let response = match connection.send(wire, sent) {
                     Ok(response) => response,
                     // It took no more queries: the next is new.
                     Err(TcpError::Closed) => continue,
@@ -181,7 +195,7 @@ impl TcpPool {
             }
             Err(TcpError::Closed)
         };
-        let answered = compio::time::timeout_at(deadline, attempt).await;
+        let answered = self.io.timeout_at(deadline, attempt).await;
         answered.unwrap_or_else(|_| {
             if let Some((connection, sent)) = last {
                 connection.state.borrow_mut().stalled(sent);
@@ -203,7 +217,10 @@ impl TcpPool {
     ) -> Result<SocketAddr, TcpError> {
         let connection = self.connection(&link.into())?;
         // Ends when the connecting does: nothing is ever sent.
-        let opened = compio::time::timeout_at(deadline, connection.opening.recv_async()).await;
+        let opened = self
+            .io
+            .timeout_at(deadline, connection.opening.recv_async())
+            .await;
         let state = connection.state.borrow();
         match (state.local, opened) {
             (Some(local), _) => Ok(local),
@@ -216,7 +233,7 @@ impl TcpPool {
     }
 
     /// The connection over `link` taking queries, or a new one.
-    fn connection(&self, link: &Link) -> Result<Connection, TcpError> {
+    fn connection(&self, link: &Link) -> Result<Connection<N>, TcpError> {
         let mut connections = self.connections.borrow_mut();
         if let Some(open) = connections.get(link)
             && open.state.borrow().takes_queries()
@@ -227,7 +244,7 @@ impl TcpPool {
             Link::Tcp(_) => None,
             Link::Tls(..) => Some(self.connector()?),
         };
-        let fresh = Connection::open(link.clone(), tls, self.idle);
+        let fresh = Connection::open(&self.io, link.clone(), tls, self.idle);
         connections.insert(link.clone(), fresh.clone());
         Ok(fresh)
     }
@@ -253,12 +270,27 @@ fn id_of(wire: &[u8]) -> Option<u16> {
 }
 
 /// One connection: its task, cancelled when the last clone drops, and what the task shares with the queries.
-#[derive(Debug, Clone)]
-struct Connection {
+#[derive(Debug)]
+struct Connection<N: Io> {
     state: Rc<RefCell<State>>,
     /// Disconnected once the connection is open or failed to open.
     opening: flume::Receiver<()>,
-    _task: Rc<JoinHandle<()>>,
+    _task: Rc<N::Task>,
+}
+
+/// By hand: `derive(Clone)` would ask `N::Task` to be `Clone`, and the connection shares its task.
+impl<N: Io> Clone for Connection<N> {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the field is named for being held, never read"
+    )]
+    fn clone(&self) -> Self {
+        Self {
+            state: Rc::clone(&self.state),
+            opening: self.opening.clone(),
+            _task: Rc::clone(&self._task),
+        }
+    }
 }
 
 /// Messages a connection queues for its writer: those past them go on another connection. A query is small, so
@@ -314,12 +346,12 @@ impl State {
     }
 }
 
-impl Connection {
+impl<N: Io> Connection<N> {
     /// Starts connecting over `link`, with TLS by `tls`; queries queue meanwhile.
-    fn open(link: Link, tls: Option<TlsConnector>, idle: Duration) -> Self {
+    fn open(io: &N, link: Link, tls: Option<TlsConnector>, idle: Duration) -> Self {
         let (opened, opening) = flume::bounded(0);
         let (outgoing, queue) = flume::bounded(QUEUE);
-        let now = Instant::now();
+        let now = io.now();
         let state = Rc::new(RefCell::new(State {
             waiting: HashMap::new(),
             outgoing: Some(outgoing),
@@ -329,7 +361,15 @@ impl Connection {
             read: now,
             idle,
         }));
-        let task = compio::runtime::spawn(run(link, tls, Rc::clone(&state), queue, opened, idle));
+        let task = io.spawn(run(
+            io.clone(),
+            link,
+            tls,
+            Rc::clone(&state),
+            queue,
+            opened,
+            idle,
+        ));
         Self {
             state,
             opening,
@@ -337,8 +377,8 @@ impl Connection {
         }
     }
 
-    /// Queues `wire` under an ID free on the connection, and returns the wait for its response.
-    fn send(&self, wire: &[u8]) -> Result<flume::Receiver<Vec<u8>>, TcpError> {
+    /// Queues `wire` at `now` under an ID free on the connection, and returns the wait for its response.
+    fn send(&self, wire: &[u8], now: Instant) -> Result<flume::Receiver<Vec<u8>>, TcpError> {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         let (Some(mut framed), Some(id)) = (frame(wire), id_of(wire)) else {
@@ -368,7 +408,7 @@ impl Connection {
         }
         let (sender, response) = flume::bounded(1);
         state.waiting.insert(id, sender);
-        state.last = Instant::now();
+        state.last = now;
         Ok(response)
     }
 }
@@ -376,7 +416,8 @@ impl Connection {
 /// Connects, and shakes hands with `tls` over a TLS link, within the idle timeout; then reads and writes until
 /// the connection closes, each write within the idle timeout too. The `idle` timeout is the pool's: the state's is
 /// zero already once the queue filled before the connection opened.
-async fn run(
+async fn run<N: Io>(
+    io: N,
     link: Link,
     tls: Option<TlsConnector>,
     state: Rc<RefCell<State>>,
@@ -384,9 +425,10 @@ async fn run(
     opened: flume::Sender<()>,
     idle: Duration,
 ) {
-    let deadline = after(Instant::now(), idle);
+    let deadline = after(io.now(), idle);
     let connected = async {
-        let stream = TcpStream::connect(link.addr())
+        let stream = io
+            .tcp_connect(link.addr())
             .await
             .map_err(TcpError::Connect)?;
         // Queries are small and each waits for its answer: send them without delay (RFC 7766 §10).
@@ -403,7 +445,8 @@ async fn run(
         };
         Ok((open, local))
     };
-    let connected = compio::time::timeout_at(deadline, connected)
+    let connected = io
+        .timeout_at(deadline, connected)
         .await
         .unwrap_or_else(|_| Err(TcpError::Connect(io::ErrorKind::TimedOut.into())));
     let open = match connected {
@@ -421,34 +464,43 @@ async fn run(
     drop(opened);
     match open {
         Open::Plain(stream) => {
-            let (reader, writer) = stream.into_split();
-            serve(BufReader::new(reader), writer, &state, &queue, idle).await;
+            let (reader, writer) = stream.split();
+            serve(
+                &io,
+                BufReader::new(reader),
+                Half(writer),
+                &state,
+                &queue,
+                idle,
+            )
+            .await;
         }
         Open::Secured(stream) => {
             let (reader, writer) = Polled::halves(*stream);
-            serve(reader, writer, &state, &queue, idle).await;
+            serve(&io, reader, writer, &state, &queue, idle).await;
         }
     }
 }
 
 /// An open connection.
-enum Open {
+enum Open<S: Stream> {
     /// Over TCP.
-    Plain(TcpStream),
+    Plain(S),
     /// Over TLS.
-    Secured(Box<TlsStream<TcpStream>>),
+    Secured(Box<TlsStream<S>>),
 }
 
 /// Runs the reader on a task of its own, and the writer.
-async fn serve(
+async fn serve<N: Io>(
+    io: &N,
     reader: impl Inbound,
     writer: impl Outbound,
     state: &Rc<RefCell<State>>,
     queue: &flume::Receiver<Vec<u8>>,
     limit: Duration,
 ) {
-    let _reader = compio::runtime::spawn(read(reader, Rc::clone(state)));
-    write(writer, state, queue, limit).await;
+    let _reader = io.spawn(read(io.clone(), reader, Rc::clone(state)));
+    write(io, writer, state, queue, limit).await;
 }
 
 /// The reading side of a connection, one message at a time.
@@ -480,13 +532,26 @@ impl<R: AsyncRead + 'static> Inbound for BufReader<R> {
     }
 }
 
-impl Outbound for TcpStream {
+impl Outbound for compio::net::TcpStream {
     async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>> {
         AsyncWriteExt::write_all(self, batch).await
     }
 
     async fn close(&mut self) {
         let _ = self.shutdown().await;
+    }
+}
+
+/// The write half of a [`Stream`], written to by compio's traits.
+struct Half<W>(W);
+
+impl<W: AsyncWrite> Outbound for Half<W> {
+    async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>> {
+        AsyncWriteExt::write_all(&mut self.0, batch).await
+    }
+
+    async fn close(&mut self) {
+        let _ = self.0.shutdown().await;
     }
 }
 
@@ -535,7 +600,8 @@ const BATCH_LEN: usize = 65535;
 /// wake-up of the server, for many. Stops when a write fails or takes longer than `limit`, as to a server that no
 /// longer reads, or when the connection closes; closes the connection once no query has been waiting for the idle
 /// timeout (RFC 7766 §6.2.3), and shuts its side down.
-async fn write(
+async fn write<N: Io>(
+    io: &N,
     mut stream: impl Outbound,
     state: &RefCell<State>,
     queue: &flume::Receiver<Vec<u8>>,
@@ -547,7 +613,7 @@ async fn write(
     loop {
         let wake = {
             let state = state.borrow();
-            let now = Instant::now();
+            let now = io.now();
             let idle_end = after(state.last, state.idle);
             // The queries waiting are looked at once idle only.
             if now < idle_end {
@@ -558,7 +624,7 @@ async fn write(
                 break;
             }
         };
-        match compio::time::timeout_at(wake, queue.recv_async()).await {
+        match io.timeout_at(wake, queue.recv_async()).await {
             // The time to look again.
             Err(_) => {}
             // An empty message, the reader's wake-up call, writes nothing.
@@ -570,11 +636,9 @@ async fn write(
                 {
                     batch.extend_from_slice(&framed);
                 }
-                match compio::time::timeout_at(
-                    after(Instant::now(), limit),
-                    stream.write_all(batch),
-                )
-                .await
+                match io
+                    .timeout_at(after(io.now(), limit), stream.write_all(batch))
+                    .await
                 {
                     Ok(BufResult(Ok(()), written)) => batch = written,
                     Ok(BufResult(Err(_), _)) | Err(_) => break,
@@ -585,20 +649,20 @@ async fn write(
     }
     state.borrow_mut().close();
     // The server closes its side in turn.
-    let _ = compio::time::timeout_at(after(Instant::now(), limit), stream.close()).await;
+    let _ = io.timeout_at(after(io.now(), limit), stream.close()).await;
 }
 
 /// Reads messages and hands each to the query waiting for its ID. A message no query waits for is dropped, and
 /// proves nothing of the server: it neither keeps the connection from idling nor from being found stalled (D108).
 /// Closes on end or error.
-async fn read(mut stream: impl Inbound, state: Rc<RefCell<State>>) {
+async fn read<N: Io>(io: N, mut stream: impl Inbound, state: Rc<RefCell<State>>) {
     while let Ok(message) = stream.message().await {
         let mut state = state.borrow_mut();
         let Some(id) = id_of(&message) else { continue };
         let Some(waiting) = state.waiting.remove(&id) else {
             continue;
         };
-        state.last = Instant::now();
+        state.last = io.now();
         state.read = state.last;
         if let Some(timeout) = keepalive(&message)
             && timeout < state.idle

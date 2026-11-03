@@ -6,6 +6,10 @@
 //! socket's task receives for every query on it. The ID and the socket are what an off-path attacker must guess:
 //! 16 bits and the log2 of the pool size (RFC 5452 §9.2). Retries go over the same socket, so a late response to
 //! an earlier try still counts.
+//!
+//! Generic over [`Io`] (D134): time, tasks and sockets come from it.
+
+#![deny(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -17,8 +21,8 @@ use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
-use compio::net::UdpSocket;
-use compio::runtime::{JoinHandle, spawn};
+
+use crate::io::{Compio, Io, Udp};
 
 /// Datagrams kept for a query before it reads them; past them, the next for it are dropped. Per query, so one
 /// flooded or slow does not take the room of the others on its socket (D108).
@@ -26,19 +30,29 @@ const INBOX: usize = 4;
 
 /// Sockets per server, opened on first use and kept for the life of the pool.
 #[derive(Debug)]
-pub struct UdpPool {
+pub struct UdpPool<N: Io = Compio> {
+    io: N,
     size: usize,
-    servers: RefCell<HashMap<SocketAddr, Sockets>>,
+    servers: RefCell<HashMap<SocketAddr, Sockets<N>>>,
 }
 
 /// The sockets of one server, by index; `None` until first used.
-type Sockets = Box<[Option<Rc<Mux>>]>;
+type Sockets<N> = Box<[Option<Rc<Mux<N>>>]>;
 
 impl UdpPool {
-    /// A pool of `size` sockets per server, none open yet.
+    /// A pool of `size` sockets per server on compio, none open yet.
     #[must_use]
     pub fn new(size: usize) -> Self {
+        Self::with_io(Compio, size)
+    }
+}
+
+impl<N: Io> UdpPool<N> {
+    /// A pool of `size` sockets per server on `io`, none open yet.
+    #[must_use]
+    pub fn with_io(io: N, size: usize) -> Self {
         Self {
+            io,
             size: size.max(1),
             servers: RefCell::default(),
         }
@@ -50,7 +64,7 @@ impl UdpPool {
     /// # Errors
     ///
     /// The socket cannot be opened or connected.
-    pub async fn query(&self, server: SocketAddr, pick: usize, id: u16) -> io::Result<UdpQuery> {
+    pub async fn query(&self, server: SocketAddr, pick: usize, id: u16) -> io::Result<UdpQuery<N>> {
         let index = pick % self.size;
         let open = self
             .servers
@@ -60,7 +74,7 @@ impl UdpPool {
         let mux = if let Some(mux) = open {
             mux
         } else {
-            let mux = Rc::new(Mux::connect(server).await?);
+            let mux = Rc::new(Mux::connect(self.io.clone(), server).await?);
             // Another query may have opened it meanwhile: the first stays.
             let mut servers = self.servers.borrow_mut();
             let sockets = servers
@@ -75,25 +89,27 @@ impl UdpPool {
 
 /// A socket connected to one server, and the task receiving for its queries.
 #[derive(Debug)]
-struct Mux {
-    socket: Rc<UdpSocket>,
+struct Mux<N: Io> {
+    io: N,
+    socket: Rc<N::Udp>,
     /// Its local address, asked once: a system call.
     local: SocketAddr,
     waiting: Rc<RefCell<Waiting>>,
     /// Cancelled with the socket.
-    _receiving: JoinHandle<()>,
+    _receiving: N::Task,
 }
 
-impl Mux {
+impl<N: Io> Mux<N> {
     /// Opens a socket on port 0 of the unspecified address of `server`'s family, connected to `server`, and starts
     /// its task.
-    async fn connect(server: SocketAddr) -> io::Result<Self> {
-        let socket = UdpSocket::bind(unspecified(server)).await?;
+    async fn connect(io: N, server: SocketAddr) -> io::Result<Self> {
+        let socket = io.udp_bind(unspecified(server)).await?;
         socket.connect(server).await?;
         let local = socket.local_addr()?;
         let (socket, waiting) = (Rc::new(socket), Rc::<RefCell<Waiting>>::default());
-        let receiving = spawn(receive(Rc::clone(&socket), Rc::clone(&waiting)));
+        let receiving = io.spawn(receive(io.clone(), Rc::clone(&socket), Rc::clone(&waiting)));
         Ok(Self {
+            io,
             socket,
             local,
             waiting,
@@ -112,7 +128,7 @@ pub(crate) fn unspecified(addr: SocketAddr) -> SocketAddr {
 
 /// Receives the datagrams of `socket` for the queries `waiting`, each whole: a query may advertise any UDP payload
 /// size (RFC 6891 §6.2.3), and one buffer of the largest serves them all.
-async fn receive(socket: Rc<UdpSocket>, waiting: Rc<RefCell<Waiting>>) {
+async fn receive<N: Io>(io: N, socket: Rc<N::Udp>, waiting: Rc<RefCell<Waiting>>) {
     /// The largest UDP payload.
     const MAX_DATAGRAM: usize = 65535;
     /// The pause after an error that follows an error, so one that keeps coming does not spin.
@@ -132,7 +148,9 @@ async fn receive(socket: Rc<UdpSocket>, waiting: Rc<RefCell<Waiting>>) {
             Err(error) => {
                 waiting.borrow_mut().fail(error.kind());
                 if failed {
-                    compio::time::sleep(PAUSE).await;
+                    let _ = io
+                        .timeout_at(io.now() + PAUSE, std::future::pending::<()>())
+                        .await;
                 }
                 failed = true;
             }
@@ -210,12 +228,12 @@ impl Waiting {
 
 /// A query waiting on a socket of a [`UdpPool`]; dropping it stops the wait.
 #[derive(Debug)]
-pub struct UdpQuery {
-    mux: Rc<Mux>,
+pub struct UdpQuery<N: Io = Compio> {
+    mux: Rc<Mux<N>>,
     token: u64,
 }
 
-impl UdpQuery {
+impl<N: Io> UdpQuery<N> {
     /// The local address: the source address the OS picked to reach the server, and the port.
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
@@ -272,13 +290,15 @@ impl UdpQuery {
             }
             Poll::Pending
         });
-        compio::time::timeout_at(deadline, next)
+        self.mux
+            .io
+            .timeout_at(deadline, next)
             .await
             .map_or(Ok(None), |received| received.map(Some))
     }
 }
 
-impl Drop for UdpQuery {
+impl<N: Io> Drop for UdpQuery<N> {
     fn drop(&mut self) {
         let token = self.token;
         self.mux

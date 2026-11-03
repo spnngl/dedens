@@ -6,6 +6,11 @@
 //! changes with either, and the server cookie is the last one that server sent, kept for the life of the client.
 //! The source address is that of the socket the query goes out of, open before the query is encoded.
 //! A client lives on one thread, as compio tasks do.
+//!
+//! Generic over [`Io`] (D134) for the UDP and TCP transports and the clock and randomness: compio's by default, a
+//! simulation's under test. QUIC, HTTPS and CoAP stay on compio.
+
+#![deny(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,6 +29,7 @@ use crate::doc::{DocError, coap, discover};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
 use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
 use crate::https::{HttpsError, HttpsPool};
+use crate::io::{Compio, Io};
 #[cfg(feature = "odoh")]
 use crate::odoh::{self, OdohError};
 use crate::quic::{QuicError, QuicPool};
@@ -47,7 +53,7 @@ const UDP_SOCKETS: usize = 256;
 pub enum ClientError {
     /// No randomness for the ID or the client cookie.
     #[error("no randomness: {0}")]
-    Random(getrandom::Error),
+    Random(io::Error),
     /// The query cannot be encoded.
     #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
@@ -226,9 +232,10 @@ impl Server {
 
 /// Sends queries and returns their responses, keeping TCP, TLS, QUIC and HTTP/3 connections and cookies per server.
 #[derive(Debug)]
-pub struct Client {
-    udp: UdpPool,
-    tcp: TcpPool,
+pub struct Client<N: Io = Compio> {
+    io: N,
+    udp: UdpPool<N>,
+    tcp: TcpPool<N>,
     quic: QuicPool,
     https: HttpsPool,
     /// The key configurations of the Oblivious `DoH` targets asked (D79).
@@ -239,7 +246,7 @@ pub struct Client {
     random: RefCell<Random>,
 }
 
-/// Random bytes from `getrandom`, drawn [`RANDOM_BATCH`] at a time and each used once: one system call per 64
+/// Random bytes from [`Io::random`], drawn [`RANDOM_BATCH`] at a time and each used once: one system call per 64
 /// exchanges instead of one each.
 #[derive(Debug)]
 struct Random {
@@ -251,15 +258,15 @@ struct Random {
 const RANDOM_BATCH: usize = 256;
 
 impl Random {
-    /// The next `N` bytes.
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], ClientError> {
-        if self.used + N > RANDOM_BATCH {
-            getrandom::fill(&mut self.bytes).map_err(ClientError::Random)?;
+    /// The next `LEN` bytes.
+    fn take<const LEN: usize>(&mut self, io: &impl Io) -> Result<[u8; LEN], ClientError> {
+        if self.used + LEN > RANDOM_BATCH {
+            io.random(&mut self.bytes).map_err(ClientError::Random)?;
             self.used = 0;
         }
-        let mut taken = [0; N];
-        taken.copy_from_slice(&self.bytes[self.used..self.used + N]);
-        self.used += N;
+        let mut taken = [0; LEN];
+        taken.copy_from_slice(&self.bytes[self.used..self.used + LEN]);
+        self.used += LEN;
         Ok(taken)
     }
 }
@@ -279,12 +286,21 @@ impl Default for Client {
 }
 
 impl Client {
-    /// No connection and no cookie yet.
+    /// No connection and no cookie yet, on compio.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_io(Compio)
+    }
+}
+
+impl<N: Io> Client<N> {
+    /// As [`Client::new`], on `io`.
+    #[must_use]
+    pub fn with_io(io: N) -> Self {
         Self {
-            udp: UdpPool::new(UDP_SOCKETS),
-            tcp: TcpPool::new(TCP_IDLE),
+            udp: UdpPool::with_io(io.clone(), UDP_SOCKETS),
+            tcp: TcpPool::with_io(io.clone(), TCP_IDLE),
+            io,
             quic: QuicPool::new(TCP_IDLE),
             https: HttpsPool::new(TCP_IDLE),
             #[cfg(feature = "odoh")]
@@ -411,7 +427,7 @@ impl Client {
         &self,
         server: SocketAddr,
     ) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
-        let random = self.random.borrow_mut().take::<14>()?;
+        let random = self.draw::<14>()?;
         discover(server, random).await
     }
 
@@ -425,7 +441,7 @@ impl Client {
     ) -> Result<Response, ClientError> {
         let server = target.addr;
         // The ID, then the UDP socket of the pool.
-        let random = self.random.borrow_mut().take::<4>()?;
+        let random = self.draw::<4>()?;
         query.header.id = u16::from_be_bytes([random[0], random[1]]);
         let pick = usize::from(u16::from_be_bytes([random[2], random[3]]));
         // The socket first: its address is the source the cookie goes with. One UDP socket for the whole exchange,
@@ -451,7 +467,7 @@ impl Client {
             }
             // The connection's address, for the cookie only.
             Some(link) if options.cookies => {
-                let deadline = after(Instant::now(), options.timeout);
+                let deadline = after(self.io.now(), options.timeout);
                 match self.tcp.local_addr(link, deadline).await {
                     Ok(local) => Some(local),
                     Err(TcpError::TimedOut) => {
@@ -475,11 +491,11 @@ impl Client {
             asked.tries = NonZeroU8::MIN;
         }
         // The IDs of the queries a fallback changes (RFC 5452 §9.2, D114).
-        let spare = self.random.borrow_mut().take::<8>()?;
+        let spare = self.draw::<8>()?;
         let spare_ids = [0, 2, 4, 6].map(|at| u16::from_be_bytes([spare[at], spare[at + 1]]));
-        let exchange = Exchange::start(query, server, asked, spare_ids, Instant::now())?;
+        let exchange = Exchange::start(query, server, asked, spare_ids, self.io.now())?;
         let mut progress = if slow {
-            exchange.lose(Instant::now())
+            exchange.lose(self.io.now())
         } else {
             Progress::Send(exchange)
         };
@@ -488,6 +504,7 @@ impl Client {
         let mut response = loop {
             progress = match progress {
                 Progress::Send(next) => {
+                    self.io.sending(&next);
                     self.keep_cookie(pair, next.cookie());
                     self.step(next, (target, proxy), udp.as_mut(), options, &mut http)
                         .await?
@@ -502,6 +519,27 @@ impl Client {
         response.http = http;
         self.keep_cookie(pair, response.cookie);
         Ok(response)
+    }
+
+    /// The next `LEN` random bytes.
+    fn draw<const LEN: usize>(&self) -> Result<[u8; LEN], ClientError> {
+        self.random.borrow_mut().take(&self.io)
+    }
+
+    /// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with
+    /// its ID, so a response that does not match ends the wait at `deadline`.
+    fn answered(
+        &self,
+        exchange: Exchange,
+        transport: Transport,
+        bytes: Vec<u8>,
+        deadline: Instant,
+    ) -> Progress {
+        let server = exchange.server();
+        match exchange.receive(server, transport, bytes, self.io.now()) {
+            Progress::Wait(next) => next.time_out(deadline.max(self.io.now())),
+            progress => progress,
+        }
     }
 
     /// Keeps the server cookie of `cookie`, if it has one, for the next query of `pair` (RFC 7873 §5.3): a cookie
@@ -520,7 +558,7 @@ impl Client {
         &self,
         exchange: Exchange,
         (target, proxy): (&Server, Option<&Server>),
-        udp: Option<&mut UdpQuery>,
+        udp: Option<&mut UdpQuery<N>>,
         options: &Options,
         http: &mut Option<Http>,
     ) -> Result<Progress, ClientError> {
@@ -543,9 +581,9 @@ impl Client {
                 Ok(reply) => {
                     debug!(%server, version = ?reply.http.version, status = %reply.http.status, "HTTP response");
                     *http = Some(reply.http);
-                    Ok(answered(exchange, transport, reply.wire, deadline))
+                    Ok(self.answered(exchange, transport, reply.wire, deadline))
                 }
-                Err(HttpsError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+                Err(HttpsError::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
         }
@@ -553,7 +591,7 @@ impl Client {
             return self.oblivious(exchange, target, proxy, http).await;
         }
         if transport == Transport::Coap {
-            let random = self.random.borrow_mut().take::<14>()?;
+            let random = self.draw::<14>()?;
             // Boxed, as HTTPS is: with its deadline the CoAP exchange's future grows every caller's past 16 KiB.
             let asked = Box::pin(coap(
                 exchange.wire(),
@@ -563,10 +601,10 @@ impl Client {
                 deadline,
             ));
             return match asked.await {
-                Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
+                Ok(bytes) => Ok(self.answered(exchange, transport, bytes, deadline)),
                 #[cfg(feature = "doc")]
                 Err(ClientError::Doc(DocError::TimedOut)) => {
-                    Ok(exchange.time_out(Instant::now().max(deadline)))
+                    Ok(exchange.time_out(self.io.now().max(deadline)))
                 }
                 Err(error) => Err(error),
             };
@@ -577,8 +615,8 @@ impl Client {
                 .exchange(server, target.certified(), exchange.wire(), deadline)
                 .await
             {
-                Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
-                Err(QuicError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+                Ok(bytes) => Ok(self.answered(exchange, transport, bytes, deadline)),
+                Err(QuicError::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
         }
@@ -597,10 +635,10 @@ impl Client {
                 let deadline = exchange.deadline();
                 let bytes = match channel.recv(deadline).await {
                     Ok(Some(bytes)) => bytes,
-                    Ok(None) => return Ok(exchange.time_out(Instant::now().max(deadline))),
+                    Ok(None) => return Ok(exchange.time_out(self.io.now().max(deadline))),
                     // Maybe another query's: the try is lost, not the exchange, unless it was the last.
                     Err(error) => {
-                        return match exchange.lose(Instant::now()) {
+                        return match exchange.lose(self.io.now()) {
                             Progress::Done(Err(Failure::TimedOut { .. })) => {
                                 Err(ClientError::Udp(error))
                             }
@@ -608,15 +646,15 @@ impl Client {
                         };
                     }
                 };
-                match exchange.receive(server, Transport::Udp, bytes, Instant::now()) {
+                match exchange.receive(server, Transport::Udp, bytes, self.io.now()) {
                     Progress::Wait(next) => exchange = next,
                     progress => return Ok(progress),
                 }
             }
         };
         match self.tcp.exchange(link, exchange.wire(), deadline).await {
-            Ok(bytes) => Ok(answered(exchange, transport, bytes, deadline)),
-            Err(TcpError::TimedOut) => Ok(exchange.time_out(Instant::now().max(deadline))),
+            Ok(bytes) => Ok(self.answered(exchange, transport, bytes, deadline)),
+            Err(TcpError::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
             Err(error) => Err(error.into()),
         }
     }
@@ -641,10 +679,10 @@ impl Client {
             Ok(reply) => {
                 debug!(server = %exchange.server(), status = %reply.http.status, "Oblivious DoH response");
                 *http = Some(reply.http);
-                Ok(answered(exchange, Transport::Odoh, reply.wire, deadline))
+                Ok(self.answered(exchange, Transport::Odoh, reply.wire, deadline))
             }
             Err(OdohError::Https(HttpsError::TimedOut)) => {
-                Ok(exchange.time_out(Instant::now().max(deadline)))
+                Ok(exchange.time_out(self.io.now().max(deadline)))
             }
             Err(error) => Err(error.into()),
         }
@@ -687,7 +725,7 @@ impl Client {
         let cookies = match all.entry(pair) {
             Entry::Occupied(known) => known.into_mut(),
             Entry::Vacant(slot) => slot.insert(Cookies {
-                client: self.random.borrow_mut().take()?,
+                client: self.draw()?,
                 returned: None,
             }),
         };
@@ -722,24 +760,9 @@ async fn discover(
     Err(ClientError::NotBuilt("CoAP"))
 }
 
-/// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with its
-/// ID, so a response that does not match ends the wait at `deadline`.
-fn answered(
-    exchange: Exchange,
-    transport: Transport,
-    bytes: Vec<u8>,
-    deadline: Instant,
-) -> Progress {
-    let server = exchange.server();
-    match exchange.receive(server, transport, bytes, Instant::now()) {
-        Progress::Wait(next) => next.time_out(deadline.max(Instant::now())),
-        progress => progress,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{RANDOM_BATCH, Random};
+    use super::{Compio, RANDOM_BATCH, Random};
 
     /// Takes across a refill come whole, and fresh bytes are not the zeros the batch starts with.
     #[test]
@@ -748,9 +771,9 @@ mod tests {
             bytes: [0; RANDOM_BATCH],
             used: RANDOM_BATCH - 4,
         };
-        assert_eq!(random.take::<4>().ok(), Some([0; 4]));
+        assert_eq!(random.take::<4>(&Compio).ok(), Some([0; 4]));
         let fresh: Vec<_> = (0..4)
-            .map(|_| random.take::<8>().expect("randomness"))
+            .map(|_| random.take::<8>(&Compio).expect("randomness"))
             .collect();
         assert_eq!(random.used, 32);
         assert!(fresh.iter().any(|bytes| *bytes != [0; 8]));
