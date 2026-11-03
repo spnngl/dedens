@@ -82,6 +82,8 @@ pub struct Answers {
     tcp: Behaviour,
     /// The connections the host accepted, over every start of it and in every clone of these answers.
     connections: Rc<Cell<usize>>,
+    /// The connections that ended, as [`Answers::connections`].
+    ended: Rc<Cell<usize>>,
 }
 
 /// A capture, as sent to a query with DO and as sent to one without (RFC 4035 §3.2.1): a server sends the
@@ -271,6 +273,13 @@ impl Answers {
     /// Notes an accepted connection.
     pub(crate) fn accepted(&self) {
         self.connections.set(self.connections.get() + 1);
+    }
+
+    /// The number of TCP connections that ended so far, closed by the client or by the server, as
+    /// [`Answers::connections`]: when a pool lets its connections go.
+    #[must_use]
+    pub fn ended(&self) -> Rc<Cell<usize>> {
+        Rc::clone(&self.ended)
     }
 
     /// Has the server behave as `behaviour` over TCP: it accepts connections whatever it does with them.
@@ -561,6 +570,7 @@ async fn connection(
             std::panic::resume_unwind(error.into_panic());
         }
     }
+    answers.ended.set(answers.ended.get() + 1);
 }
 
 #[cfg(test)]
