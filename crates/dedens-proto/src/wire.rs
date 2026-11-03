@@ -900,6 +900,116 @@ mod tests {
         assert_eq!(find(&same[MAX_COMPARES + 1]), None, "never added");
     }
 
+    /// A table of `names`, added in turn as if written one after the other after a header, and what was written.
+    fn table_of(names: &[Name<'_>], seed: u64) -> (NameTable, Vec<u8>) {
+        let mut written = vec![0; HEADER_LEN];
+        let mut table = NameTable::with_seed(seed);
+        for name in names {
+            let offset = u16::try_from(written.len()).unwrap();
+            assert!(table.add(offset, hash_of(name, seed)));
+            written.extend(wire_of(name));
+        }
+        (table, written)
+    }
+
+    /// The names `n0.`, `n1.`... and the hashes the table keys them on.
+    fn numbered(seed: u64) -> impl Iterator<Item = (Name<'static>, u32)> {
+        (0..).map(move |i| {
+            let name = name_of(&[format!("n{i}").as_bytes()]);
+            let hash = hash_of(&name, seed);
+            (name, hash)
+        })
+    }
+
+    /// Names past a full group go to the next one, from the last group round to the first, and are found there.
+    #[test]
+    fn names_past_a_full_group_are_found_in_the_next() {
+        const SEED: u64 = 1;
+        // The last group: the top 5 bits of the hash all set.
+        let names: Vec<_> = numbered(SEED)
+            .filter(|&(_, hash)| hash >> 27 == u32::MAX >> 27)
+            .map(|(name, _)| name)
+            .take(GROUP + 2)
+            .collect();
+        let (table, written) = table_of(&names, SEED);
+        for name in &names {
+            let found = table.find(&written, &wire_of(name), hash_of(name, SEED));
+            assert!(found.is_some(), "{name}");
+        }
+    }
+
+    /// Names of one tag and of other homes are each found in their own group, more of them than a lookup compares.
+    #[test]
+    fn names_of_one_tag_in_other_groups_are_each_found() {
+        const SEED: u64 = 1;
+        let mut buckets = std::collections::HashMap::<u8, Vec<(u32, Name<'static>)>>::new();
+        let names = numbered(SEED)
+            .find_map(|(name, hash)| {
+                // The home: the top 5 bits of the hash.
+                let home = hash >> 27;
+                let bucket = buckets.entry(NameTable::tag(hash)).or_default();
+                if bucket.iter().all(|&(other, _)| other != home) {
+                    bucket.push((home, name));
+                }
+                (bucket.len() > MAX_COMPARES).then(|| {
+                    bucket
+                        .iter()
+                        .map(|(_, name)| name.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap();
+        let (table, written) = table_of(&names, SEED);
+        for name in &names {
+            let found = table.find(&written, &wire_of(name), hash_of(name, SEED));
+            assert!(found.is_some(), "{name}");
+        }
+    }
+
+    /// Labels longer than a word that differ only in their last byte hash apart: written again, each is a pointer.
+    #[test]
+    fn long_labels_that_differ_at_their_end_are_each_pointed_to() {
+        let names: Vec<_> = (0..=MAX_COMPARES)
+            .map(|i| name_of(&[format!("abcdefghij{i}").as_bytes()]))
+            .collect();
+        let once = compressed(&names).len();
+        let twice = compressed(&[names.clone(), names.clone()].concat()).len();
+        assert_eq!(twice - once, 2 * names.len());
+    }
+
+    /// A rolled-back name is forgotten and frees its room in the table; the names before the cut stay found.
+    #[test]
+    fn a_rolled_back_name_frees_its_room() {
+        const SEED: u64 = 1;
+        let names: Vec<_> = numbered(SEED).map(|(name, _)| name).take(220).collect();
+        let (kept, cut, after) = (&names[..50], &names[50..100], &names[100..]);
+        assert!(kept.len() + cut.len() + after.len() > TABLE_CAPACITY);
+        assert!(kept.len() + after.len() <= TABLE_CAPACITY);
+        let mut buf = [0; 4096];
+        let mut w = Writer::with_names(&mut buf, Some(NameTable::with_seed(SEED)));
+        w.put_bytes(&[0; HEADER_LEN]).unwrap();
+        for name in kept {
+            w.put_name_compressed(name).unwrap();
+        }
+        let at = w.len();
+        for name in cut {
+            w.put_name_compressed(name).unwrap();
+        }
+        w.truncate(at);
+        for name in after {
+            w.put_name_compressed(name).unwrap();
+        }
+        let before = w.len();
+        for name in kept.iter().chain(after) {
+            w.put_name_compressed(name).unwrap();
+        }
+        assert_eq!(
+            w.len() - before,
+            2 * (kept.len() + after.len()),
+            "a pointer each"
+        );
+    }
+
     /// Labels that differ by bits chosen to cancel in a multiplicative hash of the words of a name (the
     /// shape `flips` of the `message` bench has) hash apart, whatever the seed.
     #[test]
