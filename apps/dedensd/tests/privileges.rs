@@ -88,7 +88,7 @@ fn a_server_not_started_as_root_refuses_another_user() {
     );
 }
 
-/// D122: `user` naming the user and group the server already runs as drops nothing, and the server serves.
+/// D122: `user` naming the user and group the server already runs as drops nothing, says so, and the server serves.
 #[test]
 fn the_user_already_running_is_a_no_op() {
     let Some((uid, gid)) = running_as().filter(|(uid, _)| *uid != 0) else {
@@ -103,11 +103,17 @@ fn the_user_already_running_is_a_no_op() {
     .to_vec()
     .expect("a query fits");
     assert_eq!(ask_udp(server.addr, &query).answer.len(), 1);
+    let stderr = server.stderr();
     assert!(
-        !server
-            .stderr()
+        !stderr
             .iter()
             .any(|line| line.contains("dropped privileges"))
+    );
+    assert!(
+        stderr
+            .iter()
+            .any(|line| line.contains("already the user: nothing to drop")),
+        "{stderr:?}"
     );
 }
 

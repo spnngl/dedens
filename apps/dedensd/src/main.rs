@@ -333,7 +333,7 @@ mod tests {
     use super::Driver;
 
     /// D107: a Linux server on `poll` warns, a server on `io_uring` or elsewhere does not; the threads' drivers are
-    /// one name, `mixed` when they differ.
+    /// one name, `mixed` when they differ, `none` without threads.
     #[test]
     fn poll_on_linux_warns() {
         let uring = Driver::of(&[IoUring, IoUring]);
@@ -353,5 +353,6 @@ mod tests {
             warning.starts_with("1 of 3 threads serve on poll"),
             "{warning}"
         );
+        assert_eq!(Driver::of(&[]).name, "none");
     }
 }

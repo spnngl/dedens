@@ -48,14 +48,20 @@ fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) 
 /// `upstream`.
 fn listening(certificates: &Certificates, upstream: SocketAddr) -> (Server, PathBuf, PathBuf) {
     let (certificate, key) = write_pems(certificates, &write_config(""));
-    let server = Server::configured(|listen| {
+    let server = serving(&certificate, &key, upstream);
+    (server, certificate, key)
+}
+
+/// `dedensd` answering over TLS and QUIC on one port with the `certificate` and `key` files, forwarding to
+/// `upstream`.
+fn serving(certificate: &Path, key: &Path, upstream: SocketAddr) -> Server {
+    Server::configured(|listen| {
         format!(
             "listen: ['tls://{listen}', 'quic://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
             certificate.display(),
             key.display()
         )
-    });
-    (server, certificate, key)
+    })
 }
 
 /// The reply of the server at `addr` over `transport`, its certificate checked against `ca`, to the query of the
@@ -166,6 +172,27 @@ fn a_key_readable_by_others_is_refused() {
     let (code, stderr) = common::validate(&text);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(!stderr.contains("by its group"), "{stderr}");
+}
+
+/// D115, D122: a key its group can read is warned about once at the start, the configuration being read again only
+/// after a drop to `user`. Root is not warned of a key it owns (see above), so the test skips as root.
+#[cfg(unix)]
+#[test]
+fn a_key_readable_by_its_group_is_warned_about_once() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if nix::unistd::geteuid().is_root() {
+        return eprintln!("skipped: not as root");
+    }
+    let upstream = Responder::start(&["a"]);
+    let (certificate, key) = write_pems(&certificates(), &write_config(""));
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).expect("mode set");
+    let server = serving(&certificate, &key, upstream.addr);
+    let stderr = server.stderr();
+    let warnings = stderr
+        .iter()
+        .filter(|line| line.contains("by its group"))
+        .count();
+    assert_eq!(warnings, 1, "{stderr:?}");
 }
 
 /// A UDP relay in front of `server`, and the first byte of each datagram the server sends through it.
