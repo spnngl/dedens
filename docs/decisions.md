@@ -1095,8 +1095,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   matrix over `fuzz/fuzz_targets/`, `fail-fast: false`, so a crash stops its own target only), five minutes with
   libFuzzer's `-fork` on every core of the runner, from that target's corpus; `just fuzz-cmin` (`-merge=1`) then
   keeps the inputs that add coverage, saved under a key per run, after a crash too; a crash uploads that target's
-  inputs. Before: the 25
-  targets in turn on one core, 60 s each, the first crash skipping the rest, the corpus only growing. Advisories:
+  inputs. The recipes name the host's target: cargo-fuzz defaults to the one it was built for, musl when
+  install-action falls back to cargo-binstall, where AddressSanitizer cannot link (every job failed so, 2026-11-01
+  to 11-03). Before: the 25 targets in turn on one core, 60 s each, the first crash skipping the rest, the corpus
+  only growing. Advisories:
   `advisories.yml` runs `just deny advisories` each day: an advisory against a crate no pull request touches would
   otherwise wait for the next pull request. Rejected: `rust-audit-check-action` (cargo-audit reads the RustSec
   database cargo-deny already reads, and wants to write issues); a toolchain action (`just toolchains` reads
