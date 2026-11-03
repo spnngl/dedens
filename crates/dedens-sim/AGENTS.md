@@ -28,6 +28,8 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/loss.rs`: loss, delay and reordering on the stub's and the upstream's links; the seed picking both.
 - `tests/crash.rs`: each host crashing or restarting under queries in flight, over UDP and TCP.
 - `tests/forged.rs`: forged and duplicated responses from an attacker on the upstream's host; the seed draws them.
+- `tests/limits.rs`: many clients in a few networks on one resolver under rate limit, cookies, validation shares and
+  access list; two seeded properties.
 
 What a scenario uses, so that it adds test files and no driver code:
 
