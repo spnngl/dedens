@@ -1156,6 +1156,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   cargo-shear does not read (rcgen in `dedens` and `dedensd`, data-encoding in `dedens-bench`), and
   `dedens-bench`'s dependencies, regular ones the benches alone use (D14). The first run found nothing else.
   Rejected: cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
+- D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
+  tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in the
+  `careful` job of `deep.yml` on each pull request, informational. Our code has no `unsafe` (D15), so Miri has
+  nothing of ours to check, and it runs neither io_uring's system calls nor ring's assembly; the `unsafe` is in
+  the dependencies (compio's io_uring driver, rustls and ring, quinn-proto, flume), and careful reaches it through
+  the real tests. Leak checks are off: a leak is no memory error. The sanitizer is Linux-only: cargo-careful's
+  sanitized builds fail to link on macOS, where `just careful` runs without one: from cold, about 7 min for the
+  1799 tests, all passing (2026-11-03). Its own target dir: the checked standard library rebuilds every crate.
 
 ## CLI
 
