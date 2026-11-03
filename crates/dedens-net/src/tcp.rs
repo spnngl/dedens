@@ -14,7 +14,7 @@
 #![deny(clippy::disallowed_methods)]
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -302,8 +302,9 @@ const QUEUE: usize = 1024;
 #[derive(Debug)]
 struct State {
     /// The queries sent and not answered, by the ID they went with. The sender of a query that stopped waiting is
-    /// disconnected, and stays so that its ID is not reused before the response comes (RFC 7766 §6.2.1).
-    waiting: HashMap<u16, flume::Sender<Vec<u8>>>,
+    /// disconnected, and stays so that its ID is not reused before the response comes (RFC 7766 §6.2.1). Ordered,
+    /// so that the queries a close wakes wake in ID order on every run and a seeded simulation replays (D134).
+    waiting: BTreeMap<u16, flume::Sender<Vec<u8>>>,
     /// Framed messages for the writer, at most [`QUEUE`], until the connection closes: dropping it ends the writer.
     /// An empty message only wakes the writer to look at a shorter idle timeout.
     outgoing: Option<flume::Sender<Vec<u8>>>,
@@ -353,7 +354,7 @@ impl<N: Io> Connection<N> {
         let (outgoing, queue) = flume::bounded(QUEUE);
         let now = io.now();
         let state = Rc::new(RefCell::new(State {
-            waiting: HashMap::new(),
+            waiting: BTreeMap::new(),
             outgoing: Some(outgoing),
             local: None,
             failure: None,
