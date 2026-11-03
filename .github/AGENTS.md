@@ -9,4 +9,4 @@ runs. `actionlint` and `zizmor` lint these files.
 `mutants.yml` runs `just mutants-diff` on pull requests: informational, outside the gate (D103). `deep.yml` is the
 other informational workflow, with two jobs: `loom` runs `just loom` (D135) and `sim` runs `just sim 100`, the
 simulation scenarios under random seeds (D133). `ci.yml` runs dedensd's root-only `privileges` tests with `sudo`
-(D122).
+(D122). Scheduled: `fuzz.yml`, a job per fuzz target, and `advisories.yml` (D141); `rapx.yml` weekly (D16).
