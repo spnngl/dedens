@@ -1,7 +1,7 @@
 name: mutants
 
-# Mutation testing of the code a pull request changes (`just mutants-diff`): informational, outside the gate.
-# Whole-workspace runs stay local (D103).
+# Mutation testing of the code a pull request changes (`just mutants-diff`), in shards (D142): informational,
+# outside the gate. Whole-workspace runs stay local (D103).
 on:
   pull_request:
 
@@ -15,23 +15,65 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
+  # renovate: datasource=crate depName=cargo-mutants
+  CARGO_MUTANTS_VERSION: "27.1.0"
 
 jobs:
-  mutants:
+  # Counts the diff's mutants, without building, and splits them in shards of about 40, up to 8.
+  plan:
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      count: ${{ steps.plan.outputs.count }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The diff starts where the branch left its base.
+          fetch-depth: 0
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      # The stable of rust-toolchain.toml: listing reads `cargo metadata`.
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }}
+      - id: plan
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mutants=$(just mutants-diff "origin/$BASE_REF" --list 2>/dev/null | wc -l)
+          count=$(( (mutants + 39) / 40 ))
+          count=$(( count > 8 ? 8 : count ))
+          echo "$mutants mutants, $count shards" >> "$GITHUB_STEP_SUMMARY"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          # A matrix may not be empty, even in a job its `if` skips.
+          echo "shards=$(jq -nc --argjson n "$count" '[range([$n, 1] | max)]')" >> "$GITHUB_OUTPUT"
+
+  # A shard fails on a missed mutant or a timeout (exit 2 or 3), as a whole run would.
+  shard:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
-      # renovate: datasource=crate depName=cargo-mutants
-      CARGO_MUTANTS_VERSION: "27.1.0"
       # renovate: datasource=crate depName=cargo-nextest
       CARGO_NEXTEST_VERSION: "0.9.150"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          # The diff starts where the branch left its base.
           fetch-depth: 0
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
@@ -44,12 +86,37 @@ jobs:
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+      # No baseline: ci.yml's `just check` runs the unmutated tests of the same commit.
       - env:
           BASE_REF: ${{ github.base_ref }}
-        run: just mutants-diff "origin/$BASE_REF"
+          SHARD: ${{ matrix.shard }}
+          COUNT: ${{ needs.plan.outputs.count }}
+        run: just mutants-diff "origin/$BASE_REF" --shard "$SHARD/$COUNT" --baseline=skip
       - name: Keep the outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: mutants-out
+          name: mutants-out-${{ matrix.shard }}
           path: target/mutants/mutants.out
+
+  # The missed and timed-out mutants of every shard, on the run's summary page.
+  summary:
+    needs: [plan, shard]
+    if: always() && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: mutants-out-*
+          path: out
+      - run: |
+          for kind in missed timeout; do
+            {
+              echo "## ${kind^}"
+              echo "\`\`\`"
+              cat out/*/"$kind.txt" 2>/dev/null | sort || true
+              echo "\`\`\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
