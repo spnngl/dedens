@@ -428,6 +428,43 @@ async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
 }
 
+/// A response read before the query that timed out was sent does not keep the connection: the next query goes on
+/// a new one.
+#[compio::test]
+async fn a_connection_answering_before_a_query_that_timed_out_is_replaced() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let answered = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(21), deadline()).await
+        })
+    };
+    let mut silent = Peer::accept(&listener).await;
+    let query = silent.read().await.expect("a query");
+    silent.write(&[answer(&query, Vec::new())]).await;
+    assert!(answered.await.expect("joined").is_ok());
+    let soon = Instant::now() + Duration::from_millis(50);
+    let timed_out = pool.exchange(server, &query_with_id(22), soon).await;
+    assert!(
+        matches!(timed_out, Err(TcpError::TimedOut)),
+        "{timed_out:?}"
+    );
+    silent.read().await.expect("the query that timed out");
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(23), deadline()).await
+        })
+    };
+    let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+        .await
+        .expect("a new connection");
+    let query = fresh.read().await.expect("the query on a new connection");
+    fresh.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(23));
+}
+
 /// Frames no query waits for prove nothing: a connection that gets only those since a query that timed out is
 /// replaced, though the server keeps writing.
 #[compio::test]
