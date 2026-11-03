@@ -13,12 +13,19 @@ mod common;
 
 use std::cell::Cell;
 use std::num::NonZero;
+use std::sync::Arc;
 use std::time::Duration;
 
 use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, captured, decode, query_for, write_config};
+use compio::bytes::{Buf, Bytes};
 use compio::io::AsyncWriteExt;
-use compio::quic::{ClientBuilder, Connection, ConnectionError, SendStream};
+use compio::quic::h3::client::SendRequest;
+use compio::quic::h3::error::{Code, StreamError};
+use compio::quic::h3::{self, OpenStreams};
+use compio::quic::{
+    ClientBuilder, Connection, ConnectionError, Endpoint, SendStream, TransportConfig,
+};
 use compio::runtime::Runtime;
 use dedens_net::client::Client;
 use dedens_net::exchange::{Options, Transport};
@@ -36,8 +43,13 @@ const CLOSED_BEFORE: usize = 8 << 20;
 const CAP: usize = 64 << 20;
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// `dedensd` answering `DoH` over HTTP/3, with an upstream that is never asked.
+/// `dedensd` answering `DoH` over HTTP/3, forwarding to `upstream`.
 fn serving(certificates: &Certificates, upstream: &Responder) -> Server {
+    serving_with(certificates, upstream, "")
+}
+
+/// As [`serving`], with the lines `extra` in the configuration.
+fn serving_with(certificates: &Certificates, upstream: &Responder, extra: &str) -> Server {
     let config = write_config("");
     let (certificate, key) = (
         config.with_extension("crt.pem"),
@@ -48,7 +60,7 @@ fn serving(certificates: &Certificates, upstream: &Responder) -> Server {
     let upstream = upstream.addr;
     Server::configured(|listen| {
         format!(
-            "listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
+            "{extra}listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
             certificate.display(),
             key.display()
         )
@@ -124,6 +136,170 @@ fn assert_refused(sent: usize, reason: Option<&ConnectionError>) {
     assert_eq!(code, Some(H3_EXCESSIVE_LOAD), "{reason:?}");
 }
 
+/// What the server's closing of `connection` said, within `patience`: its code, or how the connection ended if not
+/// closed by the server; `None` if it is still open.
+async fn closed(
+    connection: &Connection,
+    patience: Duration,
+) -> Option<Result<u64, ConnectionError>> {
+    let reason = compio::time::timeout(patience, connection.closed())
+        .await
+        .ok()?;
+    Some(match reason {
+        ConnectionError::ApplicationClosed(close) => Ok(u64::from(close.error_code)),
+        reason => Err(reason),
+    })
+}
+
+/// An HTTP/3 connection to `addr`, trusting `ca`, that pings it every `keep_alive` if set, with what h3 makes of it:
+/// the driver, to hold and not to poll, so the client does not hear of `GOAWAY` and its requests may cross it, and
+/// what sends the requests.
+async fn h3_connected(
+    addr: std::net::SocketAddr,
+    ca: &Certificates,
+    keep_alive: Option<Duration>,
+) -> (
+    Connection,
+    h3::client::Connection<Connection, Bytes>,
+    SendRequest<OpenStreams, Bytes>,
+) {
+    let mut config = ClientBuilder::new_with_empty_roots()
+        .with_custom_certificate(ca.ca.clone())
+        .expect("a root")
+        .with_no_crls()
+        .with_alpn_protocols(&["h3"])
+        .build();
+    let mut transport = TransportConfig::default();
+    transport.keep_alive_interval(keep_alive);
+    config.transport_config(Arc::new(transport));
+    let endpoint = Endpoint::client("127.0.0.1:0").await.expect("an endpoint");
+    let connection = endpoint
+        .connect(addr, NAME, Some(config))
+        .expect("connecting")
+        .await
+        .expect("connected");
+    let (driver, requests) = h3::client::new(connection.clone()).await.expect("HTTP/3");
+    (connection, driver, requests)
+}
+
+/// POSTs `body` to the `DoH` path of `addr` and reads the response: its status and body.
+async fn post(
+    requests: &mut SendRequest<OpenStreams, Bytes>,
+    addr: std::net::SocketAddr,
+    body: &[u8],
+) -> Result<(http::StatusCode, Vec<u8>), StreamError> {
+    let request = http::Request::post(format!("https://{NAME}:{}/dns-query", addr.port()))
+        .header("content-type", "application/dns-message")
+        .body(())
+        .expect("a request");
+    let mut stream = requests.send_request(request).await?;
+    stream.send_data(Bytes::copy_from_slice(body)).await?;
+    stream.finish().await?;
+    let status = stream.recv_response().await?.status();
+    let mut body = Vec::new();
+    while let Some(mut chunk) = stream.recv_data().await? {
+        body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+    }
+    Ok((status, body))
+}
+
+/// Sends the server bodies of no DNS message, each answered before the next, until the connection passed its budget
+/// (4 MiB of UDP payload, which the server counts as the client does on loopback) and not a connection window more
+/// (256 KiB, where it is closed), then waits for the server to see it (it checks every 20 ms). It stops at the body
+/// that passes: one more could be the request the server sends `GOAWAY` after.
+async fn past_budget(
+    connection: &Connection,
+    requests: &mut SendRequest<OpenStreams, Bytes>,
+    addr: std::net::SocketAddr,
+) {
+    let junk = vec![0; 60_000];
+    while connection.stats().udp_tx.bytes < 4 << 20 {
+        post(requests, addr, &junk).await.expect("a response");
+    }
+    compio::time::sleep(Duration::from_millis(200)).await;
+}
+
+/// §5.2: the request that comes once the connection passed its budget is answered even when slow, and the server
+/// closes the connection when it is, with `H3_NO_ERROR`: not before, and not after the 10 s it gives a connection to
+/// end.
+#[test]
+fn s5_2_a_connection_past_its_budget_is_closed_once_its_last_request_is_answered() {
+    let response = captured("a");
+    let upstream = Responder::slow("a", 300, Duration::from_millis(500));
+    let ca = certificates();
+    let server = serving(&ca, &upstream);
+    Runtime::new().expect("a runtime").block_on(async {
+        let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
+        past_budget(&connection, &mut requests, server.addr).await;
+        let (status, body) = post(&mut requests, server.addr, &query_for(&response, 0))
+            .await
+            .expect("the last request answered");
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(decode(&body).rcode(), Rcode::NOERROR);
+        let code = closed(&connection, Duration::from_secs(5)).await;
+        assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+    });
+    assert_eq!(upstream.queries(), 1);
+}
+
+/// §5.2: a request the client sent before it heard the server's `GOAWAY` is refused with `H3_REQUEST_REJECTED`, which
+/// it may retry, not cut by the end of the connection: the server waits for those a moment after its last request.
+#[test]
+fn s5_2_a_request_that_crosses_goaway_is_refused() {
+    let response = captured("a");
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving(&ca, &upstream);
+    let query = query_for(&response, 0);
+    Runtime::new().expect("a runtime").block_on(async {
+        let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
+        past_budget(&connection, &mut requests, server.addr).await;
+        post(&mut requests, server.addr, &query)
+            .await
+            .expect("the last request answered");
+        for _ in 0..2 {
+            let refused = post(&mut requests, server.addr, &query).await;
+            assert!(
+                matches!(&refused, Err(StreamError::RemoteTerminate { code, .. }) if *code == Code::H3_REQUEST_REJECTED),
+                "{refused:?}"
+            );
+        }
+        let code = closed(&connection, Duration::from_secs(5)).await;
+        assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+    });
+}
+
+/// §5.2: a client that sends `GOAWAY` has the server close the connection once its requests are answered.
+#[test]
+fn s5_2_a_client_going_away_has_the_connection_closed() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving(&ca, &upstream);
+    Runtime::new().expect("a runtime").block_on(async {
+        let (connection, mut driver, mut requests) = h3_connected(server.addr, &ca, None).await;
+        post(&mut requests, server.addr, &query_for(&captured("a"), 0))
+            .await
+            .expect("an answer");
+        driver.shutdown(0).await.expect("GOAWAY sent");
+        let code = closed(&connection, Duration::from_secs(5)).await;
+        assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+    });
+}
+
+/// §5.1: the server closes a connection without a request for 10 s, though its client keeps it alive with pings.
+#[test]
+fn s5_1_an_idle_connection_is_closed() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving(&ca, &upstream);
+    Runtime::new().expect("a runtime").block_on(async {
+        let keep_alive = Some(Duration::from_secs(1));
+        let (connection, _driver, _requests) = h3_connected(server.addr, &ca, keep_alive).await;
+        let code = closed(&connection, Duration::from_secs(20)).await;
+        assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+    });
+}
+
 /// §7.2.1, §10.5: a reserved frame on the control stream that declares 2^61 bytes, then trickles, is not buffered
 /// for good: the server closes the connection once the peer has sent its budget.
 #[test]
@@ -162,6 +338,53 @@ fn s10_5_request_headers_that_never_end_close_the_connection() {
         }
         let (sent, reason) = flood(&connection, &mut streams).await;
         assert_refused(sent, reason.as_ref());
+    });
+}
+
+/// §10.5: a thread checks its connections while it has any, and again for the next once it had none: the second
+/// connection of a thread with one is closed for its budget as the first would be.
+#[test]
+fn s10_5_the_next_connection_is_checked_too() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving_with(&ca, &upstream, "threads: 1\n");
+    Runtime::new().expect("a runtime").block_on(async {
+        let (first, _control) = connected(server.addr, &ca).await;
+        first.close(0_u32.into(), b"");
+        // Some checks, the last of which finds no connection.
+        compio::time::sleep(Duration::from_millis(200)).await;
+        let (connection, mut control) = connected(server.addr, &ca).await;
+        let mut frame = vec![0x21];
+        frame.extend_from_slice(&varint8(1 << 61));
+        control.write_all(frame).await.0.expect("the header sent");
+        let (sent, reason) = flood(&connection, &mut [control]).await;
+        assert_refused(sent, reason.as_ref());
+    });
+}
+
+/// §5.2, §10.5: a connection that does not end within 10 s of its `GOAWAY`, for a request that does not, is closed
+/// with `H3_EXCESSIVE_LOAD`.
+#[test]
+fn s10_5_a_connection_that_does_not_end_after_goaway_is_closed() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let server = serving(&ca, &upstream);
+    Runtime::new().expect("a runtime").block_on(async {
+        // Pinged, so as not to end for being idle meanwhile.
+        let keep_alive = Some(Duration::from_secs(1));
+        let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, keep_alive).await;
+        past_budget(&connection, &mut requests, server.addr).await;
+        // Well after the server saw the budget passed: its request read gives up 10 s after the request came, the
+        // connection is closed 10 s after the budget.
+        compio::time::sleep(Duration::from_secs(1)).await;
+        let request =
+            http::Request::post(format!("https://{NAME}:{}/dns-query", server.addr.port()))
+                .header("content-type", "application/dns-message")
+                .body(())
+                .expect("a request");
+        let _stream = requests.send_request(request).await.expect("a stream");
+        let code = closed(&connection, Duration::from_secs(15)).await;
+        assert_eq!(code, Some(Ok(H3_EXCESSIVE_LOAD)));
     });
 }
 
