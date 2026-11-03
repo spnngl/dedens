@@ -736,6 +736,11 @@ impl Downloads {
         })
     }
 
+    /// The directory `user` must write once root is dropped: `dir`, if the configuration downloads lists (D122).
+    pub(crate) fn written_dir(&self) -> Option<&Path> {
+        (!self.urls.is_empty()).then_some(self.dir.as_path())
+    }
+
     /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
     fn add(&mut self, urls: impl Iterator<Item = Url>) {
         for Url(url) in urls {

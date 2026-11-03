@@ -55,6 +55,8 @@ exclude_re = [
   'replace \| with \^ in Response::serve$',
   # At the limit both branches give the same value: the insecure TTL, and the default entry size.
   'replace < with <= in Config::(insecure_ttl|entry_limit)$',
+  # Read only when root drops to `user` (D122): seen by the #[ignore]d root tests of privileges.rs, outside this job.
+  'config\.rs:\d+:\d+: (delete ! in Downloads::written_dir|replace Downloads::written_dir -> .* with None)$',
   # Equal values: either is the lesser.
   'config\.rs:\d+:\d+: replace < with <= in lesser$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
