@@ -376,6 +376,11 @@ impl Server {
             .clone()
     }
 
+    /// Its process ID.
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Sends SIGHUP, asking for a reload (D55).
     #[cfg(unix)]
     pub(crate) fn hang_up(&self) {
