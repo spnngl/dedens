@@ -1174,6 +1174,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `Message::decode` was still unrolling every RDATA decoder after 30 min and stays with the fuzzer. Headers take
   3-5 s, `just kani` 8 min (2026-11-03, a loaded laptop). Weekly, not in the gate: minutes a proof, and a nightly
   and CBMC of Kani's own (`just kani-install`).
+- D146 (builds on D16) CodeQL's Rust queries, weekly and manual, outside the gate: `codeql.yml` extracts the
+  sources without building them (`build-mode: none`) and runs the default suite, whose taint tracking follows
+  outside data to where it sizes an allocation, names a path, reaches a log or disables a certificate check:
+  data flow across functions, which clippy's lints do not follow. Alerts go to the repository's Security tab, not
+  to pull requests: the queries change with each release of the action, and a new one must not block unrelated
+  work.
 
 ## CLI
 
