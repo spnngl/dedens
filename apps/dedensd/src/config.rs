@@ -1315,7 +1315,7 @@ fn presented(listen: &[Listen], tls: Option<&TlsFile>) -> anyhow::Result<Option<
 pub(crate) fn guard_key(file: &fs::File, setting: &str, path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt as _;
 
-    use nix::unistd::{Uid, geteuid};
+    use nix::unistd::geteuid;
     let shown = path.display();
     let metadata = file
         .metadata()
@@ -1326,12 +1326,20 @@ pub(crate) fn guard_key(file: &fs::File, setting: &str, path: &Path) -> anyhow::
         others == 0,
         "{setting}: the key {shown} can be accessed by others (mode {mode:03o}): chmod 600"
     );
-    let shared = metadata.uid() == 0
-        && (geteuid() == Uid::from_raw(0) || crate::privileges::in_group(metadata.gid()));
+    let shared = shared_key(metadata.uid(), geteuid().is_root(), || {
+        crate::privileges::in_group(metadata.gid())
+    });
     if group != 0 && !shared {
         tracing::warn!(key = %shown, mode = format!("{mode:03o}"), "{setting}: the key can be accessed by its group: chmod 600 unless the group is meant to");
     }
     Ok(())
+}
+
+/// Whether [`guard_key`] lets a key of `owner` be read by its group quietly: root owns it, and the process is root
+/// or, as `member` says, in its group.
+#[cfg(unix)]
+fn shared_key(owner: u32, root: bool, member: impl FnOnce() -> bool) -> bool {
+    owner == 0 && (root || member())
 }
 
 /// [`guard_key`] off Unix: nothing to check.
@@ -2595,6 +2603,16 @@ mod tests {
         assert!(read(&text, env, &Pipeline::default()).is_ok());
     }
 
+    /// D115: a key its group can read is quiet when root owns it and the process is root or in its group.
+    #[cfg(unix)]
+    #[test]
+    fn a_key_is_shared_with_its_group_when_root_owns_it() {
+        assert!(shared_key(0, true, || false));
+        assert!(shared_key(0, false, || true));
+        assert!(!shared_key(0, false, || false));
+        assert!(!shared_key(1000, true, || true));
+    }
+
     /// D115: a value is YAML text, not YAML: unless it is plain (letters, digits and `_./:@+=%~#-`), `${VAR}` must
     /// stand alone as a value, and is quoted there.
     #[test]
@@ -2634,6 +2652,15 @@ mod tests {
             "key: 'x ${TEXT}'",
             "key: ${TEXT}${PORT}",
             "key: ${QUOTE}'",
+            r#"key: "${TEXT}"#,
+            "key:${TEXT}",
+            "a,${TEXT}",
+            "[x ${TEXT}]",
+            "x ${TEXT}",
+            "-${TEXT}",
+            "key: ${TEXT}#x",
+            "key: ${TEXT} x",
+            "key: ${TEXT},",
         ] {
             let refused = interpolate(text, env).expect_err(text).to_string();
             assert!(refused.contains("not alone"), "{text}: {refused}");

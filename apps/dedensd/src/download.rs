@@ -618,6 +618,7 @@ mod tests {
         );
         let shown = failure(&error);
         assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains(NOT_A_URL), "{shown}");
     }
 
     /// L13: a symlink left at the old, predictable `.part` name is not written through.
