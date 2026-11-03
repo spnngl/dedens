@@ -909,8 +909,8 @@ impl Reviewer for Blocklist {
         let mut from = 0;
         for _ in 0..=MAX_HOPS {
             let mut next = None;
-            for offset in 0..records.len() {
-                let at = (from + offset) % records.len();
+            // From where the last hop was found, round to it: the range is taken before the hop moves `from`.
+            for at in (from..records.len()).chain(0..from) {
                 let Some(record) = records.get(at) else {
                     break;
                 };
