@@ -43,6 +43,9 @@ const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
 const ONE: &[u64] = &[0];
+/// [`ONE`], and a seed whose links take no time where the shed query starts: the server answers the query before
+/// at that instant, which `Run::served_for` counted for the shed query when it went by time.
+const SHED: &[u64] = &[0, 954_528_015_640_862_262];
 
 /// What a zone's answer is, with no fault: the verdict of the validator, which sets AD for the first only (D114).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,16 +260,6 @@ fn answer(outcome: Result<Outcome, CheckError>, name: &str) -> Result<Answer, St
 struct Run(Vec<Event>);
 
 impl Run {
-    /// Responses the upstream server sent, the client's questions included, from `from` to `to`.
-    fn served_between(&self, from: Duration, to: Duration) -> usize {
-        self.0
-            .iter()
-            .filter(|event| {
-                matches!(event.what, What::Served { .. }) && (from..=to).contains(&event.at)
-            })
-            .count()
-    }
-
     /// The distinct questions the upstream server answered.
     fn questions(&self) -> BTreeSet<String> {
         self.0
@@ -286,28 +279,35 @@ impl Run {
             .count()
     }
 
-    /// The times a client asked `name`, and the times those queries ended.
-    fn exchanges(&self, name: &str) -> Vec<(Duration, Duration)> {
+    /// Where in the trace a client asked `name`, and where those queries ended: places, not times, as a link
+    /// may take no time, and then a response the server sent for the query before shares its instant with the
+    /// next query's start.
+    fn exchanges(&self, name: &str) -> Vec<(usize, usize)> {
         let name: Name<'static> = name.parse().expect("a domain name");
-        let starts = self.0.iter().filter_map(|event| match &event.what {
-            What::Asked { question, .. } if question.name == name => Some(event.at),
+        let events = || self.0.iter().enumerate();
+        let starts = events().filter_map(|(place, event)| match &event.what {
+            What::Asked { question, .. } if question.name == name => Some(place),
             _ => None,
         });
-        let ends = self.0.iter().filter_map(|event| match &event.what {
+        let ends = events().filter_map(|(place, event)| match &event.what {
             What::Answered { question, .. } | What::Failed { question, .. }
                 if question.name == name =>
             {
-                Some(event.at)
+                Some(place)
             }
             _ => None,
         });
         starts.zip(ends).collect()
     }
 
-    /// Responses the upstream server sent while a client's `nth` query for `name` was open.
+    /// Responses the upstream server sent, the client's questions included, while a client's `nth` query for
+    /// `name` was open.
     fn served_for(&self, name: &str, nth: usize) -> usize {
         let (from, to) = self.exchanges(name)[nth];
-        self.served_between(from, to)
+        self.0[from..to]
+            .iter()
+            .filter(|event| matches!(event.what, What::Served { .. }))
+            .count()
     }
 }
 
@@ -825,7 +825,7 @@ async fn until_shed(stub: &mut Stub) -> Result<usize, String> {
 /// allowance refills with time.
 #[test]
 fn a_query_past_the_allowance_is_shed_and_the_cache_is_still_answered() {
-    seed::each(ONE, |seed| {
+    seed::each(SHED, |seed| {
         let spending = spending(
             Allowance {
                 per_second: 1,
