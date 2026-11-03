@@ -40,5 +40,10 @@ rcgen.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 
+# D143: rcgen serves `crates/dedens-net/tests/common/certificates.rs`, a module of the tests by `#[path]`, outside
+# this package: cargo-shear reads none.
+[package.metadata.cargo-shear]
+ignored = ["rcgen"]
+
 [lints]
 workspace = true

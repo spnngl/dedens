@@ -33,6 +33,8 @@ jobs:
       TAPLO_VERSION: "0.10.0"
       # renovate: datasource=crate depName=typos-cli
       TYPOS_VERSION: "1.51.1"
+      # renovate: datasource=crate depName=cargo-shear
+      CARGO_SHEAR_VERSION: "1.14.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -51,7 +53,7 @@ jobs:
             fuzz -> target
       - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
-          tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }}
+          tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }},cargo-shear@${{ env.CARGO_SHEAR_VERSION }}
       - run: just check
       # Root and a Linux kernel: dedensd drops to `nobody` after binding :53, and nothing else proves it (D122). `sudo -E`
       # keeps HOME, so rustup finds its toolchains; the PATH is passed through `env`, which `sudo` would reset.

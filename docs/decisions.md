@@ -1148,6 +1148,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   profiled server are not kept, and a claim of speed is still a bench (D14). Rejected: hotpath, which instruments each
   measured function at about 40 ns a call against the 84-185 ns of a cache hit, needs a feature in each crate (doubling
   `just hack`), and brings a counting allocator that collides with the benches'.
+- D143 (builds on D16) Unused dependencies fail the gate: `just check` runs cargo-shear (`--locked --deny-warnings`)
+  over the workspace and over `fuzz/`, a workspace of its own. It parses the sources with rust-analyzer's parser and
+  builds nothing: 0.3 s each (2026-11-03). A false positive goes in the package's
+  `[package.metadata.cargo-shear] ignored`, its reason beside it; cargo-shear reports an entry that suppresses
+  nothing. Two kinds so far: a dependency of a module another package holds, reached by `#[path]`, which
+  cargo-shear does not read (rcgen in `dedens` and `dedensd`, data-encoding in `dedens-bench`), and
+  `dedens-bench`'s dependencies, regular ones the benches alone use (D14). The first run found nothing else.
+  Rejected: cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
 
 ## CLI
 
