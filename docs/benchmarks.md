@@ -860,3 +860,85 @@ A unit of D77 is about 10 µs, so the defaults (`client_share` 1000 a second, bu
 network spend 1 % of a core on validations (about 80 cold ones a second, 160 in a burst) and 3.7 % of a core on
 decapsulations (1000 a second, 2000 in a burst); the global `odoh.budget` (10 000 a second, burst 20 000) caps all clients at
 37 % of a core. A network's budget is a tenth of the global one for both.
+
+## Profiles (D138)
+
+Where the time goes, from samples; no result to compare. 2026-11-03, `dedensd` and the benches at 4db3114 plus this change.
+Inlined frames fold into the function that holds them.
+
+### A cache hit on macOS
+
+`just profile server 'hit::'`: the `hit` bench of `benches/server.rs`, a/mx/txt_large five seconds each, samply 0.13.1 at 1 kHz,
+14 979 samples. Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), bench profile (release with line tables), a laptop under load
+from other workers (load average 17, 13, 11): read the shares, not the times. Tabulated from a second run of the same command
+with `--unstable-presymbolicate`; divan's own loop is the other 2.4% of the samples.
+
+| Function | Self | With callees |
+|---|---|---|
+| `Pipeline::query` (the bench's call) | 7.2% | 97.6% |
+| `dedens_server::cache::look` | 3.1% | 57.5% |
+| `Cache::find` | 8.5% | 46.5% |
+| `Query::read` (its closure, 8.5% self, included) | 8.7% | 28.1% |
+| `_platform_memmove` | 16.0% | 16.0% |
+| `Key::new` (`DefaultHasher::write` 4.2%) | 5.1% | 8.2% |
+| `Cache::shard` | 3.5% | 7.7% |
+| `response::patch` | 2.5% | 5.9% |
+| `Client::append_opt` (`Client::pad` 1.7%) | 1.6% | 5.8% |
+| `Record::read_raw` | 3.0% | 4.4% |
+| `Name::decode` | 4.4% | 4.4% |
+| `Edns::encode` | 3.7% | 3.7% |
+| `Options::read` | 3.6% | |
+| `pthread_mutex_lock` and `_unlock` | 0.8%, 1.1% | |
+
+Reading the query takes 28% of a hit, the key's hash and shard 16%, and the `memmove` (the reply copied out of the entry) 16%.
+
+### `dedensd` under dnsperf on Linux
+
+`DEDENS_CONTAINER=podman DEDENS_BACK_CPU=2 DEDENS_LOAD_CPUS=3-5 DEDENS_PERF=1 just bench-dnsperf HEAD udp` (and `forward`).
+A VPS with six vCPUs shared with other tenants, load average 0.6-1.0 right after the runs, AlmaLinux 10.2, Linux
+6.12.0-211.69.1.el10_2.x86_64, podman rootless, `rust:1` with Debian's `linux-perf`. `dedensd` on core 0 under `perf record -F
+999 --call-graph dwarf` (event `task-clock`: the VM has no PMU), dnsperf `-c 8 -T 4 -q 500` on cores 3-5, one 10 s round, 9-10k
+samples. For the run `kernel.io_uring_disabled` was 0, `kernel.perf_event_paranoid` 1 and `kernel.kptr_restrict` 0 (perf reads
+`/proc/kallsyms` as an unprivileged user; at 1 the kernel functions are bare addresses), restored to 2, 2 and 1 after.
+
+Profiled, the server answered 186k queries/s from its cache and 37k forwarding (one round each): dwarf unwinding copies a stack for each
+sample, so these are not the rates of `dedensd` (sections above). Sampling by `task-clock` lands where interrupts are enabled
+again, so `_raw_spin_unlock_irqrestore` probably over-counts. A table lists the functions above 0.5% of the samples.
+
+`udp`, from the cache (four names): 66% of the samples are inside syscalls (`io_uring_enter`; `Driver::submit_auto` 65.8%
+with its callees), of the rest 16% in `udp_queries` and 14% in `send_replies`; the cache hit, `Pipeline::query`, is 7.3%.
+The functions in the table add up to 39% in the kernel, 16% in `dedensd` and 2% in libc: a flat profile, no function of
+`dedensd` above 6% of its own.
+
+| Function | Self | With callees |
+|---|---|---|
+| kernel `_raw_spin_unlock_irqrestore` | 8.1% | 8.1% |
+| `dedensd::serve::send_replies` | 5.6% | 14.1% |
+| `dedensd::serve::udp_queries` | 3.2% | 16.2% |
+| kernel `udp_sendmsg` (a reply sent) | 1.9% | 28.5% |
+| kernel `process_backlog` (loopback receive, in softirq) | 0.3% | 16.0% |
+| kernel `io_recvmsg` (multishot receive) | 0.2% | 11.2% |
+| `Cache::find` | 1.3% | |
+| `Outbox::push` | 1.2% | |
+| libc `malloc` | 1.2% | |
+| `Query::read` | 0.9% | |
+
+`forward`, the front `dedensd` (no cache) sending every query over UDP to the second one: 30% of the samples in syscalls,
+33% in `compio_runtime::Runtime::run`.
+
+| Function | Self | With callees |
+|---|---|---|
+| libc `0x162b87`: the `rep movsb` of glibc's `memmove` (no symbol) | 18.1% | 18.1% |
+| kernel `_raw_spin_unlock_irqrestore` | 3.3% | |
+| `TaskAlloc<Origin::run<udp_queries …>>` | 2.0% | 24.4% |
+| `compio_runtime::Runtime::run` | 1.6% | 32.8% |
+| kernel `rep_movs_alternative` | 1.6% | |
+| `send_replies` | 1.4% | |
+| `dedens_net::client::Client::run` | 1.2% | 6.1% |
+| libc `malloc`, `cfree` | 1.2%, 1.1% | |
+| `Writer::put_name_found` | 1.1% | |
+| `Client::step` | 1.1% | 9.6% |
+
+The `memmove` stands out: nearly a fifth of the front server's samples copying bytes, with no caller in the stacks (dwarf
+unwinding stops at a libc leaf without CFI). Whether it is a reply buffer of D52 or D63, or the response copied out of the
+upstream socket, is not known; the report keeps no `perf.data` to ask.

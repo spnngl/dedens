@@ -1116,6 +1116,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   row, every `AGENTS.md` has its `CLAUDE.md` symlink. Each check runs once on a small broken input in the same file.
   No `syn`: nothing here parses Rust, string matching does it, with no new dependency. Not checked: that a row lists
   its test file, or that its status is true.
+- D138 (builds on D14, D16) Profiles are sampled, never instrumented. `just profile <bench> [filter]` runs a bench
+  target under samply (launching needs no `samply setup`), the bench profile's line tables giving the names; `DEDENS_PERF=1
+  just bench-dnsperf` runs the working tree's `dedensd` under `perf record --call-graph dwarf` in the container, built
+  with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` and `CARGO_PROFILE_RELEASE_STRIP=false` over the release profile.
+  Both write to `target/profile/` (git-ignored with `target/`): `<bench>[-<filter>].json.gz` for `samply load`,
+  `<mode>.txt` for perf's report (the data stays in the container). Local, no CI job; a missing samply stops the recipe
+  with its install command. A profile splits a total into functions and records no result: the queries per second of a
+  profiled server are not kept, and a claim of speed is still a bench (D14). Rejected: hotpath, which instruments each
+  measured function at about 40 ns a call against the 84-185 ns of a cache hit, needs a feature in each crate (doubling
+  `just hack`), and brings a counting allocator that collides with the benches'.
 
 ## CLI
 
