@@ -101,7 +101,11 @@ fn svc_params() -> impl Strategy<Value = SvcParams<'static>> {
         // An ECHConfigList is never empty.
         prop::option::of(prop::collection::vec(any::<u8>(), 1..=20)),
         prop::option::of("[a-z/{?}]{0,20}"),
-        prop::option::of((8u16..65535, bytes(10))),
+        // Keys 8 to 65534 but `docpath`, which has its own variant.
+        prop::option::of((
+            (8u16..65535).prop_filter("docpath is typed", |key| *key != SvcParamKey::DOCPATH.0),
+            bytes(10),
+        )),
         prop::collection::vec(any::<bool>(), 8),
     );
     (alpn, v4, v6, others).prop_map(
