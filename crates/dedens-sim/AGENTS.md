@@ -37,7 +37,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/limits.rs`: many clients in a few networks on one resolver under rate limit, cookies, validation shares and
   access list; two seeded properties.
 - `tests/pools.rs`: the client's own pools against servers it addresses (`World::client_direct`, no stub): connections
-  opened, reused, closed when idle (D27), the inbox of a query (D108), socket errors, DNS over TLS (fixed
+  opened, reused, closed when idle or stalled (D27), the inbox of a query (D108), socket errors, DNS over TLS (fixed
   certificates, so that it replays).
 - `tests/dnssec.rs`: validation of captured signed responses: AD, cache, bogus data, the start date, the cost limits
   and loss on the chain's questions, which the seed picks.
