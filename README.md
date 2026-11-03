@@ -18,8 +18,9 @@ released.
 - [rustup](https://rustup.rs) and [just](https://github.com/casey/just); `just` lists the recipes, `just check` is
   the gate.
 - `just toolchains`: the pinned stable (`rust-toolchain.toml`) and the pinned nightly's rustfmt (`justfile`).
-- [taplo](https://taplo.tamasfe.dev) and [typos](https://github.com/crate-ci/typos), for `just check`:
-  `brew install taplo typos-cli` or `cargo install taplo-cli typos-cli`.
+- [taplo](https://taplo.tamasfe.dev), [typos](https://github.com/crate-ci/typos) and
+  [cargo-shear](https://github.com/Boshen/cargo-shear), for `just check`: `brew install taplo typos-cli cargo-shear`
+  or `cargo install taplo-cli typos-cli cargo-shear`.
 - Optional, for `just hack`, `just msrv` and `just deny`: `cargo install cargo-hack cargo-deny`.
 - Optional, for `just cov`: `cargo install cargo-llvm-cov`; for `just fuzz` and `just fuzz-all`:
   `cargo install cargo-fuzz`.

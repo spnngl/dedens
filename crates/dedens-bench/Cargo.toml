@@ -75,5 +75,24 @@ harness = false
 name = "rrl"
 harness = false
 
+# D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14); data-encoding serves
+# `crates/dedens-dnssec/tests/common/mod.rs`, a module of `benches/dnssec.rs` by `#[path]`, outside this package.
+[package.metadata.cargo-shear]
+ignored = [
+  "data-encoding",
+  "dedens-cache",
+  "dedens-dnssec",
+  "dedens-net",
+  "dedens-odoh",
+  "dedens-plugins",
+  "dedens-proto",
+  "dedens-server",
+  "divan",
+  "domain",
+  "hickory-proto",
+  "http",
+  "metrics-util",
+]
+
 [lints]
 workspace = true

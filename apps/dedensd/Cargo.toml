@@ -61,5 +61,10 @@ harness = false
 name = "udp"
 harness = false
 
+# D143: rcgen serves `crates/dedens-net/tests/common/certificates.rs`, a module of the tests and benches by `#[path]`,
+# outside this package: cargo-shear reads none.
+[package.metadata.cargo-shear]
+ignored = ["rcgen"]
+
 [lints]
 workspace = true

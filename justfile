@@ -22,10 +22,12 @@ toolchains:
     rustup toolchain install
     rustup toolchain install {{ nightly }} --profile minimal --component rustfmt
 
-# The gate of every change: format, spelling, lint, docs, tests.
+# The gate of every change: format, spelling, unused dependencies, lint, docs, tests.
 check: (rustfmt "--check")
     taplo fmt --check
     typos
+    cargo shear --locked --deny-warnings
+    cargo shear --locked --deny-warnings fuzz
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
     cargo test --workspace --all-features
