@@ -1091,6 +1091,16 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hangs the tests (240 s each), is skipped in `.cargo/mutants.toml`, with its reason, matched by function and
   change, never by line. Rejected: a
   scheduled whole-workspace run in CI, which would need a dozen shards to fit GitHub's 6 h job limit.
+- D141 (builds on D16) Scheduled checks. Fuzzing: `fuzz.yml` runs each night every target in a job of its own (a
+  matrix over `fuzz/fuzz_targets/`, `fail-fast: false`, so a crash stops its own target only), five minutes with
+  libFuzzer's `-fork` on every core of the runner, from that target's corpus; `just fuzz-cmin` (`-merge=1`) then
+  keeps the inputs that add coverage, saved under a key per run; a crash uploads that target's inputs. Before: the 25
+  targets in turn on one core, 60 s each, the first crash skipping the rest, the corpus only growing. Advisories:
+  `advisories.yml` runs `just deny advisories` each day: an advisory against a crate no pull request touches would
+  otherwise wait for the next pull request. Rejected: `rust-audit-check-action` (cargo-audit reads the RustSec
+  database cargo-deny already reads, and wants to write issues); a toolchain action (`just toolchains` reads
+  `rust-toolchain.toml` and the pinned nightly); Depot's shards of one target merged by a later job (a job per
+  target already spreads the work, and each merges its own corpus).
 - D22 (amended by D114, D116, D118, D124) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves

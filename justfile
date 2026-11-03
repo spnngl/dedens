@@ -63,10 +63,10 @@ minimal-versions:
     rustup run {{nightly}} cargo update -Z direct-minimal-versions
     cargo check --workspace --all-targets --all-features
 
-# Advisories, licenses, duplicate crates and sources (cargo-deny, deny.toml).
-deny:
-    cargo deny check
-    cargo deny --manifest-path fuzz/Cargo.toml check
+# Advisories, licenses, duplicate crates and sources (cargo-deny, deny.toml), or the checks named: just deny advisories
+deny *checks:
+    cargo deny check {{checks}}
+    cargo deny --manifest-path fuzz/Cargo.toml check {{checks}}
 
 # Benchmarks against other DNS libraries (D14): Rust ones with divan, then Go's miekg/dns, the codec of
 # CoreDNS, when Go is installed. Unbound: `just bench-unbound`.
@@ -186,8 +186,8 @@ loom:
     cargo test -p dedensd --profile loom --bin dedensd loom_tests::
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
-# minutes by default: just fuzz decode_message 60
-fuzz target="decode_message" seconds="300":
+# minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
+fuzz target="decode_message" seconds="300" fork="0":
     #!/usr/bin/env bash
     set -euo pipefail
     # The pinned nightly's own cargo and rustc first: cargo-fuzz needs `-Z` flags, and rustup proxies would pick
@@ -200,9 +200,18 @@ fuzz target="decode_message" seconds="300":
     # A target with a token dictionary in dicts/ gets it.
     dict=""
     if [[ -f "dicts/{{target}}.dict" ]]; then dict="-dict=dicts/{{target}}.dict"; fi
-    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} $dict
+    cargo fuzz run {{target}} "corpus/{{target}}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{seconds}} -fork={{fork}} $dict
 
-# Every fuzz target for `seconds` each, as the scheduled CI job runs them.
+# Shrink a target's corpus to the inputs that add coverage (libFuzzer's `-merge=1`).
+fuzz-cmin target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustc="$(rustup which --toolchain {{nightly}} rustc)"
+    export PATH="$(dirname "$rustc"):$PATH"
+    cd fuzz
+    cargo fuzz cmin {{target}} "corpus/{{target}}"
+
+# Every fuzz target for `seconds` each, in turn (the scheduled CI job runs them in parallel, D141).
 fuzz-all seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
