@@ -217,16 +217,18 @@ impl Config {
         {
             return Err(ConfigError::InsecureTtl);
         }
-        let mut most = self.max_ttl;
-        if self.max_negative_ttl < most {
-            most = self.max_negative_ttl;
-        }
-        if self.insecure_ttl() < most {
-            most = self.insecure_ttl();
-        }
+        let most = lesser(
+            lesser(self.max_ttl, self.max_negative_ttl),
+            self.insecure_ttl(),
+        );
         if self.min_ttl > most {
             return Err(ConfigError::MinTtl(most));
         }
         Ok(())
     }
+}
+
+/// The lesser of `a` and `b`: `Ord::min` is not `const`.
+const fn lesser(a: u32, b: u32) -> u32 {
+    if a < b { a } else { b }
 }
