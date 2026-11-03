@@ -26,6 +26,7 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `tests/partition.rs`: upstream servers and clients cut off, healed and held; the seed cuts and heals links.
 - `tests/replay.rs`: one seed in two processes gives one trace.
 - `tests/loss.rs`: loss, delay and reordering on the stub's and the upstream's links; the seed picking both.
+- `tests/crash.rs`: each host crashing or restarting under queries in flight, over UDP and TCP.
 
 What a scenario uses, so that it adds test files and no driver code:
 
