@@ -1080,7 +1080,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   hand-written concurrent structure, cargo-semver-checks with the first crates.io release, fuzzing with the
   first fuzz target. RAPx weekly, outside the gate: it builds on rustc internals and breaks on unrelated
   nightly changes.
-- D103 Mutation testing (cargo-mutants), outside the gate: `just mutants` for whole packages, local, as it takes
+- D103 (amended by D142) Mutation testing (cargo-mutants), outside the gate: `just mutants` for whole packages, local, as it takes
   hours (5510 mutants in the workspace, about 10 s of build each); `just mutants-diff` for what a branch changes,
   also run on each pull request by the `mutants` workflow, informational: the `gate` job does not need it.
   Both test the committed HEAD in a worktree of their own with `--in-place`: the build stays warm from one
@@ -1101,6 +1101,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   database cargo-deny already reads, and wants to write issues); a toolchain action (`just toolchains` reads
   `rust-toolchain.toml` and the pinned nightly); Depot's shards of one target merged by a later job (a job per
   target already spreads the work, and each merges its own corpus).
+- D142 (amends D103) The pull request's mutants in shards: a `plan` job lists the diff's mutants without building
+  (`--list`) and asks for one shard per 40, up to 8; each shard job runs `just mutants-diff` with `--shard k/n`
+  (cargo-mutants' default `slice`: neighbouring mutants, so warm incremental builds) and `--baseline=skip`, as
+  `ci.yml`'s `just check` runs the unmutated tests of the same commit; a `summary` job lists every shard's missed
+  and timed-out mutants on the run's page. A shard with one fails (red), still outside the gate. Before: one job,
+  every mutant in turn, 120 min at most, the outcomes in an artifact only.
 - D22 (amended by D114, D116, D118, D124) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
