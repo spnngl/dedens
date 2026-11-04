@@ -97,6 +97,14 @@ fn forwarded(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize {
 }
 
 /// How many queries the clients asked, and how many ended.
+/// Where `fault` is in the trace, or `None` if the run ended before its time. The trace's order, not the times: an
+/// event at the instant of a fault may come before or after it, and `World::run` makes a fault at the first step at
+/// or past its time.
+fn position(events: &[Event], fault: Fault) -> Option<usize> {
+    let fault = What::Fault(fault);
+    events.iter().position(|event| event.what == fault)
+}
+
 fn asked_and_ended(events: &[Event]) -> (usize, usize) {
     let asked = events
         .iter()
@@ -360,10 +368,10 @@ fn a_crashed_resolver_goes_silent() {
                 Ok(())
             });
             let events = world.run().expect("the run passes its checks");
+            let crash = position(&events, Fault::Crash(Server::Resolver))
+                .expect("the crash under the query");
             assert!(
-                events
-                    .iter()
-                    .all(|event| event.host != resolver || event.at <= at + 100 * MS),
+                events[crash..].iter().all(|event| event.host != resolver),
                 "{events:#?}"
             );
         });
@@ -431,12 +439,17 @@ fn whatever_the_seed_crashes_queries_end_well() {
         let events = world.run().expect("the run passes its checks");
         let (asked, ended) = asked_and_ended(&events);
         assert_eq!((asked, ended), (6, 6), "{events:#?}");
-        // The crashed host does nothing while it is down; a reply already on the wire (100 ms) may still land.
-        let down = |event: &Event| event.at > at && back.is_none_or(|back| event.at < back);
+        // The crashed host does nothing while it is down; what it sent before may still land, on another host.
+        let crash = position(&events, Fault::Crash(server));
+        let bounce = position(&events, Fault::Bounce(server));
+        let down = |index: usize| {
+            crash.is_some_and(|crash| index > crash) && bounce.is_none_or(|bounce| index < bounce)
+        };
         assert!(
             events
                 .iter()
-                .all(|event| event.host != host || !down(event)),
+                .enumerate()
+                .all(|(index, event)| event.host != host || !down(index)),
             "{events:#?}"
         );
         let asks: Vec<_> = events
@@ -445,14 +458,15 @@ fn whatever_the_seed_crashes_queries_end_well() {
             .collect();
         let ends: Vec<_> = events
             .iter()
-            .filter(|event| {
+            .enumerate()
+            .filter(|(_, event)| {
                 matches!(
                     event.what,
                     What::Answered { .. } | What::Failed { .. } | What::Errored { .. }
                 )
             })
             .collect();
-        for (ask, end) in asks.iter().zip(&ends) {
+        for (ask, (_, end)) in asks.iter().zip(&ends) {
             // With the resolver and one upstream server up, the stream gets records, late at worst.
             let up =
                 server != Server::Resolver || back.is_some_and(|back| ask.at >= back + 100 * MS);
@@ -461,19 +475,20 @@ fn whatever_the_seed_crashes_queries_end_well() {
         if server == Server::Resolver {
             // What a dead resolver sent is on the wire for 100 ms, no more.
             assert!(
-                ends.iter().all(|end| {
+                ends.iter().all(|(index, end)| {
                     !matches!(end.what, What::Answered { .. })
                         || end.at <= at + 100 * MS
-                        || back.is_some_and(|back| end.at >= back)
+                        || bounce.is_some_and(|bounce| *index > bounce)
                 }),
                 "{events:#?}"
             );
             // The cache died with it: the first thing it keeps afterwards is the first entry.
             let first = events
                 .iter()
-                .filter(|event| event.host == resolver)
-                .find_map(|event| match event.what {
-                    What::Stored { entries, .. } if back.is_some_and(|back| event.at >= back) => {
+                .enumerate()
+                .filter(|(_, event)| event.host == resolver)
+                .find_map(|(index, event)| match event.what {
+                    What::Stored { entries, .. } if bounce.is_some_and(|bounce| index > bounce) => {
                         Some(entries)
                     }
                     _ => None,
