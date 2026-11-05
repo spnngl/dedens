@@ -1,0 +1,7 @@
+#!/bin/sh
+# D150: `cc` linking with lld: Rust's own (its `gcc-ld/ld.lld`, found next to the `rust-lld` rustc puts first in the
+# linker's PATH), else the system's.
+if rust_lld="$(command -v rust-lld)"; then
+    set -- "-B$(dirname "$rust_lld")/gcc-ld" "$@"
+fi
+exec cc -fuse-ld=lld "$@"
