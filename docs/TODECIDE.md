@@ -288,6 +288,3 @@ Open questions, each with its proposed default. Once answered, record the outcom
   effective and ambient capabilities once bound, as D122's drop ends with none.
 - IPv6 in the packaged `dedensd.yaml` (D156): `127.0.0.1:53` only, since a host without IPv6 has no `[::1]` and the
   start fails. Default: as is. Alternative: `dedensd` skipping a loopback address the host lacks, with a warning.
-- Two flaky tests, seen under the musl job (D154): `a_client_over_its_share_cannot_shed_another_client` fails when the keyed hash puts two
-  networks in one of 256 buckets (1 run in 400); `isolate::tests::the_hook_logs_the_panics_no_catch_has` sets the process-wide panic hook
-  beside other tests. Default: as is. Alternative: a table of one bucket per network in the first, `serial` in the second.
