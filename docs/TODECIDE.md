@@ -269,8 +269,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Cross builds with the lld wrapper (D150): `lld-cc` calls the host `cc`, so a `--target` other than the host's
   needs `CARGO_TARGET_<TRIPLE>_LINKER` set to a cross `cc`. The musl targets build natively in Alpine instead (D151).
   Default: as is.
-- The allocator of the musl binaries (D151): musl's own is reputed slower under threads than glibc's. Default: musl's,
-  until a bench of `dedensd` under dnsperf compares it with mimalloc and jemalloc, security included.
+- The allocator of the musl binaries (D152): no candidate passed the rule, so musl's mallocng stays: the safest, 0.68 of
+  the fastest, a p99 up to 2.6 times. Default: mallocng. Alternative: mimalloc with `MI_SECURE=4` (the attacker gains in
+  no probe case, 0.89 of the fastest, a churn peak of 184 MiB against 94), as a `cfg(target_env = "musl")`
+  dependency. A bench with the allocator tuned (jemalloc's arenas, mimalloc's options) or on aarch64 may move the numbers.
 - The trust store of the image (D153): it carries Alpine's `ca-certificates` bundle, as of its build, so a CA the
   bundle drops stays trusted until the next release. Default: as is. Alternative: bundled roots (`webpki-roots`),
   which the host's own CAs (a corporate proxy) would not extend either.

@@ -37,7 +37,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   [`TODECIDE.md`](TODECIDE.md)). Rejected: `-fuse-ld=lld` in `rustflags` or `-C link-arg` (RUSTFLAGS replaces it; needs
   a system `ld.lld`), `-C linker-features=+lld` and `-C link-self-contained=+linker` (nightly), `-C linker=rust-lld`
   (macOS records SDK 11.0 for the one in use), a `[host]` table (unstable), mold (an install, no macOS).
-- D151 (builds on D6, D150) The Linux binaries we ship are static PIE on `x86_64-unknown-linux-musl` and
+- D151 (builds on D6, D150; amended by D152) The Linux binaries we ship are static PIE on `x86_64-unknown-linux-musl` and
   `aarch64-unknown-linux-musl`: one file, no libc to match, none of glibc's NSS and `dlopen` surface. glibc stays for
   development and for the tools that need it (sanitizers, fuzzing, Kani, loom, mutants): `just check` is unchanged.
   `just musl <target> [cargo arguments]` builds and tests (the suite by default) natively in `rust:<channel>-alpine` of
@@ -58,9 +58,30 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   blocking its names; `io_uring` (`kernel.io_uring_disabled=0`) and, with it `2` (the host's), the `poll` fallback;
   root dropping to uid 99 from port 53 with no capability and `NoNewPrivs`. Differences from glibc: `getpwnam` reads
   `/etc/passwd` only, no NSS, so a `user:` name defined elsewhere (AlmaLinux's `nobody`, `nss-altfiles`, LDAP) is
-  "no user named" and an id works (D122); musl's allocator, slower under threads, is unmeasured ([`TODECIDE.md`](TODECIDE.md)); the trust store is the
+  "no user named" and an id works (D122); musl's allocator is measured in D152; the trust store is the
   host's (`rustls-platform-verifier`), so an image holds one ([`TODECIDE.md`](TODECIDE.md)). Rejected: cross-compiling
   from glibc (a cross `gcc` for ring, `musl-tools`), `cross` and `cargo-zigbuild` (a tool each), dynamic musl.
+- D152 (amends D151; builds on D15) The musl binaries keep musl's own allocator (mallocng): no allocator crate, no
+  `#[global_allocator]`, no feature. The rule, fixed before measuring (plan README, now [`alloc-security.md`](alloc-security.md)
+  and "Allocators" in [`benchmarks.md`](benchmarks.md)): among candidates passing the gates (musl and lld build, tests,
+  a release in the last 12 months, no file opened after the first query, a licence `deny.toml` allows), the best
+  security rank wins if, in every dnsperf mode and core count, its median per-round queries/s ratio is 0.90 or more, its
+  p99 is within 25 % of the fastest and its peak RSS within 25 % of the lowest; else the next. x86_64 VPS, 8 shuffled
+  paired rounds, defaults, a 1 h soak of `mi` and `mi-min` (the best by speed and RSS rank sum). Result: no candidate
+  passes, and the rule does not say what then; keeping the status quo is a judgment, to be revisited
+  ([`TODECIDE.md`](TODECIDE.md)). mallocng: the safest (20 of 20 runs stop 10 of the plan's 12 probe cases and the
+  attacker gains nothing in the other two; 1,084 lines, MIT), the leanest (churn peak 94 MiB) and the slowest (median
+  ratio 0.68, 0.53 to 0.80 by cell; p99 1.3 to 2.6 times the lowest; 1.3 to 16 times the cost of an allocating
+  operation). mimalloc `MI_SECURE=4` is second: no gain for the attacker, but double and interior frees are ignored,
+  1-byte overflows missed on 65 of 256 sizes, ratio 0.89 and a churn peak 94 % over mallocng's. mimalloc and its
+  `MI_SECURE=1` build let the attacker gain in 5 and 4 cases. jemalloc fails the licence gate (its C is BSD-2-Clause,
+  not in `deny.toml`'s list), has no hardening and starts 37 MiB on 3 threads. tcmalloc was dropped before measuring:
+  upstream supports neither musl nor macOS, and its crate's last release (June 2025) was over 12 months old. Limits: one
+  session on a shared host, x86_64 only (the probe ran on aarch64: what an allocator catches does not depend on the
+  ISA), defaults untuned. The experiment is the tag `alloc-experiment-2026-11-06` (`build/alloc-experiment`, code
+  `d46bd0e`), the probe `alloc-security-2026-11-06` (`crates/dedens-bench/alloc-probe/`). Its allocator features
+  exclude one another, so `--all-features` cannot build it: a design that lands an allocator names it per target.
+  Glibc, macOS and every tool build (careful, Miri, fuzz, loom, Kani) keep the system allocator.
 - D153 (builds on D57, D122, D150, D151) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
   `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
   with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the
@@ -79,12 +100,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   a `scratch` image lacks), a `passwd` and `group` naming uid 10001, `/var/cache/dedensd` (downloads) owned by it,
   `deploy/dedensd.yaml` (a caching forwarder over DoT) read-only; no shell, no package manager, and `USER`
   10001 from the first instruction. Port 53 binds through the runtime's `net.ipv4.ip_unprivileged_port_start` (Docker
-  sets it to 0; with any other, `--sysctl`, or a published high port), so D122's drop has nothing to do there and the
+  sets it to 0; rootless Podman on the VPS leaves 1024 and needs `--sysctl net.ipv4.ip_unprivileged_port_start=53`; with
+  any other, a published high port), so D122's drop has nothing to do there and the
   config sets no `user:`; the drop and its root tests stay for hosts that start `dedensd` as root. Rejected: an
   Alpine or distroless final stage (more than the binary needs), `USER root` with D122's drop (root and capabilities
   in the image for the first milliseconds, and a runtime that drops `CAP_SETUID` breaks it), `setcap` on the binary
   (a file capability grants nothing under `no-new-privileges`), a single multi-arch build under QEMU (slow, and the binaries of the
-  native build are the ones tested).
+  native build are the ones tested). Read on the VPS (x86_64, rootless Podman 5.8.2): `just release` builds twice
+  identical, `just image` runs `dedensd` as uid 10001 (`CapEff` 0), `exec` of a shell fails (none in the image), and with
+  a mounted config it answers UDP and TCP, forwards over DoT with the image's CA bundle, downloads a 222,630-name list
+  into `/var/cache/dedensd` and answers a listed name NXDOMAIN with EDE 15; a client outside the private networks is
+  REFUSED until `access:` allows it (D91).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
