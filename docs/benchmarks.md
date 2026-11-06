@@ -1008,3 +1008,44 @@ The functions in the table add up to 39% in the kernel, 16% in `dedensd` and 2% 
 The `memmove` stands out: nearly a fifth of the front server's samples copying bytes, with no caller in the stacks (dwarf
 unwinding stops at a libc leaf without CFI). Whether it is a reply buffer of D52 or D63, or the response copied out of the
 upstream socket, is not known; the report keeps no `perf.data` to ask.
+
+## Linker (D150)
+
+lld, Rust's own (`.cargo/config.toml`), against the platform's linker, for `dedensd`. Paired rounds, the two
+variants alternated in one session; `L` is lld (Linux: rustc's default; macOS: `.cargo/lld-cc`), `B` the platform's linker.
+
+- Linux: x86_64, 6 vCPUs, AlmaLinux 10.2 (kernel 6.12.0-211.73.1), the `rust:1` container under rootless
+  podman, rustc 1.99.1, shared host (load average 3.5 before the run), 2026-11-05. `B` is
+  `RUSTFLAGS=-Clinker-features=-lld`, which gives GNU ld 2.44 (through gcc 14).
+- macOS: Apple M5, 10 cores, macOS 27.2, rustc 1.99.1, load average 4.7 at the start, 2026-11-06. `B` is
+  `CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=cc` (Apple's `ld`); `L` runs with `SDKROOT` of the 26.5 SDK, as
+  stable's lld cannot read the 27 SDK.
+- Debug relink: `touch apps/dedensd/src/main.rs; cargo build -q -p dedensd` after a warm build, 10 rounds.
+  Release: the same touch and `cargo build -q --release -p dedensd` (fat LTO, one codegen unit), 4 rounds.
+
+Seconds, min / median / max over the rounds.
+
+| Build | Linux `L` | Linux `B` | macOS `L` | macOS `B` |
+|---|---|---|---|---|
+| Debug relink | 1.88 / 1.98 / 2.34 | 6.83 / 7.06 / 7.66 | 1.03 / 1.07 / 1.68 | 0.82 / 0.86 / 1.16 |
+| `B`/`L` per round, median (range) | 3.57 (3.26-3.72) | | 0.79 (0.69-0.96) | |
+| Release | 107.5 / 108.5 / 115.1 | 106.9 / 108.5 / 109.0 | 34.7 / 34.8 / 35.1 | 34.6 / 36.3 / 38.5 |
+| `B`/`L` per round, median (range) | 0.995 (0.95-1.00) | | 1.04 (0.99-1.11) | |
+
+- On Linux lld relinks the debug build 3.6 times faster, in every round; on macOS Apple's `ld` is 0.2 s faster,
+  in every round. The release build is codegen's, not the linker's: equal within the noise on both.
+
+Hardening of the release `dedensd` and `dedens`, `L` against `B` (`readelf -hlWd`; `otool -hv`): unchanged.
+
+| Property | Linux `L` and `B` | macOS `L` and `B` |
+|---|---|---|
+| Position independent | `Type: DYN`, `FLAGS_1 PIE` | `PIE` in the header flags |
+| RELRO, BIND_NOW | `GNU_RELRO`, `FLAGS BIND_NOW`, `FLAGS_1 NOW` | `__DATA_CONST` segment, `DYLDLINK TWOLEVEL` |
+| Non-executable stack | `GNU_STACK` `RW` | none to set |
+
+- Size, `dedensd`/`dedens`, bytes: Linux `L` 7,495,736/6,191,544, `B` 7,502,616/6,194,496; macOS `L`
+  6,136,512/5,107,760, `B` 6,153,168/5,107,856. Linux links `libgcc_s.so.1` and `libc.so.6` either way.
+- What differs: lld records itself, even stripped (ELF `.comment` `Linker: LLD`; Mach-O `LC_BUILD_VERSION` tool 4
+  against Apple's 3); it writes no `LC_SOURCE_VERSION` and, on Linux, a `GNU_STACK` of alignment 0 instead of 0x10.
+- The debug `dedens` and `dedensd` of `x86_64-unknown-linux-musl` (cross, Debian with `musl-tools`) are static-PIE:
+  no `INTERP`, `FLAGS BIND_NOW`, `FLAGS_1 NOW PIE`. The release musl readout waits for step 01.

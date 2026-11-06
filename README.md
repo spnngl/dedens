@@ -19,6 +19,9 @@ released.
   the gate.
 - `just toolchains`: the pinned stable (`rust-toolchain.toml`) and the pinned nightly's rustfmt and rust-src
   (`justfile`).
+- Builds link with lld (`.cargo/config.toml`, D150): rustup's toolchain carries it, nothing to install. Homebrew's
+  `rust` does not: put rustup's `cargo` ahead of it in `PATH`. macOS 27's SDK is beyond the lld of stable 1.99:
+  build with `SDKROOT` set to a 26 SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`).
 - [taplo](https://taplo.tamasfe.dev), [typos](https://github.com/crate-ci/typos) and
   [cargo-shear](https://github.com/Boshen/cargo-shear), for `just check`: `brew install taplo typos-cli cargo-shear`
   or `cargo install taplo-cli typos-cli cargo-shear`.

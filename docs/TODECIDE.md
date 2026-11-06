@@ -262,3 +262,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - crates.io publishing, a container image, dnsperf benchmarks against Unbound and CoreDNS.
 - A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config.rs`), which needs the reader in a
   library crate. Default: move the reader to `dedens-server` with the next change to the configuration.
+- macOS 27's SDK against the lld of stable 1.99 (D150): `libSystem.tbd` of the 27.x SDKs fails to load
+  (`unknown target arm64e.x1-macos`, LLVM 23.1.1; the pinned nightly's 23.1.4 reads it), so a Mac with only that SDK
+  as `xcrun`'s default cannot build. Default: `SDKROOT` of a 26 SDK in the shell until a stable carries LLVM 23.1.4;
+  then drop the sentence from `README.md`. Alternative: `lld-cc` falling back to `ld` when `rust-lld` fails.
+- Cross builds with the lld wrapper (D150): `lld-cc` calls the host `cc`, so a `--target` other than the host's
+  needs `CARGO_TARGET_<TRIPLE>_LINKER` set to a cross `cc` (the musl targets of step 01 do). Default: as is.

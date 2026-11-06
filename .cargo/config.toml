@@ -1,17 +1,14 @@
-# D150: every target links with lld, through `linker`, which `RUSTFLAGS` in the environment (`just loom`, cargo-fuzz,
+# D150: targets link with lld through `linker`, which `RUSTFLAGS` in the environment (`just loom`, cargo-fuzz,
 # cargo-careful) does not replace as it does `rustflags`, and which stable accepts for every target
 # (`-C linker-features=+lld` needs `-Z unstable-options` outside x86_64-unknown-linux-gnu).
 #
-# x86_64-unknown-linux-gnu has no entry: rustc links with its own lld there by default (1.90), flags or not.
+# x86_64-unknown-linux-gnu has no entry: rustc links with its own lld there by default (1.90), as long as no
+# `linker` is set for it. The musl targets get theirs with the musl step.
 
+# D150: Apple's `ld` is the default; lld is Rust's `gcc-ld/ld64.lld`.
 [target.aarch64-apple-darwin]
 linker = ".cargo/lld-cc"
 
+# D150: rustc's default there is GNU ld through `cc`.
 [target.aarch64-unknown-linux-gnu]
-linker = ".cargo/lld-cc"
-
-[target.x86_64-unknown-linux-musl]
-linker = ".cargo/lld-cc"
-
-[target.aarch64-unknown-linux-musl]
 linker = ".cargo/lld-cc"
