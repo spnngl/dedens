@@ -61,6 +61,37 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo -E env "PATH=$PATH" cargo test -p dedensd --test privileges -- --ignored
 
+  # The static musl binaries we ship (D151): the whole test suite on each architecture's musl target, natively in a
+  # `rust:alpine` container of the runner's architecture (`just musl`), then dedensd's root-only `privileges` tests,
+  # the container running as root.
+  musl:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-26.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: just musl "$TARGET"
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: just musl "$TARGET" test -p dedensd --test privileges -- --ignored
+
   # Build matrix and dependency checks: platform-independent, Linux only.
   deps:
     strategy:
@@ -130,7 +161,7 @@ jobs:
   # would break whenever a matrix changes.
   gate:
     if: always()
-    needs: [check, deps]
+    needs: [check, musl, deps]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -138,7 +169,9 @@ jobs:
       - name: Every check passed
         env:
           CHECK: ${{ needs.check.result }}
+          MUSL: ${{ needs.musl.result }}
           DEPS: ${{ needs.deps.result }}
         run: |
           [ "$CHECK" = success ] || { echo "::error::check: $CHECK"; exit 1; }
+          [ "$MUSL" = success ] || { echo "::error::musl: $MUSL"; exit 1; }
           [ "$DEPS" = success ] || { echo "::error::deps: $DEPS"; exit 1; }

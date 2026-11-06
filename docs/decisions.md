@@ -26,17 +26,41 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   bundled `rust-lld` unasked; `aarch64-apple-darwin` and `aarch64-unknown-linux-gnu` set
   `linker = ".cargo/lld-cc"` in `.cargo/config.toml`, a short wrapper that runs `cc -fuse-ld=lld` with rustc's
   `gcc-ld` directory (`ld.lld`, `ld64.lld`) first, so the `cc` driver still finds the target's runtime and SDK. The
-  musl targets get theirs with the musl step. A `linker` is not `rustflags`: RUSTFLAGS in the environment replaces
+  musl targets get theirs in D151. A `linker` is not `rustflags`: RUSTFLAGS in the environment replaces
   the config's `rustflags` (loom, cargo-fuzz, cargo-careful, cargo-llvm-cov and RAPx set it), never `linker`. Each
   recipe's binaries were read for the linker (ELF `.comment` `Linker: LLD`, Mach-O `LC_BUILD_VERSION` tool 4), build
   scripts and proc macros included; hardening is unchanged ([`benchmarks.md`](benchmarks.md)). Not reached: Kani on
   macOS builds host artifacts through `-Zhost-config`, which ignores `[target.<host>]`, so its build scripts link with
-  Apple's `ld` (no binary of ours); the `aarch64-unknown-linux-gnu` entry is the macOS mechanism and is first
-  exercised by step 01's arm64 job. A build then fails loudly, not silently with another linker, where `rust-lld` is
+  Apple's `ld` (no binary of ours); the `aarch64-unknown-linux-gnu` entry is the macOS mechanism, run by no job
+  (the arm64 runner builds musl, D151). A build then fails loudly, not silently with another linker, where `rust-lld` is
   missing (Homebrew's `rustc`: put rustup's `cargo` first) or too old for the SDK (macOS 27's: `SDKROOT` of a 26 SDK,
   [`TODECIDE.md`](TODECIDE.md)). Rejected: `-fuse-ld=lld` in `rustflags` or `-C link-arg` (RUSTFLAGS replaces it; needs
   a system `ld.lld`), `-C linker-features=+lld` and `-C link-self-contained=+linker` (nightly), `-C linker=rust-lld`
   (macOS records SDK 11.0 for the one in use), a `[host]` table (unstable), mold (an install, no macOS).
+- D151 (builds on D6, D150) The Linux binaries we ship are static PIE on `x86_64-unknown-linux-musl` and
+  `aarch64-unknown-linux-musl`: one file, no libc to match, none of glibc's NSS and `dlopen` surface. glibc stays for
+  development and for the tools that need it (sanitizers, fuzzing, Kani, loom, mutants): `just check` is unchanged.
+  `just musl <target> [cargo arguments]` builds and tests (the suite by default) natively in `rust:<channel>-alpine` of
+  the host's architecture, under `container` (macOS: podman's Linux VM, so aarch64), with no cross toolchain; the CI
+  job `musl`, in the gate, runs the suite then dedensd's root `privileges` test on `ubuntu-26.04` and
+  `ubuntu-26.04-arm`. The libc and libunwind are those of rustc's target (musl, self-contained), not Alpine's; Alpine
+  supplies `gcc` (ring's C and assembly), `git` and `procps-ng` for the tests (BusyBox's `ps` lacks `-p`), and `lld`:
+  Rust's has no zlib and Alpine's C objects (`crti.o` of the failing link) have zlib-compressed debug sections, so
+  `lld-cc` uses the system's lld there. x86_64 links static-pie unasked; rustc's target spec of aarch64 lacks `static-position-independent-executables`
+  (`-static -no-pie` with `crt1.o`: an `EXEC` at a fixed address, found by reading the first binary), so `.cargo/lld-cc`
+  swaps in `rcrt1.o`, `crtbeginS.o`, `crtendS.o` and `-static-pie`, as rustc does for x86_64, and the config sets
+  `relocation-model=pic`; drop it when the spec has the flag. Read on release `dedensd` and `dedens` of both
+  architectures (`readelf`, Alpine's binutils): `DYN`, `FLAGS BIND_NOW`, `FLAGS_1 NOW PIE`, `GNU_RELRO`, `GNU_STACK`
+  `RW`, no `INTERP`, no `NEEDED`, `Linker: LLD 22.1.3`; x86_64 7.6 MB and 6.3 MB. The suite passes on both
+  (151 test binaries, and the root test, on each). The x86_64 binary was run on the VPS (AlmaLinux 10.2, glibc, kernel
+  6.12), each check passing: UDP, TCP and cache; DoT and DoH forwarding with the host's trust store, and a wrong
+  certificate name refused (SERVFAIL); a 223,594-name blocklist downloaded through musl's resolver (`getaddrinfo`) and
+  blocking its names; `io_uring` (`kernel.io_uring_disabled=0`) and, with it `2` (the host's), the `poll` fallback;
+  root dropping to uid 99 from port 53 with no capability and `NoNewPrivs`. Differences from glibc: `getpwnam` reads
+  `/etc/passwd` only, no NSS, so a `user:` name defined elsewhere (AlmaLinux's `nobody`, `nss-altfiles`, LDAP) is
+  "no user named" and an id works (D122); musl's allocator, slower under threads, is unmeasured ([`TODECIDE.md`](TODECIDE.md)); the trust store is the
+  host's (`rustls-platform-verifier`), so an image holds one ([`TODECIDE.md`](TODECIDE.md)). Rejected: cross-compiling
+  from glibc (a cross `gcc` for ring, `musl-tools`), `cross` and `cargo-zigbuild` (a tool each), dynamic musl.
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
