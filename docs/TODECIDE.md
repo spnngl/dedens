@@ -281,3 +281,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   effective and ambient capabilities once bound, as D122's drop ends with none.
 - IPv6 in the packaged `dedensd.yaml` (D156): `127.0.0.1:53` only, since a host without IPv6 has no `[::1]` and the
   start fails. Default: as is. Alternative: `dedensd` skipping a loopback address the host lacks, with a warning.
+- A SIGSEGV of the `rfc8484` test binary (D107): once, in the coverage job of 2026-11-06 (run 42254972560, glibc
+  x86_64, instrumented), while its tests ran; the rerun passed, and 300 runs on the VPS, with and without coverage and
+  on `io_uring`, did not crash. Suspect: the tests' client runtimes, dropped with QUIC operations in flight, which
+  `dedensd` never does (D107), though compio 0.12.5 closes the ring before freeing them. Default: as is, watched.
+  Alternative: hunt it, the test in a loop on runners with core dumps uploaded, or under AddressSanitizer.
