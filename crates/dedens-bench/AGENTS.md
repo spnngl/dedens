@@ -7,6 +7,9 @@ Linux container (`DEDENS_CONTAINER=podman` for Podman; `DEDENS_BACK_CPU` and `DE
 host with fewer than eight; `DEDENS_ROUNDS` the rounds, of base and tree alternating), the working tree against a
 git ref, in a mode (`udp`, `tcp`, `forward`, `forward-tcp`, `two-sockets`; see the justfile). A regular crate so
 `cargo deny` checks the baselines. `examples/zone.rs` writes the zone for the benches outside Rust.
+`dnsperf/alloc.sh` compares N prebuilt binaries (the allocators of the `alloc-*` features) in shuffled paired rounds, churn,
+startup and divan runs; `dnsperf/alloc-vps/` builds them and runs a session on the VPS, `dnsperf/alloc-report.nu` tabulates it
+("Allocators" in `docs/benchmarks.md`).
 `examples/hit_ratio.rs` replays Zipf draws or a trace (`--trace`) through the cache's eviction (D116). Record new
 numbers in `docs/benchmarks.md`.
 
