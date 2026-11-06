@@ -1,0 +1,28 @@
+[package]
+name = "alloc-probe"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "What each allocator catches. Needs unsafe (D15), so it is no workspace member: see AGENTS.md."
+
+[dependencies]
+libc = "0.2.191"
+# The same crates and versions as `Cargo.lock` of the workspace, the same features as dedensd's.
+mimalloc = { version = "0.1.52", optional = true }
+tikv-jemalloc-sys = { version = "0.7.1", optional = true }
+tikv-jemallocator = { version = "0.7.0", optional = true }
+
+[features]
+alloc-mimalloc = ["dep:mimalloc"]
+alloc-mimalloc-secure = ["dep:mimalloc", "mimalloc/secure"]
+alloc-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys"]
+
+# A workspace of its own: outside the repository's gates (`just check`), as `fuzz/`.
+[workspace]
+
+[profile.release]
+# The workspace's: the allocator is what changes between builds.
+lto = "fat"
+codegen-units = 1
+strip = true
