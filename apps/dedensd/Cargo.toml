@@ -47,6 +47,7 @@ odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:zeroize"]
 doc = ["dedens-net/doc"]
 
 [dev-dependencies]
+clap_mangen.workspace = true
 dedens-scenario.workspace = true
 flate2.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }

@@ -1,7 +1,7 @@
 # The release build and the dedensd image (D153): static musl binaries (D151) linked by lld (D150), the dependency
 # list embedded by cargo-auditable, built on the architecture of the machine running this file.
 #
-#   binaries  the two binaries alone: `--target binaries --output type=local,dest=DIR` (just release)
+#   binaries  the two binaries and their notices alone (just release)
 #   (last)    the dedensd image, FROM scratch, run as an unprivileged user: just image
 
 # The tag is rust-toolchain.toml's channel (checked by crates/dedens-bench/tests/repo.rs); Renovate keeps the digest.
@@ -13,6 +13,9 @@ RUN apk add --no-cache lld ca-certificates
 # renovate: datasource=crate depName=cargo-auditable
 ARG CARGO_AUDITABLE_VERSION=0.7.7
 RUN cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE_VERSION"
+# renovate: datasource=crate depName=cargo-about
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
 
 # Constant paths and time: the binaries come out the same wherever and whenever the file runs (`.cargo/config.toml`
 # remaps the paths; mimalloc's `options.c` embeds `__DATE__` and `__TIME__`, which gcc takes from this variable).
@@ -24,6 +27,13 @@ RUN target="$(uname -m)-unknown-linux-musl" \
     && mkdir /out \
     && cp "target/$target/release/dedensd" "target/$target/release/dedens" /out/ \
     && /out/dedensd validate --config deploy/dedensd.yaml
+# The notice each binary travels with: the licences of the crates it links (D158), from the sources just built.
+# Offline, so no licence text comes from a crate's repository, but `cargo metadata` wants every platform's crates.
+RUN cargo fetch --locked \
+    && for binary in dedens dedensd; do \
+        cargo about generate --locked --offline -c deploy/about.toml -m "apps/$binary/Cargo.toml" \
+            -o "/out/THIRD-PARTY-$binary.txt" deploy/about.hbs || exit 1; \
+    done
 
 # What the scratch image gets and a shell is needed to make: one unprivileged user, a directory for it to write.
 RUN mkdir -p /rootfs/etc /rootfs/var/cache/dedensd \
@@ -38,6 +48,8 @@ COPY --from=build /rootfs/etc/passwd /rootfs/etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=10001:10001 /rootfs/var/cache/dedensd /var/cache/dedensd
 COPY --from=build /out/dedensd /dedensd
+COPY --from=build /out/THIRD-PARTY-dedensd.txt /usr/share/licenses/dedensd/THIRD-PARTY.txt
+COPY LICENSE /usr/share/licenses/dedensd/LICENSE
 COPY deploy/dedensd.yaml /etc/dedensd/dedensd.yaml
 # The source label links the package to the repository on ghcr.io, which the push needs to keep its access.
 LABEL org.opencontainers.image.source="https://github.com/spnngl/dedens" \

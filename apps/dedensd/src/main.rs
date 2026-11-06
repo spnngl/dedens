@@ -393,4 +393,28 @@ mod tests {
         );
         assert_eq!(Driver::of(&[]).name, "none");
     }
+
+    /// D158: the packaged man page is this command line's, section 8, without the version, which the package has;
+    /// `just man` writes it again.
+    #[test]
+    fn the_man_page_is_the_command_lines() {
+        use clap::CommandFactory as _;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/packages/man/dedensd.8"
+        );
+        let mut page = Vec::new();
+        clap_mangen::Man::new(super::Args::command().version(None::<&str>))
+            .section("8")
+            .render(&mut page)
+            .expect("rendered");
+        if std::env::var_os("DEDENS_WRITE_MAN").is_some() {
+            std::fs::write(path, &page).expect("written");
+        }
+        let committed = std::fs::read(path).unwrap_or_default();
+        assert!(
+            committed == page,
+            "{path} is stale: `just man` writes it again"
+        );
+    }
 }
