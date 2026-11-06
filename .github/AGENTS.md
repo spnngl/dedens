@@ -11,4 +11,6 @@ runs. `actionlint` and `zizmor` lint these files.
 `just sim 100`, the simulation scenarios under random seeds, a job per scenario file (D133), and `careful` runs
 `just careful address`, a job per package (D144). `ci.yml` runs dedensd's root-only `privileges` tests with `sudo`
 (D122). Scheduled: `fuzz.yml`, a job per fuzz target, and `advisories.yml` (D141); weekly, `rapx.yml` (D16),
-`kani.yml` (D145) and `codeql.yml` (D146), whose alerts go to the Security tab.
+`kani.yml` (D145) and `codeql.yml` (D146), whose alerts go to the Security tab. `release.yml` runs on a pushed tag
+`v*`, after `ci.yml`'s gate through `workflow_call` (D153); by hand with `publish` off it builds and attests but
+releases and pushes nothing.

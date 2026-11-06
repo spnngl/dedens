@@ -1,0 +1,11 @@
+# The build context of the Containerfile: what cargo builds, and nothing that varies between machines (D153). No
+# rust-toolchain.toml either: the image's own toolchain is the one, its tag checked against the channel.
+*
+!Cargo.toml
+!Cargo.lock
+!.cargo
+!apps
+!crates
+!deploy
+**/target
+**/._*

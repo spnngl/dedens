@@ -536,6 +536,29 @@ fn missing_links(tracked: &[String], link: impl Fn(&str) -> Option<PathBuf>) -> 
         .collect()
 }
 
+// --- The release image's Rust ---
+
+/// The Containerfile's Rust, when it is not `channel`, the one `rust-toolchain.toml` pins (D153): the image's own
+/// toolchain builds the release, so a tag of another version builds with a Rust the gate never ran.
+fn image_rust_differs(containerfile: &str, toolchain: &str) -> Vec<String> {
+    let channel = toolchain
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("channel = \"")?.strip_suffix('"'))
+        .expect("rust-toolchain.toml pins a channel");
+    let from = containerfile
+        .lines()
+        .find_map(|line| line.strip_prefix("FROM docker.io/library/rust:"))
+        .expect("the Containerfile builds FROM rust");
+    let tag = from.split(['@', ' ']).next().unwrap_or_default();
+    if tag == format!("{channel}-alpine") {
+        Vec::new()
+    } else {
+        vec![format!(
+            "Containerfile: builds FROM rust:{tag}, rust-toolchain.toml pins {channel}-alpine"
+        )]
+    }
+}
+
 // --- The tree ---
 
 #[test]
@@ -568,7 +591,28 @@ fn agents_files_have_their_claude_symlink() {
     }));
 }
 
+#[test]
+fn image_builds_with_the_pinned_rust() {
+    let containerfile =
+        fs::read_to_string(root().join("Containerfile")).expect("Containerfile reads");
+    let toolchain =
+        fs::read_to_string(root().join("rust-toolchain.toml")).expect("toolchain reads");
+    report(&image_rust_differs(&containerfile, &toolchain));
+}
+
 // --- Each check fails on a small broken input ---
+
+#[test]
+fn an_image_of_another_rust_fails() {
+    let toolchain = "[toolchain]\nchannel = \"1.99.1\"\n";
+    let same = "FROM docker.io/library/rust:1.99.1-alpine@sha256:abc AS build\n";
+    let other = "FROM docker.io/library/rust:1.99.0-alpine@sha256:abc AS build\n";
+    report(&image_rust_differs(same, toolchain));
+    assert_eq!(
+        image_rust_differs(other, toolchain),
+        ["Containerfile: builds FROM rust:1.99.0-alpine, rust-toolchain.toml pins 1.99.1-alpine"]
+    );
+}
 
 #[test]
 fn ids_are_found_in_text() {

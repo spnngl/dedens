@@ -15,10 +15,21 @@ linker = ".cargo/lld-cc"
 
 # D151: the static musl binaries, and on `rust:alpine` the host's own: its proc macros and build scripts link here
 # too, with the system's lld there (`lld-cc`). x86_64 links static-pie by default; aarch64 does not (rustc's target
-# spec): `lld-cc` links it so, from position-independent code.
+# spec): `lld-cc` links it so, from position-independent code. D153: the paths of the workspace and of CARGO_HOME in
+# `rust:alpine`, remapped, so that no path of the machine is in a release binary; set here, not in RUSTFLAGS, which
+# would replace them.
 [target.x86_64-unknown-linux-musl]
 linker = ".cargo/lld-cc"
+rustflags = [
+  "--remap-path-prefix=/src=dedens",
+  "--remap-path-prefix=/usr/local/cargo=cargo",
+]
 
 [target.aarch64-unknown-linux-musl]
 linker = ".cargo/lld-cc"
-rustflags = ["-C", "relocation-model=pic"]
+rustflags = [
+  "-C",
+  "relocation-model=pic",
+  "--remap-path-prefix=/src=dedens",
+  "--remap-path-prefix=/usr/local/cargo=cargo",
+]

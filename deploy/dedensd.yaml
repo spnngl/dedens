@@ -1,0 +1,12 @@
+# The configuration of the dedensd image (D153): a caching forwarder over DoT. Mount your own over this file.
+# No `user:` (D122): the image runs unprivileged already, and the runtime lets it bind port 53.
+listen: ["0.0.0.0:53"]
+downloads:
+  dir: /var/cache/dedensd
+pipeline: [cache, upstream]
+stages:
+  cache:
+    type: cache
+  upstream:
+    type: forward
+    servers: ["tls://9.9.9.9#dns.quad9.net", "tls://149.112.112.112#dns.quad9.net"]
