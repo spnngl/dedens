@@ -7,6 +7,10 @@ all-features = true
 # Unmaintained crates fail the check, transitive ones included.
 unmaintained = "all"
 yanked = "deny"
+# D155: reached through loom only, which no shipped build compiles.
+ignore = [
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils, unmaintained: loom's, under cfg(loom) and cfg(dedens_loom) only" },
+]
 
 [licenses]
 # ISC: rustls's `ring`, `untrusted` and `webpki`; CDLA-Permissive-2.0: the CA certificates of `webpki-roots` (D57).

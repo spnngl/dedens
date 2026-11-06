@@ -124,6 +124,12 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   a mounted config it answers UDP and TCP, forwards over DoT with the image's CA bundle, downloads a 222,630-name list
   into `/var/cache/dedensd` and answers a listed name NXDOMAIN with EDE 15; a client outside the private networks is
   REFUSED until `access:` allows it (D91).
+- D155 (builds on D14, D135, D141) `deny.toml` ignores RUSTSEC-2026-0441, `pin-utils` unmaintained (repository archived
+  2026-10-01, no successor release): its one path is `loom` 0.7.2, the latest, which `compio-executor` takes under
+  `cfg(loom)` and `dedensd` under `cfg(dedens_loom)` (`just loom`, D135), so no shipped build compiles it. Drop the
+  entry when `loom` stops depending on `pin-utils`; cargo-deny warns once the advisory no longer matches. Rejected:
+  `[graph] targets` limited to the shipped targets (it would drop `loom` from the graph, and with it the licence and
+  ban checks of every test-only crate).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
