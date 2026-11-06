@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
@@ -384,12 +384,30 @@ impl Server {
     /// Sends SIGHUP, asking for a reload (D55).
     #[cfg(unix)]
     pub(crate) fn hang_up(&self) {
+        self.signal("HUP");
+    }
+
+    /// Sends the signal named `name`, `HUP` or `TERM`, with `kill`.
+    #[cfg(unix)]
+    pub(crate) fn signal(&self, name: &str) {
         let status = Command::new("kill")
-            .arg("-HUP")
+            .arg(format!("-{name}"))
             .arg(self.child.id().to_string())
             .status()
             .expect("kill runs");
-        assert!(status.success(), "kill -HUP");
+        assert!(status.success(), "kill -{name}");
+    }
+
+    /// How it exited, waiting at most [`EVENT_TIMEOUT`]; `None` while it still runs then.
+    pub(crate) fn exited(&mut self) -> Option<ExitStatus> {
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().expect("its status") {
+                return Some(status);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        None
     }
 }
 

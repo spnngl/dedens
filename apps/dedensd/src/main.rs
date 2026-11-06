@@ -137,7 +137,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "doc")]
     warn_coap(&listen);
     let threads = sockets.len();
-    let (ended, end) = mpsc::channel();
+    let (ended, end) = stop_on_signal().context("cannot handle SIGTERM")?;
     let (listening, listened) = mpsc::channel();
     for (index, sockets) in sockets.into_iter().enumerate() {
         let (current, ended) = (Arc::clone(&current), ended.clone());
@@ -186,6 +186,42 @@ fn main() -> anyhow::Result<()> {
         }
     }
 }
+
+/// Ends the server on SIGTERM or SIGINT (D157), as `docker stop`, systemd and Ctrl-C ask: at once, since nothing is
+/// to flush (the cache lives in memory, a list and its `ETag` are replaced atomically, D64). Needed as PID 1 of the
+/// image, where the kernel drops a signal that has no handler. The thread starts after root is dropped (D122).
+///
+/// The channel the server's end comes on: from a serving thread, or from the signal.
+///
+/// # Errors
+///
+/// A handler the OS refuses.
+fn stop_on_signal() -> io::Result<Ending> {
+    let (ended, end) = mpsc::channel();
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT])?;
+        let ended = ended.clone();
+        thread::Builder::new()
+            .name("dedensd-signals".to_owned())
+            .spawn(move || {
+                if let Some(signal) = signals.forever().next() {
+                    let signal = if signal == SIGTERM {
+                        "SIGTERM"
+                    } else {
+                        "SIGINT"
+                    };
+                    tracing::info!(signal, "dedensd ends: stopped");
+                    let _ = ended.send(Ok(()));
+                }
+            })?;
+    }
+    Ok((ended, end))
+}
+
+/// The two ends of [`stop_on_signal`]'s channel.
+type Ending = (mpsc::Sender<io::Result<()>>, mpsc::Receiver<io::Result<()>>);
 
 /// Warns of each CoAP address in `listen`: DNS there is unprotected (RFC 9953 §6).
 #[cfg(feature = "doc")]
