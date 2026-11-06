@@ -15,6 +15,8 @@ unbound_version := "1.26.2"
 # The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
 # `DEDENS_ROUNDS=5` sets its rounds.
 container := env("DEDENS_CONTAINER", "docker")
+# The nfpm image of `just packages` (D156).
+nfpm := "docker.io/goreleaser/nfpm:v2.48.0@sha256:d57a1452e7a019896b355f7b1ec67262278f6c503631f652d4fce7aef9ac8df7"
 
 # List recipes.
 default:
@@ -248,6 +250,31 @@ release:
     mv dist/1/* dist/
     rm -r dist/1 dist/2
     sha256sum dist/* 2>/dev/null || shasum -a 256 dist/*
+
+# The deb and rpm packages of dedens and dedensd, from the binaries `just release` left in dist/ (D156)
+packages:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ arch() }}" in x86_64) goarch=amd64 ;; aarch64) goarch=arm64 ;; esac
+    version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+    # The commit's time, for every file's and the changelog's: the same commit makes the same packages.
+    epoch="$(git log -1 --format=%ct)"
+    trap 'rm -rf dist/changelog.yaml dist/packages' EXIT
+    mkdir dist/packages
+    printf -- '- semver: %s-1\n  date: %s\n  packager: Lola Delannoy <lola.2lannoy@gmail.com>\n  deb:\n    urgency: medium\n    distributions: [unstable]\n  changes:\n    - note: %s\n' \
+        "$version" "$(git log -1 --format=%cI)" "https://github.com/spnngl/dedens/releases/tag/v$version" > dist/changelog.yaml
+    # The packages owned by the caller: rootless Podman maps only the caller's own id through. nfpm writes to
+    # dist/packages only: the binaries and the sources are read-only to it.
+    user="--user=$(id -u):$(id -g)"
+    if [[ "{{ container }}" == podman ]]; then user=--userns=keep-id; fi
+    for package in dedens dedensd; do
+        for packager in deb rpm; do
+            {{ container }} run --rm "$user" -v "$PWD:/src:ro" -v "$PWD/dist/packages:/out" -w /src -e "ARCH=$goarch" \
+                -e "VERSION=$version" -e "SOURCE_DATE_EPOCH=$epoch" {{ nfpm }} \
+                package --config "deploy/packages/$package.yaml" --packager "$packager" --target /out/
+        done
+    done
+    mv dist/packages/* dist/
 
 # The dedensd image, `localhost/dedensd`, for this machine's architecture (D153): just image && docker run --rm -p 5353:53/udp
 # localhost/dedensd

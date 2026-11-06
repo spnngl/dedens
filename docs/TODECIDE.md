@@ -280,6 +280,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   SIGINT handler ending the process, with its own test.
 - The image's registry access (D153): the GHCR package starts private, and nothing protects `v*` tags, so any pushed
   tag publishes. Default: by hand, once (`.github/AGENTS.md`, "First release"): make the package public, add a tag ruleset.
+- The licences of the crates linked into the shipped binaries (D153, D156): the archives, the image and the packages
+  carry dedens' own `LICENSE` only, while MIT and BSD ask their notice to travel with a binary. Default: as is.
+  Alternative: a notice file made by `cargo about` from `Cargo.lock`, shipped in all three.
+- `CAP_NET_BIND_SERVICE` under systemd (D156): the unit grants it for the bind, and `dedensd` keeps it for its life
+  (`CapEff` 0x400), though `listen` cannot change on reload. Default: as is. Alternative: `dedensd` clearing its
+  effective and ambient capabilities once bound, as D122's drop ends with none.
+- IPv6 in the packaged `dedensd.yaml` (D156): `127.0.0.1:53` only, since a host without IPv6 has no `[::1]` and the
+  start fails. Default: as is. Alternative: `dedensd` skipping a loopback address the host lacks, with a warning.
 - Two flaky tests, seen under the musl job (D154): `a_client_over_its_share_cannot_shed_another_client` fails when the keyed hash puts two
   networks in one of 256 buckets (1 run in 400); `isolate::tests::the_hook_logs_the_panics_no_catch_has` sets the process-wide panic hook
   beside other tests. Default: as is. Alternative: a table of one bucket per network in the first, `serial` in the second.

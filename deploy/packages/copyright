@@ -1,0 +1,10 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: dedens
+Upstream-Contact: Lola Delannoy <lola.2lannoy@gmail.com>
+Source: https://github.com/spnngl/dedens
+
+Files: *
+Copyright: 2026 dédéns contributors
+License: Apache-2.0
+ On Debian systems, the full text of the Apache License, version 2.0, is in
+ /usr/share/common-licenses/Apache-2.0.

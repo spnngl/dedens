@@ -95,7 +95,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
   (1 run in 400: two networks hash to one of 256 buckets). Rejected:
   mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152).
-- D153 (builds on D57, D122, D150, D151) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
+- D153 (builds on D57, D122, D150, D151; amended by D156) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
   `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
   with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the
   license, with `SHA256SUMS`, each attested for its build provenance (`actions/attest-build-provenance`: `gh
@@ -130,6 +130,26 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   entry when `loom` stops depending on `pin-utils`; cargo-deny warns once the advisory no longer matches. Rejected:
   `[graph] targets` limited to the shipped targets (it would drop `loom` from the graph, and with it the licence and
   ban checks of every test-only crate).
+- D156 (amends D153; builds on D122, D151) The release also holds a deb and an rpm of `dedens` and of `dedensd` per
+  architecture, packed by nfpm (`goreleaser/nfpm` by digest) from the very binaries of the archives (`just packages`,
+  from `deploy/packages/`), in `SHA256SUMS` and attested with them. Version `X.Y.Z-1`, Cargo.toml's, which a tag must
+  name (`vX.Y.Z`); a changelog of one entry pointing at the release; each file's time the commit's, so the same commit
+  makes the same packages (twice identical on macOS). `dedensd` in `/usr/sbin`, run by a systemd unit the package
+  neither enables nor starts: as user `dedensd` (`sysusers.d`, `useradd` without systemd) from the start, with
+  `CAP_NET_BIND_SERVICE` only, `NoNewPrivileges`, `ProtectSystem=strict`, `@system-service` (it allows io_uring; a
+  refused call gets `EPERM`, not a kill), `CacheDirectory` for downloads, `LimitNOFILE` 524288 (systemd's soft 1024 is
+  short of a server's sockets), `Type=exec`, before `nss-lookup.target`; so no `user:` (D122). Its config, kept across
+  upgrades: a caching forwarder over DoT on `127.0.0.1:53` only, not `[::1]` (on the VPS, without IPv6, the start
+  failed). An upgrade restarts a running service, a removal stops and disables it, leaves the user, the cache and the
+  edited config; a failing `systemctl` (a chroot without a bus) fails no script. `lintian` and `rpmlint` fail the job on
+  an error; rpmlint's `no-signature` and `statically-linked-binary` are filtered (`deploy/packages/rpmlint.toml`). Then
+  each deb is installed on a fresh runner, started and asked over UDP and TCP, and each rpm in AlmaLinux 10, its config
+  validated and `rpm --verify` clean. The image is pushed only once both passed. Not signed with GPG, and no apt or dnf
+  repository: the attestation and `SHA256SUMS` cover them. Rejected: cargo-deb and cargo-generate-rpm (two tools, each
+  building again), `DynamicUser` (its uid changes, and a TLS key or list given to `dedensd` needs a fixed one). Read on
+  the VPS (AlmaLinux 10, systemd 257): installed, started, asked over UDP and TCP via DoT, uid 980, `CapEff` 0x400,
+  seccomp on, io_uring when the sysctl allows it, a reload downloads an 87,809-name list into `/var/cache/dedensd` and
+  answers a listed name NXDOMAIN with EDE 15; `systemd-analyze security` 1.7 OK.
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The

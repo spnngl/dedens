@@ -1,0 +1,2 @@
+# The user dedensd runs as (D156); its home is the directory systemd makes for downloads.
+u dedensd - "dédéns DNS server" /var/cache/dedensd

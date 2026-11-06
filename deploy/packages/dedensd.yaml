@@ -1,0 +1,63 @@
+# nfpm: the dedensd package, deb and rpm, of the musl binary `just release` left in dist/ (D156).
+# `just packages` sets ARCH (amd64, arm64) and VERSION (Cargo.toml's).
+name: dedensd
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+# The packaging's revision: 0.1.0-1, a package of an upstream version, as lintian wants it.
+release: 1
+section: net
+priority: optional
+maintainer: Lola Delannoy <lola.2lannoy@gmail.com>
+description: |-
+  Caching DNS forwarder
+  dedensd answers on 127.0.0.1:53 and forwards over DNS over TLS to Quad9,
+  once its service is enabled.
+homepage: https://github.com/spnngl/dedens
+license: Apache-2.0
+# Written by `just packages`: one entry, this version, pointing at its release.
+changelog: dist/changelog.yaml
+rpm:
+  summary: Caching DNS forwarder
+  group: Applications/Internet
+  packager: Lola Delannoy <lola.2lannoy@gmail.com>
+  # The container's name otherwise: the same sources would make another rpm.
+  buildhost: dedens
+depends:
+  - ca-certificates
+contents:
+  - src: dist/dedensd
+    dst: /usr/sbin/dedensd
+    file_info: { mode: 0755 }
+  - src: deploy/packages/dedensd.service
+    dst: /usr/lib/systemd/system/dedensd.service
+    file_info: { mode: 0644 }
+  - src: deploy/packages/dedensd.sysusers
+    dst: /usr/lib/sysusers.d/dedensd.conf
+    file_info: { mode: 0644 }
+  # The rpm owns only the directories it lists; the deb, all of its own.
+  - dst: /etc/dedensd
+    type: dir
+    packager: rpm
+    file_info: { mode: 0755 }
+  - dst: /usr/share/licenses/dedensd
+    type: dir
+    packager: rpm
+    file_info: { mode: 0755 }
+  - src: deploy/packages/dedensd.conf.yaml
+    dst: /etc/dedensd/dedensd.yaml
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - src: deploy/packages/copyright
+    dst: /usr/share/doc/dedensd/copyright
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: LICENSE
+    dst: /usr/share/licenses/dedensd/LICENSE
+    packager: rpm
+    type: license
+    file_info: { mode: 0644 }
+scripts:
+  postinstall: deploy/packages/dedensd.postinst
+  preremove: deploy/packages/dedensd.prerm
+  postremove: deploy/packages/dedensd.postrm

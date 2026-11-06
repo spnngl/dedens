@@ -12,10 +12,11 @@ runs. `actionlint` and `zizmor` lint these files.
 `just careful address`, a job per package (D144). `ci.yml` runs dedensd's root-only `privileges` tests with `sudo`
 (D122). Scheduled: `fuzz.yml`, a job per fuzz target, and `advisories.yml` (D141); weekly, `rapx.yml` (D16),
 `kani.yml` (D145) and `codeql.yml` (D146), whose alerts go to the Security tab. `release.yml` runs on a pushed tag
-`v*`, after `ci.yml`'s gate through `workflow_call` (D153); by hand with `publish` off it builds and attests but
+`v*`, after `ci.yml`'s gate through `workflow_call` (D153), with deb and rpm packages tested on fresh runners
+(D156); by hand with `publish` off it builds and attests but
 releases and pushes nothing.
 
 First release, by hand (D153): push `v0.1.0` (`git tag v0.1.0 && git push origin v0.1.0`); once the `image` job has
 pushed, set the `dedensd` package to public (GitHub: Packages, `dedensd`, Package settings, Change visibility: no API
 does it, and a package is private at its first push) and add a tag ruleset on `v*`; check the release's archives
-against `SHA256SUMS` and `gh attestation verify`.
+and packages against `SHA256SUMS` and `gh attestation verify`.

@@ -1,0 +1,11 @@
+#!/bin/sh
+# dedensd's package (D156), before removal: the service stopped and disabled. An upgrade leaves it running.
+# deb passes `remove`, rpm the count of versions left, 0. A failing systemctl must not block the removal.
+set -e
+case "$1" in
+    remove | 0)
+        if [ -d /run/systemd/system ]; then
+            systemctl disable --now dedensd.service || true
+        fi
+        ;;
+esac
