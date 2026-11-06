@@ -25,6 +25,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-script.workspace = true
 
+# D154: the global allocator on musl, `src/main.rs`.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc.workspace = true
+
 [features]
 # D69: experimental transports, off by default.
 odoh = ["dedens-net/odoh"]

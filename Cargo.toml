@@ -73,6 +73,8 @@ ipnet = "2.12.2"
 # D135: dedensd's loom tests, under `--cfg dedens_loom` only.
 loom = { version = "0.7.2", features = ["futures"] }
 metrics = "0.24.6"
+# D154: the global allocator of the musl binaries, `MI_SECURE=4` (guard pages, randomised and encoded free lists).
+mimalloc = { version = "0.1.52", features = ["secure"] }
 metrics-util = { version = "0.20.4", default-features = false }
 # D122: dedensd's privilege drop (`setuid`, `setgid`, `initgroups`, user and group lookup, `PR_SET_NO_NEW_PRIVS`), the
 # libc calls without `unsafe` of our own. Its `setuid` is libc's, which changes every thread.

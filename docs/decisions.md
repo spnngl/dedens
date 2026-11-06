@@ -61,15 +61,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   "no user named" and an id works (D122); musl's allocator is measured in D152; the trust store is the
   host's (`rustls-platform-verifier`), so an image holds one ([`TODECIDE.md`](TODECIDE.md)). Rejected: cross-compiling
   from glibc (a cross `gcc` for ring, `musl-tools`), `cross` and `cargo-zigbuild` (a tool each), dynamic musl.
-- D152 (amends D151; builds on D15) The musl binaries keep musl's own allocator (mallocng): no allocator crate, no
-  `#[global_allocator]`, no feature. The rule, fixed before measuring (plan README, now [`alloc-security.md`](alloc-security.md)
+- D152 (amends D151; amended by D154; builds on D15) The musl binaries kept musl's own allocator (mallocng), until D154
+  chose mimalloc's secure mode. The rule, fixed before measuring (plan README, now [`alloc-security.md`](alloc-security.md)
   and "Allocators" in [`benchmarks.md`](benchmarks.md)): among candidates passing the gates (musl and lld build, tests,
   a release in the last 12 months, no file opened after the first query, a licence `deny.toml` allows), the best
   security rank wins if, in every dnsperf mode and core count, its median per-round queries/s ratio is 0.90 or more, its
   p99 is within 25 % of the fastest and its peak RSS within 25 % of the lowest; else the next. x86_64 VPS, 8 shuffled
   paired rounds, defaults, a 1 h soak of `mi` and `mi-min` (the best by speed and RSS rank sum). Result: no candidate
-  passes, and the rule does not say what then; keeping the status quo is a judgment, to be revisited
-  ([`TODECIDE.md`](TODECIDE.md)). mallocng: the safest (20 of 20 runs stop 10 of the plan's 12 probe cases and the
+  passes, and the rule does not say what then; keeping the status quo was a judgment, which D154 replaced. mallocng: the safest (20 of 20 runs stop 10 of the plan's 12 probe cases and the
   attacker gains nothing in the other two; 1,084 lines, MIT), the leanest (churn peak 94 MiB) and the slowest (median
   ratio 0.68, 0.53 to 0.80 by cell; p99 1.3 to 2.6 times the lowest; 1.3 to 16 times the cost of an allocating
   operation). mimalloc `MI_SECURE=4` is second: no gain for the attacker, but double and interior frees are ignored,
@@ -81,7 +80,21 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   ISA), defaults untuned. The experiment is the tag `alloc-experiment-2026-11-06` (`build/alloc-experiment`, code
   `d46bd0e`), the probe `alloc-security-2026-11-06` (`crates/dedens-bench/alloc-probe/`). Its allocator features
   exclude one another, so `--all-features` cannot build it: a design that lands an allocator names it per target.
-  Glibc, macOS and every tool build (careful, Miri, fuzz, loom, Kani) keep the system allocator.
+- D154 (amends D152; builds on D15, D151) The musl binaries, `dedensd` and `dedens`, use mimalloc with `MI_SECURE=4`
+  (the `mimalloc` crate's `secure` feature: guard pages, randomised and encoded free lists) as their `#[global_allocator]`,
+  a `[target.'cfg(target_env = "musl")'.dependencies]` entry and four lines in each `main.rs`; glibc, macOS and every
+  tool build (careful, Miri, fuzz, loom, Kani, mutants) keep the system allocator. Chosen by the human over mallocng
+  (D152's numbers: the rule selected none): the attacker gains nothing in any probe case, as with mallocng, at 0.89 of
+  the fastest against mallocng's 0.68 and a lower p99. Paid: a churn peak of 184 MiB against 94, 0.2 MB of binary, 15,837
+  lines of C built by `cc` (Alpine's gcc, already there for `ring`), and what mallocng alone stops: a double or interior
+  free is ignored, not aborted, and an overflow of 1 byte goes unseen on 65 of 256 sizes. mimalloc's `options.c` embeds
+  `__DATE__` and `__TIME__`, so the `Containerfile` sets `SOURCE_DATE_EPOCH=0` to keep the build reproducible (D153: without it two builds differed
+  by that string). Read: the suite passes on both musl targets (the `musl` job), `just release` builds twice identical on
+  both, and the image on the VPS answers UDP, TCP and DoT as uid 10001 with no capability and blocks a listed name. Two
+  tests of that suite are flaky whatever the allocator (each failed in a run and passed on rerun):
+  `isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
+  (1 run in 400: two networks hash to one of 256 buckets). Rejected:
+  mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152).
 - D153 (builds on D57, D122, D150, D151) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
   `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
   with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the

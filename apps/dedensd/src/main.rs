@@ -6,6 +6,11 @@
 
 #![forbid(unsafe_code)]
 
+// D154: on musl, mimalloc in its secure mode replaces musl's allocator.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod config;
 mod download;
 mod flights;
