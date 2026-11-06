@@ -10,7 +10,8 @@
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query"]
 //! threads: 4                       # serving threads, fixed at start, 1 to 1024; default: a core each on Linux, else 1 (D42)
-//! user: dedens                     # Linux, started as root: run as this user, a name or an id, once the sockets are bound (D122)
+//! user: dedens                     # Linux, started as root: run as this user, a name or an id, once the sockets are bound (D122);
+//!                                  # a musl build looks a name up in /etc/passwd only, no NSS (D151)
 //! group: dedens                    # default: the user's primary group; supplementary groups: those listing the user, plus this one
 //! tls:
 //!   certificate: /etc/dedensd/tls/fullchain.pem

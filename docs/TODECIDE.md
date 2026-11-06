@@ -267,4 +267,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   as `xcrun`'s default cannot build. Default: `SDKROOT` of a 26 SDK in the shell until a stable carries LLVM 23.1.4;
   then drop the sentence from `README.md`. Alternative: `lld-cc` falling back to `ld` when `rust-lld` fails.
 - Cross builds with the lld wrapper (D150): `lld-cc` calls the host `cc`, so a `--target` other than the host's
-  needs `CARGO_TARGET_<TRIPLE>_LINKER` set to a cross `cc` (the musl targets of step 01 do). Default: as is.
+  needs `CARGO_TARGET_<TRIPLE>_LINKER` set to a cross `cc`. The musl targets build natively in Alpine instead (D151).
+  Default: as is.
+- The allocator of the musl binaries (D151): musl's own is reputed slower under threads than glibc's. Default: musl's,
+  until a bench of `dedensd` under dnsperf compares it with mimalloc and jemalloc, security included.
+- The trust store of the musl image (D151): `rustls-platform-verifier` reads the host's store (`/etc/pki/tls`,
+  `/etc/ssl/certs`), which a `scratch` image lacks, so DoT, DoH and list downloads fail there. Default: the image
+  carries `ca-certificates`, read in the release step. Alternative: bundled roots (`webpki-roots`), pinned to a
+  release, which the host's own CAs (a corporate proxy) would not extend.
+- A user name defined outside `/etc/passwd` (D151): musl has no NSS, so `user: nobody` fails where it is defined in
+  `nss-altfiles`, LDAP or systemd's userdb. Default: a numeric id there, as documented in `config.rs`.

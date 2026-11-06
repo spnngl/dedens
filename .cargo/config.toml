@@ -3,7 +3,7 @@
 # (`-C linker-features=+lld` needs `-Z unstable-options` outside x86_64-unknown-linux-gnu).
 #
 # x86_64-unknown-linux-gnu has no entry: rustc links with its own lld there by default (1.90), as long as no
-# `linker` is set for it. The musl targets get theirs with the musl step.
+# `linker` is set for it.
 
 # D150: Apple's `ld` is the default; lld is Rust's `gcc-ld/ld64.lld`.
 [target.aarch64-apple-darwin]
@@ -12,3 +12,13 @@ linker = ".cargo/lld-cc"
 # D150: rustc's default there is GNU ld through `cc`.
 [target.aarch64-unknown-linux-gnu]
 linker = ".cargo/lld-cc"
+
+# D151: the static musl binaries, and on `rust:alpine` the host's own: its proc macros and build scripts link here
+# too, with the system's lld there (`lld-cc`). x86_64 links static-pie by default; aarch64 does not (rustc's target
+# spec): `lld-cc` links it so, from position-independent code.
+[target.x86_64-unknown-linux-musl]
+linker = ".cargo/lld-cc"
+
+[target.aarch64-unknown-linux-musl]
+linker = ".cargo/lld-cc"
+rustflags = ["-C", "relocation-model=pic"]

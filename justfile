@@ -205,6 +205,27 @@ careful sanitizer="" package="":
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
     cargo careful test {{ if sanitizer == "" { "" } else { "-Zcareful-sanitizer=" + sanitizer } }} {{ if package == "" { "--workspace" } else { "-p " + package } }} --all-features
 
+# cargo on a musl target (D151), natively in a `rust:alpine` container of the host's architecture, with no cross
+# toolchain: `target` is that architecture's `<arch>-unknown-linux-musl`, `cmd` the cargo arguments, the tests by
+# default. The root test: just musl x86_64-unknown-linux-musl test -p dedensd --test privileges -- --ignored. The
+# image is the one of rust-toolchain.toml (its components stay out: rustup would download them on each run); lld is
+# Alpine's own (`lld-cc`), git and procps-ng (BusyBox's `ps` has no `-p`) are for the repository and `rfc7766` tests.
+# Unconfined seccomp, for io_uring, which the host's `kernel.io_uring_disabled` must allow. A linked worktree's `.git`
+# points outside the mount, so the repository tests need a clone.
+# Volumes, dedens-musl-registry and dedens-musl-<arch>, keep the registry and the build between runs.
+musl target *cmd="test --workspace --all-features":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "{{ target }}" != "{{ arch() }}-unknown-linux-musl" ]]; then
+        echo "musl: a container runs the host's architecture: use {{ arch() }}-unknown-linux-musl" >&2
+        exit 1
+    fi
+    channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+    {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -v "$(pwd):/src:ro" -w /src \
+        -v dedens-musl-registry:/usr/local/cargo/registry -v "dedens-musl-{{ arch() }}:/target" \
+        -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_TARGET={{ target }} -e "RUSTUP_TOOLCHAIN=$channel" "rust:$channel-alpine" \
+        sh -c 'apk add --quiet --no-cache git lld procps-ng && git config --global --add safe.directory /src && exec cargo "$@"' cargo {{ cmd }}
+
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
 fuzz target="decode_message" seconds="300" fork="0":
