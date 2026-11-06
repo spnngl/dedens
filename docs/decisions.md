@@ -61,6 +61,30 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   "no user named" and an id works (D122); musl's allocator, slower under threads, is unmeasured ([`TODECIDE.md`](TODECIDE.md)); the trust store is the
   host's (`rustls-platform-verifier`), so an image holds one ([`TODECIDE.md`](TODECIDE.md)). Rejected: cross-compiling
   from glibc (a cross `gcc` for ring, `musl-tools`), `cross` and `cargo-zigbuild` (a tool each), dynamic musl.
+- D153 (builds on D57, D122, D150, D151) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
+  `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
+  with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the
+  license, with `SHA256SUMS`, each attested for its build provenance (`actions/attest-build-provenance`: `gh
+  attestation verify`) and held by a GitHub release; and `ghcr.io/<owner>/dedensd:<tag>`, both architectures under that
+  tag, attested too; the job that builds the image checks its `dedensd` is the archive's, byte for byte. Each architecture builds on its own runner, from the `Containerfile`: `rust:<channel>-alpine` by
+  digest (Renovate keeps it; `repo.rs` checks its tag is `rust-toolchain.toml`'s channel), `cargo auditable build
+  --release --locked` (the dependency list in the binary: `cargo audit bin` reads it; it survives `strip`), the
+  baseline CPU, nothing of `target-cpu`. Reproducible: the paths are constant in the container and
+  `.cargo/config.toml` remaps the workspace and `CARGO_HOME` (in `rustflags`, which `RUSTFLAGS` would replace), so no
+  path of the machine is in a binary; `just release` builds twice with no cache, fails when the two differ or a path
+  shows, and the job runs it. `SOURCE_DATE_EPOCH` is not set: nothing in the build reads a clock. The claim is the
+  binaries, and the archives built from them sorted, with no owner or time; not the image layers, and not across
+  days: Alpine's `lld` and `ca-certificates` are the repository's current ones (the ELF `.comment` names the linker's
+  version). The image is `FROM scratch`: `dedensd`, the CA bundle of `ca-certificates` (D57: the host's store, which
+  a `scratch` image lacks), a `passwd` and `group` naming uid 10001, `/var/cache/dedensd` (downloads) owned by it,
+  `deploy/dedensd.yaml` (a caching forwarder over DoT) read-only; no shell, no package manager, and `USER`
+  10001 from the first instruction. Port 53 binds through the runtime's `net.ipv4.ip_unprivileged_port_start` (Docker
+  sets it to 0; with any other, `--sysctl`, or a published high port), so D122's drop has nothing to do there and the
+  config sets no `user:`; the drop and its root tests stay for hosts that start `dedensd` as root. Rejected: an
+  Alpine or distroless final stage (more than the binary needs), `USER root` with D122's drop (root and capabilities
+  in the image for the first milliseconds, and a runtime that drops `CAP_SETUID` breaks it), `setcap` on the binary
+  (a file capability grants nothing under `no-new-privileges`), a single multi-arch build under QEMU (slow, and the binaries of the
+  native build are the ones tested).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The

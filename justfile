@@ -226,6 +226,34 @@ musl target *cmd="test --workspace --all-features":
         -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_TARGET={{ target }} -e "RUSTUP_TOOLCHAIN=$channel" "rust:$channel-alpine" \
         sh -c 'apk add --quiet --no-cache git lld procps-ng && git config --global --add safe.directory /src && exec cargo "$@"' cargo {{ cmd }}
 
+# The release binaries of this machine's architecture, `dedensd` and `dedens` in `dist/` (D153): the Containerfile's
+# `binaries` stage, built twice from scratch and the two compared; a path of the build in a binary fails too.
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf dist
+    mkdir -p dist/1 dist/2
+    for n in 1 2; do
+        {{ container }} build -f Containerfile --no-cache --target binaries -t "localhost/dedens-binaries:$n" .
+        id="$({{ container }} create "localhost/dedens-binaries:$n" /dedensd)"
+        {{ container }} cp "$id:/dedensd" "dist/$n/dedensd"
+        {{ container }} cp "$id:/dedens" "dist/$n/dedens"
+        {{ container }} rm "$id" >/dev/null
+    done
+    diff -r dist/1 dist/2
+    if grep -aF -e "$(pwd)" -e /src/apps -e /src/crates -e /usr/local/cargo -e /usr/local/rustup dist/1/dedensd dist/1/dedens; then
+        echo "release: a path of the build is in a binary" >&2
+        exit 1
+    fi
+    mv dist/1/* dist/
+    rm -r dist/1 dist/2
+    sha256sum dist/* 2>/dev/null || shasum -a 256 dist/*
+
+# The dedensd image, `localhost/dedensd`, for this machine's architecture (D153): just image && docker run --rm -p 5353:53/udp
+# localhost/dedensd
+image:
+    {{ container }} build -f Containerfile -t localhost/dedensd .
+
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
 fuzz target="decode_message" seconds="300" fork="0":

@@ -5,6 +5,8 @@ on:
     branches:
       - main
   pull_request:
+  # The gate of `release.yml` (D153).
+  workflow_call:
 
 # A new push to a pull request cancels its running checks; each commit on main gets its own run.
 concurrency:
@@ -129,6 +131,8 @@ jobs:
 
   # Coverage of the tests, shown in the job summary: informational, not part of the gate.
   coverage:
+    # Nor does it stop a release, which calls this workflow (D153).
+    continue-on-error: true
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
