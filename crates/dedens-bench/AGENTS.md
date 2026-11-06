@@ -10,6 +10,9 @@ git ref, in a mode (`udp`, `tcp`, `forward`, `forward-tcp`, `two-sockets`; see t
 `examples/hit_ratio.rs` replays Zipf draws or a trace (`--trace`) through the cache's eviction (D116). Record new
 numbers in `docs/benchmarks.md`.
 
+The allocator experiment (D152) is not in the tree: check out the tag `alloc-experiment-2026-11-06` for `dnsperf/alloc.sh`,
+`dnsperf/alloc-vps/` and the `alloc-*` features, and `alloc-security-2026-11-06` for `alloc-probe/`; each has its AGENTS.md.
+
 Where time goes (D138): `just profile <bench> [filter]` runs a bench target under samply, and `DEDENS_PERF=1 just
 bench-dnsperf` runs the working tree's `dedensd` under perf in the container (not a base-against-tree run); both write to
 `target/profile/`.

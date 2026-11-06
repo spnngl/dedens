@@ -50,6 +50,7 @@ Planned: `dedens-resolver`.
 - [`tests/interop/`](tests/interop/odoh.py): `dedensd` as an Oblivious DoH target for Cloudflare's `odoh-rs`
   (`just odoh-interop`, by hand, needs `uv` and the network); `just odoh-live` asks public targets (D79).
 - [`docs/benchmarks.md`](docs/benchmarks.md): measurements behind the performance decisions.
+- [`docs/alloc-security.md`](docs/alloc-security.md): what each candidate allocator stops (D152).
 - [`docs/providers/providers.yaml`](docs/providers/providers.yaml): public resolvers and their endpoints,
   checked by `just providers` (D67).
 - [`docs/blocklists/blocklists.yaml`](docs/blocklists/blocklists.yaml): published blocklists and their

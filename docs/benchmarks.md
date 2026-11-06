@@ -1049,3 +1049,207 @@ Hardening of the release `dedensd` and `dedens`, `L` against `B` (`readelf -hlWd
   against Apple's 3); it writes no `LC_SOURCE_VERSION` and, on Linux, a `GNU_STACK` of alignment 0 instead of 0x10.
 - The debug `dedens` and `dedensd` of `x86_64-unknown-linux-musl` (cross, Debian with `musl-tools`) are static-PIE:
   no `INTERP`, `FLAGS BIND_NOW`, `FLAGS_1 NOW PIE`. The release musl readout waits for step 01.
+
+## Allocators
+
+Which global allocator a static musl `dedensd` (D151) should carry: musl's mallocng (the default, no crate), mimalloc
+(three hardening levels) or jemalloc. Branch `build/alloc-experiment` (from `main` 83ca20f, never merged); the code
+measured is the commit tagged `alloc-experiment-2026-11-06`. Features `alloc-mimalloc`, `alloc-mimalloc-secure` and
+`alloc-jemalloc` of `dedensd` and `dedens-bench` select one `#[global_allocator]` (two at once do not compile); the
+benches wrap it in divan's `AllocProfiler`. The ranking by security is step 03's; the choice, step 04's.
+
+- Machine: the VPS, x86_64, 6 vCPUs (Intel Haswell, no TSX), 11.7 GiB, AlmaLinux 10.2, kernel 6.12.0-211.73.1, rootless
+  podman 5.8.2, shared host. THP `enabled` is `always` (`defrag` `madvise`); there is no cpufreq governor in the VM.
+  `kernel.io_uring_disabled` is 2 there, so each session set it to 0 and restored 2 at the end; every log of every
+  run says `"driver":"io_uring"`.
+- Candidates, defaults, nothing tuned. Binaries: `x86_64-unknown-linux-musl` static PIE from `rust:1.99.1-alpine`
+  (Alpine's gcc builds the C allocators); references: dynamic glibc 2.41 from `rust:1` (Debian 13). Release profile.
+
+| Name | Allocator |
+|---|---|
+| `ng` | musl 1.2's mallocng, no crate |
+| `mi` | `mimalloc` 0.1.52 (mimalloc v3.3.2), `alloc-mimalloc` |
+| `mi-min` | `alloc-mimalloc` with `CFLAGS=-DMI_SECURE=1` (reaches the C build: `CFLAGS = Some(-DMI_SECURE=1)` in its log; the binary differs from `mi`'s) |
+| `mi-sec` | `alloc-mimalloc-secure` (`MI_SECURE=4`: guard pages, randomised, encoded free lists) |
+| `je` | `tikv-jemallocator` 0.7.0 (jemalloc 5.3.1), `alloc-jemalloc` |
+| `g` | reference: glibc's malloc |
+| `g-mi` | reference: mimalloc on glibc |
+
+- Session: `crates/dedens-bench/dnsperf/alloc-vps/` (`build.sh`, `inner.sh`, `session.sh`, run
+  from `~/alloc` beside a copy of the repository in `src/`), `crates/dedens-bench/dnsperf/alloc.sh`
+  (in the `dedens-abench` image: `rust:1` and `dnsperf` 2.14.0), tables from
+  `crates/dedens-bench/dnsperf/alloc-report.nu`. `session.sh <dir> startup rounds divan churn` was the first session
+  (08:59-10:25); the divan session (30 rounds) and the soak followed on the same build, one session at a time.
+- Rounds: 8 per cell, a cell being a mode (`udp`, `tcp`, `forward`, `forward-tcp`) and 1 or 3 serving threads. In a round
+  every binary runs once per cell, in a shuffled order, 8 s each, `dnsperf -c 8 -T 4 -q 500` on its own cores
+  (one thread: server 0, back server 1, `dnsperf` 2-5; three: server 0-2, back 3, `dnsperf` 3-5, or 4-5 forwarding).
+  The back server, the same `ng` binary for every run, answers locally (a blocklist). `forward*` forward every query,
+  the others hit the cache. Load average at the start of the rounds: 0.55 (5-6 while the generators run). No query
+  was lost.
+- A ratio is a binary's queries/s over the round's fastest in that cell; latencies likewise over the round's lowest. A
+  cell is the median over the rounds. p99 is the upper edge of the `dnsperf` histogram bucket that holds the 99th
+  percentile, so it moves in bucket steps.
+
+### Build
+
+One clean `cargo build --release -p dedensd` each, nothing else running (the musl builds in `rust:1.99.1-alpine`, the
+glibc ones in `rust:1`, so compare within a libc).
+
+| Name     | Build, s | `dedensd`, bytes | vs `ng` or `g` |
+| -------- | -------- | ---------------- | -------------- |
+| `ng`     | 266      | 7,620,640        |                |
+| `mi`     | 265      | 7,806,592        | +2.4 %         |
+| `mi-min` | 268      | 7,806,848        | +2.4 %         |
+| `mi-sec` | 268      | 7,813,056        | +2.5 %         |
+| `je`     | 292      | 8,114,272        | +6.5 %         |
+| `g`      | 148      | 7,494,456        |                |
+| `g-mi`   | 156      | 7,676,168        | +2.4 %         |
+
+### Throughput and latency
+
+Queries/s over the round's fastest, median (range):
+
+| cell          | ng               | mi               | mi-min           | mi-sec           | je               | g                | g-mi             |
+| ------------- | ---------------- | ---------------- | ---------------- | ---------------- | ---------------- | ---------------- | ---------------- |
+| udp 1         | 0.6 (0.58-0.64)  | 0.93 (0.9-0.99)  | 0.93 (0.9-1.0)   | 0.89 (0.85-0.95) | 0.92 (0.87-0.99) | 0.96 (0.91-1.0)  | 1.0 (0.98-1.0)   |
+| tcp 1         | 0.67 (0.65-0.75) | 0.9 (0.81-0.92)  | 0.87 (0.85-0.89) | 0.83 (0.78-0.86) | 0.87 (0.82-0.89) | 0.99 (0.93-1.0)  | 1.0 (0.77-1.0)   |
+| forward 1     | 0.77 (0.75-0.83) | 0.98 (0.88-1.0)  | 0.91 (0.89-1.0)  | 0.91 (0.82-0.99) | 0.89 (0.85-0.98) | 0.87 (0.83-0.93) | 1.0 (0.9-1.0)    |
+| forward-tcp 1 | 0.8 (0.75-0.84)  | 0.91 (0.88-0.96) | 0.91 (0.88-0.98) | 0.84 (0.79-0.9)  | 0.87 (0.82-0.89) | 0.89 (0.85-0.92) | 1.0 (1.0-1.0)    |
+| udp 3         | 0.62 (0.34-0.81) | 0.86 (0.59-1.0)  | 0.88 (0.71-1.0)  | 0.97 (0.69-1.0)  | 0.89 (0.63-0.96) | 0.92 (0.81-1.0)  | 0.95 (0.65-1.0)  |
+| tcp 3         | 0.7 (0.5-0.87)   | 0.93 (0.76-0.97) | 0.96 (0.81-1.0)  | 0.95 (0.8-1.0)   | 0.95 (0.78-1.0)  | 0.97 (0.82-1.0)  | 0.93 (0.84-0.94) |
+| forward 3     | 0.76 (0.55-0.88) | 0.95 (0.67-1.0)  | 0.89 (0.71-1.0)  | 0.96 (0.61-1.0)  | 0.99 (0.67-1.0)  | 0.93 (0.65-0.99) | 0.94 (0.65-0.96) |
+| forward-tcp 3 | 0.53 (0.41-0.62) | 0.95 (0.59-1.0)  | 0.85 (0.6-0.98)  | 0.81 (0.67-0.94) | 0.81 (0.57-1.0)  | 0.84 (0.61-1.0)  | 1.0 (0.56-1.0)   |
+
+p99, ms, median (median ratio to the round's lowest):
+
+| cell          | ng           | mi           | mi-min       | mi-sec       | je           | g            | g-mi         |
+| ------------- | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ |
+| udp 1         | 6.14 (1.71)  | 4.1 (1.16)   | 3.97 (1.15)  | 4.03 (1.15)  | 4.1 (1.2)    | 4.03 (1.16)  | 3.84 (1.03)  |
+| tcp 1         | 1.28 (1.52)  | 0.93 (1.11)  | 0.95 (1.14)  | 0.99 (1.22)  | 0.94 (1.13)  | 0.86 (1.0)   | 0.86 (1.02)  |
+| forward 1     | 21.5 (1.36)  | 17.15 (1.03) | 18.69 (1.17) | 19.2 (1.13)  | 18.18 (1.15) | 18.43 (1.16) | 17.15 (1.04) |
+| forward-tcp 1 | 12.8 (1.31)  | 10.75 (1.09) | 11.14 (1.12) | 11.9 (1.25)  | 11.9 (1.17)  | 11.65 (1.17) | 10.11 (1.0)  |
+| udp 3         | 6.14 (1.9)   | 3.74 (1.27)  | 3.68 (1.27)  | 3.52 (1.28)  | 3.46 (1.21)  | 3.14 (1.13)  | 3.68 (1.13)  |
+| tcp 3         | 1.78 (2.59)  | 0.83 (1.27)  | 0.75 (1.16)  | 1.0 (1.45)   | 0.9 (1.29)   | 0.75 (1.07)  | 0.9 (1.28)   |
+| forward 3     | 16.77 (1.75) | 13.7 (1.41)  | 14.59 (1.44) | 14.72 (1.57) | 11.65 (1.17) | 13.7 (1.27)  | 12.8 (1.29)  |
+| forward-tcp 3 | 11.65 (2.36) | 6.59 (1.25)  | 6.91 (1.36)  | 7.04 (1.35)  | 6.85 (1.34)  | 6.78 (1.29)  | 6.59 (1.19)  |
+
+Average latency, ms, median (median ratio to the round's lowest):
+
+| cell          | ng           | mi           | mi-min      | mi-sec      | je           | g            | g-mi        |
+| ------------- | ------------ | ------------ | ----------- | ----------- | ------------ | ------------ | ----------- |
+| udp 1         | 3.9 (1.68)   | 2.53 (1.06)  | 2.52 (1.08) | 2.6 (1.12)  | 2.57 (1.1)   | 2.46 (1.05)  | 2.34 (1.0)  |
+| tcp 1         | 3.66 (1.03)  | 4.06 (1.18)  | 3.81 (1.19) | 3.59 (1.1)  | 4.09 (1.24)  | 3.72 (1.1)   | 4.46 (1.29) |
+| forward 1     | 13.82 (1.29) | 11.15 (1.02) | 11.65 (1.1) | 11.98 (1.1) | 11.85 (1.12) | 12.28 (1.15) | 10.92 (1.0) |
+| forward-tcp 1 | 3.42 (1.02)  | 4.08 (1.23)  | 3.88 (1.23) | 3.95 (1.22) | 3.66 (1.09)  | 3.77 (1.14)  | 3.85 (1.2)  |
+| udp 3         | 1.78 (2.72)  | 1.02 (1.69)  | 0.95 (1.75) | 0.69 (1.24) | 0.92 (1.63)  | 0.84 (1.17)  | 0.78 (1.07) |
+| tcp 3         | 4.38 (1.32)  | 4.02 (1.14)  | 3.95 (1.11) | 3.99 (1.11) | 4.67 (1.25)  | 4.21 (1.07)  | 3.9 (1.05)  |
+| forward 3     | 6.19 (1.33)  | 4.96 (1.06)  | 5.4 (1.14)  | 4.86 (1.04) | 4.78 (1.01)  | 5.08 (1.08)  | 5.08 (1.06) |
+| forward-tcp 3 | 3.68 (1.11)  | 3.58 (1.09)  | 3.82 (1.14) | 3.95 (1.19) | 3.85 (1.19)  | 3.51 (1.03)  | 3.66 (1.08) |
+
+Queries/s, median:
+
+| cell          | ng     | mi     | mi-min | mi-sec | je     | g      | g-mi   |
+| ------------- | ------ | ------ | ------ | ------ | ------ | ------ | ------ |
+| udp 1         | 124076 | 190589 | 191063 | 185170 | 188729 | 195722 | 205550 |
+| tcp 1         | 571271 | 746832 | 732008 | 693535 | 736783 | 832630 | 838413 |
+| forward 1     | 35882  | 44406  | 42581  | 41315  | 41804  | 40369  | 45331  |
+| forward-tcp 1 | 55236  | 62082  | 62343  | 58152  | 58650  | 60838  | 68028  |
+| udp 3         | 255105 | 371605 | 381135 | 419376 | 387025 | 405507 | 394563 |
+| tcp 3         | 647798 | 866596 | 870853 | 862990 | 879172 | 892596 | 863177 |
+| forward 3     | 79363  | 98225  | 91173  | 99885  | 100969 | 95852  | 95838  |
+| forward-tcp 3 | 91798  | 168527 | 153267 | 142160 | 142178 | 149730 | 169304 |
+
+Per binary: geometric mean of the cells' median ratios (queries/s), cells of 8 with a median ratio of 0.90 or more, cells of 8 with a median p99 ratio of 1.25 or less:
+
+| binary | geomean | at_090 | p99_within_125 |
+| ------ | ------- | ------ | -------------- |
+| ng     | 0.677   | 0      | 0              |
+| mi     | 0.924   | 6      | 4              |
+| mi-min | 0.898   | 4      | 5              |
+| mi-sec | 0.892   | 4      | 4              |
+| je     | 0.897   | 3      | 6              |
+| g      | 0.919   | 5      | 6              |
+| g-mi   | 0.977   | 8      | 6              |
+
+Queries lost: 0. Drivers: io_uring.
+
+### Benches
+
+divan on core 2 of the idle machine (load average 0.4), 30 rounds of 100 samples, every binary in each round; the
+benches are `server`, `cache` (insert) and `message` (owned decode) of `dedens-bench`.
+
+divan medians, ns, median over the rounds (median ratio to the round's fastest):
+
+| key                                    | ng              | mi            | mi-min        | mi-sec        | je            | g             | g-mi          |
+| -------------------------------------- | --------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
+| cache::insert/a                        | 10790.0 (15.72) | 879.9 (1.28)  | 902.9 (1.32)  | 1005.5 (1.46) | 890.2 (1.3)   | 691.4 (1.01)  | 689.7 (1.0)   |
+| cache::insert/mx                       | 2825.0 (1.41)   | 2541.0 (1.27) | 2565.5 (1.28) | 2662.0 (1.33) | 2551.0 (1.27) | 2002.5 (1.0)  | 2007.0 (1.0)  |
+| cache::insert/txt_large                | 17480.0 (7.06)  | 3205.0 (1.3)  | 3220.0 (1.3)  | 3474.5 (1.41) | 3168.0 (1.28) | 2525.5 (1.02) | 2474.5 (1.0)  |
+| message::decode_dedens_owned/a         | 956.6 (1.66)    | 712.8 (1.22)  | 715.6 (1.23)  | 766.8 (1.31)  | 643.3 (1.11)  | 581.8 (1.0)   | 610.6 (1.05)  |
+| message::decode_dedens_owned/mx        | 7097.0 (4.01)   | 2393.0 (1.36) | 2397.0 (1.36) | 2530.0 (1.43) | 2295.0 (1.29) | 1781.0 (1.0)  | 1790.0 (1.01) |
+| message::decode_dedens_owned/txt_large | 4057.0 (1.5)    | 3207.0 (1.18) | 3195.5 (1.18) | 3651.0 (1.35) | 3062.5 (1.13) | 2733.5 (1.0)  | 2716.0 (1.0)  |
+| server::hit/a                          | 442.6 (1.23)    | 444.4 (1.24)  | 441.6 (1.23)  | 441.6 (1.23)  | 441.6 (1.23)  | 361.1 (1.01)  | 357.6 (1.0)   |
+| server::hit/mx                         | 433.1 (1.3)     | 433.6 (1.31)  | 430.5 (1.3)   | 432.2 (1.3)   | 429.2 (1.3)   | 336.2 (1.01)  | 332.6 (1.0)   |
+| server::hit/txt_large                  | 443.5 (1.25)    | 442.2 (1.24)  | 440.0 (1.24)  | 438.5 (1.24)  | 440.2 (1.24)  | 360.3 (1.01)  | 355.8 (1.0)   |
+| server::miss/a                         | 4280.5 (1.88)   | 2644.0 (1.17) | 2681.5 (1.18) | 3222.0 (1.42) | 2517.5 (1.11) | 2305.5 (1.0)  | 2300.0 (1.01) |
+| server::miss/mx                        | 5267.0 (1.31)   | 4747.5 (1.18) | 4818.0 (1.2)  | 5220.0 (1.3)  | 4628.0 (1.16) | 4022.0 (1.0)  | 4040.5 (1.0)  |
+| server::miss/txt_large                 | 25365.0 (4.41)  | 6602.0 (1.15) | 6675.0 (1.16) | 7202.0 (1.25) | 6403.0 (1.11) | 5824.5 (1.01) | 5733.0 (1.0)  |
+
+### Memory
+
+Startup: `VmRSS` 2 s after the start, three runs. Churn: 120 s of 1 million distinct names (`nN.churn.test`, looped)
+at 30,000 queries/s offered, three threads on the default 64 MiB cache, `VmRSS` sampled every second (`VmHWM` is the
+peak), then 20 s of rest. The soak is the same for 3,600 s.
+
+Startup RSS, MiB, median of three:
+
+| threads | ng   | mi   | mi-min | mi-sec | je   | g   | g-mi |
+| ------- | ---- | ---- | ------ | ------ | ---- | --- | ---- |
+| 1       | 8.1  | 14.8 | 14.8   | 13.2   | 12.9 | 7.5 | 16.3 |
+| 3       | 10.8 | 19.2 | 19.2   | 19.6   | 37.1 | 9.9 | 20.8 |
+
+Churn, MiB: VmHWM, RSS at the end of the load, RSS 20 s later, and the queries/s dnsperf got (30,000 offered):
+
+| binary | peak  | end_of_load | after_20s | qps   |
+| ------ | ----- | ----------- | --------- | ----- |
+| ng     | 94.4  | 82.1        | 82.0      | 29854 |
+| mi     | 160.8 | 146.1       | 154.7     | 29294 |
+| mi-min | 153.8 | 140.6       | 140.6     | 29913 |
+| mi-sec | 183.5 | 177.7       | 179.3     | 29808 |
+| je     | 159.8 | 140.1       | 139.9     | 29738 |
+| g      | 101.1 | 100.1       | 99.4      | 29065 |
+| g-mi   | 157.1 | 147.9       | 141.9     | 29471 |
+
+### Soak
+
+Soak, MiB: VmHWM, RSS at 10 and 30 minutes, at the end of the load (60), 20 s later, and the queries/s dnsperf got:
+
+| binary | peak  | rss_600s | rss_1800s | end_of_load | after_20s | qps   |
+| ------ | ----- | -------- | --------- | ----------- | --------- | ----- |
+| mi     | 144.1 | 122.5    | 131.8     | 131.3       | 131.3     | 29863 |
+| mi-min | 165.8 | 155.2    | 144.9     | 156.0       | 151.1     | 29802 |
+
+### Reading
+
+- Speed: no musl candidate holds 0.90 of the fastest in every cell. `ng` is the slowest everywhere (0.53-0.80), the
+  crates 0.81-0.99 (`mi` 6 cells of 8 at 0.90 or more, `mi-min` 4, `mi-sec` 4, `je` 3); between them the cells differ by
+  less than the 10 % noise, apart from `mi-min`, `mi-sec` and `je` in `forward-tcp 3` (0.81-0.85, 0.1 below `mi`). The
+  three-core ranges reach 0.34-0.6 on the shared host; one-core ones stay within 0.1.
+- Latency: `ng` has the highest p99 in every cell (1.3-2.6 times the lowest; `tcp 3` 1.78 ms against 0.75-1.0); the crates
+  sit within 1.0-1.57 of it. The average latency does not follow queries/s in the TCP cells (`ng` has the lowest
+  average in `forward-tcp 1`).
+- The cost of `mi-sec` against `mi` is on the allocating paths: +22 % `server::miss/a`, +14 % `cache::insert/a`, +14 %
+  `message::decode_dedens_owned/txt_large`, and +14 % of the peak RSS in the churn (+19 % over `mi-min`). `mi-min`
+  is `mi` within 2-5 %.
+- mallocng costs 1.3 to 16 times per allocating operation: `cache::insert/a` 10.8 µs against 0.7-1.0 µs,
+  `server::miss/txt_large` 25 µs against 5.8-7.2 µs. `server::hit`, which allocates nothing, is 23-30 % slower on
+  every musl build than on glibc (440 against 360 ns): the libc, not the allocator.
+- Memory: `ng` holds the least of the musl builds (churn peak 94 MiB against 154-184 MiB, startup 8-11 against
+  13-20 MiB), as glibc's malloc does (101 MiB). `je` reaches 37 MiB at start on three threads (arenas). In the 1 h soak neither
+  `mi` nor `mi-min` grows (peak 144 and 166 MiB; the 120 s churn ordered them the other way round: noise of about 10 %).
+- Soak candidates: the two best by speed and RSS only, for now. By rank sum (speed rank by the geometric mean over
+  cells, RSS rank by the churn peak, among the five musl builds) `mi-min` (4) and `mi` (5) lead, then `ng` and `je`
+  (6), `mi-sec` (9). `ng` was not soaked: no 1 h baseline for it. Step 03's security rank is not applied.
+- Against the plan's verdict rule (queries/s 0.90 and p99 within 25 % of the fastest in every cell, peak RSS within
+  25 % of the lowest): `ng` fails the speed, every crate fails the RSS (+63 % to +94 % over `ng`). The choice is step 04's.
+- One session on one shared host; a ratio below 1.1 between two builds is not a difference.
