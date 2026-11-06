@@ -19,6 +19,24 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
+- D150 (builds on D6) Every build links with lld, Rust's own, from rustup's toolchain: nothing to install. It relinks
+  the debug `dedensd` on Linux 3.6 times faster than GNU ld (2 s against 7 s); on macOS Apple's `ld` is 0.2 s faster;
+  the release build is codegen's and does not move ([`benchmarks.md`](benchmarks.md)). The mechanism differs by target,
+  for no stable flag selects lld on all of them: `x86_64-unknown-linux-gnu` has no entry, rustc (1.90) links it with its
+  bundled `rust-lld` unasked; `aarch64-apple-darwin` and `aarch64-unknown-linux-gnu` set
+  `linker = ".cargo/lld-cc"` in `.cargo/config.toml`, a short wrapper that runs `cc -fuse-ld=lld` with rustc's
+  `gcc-ld` directory (`ld.lld`, `ld64.lld`) first, so the `cc` driver still finds the target's runtime and SDK. The
+  musl targets get theirs with the musl step. A `linker` is not `rustflags`: RUSTFLAGS in the environment replaces
+  the config's `rustflags` (loom, cargo-fuzz, cargo-careful, cargo-llvm-cov and RAPx set it), never `linker`. Each
+  recipe's binaries were read for the linker (ELF `.comment` `Linker: LLD`, Mach-O `LC_BUILD_VERSION` tool 4), build
+  scripts and proc macros included; hardening is unchanged ([`benchmarks.md`](benchmarks.md)). Not reached: Kani on
+  macOS builds host artifacts through `-Zhost-config`, which ignores `[target.<host>]`, so its build scripts link with
+  Apple's `ld` (no binary of ours); the `aarch64-unknown-linux-gnu` entry is the macOS mechanism and is first
+  exercised by step 01's arm64 job. A build then fails loudly, not silently with another linker, where `rust-lld` is
+  missing (Homebrew's `rustc`: put rustup's `cargo` first) or too old for the SDK (macOS 27's: `SDKROOT` of a 26 SDK,
+  [`TODECIDE.md`](TODECIDE.md)). Rejected: `-fuse-ld=lld` in `rustflags` or `-C link-arg` (RUSTFLAGS replaces it; needs
+  a system `ld.lld`), `-C linker-features=+lld` and `-C link-self-contained=+linker` (nightly), `-C linker=rust-lld`
+  (macOS records SDK 11.0 for the one in use), a `[host]` table (unstable), mold (an install, no macOS).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
