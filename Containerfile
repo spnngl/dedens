@@ -5,7 +5,7 @@
 #   (last)    the dedensd image, FROM scratch, run as an unprivileged user: just image
 
 # The tag is rust-toolchain.toml's channel (checked by crates/dedens-bench/tests/repo.rs); Renovate keeps the digest.
-FROM docker.io/library/rust:1.99.1-alpine@sha256:98e4492621c23872a502a7171b7d2b105fdc114276856f71051f38bf94ee26aa AS build
+FROM docker.io/library/rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS build
 
 # lld: Alpine's own, see `.cargo/lld-cc`; ca-certificates: the bundle the image carries (D57).
 RUN apk add --no-cache lld ca-certificates
