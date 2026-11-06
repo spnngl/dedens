@@ -13,8 +13,8 @@ runs. `actionlint` and `zizmor` lint these files.
 (D122). Scheduled: `fuzz.yml`, a job per fuzz target, and `advisories.yml` (D141); weekly, `rapx.yml` (D16),
 `kani.yml` (D145) and `codeql.yml` (D146), whose alerts go to the Security tab. `release.yml` runs on a pushed tag
 `v*`, after `ci.yml`'s gate through `workflow_call` (D153), with deb and rpm packages tested on fresh runners
-(D156); by hand with `publish` off it builds and attests but
-releases and pushes nothing.
+and in containers without systemd (D156, D158); by hand with `publish` off it builds and attests but releases and
+pushes nothing.
 
 First release, by hand (D153): push `v0.1.0` (`git tag v0.1.0 && git push origin v0.1.0`); once the `image` job has
 pushed, set the `dedensd` package to public (GitHub: Packages, `dedensd`, Package settings, Change visibility: no API

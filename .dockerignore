@@ -3,6 +3,7 @@
 *
 !Cargo.toml
 !Cargo.lock
+!LICENSE
 !.cargo
 !apps
 !crates

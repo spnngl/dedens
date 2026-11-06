@@ -5,3 +5,5 @@ Filters = [
   # Static PIE musl binaries (D151).
   'statically-linked-binary',
 ]
+# The man pages are gzipped, as Fedora's own and Debian's (D158); rpmlint expects bzip2.
+CompressExtension = 'gz'

@@ -1,0 +1,14 @@
+Third-party licences
+
+This binary links the crates below, each under the licence that follows its list. dedens' own code is under
+LICENSE, Apache-2.0.
+{{#each licenses}}
+
+================================================================================
+{{{name}}} ({{{id}}}), used by:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

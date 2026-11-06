@@ -24,8 +24,9 @@ released.
   build with `SDKROOT` set to a 26 SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`).
 - `just musl <target>`: the suite on the static musl targets we ship (D151), in a `rust:alpine` container of your
   architecture (docker, or `DEDENS_CONTAINER=podman`); `just musl <target> build --release` builds them.
-- `just release`: the release binaries of your architecture in `dist/`, built twice and compared; `just image`: the
-  `dedensd` image (D153); then `just packages`: their deb and rpm (D156). A tag `v*` publishes all three from CI.
+- `just release`: the release binaries of your architecture and their licence notices in `dist/`, built twice and
+  compared; `just image`: the `dedensd` image (D153); then `just packages`: their deb and rpm (D156). A tag `v*`
+  publishes all three from CI. `just man` writes the man pages again after a change to a command line (D158).
 - [taplo](https://taplo.tamasfe.dev), [typos](https://github.com/crate-ci/typos) and
   [cargo-shear](https://github.com/Boshen/cargo-shear), for `just check`: `brew install taplo typos-cli cargo-shear`
   or `cargo install taplo-cli typos-cli cargo-shear`.

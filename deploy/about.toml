@@ -1,0 +1,17 @@
+# cargo-about (D158): the licences of the crates each shipped binary links, for the notice it travels with. The
+# Containerfile writes one per binary; deny.toml checks the same licences.
+accepted = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+# The shipped targets (D151); the crates of a build script or a test do not end in a binary.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# dedens' own crates, under LICENSE.
+private = { ignore = true }

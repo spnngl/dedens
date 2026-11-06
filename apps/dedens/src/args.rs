@@ -518,4 +518,26 @@ mod tests {
     fn clap_definition_is_valid() {
         Cli::command().debug_assert();
     }
+
+    /// D158: the packaged man page is this command line's, without the version, which the package has; `just man`
+    /// writes it again.
+    #[test]
+    fn the_man_page_is_the_command_lines() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/packages/man/dedens.1"
+        );
+        let mut page = Vec::new();
+        clap_mangen::Man::new(Cli::command().version(None::<&str>))
+            .render(&mut page)
+            .expect("rendered");
+        if std::env::var_os("DEDENS_WRITE_MAN").is_some() {
+            std::fs::write(path, &page).expect("written");
+        }
+        let committed = std::fs::read(path).unwrap_or_default();
+        assert!(
+            committed == page,
+            "{path} is stale: `just man` writes it again"
+        );
+    }
 }

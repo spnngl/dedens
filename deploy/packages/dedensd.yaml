@@ -57,6 +57,26 @@ contents:
     packager: rpm
     type: license
     file_info: { mode: 0644 }
+  # The licences of the crates the binary links (D158), from `just release`.
+  - src: dist/THIRD-PARTY-dedensd.txt
+    dst: /usr/share/doc/dedensd/THIRD-PARTY.txt
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: dist/THIRD-PARTY-dedensd.txt
+    dst: /usr/share/licenses/dedensd/THIRD-PARTY.txt
+    packager: rpm
+    type: license
+    file_info: { mode: 0644 }
+  # Compressed by `just packages`; a `doc` of the rpm, which nfpm leaves out of a deb.
+  - src: dist/man/dedensd.8.gz
+    dst: /usr/share/man/man8/dedensd.8.gz
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: dist/man/dedensd.8.gz
+    dst: /usr/share/man/man8/dedensd.8.gz
+    packager: rpm
+    type: doc
+    file_info: { mode: 0644 }
 scripts:
   postinstall: deploy/packages/dedensd.postinst
   preremove: deploy/packages/dedensd.prerm

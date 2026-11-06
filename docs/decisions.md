@@ -95,7 +95,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
   (1 run in 400: two networks hash to one of 256 buckets). Rejected:
   mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152).
-- D153 (builds on D57, D122, D150, D151; amended by D156) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
+- D153 (builds on D57, D122, D150, D151; amended by D156, D158) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
   `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
   with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the
   license, with `SHA256SUMS`, each attested for its build provenance (`actions/attest-build-provenance`: `gh
@@ -130,7 +130,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   entry when `loom` stops depending on `pin-utils`; cargo-deny warns once the advisory no longer matches. Rejected:
   `[graph] targets` limited to the shipped targets (it would drop `loom` from the graph, and with it the licence and
   ban checks of every test-only crate).
-- D156 (amends D153; builds on D122, D151) The release also holds a deb and an rpm of `dedens` and of `dedensd` per
+- D156 (amends D153; builds on D122, D151; amended by D158) The release also holds a deb and an rpm of `dedens` and of `dedensd` per
   architecture, packed by nfpm (`goreleaser/nfpm` by digest) from the very binaries of the archives (`just packages`,
   from `deploy/packages/`), in `SHA256SUMS` and attested with them. Version `X.Y.Z-1`, Cargo.toml's, which a tag must
   name (`vX.Y.Z`); a changelog of one entry pointing at the release; each file's time the commit's, so the same commit
@@ -157,6 +157,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   period, 10 to 30 s, then SIGKILL. The handler is `signal-hook`'s, as SIGHUP's (D55), on a thread started after root
   is dropped (D122). Rejected: draining the connections first (a client asks again, as for a lost packet); `docker
   run --init` (each user would have to know).
+- D158 (amends D153, D156; builds on D14, D32) Each shipped binary travels with the licences of the crates it links,
+  as MIT, BSD and ISC ask: `THIRD-PARTY-dedens.txt` and `THIRD-PARTY-dedensd.txt`, written by cargo-about (pinned in
+  the Containerfile) from the sources just built, offline, for the musl targets without build and dev dependencies
+  (`deploy/about.toml`, the licences `deny.toml` accepts; `deploy/about.hbs`). They are in the archive, beside
+  `LICENSE`, and in each package (`/usr/share/doc/<package>/` in the deb, `/usr/share/licenses/<package>/` in the
+  rpm); the image has `dedensd`'s and `LICENSE` in `/usr/share/licenses/dedensd/`, checked equal to the archive's.
+  `just release` builds them twice and compares, as the binaries. The packages also carry a man page, `dedens.1` and
+  `dedensd.8`, made by `clap_mangen` from the command line without its version (the package has it), kept in
+  `deploy/packages/man/` and checked against it by a test of each binary (`just man` writes them); `just packages`
+  gzips them (rpmlint told so by `CompressExtension`; a `doc` of the rpm). A deb is also installed in an Ubuntu
+  container without systemd, as in a chroot: `useradd` makes the user, a purge removes the configuration. Rejected: a notice in the repository (it would
+  drift from `Cargo.lock`); pages made at build time (a generator in the image, or a hidden command in the binary).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The

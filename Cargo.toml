@@ -17,6 +17,8 @@ anstyle = "1.0.14"
 anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 clap = { version = "4.6.7", features = ["derive"] }
+# D158: the man pages, checked against the command lines by a test of each binary.
+clap_mangen = "0.3.3"
 # D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS. D60: TLS by
 # rustls with ring, QUIC by quinn-proto. D82: HTTP/3 by h3.
 compio = { version = "0.19.2", default-features = false, features = [

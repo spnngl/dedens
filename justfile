@@ -228,8 +228,9 @@ musl target *cmd="test --workspace --all-features":
         -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_TARGET={{ target }} -e "RUSTUP_TOOLCHAIN=$channel" "rust:$channel-alpine" \
         sh -c 'apk add --quiet --no-cache git lld procps-ng && git config --global --add safe.directory /src && exec cargo "$@"' cargo {{ cmd }}
 
-# The release binaries of this machine's architecture, `dedensd` and `dedens` in `dist/` (D153): the Containerfile's
-# `binaries` stage, built twice from scratch and the two compared; a path of the build in a binary fails too.
+# The release binaries of this machine's architecture, `dedensd` and `dedens` in `dist/` with their notices (D153,
+# D158): the Containerfile's `binaries` stage, built twice from scratch and the two compared; a path of the build in a
+# binary fails too.
 release:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -238,8 +239,9 @@ release:
     for n in 1 2; do
         {{ container }} build -f Containerfile --no-cache --target binaries -t "localhost/dedens-binaries:$n" .
         id="$({{ container }} create "localhost/dedens-binaries:$n" /dedensd)"
-        {{ container }} cp "$id:/dedensd" "dist/$n/dedensd"
-        {{ container }} cp "$id:/dedens" "dist/$n/dedens"
+        for file in dedensd dedens THIRD-PARTY-dedensd.txt THIRD-PARTY-dedens.txt; do
+            {{ container }} cp "$id:/$file" "dist/$n/$file"
+        done
         {{ container }} rm "$id" >/dev/null
     done
     diff -r dist/1 dist/2
@@ -259,8 +261,10 @@ packages:
     version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
     # The commit's time, for every file's and the changelog's: the same commit makes the same packages.
     epoch="$(git log -1 --format=%ct)"
-    trap 'rm -rf dist/changelog.yaml dist/packages' EXIT
-    mkdir dist/packages
+    trap 'rm -rf dist/changelog.yaml dist/packages dist/man' EXIT
+    mkdir dist/packages dist/man
+    # Compressed as Debian's policy asks; `-n`: no name or time in the header.
+    for page in deploy/packages/man/*; do gzip -9n < "$page" > "dist/man/${page##*/}.gz"; done
     printf -- '- semver: %s-1\n  date: %s\n  packager: Lola Delannoy <lola.2lannoy@gmail.com>\n  deb:\n    urgency: medium\n    distributions: [unstable]\n  changes:\n    - note: %s\n' \
         "$version" "$(git log -1 --format=%cI)" "https://github.com/spnngl/dedens/releases/tag/v$version" > dist/changelog.yaml
     # The packages owned by the caller: rootless Podman maps only the caller's own id through. nfpm writes to
@@ -275,6 +279,10 @@ packages:
         done
     done
     mv dist/packages/* dist/
+
+# The man pages in deploy/packages/man/, written again from the command lines (D158).
+man:
+    DEDENS_WRITE_MAN=1 cargo test -p dedens -p dedensd --bins the_man_page
 
 # The dedensd image, `localhost/dedensd`, for this machine's architecture (D153): just image && docker run --rm -p 5353:53/udp
 # localhost/dedensd

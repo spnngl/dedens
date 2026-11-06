@@ -276,9 +276,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `nss-altfiles`, LDAP or systemd's userdb. Default: a numeric id there, as documented in `config.rs`.
 - The image's registry access (D153): the GHCR package starts private, and nothing protects `v*` tags, so any pushed
   tag publishes. Default: by hand, once (`.github/AGENTS.md`, "First release"): make the package public, add a tag ruleset.
-- The licences of the crates linked into the shipped binaries (D153, D156): the archives, the image and the packages
-  carry dedens' own `LICENSE` only, while MIT and BSD ask their notice to travel with a binary. Default: as is.
-  Alternative: a notice file made by `cargo about` from `Cargo.lock`, shipped in all three.
 - `CAP_NET_BIND_SERVICE` under systemd (D156): the unit grants it for the bind, and `dedensd` keeps it for its life
   (`CapEff` 0x400), though `listen` cannot change on reload. Default: as is. Alternative: `dedensd` clearing its
   effective and ambient capabilities once bound, as D122's drop ends with none.
