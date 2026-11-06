@@ -274,10 +274,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   which the host's own CAs (a corporate proxy) would not extend either.
 - A user name defined outside `/etc/passwd` (D151): musl has no NSS, so `user: nobody` fails where it is defined in
   `nss-altfiles`, LDAP or systemd's userdb. Default: a numeric id there, as documented in `config.rs`.
-- SIGTERM in the image (D153): `dedensd` handles SIGHUP only, and as PID 1 the kernel drops a SIGTERM that has no
-  handler, so `docker stop` and Kubernetes wait out the grace period, then SIGKILL. Nothing is lost (no state to
-  flush), but a stop takes 10 to 30 s. Default: as is; `docker run --init` works around it. Alternative: a SIGTERM and
-  SIGINT handler ending the process, with its own test.
 - The image's registry access (D153): the GHCR package starts private, and nothing protects `v*` tags, so any pushed
   tag publishes. Default: by hand, once (`.github/AGENTS.md`, "First release"): make the package public, add a tag ruleset.
 - The licences of the crates linked into the shipped binaries (D153, D156): the archives, the image and the packages

@@ -1,6 +1,6 @@
 //! `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured
 //! bytes, several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start
-//! that fails on a taken address, `validate` reading a configuration file without binding, and expired data
+//! that fails on a taken address, SIGTERM and SIGINT ending it, `validate` reading a configuration file without binding, and expired data
 //! answering a client kept waiting while resolution goes on (RFC 8767 §5).
 
 mod common;
@@ -101,6 +101,22 @@ fn the_start_logs_the_driver() {
         driver.is_some_and(|driver| known.contains(&driver)),
         "{driver:?}"
     );
+}
+
+/// D157: SIGTERM and SIGINT end the server at once, with success and its reason logged; as PID 1 of the image the
+/// kernel would drop either without a handler.
+#[cfg(unix)]
+#[test]
+fn sigterm_and_sigint_end_the_server() {
+    for (name, signal) in [("TERM", "SIGTERM"), ("INT", "SIGINT")] {
+        let (_socket, upstream) = silent();
+        let mut server = Server::start(upstream, "");
+        server.signal(name);
+        let stopped = server.event("dedensd ends: stopped").expect("logged");
+        assert_eq!(stopped["fields"]["signal"], signal);
+        let status = server.exited().expect("exited");
+        assert!(status.success(), "{signal}: {status}");
+    }
 }
 
 #[test]

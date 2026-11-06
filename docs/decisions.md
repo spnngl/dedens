@@ -150,6 +150,13 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   the VPS (AlmaLinux 10, systemd 257): installed, started, asked over UDP and TCP via DoT, uid 980, `CapEff` 0x400,
   seccomp on, io_uring when the sysctl allows it, a reload downloads an 87,809-name list into `/var/cache/dedensd` and
   answers a listed name NXDOMAIN with EDE 15; `systemd-analyze security` 1.7 OK.
+- D157 (builds on D55, D64, D121, D122, D153) `dedensd` ends on SIGTERM or SIGINT, as `docker stop`, systemd and
+  Ctrl-C ask: it logs `dedensd ends: stopped` with the signal and exits with success at once. Nothing is to flush: the
+  cache lives in memory, a list and its `ETag` are replaced atomically (D64), a query in flight is dropped as a lost
+  packet. As PID 1 of the image (D153) the kernel drops a signal without a handler, so a stop waited out the grace
+  period, 10 to 30 s, then SIGKILL. The handler is `signal-hook`'s, as SIGHUP's (D55), on a thread started after root
+  is dropped (D122). Rejected: draining the connections first (a client asks again, as for a lost packet); `docker
+  run --init` (each user would have to know).
 - D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
