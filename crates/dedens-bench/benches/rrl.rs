@@ -20,7 +20,7 @@ use dedens_server::{
 use divan::Bencher;
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 fn main() {
     divan::main();

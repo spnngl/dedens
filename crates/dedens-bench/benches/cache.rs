@@ -21,7 +21,7 @@ use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, 
 use divan::Bencher;
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 fn main() {
     #[cfg(feature = "recorder")]

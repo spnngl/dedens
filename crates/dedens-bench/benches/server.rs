@@ -17,7 +17,7 @@ use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step, Tra
 use divan::Bencher;
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 fn main() {
     divan::main();

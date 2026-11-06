@@ -8,7 +8,7 @@ use dedens_proto::{Edns, Message, Question, RecordType};
 use dedens_server::{Access, Denial, Network, Pipeline, Step, Transport};
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 /// Networks in the table: 8 000 IPv4 `/24` of `10.0.0.0/8` and 2 000 IPv6 `/48` of `2001:db8::/32`, allowed but
 /// for every tenth, denied.

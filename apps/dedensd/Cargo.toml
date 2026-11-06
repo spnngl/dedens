@@ -24,10 +24,12 @@ futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 metrics.workspace = true
+mimalloc = { workspace = true, optional = true }
 serde.workspace = true
 serde-saphyr.workspace = true
 socket2.workspace = true
 tempfile.workspace = true
+tikv-jemallocator = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json"] }
 ureq.workspace = true
@@ -41,6 +43,10 @@ signal-hook.workspace = true
 # D69: experimental transports, off by default.
 odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:zeroize"]
 doc = ["dedens-net/doc"]
+# D152 (experiment): the allocator under test; two at once do not build (`src/alloc.rs`), none is the libc's.
+alloc-mimalloc = ["dep:mimalloc"]
+alloc-mimalloc-secure = ["dep:mimalloc", "mimalloc/secure"]
+alloc-jemalloc = ["dep:tikv-jemallocator"]
 
 [dev-dependencies]
 dedens-scenario.workspace = true

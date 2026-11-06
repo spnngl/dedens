@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod alloc;
 mod config;
 mod download;
 mod flights;

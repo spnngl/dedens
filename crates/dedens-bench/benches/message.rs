@@ -24,7 +24,7 @@ use hickory_proto::op::Message as HickoryMessage;
 
 // Counts allocations next to time: borrowing exists to remove them (D7a).
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 fn main() {
     divan::main();

@@ -13,7 +13,7 @@ use dedens_proto::{Class, Message, Name, Query, Question, RData, Record, RecordT
 use dedens_server::{Forward, Pipeline, Plugin, Stage, Step, Transport};
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 const BLOCK: [&str; 3] = [
     include_str!("../../dedens-plugins/tests/testdata/stevenblack.hosts"),

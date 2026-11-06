@@ -74,6 +74,8 @@ ipnet = "2.12.2"
 loom = { version = "0.7.2", features = ["futures"] }
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
+# D152 (experiment): an allocator under test, by feature of dedensd and dedens-bench.
+mimalloc = "0.1.52"
 # D122: dedensd's privilege drop (`setuid`, `setgid`, `initgroups`, user and group lookup, `PR_SET_NO_NEW_PRIVS`), the
 # libc calls without `unsafe` of our own. Its `setuid` is libc's, which changes every thread.
 nix = { version = "0.31.3", default-features = false, features = [
@@ -114,6 +116,8 @@ stats_alloc = "0.1.10"
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
+# D152 (experiment): the same.
+tikv-jemallocator = "0.7.0"
 # D133: the simulation tests' tasks and clock; turmoil runs a current-thread runtime per host.
 tokio = { version = "1.54.1", default-features = false }
 # D30: diagnostics of net, the CLI and dedensd; the CLI prints them as text under -v, dedensd as JSON ("json"

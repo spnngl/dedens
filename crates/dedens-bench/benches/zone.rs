@@ -12,7 +12,7 @@ use domain::zonefile::inplace::Zonefile;
 use hickory_proto::serialize::txt::Parser;
 
 #[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+static ALLOC: dedens_bench::alloc::Profiled = dedens_bench::alloc::profiled();
 
 fn main() {
     divan::main();

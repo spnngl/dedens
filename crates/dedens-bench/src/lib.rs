@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alloc;
+
 /// Captured responses, smallest to largest: one A record; MX records with their A glue; a TXT answer of
 /// 1.2 kB.
 pub const CASES: [&str; 3] = ["a", "mx", "txt_large"];
