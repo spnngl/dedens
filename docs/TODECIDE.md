@@ -269,10 +269,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Cross builds with the lld wrapper (D150): `lld-cc` calls the host `cc`, so a `--target` other than the host's
   needs `CARGO_TARGET_<TRIPLE>_LINKER` set to a cross `cc`. The musl targets build natively in Alpine instead (D151).
   Default: as is.
-- The allocator of the musl binaries (D152): no candidate passed the rule, so musl's mallocng stays: the safest, 0.68 of
-  the fastest, a p99 up to 2.6 times. Default: mallocng. Alternative: mimalloc with `MI_SECURE=4` (the attacker gains in
-  no probe case, 0.89 of the fastest, a churn peak of 184 MiB against 94), as a `cfg(target_env = "musl")`
-  dependency. A bench with the allocator tuned (jemalloc's arenas, mimalloc's options) or on aarch64 may move the numbers.
 - The trust store of the image (D153): it carries Alpine's `ca-certificates` bundle, as of its build, so a CA the
   bundle drops stays trusted until the next release. Default: as is. Alternative: bundled roots (`webpki-roots`),
   which the host's own CAs (a corporate proxy) would not extend either.
@@ -283,4 +279,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   flush), but a stop takes 10 to 30 s. Default: as is; `docker run --init` works around it. Alternative: a SIGTERM and
   SIGINT handler ending the process, with its own test.
 - The image's registry access (D153): the GHCR package starts private, and nothing protects `v*` tags, so any pushed
-  tag publishes. Default: by hand, once: make the package public and add a tag ruleset.
+  tag publishes. Default: by hand, once (`.github/AGENTS.md`, "First release"): make the package public, add a tag ruleset.
+- Two flaky tests, seen under the musl job (D154): `a_client_over_its_share_cannot_shed_another_client` fails when the keyed hash puts two
+  networks in one of 256 buckets (1 run in 400); `isolate::tests::the_hook_logs_the_panics_no_catch_has` sets the process-wide panic hook
+  beside other tests. Default: as is. Alternative: a table of one bucket per network in the first, `serial` in the second.

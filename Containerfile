@@ -14,7 +14,9 @@ RUN apk add --no-cache lld ca-certificates
 ARG CARGO_AUDITABLE_VERSION=0.7.7
 RUN cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE_VERSION"
 
-# Constant paths: the binaries come out the same wherever the file runs (`.cargo/config.toml` remaps them).
+# Constant paths and time: the binaries come out the same wherever and whenever the file runs (`.cargo/config.toml`
+# remaps the paths; mimalloc's `options.c` embeds `__DATE__` and `__TIME__`, which gcc takes from this variable).
+ENV SOURCE_DATE_EPOCH=0
 WORKDIR /src
 COPY . .
 RUN target="$(uname -m)-unknown-linux-musl" \
