@@ -45,7 +45,9 @@ fn config(slip: u8) -> RateLimitConfig {
             burst: BURST,
         },
         slip,
-        table: 1024,
+        // A million buckets, keyed at random: two networks of a test share one once in a million runs, not once in
+        // a thousand.
+        table: 1 << 20,
         exempt: RateLimitConfig::default().exempt,
     }
 }

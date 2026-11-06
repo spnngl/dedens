@@ -268,7 +268,8 @@ fn ask_from(
 }
 
 /// A validation under an allowance of `burst` units, and a share of 20 units that does not refill within a
-/// test.
+/// test, in a million buckets keyed at random: two networks of a test share one once in a million runs, not once in
+/// 256.
 fn sharing(burst: u32) -> Validating {
     validating(Allowance {
         per_second: 1,
@@ -279,7 +280,7 @@ fn sharing(burst: u32) -> Validating {
         Budgets::new(Budget {
             per_second: 1,
             burst: 20,
-            table: 1 << 8,
+            table: 1 << 20,
         })
         .expect("a share in bounds"),
     )

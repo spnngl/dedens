@@ -431,7 +431,12 @@ pub(crate) mod tests {
             .json()
             .with_writer(move || writer.clone())
             .finish();
-        tracing::subscriber::with_default(subscriber, body);
+        tracing::subscriber::with_default(subscriber, || {
+            // A callsite another test registers as this subscriber comes may keep the interest it computed before,
+            // none (tracing-core stores it after the subscriber's own rebuild): the event would be lost. Ask again.
+            tracing::callsite::rebuild_interest_cache();
+            body();
+        });
         let bytes = written.0.lock().unwrap_or_else(PoisonError::into_inner);
         String::from_utf8_lossy(&bytes)
             .lines()
