@@ -1,0 +1,7 @@
+# rpmlint errors the rpms of `just packages` keep on purpose (D156); release.yml passes this file to `rpmlint -c`.
+Filters = [
+  # The attestation and SHA256SUMS cover the packages; no GPG key signs them.
+  'no-signature',
+  # Static PIE musl binaries (D151).
+  'statically-linked-binary',
+]

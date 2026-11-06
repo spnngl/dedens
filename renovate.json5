@@ -20,5 +20,12 @@
             ],
             "extractVersionTemplate": "{{#if extractVersion}}{{{extractVersion}}}{{else}}^v?(?<version>.*)${{/if}}",
         },
+        {
+            "customType": "regex",
+            "description": "Images in the justfile, pinned by tag and digest.",
+            "managerFilePatterns": ["/(^|/)justfile$/"],
+            "matchStrings": ["\"(?<depName>docker\\.io/[^:\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[0-9a-f]{64})\""],
+            "datasourceTemplate": "docker",
+        },
     ],
 }

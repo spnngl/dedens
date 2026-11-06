@@ -1,0 +1,13 @@
+# dedensd of the deb and rpm packages (D156): a caching forwarder over DoT, on the loopback only. Not [::1]: a host
+# without IPv6 has none, and the start would fail.
+# No `user:` (D122): systemd starts it as `dedensd`, with the one capability to bind port 53.
+listen: ["127.0.0.1:53"]
+downloads:
+  dir: /var/cache/dedensd
+pipeline: [cache, upstream]
+stages:
+  cache:
+    type: cache
+  upstream:
+    type: forward
+    servers: ["tls://9.9.9.9#dns.quad9.net", "tls://149.112.112.112#dns.quad9.net"]

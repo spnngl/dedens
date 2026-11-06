@@ -1,0 +1,45 @@
+# nfpm: the dedens package, deb and rpm, of the musl binary `just release` left in dist/ (D156).
+# `just packages` sets ARCH (amd64, arm64) and VERSION (Cargo.toml's).
+name: dedens
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+# The packaging's revision: 0.1.0-1, a package of an upstream version, as lintian wants it.
+release: 1
+section: net
+priority: optional
+maintainer: Lola Delannoy <lola.2lannoy@gmail.com>
+description: |-
+  Dig-like DNS client
+  dedens asks over UDP, TCP, DNS over TLS, QUIC, HTTPS and CoAP, and reads dig's
+  syntax.
+homepage: https://github.com/spnngl/dedens
+license: Apache-2.0
+# Written by `just packages`: one entry, this version, pointing at its release.
+changelog: dist/changelog.yaml
+rpm:
+  summary: Dig-like DNS client
+  group: Applications/Internet
+  packager: Lola Delannoy <lola.2lannoy@gmail.com>
+  # The container's name otherwise: the same sources would make another rpm.
+  buildhost: dedens
+depends:
+  - ca-certificates
+contents:
+  - src: dist/dedens
+    dst: /usr/bin/dedens
+    file_info: { mode: 0755 }
+  - src: deploy/packages/copyright
+    dst: /usr/share/doc/dedens/copyright
+    packager: deb
+    file_info: { mode: 0644 }
+  # The rpm owns only the directories it lists; the deb, all of its own.
+  - dst: /usr/share/licenses/dedens
+    type: dir
+    packager: rpm
+    file_info: { mode: 0755 }
+  - src: LICENSE
+    dst: /usr/share/licenses/dedens/LICENSE
+    packager: rpm
+    type: license
+    file_info: { mode: 0644 }

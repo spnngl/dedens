@@ -1,0 +1,14 @@
+#!/bin/sh
+# dedensd's package (D156), after install or upgrade: the user, systemd told of the unit, a running service restarted.
+# The service is never enabled or started here; a failing systemctl (a chroot without a bus) fails nothing.
+set -e
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers dedensd.conf
+elif ! getent passwd dedensd >/dev/null; then
+    useradd --system --user-group --home-dir /var/cache/dedensd --no-create-home --shell /usr/sbin/nologin \
+        --comment "dédéns DNS server" dedensd
+fi
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    systemctl try-restart dedensd.service || true
+fi
