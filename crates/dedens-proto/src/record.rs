@@ -244,7 +244,7 @@ impl fmt::Display for WireRdata<'_> {
     }
 }
 
-/// A resource record: owner name, class, TTL and RDATA; the type is the RDATA's.
+/// A resource record: owner name, class, TTL and RDATA; the type is the RDATA's (RFC 1035 §3.2.1, §4.1.3).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Record<'a> {
     /// Owner name.
@@ -449,7 +449,7 @@ impl fmt::Display for Record<'_> {
     }
 }
 
-/// A record written with its RDATA in the generic form; from [`Record::generic`].
+/// A record written with its RDATA in the generic form (RFC 3597 §5); from [`Record::generic`].
 #[derive(Debug, Clone, Copy)]
 pub struct GenericRecord<'r>(&'r Record<'r>);
 

@@ -16,7 +16,7 @@ use crate::wire::{MAX_MESSAGE_LEN, Reader, Writer};
 const MIN_QUESTION_LEN: usize = 5;
 const MIN_RECORD_LEN: usize = 11;
 
-/// The record sections of a message.
+/// The record sections of a message (RFC 1035 §4.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
     /// Answer (RFC 1035 §4.1.3).
@@ -38,7 +38,7 @@ impl Section {
     }
 }
 
-/// A message: header, the four sections, and EDNS.
+/// A message: header, the four sections, and EDNS (RFC 1035 §4.1, RFC 6891 §6.1.1).
 ///
 /// The counts of the header are the lengths of the sections, so they are not stored (D8).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

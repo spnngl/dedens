@@ -9,7 +9,7 @@ use crate::message::{self, Entry, Violation};
 use crate::question::Question;
 use crate::record::decode_rdata;
 
-/// A query read in place: what a server needs to answer it, from the input.
+/// A query read in place: what a server needs to answer it, from the input (RFC 1035 §4.1).
 #[derive(Debug, Clone)]
 pub struct Query<'a> {
     msg: &'a [u8],

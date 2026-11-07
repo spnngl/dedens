@@ -221,7 +221,8 @@ pub enum SvcParamsError {
     TooLong,
 }
 
-/// The parameters of a SVCB or HTTPS record, in wire form: sorted by key, each key once, internally consistent.
+/// The parameters of a SVCB or HTTPS record, in wire form (RFC 9460 §2.2): sorted by key, each key once,
+/// self-consistent (RFC 9460 §2.4.3).
 ///
 /// Borrowed from the message they were decoded from, or owned; [`SvcParams::iter`] parses them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -296,7 +297,7 @@ impl<'p> IntoIterator for &'p SvcParams<'_> {
     }
 }
 
-/// Iterator over [`SvcParams`], parsing each parameter.
+/// Iterator over [`SvcParams`], parsing each parameter (RFC 9460 §2.2).
 #[derive(Debug, Clone)]
 pub struct Params<'p>(&'p [u8]);
 

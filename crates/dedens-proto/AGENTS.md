@@ -3,8 +3,8 @@
 The DNS wire format and zone-file text: messages, names, records, EDNS, read and written. Sans-IO: it encodes
 and decodes byte slices; sockets, timers and compio live in `dedens-net` and the apps.
 
-- Layout (D13): topic modules at `src/`, one RDATA or EDNS option file per type or per group sharing a format,
-  named after the defining RFC (`rdata/rfc2782_srv.rs`, `rdata/rfc1035_domain_name.rs`).
+- Layout (D13, D159): topic modules at `src/`, one RDATA or EDNS option file per type or per group sharing a
+  format, named after the type (`rdata/srv.rs`, `edns/cookie.rs`); each public item's doc cites its RFC and section.
 - An in-place reader (`Query::read`) is fuzzed against `Message::decode` (`read_query` in `fuzz/src/lib.rs`).
 - `src/proofs.rs` holds Kani's proofs of the name and header decoders (`just kani`, D145); a change to their loops
   runs it.

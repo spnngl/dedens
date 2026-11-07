@@ -4,14 +4,14 @@
 use core::fmt;
 use std::borrow::Cow;
 
-use super::rfc4034_nsec::TypeBitmap;
+use super::nsec::TypeBitmap;
 use crate::codes::Nsec3HashAlgorithm;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::text::encoding::{Base32Hex, decode_base32hex};
 use crate::text::{Fields, Hex, TextError, TextErrorKind, decode_hex};
 use crate::wire::{Reader, Writer};
 
-/// A salt or a hash that does not fit the one-byte length in front of it.
+/// A salt or a hash that does not fit the one-byte length in front of it (RFC 5155 §3.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Nsec3Error {
@@ -75,8 +75,8 @@ fn salt_from_text(f: &mut Fields<'_, '_>) -> Result<Vec<u8>, TextError> {
     Ok(salt)
 }
 
-/// An NSEC3 record: a link of the chain of hashed owner names, and the types at the name that hashes to the
-/// record's owner.
+/// An NSEC3 record (RFC 5155 §3): a link of the chain of hashed owner names, and the types at the name that hashes
+/// to the record's owner.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Nsec3<'a> {
     /// How the owner names are hashed.

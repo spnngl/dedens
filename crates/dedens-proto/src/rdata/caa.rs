@@ -20,7 +20,7 @@ pub enum CaaError {
     TooLong,
 }
 
-/// A CAA property: flags, a tag such as `issue`, and a value.
+/// A CAA property (RFC 8659 §4.1): flags, a tag such as `issue`, and a value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Caa<'a> {
     flags: u8,

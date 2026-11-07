@@ -9,7 +9,7 @@ use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::text::{Fields, Hex, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
-/// A DS digest that is empty or longer than an RDATA holds.
+/// A DS digest that is empty or longer than an RDATA holds (RFC 4034 §5.1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DsError {

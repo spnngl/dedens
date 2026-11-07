@@ -667,11 +667,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   D70; others opaque until added. The other types with compressible names (RFC 3597 §4: MD MF MB MG MR
   MINFO, RP AFSDB RT SIG PX NXT NAPTR) are parsed by a field layout and kept opaque with their names
   expanded, so opaque data never holds a pointer.
-- D12 Typed EDNS options: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client subnet
+- D12 (amended by D159) Typed EDNS options: cookie (RFC 7873), Extended DNS Error (RFC 8914), padding (RFC 7830), client subnet
   (RFC 7871), TCP keepalive (RFC 7828), NSID (RFC 5001). Typed SVCB keys: RFC 9460 keys 0-6 and dohpath (RFC
   9461). Others opaque. An opaque option (`UnknownOption::new`) refuses data that reads as its typed option, so
   an option has one form and equals itself read back.
-- D13 Topic modules, RDATA and conformance tests by RFC (`crates/dedens-proto/AGENTS.md`). Rejected strict
+- D13 (amended by D159) Topic modules, RDATA and conformance tests by RFC (`crates/dedens-proto/AGENTS.md`). Rejected strict
   `rfcNNNN/` folders: names, the header and rcodes are each defined across several RFCs.
 - D19 Codes (type, class, opcode, rcode, EDNS option, SVCB key) are newtypes with named constants, not enums
   with an `Unknown` arm: every value has one representation and a new code is one constant. `Record` has no
@@ -705,7 +705,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   check without the crate: not measured, as the gains above are against the former six reads of one field each,
   so zerocopy is kept by owner decision, not by a measured gain over it. Names stay hand-parsed: their length
   varies and they may point elsewhere.
-- D70 DNSSEC RDATA, typed: DS and CDS (`Ds`), DNSKEY and CDNSKEY (`Dnskey`), RRSIG, NSEC, NSEC3, NSEC3PARAM
+- D70 (amended by D159) DNSSEC RDATA, typed: DS and CDS (`Ds`), DNSKEY and CDNSKEY (`Dnskey`), RRSIG, NSEC, NSEC3, NSEC3PARAM
   (RFC 4034, 5155, 7344, 8078), one file per format (D13); a CDS is a `Ds` under its own `RData` arm, so the
   two cannot be mixed up. Types only: the validator's checks (digest length, key format, times, hash order)
   and canonical form are `dedens-dnssec`'s. Rules:
@@ -752,6 +752,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   Rejected: a test that every type of the fuzzing seed reads typed from its text and from the wire (+32 lines, built
   and run against the removed arm): it fails on a missing arm only for a type whose seed line exists, where the table
   needs no line to be right.
+- D159 (amends D12, D13, D70) An RDATA or EDNS option file is named after its type (`rdata/srv.rs`, `edns/cookie.rs`),
+  not its RFC; the RFC and section go on each public item's doc, where `cargo doc` and a reader of the item see
+  them. Why: a file name held one RFC, while SVCB, the DNSSEC types and the options each span several, and 13
+  public items cited none. A codec of a few lines with no type of its own is inlined where it is used: A, AAAA
+  and the one-name types (NS, CNAME, PTR) as modules in `rdata/mod.rs` beside the `rdata_types!` table (D139),
+  NSID, keepalive and padding as arms of `EdnsOption`'s decode and encode. Tests stay one file per RFC,
+  `tests/rfcNNNN.rs`. Behaviour is unchanged. Rejected: keeping the RFC prefix (`rfc2782_srv.rs`): it sorts the
+  files by RFC number, which no reader looks for.
 
 ## Transports
 

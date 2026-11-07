@@ -29,7 +29,7 @@ const fn values_of(alphabet: &[u8; 64]) -> [u8; 256] {
     values
 }
 
-/// Writes bytes as lowercase hex.
+/// Writes bytes as lowercase hex, as the generic RDATA form does (RFC 3597 §5).
 pub struct Hex<'b>(pub &'b [u8]);
 
 impl fmt::Display for Hex<'_> {
@@ -38,7 +38,7 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
-/// Appends the bytes of hex digits, any case, to `out`; `None` for an odd count or a non-hex byte.
+/// Appends the bytes of hex digits, any case, to `out` (RFC 3597 §5); `None` for an odd count or a non-hex byte.
 pub fn decode_hex(text: &[u8], out: &mut Vec<u8>) -> Option<()> {
     let (pairs, odd) = text.as_chunks::<2>();
     if !odd.is_empty() {

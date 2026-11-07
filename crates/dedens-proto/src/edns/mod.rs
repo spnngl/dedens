@@ -1,21 +1,20 @@
 //! EDNS(0): the OPT pseudo-record and its options (RFC 6891).
 //!
-//! A [`Message`](crate::Message) holds the OPT record as an [`Edns`] value, not among its records (D8). One file per
-//! typed option (D12); every other option, and an option whose content is invalid, stays [`EdnsOption::Unknown`].
+//! A [`Message`](crate::Message) holds the OPT record as an [`Edns`] value, not among its records (D8). A typed
+//! option (D12) with a type of its own has a file named after it; NSID, keepalive and padding are arms of
+//! [`EdnsOption`]'s decode and encode (D159). Every other option, and an option whose content is invalid, stays
+//! [`EdnsOption::Unknown`].
 
-mod rfc5001_nsid;
-mod rfc7828_keepalive;
-mod rfc7830_padding;
-mod rfc7871_client_subnet;
-mod rfc7873_cookie;
-mod rfc8914_ede;
+mod cookie;
+mod ede;
+mod subnet;
 
 use std::borrow::Cow;
 use std::mem;
 
-pub use rfc7871_client_subnet::{ClientSubnet, InvalidClientSubnet};
-pub use rfc7873_cookie::{Cookie, InvalidServerCookie};
-pub use rfc8914_ede::{EDE_LEN, ExtendedError, InfoCode};
+pub use cookie::{Cookie, InvalidServerCookie};
+pub use ede::{EDE_LEN, ExtendedError, InfoCode};
+pub use subnet::{ClientSubnet, InvalidClientSubnet};
 
 use crate::codes::{RecordType, code_type};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
@@ -71,27 +70,28 @@ code_type! {
     EDE = 15, "EDE";
 }
 
-/// One option of an OPT record.
+/// One option of an OPT record (RFC 6891 §6.1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EdnsOption<'a> {
-    /// Name server identifier: empty in a query (RFC 5001).
+    /// Name server identifier: empty in a query, opaque bytes in a response (RFC 5001 §2.3).
     Nsid(Cow<'a, [u8]>),
-    /// Client subnet (RFC 7871).
+    /// Client subnet (RFC 7871 §6).
     ClientSubnet(ClientSubnet),
-    /// Cookie (RFC 7873).
+    /// Cookie (RFC 7873 §4).
     Cookie(Cookie),
-    /// TCP keepalive: the idle timeout in 100 ms units, absent in a query (RFC 7828).
+    /// TCP keepalive: the idle timeout in 100 ms units, absent in a query (RFC 7828 §3.1).
     Keepalive(Option<u16>),
-    /// Padding of this many zero bytes (RFC 7830).
+    /// Padding of this many zero bytes: only the length is kept, as a receiver ignores the octets (RFC 7830 §3).
     Padding(u16),
-    /// Extended DNS Error (RFC 8914).
+    /// Extended DNS Error (RFC 8914 §2).
     Ede(ExtendedError<'a>),
     /// An option without a typed variant, or whose content is invalid for its code (D9).
     Unknown(UnknownOption<'a>),
 }
 
-/// The data of an option kept as bytes: its code has no typed variant, or the data is invalid for its code (D9).
+/// The data of an option kept as bytes (RFC 6891 §6.1.2): its code has no typed variant, or the data is invalid for
+/// its code (D9).
 ///
 /// [`UnknownOption::new`] refuses data that reads as a typed option, so an option has one form and compares
 /// equal to itself read back.
@@ -195,11 +195,22 @@ impl<'a> EdnsOption<'a> {
     /// Parses the data of option `code`; all of `data` must be used.
     fn decode_typed(code: OptionCode, data: &mut Reader<'a>) -> Result<Self, DecodeError> {
         let option = match code {
-            OptionCode::NSID => Self::Nsid(rfc5001_nsid::decode(data)),
+            OptionCode::NSID => Self::Nsid(Cow::Borrowed(data.rest())),
             OptionCode::CLIENT_SUBNET => Self::ClientSubnet(ClientSubnet::decode(data)?),
             OptionCode::COOKIE => Self::Cookie(Cookie::decode(data)?),
-            OptionCode::KEEPALIVE => Self::Keepalive(rfc7828_keepalive::decode(data)?),
-            OptionCode::PADDING => Self::Padding(rfc7830_padding::decode(data)),
+            OptionCode::KEEPALIVE => Self::Keepalive(match data.remaining() {
+                0 => None,
+                2 => Some(data.u16()?),
+                _ => {
+                    return Err(data.error(DecodeErrorKind::Invalid(
+                        "keepalive is empty or a 2-byte timeout",
+                    )));
+                }
+            }),
+            // The option length is a `u16`, so the padding fits.
+            OptionCode::PADDING => {
+                Self::Padding(u16::try_from(data.rest().len()).unwrap_or(u16::MAX))
+            }
             OptionCode::EDE => Self::Ede(ExtendedError::decode(data)?),
             _ => Self::Unknown(UnknownOption::borrowed(code, data.rest())),
         };
@@ -217,8 +228,9 @@ impl<'a> EdnsOption<'a> {
             Self::Nsid(id) => w.put_bytes(id)?,
             Self::ClientSubnet(subnet) => subnet.encode(w)?,
             Self::Cookie(cookie) => cookie.encode(w)?,
-            Self::Keepalive(timeout) => rfc7828_keepalive::encode(*timeout, w)?,
-            Self::Padding(len) => rfc7830_padding::encode(*len, w)?,
+            Self::Keepalive(Some(timeout)) => w.put_u16(*timeout)?,
+            Self::Keepalive(None) => {}
+            Self::Padding(len) => w.put_zeros(usize::from(*len))?,
             Self::Ede(error) => error.encode(w)?,
             Self::Unknown(unknown) => w.put_bytes(&unknown.data)?,
         }
@@ -229,7 +241,7 @@ impl<'a> EdnsOption<'a> {
 }
 
 /// An option that was kept as [`EdnsOption::Unknown`] although its code is typed, because its content is
-/// invalid (D9).
+/// invalid for its code (RFC 6891 §6.1.2, D9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidOption {
     /// The option code.
@@ -439,7 +451,8 @@ impl<'a> Iterator for Options<'a> {
     }
 }
 
-/// The OPT record of a message read in place: its fields, and its options read from the input when iterated.
+/// The OPT record of a message read in place (RFC 6891 §6.1): its fields, and its options read from the input when
+/// iterated.
 #[derive(Debug, Clone)]
 pub struct EdnsView<'a> {
     /// As [`Edns::udp_payload`].
