@@ -7,7 +7,8 @@ use common::{
     small_cache, small_config, soa, ttls,
 };
 use dedens_cache::{Cache, Config, Lookup, NotCached, StalePolicy};
-use dedens_proto::{Flags, Message, RData, Rcode, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Flags, Message, Rcode, RecordType, Ttl};
 
 const NEVER: StalePolicy = StalePolicy::Never;
 

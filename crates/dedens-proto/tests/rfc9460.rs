@@ -5,8 +5,8 @@ mod common;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use common::{decode_record, encode_record, name_of, record, record_wire};
-use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
-use dedens_proto::{Class, Name, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::{RData, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
+use dedens_proto::{Class, Name, Record, RecordType, Ttl};
 use proptest::prelude::*;
 
 const FOO_EXAMPLE_COM: &[u8] = b"\x03foo\x07example\x03com\x00";

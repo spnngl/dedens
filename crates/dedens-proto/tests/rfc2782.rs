@@ -3,7 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record, name_of, record, record_wire};
-use dedens_proto::{RData, RecordType};
+use dedens_proto::RecordType;
+use dedens_proto::rdata::RData;
 use proptest::prelude::*;
 
 fn srv_rdata(priority: u16, weight: u16, port: u16, target: &[u8]) -> Vec<u8> {

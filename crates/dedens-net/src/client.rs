@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 
 use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{EncodeError, Message};
+use dedens_proto::{EncodeError, Message, Transport};
 
 #[cfg(feature = "doc")]
 use crate::doc::{DocError, coap, discover};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
-use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, Transport, after};
+use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, after};
 use crate::https::{HttpsError, HttpsPool};
 use crate::io::{Compio, Io};
 #[cfg(feature = "odoh")]

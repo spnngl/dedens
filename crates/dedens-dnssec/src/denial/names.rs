@@ -2,7 +2,7 @@
 
 use core::cmp::Ordering;
 
-use dedens_proto::name::{Name, NameError};
+use dedens_proto::{Name, NameError};
 
 /// The labels of `name`, least specific first, the order canonical comparison walks them in.
 fn from_the_root<'n>(name: &'n Name<'_>) -> Vec<&'n [u8]> {

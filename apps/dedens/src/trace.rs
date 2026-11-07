@@ -6,8 +6,10 @@ use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, bail};
 use dedens_net::client::Client;
-use dedens_proto::text::{Entry, ZoneReader};
-use dedens_proto::{Flags, Message, Name, Question, RData, Rcode, Record, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{
+    Flags, Message, Name, Question, Rcode, Record, RecordType, ZoneEntry, ZoneReader,
+};
 use dedens_scenario::{Id, Options, Report};
 use tracing::Instrument;
 
@@ -56,7 +58,7 @@ pub(crate) fn root_hints() -> Vec<SocketAddr> {
     let records =
         ZoneReader::new(ROOT_HINTS.as_bytes(), Some(Name::root())).filter_map(
             |entry| match entry {
-                Ok(Entry::Record(decoded)) => Some(decoded.record),
+                Ok(ZoneEntry::Record(decoded)) => Some(decoded.record),
                 _ => None,
             },
         );

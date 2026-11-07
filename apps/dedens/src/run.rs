@@ -19,12 +19,12 @@ use dedens_net::coap::doc::path_segments;
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
 use dedens_net::doh::{DEFAULT_PATH, Template, TemplateError};
-use dedens_net::exchange::{self, Failure, Response, Transport};
+use dedens_net::exchange::{self, Failure, Response};
 use dedens_net::https::HttpsError;
 use dedens_net::quic::QuicError;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
-use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType};
+use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report};
 
 use crate::args::{self, Cli};

@@ -13,8 +13,8 @@ use common::{
 use dedens_cache::{
     Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
 };
-use dedens_proto::edns::{ClientSubnet, EdnsOption};
-use dedens_proto::{Edns, Flags, Message, Opcode, Query, Rcode, RecordType};
+use dedens_proto::edns::{ClientSubnet, Edns, EdnsOption};
+use dedens_proto::{Flags, Message, Opcode, Query, Rcode, RecordType};
 use proptest::prelude::*;
 
 const NEVER: StalePolicy = StalePolicy::Never;

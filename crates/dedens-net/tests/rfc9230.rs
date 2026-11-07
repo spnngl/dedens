@@ -22,7 +22,7 @@ use compio::rustls::pki_types::ServerName;
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Template;
-use dedens_net::exchange::{Http, Options, Transport};
+use dedens_net::exchange::{Http, Options};
 use dedens_net::https::{HttpsError, HttpsPool};
 use dedens_net::odoh::{
     CONFIGS_PATH, Entropy, Kind, Lifetime, MAX_BODY, Notice, OdohError, classify, configs_lifetime,
@@ -35,7 +35,7 @@ use dedens_odoh::{
     MEDIA_TYPE, MessageType, ObliviousDoHConfigContents, ObliviousDoHConfigs, ObliviousDoHMessage,
     TargetKey, decrypt_query, encrypt_query, encrypt_response, query_padding, response_padding,
 };
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Rcode, Transport};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};

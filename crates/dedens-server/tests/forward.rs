@@ -6,9 +6,9 @@ use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use common::{captured, decode, dns, forwarder, query_for, run, wire};
-use dedens_proto::edns::{ClientSubnet, Cookie, EdnsOption};
-use dedens_proto::{Edns, Flags, Message};
-use dedens_server::{Forward, Pipeline, Server, Stage, Step, Transport, Via};
+use dedens_proto::edns::{ClientSubnet, Cookie, Edns, EdnsOption};
+use dedens_proto::{Flags, Message, Transport};
+use dedens_server::{Forward, Pipeline, Server, Stage, Step, Via};
 
 #[test]
 fn upstream_gets_the_question_and_our_edns_without_the_clients_options() {

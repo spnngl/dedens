@@ -5,8 +5,9 @@ mod common;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use common::{dns, message, rec};
-use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Edns, Flags, Message, Question, RData, Record, RecordType, Violation};
+use dedens_proto::edns::{Edns, EdnsOption};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Flags, Message, Question, Record, RecordType, Violation};
 use proptest::prelude::*;
 
 fn a(n: u8) -> RData<'static> {

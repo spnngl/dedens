@@ -3,8 +3,8 @@
 //!
 //! ```
 //! # use dedens_plugins::Hosts;
-//! # use dedens_proto::{Message, Name, Question, RecordType, Rcode, Ttl};
-//! # use dedens_server::{Pipeline, Stage, Step, Transport};
+//! # use dedens_proto::{Message, Name, Question, Rcode, RecordType, Transport, Ttl};
+//! # use dedens_server::{Pipeline, Stage, Step};
 //! # use std::net::Ipv4Addr;
 //! let hosts = Hosts::new("192.0.2.1 printer.lan", Ttl::from_wire(3600), false)?;
 //! let pipeline = Pipeline::new(vec![Stage::Plugin(Box::new(hosts))]);

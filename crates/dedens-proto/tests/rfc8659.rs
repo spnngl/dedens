@@ -3,8 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record, record, record_wire};
-use dedens_proto::rdata::Caa;
-use dedens_proto::{DecodeErrorKind, RData, RecordType};
+use dedens_proto::rdata::{Caa, RData};
+use dedens_proto::{DecodeErrorKind, RecordType};
 use proptest::prelude::*;
 
 #[test]

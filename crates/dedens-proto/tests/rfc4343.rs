@@ -5,8 +5,7 @@ mod common;
 use std::collections::HashSet;
 
 use common::{name, name_of};
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Message, Name};
+use dedens_proto::{MAX_NAME_LEN, Message, Name};
 use proptest::prelude::*;
 
 #[test]

@@ -6,7 +6,8 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_proto::{Decoded, Edns, EdnsFlags, Flags, Message, Opcode, Question, Rcode};
+use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::{Decoded, Flags, Message, Opcode, Question, Rcode};
 
 use crate::reply::Client;
 use crate::validate::Validating;

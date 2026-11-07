@@ -13,8 +13,7 @@ use std::path::PathBuf;
 use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature, Verified};
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Message, Name, Record};
+use dedens_proto::{MAX_NAME_LEN, Message, Name, Record};
 
 // spellchecker:off
 /// RFC 4034 §5.4: the key of `dskey.example.com.` (algorithm 5, key tag 60485), the DNSKEY that RFC 4034 and

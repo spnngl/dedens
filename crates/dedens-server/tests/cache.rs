@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use common::{caching, captured, decode, query_for, run_at, servers, wire, with_flags};
 use dedens_cache::{Cache, Config};
-use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
-use dedens_proto::{Edns, Flags, Message, Rcode};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport, Upstream};
+use dedens_proto::edns::{Edns, EdnsOption, ExtendedError, InfoCode};
+use dedens_proto::{Flags, Message, Rcode, Transport};
+use dedens_server::{Forward, Pipeline, Stage, Step, Upstream};
 
 /// The reply at `now` to `query`, upstream answering `responses` in turn, and the servers asked.
 fn ask(

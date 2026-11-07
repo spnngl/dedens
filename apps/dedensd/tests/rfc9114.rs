@@ -28,10 +28,10 @@ use compio::quic::{
 };
 use compio::runtime::Runtime;
 use dedens_net::client::Client;
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::https::H3_EXCESSIVE_LOAD;
 use dedens_net::tls::Trust;
-use dedens_proto::Rcode;
+use dedens_proto::{Rcode, Transport};
 use futures_util::future::join_all;
 
 /// What a client may send before the server must have closed the connection: the budget of D119 is 4 MiB, and the

@@ -1,10 +1,7 @@
 //! Denial by NSEC3 records (RFC 5155 §8, RFC 6840 §4.1): a chain of the hashes of the names of the zone.
 
-use dedens_proto::codes::{Nsec3HashAlgorithm, RecordType};
-use dedens_proto::name::Name;
 use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
-use dedens_proto::record::{Record, Ttl};
-use dedens_proto::{Class, Question};
+use dedens_proto::{Class, Name, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
 
 use super::names::{covers, wildcard};
 use super::{Fact, MaxIterations, Proof, Unproven, at_name, least, wildcard_lacks};

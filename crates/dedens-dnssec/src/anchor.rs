@@ -8,9 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dedens_proto::rdata::{Dnskey, Ds};
-use dedens_proto::text::{Entry, ZoneReader};
-use dedens_proto::{Class, DecodeError, Name, RData, RecordType, TextError, Ttl};
+use dedens_proto::rdata::{Dnskey, Ds, RData};
+use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
 
 /// The root's DS records, written by `just root-anchors` from IANA's `root-anchors.xml` (RFC 9718 §2).
 const ROOT: &str = include_str!("root.ds");
@@ -113,7 +112,7 @@ impl TrustAnchors {
         let mut zones: HashMap<Name<'static>, Anchor> = HashMap::new();
         while let Some(entry) = reader.next() {
             let line = reader.line();
-            let Entry::Record(decoded) = entry? else {
+            let ZoneEntry::Record(decoded) = entry? else {
                 return Err(AnchorError::NotARecord { line });
             };
             let record = decoded.record;

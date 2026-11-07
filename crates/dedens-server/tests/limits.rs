@@ -15,10 +15,10 @@ use common::{
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Flags, Rcode, RecordType};
+use dedens_proto::{Flags, Rcode, RecordType, Transport};
 use dedens_server::{
     Allowance, Budget, Budgets, Clock, Cookies, Pipeline, RateLimit, RateLimitConfig, Secret,
-    Secrets, Transport, Validating,
+    Secrets, Validating,
 };
 
 /// The second the queries start at, far from 0 so that a clock gone back can be tried.

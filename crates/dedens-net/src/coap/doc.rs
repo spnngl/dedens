@@ -2,9 +2,8 @@
 //! what a server makes of a request and of the DNS response it answers with, the TTLs against Max-Age, and the
 //! discovery of the resource by its resource type, both sides (RFC 9953 §3.1, §3.2, §4.2, §4.3; D95).
 
-use dedens_proto::DecodeError;
-use dedens_proto::message::ttl_offsets;
 use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams};
+use dedens_proto::{DecodeError, ttl_offsets};
 
 use super::block::{self, Block, BlockSize, Slice};
 use super::exchange::Request;

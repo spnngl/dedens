@@ -11,14 +11,12 @@ use common::{decode, dns, run, servers, wire};
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
-use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::edns::{Edns, EdnsOption, InfoCode};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, Edns, Flags, Message, Name, Opcode, Query, Question, RData, Rcode, Record, RecordType,
-    Ttl,
+    Class, Flags, Message, Name, Opcode, Query, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
-use dedens_server::{
-    Answer, Forward, Pipeline, Plugin, Records, Reviewer, Stage, Transport, Validating,
-};
+use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Reviewer, Stage, Validating};
 
 /// Answers A queries for `local.test.` with `count` addresses, and blocks `blocked.test.`.
 #[derive(Debug)]

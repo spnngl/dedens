@@ -4,8 +4,9 @@
 use std::hint::black_box;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use dedens_proto::{Edns, Message, Question, RecordType};
-use dedens_server::{Access, Denial, Network, Pipeline, Step, Transport};
+use dedens_proto::edns::Edns;
+use dedens_proto::{Message, Question, RecordType, Transport};
+use dedens_server::{Access, Denial, Network, Pipeline, Step};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();

@@ -1,7 +1,7 @@
 //! What an answer is cached under: the question, case-folded (RFC 4343), and the bits that change the answer.
 
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{EdnsFlags, Flags, Opcode, Query, Question, RecordType};
+use dedens_proto::edns::EdnsFlags;
+use dedens_proto::{Flags, MAX_NAME_LEN, Opcode, Query, Question, RecordType};
 
 /// Name, type, class and the DO and CD bits.
 pub(crate) const MAX_KEY_LEN: usize = MAX_NAME_LEN + 5;

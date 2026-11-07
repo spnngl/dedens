@@ -5,9 +5,9 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::{dns, rec};
-use dedens_proto::rdata::{Mx, Opaque};
+use dedens_proto::rdata::{Mx, Opaque, RData};
 use dedens_proto::{
-    Class, DecodeErrorKind, Message, Question, RData, Record, RecordType, Ttl, message,
+    Class, DecodeErrorKind, Message, Question, Record, RecordType, Ttl, ttl_offsets,
 };
 
 fn mx_response() -> Message<'static> {
@@ -98,7 +98,7 @@ fn ttl_offsets_skip_a_stray_opt_record() {
     let mut wire = vec![0, 0, 0x80, 0, 0, 0, 0, 1, 0, 0, 0, 0];
     wire.extend([0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0]);
     let mut offsets = Vec::new();
-    message::ttl_offsets(&wire, |at| offsets.push(at)).expect("readable");
+    ttl_offsets(&wire, |at| offsets.push(at)).expect("readable");
     assert_eq!(offsets, []);
 }
 
@@ -111,7 +111,7 @@ fn ttl_offsets_locate_every_record_ttl() {
     ));
     let mut wire = response.to_vec().expect("encodes");
     let mut offsets = Vec::new();
-    message::ttl_offsets(&wire, |at| offsets.push(at)).expect("reads");
+    ttl_offsets(&wire, |at| offsets.push(at)).expect("reads");
     assert_eq!(offsets.len(), 2, "the OPT record is not a record");
     for at in offsets.into_iter().map(usize::from) {
         wire[at..at + 4].copy_from_slice(&7_u32.to_be_bytes());

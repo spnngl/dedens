@@ -2,8 +2,7 @@
 
 use core::str::SplitWhitespace;
 
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Name, TextError, TextErrorKind};
+use dedens_proto::{MAX_NAME_LEN, Name, TextError, TextErrorKind};
 
 /// A line of a plugin's input that it cannot read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

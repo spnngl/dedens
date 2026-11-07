@@ -12,9 +12,10 @@ use std::path::PathBuf;
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, MaxIterations, Proof, Unproven};
-use dedens_proto::rdata::{Nsec, Nsec3, TypeBitmap};
-use dedens_proto::text::{Entry, ZoneReader};
-use dedens_proto::{Class, Message, Nsec3HashAlgorithm, Question, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::{Nsec, Nsec3, RData, TypeBitmap};
+use dedens_proto::{
+    Class, Message, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl, ZoneEntry, ZoneReader,
+};
 
 use crate::common::name;
 
@@ -24,7 +25,7 @@ pub fn zone(path: &str) -> Vec<Record<'static>> {
     let text = fs::read(path).expect("zone file");
     ZoneReader::new(&text, None)
         .filter_map(|entry| match entry.expect("a valid zone") {
-            Entry::Record(decoded) => Some(decoded.record),
+            ZoneEntry::Record(decoded) => Some(decoded.record),
             _ => None,
         })
         .collect()

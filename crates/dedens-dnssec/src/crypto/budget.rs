@@ -165,7 +165,7 @@ mod tests {
     /// The paid hash is the hash, and a refused one is not computed: the counter is zero and there is no hash.
     #[test]
     fn the_paid_hash_is_the_hash_and_a_refused_one_is_none() {
-        use dedens_proto::codes::Nsec3HashAlgorithm;
+        use dedens_proto::Nsec3HashAlgorithm;
         let owner = name("a.c.x.w.example.");
         let salt = [0xaa, 0xbb, 0xcc, 0xdd];
         let mut budget = Budget::new(Verifications(0), Nsec3Blocks(13));

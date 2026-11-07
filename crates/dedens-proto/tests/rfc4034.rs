@@ -3,8 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record, rdata_wire, record_wire};
-use dedens_proto::rdata::{Dnskey, TypeBitmap, TypeBitmapError};
-use dedens_proto::{DigestType, RData, Record, RecordType, SecAlgorithm};
+use dedens_proto::rdata::{Dnskey, RData, TypeBitmap, TypeBitmapError};
+use dedens_proto::{DigestType, Record, RecordType, SecAlgorithm};
 
 /// §2.3.
 const DNSKEY: &str = "example.com. 86400 IN DNSKEY 256 3 5 ( AQPSKmynfzW4kyBv015MUG2DeIQ3

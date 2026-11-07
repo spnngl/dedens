@@ -16,11 +16,11 @@ use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::rustls::DEFAULT_VERSIONS;
 use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError};
-use dedens_net::exchange::{Failure, Options, Transport};
+use dedens_net::exchange::{Failure, Options};
 use dedens_net::tcp::{TcpError, frame};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Rcode, Transport};
 
 fn answer_plainly(query: &[u8]) -> Vec<u8> {
     answer(query, Vec::new())

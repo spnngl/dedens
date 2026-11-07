@@ -182,7 +182,7 @@ fn every_query_upstream_has_do_and_cd_and_no_ad() {
     for request in &done.requests {
         assert_eq!(request.header.flags, Flags::RD | Flags::CD);
         let edns = request.edns.as_ref().expect("EDNS");
-        assert!(edns.flags.contains(dedens_proto::EdnsFlags::DO));
+        assert!(edns.flags.contains(dedens_proto::edns::EdnsFlags::DO));
         assert_eq!(edns.options, []);
     }
 }
@@ -250,7 +250,11 @@ fn a_secure_answer_loses_its_additional_section() {
 }
 
 /// A record of class IN owned by `owner` with `data`.
-fn record(owner: &str, ttl: u32, data: &dedens_proto::RData<'_>) -> dedens_proto::Record<'static> {
+fn record(
+    owner: &str,
+    ttl: u32,
+    data: &dedens_proto::rdata::RData<'_>,
+) -> dedens_proto::Record<'static> {
     dedens_proto::Record {
         name: common::dns(owner),
         class: dedens_proto::Class::IN,
@@ -279,7 +283,7 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
     let ns = record(
         "unrelated.example.",
         300,
-        &dedens_proto::RData::Cname(common::dns("evil.example.")),
+        &dedens_proto::rdata::RData::Cname(common::dns("evil.example.")),
     );
     let genuine = message.answer.len();
     message.answer.push(foreign("other.example."));
@@ -328,7 +332,7 @@ fn a_second_record_in_the_cname_a_dname_makes_is_bogus() {
         .position(|record| record.rtype() == RecordType::CNAME)
         .expect("the synthesized CNAME");
     let evil = dedens_proto::Record {
-        rdata: dedens_proto::WireRdata::new(&dedens_proto::RData::Cname(common::dns(
+        rdata: dedens_proto::WireRdata::new(&dedens_proto::rdata::RData::Cname(common::dns(
             "evil.example.",
         ))),
         ..message.answer[at].clone()
@@ -464,7 +468,7 @@ fn a_refresh_that_turns_bogus_keeps_the_entry() {
     let mut forged = decode(&Captures::get("alg13_a")).into_owned();
     for record in &mut forged.answer {
         if record.rtype() == RecordType::A {
-            record.rdata = dedens_proto::WireRdata::new(&dedens_proto::RData::A(
+            record.rdata = dedens_proto::WireRdata::new(&dedens_proto::rdata::RData::A(
                 std::net::Ipv4Addr::new(192, 0, 2, 66),
             ));
         }
@@ -480,6 +484,6 @@ fn a_refresh_that_turns_bogus_keeps_the_entry() {
     assert_eq!(reply.rcode(), Rcode::NOERROR);
     assert!(reply.header.flags.contains(Flags::AD));
     assert!(reply.answer.iter().all(|record| {
-        !matches!(record.data(), dedens_proto::RData::A(address) if address == std::net::Ipv4Addr::new(192, 0, 2, 66))
+        !matches!(record.data(), dedens_proto::rdata::RData::A(address) if address == std::net::Ipv4Addr::new(192, 0, 2, 66))
     }));
 }

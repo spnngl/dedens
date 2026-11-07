@@ -3,8 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record};
-use dedens_proto::rdata::{SvcParam, SvcParamKey, SvcParams, Svcb};
-use dedens_proto::{Name, RData, Record};
+use dedens_proto::rdata::{RData, SvcParam, SvcParamKey, SvcParams, Svcb};
+use dedens_proto::{Name, Record};
 use proptest::prelude::*;
 
 /// §3.2.1's records: the binary form, the presentation form (the RFC's parentheses removed, the target made

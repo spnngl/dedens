@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::header::HEADER_LEN;
-use dedens_proto::name::MAX_NAME_LEN;
+use dedens_proto::edns::{EdnsFlags, EdnsOption, InfoCode};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Decoded, EdnsFlags, EncodeError, Flags, Message, Name, Opcode, Query, Question, RData, Rcode,
-    Record, RecordType, message,
+    Decoded, EncodeError, Flags, HEADER_LEN, MAX_NAME_LEN, Message, Name, Opcode, Query, Question,
+    Rcode, Record, RecordType, ttl_offsets,
 };
 use thiserror::Error;
 
@@ -173,7 +172,7 @@ impl Response {
         let mut bytes =
             Vec::with_capacity(wire.len() + 2 * records + message.additional.len() / 8 + 1);
         bytes.extend_from_slice(&wire);
-        message::ttl_offsets(&wire, |at| bytes.extend(at.to_be_bytes()))
+        ttl_offsets(&wire, |at| bytes.extend(at.to_be_bytes()))
             .expect("the encoder writes messages that decode");
         if bytes.len() != wire.len() + 2 * records {
             // An OPT record among the others has no TTL offset: not one a cache stores.

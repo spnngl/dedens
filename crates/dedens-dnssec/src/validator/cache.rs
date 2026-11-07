@@ -305,8 +305,8 @@ mod tests {
     use std::sync::Arc;
 
     use dedens_proto::edns::InfoCode;
-    use dedens_proto::rdata::Dnskey;
-    use dedens_proto::{Class, RData, Record, SecAlgorithm, WireRdata};
+    use dedens_proto::rdata::{Dnskey, RData};
+    use dedens_proto::{Class, Record, SecAlgorithm, WireRdata};
 
     use super::*;
     use crate::rrsig::RrSet;

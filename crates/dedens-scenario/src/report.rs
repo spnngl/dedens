@@ -4,10 +4,9 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use dedens_net::exchange::{self, Response};
-use dedens_proto::edns::{EdnsOption, ExtendedError, InfoCode};
-use dedens_proto::text::Hex;
-use dedens_proto::{Decoded, Edns, EdnsFlags, Question, Record};
+use dedens_net::exchange::Response;
+use dedens_proto::edns::{Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode};
+use dedens_proto::{Decoded, Hex, Question, Record};
 use serde::{Deserialize, Serialize};
 
 use crate::Id;
@@ -94,13 +93,13 @@ impl Report {
             exchange: Some(ExchangeReport {
                 server,
                 transport: match response.transport {
-                    exchange::Transport::Udp => Transport::Udp,
-                    exchange::Transport::Tcp => Transport::Tcp,
-                    exchange::Transport::Tls => Transport::Tls,
-                    exchange::Transport::Quic => Transport::Quic,
-                    exchange::Transport::Https => Transport::Https,
-                    exchange::Transport::Odoh => Transport::Odoh,
-                    exchange::Transport::Coap => Transport::Coap,
+                    dedens_proto::Transport::Udp => Transport::Udp,
+                    dedens_proto::Transport::Tcp => Transport::Tcp,
+                    dedens_proto::Transport::Tls => Transport::Tls,
+                    dedens_proto::Transport::Quic => Transport::Quic,
+                    dedens_proto::Transport::Https => Transport::Https,
+                    dedens_proto::Transport::Odoh => Transport::Odoh,
+                    dedens_proto::Transport::Coap => Transport::Coap,
                 },
                 rtt_us: u64::try_from(response.rtt.as_micros()).unwrap_or(u64::MAX),
                 sends: response.sends,
@@ -598,7 +597,7 @@ mod tests {
             .expect("an encoded query");
         let progress = exchange.receive(
             server,
-            exchange::Transport::Udp,
+            dedens_proto::Transport::Udp,
             wire.to_vec(),
             sent + Duration::from_millis(7),
         );

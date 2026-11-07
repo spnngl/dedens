@@ -13,8 +13,8 @@ use common::{
     servers, validating, wire,
 };
 use dedens_cache::Config;
-use dedens_proto::{Class, Flags, Message, Opcode, Rcode, RecordType};
-use dedens_server::{Step, Transport};
+use dedens_proto::{Class, Flags, Message, Opcode, Rcode, RecordType, Transport};
+use dedens_server::Step;
 
 /// The capture `case` with `alter` applied.
 fn altered(case: &str, alter: impl FnOnce(&mut Message<'static>)) -> Vec<u8> {

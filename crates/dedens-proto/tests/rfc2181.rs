@@ -3,7 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record, record_wire};
-use dedens_proto::{Class, Name, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Name, Record, RecordType, Ttl};
 use proptest::prelude::*;
 
 #[test]

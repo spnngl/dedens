@@ -4,8 +4,9 @@
 use core::fmt;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::header::HEADER_LEN;
-use dedens_proto::{EncodeError, Message, Name, Query, Question, Rcode, Record, RecordType};
+use dedens_proto::{
+    EncodeError, HEADER_LEN, Message, Name, Query, Question, Rcode, Record, RecordType,
+};
 
 /// A stage that answers from what it holds, at once, or passes the query to the next stage (D54). It runs on
 /// every query reaching it, on every serving thread: [`Plugin::answer`] should not allocate.

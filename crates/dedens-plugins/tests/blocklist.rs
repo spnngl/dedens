@@ -13,10 +13,11 @@ use dedens_plugins::{
     Read, Tlds,
 };
 use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, Flags, Message, Name, Query, Question, RData, Rcode, Record, RecordType, Ttl,
+    Class, Flags, Message, Name, Query, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
-use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step, Transport};
+use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step};
 
 const STEVENBLACK: &str = include_str!("testdata/stevenblack.hosts");
 const HAGEZI: &str = include_str!("testdata/hagezi-light.txt");

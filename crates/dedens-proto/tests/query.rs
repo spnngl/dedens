@@ -5,10 +5,10 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use dedens_proto::edns::{Cookie, EdnsOption};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption, EdnsView};
 use dedens_proto::{
-    DecodeError, Decoded, Edns, EdnsView, EncodeError, Header, Message, Query, Question, Rcode,
-    RecordType, Violation,
+    DecodeError, Decoded, EncodeError, Header, Message, Query, Question, Rcode, RecordType,
+    Violation,
 };
 use proptest::prelude::*;
 
@@ -92,7 +92,7 @@ fn append_adds_opt_after_the_records() {
     message.edns = None;
     message.additional = vec![common::rec(
         "example.",
-        dedens_proto::RData::A([192, 0, 2, 1].into()),
+        dedens_proto::rdata::RData::A([192, 0, 2, 1].into()),
     )];
     let mut buf = [0; 512];
     let len = message.encode(&mut buf).expect("encodes");

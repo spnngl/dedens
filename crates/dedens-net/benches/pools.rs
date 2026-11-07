@@ -9,9 +9,9 @@ use compio::BufResult;
 use compio::io::{AsyncReadExt, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use dedens_net::client::Client;
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tcp::frame;
-use dedens_proto::{Message, Question, RecordType};
+use dedens_proto::{Message, Question, RecordType, Transport};
 use futures_util::future::join_all;
 
 /// How long each measure runs.

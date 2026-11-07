@@ -5,11 +5,9 @@
 use std::net::Ipv4Addr;
 
 use dedens_cache::{Cache, Config, Key, Lookup, NotCached, StalePolicy};
-use dedens_proto::rdata::Soa;
-use dedens_proto::{
-    Class, Edns, EdnsFlags, Flags, Message, Name, Query, Question, RData, Rcode, Record,
-    RecordType, Ttl,
-};
+use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::rdata::{RData, Soa};
+use dedens_proto::{Class, Flags, Message, Name, Query, Question, Rcode, Record, RecordType, Ttl};
 
 /// Seconds at which the tests store responses.
 pub(crate) const T0: u32 = 1_000;

@@ -7,9 +7,11 @@
 use core::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dedens_proto::text::{decode_base64url, encode_base64url};
-use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_proto::{DecodeError, Decoded, EncodeError, Message, RData, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{
+    DecodeError, Decoded, EncodeError, MAX_MESSAGE_LEN, Message, RecordType, Ttl, decode_base64url,
+    encode_base64url,
+};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use http::uri::{Authority, InvalidUri, PathAndQuery};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};

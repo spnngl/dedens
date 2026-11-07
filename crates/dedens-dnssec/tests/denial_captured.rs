@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations};
-use dedens_proto::{Message, Name, RData, Rcode, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Name, Rcode, Record, RecordType, Ttl};
 use support::{capture, prove, prove_wildcard};
 
 const NAME_ERROR: Fact = Fact::NameError { compact: false };

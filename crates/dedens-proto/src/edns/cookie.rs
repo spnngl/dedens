@@ -6,7 +6,7 @@ use crate::wire::{Reader, Writer};
 /// A server cookie that is not 8 to 32 bytes (RFC 7873 §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("server cookie must be 8 to 32 bytes")]
-pub struct InvalidServerCookie;
+pub struct CookieError;
 
 /// A client cookie of 8 bytes, with the server cookie of 8 to 32 bytes once a server has sent one (RFC 7873 §4).
 ///
@@ -23,19 +23,19 @@ impl Cookie {
     ///
     /// # Errors
     ///
-    /// [`InvalidServerCookie`] when `server` is present and not 8 to 32 bytes.
-    pub fn new(client: [u8; 8], server: Option<&[u8]>) -> Result<Self, InvalidServerCookie> {
+    /// [`CookieError`] when `server` is present and not 8 to 32 bytes.
+    pub fn new(client: [u8; 8], server: Option<&[u8]>) -> Result<Self, CookieError> {
         if server.is_some_and(|s| !(8..=32).contains(&s.len())) {
-            return Err(InvalidServerCookie);
+            return Err(CookieError);
         }
         let server = server.unwrap_or_default();
         let mut wire = [0; 40];
         let (head, tail) = wire.split_at_mut(8);
         head.copy_from_slice(&client);
         tail.get_mut(..server.len())
-            .ok_or(InvalidServerCookie)?
+            .ok_or(CookieError)?
             .copy_from_slice(server);
-        let len = u8::try_from(8 + server.len()).map_err(|_| InvalidServerCookie)?;
+        let len = u8::try_from(8 + server.len()).map_err(|_| CookieError)?;
         Ok(Self { wire, len })
     }
 

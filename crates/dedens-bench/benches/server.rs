@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Checked, Config};
-use dedens_proto::{
-    Class, Edns, EdnsFlags, Message, Query, Question, RData, Record, RecordType, Ttl,
-};
-use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step, Transport};
+use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Message, Query, Question, Record, RecordType, Transport, Ttl};
+use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step};
 use divan::Bencher;
 
 #[global_allocator]

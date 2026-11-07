@@ -3,8 +3,8 @@
 mod common;
 
 use common::{decode_answer, decode_record, encode_record, record, record_wire};
-use dedens_proto::rdata::Opaque;
-use dedens_proto::{Class, DecodeError, DecodeErrorKind, DecodedRecord, RData, RecordType};
+use dedens_proto::rdata::{Opaque, RData};
+use dedens_proto::{Class, DecodeError, DecodeErrorKind, DecodedRecord, RecordType};
 use proptest::prelude::*;
 
 #[test]

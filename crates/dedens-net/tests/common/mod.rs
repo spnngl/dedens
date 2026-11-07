@@ -8,9 +8,9 @@ pub(crate) mod loopback;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use dedens_net::exchange::{Exchange, Failure, Options, Progress, Response, Transport};
+use dedens_net::exchange::{Exchange, Failure, Options, Progress, Response};
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType};
+use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType, Transport};
 
 /// The server every test queries.
 pub(crate) const SERVER: &str = "192.0.2.53:53";
@@ -56,7 +56,10 @@ pub(crate) fn cookie_of(wire: &[u8]) -> Option<Cookie> {
 pub(crate) fn response(query: &Message<'_>, rcode: Rcode) -> Message<'static> {
     let mut response = query.clone().into_owned();
     response.header.flags = response.header.flags.with(Flags::QR).with(Flags::RA);
-    response.edns = query.edns.as_ref().map(|_| dedens_proto::Edns::default());
+    response.edns = query
+        .edns
+        .as_ref()
+        .map(|_| dedens_proto::edns::Edns::default());
     response
         .set_rcode(rcode)
         .expect("EDNS when the rcode needs it");

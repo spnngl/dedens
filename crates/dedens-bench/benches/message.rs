@@ -12,10 +12,8 @@ use std::net::Ipv4Addr;
 
 use dedens_bench::{CASES, wire};
 use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::rdata::Mx;
-use dedens_proto::{
-    Class, Decoded, Message, Name, Query, Question, RData, Record, RecordType, Ttl,
-};
+use dedens_proto::rdata::{Mx, RData};
+use dedens_proto::{Class, Decoded, Message, Name, Query, Question, Record, RecordType, Ttl};
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};

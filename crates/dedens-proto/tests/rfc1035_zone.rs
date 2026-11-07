@@ -7,10 +7,9 @@ use std::fs;
 use std::path::Path;
 
 use common::{dns, zone_record};
-use dedens_proto::rdata::Soa;
-use dedens_proto::text::{Entry, ZoneReader};
+use dedens_proto::rdata::{RData, Soa};
 use dedens_proto::{
-    Class, DecodedRecord, RData, Record, RecordType, TextError, TextErrorKind, Ttl,
+    Class, DecodedRecord, Record, RecordType, TextError, TextErrorKind, Ttl, ZoneEntry, ZoneReader,
 };
 use proptest::prelude::*;
 
@@ -22,8 +21,8 @@ fn read(
     let mut records = Vec::new();
     while let Some(entry) = reader.next() {
         match entry? {
-            Entry::Record(r) => records.push(r.record),
-            Entry::Include { file, origin } => {
+            ZoneEntry::Record(r) => records.push(r.record),
+            ZoneEntry::Include { file, origin } => {
                 let (_, local) = files
                     .iter()
                     .find(|(name, _)| *name == file)
@@ -194,14 +193,14 @@ fn s5_1_include_is_handed_to_the_caller() {
     let mut reader = ZoneReader::new(text, None);
     assert_eq!(
         reader.next(),
-        Some(Ok(Entry::Include {
+        Some(Ok(ZoneEntry::Include {
             file: "my file.zone".to_owned(),
             origin: Some(dns("sub.a.")),
         }))
     );
     assert_eq!(
         reader.next(),
-        Some(Ok(Entry::Include {
+        Some(Ok(ZoneEntry::Include {
             file: "other.zone".to_owned(),
             origin: Some(dns("a.")),
         }))
@@ -215,7 +214,7 @@ fn s5_1_include_is_handed_to_the_caller() {
         .collect();
     assert_eq!(child.len(), 1);
     assert_eq!(reader.origin(), Some(&dns("a.")));
-    let Some(Ok(Entry::Record(DecodedRecord { record: rec, .. }))) = reader.next() else {
+    let Some(Ok(ZoneEntry::Record(DecodedRecord { record: rec, .. }))) = reader.next() else {
         unreachable!("a record follows")
     };
     assert_eq!((rec.name, rec.ttl.get()), (dns("x.a."), 5));
@@ -226,7 +225,7 @@ fn included_files_keep_the_defaults() {
     let mut reader = ZoneReader::new(b"$TTL 7\na CH TXT x\n", Some(dns("p.")));
     reader.next();
     let child: Vec<_> = reader.include(b"b TXT y\n", Some(dns("q."))).collect();
-    let Some(Ok(Entry::Record(DecodedRecord { record: rec, .. }))) = child.into_iter().next()
+    let Some(Ok(ZoneEntry::Record(DecodedRecord { record: rec, .. }))) = child.into_iter().next()
     else {
         unreachable!("one record")
     };
@@ -306,12 +305,12 @@ fn invalid_generic_rdata_is_reported() {
         b"a 60 A \\# 3 c00002\nb 60 A \\# 4 c0000201\n",
         Some(dns("p.")),
     );
-    let Some(Ok(Entry::Record(invalid))) = reader.next() else {
+    let Some(Ok(ZoneEntry::Record(invalid))) = reader.next() else {
         unreachable!("a record")
     };
     assert!(matches!(invalid.record.data(), RData::Opaque(_)));
     assert!(invalid.invalid_rdata.is_some());
-    let Some(Ok(Entry::Record(valid))) = reader.next() else {
+    let Some(Ok(ZoneEntry::Record(valid))) = reader.next() else {
         unreachable!("a record")
     };
     assert!(matches!(valid.record.data(), RData::A(_)));
@@ -348,7 +347,7 @@ proptest! {
         });
         let read: Result<Vec<_>, _> = ZoneReader::new(text.as_bytes(), None)
             .map(|e| match e {
-                Ok(Entry::Record(r)) => Ok(r.record),
+                Ok(ZoneEntry::Record(r)) => Ok(r.record),
                 Ok(_) => unreachable!("no directive written"),
                 Err(e) => Err(e),
             })
@@ -483,7 +482,7 @@ proptest! {
     fn reading_tokens_never_panics(tokens in prop::collection::vec(prop::sample::select(TOKENS), 0..60)) {
         let text = tokens.join(" ");
         for entry in ZoneReader::new(text.as_bytes(), Some(dns("example."))) {
-            let Ok(Entry::Record(DecodedRecord { record: r, .. })) = entry else {
+            let Ok(ZoneEntry::Record(DecodedRecord { record: r, .. })) = entry else {
                 continue;
             };
             let again: Record<'_> = r.to_string().parse().map_err(|e| TestCaseError::fail(format!("{r}: {e}")))?;

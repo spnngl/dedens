@@ -4,10 +4,10 @@ mod common;
 
 use std::net::Ipv4Addr;
 
-use dedens_proto::edns::EdnsOption;
+use dedens_proto::edns::{Edns, EdnsOption};
 use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, DecodeErrorKind, Decoded, Edns, Message, Name, Question, RecordType, Violation,
+    Class, DecodeErrorKind, Decoded, Message, Name, Question, RecordType, Violation,
 };
 use proptest::prelude::*;
 
@@ -84,7 +84,7 @@ fn invalid_rdata_is_flagged_with_its_place() {
             Name::root(),
             Class::IN,
             dedens_proto::Ttl::ZERO,
-            &dedens_proto::RData::A("1.2.3.4".parse().unwrap()),
+            &dedens_proto::rdata::RData::A("1.2.3.4".parse().unwrap()),
         )],
         ..Message::default()
     };

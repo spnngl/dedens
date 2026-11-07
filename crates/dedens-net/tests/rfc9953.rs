@@ -22,8 +22,8 @@ use dedens_net::coap::exchange::Failure;
 use dedens_net::coap::link::LinkError;
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
 use dedens_net::doc::DocError;
-use dedens_net::exchange::{Failure as DnsFailure, Options as DnsOptions, Transport};
-use dedens_proto::Message as Dns;
+use dedens_net::exchange::{Failure as DnsFailure, Options as DnsOptions};
+use dedens_proto::{Message as Dns, Transport};
 
 /// A query for gmail.com MX with ID 0, and the response of Quad9 to it (testdata/doh), whose TTLs are 1822, 1822,
 /// 1822, 1822 and 1822 for the answer and 0 for its OPT record.

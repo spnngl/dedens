@@ -6,10 +6,10 @@ use crate::name::Name;
 use crate::rdata::RData;
 use crate::record::{DecodedRecord, Record, Ttl};
 
-/// What a zone file holds, entry by entry.
+/// What a zone file holds, entry by entry (RFC 1035 §5.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Entry {
+pub enum ZoneEntry {
     /// A resource record, its owner, TTL and class filled in from the defaults, and why its RDATA, written
     /// `\# length hex`, was kept opaque if it is invalid for its type (D9); the offset of that reason is in the
     /// RDATA.
@@ -126,7 +126,7 @@ impl<'t> ZoneReader<'t> {
         self.lexer.end().0
     }
 
-    fn entry(&mut self) -> Result<Option<Entry>, TextError> {
+    fn entry(&mut self) -> Result<Option<ZoneEntry>, TextError> {
         loop {
             let Some(blank) = self.lexer.entry()? else {
                 return Ok(None);
@@ -145,7 +145,7 @@ impl<'t> ZoneReader<'t> {
                         Directive::Ttl(ttl) => self.defaults.ttl = Some(ttl),
                         Directive::Include { file, origin } => {
                             let origin = origin.or_else(|| self.origin.clone());
-                            return Ok(Some(Entry::Include { file, origin }));
+                            return Ok(Some(ZoneEntry::Include { file, origin }));
                         }
                     }
                     continue;
@@ -158,13 +158,13 @@ impl<'t> ZoneReader<'t> {
             return self
                 .defaults
                 .record(owner, &mut f)
-                .map(|r| Some(Entry::Record(r)));
+                .map(|r| Some(ZoneEntry::Record(r)));
         }
     }
 }
 
 impl Iterator for ZoneReader<'_> {
-    type Item = Result<Entry, TextError>;
+    type Item = Result<ZoneEntry, TextError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed {

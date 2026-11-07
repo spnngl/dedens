@@ -11,7 +11,7 @@ use dedens_dnssec::crypto::{
     Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
 };
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
-use dedens_proto::{DigestType, SecAlgorithm};
+use dedens_proto::{DigestType, MAX_LABEL_LEN, SecAlgorithm};
 
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
     LnXwDzvqp4tZVKp1sZMepFb8MvxhhW3y/0QZ
@@ -243,6 +243,18 @@ fn canonical_rdata_is_lowercase_sorted_and_without_duplicates() {
             lower(20, "mail.example.")
         ]
     );
+}
+
+#[test]
+fn canonical_rdata_lowercases_a_name_with_a_longest_label() {
+    // §6.2 item 3: a 63-octet label, the longest (RFC 1035 §2.3.4), is a label, not a pointer or an extended one.
+    let exchange = format!("{}.EXAMPLE.", "M".repeat(MAX_LABEL_LEN));
+    let mut rdata = 10u16.to_be_bytes().to_vec();
+    rdata.extend(name(&exchange).to_wire(&mut [0; 255]));
+    let set = rrset("Host.EXAMPLE.", 15, &[rdata]);
+    let mut lower = 10u16.to_be_bytes().to_vec();
+    lower.extend(canonical_name(&exchange));
+    assert_eq!(set.canonical_rdatas(), [lower]);
 }
 
 #[test]

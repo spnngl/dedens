@@ -14,7 +14,7 @@ use compio::quic::h3::client::{self, RequestStream, SendRequest};
 use compio::quic::h3::error::{Code, ConnectionError, StreamError};
 use compio::quic::h3::{self, BidiStream, OpenStreams};
 use compio::rustls::pki_types::ServerName;
-use dedens_proto::wire::MAX_MESSAGE_LEN;
+use dedens_proto::MAX_MESSAGE_LEN;
 use http::{Request, Response, StatusCode, Version};
 
 use crate::dial::{Dialer, Peer, Slots};

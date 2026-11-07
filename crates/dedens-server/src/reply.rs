@@ -3,12 +3,11 @@
 use std::borrow::Cow;
 
 use dedens_proto::edns::{
-    Cookie, DEFAULT_UDP_PAYLOAD, EDE_LEN, EdnsOption, ExtendedError, InfoCode, OptionCode,
+    Cookie, DEFAULT_UDP_PAYLOAD, EDE_LEN, Edns, EdnsFlags, EdnsOption, EdnsView, ExtendedError,
+    InfoCode, OptionCode,
 };
-use dedens_proto::header::HEADER_LEN;
-use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    Edns, EdnsFlags, EdnsView, Flags, Header, Message, Query, Question, Rcode, Transport,
+    Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
 };
 
 use crate::plugin::Answer;

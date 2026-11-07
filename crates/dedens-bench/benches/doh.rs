@@ -9,7 +9,8 @@ use dedens_bench::{CASES, wire};
 use dedens_net::doh::{
     MEDIA_TYPE, Method, Template, request, response, server_request, server_response,
 };
-use dedens_proto::{Edns, Message};
+use dedens_proto::Message;
+use dedens_proto::edns::Edns;
 use divan::Bencher;
 use http::header::{AGE, CONTENT_TYPE};
 

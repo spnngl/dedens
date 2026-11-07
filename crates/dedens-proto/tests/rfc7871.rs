@@ -42,7 +42,7 @@ fn s6_ipv6_uses_family_2() {
 fn s6_only_the_source_prefix_octets_are_sent() {
     let subnet = ClientSubnet::new("10.1.2.3".parse().unwrap(), 32, 0).unwrap();
     let message = dedens_proto::Message {
-        edns: Some(dedens_proto::Edns {
+        edns: Some(dedens_proto::edns::Edns {
             options: vec![EdnsOption::ClientSubnet(subnet)],
             ..Default::default()
         }),

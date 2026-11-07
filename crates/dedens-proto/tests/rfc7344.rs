@@ -3,7 +3,8 @@
 mod common;
 
 use common::{decode_record, encode_record, rdata_wire, record_wire};
-use dedens_proto::{DigestType, RData, Record, RecordType, SecAlgorithm};
+use dedens_proto::rdata::RData;
+use dedens_proto::{DigestType, Record, RecordType, SecAlgorithm};
 
 fn parse(text: &str) -> Record<'static> {
     text.parse().expect("valid text")

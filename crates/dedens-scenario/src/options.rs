@@ -6,10 +6,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use dedens_net::doh::Method;
-use dedens_net::exchange::{self, Transport};
-use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::text::decode_hex;
-use dedens_proto::{Edns, EdnsFlags, Flags, Message, Name, Question};
+use dedens_net::exchange;
+use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
+use dedens_proto::{Flags, Message, Name, Question, Transport, decode_hex};
 use serde::Deserialize;
 
 /// How to ask a query, each option by its name in dig. Each field left out takes its value from the level above

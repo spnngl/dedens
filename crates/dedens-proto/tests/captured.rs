@@ -5,7 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Flags, Message, RData, Rcode, Record, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Flags, Message, Rcode, Record, RecordType};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")

@@ -22,7 +22,7 @@ use dedens_net::coap::doc::{
 };
 use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, Type};
-use dedens_server::Transport;
+use dedens_proto::Transport;
 
 use super::{ERROR_PAUSE, Slot, Slots, Started, Thread, answer, start};
 use crate::isolate::{Listener, Origin};

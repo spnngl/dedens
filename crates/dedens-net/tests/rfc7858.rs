@@ -18,11 +18,11 @@ use compio::rustls::DEFAULT_VERSIONS;
 use compio::rustls::pki_types::ServerName;
 use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError, Server};
-use dedens_net::exchange::{Options, Response, Transport};
+use dedens_net::exchange::{Options, Response};
 use dedens_net::tcp::{Link, TcpError, TcpPool, frame};
 use dedens_net::tls::{self, Presented, Trust};
-use dedens_proto::Message;
 use dedens_proto::edns::EdnsOption;
+use dedens_proto::{Message, Transport};
 
 /// What the server saw.
 #[derive(Default)]

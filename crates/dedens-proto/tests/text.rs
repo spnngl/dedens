@@ -3,10 +3,10 @@
 mod common;
 
 use common::{data_class, data_type, decode_record, dns, record_wire, zone_record};
-use dedens_proto::text::{Entry, ZoneReader};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, DecodeErrorKind, DecodedRecord, Name, NameError, RData, Record, RecordType, TextError,
-    TextErrorKind, Ttl,
+    Class, DecodeErrorKind, DecodedRecord, Name, NameError, Record, RecordType, TextError,
+    TextErrorKind, Ttl, ZoneEntry, ZoneReader,
 };
 use proptest::prelude::*;
 
@@ -275,7 +275,7 @@ fn quotes_start_tokens_and_never_names() {
 /// One record of a zone, kept with why its RDATA is opaque, if it is.
 fn zone_entry(text: &str) -> Result<DecodedRecord<'static>, TextError> {
     match ZoneReader::new(text.as_bytes(), None).next() {
-        Some(Ok(Entry::Record(decoded))) => Ok(decoded),
+        Some(Ok(ZoneEntry::Record(decoded))) => Ok(decoded),
         Some(Err(e)) => Err(e),
         other => unreachable!("not one record: {other:?}"),
     }

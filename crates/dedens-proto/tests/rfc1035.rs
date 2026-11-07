@@ -6,10 +6,9 @@ mod common;
 use std::net::{IpAddr, Ipv4Addr};
 
 use common::{decode_answer, decode_record, encode_record, name_of, record, record_wire};
-use dedens_proto::header::HEADER_LEN;
-use dedens_proto::rdata::{Mx, Soa, Txt, TxtError};
+use dedens_proto::rdata::{Mx, RData, Soa, Txt, TxtError};
 use dedens_proto::{
-    Class, DecodeErrorKind, Header, Message, Name, Opcode, Question, RData, Rcode, RecordType,
+    Class, DecodeErrorKind, HEADER_LEN, Header, Message, Name, Opcode, Question, Rcode, RecordType,
 };
 use proptest::prelude::*;
 

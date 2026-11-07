@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dedens_bench::{CASES, wire};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
-use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Name, Query, Question, Record, RecordType, Ttl};
 use divan::Bencher;
 
 #[global_allocator]
