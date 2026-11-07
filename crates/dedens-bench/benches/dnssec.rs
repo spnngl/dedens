@@ -11,12 +11,13 @@ use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
+use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{
-    DigestType, Edns, EdnsFlags, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm,
+    DigestType, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm, Transport,
 };
 use dedens_server::{
     Allowance, Budget as Share, Budgets, DEFAULT_SHARE, Forward, MAX_BUDGET, Pipeline, Stage, Step,
-    Transport, Validating,
+    Validating,
 };
 
 #[path = "../../dedens-dnssec/tests/common/mod.rs"]

@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
 use dedens_plugins::{Action, Blocklist, List, Lists, Merged, Names, Origin, Tlds};
-use dedens_proto::{Class, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
-use dedens_server::{Forward, Pipeline, Plugin, Stage, Step, Transport};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Message, Name, Query, Question, Record, RecordType, Transport, Ttl};
+use dedens_server::{Forward, Pipeline, Plugin, Stage, Step};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();

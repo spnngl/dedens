@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Name, Question, RData, Rcode, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Name, Question, Rcode, Record, RecordType, Ttl};
 
 use super::chain::{Cut, Settled, parent, sig_failure};
 use super::section::{Chain, Section, is_denial, synthesized};

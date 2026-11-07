@@ -21,10 +21,10 @@ use certificates::{NAME, certificates, named};
 use common::{Server, ask_tcp, ask_udp, decode, framed, write_config};
 use compio::runtime::Runtime;
 use dedens_net::client::Client;
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Message, Question, Rcode, RecordType};
+use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
 
 /// The configuration of a server answering `www.example.` from a hosts stage at `listen`, with `access` (lines of
 /// the file, or none).

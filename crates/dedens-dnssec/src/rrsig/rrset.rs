@@ -3,8 +3,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use dedens_proto::rdata::{Dnskey, Rrsig};
-use dedens_proto::{Class, Name, RData, Record, RecordType, Ttl, WireRdata};
+use dedens_proto::rdata::{Dnskey, RData, Rrsig};
+use dedens_proto::{Class, Name, Record, RecordType, Ttl, WireRdata};
 
 use super::canonical;
 use crate::crypto;

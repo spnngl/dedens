@@ -224,7 +224,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Cache shards from `threads` (D137): `Config::shards` is 64 whatever the core count; `quick_cache` takes 4 a
   CPU. Default: 64 until `hit_spread` on 16 or more cores shows locks waited on; then a default from `threads`,
   rounded to a power of two.
-- An encoder that also returns the TTL offsets it wrote, so `Response::build` skips its `message::ttl_offsets` pass
+- An encoder that also returns the TTL offsets it wrote, so `Response::build` skips its `ttl_offsets` pass
   over the response bytes. Default: add it when that pass shows in a profile of the server.
 - SIMD base64 and hex for DNSSEC keys and signatures in zone text (`text/encoding.rs` decodes a byte at a time
   through a table): `core::arch` per CPU, since `std::simd` is nightly-only. Default: when a

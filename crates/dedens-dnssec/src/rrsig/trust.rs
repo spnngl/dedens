@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dedens_proto::rdata::Ds;
-use dedens_proto::{DigestType, RData, SecAlgorithm};
+use dedens_proto::rdata::{Ds, RData};
+use dedens_proto::{DigestType, SecAlgorithm};
 
 use super::error::SigError;
 use super::rrset::{Key, RrSet, Signature};

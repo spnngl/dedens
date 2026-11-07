@@ -4,7 +4,7 @@
 
 | Path | Role | I/O |
 |---|---|---|
-| `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
+| `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS; public modules `rdata` and `edns`, every other item at the root (D160) | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
@@ -34,7 +34,7 @@ Planned: `dedens-resolver`.
 - `dedensd` listens on UDP, TCP, TLS, QUIC (D66), DoH over HTTP/3 (D84) and CoAP (DoC, D81), as an Oblivious DoH target (D79) and proxy (D94) with `odoh`, and asks each upstream over its own transport (D65).
 - Server-side reading of responses: `Message::decode` (records keep RDATA as bytes, D28) → `forward::usable` →
   `Cache::insert`, whose `Response::build` (before the shard lock) encodes it once with its TTL offsets
-  (`message::ttl_offsets`) and cut points, and floors and caps its TTL (`min_ttl`, `max_ttl`; D116, D124); the reply
+  (`ttl_offsets`) and cut points, and floors and caps its TTL (`min_ttl`, `max_ttl`; D116, D124); the reply
   is then served from the entry as a hit (D43). A forward stage with `dnssec: validate` puts `dedens-dnssec`'s
   `Validation` between `forward::usable` and `Cache::insert_checked`: each question it asks is one more upstream
   `Step`, the verdict is kept with the entry and sets AD (D77, `crates/dedens-server/src/validate.rs`). A query's cost

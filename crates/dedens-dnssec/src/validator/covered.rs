@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 
-use dedens_proto::{Class, Message, Name, RData, Record, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Message, Name, Record, RecordType};
 
 use super::response::Parsed;
 use super::section::{is_denial, synthesized};

@@ -14,7 +14,7 @@ const FAMILY_IPV6: u16 = 2;
 #[error(
     "client subnet prefix too long for the family, or address bits set beyond the source prefix"
 )]
-pub struct InvalidClientSubnet;
+pub struct SubnetError;
 
 /// The network a query comes from (RFC 7871 §6): an address truncated to `source_prefix` bits, and in a response
 /// the `scope_prefix` the answer is valid for.
@@ -30,19 +30,15 @@ impl ClientSubnet {
     ///
     /// # Errors
     ///
-    /// [`InvalidClientSubnet`] when a prefix exceeds 32 (IPv4) or 128 (IPv6) bits, or `address` has a bit set after
+    /// [`SubnetError`] when a prefix exceeds 32 (IPv4) or 128 (IPv6) bits, or `address` has a bit set after
     /// the first `source_prefix` bits.
-    pub fn new(
-        address: IpAddr,
-        source_prefix: u8,
-        scope_prefix: u8,
-    ) -> Result<Self, InvalidClientSubnet> {
+    pub fn new(address: IpAddr, source_prefix: u8, scope_prefix: u8) -> Result<Self, SubnetError> {
         let max = match address {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,
         };
         if source_prefix > max || scope_prefix > max {
-            return Err(InvalidClientSubnet);
+            return Err(SubnetError);
         }
         let (bytes, len) = octets(address);
         let clean = bytes.iter().take(len).enumerate().all(|(i, &b)| {
@@ -51,7 +47,7 @@ impl ClientSubnet {
             b & !high_bits(kept) == 0
         });
         if !clean {
-            return Err(InvalidClientSubnet);
+            return Err(SubnetError);
         }
         Ok(Self {
             address,

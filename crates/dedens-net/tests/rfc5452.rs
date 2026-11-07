@@ -7,8 +7,8 @@ use common::{
     SPARE_IDS, expect_response, expect_send, expect_wait, name, query, response, sent, server,
     start, t0, udp, wire,
 };
-use dedens_net::exchange::{Options, Progress, Transport};
-use dedens_proto::{Class, Flags, Message, Rcode, RecordType};
+use dedens_net::exchange::{Options, Progress};
+use dedens_proto::{Class, Flags, Message, Rcode, RecordType, Transport};
 use proptest::prelude::*;
 
 #[test]

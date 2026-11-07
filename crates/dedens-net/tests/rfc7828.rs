@@ -3,9 +3,9 @@
 mod common;
 
 use common::{query, sent, start, t0};
-use dedens_net::exchange::{Options, Transport};
-use dedens_proto::Message;
+use dedens_net::exchange::Options;
 use dedens_proto::edns::EdnsOption;
+use dedens_proto::{Message, Transport};
 
 /// The query with an edns-tcp-keepalive of its own, which the exchange replaces.
 fn with_keepalive() -> Message<'static> {

@@ -48,9 +48,8 @@ use dedens_net::tls::{self, Presented, Trust};
 #[cfg(feature = "odoh")]
 use dedens_odoh::ResponseContext;
 use dedens_proto::edns::{DEFAULT_UDP_PAYLOAD, OptionCode};
-use dedens_proto::wire::MAX_MESSAGE_LEN;
-use dedens_proto::{Message, Query};
-use dedens_server::{Pipeline, Step, Transport, Upstream, Via};
+use dedens_proto::{MAX_MESSAGE_LEN, Message, Query, Transport};
+use dedens_server::{Pipeline, Step, Upstream, Via};
 use futures_util::future::{join, join_all, select_all};
 use futures_util::lock::Mutex;
 use futures_util::stream::FuturesUnordered;
@@ -1607,8 +1606,8 @@ mod tests {
     use dedens_net::tcp::{frame, read_message};
     use dedens_net::tls::Trust;
     use dedens_proto::edns::EdnsOption;
-    use dedens_proto::{Message, Question, Rcode, RecordType};
-    use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage, Transport};
+    use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
+    use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage};
     use futures_util::Stream;
     use futures_util::future::{Either, join, select};
     use futures_util::lock::Mutex;

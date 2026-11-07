@@ -14,10 +14,10 @@ use compio::quic::{ServerBuilder, h3};
 use compio::rustls::version::TLS13;
 use dedens_net::client::Client;
 use dedens_net::doh::{Method, server_response};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tcp::frame;
 use dedens_net::tls::Trust;
-use dedens_proto::{Flags, Message, Question, RecordType};
+use dedens_proto::{Flags, Message, Question, RecordType, Transport};
 use futures_util::future::join_all;
 
 #[path = "../tests/common/certificates.rs"]

@@ -17,7 +17,8 @@ use std::fs;
 use std::net::Ipv4Addr;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
-use dedens_proto::{Class, Flags, Message, Name, Query, Question, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Name, Query, Question, Record, RecordType, Ttl};
 
 /// Requests per entry of the cache.
 const REQUESTS_PER_ENTRY: usize = 100;

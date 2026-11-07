@@ -6,7 +6,7 @@
 use std::hint::black_box;
 
 use dedens_bench::{ZONE_HOSTS, zone};
-use dedens_proto::text::{Entry, ZoneReader};
+use dedens_proto::{ZoneEntry, ZoneReader};
 use divan::Bencher;
 use domain::zonefile::inplace::Zonefile;
 use hickory_proto::serialize::txt::Parser;
@@ -24,7 +24,7 @@ fn read_dedens(bencher: Bencher<'_, '_>) {
     bencher.bench_local(|| {
         let mut records = 0_usize;
         for entry in ZoneReader::new(black_box(text.as_bytes()), None) {
-            if let Entry::Record(record) = entry.expect("reads") {
+            if let ZoneEntry::Record(record) = entry.expect("reads") {
                 black_box(record);
                 records += 1;
             }

@@ -5,7 +5,8 @@ mod common;
 use std::net::{IpAddr, Ipv6Addr};
 
 use common::{decode_record, encode_record, record_wire};
-use dedens_proto::{Class, DecodeErrorKind, Name, RData, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, DecodeErrorKind, Name, Record, RecordType, Ttl};
 use proptest::prelude::*;
 
 #[test]

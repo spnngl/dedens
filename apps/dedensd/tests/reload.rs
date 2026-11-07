@@ -8,7 +8,8 @@ mod common;
 use std::net::IpAddr;
 
 use common::{Server, ask_udp};
-use dedens_proto::{Message, Question, RData, Rcode, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Question, Rcode, RecordType};
 
 /// A server answering `www.example.` from a hosts stage.
 fn hosts(listen: &str, address: &str) -> String {

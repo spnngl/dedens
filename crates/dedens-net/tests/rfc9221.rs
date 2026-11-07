@@ -11,8 +11,9 @@ use common::query;
 use compio::quic::{ServerBuilder, VarInt};
 use compio::rustls::version::TLS13;
 use dedens_net::client::Client;
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
+use dedens_proto::Transport;
 
 /// RFC 9221 §3: an endpoint that does not support DATAGRAM frames leaves `max_datagram_frame_size` out (default 0),
 /// so a peer sees no size it may send. quinn derives the parameter from its receive buffer, 1.25 MB unless unset.

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
-use dedens_proto::{Flags, Message, Name, Rcode, RecordType};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport, Validating};
+use dedens_proto::{Flags, Message, Name, Rcode, RecordType, Transport};
+use dedens_server::{Forward, Pipeline, Stage, Step, Validating};
 
 /// The bytes `text` writes in hexadecimal, as RFC 9018 Appendix A writes them.
 pub(crate) fn hex(text: &str) -> Vec<u8> {
@@ -381,13 +381,13 @@ pub(crate) fn run_together(
 pub(crate) fn client_query(name: &str, qtype: RecordType, flags: Flags, dnssec: bool) -> Vec<u8> {
     let mut query = Message::query(7, dedens_proto::Question::new(dns(name), qtype));
     query.header.flags = Flags::RD | flags;
-    query.edns = Some(dedens_proto::Edns {
+    query.edns = Some(dedens_proto::edns::Edns {
         flags: if dnssec {
-            dedens_proto::EdnsFlags::DO
+            dedens_proto::edns::EdnsFlags::DO
         } else {
-            dedens_proto::EdnsFlags::default()
+            dedens_proto::edns::EdnsFlags::default()
         },
-        ..dedens_proto::Edns::default()
+        ..dedens_proto::edns::Edns::default()
     });
     wire(&query)
 }

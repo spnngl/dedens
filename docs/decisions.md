@@ -16,6 +16,19 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   2024-05), monoio (5 commits a year), glommio (dead since 2025-04), tokio's `io-uring` feature (files only), raw
   `io-uring` (we would write a runtime). Fallback: tokio. Risk: compio is 0.x, contained by D5.
 - D5 `dedens-proto` is sans-IO, so a runtime change touches one crate and the server reuses the codec as is.
+- D160 (builds on D1, D159) A library crate exports each public item at one path: its modules are private and
+  `lib.rs` re-exports their public items at the root, one sorted `pub use` list, as ripgrep's `grep-*` crates.
+  Exceptions, each a public module whose items are not re-exported: `dedens-net` keeps every module public, as
+  several of its items share a name (`Exchange` x3, `Options`, `Response`, `Failure`, `Link`); `dedens-proto` keeps
+  `rdata` and `edns` (`rdata::RData`, `edns::Edns`; `edns::Option` would shadow `std`) and `dedens-dnssec` keeps
+  `crypto`, `rrsig` and `denial`, families a reader names, and flattens `anchor` and `validator`. Every other library
+  crate is flat. A name read at the root carries what the module gave it: `ZoneEntry`, not `text::Entry`; an error
+  is `<Thing>Error` (`SubnetError`, `CookieError`). A crate re-exports none of its dependencies' items (`Transport`
+  is `dedens_proto::Transport` only). The workspace lint `unnameable_types` flags a type the API hands out that no
+  path names, as an item of a private module the root forgot. Why: an item reachable at two paths gets imported
+  both ways (`Transport` was imported from four), and a reader cannot tell they are one item. Rejected: every
+  module public with no re-export (the paths repeat the type, `name::Name`); a glob `pub use` (hides what is
+  exported).
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
@@ -690,7 +703,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   checks every RDATA (D9) and builds nothing; encode copies the bytes, except for the types whose names may be
   compressed (RFC 3597 §4), read and written again. Equality and hashing go through `RData`, so names in RDATA
   compare without case (RFC 4343). Replaces D20: with decoding into reused vectors (`decode_reusing`), one
-  `Message` is as cheap as the view, and `message::ttl_offsets` gives the cache the TTL positions. Messages over
+  `Message` is as cheap as the view, and `ttl_offsets` gives the cache the TTL positions. Messages over
   65535 bytes are refused. Gain: one message type instead of two, at the same measured speed
   (`docs/benchmarks.md`); typed records were expected to explain the encode gap with Unbound and did not.
   Rejected: expanding compressed names at decode (one allocation per such record).

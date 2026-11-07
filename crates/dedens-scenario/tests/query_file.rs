@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use dedens_net::exchange::{self, Transport};
+use dedens_net::exchange;
 use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
-use dedens_proto::{Flags, Message, Name, Question, RecordType};
+use dedens_proto::{Flags, Message, Name, Question, RecordType, Transport};
 use dedens_scenario::{CookieOption, DnssecStatus, Id, Latency, Options, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.

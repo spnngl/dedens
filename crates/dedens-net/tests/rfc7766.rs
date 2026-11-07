@@ -5,9 +5,9 @@ mod common;
 
 use common::loopback::listen;
 use common::{expect_response, expect_send, query, response, server, start, t0, udp, wire};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::io::{Compio, Io, Stream};
-use dedens_proto::{Flags, Rcode};
+use dedens_proto::{Flags, Rcode, Transport};
 
 #[test]
 fn a_truncated_response_moves_the_query_to_tcp() {

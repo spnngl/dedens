@@ -1,7 +1,6 @@
 //! What a response must hold (D34): rcode, flags, and the records of each section.
 
-use dedens_proto::text::{TextError, TextErrorKind};
-use dedens_proto::{Flags, Message, Rcode, Record};
+use dedens_proto::{Flags, Message, Rcode, Record, TextError, TextErrorKind};
 use serde::Deserialize;
 
 use crate::DnssecStatus;

@@ -33,9 +33,8 @@ use std::time::Duration;
 
 use dedens_net::exchange::Failure;
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
-use dedens_proto::{
-    Class, Flags, Message, Opcode, RData, Rcode, Record, RecordType, Transport, Ttl,
-};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Opcode, Rcode, Record, RecordType, Transport, Ttl};
 use dedens_sim::attacker::{Attacker, Injection, Reaction};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node};

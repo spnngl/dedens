@@ -9,8 +9,8 @@ mod support;
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations, Unproven};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Nsec3, TypeBitmap};
-use dedens_proto::{Class, Message, RData, Rcode, Record, RecordType};
+use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
+use dedens_proto::{Class, Message, Rcode, Record, RecordType};
 use support::{capture, pick, prove, zone};
 
 fn denials(message: &Message<'static>) -> Vec<Record<'static>> {

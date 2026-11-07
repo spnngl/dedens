@@ -20,9 +20,9 @@ use compio::runtime::{Runtime, spawn};
 use compio::rustls::RootCertStore;
 use dedens_net::client::Client;
 use dedens_net::doh::{MEDIA_TYPE, Method, Template, request};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Rcode, Transport};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{HeaderMap, StatusCode};
 

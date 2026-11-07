@@ -7,8 +7,8 @@ use common::{
     SPARE_IDS, expect_response, expect_send, expect_wait, query, query_with_cookie, response, sent,
     server, start, t0, udp, wire,
 };
-use dedens_net::exchange::{Options, Transport};
-use dedens_proto::{Flags, Message, Rcode};
+use dedens_net::exchange::Options;
+use dedens_proto::{Flags, Message, Rcode, Transport};
 
 /// The response of a server without EDNS: `rcode` and no OPT record.
 fn without_edns(query: &Message<'_>, rcode: Rcode) -> Vec<u8> {

@@ -17,12 +17,12 @@ use compio::io::AsyncWriteExt;
 use compio::quic::{ConnectionError, ServerBuilder, VarInt};
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::quic::QuicError;
 use dedens_net::tcp::frame;
 use dedens_net::tls::Trust;
-use dedens_proto::Message;
 use dedens_proto::edns::EdnsOption;
+use dedens_proto::{Message, Transport};
 
 /// How the server answers.
 #[derive(Clone, Copy, PartialEq, Eq)]

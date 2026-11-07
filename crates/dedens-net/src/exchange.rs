@@ -7,8 +7,8 @@
 //! ```
 //! # use std::net::SocketAddr;
 //! # use std::time::Instant;
-//! # use dedens_net::exchange::{Exchange, Options, Progress, Transport};
-//! # use dedens_proto::{Message, Name, Question, RecordType};
+//! # use dedens_net::exchange::{Exchange, Options, Progress};
+//! # use dedens_proto::{Message, Name, Question, RecordType, Transport};
 //! let server: SocketAddr = "192.0.2.53:53".parse()?;
 //! let query = Message::query(0x1234, Question::new(Name::root(), RecordType::NS));
 //! let now = Instant::now();
@@ -25,9 +25,10 @@ use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
-pub use dedens_proto::Transport;
 use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
-use dedens_proto::{EncodeError, Flags, Message, Name, Query, Question, Rcode, Violation};
+use dedens_proto::{
+    EncodeError, Flags, Message, Name, Query, Question, Rcode, Transport, Violation,
+};
 
 use crate::doh::Method;
 

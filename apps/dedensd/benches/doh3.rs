@@ -15,8 +15,9 @@ use certificates::{NAME, certificates, named};
 use common::{Responder, Server, captured, decode, query_for};
 use dedens_net::client::Client;
 use dedens_net::doh::Method;
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
+use dedens_proto::Transport;
 use futures_util::future::join_all;
 
 /// How long each measure runs.

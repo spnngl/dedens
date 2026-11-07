@@ -28,12 +28,9 @@ mod names;
 mod nsec;
 mod nsec3;
 
-use dedens_proto::Question;
-use dedens_proto::codes::RecordType;
 use dedens_proto::edns::InfoCode;
-use dedens_proto::name::{Name, NameError};
 use dedens_proto::rdata::TypeBitmap;
-use dedens_proto::record::{Record, Ttl};
+use dedens_proto::{Name, NameError, Question, Record, RecordType, Ttl};
 
 use crate::crypto::{Budget, BudgetExhausted};
 

@@ -1,19 +1,4 @@
-//! Presentation format (RFC 1035 §5.1): records as zone-file text, read and written.
-//!
-//! Written: `Display` on [`Name`], the codes, [`RData`] and [`Record`]: one tab-separated line per record,
-//! absolute names, TTL in seconds, character-strings quoted, bytes outside printable ASCII as `\DDD`.
-//! [`RData::generic`] and [`Record::generic`] write the form of RFC 3597 §5 (`TYPE65280 \# 2 abcd`).
-//!
-//! Zone files: [`ZoneReader`].
-//!
-//! Read: `FromStr` on the same types. Text is bytes (`&[u8]` underneath), since a quoted string may hold any
-//! byte; a known type may be written in the generic form and is read into its typed RDATA (RFC 3597 §5).
-//!
-//! [`Name`]: crate::Name
-//! [`RData`]: crate::RData
-//! [`RData::generic`]: crate::RData::generic
-//! [`Record`]: crate::Record
-//! [`Record::generic`]: crate::Record::generic
+//! Presentation format (RFC 1035 §5.1); its conventions are in the crate doc.
 
 pub(crate) mod encoding;
 mod lexer;
@@ -26,7 +11,7 @@ use core::str::FromStr;
 pub use encoding::{Hex, decode_base64url, decode_hex, encode_base64url};
 pub(crate) use lexer::{Lexer, Token};
 use zone::Defaults;
-pub use zone::{Entry, ZoneReader};
+pub use zone::{ZoneEntry, ZoneReader};
 
 use crate::codes::{Class, RecordType};
 use crate::error::DecodeErrorKind;

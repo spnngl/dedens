@@ -28,10 +28,10 @@ use compio::rustls::crypto::ring;
 use compio::rustls::version::TLS13;
 use compio::rustls::{ClientConfig as TlsConfig, RootCertStore};
 use dedens_net::client::{Client, ClientError};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::quic::read_message;
 use dedens_net::tls::Trust;
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Rcode, Transport};
 
 /// The certificate and key of `certificates` in PEM files beside the configuration file `config`.
 fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) {

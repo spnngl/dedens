@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{Server, ask_tcp, ask_udp};
-use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Edns, Message, Question, RecordType};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption};
+use dedens_proto::{Message, Question, RecordType};
 use dedens_server::{Cookies, Secret, Secrets, Standing};
 
 fn config(extra: &str) -> impl Fn(&str) -> String {

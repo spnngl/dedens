@@ -12,9 +12,9 @@ mod subnet;
 use std::borrow::Cow;
 use std::mem;
 
-pub use cookie::{Cookie, InvalidServerCookie};
+pub use cookie::{Cookie, CookieError};
 pub use ede::{EDE_LEN, ExtendedError, InfoCode};
-pub use subnet::{ClientSubnet, InvalidClientSubnet};
+pub use subnet::{ClientSubnet, SubnetError};
 
 use crate::codes::{RecordType, code_type};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
@@ -330,7 +330,7 @@ impl<'a> Edns<'a> {
     /// the new length: how a server adds its EDNS to a response copied from a cache.
     ///
     /// ```
-    /// # use dedens_proto::{Edns, Message, Question, RecordType, Name};
+    /// # use dedens_proto::{edns::Edns, Message, Question, RecordType, Name};
     /// let mut message = Message::query(1, Question::new(Name::root(), RecordType::NS));
     /// message.edns = None;
     /// let mut buf = [0; 512];

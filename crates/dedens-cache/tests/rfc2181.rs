@@ -8,7 +8,9 @@ use std::path::Path;
 
 use common::{T0, a, dns, insert, query, record, response};
 use dedens_cache::{Cache, Hit, Lookup, StalePolicy};
-use dedens_proto::{Edns, EdnsFlags, Message, Query, RData, Rcode, Record, RecordType};
+use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Query, Rcode, Record, RecordType};
 use proptest::prelude::*;
 
 /// Owners of the records: the question's and others, so that the records of an `RRset` may be apart.

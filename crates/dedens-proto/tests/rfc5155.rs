@@ -6,9 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use common::{decode_record, encode_record, rdata_wire, record_wire};
-use dedens_proto::rdata::{Nsec3, Nsec3Error, Nsec3Param, TypeBitmap};
-use dedens_proto::text::{Entry, ZoneReader};
-use dedens_proto::{Nsec3HashAlgorithm, RData, Record, RecordType};
+use dedens_proto::rdata::{Nsec3, Nsec3Error, Nsec3Param, RData, TypeBitmap};
+use dedens_proto::{Nsec3HashAlgorithm, Record, RecordType, ZoneEntry, ZoneReader};
 
 /// The records of Appendix A's signed zone, `tests/zones/rfc5155_appendix_a.zone`.
 fn appendix_a() -> Vec<Record<'static>> {
@@ -17,7 +16,7 @@ fn appendix_a() -> Vec<Record<'static>> {
     let mut records = Vec::new();
     for entry in ZoneReader::new(&text, None) {
         match entry.expect("a valid zone") {
-            Entry::Record(r) => records.push(r.record),
+            ZoneEntry::Record(r) => records.push(r.record),
             _ => unreachable!("records only"),
         }
     }

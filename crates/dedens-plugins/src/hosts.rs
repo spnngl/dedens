@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry as Slot;
 use std::net::{IpAddr, Ipv6Addr};
 
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Class, Name, Query, RData, Rcode, Record, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, MAX_NAME_LEN, Name, Query, Rcode, Record, RecordType, Ttl};
 use dedens_server::{Answer, Plugin, Records};
 
 use crate::text::{self, LineError, LineErrorKind};

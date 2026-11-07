@@ -11,11 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dedens_bench::wire;
 use dedens_cache::{Cache, Config};
-use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Edns, Message};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption};
+use dedens_proto::{Message, Transport};
 use dedens_server::{
     Cookies, Forward, Pipeline, Rate, RateLimit, RateLimitConfig, Secret, Secrets, Stage, Step,
-    Transport,
 };
 use divan::Bencher;
 

@@ -9,13 +9,12 @@ use dedens_proto::edns::{
     UnknownOption,
 };
 use dedens_proto::rdata::{
-    Caa, Dnskey, Ds, Mx, Nsec, Nsec3, Nsec3Param, Opaque, Rrsig, Soa, Srv, SvcParam, SvcParamKey,
-    SvcParams, Svcb, Txt, TypeBitmap,
+    Caa, Dnskey, Ds, Mx, Nsec, Nsec3, Nsec3Param, Opaque, RData, Rrsig, Soa, Srv, SvcParam,
+    SvcParamKey, SvcParams, Svcb, Txt, TypeBitmap,
 };
 use dedens_proto::{
     Class, DecodeError, Decoded, DecodedRecord, DigestType, Flags, Header, Message, Name,
-    Nsec3HashAlgorithm, Opcode, Question, RData, Rcode, Record, RecordType, SecAlgorithm, Ttl,
-    Violation,
+    Nsec3HashAlgorithm, Opcode, Question, Rcode, Record, RecordType, SecAlgorithm, Ttl, Violation,
 };
 use proptest::prelude::*;
 

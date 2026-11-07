@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use common::{Responder, TLS_NAME, Transport};
-use dedens_proto::edns::{EdnsOption, OptionCode};
-use dedens_proto::{Class, EdnsFlags, Flags, Message, Name, Record, RecordType};
+use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode};
+use dedens_proto::{Class, Flags, Message, Name, Record, RecordType};
 use predicates::prelude::*;
 use predicates::str::contains;
 

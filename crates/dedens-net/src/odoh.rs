@@ -28,7 +28,7 @@ use dedens_odoh::{
     ExchangeError, MEDIA_TYPE, MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, WireError,
     decrypt_response, encrypt_query, query_padding,
 };
-use dedens_proto::wire::MAX_MESSAGE_LEN;
+use dedens_proto::MAX_MESSAGE_LEN;
 use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};

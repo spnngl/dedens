@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use common::{dnskey_rdata, name};
 use dedens_dnssec::anchor::{AnchorError, TrustAnchors};
 use dedens_dnssec::crypto::{ds_digest, key_tag};
-use dedens_proto::rdata::Ds;
-use dedens_proto::{Class, Message, RData, RecordType};
+use dedens_proto::rdata::{Ds, RData};
+use dedens_proto::{Class, Message, RecordType};
 
 // RFC 9718 §2.3 (the DS RRset and the DNSKEY of KSK-2017, key tag 20326).
 const EXAMPLE: &str = "\

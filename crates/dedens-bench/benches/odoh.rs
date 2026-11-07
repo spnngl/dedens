@@ -14,7 +14,8 @@ use dedens_odoh::{
     ObliviousDoHConfigs, ObliviousDoHMessage, TargetKey, decrypt_query, decrypt_response,
     encrypt_query, encrypt_response, query_padding, response_padding,
 };
-use dedens_proto::{Edns, Message};
+use dedens_proto::Message;
+use dedens_proto::edns::Edns;
 use dedens_server::{Budget, Budgets, MAX_BUDGET, Slot};
 use divan::Bencher;
 

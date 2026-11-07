@@ -21,11 +21,12 @@ use dedens_net::doh::{
     DohError, MEDIA_TYPE, Method, Template, TemplateError, request, response, server_request,
     server_response, wire,
 };
-use dedens_net::exchange::{Failure, Http, Options, Transport};
+use dedens_net::exchange::{Failure, Http, Options};
 use dedens_net::https::{HttpsError, Requests};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Message, RData, Rcode, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Rcode, RecordType, Transport};
 use futures_util::future::join_all;
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE};
 use http::{Response, StatusCode, Version};

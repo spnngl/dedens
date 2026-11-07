@@ -3,8 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dedens_proto::name::NameError;
-use dedens_proto::{Class, Name, Question, RData, Record, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Name, NameError, Question, Record, RecordType};
 
 use crate::rrsig::{RrSet, Signature};
 

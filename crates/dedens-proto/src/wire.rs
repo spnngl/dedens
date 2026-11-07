@@ -814,7 +814,8 @@ mod tests {
     /// A record or question that does not fit leaves the writer as it was, compression table included.
     #[test]
     fn failed_encoding_writes_nothing() {
-        use crate::{Class, Question, RData, Record, RecordType, Ttl};
+        use crate::rdata::RData;
+        use crate::{Class, Question, Record, RecordType, Ttl};
 
         let owner: Name<'static> = "abcdefgh.example".parse().unwrap();
         let record = Record::new(

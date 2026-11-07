@@ -12,9 +12,9 @@ use dedens_dnssec::validator::{
     Cost, Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
 };
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Nsec, Rrsig};
+use dedens_proto::rdata::{Nsec, RData, Rrsig};
 use dedens_proto::{
-    Class, Flags, Message, Name, Question, RData, Rcode, Record, RecordType, Ttl, WireRdata,
+    Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Ttl, WireRdata,
 };
 
 mod common;

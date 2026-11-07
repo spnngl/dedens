@@ -3,9 +3,7 @@
 
 use std::path::Path;
 
-use dedens_proto::name::Name;
-use dedens_proto::record::Record;
-use dedens_proto::text::{Entry, ZoneReader};
+use dedens_proto::{Name, Record, ZoneEntry, ZoneReader};
 use proptest::prelude::*;
 
 /// The records of the zone file at `path`, relative to the crate.
@@ -13,7 +11,7 @@ pub(super) fn zone(path: &str) -> Vec<Record<'static>> {
     let text = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).expect("zone file");
     ZoneReader::new(&text, None)
         .filter_map(|e| match e.expect("a zone") {
-            Entry::Record(decoded) => Some(decoded.record),
+            ZoneEntry::Record(decoded) => Some(decoded.record),
             _ => None,
         })
         .collect()

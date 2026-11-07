@@ -1,7 +1,6 @@
 //! Canonical form of names and RDATA (RFC 4034 §6.2, RFC 6840 §5.1).
 
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Name, RecordType};
+use dedens_proto::{MAX_NAME_LEN, Name, RecordType};
 
 /// One field of RDATA that matters to the canonical form.
 #[derive(Clone, Copy)]
@@ -84,7 +83,7 @@ fn name_len(wire: &[u8]) -> Option<usize> {
             return Some(pos);
         }
         // A pointer or an extended label: 64 and above.
-        if label > dedens_proto::name::MAX_LABEL_LEN {
+        if label > dedens_proto::MAX_LABEL_LEN {
             return None;
         }
     }

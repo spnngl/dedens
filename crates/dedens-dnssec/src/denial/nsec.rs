@@ -1,10 +1,7 @@
 //! Denial by NSEC records (RFC 4035 §5.4, RFC 6840 §4.1): a chain of the names of the zone in canonical order.
 
-use dedens_proto::codes::RecordType;
-use dedens_proto::name::Name;
 use dedens_proto::rdata::{RData, TypeBitmap};
-use dedens_proto::record::{Record, Ttl};
-use dedens_proto::{Class, Question};
+use dedens_proto::{Class, Name, Question, Record, RecordType, Ttl};
 
 use super::names::{Canonical, covers, shared_labels, suffix, wildcard};
 use super::{Fact, Proof, Unproven, at_name, least, wildcard_lacks};
@@ -109,7 +106,7 @@ pub(super) fn prove_wildcard_answer(
 
 #[cfg(test)]
 mod tests {
-    use dedens_proto::record::Record;
+    use dedens_proto::Record;
     use proptest::prelude::*;
 
     use super::super::fixtures::{names, zone};

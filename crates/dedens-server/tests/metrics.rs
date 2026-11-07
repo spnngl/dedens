@@ -13,11 +13,11 @@ use common::{
 };
 use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::validator::{Limits, Validator};
-use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Edns, Flags, RecordType};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption};
+use dedens_proto::{Flags, RecordType, Transport};
 use dedens_server::{
     Access, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit, RateLimitConfig,
-    Secret, Secrets, Transport, Validating,
+    Secret, Secrets, Validating,
 };
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 

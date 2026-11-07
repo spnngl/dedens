@@ -8,9 +8,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, LazyLock};
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::name::{MAX_LABELS, MAX_NAME_LEN};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Class, Message, Name, Query, Question, RData, Rcode, Record, RecordType, TextErrorKind, Ttl,
+    Class, MAX_LABELS, MAX_NAME_LEN, Message, Name, Query, Question, Rcode, Record, RecordType,
+    TextErrorKind, Ttl,
 };
 use dedens_server::{Answer, Plugin, Records, Reviewer};
 

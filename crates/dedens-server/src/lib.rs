@@ -2,8 +2,8 @@
 //! send, so tests drive every reply without a socket.
 //!
 //! ```
-//! # use dedens_proto::{Message, Name, Question, RecordType, Rcode};
-//! # use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+//! # use dedens_proto::{Message, Name, Question, RecordType, Rcode, Transport};
+//! # use dedens_server::{Forward, Pipeline, Stage, Step};
 //! # use std::net::Ipv4Addr;
 //! let upstream = "192.0.2.53:53".parse()?;
 //! let pipeline = Pipeline::new(vec![Stage::Forward(Forward::new([upstream]).expect("one server"))]);
@@ -42,7 +42,6 @@ mod validate;
 pub use access::{Access, Denial, Network, NetworkError};
 pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
-pub use dedens_proto::Transport;
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
 pub use plugin::{Answer, Plugin, Records, Reviewer};

@@ -5,8 +5,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use dedens_plugins::{Hosts, LineError, LineErrorKind};
-use dedens_proto::{Class, Flags, Message, Name, Question, RData, Rcode, RecordType, Ttl};
-use dedens_server::{Forward, Pipeline, Stage, Step, Transport};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, RecordType, Transport, Ttl};
+use dedens_server::{Forward, Pipeline, Stage, Step};
 
 const HOSTS: &str = include_str!("testdata/hosts.5");
 

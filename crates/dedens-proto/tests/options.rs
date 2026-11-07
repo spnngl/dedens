@@ -3,8 +3,8 @@
 mod common;
 
 use common::{decode_options, option_wire};
-use dedens_proto::edns::{EdnsOption, OptionCode, UnknownOption};
-use dedens_proto::{Edns, Message};
+use dedens_proto::Message;
+use dedens_proto::edns::{Edns, EdnsOption, OptionCode, UnknownOption};
 
 fn options(code: u16, data: &[u8]) -> Vec<EdnsOption<'static>> {
     decode_options(&option_wire(code, data))

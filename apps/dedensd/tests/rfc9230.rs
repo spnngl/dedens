@@ -26,11 +26,11 @@ use compio::runtime::{Runtime, spawn};
 use compio::rustls::RootCertStore;
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, Server as Peer};
-use dedens_net::exchange::{Options, Transport};
+use dedens_net::exchange::Options;
 use dedens_net::odoh::{CONFIGS_PATH, Entropy};
 use dedens_net::tls::Trust;
 use dedens_odoh::{MEDIA_TYPE, ObliviousDoHConfigs, encrypt_query};
-use dedens_proto::Rcode;
+use dedens_proto::{Rcode, Transport};
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
 

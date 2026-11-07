@@ -1,8 +1,8 @@
 //! DNS server discovery by SVCB (RFC 9461): the `dohpath` value as the URI Template of a `DoH` server (§5, §7).
 
 use dedens_net::doh::{Method, Template, TemplateError, request};
-use dedens_proto::rdata::{SvcParam, SvcParamKey, Svcb};
-use dedens_proto::{RData, Record};
+use dedens_proto::Record;
+use dedens_proto::rdata::{RData, SvcParam, SvcParamKey, Svcb};
 use http::uri::Authority;
 
 #[expect(clippy::panic, reason = "a test helper: the text is not a SVCB record")]

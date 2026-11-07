@@ -4,9 +4,8 @@
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{
-    Class, Message, Name, Question, RData, Rcode, Record, RecordType, Ttl, WireRdata,
-};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType, Ttl, WireRdata};
 
 use super::section::{Section, dname_of, synthesized};
 use super::verdict::{Failure, InsecureReason, Unusable};

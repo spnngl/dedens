@@ -8,9 +8,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use common::{caching, captured, decode, forwarder, hex, query_for, reply, run, wire};
-use dedens_proto::edns::{Cookie, EdnsOption};
-use dedens_proto::{Edns, Message, Rcode};
-use dedens_server::{Clock, Cookies, Secret, Secrets, Standing, Transport};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption};
+use dedens_proto::{Message, Rcode, Transport};
+use dedens_server::{Clock, Cookies, Secret, Secrets, Standing};
 
 const CLIENT: [u8; 8] = [0x24, 0x64, 0xc4, 0xab, 0xcf, 0x10, 0xc9, 0x57];
 const NOW: u64 = 1_559_731_985;

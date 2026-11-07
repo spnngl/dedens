@@ -35,19 +35,17 @@ use dedens_odoh::{
 use dedens_plugins::{
     Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Merged, Names, Origin, Tlds,
 };
-use dedens_proto::edns::{Cookie, EdnsOption as CookieOption};
+use dedens_proto::edns::{Cookie, Edns, EdnsOption as CookieOption, EdnsView};
 use dedens_proto::rdata::{RData, SvcParam};
-use dedens_proto::text::{Entry as ZoneEntry, ZoneReader};
-use dedens_proto::wire::MAX_MESSAGE_LEN;
 use dedens_proto::{
-    Class, DecodeErrorKind, DecodedRecord, DigestType, Edns, EdnsView, EncodeError, Flags, Header,
+    Class, DecodeErrorKind, DecodedRecord, DigestType, EncodeError, Flags, Header, MAX_MESSAGE_LEN,
     Message, Name, Nsec3HashAlgorithm, Query, Question, Rcode, Record, RecordType, SecAlgorithm,
-    Ttl, message,
+    Transport, Ttl, ZoneEntry, ZoneReader, ttl_offsets,
 };
 use dedens_scenario::QueryFile;
 use dedens_server::{
     Access, Cookies, Denial, Forward, Network, Pipeline, Plugin, Rate, RateLimit, RateLimitConfig,
-    Secret, Secrets, Stage, Standing, Step, Transport,
+    Secret, Secrets, Stage, Standing, Step,
 };
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
 use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
@@ -689,7 +687,7 @@ pub fn decode_message(data: &[u8]) {
     assert_eq!(
         {
             let mut offsets = 0;
-            message::ttl_offsets(data, |_| offsets += 1).map(|()| offsets)
+            ttl_offsets(data, |_| offsets += 1).map(|()| offsets)
         },
         Ok(records
             .iter()
@@ -1088,7 +1086,7 @@ pub fn server_request(data: &[u8]) {
                 query.len()
             );
             if method == http::Method::GET {
-                let parameter = format!("dns={}", dedens_proto::text::encode_base64url(&query));
+                let parameter = format!("dns={}", dedens_proto::encode_base64url(&query));
                 assert!(
                     request
                         .uri()

@@ -9,9 +9,9 @@ use common::{
     CLIENT_COOKIE, cookie, cookie_of, expect_failure, expect_response, expect_send, expect_wait,
     query, query_with_cookie, response, secs, sent, server, start, t0, udp, wire,
 };
-use dedens_net::exchange::{Failure, Options, Transport};
+use dedens_net::exchange::{Failure, Options};
 use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Rcode, Transport};
 
 const SERVER_COOKIE: &[u8] = b"server.cookie.01";
 

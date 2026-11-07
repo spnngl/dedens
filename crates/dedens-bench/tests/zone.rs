@@ -1,7 +1,7 @@
 //! The zone readers compared in `benches/zone.rs` read the same zone.
 
 use dedens_bench::zone;
-use dedens_proto::text::{Entry, ZoneReader};
+use dedens_proto::{ZoneEntry, ZoneReader};
 use domain::zonefile::inplace::Zonefile;
 use hickory_proto::serialize::txt::Parser;
 
@@ -11,7 +11,7 @@ fn readers_count_the_same_records() {
     let text = zone(1_000);
     let dedens = ZoneReader::new(text.as_bytes(), None)
         .map(|e| e.expect("reads"))
-        .filter(|e| matches!(e, Entry::Record(_)))
+        .filter(|e| matches!(e, ZoneEntry::Record(_)))
         .count();
     let mut zonefile = Zonefile::with_capacity(text.len());
     zonefile.extend_from_slice(text.as_bytes());

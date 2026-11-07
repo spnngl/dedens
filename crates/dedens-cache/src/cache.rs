@@ -4,9 +4,7 @@ use std::hash::{BuildHasher, RandomState};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dedens_proto::edns::EDE_LEN;
-use dedens_proto::header::HEADER_LEN;
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{Decoded, Query};
+use dedens_proto::{Decoded, HEADER_LEN, MAX_NAME_LEN, Query};
 
 use crate::config::{Config, ConfigError};
 use crate::key::Key;

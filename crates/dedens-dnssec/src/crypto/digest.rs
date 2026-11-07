@@ -1,7 +1,6 @@
 //! DS digests (RFC 4034 §5.1.4, RFC 4509 §2, RFC 6605 §5) and NSEC3 hashes (RFC 5155 §5).
 
-use dedens_proto::name::MAX_NAME_LEN;
-use dedens_proto::{DigestType, Name, Nsec3HashAlgorithm};
+use dedens_proto::{DigestType, MAX_NAME_LEN, Name, Nsec3HashAlgorithm};
 use ring::digest::{Algorithm, Context, MAX_OUTPUT_LEN, SHA1_FOR_LEGACY_USE_ONLY, SHA256, SHA384};
 use thiserror::Error;
 
