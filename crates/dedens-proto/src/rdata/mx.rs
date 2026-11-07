@@ -7,7 +7,7 @@ use crate::name::Name;
 use crate::text::{Fields, TextError};
 use crate::wire::{Reader, Writer};
 
-/// A mail exchange: lower preference is tried first.
+/// A mail exchange (RFC 1035 §3.3.9): lower preference is tried first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Mx<'a> {
     /// Preference of this exchange.

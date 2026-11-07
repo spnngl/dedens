@@ -8,7 +8,7 @@ use crate::wire::{Reader, Writer};
 #[error("server cookie must be 8 to 32 bytes")]
 pub struct InvalidServerCookie;
 
-/// A client cookie of 8 bytes, with the server cookie of 8 to 32 bytes once a server has sent one.
+/// A client cookie of 8 bytes, with the server cookie of 8 to 32 bytes once a server has sent one (RFC 7873 §4).
 ///
 /// Held inline, client then server, so it never allocates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

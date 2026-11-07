@@ -16,8 +16,8 @@ const FAMILY_IPV6: u16 = 2;
 )]
 pub struct InvalidClientSubnet;
 
-/// The network a query comes from: an address truncated to `source_prefix` bits, and in a response the
-/// `scope_prefix` the answer is valid for.
+/// The network a query comes from (RFC 7871 §6): an address truncated to `source_prefix` bits, and in a response
+/// the `scope_prefix` the answer is valid for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClientSubnet {
     address: IpAddr,

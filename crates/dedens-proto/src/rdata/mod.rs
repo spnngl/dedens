@@ -1,38 +1,36 @@
 //! RDATA of the supported record types (D11); every other type is kept [`Opaque`] (RFC 3597).
 //!
-//! One file per type, or per group of types sharing a format, named after the RFC that defines it.
+//! One file per type, or per group of types sharing a format, named after the type (D159); the codecs of A, AAAA
+//! and the one-name types are modules beside the table.
 
-mod rfc1035_a;
-mod rfc1035_domain_name;
-mod rfc1035_mx;
-mod rfc1035_soa;
-mod rfc1035_txt;
-mod rfc2782_srv;
-mod rfc3596_aaaa;
-mod rfc3597_opaque;
-mod rfc4034_dnskey;
-mod rfc4034_ds;
-mod rfc4034_nsec;
-mod rfc4034_rrsig;
-mod rfc5155_nsec3;
-mod rfc8659_caa;
-mod rfc9460_svcb;
+mod caa;
+mod dnskey;
+mod ds;
+mod mx;
+mod nsec;
+mod nsec3;
+mod opaque;
+mod rrsig;
+mod soa;
+mod srv;
+mod svcb;
+mod txt;
 
 use core::fmt;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-pub use rfc1035_mx::Mx;
-pub use rfc1035_soa::Soa;
-pub use rfc1035_txt::{CharacterStrings, Txt, TxtError};
-pub use rfc2782_srv::Srv;
-pub use rfc3597_opaque::Opaque;
-pub use rfc4034_dnskey::{Dnskey, DnskeyError};
-pub use rfc4034_ds::{Ds, DsError};
-pub use rfc4034_nsec::{Nsec, TypeBitmap, TypeBitmapError};
-pub use rfc4034_rrsig::{Rrsig, RrsigError};
-pub use rfc5155_nsec3::{Nsec3, Nsec3Error, Nsec3Param};
-pub use rfc8659_caa::{Caa, CaaError};
-pub use rfc9460_svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
+pub use caa::{Caa, CaaError};
+pub use dnskey::{Dnskey, DnskeyError};
+pub use ds::{Ds, DsError};
+pub use mx::Mx;
+pub use nsec::{Nsec, TypeBitmap, TypeBitmapError};
+pub use nsec3::{Nsec3, Nsec3Error, Nsec3Param};
+pub use opaque::Opaque;
+pub use rrsig::{Rrsig, RrsigError};
+pub use soa::Soa;
+pub use srv::Srv;
+pub use svcb::{Params, SvcParam, SvcParamKey, SvcParams, SvcParamsError, Svcb};
+pub use txt::{CharacterStrings, Txt, TxtError};
 
 use crate::codes::RecordType;
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
@@ -50,7 +48,8 @@ pub(crate) const MAX_RDATA_LEN: usize = 65535;
 /// outside the table are [`Opaque`].
 macro_rules! rdata_types {
     ($($(#[$meta:meta])* $variant:ident($ty:ty) = $code:ident, $codec:ident;)*) => {
-        /// The data of a resource record, borrowed from the message it was decoded from or owned (D7a).
+        /// The data of a resource record (RFC 1035 §3.2.1), borrowed from the message it was decoded from or owned
+        /// (D7a).
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         #[non_exhaustive]
         pub enum RData<'a> {
@@ -126,15 +125,15 @@ macro_rules! rdata_types {
 
 rdata_types! {
     /// Host address (RFC 1035 §3.4.1).
-    A(Ipv4Addr) = A, rfc1035_a;
+    A(Ipv4Addr) = A, a;
     /// IPv6 address (RFC 3596 §2.2).
-    Aaaa(Ipv6Addr) = AAAA, rfc3596_aaaa;
+    Aaaa(Ipv6Addr) = AAAA, aaaa;
     /// Authoritative name server (RFC 1035 §3.3.11).
-    Ns(Name<'a>) = NS, rfc1035_domain_name;
+    Ns(Name<'a>) = NS, domain_name;
     /// Canonical name (RFC 1035 §3.3.1).
-    Cname(Name<'a>) = CNAME, rfc1035_domain_name;
+    Cname(Name<'a>) = CNAME, domain_name;
     /// Domain name pointer (RFC 1035 §3.3.12).
-    Ptr(Name<'a>) = PTR, rfc1035_domain_name;
+    Ptr(Name<'a>) = PTR, domain_name;
     /// Start of authority (RFC 1035 §3.3.13).
     Soa(Soa<'a>) = SOA, Soa;
     /// Mail exchange (RFC 1035 §3.3.9).
@@ -165,6 +164,75 @@ rdata_types! {
     Nsec3(Nsec3<'a>) = NSEC3, Nsec3;
     /// Parameters of a zone's NSEC3 records (RFC 5155 §4).
     Nsec3Param(Nsec3Param<'a>) = NSEC3PARAM, Nsec3Param;
+}
+
+/// A: an IPv4 address (RFC 1035 §3.4.1).
+mod a {
+    use super::{DecodeError, EncodeError, Fields, Ipv4Addr, Reader, TextError, Writer};
+
+    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Ipv4Addr, DecodeError> {
+        Ok(Ipv4Addr::from(r.array::<4>()?))
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the signature of every codec in the table (D139)"
+    )]
+    pub(super) fn encode(addr: &Ipv4Addr, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        w.put_bytes(&addr.octets())
+    }
+
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Ipv4Addr, TextError> {
+        f.parse("IPv4 address")
+    }
+
+    pub(super) const fn into_owned(addr: Ipv4Addr) -> Ipv4Addr {
+        addr
+    }
+}
+
+/// AAAA: an IPv6 address (RFC 3596 §2.2).
+mod aaaa {
+    use super::{DecodeError, EncodeError, Fields, Ipv6Addr, Reader, TextError, Writer};
+
+    pub(super) fn decode(r: &mut Reader<'_>) -> Result<Ipv6Addr, DecodeError> {
+        Ok(Ipv6Addr::from(r.array::<16>()?))
+    }
+
+    pub(super) fn encode(addr: &Ipv6Addr, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        w.put_bytes(&addr.octets())
+    }
+
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Ipv6Addr, TextError> {
+        f.parse("IPv6 address")
+    }
+
+    pub(super) const fn into_owned(addr: Ipv6Addr) -> Ipv6Addr {
+        addr
+    }
+}
+
+/// NS, CNAME and PTR: RDATA that is one domain name (RFC 1035 §3.3.1, §3.3.11, §3.3.12).
+///
+/// The name may be compressed (RFC 3597 §4).
+mod domain_name {
+    use super::{DecodeError, EncodeError, Fields, Name, Reader, TextError, Writer};
+
+    pub(super) fn decode<'a>(r: &mut Reader<'a>) -> Result<Name<'a>, DecodeError> {
+        Name::decode(r)
+    }
+
+    pub(super) fn encode(name: &Name<'_>, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+        w.put_name_compressed(name)
+    }
+
+    pub(super) fn from_text(f: &mut Fields<'_, '_>) -> Result<Name<'static>, TextError> {
+        f.name("domain name")
+    }
+
+    pub(super) fn into_owned(name: Name<'_>) -> Name<'static> {
+        name.into_owned()
+    }
 }
 
 impl<'a> RData<'a> {

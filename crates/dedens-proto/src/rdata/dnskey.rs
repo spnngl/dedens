@@ -13,7 +13,7 @@ use crate::wire::{Reader, Writer};
 /// The only protocol value there is (RFC 4034 §2.1.2); a DNSKEY with another is invalid, so it has no field.
 const PROTOCOL: u8 = 3;
 
-/// A DNSKEY public key that is empty or longer than an RDATA holds.
+/// A DNSKEY public key that is empty or longer than an RDATA holds (RFC 4034 §2.1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DnskeyError {

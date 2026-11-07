@@ -8,7 +8,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::name::Name;
 use crate::wire::{Reader, Writer};
 
-/// What is asked: a name, a type and a class.
+/// What is asked: a name, a type and a class (RFC 1035 §4.1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Question<'a> {
     /// The name asked about (QNAME).

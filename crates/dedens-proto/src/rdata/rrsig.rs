@@ -16,7 +16,7 @@ const FIXED_LEN: usize = 18;
 /// The longest signature an RRSIG holds: what an RDATA has left after the fixed fields and the longest signer.
 const MAX_SIGNATURE_LEN: usize = super::MAX_RDATA_LEN - FIXED_LEN - MAX_NAME_LEN;
 
-/// An RRSIG signature that is empty or too long.
+/// An RRSIG signature that is empty or too long (RFC 4034 §3.1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RrsigError {

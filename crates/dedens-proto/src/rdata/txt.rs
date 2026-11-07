@@ -15,7 +15,7 @@ use crate::wire::{Reader, Writer};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Txt<'a>(Cow<'a, [u8]>);
 
-/// Strings that cannot form a TXT RDATA.
+/// Strings that cannot form a TXT RDATA (RFC 1035 §3.3, §3.3.14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TxtError {
@@ -80,7 +80,7 @@ impl<'a> Txt<'a> {
     }
 }
 
-/// Iterator over the strings of a [`Txt`].
+/// Iterator over the character-strings of a [`Txt`] (RFC 1035 §3.3).
 #[derive(Debug, Clone)]
 pub struct CharacterStrings<'t>(&'t [u8]);
 

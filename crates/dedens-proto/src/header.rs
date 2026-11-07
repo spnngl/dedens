@@ -10,7 +10,7 @@ use crate::codes::{Opcode, Rcode};
 use crate::error::{DecodeError, EncodeError};
 use crate::wire::{Reader, Writer};
 
-/// Length of the header on the wire.
+/// Length of the header on the wire (RFC 1035 §4.1.1).
 pub const HEADER_LEN: usize = 12;
 
 /// Adds `contains`, `with`, `without` and `bits` to a set of one-bit flags kept as their bits in a `u16`.
@@ -146,7 +146,7 @@ pub(crate) struct Counts {
     pub additional: u16,
 }
 
-/// A message header without its counts.
+/// A message header without its counts (RFC 1035 §4.1.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Header {
     /// Identifier copied from query to response.

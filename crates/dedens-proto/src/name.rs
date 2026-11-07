@@ -14,7 +14,8 @@ use crate::wire::{Reader, Writer};
 pub const MAX_NAME_LEN: usize = 255;
 /// Longest label (RFC 1035 §2.3.4).
 pub const MAX_LABEL_LEN: usize = 63;
-/// Most labels in a name, the root not counted: each takes 2 bytes at least, and the root 1, of [`MAX_NAME_LEN`].
+/// Most labels in a name, the root not counted: each takes 2 bytes at least, and the root 1, of [`MAX_NAME_LEN`]
+/// (RFC 1035 §2.3.4).
 pub const MAX_LABELS: usize = MAX_NAME_LEN / 2;
 /// Most compression pointers followed in one name: one per label of the longest name.
 const MAX_POINTERS: usize = MAX_LABELS;
@@ -427,7 +428,7 @@ fn append(buf: &mut [u8; MAX_NAME_LEN], len: usize, part: &[u8]) -> usize {
     end
 }
 
-/// Iterator over the labels of a [`Name`], following the compression pointers of a decoded one.
+/// Iterator over the labels of a [`Name`], following the compression pointers of a decoded one (RFC 1035 §4.1.4).
 #[derive(Debug, Clone)]
 pub struct Labels<'n> {
     buf: &'n [u8],
