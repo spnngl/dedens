@@ -3,8 +3,8 @@
 What each allocator candidate catches, adds to the attack surface and costs the build, and its security rank under
 the verdict rule's step 1. Measured on the experiment tag `alloc-experiment-2026-11-06` (features `alloc-mimalloc`,
 `alloc-mimalloc-secure`, `alloc-jemalloc` of `dedensd`); each claim is read from the vendored source or measured.
-The probe is `crates/dedens-bench/alloc-probe/` (`AGENTS.md` there), a cargo project outside the workspace: it
-needs `unsafe` (D15).
+The probe is `crates/dedens-bench/alloc-probe/` of the tag `alloc-security-2026-11-06` (`AGENTS.md` there), a cargo
+project outside the workspace: it needs `unsafe` (D15).
 
 ## Candidates
 

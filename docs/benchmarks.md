@@ -572,7 +572,7 @@ one core answering four names from its cache, dnsperf on six, 10 s a run, two ro
   second socket's average latency 0.30-1.04 ms → 0.28-0.31 ms, maximum 13-101 ms → 10-12 ms, no query lost on
   either socket in any run (four runs: two rounds each). The flood never emptied the pool of 256 buffers, so no
   `ENOBUFS` happened and the change shows only as noise: the first base run's 101 ms maximum was its warm-up,
-  not repeated in round 2. The scenario cannot show the U2 gain; the unit tests (`serve.rs`) do, with a stream
+  not repeated in round 2. The scenario cannot show the U2 gain; the unit tests (`serve/udp.rs`) do, with a stream
   that fails on every poll.
 
 ### UDP send queue and `io_uring` flags (D123, D51)
