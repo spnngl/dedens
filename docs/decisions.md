@@ -417,7 +417,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   pipeline turns each `Next::Ask` into a `Step::Upstream` whose `Upstream::request()` is the validator's question
   (RD, DO and CD, no client option, AD clear: RFC 4035 §4.6, RFC 6840 §5.9) and which goes to the server that
   answered the last question: one that failed is not asked again by the same query, so a dead server costs one
-  question's patience (`tries`/`timeout_ms` of D45), not each one's. So `serve.rs` is unchanged. A validating
+  question's patience (`tries`/`timeout_ms` of D45), not each one's. So `serve/` is unchanged. A validating
   stage's query for the client's own question also carries CD and DO whatever the client set; a client with CD (or
   a question not of class IN) is answered unvalidated, AD clear, from a plain forwarder's query (the client's AD
   and CD, RFC 6840 §5.7; upstream's AD is not read). Every
@@ -755,7 +755,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `Opaque` and compiled; only the type's own tests caught it. Now a variant exists with all its arms or not at all.
   The codec is the payload type or, for A, AAAA, NS, CNAME and PTR, the module of the type; it gives `decode`,
   `encode`, `from_text` and `into_owned`. Adding a type: its file with those four and `Display`, each constructor and
-  decoder holding D125's `MAX_RDATA_LEN` check, a line in the table, the rest of `rdata/AGENTS.md`. Costs:
+  decoder holding D125's `MAX_RDATA_LEN` check, a line in the table, the rest of `crates/dedens-proto/AGENTS.md`. Costs:
   cargo-mutants does not mutate code a macro generates, so the six matches are no longer mutated; the text errors of
   NS, CNAME and PTR say "domain name", not "NS name", "CNAME target", "PTR name". Kept because it deletes 49
   lines (+142, -191: the table and the macro against the enum and the matches, with `from_text` and `into_owned` added
@@ -880,7 +880,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     authority section (least of its TTL and MINIMUM, RFC 2308 §5), 0 without any, and a POST with none, which
     §5.1 makes uncacheable. Errors of the request are statuses without a DNS message: 405, 415, 400, 413.
     Whether the query is a DNS message is the caller's (FORMERR, §4.2.1).
-- D83 (amends D62; completes D82; amended by D79, D109, D119) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::https`. RFC 9114 over a
+- D83 (amends D62; completes D82; amended by D79, D109, D119) The client asks DoH over HTTP/3, `Transport::Https` in `dedens-net::http3`. RFC 9114 over a
   QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
   - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
     request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
@@ -1202,8 +1202,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D109 (amends D61, D81, D83; amended by D119) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
   by the query's deadline (audit step 06):
   - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
-    8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `https.rs`), where h3 states none; a response with a larger header section
-    is refused as a stream error (`HttpsError::Stream`), the request not sent again. 8 KiB is ten times the largest
+    8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `http3.rs`), where h3 states none; a response with a larger header section
+    is refused as a stream error (`Http3Error::Stream`), the request not sent again. 8 KiB is ten times the largest
     header section of the responses captured from Cloudflare, Google, Quad9 and AdGuard (797 bytes, counted as
     RFC 9114 §4.2.2 does: name, value and 32 per field; `testdata/doh/*.headers`) and what servers commonly
     take of a request; a server that sends more is no DoH server worth asking. The body limit is unchanged, and the
@@ -2026,7 +2026,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     192.0.0.10, and 192.88.99.0/24 on purpose) is used, and a name with none is 502 `destination_ip_prohibited`: a
     listed name that points inside the network is not an open door to it. The address a name was checked as is kept
     60 s per thread, so a forward within that time, and any on a connection that is still up, does no lookup.
-  - Forward: a new POST to `https://targethost/targetpath` over HTTP/3 through `HttpsPool` (D83), one connection per
+  - Forward: a new POST to `https://targethost/targetpath` over HTTP/3 through `Http3Pool` (D83), one connection per
     address and name kept 30 s idle and shared by requests (§11.2 recommends it: a connection of a client's own would
     let the target link its queries), checked against `upstream_ca` or the system (D65). The request is built, not
     copied: media type as content type and accept, `content-length`, no `Forwarded`, `Via`, cookie or other header of
@@ -2501,7 +2501,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     it goes with it. It is closed with `H3_EXCESSIVE_LOAD` (0x107, §8.1, §10.5) once it passes `BUDGET` plus
     `RECEIVE_WINDOW`, or does not end `DRAIN` after `GOAWAY`. An honest client is not cut: the requests accepted
     before `GOAWAY` are answered (the connection ends only once none is in flight), and dedens' client opens a new
-    connection for the next query (`https.rs`: a rejected or closed connection is set aside, not reused).
+    connection for the next query (`http3.rs`: a rejected or closed connection is set aside, not reused).
   - Bound: one sweeper task per serving thread (`Thread::h3`) checks its HTTP/3 connections every `CHECK` (quinn has
     no event for bytes received), whatever their number; it ends when none is left, and holds them weakly, so a
     connection is checked as long as its service or a request on it lives. A peer returning its credit at once sends
@@ -2664,7 +2664,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     tried; `loom::sync::Notify` and `mpsc`, which have no `Future` to receive from, so no query could wait on them
     as it does in `serve/upstream.rs`. The `Arc<[u8]>` of a response stays std's: loom's `Arc` has no `From<&[T]>`.
   - What the threads run is the server's own code: `Current::newer` (the generation check of `Thread::pipeline`) and
-    `Flights::enter` (the join and rejoin of `fetch`) were moved out of `serve.rs` for it.
+    `Flights::enter` (the join and rejoin of `fetch`) were moved out of `serve/` for it.
   - `just loom` lints the loom-only code with clippy, then runs the `loom_tests` modules beside the code under
     `[profile.loom]` (release without LTO, with assertions on: a build in seconds), in its own `target/loom` as the
     cfg rebuilds the dependencies. The preemption bound is four (`sync::model`): unbounded, the tests of `Flights`
@@ -2716,8 +2716,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
   (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve/`,
   `start` and `answer`) and runs `dedens-net`'s own client (D134), and one scenario family a `tests/<family>.rs`.
-  The compio layer of the server stays tested over loopback (D26). What the driver offers, what a scenario uses and the rules for both are
-  in `crates/dedens-sim/AGENTS.md`.
+  The compio layer of the server stays tested over loopback (D26). What the driver offers and what a scenario uses are
+  in the crate's `//!` docs, the rules for both in `crates/dedens-sim/AGENTS.md`.
   - Why turmoil: hosts crash and bounce, links partition, hold, lose and reorder, the clock is simulated and every
     random choice follows one seed. Rejected: `turmoil-net` (no crash or bounce, no per-link faults); `madsim`
     (replaces tokio and the system calls under it for the whole dependency tree); `shuttle` (explores thread
