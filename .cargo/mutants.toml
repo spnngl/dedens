@@ -60,7 +60,7 @@ exclude_re = [
   # At the limit both branches give the same value: the insecure TTL, and the default entry size.
   'replace < with <= in Config::(insecure_ttl|entry_limit)$',
   # Read only when root drops to `user` (D122): seen by the #[ignore]d root tests of privileges.rs, outside this job.
-  'config/mod\.rs:\d+:\d+: (delete ! in Downloads::written_dir|replace Downloads::written_dir -> .* with None)$',
+  'config/sources\.rs:\d+:\d+: (delete ! in Downloads::written_dir|replace Downloads::written_dir -> .* with None)$',
   # target is given CNAME or DNAME sets only, and a CNAME's RDATA always decodes as RData::Cname, never opaque.
   'section\.rs:\d+:\d+: replace match guard set\.rtype\(\) == RecordType::DNAME with true in target$',
   # Equal values: either is the lesser.

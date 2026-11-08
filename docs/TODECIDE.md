@@ -260,7 +260,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.
 - A small typed rule language for matchers (D23), beyond declarative matchers.
 - crates.io publishing, a container image, dnsperf benchmarks against Unbound and CoreDNS.
-- A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config.rs`), which needs the reader in a
+- A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config/`), which needs the reader in a
   library crate. Default: move the reader to `dedens-server` with the next change to the configuration.
 - macOS 27's SDK against the lld of stable 1.99 (D150): `libSystem.tbd` of the 27.x SDKs fails to load
   (`unknown target arm64e.x1-macos`, LLVM 23.1.1; the pinned nightly's 23.1.4 reads it), so a Mac with only that SDK
@@ -273,7 +273,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   bundle drops stays trusted until the next release. Default: as is. Alternative: bundled roots (`webpki-roots`),
   which the host's own CAs (a corporate proxy) would not extend either.
 - A user name defined outside `/etc/passwd` (D151): musl has no NSS, so `user: nobody` fails where it is defined in
-  `nss-altfiles`, LDAP or systemd's userdb. Default: a numeric id there, as documented in `config.rs`.
+  `nss-altfiles`, LDAP or systemd's userdb. Default: a numeric id there, as documented in `config/mod.rs`.
 - The image's registry access (D153): the GHCR package starts private, and nothing protects `v*` tags, so any pushed
   tag publishes. Default: by hand, once (`.github/AGENTS.md`, "First release"): make the package public, add a tag ruleset.
 - `CAP_NET_BIND_SERVICE` under systemd (D156): the unit grants it for the bind, and `dedensd` keeps it for its life
