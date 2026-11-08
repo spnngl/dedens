@@ -1,5 +1,5 @@
 ---
-source: apps/dedens/tests/cli.rs
+source: apps/dedens/tests/validate.rs
 expression: out
 ---
 {"id":"dnssec-failed.org_A","exchange":{"server":"127.0.0.1:PORT","transport":"udp","rtt_us":N,"sends":1,"query_size":58},"size":232,"header":{"id":N,"opcode":"QUERY","rcode":"NOERROR","flags":["qr","rd","ra","cd"]},"question":[{"name":"dnssec-failed.org.","class":"IN","type":"A"}],"answer":[{"name":"dnssec-failed.org.","ttl":300,"class":"IN","type":"A","data":"96.99.227.255"},{"name":"dnssec-failed.org.","ttl":300,"class":"IN","type":"RRSIG","data":"A 13 2 300 20261105015706 20261028225206 32784 dnssec-failed.org. ELXURSle2X0DpeJqThiKHyDKBs9l0W0Y7ON4ZwJeWKJNuD4tUg0cfMW2xvx6JAGS+HFS7cF67IudjKe7metAfg=="}],"edns":{"payload":1232,"flags":["do"],"options":[{"option":"ede","code":9,"purpose":"DNSKEY Missing","text":"no SEP matching the DS found for dnssec-failed.org."}]},"dnssec":{"status":"bogus","ede":{"code":9,"purpose":"DNSKEY Missing","text":"dnssec-failed.org. DNSKEY: no DNSKEY matches a DS record"}}}

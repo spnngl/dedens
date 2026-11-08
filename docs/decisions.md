@@ -498,7 +498,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   EDE when bogus or indeterminate; `+short` prints nothing of it but a line to stderr for the last two, like a
   violation. The expectation `dnssec: secure|insecure|bogus|indeterminate` (D34) fails the query as any other,
   exit 1. Exit codes stay D33's: a bogus response alone exits 0, since the verdict is the answer the tool
-  gives. Tests: `apps/dedens/tests/cli.rs` against the captures of `testdata/dnssec` at their
+  gives. Tests: `apps/dedens/tests/validate.rs` against the captures of `testdata/dnssec` at their
   `captured_at`: secure, insecure and bogus in each format, the questions asked, a wrong or a right anchor file,
   a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
   `dnssec-failed.org` bogus with EDE 9.

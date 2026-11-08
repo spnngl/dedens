@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 anstream.workspace = true
@@ -43,6 +44,10 @@ insta.workspace = true
 predicates.workspace = true
 serde.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
 
 [lints]
 workspace = true

@@ -1,5 +1,5 @@
 ---
-source: apps/dedens/tests/cli.rs
+source: apps/dedens/tests/output.rs
 expression: redacted(&out)
 ---
 dnssec-failed.org. A  SERVFAIL (server failure)  N ms from 127.0.0.1:PORT over UDP

@@ -1,5 +1,5 @@
 ---
-source: apps/dedens/tests/cli.rs
+source: apps/dedens/tests/validate.rs
 expression: out
 ---
 104.16.132.229

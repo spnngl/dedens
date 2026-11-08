@@ -1,37 +1,15 @@
 //! `+odoh-proxy` (D79): Oblivious `DoH` (RFC 9230) over HTTP/3 against a loopback target that is its own proxy, and
 //! the usage errors.
-#![cfg(feature = "odoh")]
 
 use std::io::Write as _;
 
-use assert_cmd::Command;
 use dedens_odoh::{Configs, TargetKey};
 use dedens_proto::Message;
 use dedens_testkit::certificates::NAME;
 use dedens_testkit::responder::{Responder, Transport};
 use predicates::str::contains;
 
-/// The command, without colors and with a resolv.conf that does not exist.
-fn dedens() -> Command {
-    let mut command = assert_cmd::cargo_bin_cmd!("dedens");
-    command
-        .env("DEDENS_RESOLV_CONF", "/nonexistent/resolv.conf")
-        .env_remove("NO_COLOR")
-        .env_remove("CLICOLOR_FORCE");
-    command
-}
-
-/// The standard output of a run that exits with `code`.
-fn run(args: &[&str], code: i32) -> String {
-    let output = dedens()
-        .args(args)
-        .assert()
-        .code(code)
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8(output).expect("UTF-8")
-}
+use crate::util::{dedens, run};
 
 /// RFC 9230 §4, D79: through a proxy to a target, the query is opened by the target with ID 0, the answer comes back
 /// sealed, and the transport reads `ODoH`; with `--json` too.
