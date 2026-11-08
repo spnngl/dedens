@@ -74,23 +74,24 @@ impl Section {
         }
     }
 
-    /// The target of the settings: reads the key.
+    /// The target of the settings, with the proxy role if they give it: reads the key.
     ///
     /// # Errors
     ///
-    /// As [`Target::new`].
-    pub(crate) fn target(&self) -> anyhow::Result<Target> {
-        let target = Target::new(self.key.as_deref(), self.limits)?;
+    /// As [`Service::new`].
+    pub(crate) fn service(&self) -> anyhow::Result<Service> {
+        let service = Service::new(self.key.as_deref(), self.limits)?;
         Ok(match &self.proxy {
-            Some(settings) => target.proxying(settings.clone()),
-            None => target,
+            Some(settings) => service.proxying(settings.clone()),
+            None => service,
         })
     }
 }
 
-/// The key of a target and the configurations that go with it, and the proxy that shares its listeners (D94).
+/// `dedensd`'s Oblivious `DoH` roles: the target's key and the configurations that go with it (RFC 9230 §8), and the
+/// proxy that shares its listeners (D94).
 #[derive(Debug)]
-pub(crate) struct Target {
+pub(crate) struct Service {
     key: TargetKey,
     /// The encoded configurations (RFC 9230 §5), served at the well-known path.
     configs: Vec<u8>,
@@ -102,7 +103,7 @@ pub(crate) struct Target {
     pub(crate) proxy: Option<Proxy>,
 }
 
-impl Target {
+impl Service {
     /// The target of the secret in `file`: 64 hexadecimal digits, as `openssl rand -hex 32` writes them; a new
     /// random one when there is no file.
     ///
@@ -278,10 +279,10 @@ mod tests {
     #[test]
     fn a_file_fixes_the_key() {
         let file = secret_file(&format!("{}\n", "ab".repeat(SECRET_LEN)));
-        let one = Target::new(Some(file.path()), Limits::default()).expect("a target");
-        let two = Target::new(Some(file.path()), Limits::default()).expect("a target");
+        let one = Service::new(Some(file.path()), Limits::default()).expect("a target");
+        let two = Service::new(Some(file.path()), Limits::default()).expect("a target");
         assert_eq!(one.configs, two.configs);
-        let generated = Target::new(None, Limits::default()).expect("a target");
+        let generated = Service::new(None, Limits::default()).expect("a target");
         assert_ne!(generated.configs, one.configs);
     }
 
@@ -301,7 +302,7 @@ mod tests {
         assert_ne!(proxy("a.example"), proxy("b.example"));
         assert_ne!(proxy("a.example"), section(None));
         // Nothing is read until the target is made.
-        assert!(section(Some("/nonexistent/odoh.key")).target().is_err());
+        assert!(section(Some("/nonexistent/odoh.key")).service().is_err());
     }
 
     /// A key file longer than a key and its whitespace is refused, as is one others can access (D115); one its group
@@ -311,17 +312,17 @@ mod tests {
     fn a_long_key_file_is_refused_and_an_exposed_one_too() {
         use std::os::unix::fs::PermissionsExt as _;
         let file = secret_file(&format!("{}\n", "ab".repeat(KEY_FILE_MAX)));
-        let error = Target::new(Some(file.path()), Limits::default()).unwrap_err();
+        let error = Service::new(Some(file.path()), Limits::default()).unwrap_err();
         assert!(format!("{error:#}").contains("longer"), "{error:#}");
         let file = secret_file(&format!("  {}\n\n\n", "ab".repeat(SECRET_LEN)));
         assert!(
-            Target::new(Some(file.path()), Limits::default()).is_ok(),
+            Service::new(Some(file.path()), Limits::default()).is_ok(),
             "whitespace around"
         );
         let mode = |mode| {
             std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(mode))
                 .expect("set");
-            Target::new(Some(file.path()), Limits::default())
+            Service::new(Some(file.path()), Limits::default())
         };
         assert!(mode(0o600).is_ok());
         assert!(mode(0o640).is_ok(), "warned about");
@@ -344,18 +345,18 @@ mod tests {
         ] {
             let file = secret_file(text);
             assert!(
-                Target::new(Some(file.path()), Limits::default()).is_err(),
+                Service::new(Some(file.path()), Limits::default()).is_err(),
                 "{text:?}"
             );
         }
-        assert!(Target::new(Some(Path::new("/nonexistent/odoh.key")), Limits::default()).is_err());
+        assert!(Service::new(Some(Path::new("/nonexistent/odoh.key")), Limits::default()).is_err());
     }
 
     /// RFC 9230 §4.3: a query opens to the DNS message and its reply seals to the client; a query to another key is
     /// 401, garbage 400.
     #[test]
     fn queries_open_and_replies_seal() {
-        let target = Target::new(None, Limits::default()).expect("a target");
+        let target = Service::new(None, Limits::default()).expect("a target");
         let configs = dedens_odoh::Configs::parse(&target.configs).expect("configurations");
         let mut entropy = Entropy::new().expect("randomness");
         let (message, context) =
@@ -369,7 +370,7 @@ mod tests {
         let sealed = dedens_odoh::Message::parse(response.body()).expect("a message");
         let plaintext = dedens_odoh::decrypt_response(&context, &sealed).expect("a reply");
         assert_eq!(plaintext.dns_message(), b"reply");
-        let other = Target::new(None, Limits::default()).expect("a target");
+        let other = Service::new(None, Limits::default()).expect("a target");
         assert_eq!(
             other.open(CLIENT, 0, false, &message.encode()).err(),
             Some(StatusCode::UNAUTHORIZED)
@@ -381,8 +382,8 @@ mod tests {
     }
 
     /// A target of `limits` and a source of its queries: each call is a fresh query for it.
-    fn flooded(limits: Limits) -> (Target, impl FnMut() -> Vec<u8>) {
-        let target = Target::new(None, limits).expect("a target");
+    fn flooded(limits: Limits) -> (Service, impl FnMut() -> Vec<u8>) {
+        let target = Service::new(None, limits).expect("a target");
         let configs = dedens_odoh::Configs::parse(&target.configs).expect("configurations");
         let mut entropy = Entropy::new().expect("randomness");
         let query = move || {

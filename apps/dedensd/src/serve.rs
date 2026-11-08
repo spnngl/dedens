@@ -62,9 +62,9 @@ use crate::flights::{Entered, Flights, Key, Lead};
 use crate::h3_budget::{Budget, Connections};
 use crate::isolate::{BACKOFF, Backoff, Listener, Origin, supervise};
 #[cfg(feature = "odoh")]
-use crate::odoh::proxy::{Forwarder, Proxy};
+use crate::odoh;
 #[cfg(feature = "odoh")]
-use crate::odoh::{self, Target};
+use crate::odoh::proxy::{Forwarder, Proxy};
 use crate::reload::Current;
 use crate::sync;
 
@@ -215,7 +215,7 @@ struct Thread {
     scratch: RefCell<Box<[u8]>>,
     /// The Oblivious `DoH` target the HTTP/3 listeners serve, if any (D79).
     #[cfg(feature = "odoh")]
-    odoh: Option<Arc<Target>>,
+    odoh: Option<Arc<odoh::Service>>,
     /// What the Oblivious `DoH` proxy forwards with: connections, checked addresses and a limit of its own (D94).
     #[cfg(feature = "odoh")]
     forwarder: Forwarder,
@@ -341,7 +341,7 @@ pub(crate) async fn serve(
     current: Arc<Current>,
     trust: Trust,
     presented: Option<Arc<Presented>>,
-    #[cfg(feature = "odoh")] odoh: Option<Arc<Target>>,
+    #[cfg(feature = "odoh")] odoh: Option<Arc<odoh::Service>>,
     listening: mpsc::Sender<DriverType>,
 ) -> io::Result<()> {
     #[cfg_attr(
@@ -1186,7 +1186,7 @@ async fn oblivious(
     path: &str,
     peer: SocketAddr,
     thread: &Thread,
-    target: &Target,
+    target: &odoh::Service,
 ) {
     let read = pending.read_with(MAX_BODY, |request, body| {
         route(request, body, path, target.proxy.as_ref())

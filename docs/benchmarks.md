@@ -915,7 +915,7 @@ is gone: a query takes no lock.
 
 `benches/odoh.rs`: `decrypt_query_message` is the HPKE open of a query, the cost a flood of posts asks of the target:
 36.7 µs median before and after (34.4-34.7 µs fastest; one round at 52 µs while the machine was busy). `budget_admit` is what
-`Target::open` does first for a client outside loopback, the network keyed and hashed and a unit taken, `budget_refuse` the same with
+`odoh::Service::open` does first for a client outside loopback, the network keyed and hashed and a unit taken, `budget_refuse` the same with
 the budget spent, each thread on a network of its own: 7.1 ns and 6.1 ns with 1 thread, 7.3 ns and 6.5 ns with 4 (fastest
 6.5 ns and 5.6 ns; a round or two at 20-40 ns while the machine was busy), the table of 2^16 words in the cache of every core.
 `budget_refuse_one_network` has all the threads refused on one network's word, 5.6 ns with 1 thread and 6.2 ns with 4: a refusal

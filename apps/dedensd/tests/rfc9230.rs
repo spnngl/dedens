@@ -240,7 +240,7 @@ fn valid_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
 /// D117, audit S14: posts past a budget are 503 before their body is opened, so the upstream is asked for what was
 /// opened and no more. All clients here are the loopback's, which `rrl.exempt` leaves out of the network budget by
 /// default: the global one bounds them, and the network one once nothing is exempt. (That another network is still
-/// opened is the unit test of `Target::open`.)
+/// opened is the unit test of `odoh::Service::open`.)
 #[test]
 fn d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened() {
     for config in [

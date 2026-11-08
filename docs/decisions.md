@@ -2329,7 +2329,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     stage, default 1000 and 2000, a tenth of the allowance, so that ten networks at their share spend all of it
     and no one network can: 2000 units are about 160 cold validations (`docs/benchmarks.md`). A reload keeps the
     key cache and restarts the shares only when the setting changed.
-  - ODoH (S14). Before `Message::parse` and the HPKE open, `Target::open` takes one unit of the
+  - ODoH (S14). Before `dedens_odoh::Message::parse` and the HPKE open, `odoh::Service::open` takes one unit of the
     client network's budget (`odoh.client_budget`, default 1000 and 2000: 3.5% of a core at 34.6 µs a
     decapsulation) and one of the global one (`odoh.budget`, default 10 000 and 20 000: a third of a core), and
     gives the first back if the second refuses. A QUIC peer completed its handshake: its address is proven.

@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
     let odoh = config
         .odoh
         .as_ref()
-        .map(odoh::Section::target)
+        .map(odoh::Section::service)
         .transpose()?
         .map(Arc::new);
     if let Some(Command::Validate) = args.command {
