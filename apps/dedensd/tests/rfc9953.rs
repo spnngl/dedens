@@ -595,7 +595,7 @@ fn s4_3_2_a_ttl_is_the_max_age_less_what_was_taken() {
     let response = ask(server.addr, &fetch(5, &query_for(&captured("a"), 0)));
     let mut wire = response.payload.clone();
     assert_eq!(ttls(&wire), vec![0; ttls(&wire).len()]);
-    dedens_net::coap::doc::add_max_age(&mut wire, response.options.max_age()).expect("DNS");
+    dedens_net::coap::dns::add_max_age(&mut wire, response.options.max_age()).expect("DNS");
     assert!(ttls(&wire).iter().all(|&ttl| ttl == 120));
 }
 

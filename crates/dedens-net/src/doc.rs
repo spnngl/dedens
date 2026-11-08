@@ -1,4 +1,5 @@
-//! DNS over CoAP, the client's socket (RFC 9953 §4, D81; the `doc` feature).
+//! DNS over CoAP, the client's socket (RFC 9953 §4, D81; the `doc` feature); the messages are
+//! [`coap::dns`](crate::coap::dns)'s.
 //!
 //! One UDP socket per query, connected to the server, source port picked by the OS, and a random token of 8 bytes:
 //! the token is what an off-path attacker must guess, as the DNS ID is 0 (RFC 9953 §4.2.2, §6). The retransmission is
@@ -14,7 +15,7 @@ use compio::net::UdpSocket;
 use compio::time::timeout_at;
 
 use crate::client::ClientError;
-use crate::coap::doc::{RESOURCE_TYPE, add_max_age, discovery_request, request};
+use crate::coap::dns::{RESOURCE_TYPE, add_max_age, discovery_request, request};
 use crate::coap::exchange::{Exchange, Failure, Next, Params, Response, Step};
 use crate::coap::link::{self, LinkError};
 use crate::coap::{Code, Options, Token};

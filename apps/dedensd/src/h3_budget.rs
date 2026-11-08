@@ -15,7 +15,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use compio::quic::{Connection, VarInt};
-use dedens_net::https::H3_EXCESSIVE_LOAD;
+use dedens_net::http3::H3_EXCESSIVE_LOAD;
 use dedens_net::quic::RECEIVE_WINDOW;
 
 use crate::isolate::Origin;

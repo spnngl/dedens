@@ -28,7 +28,7 @@ use dedens_proto::{EncodeError, Message, Transport};
 use crate::doc::{DocError, coap, discover};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
 use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, after};
-use crate::https::{HttpsError, HttpsPool};
+use crate::http3::{Http3Error, Http3Pool};
 use crate::io::{Compio, Io};
 #[cfg(feature = "odoh")]
 use crate::odoh::{self, OdohError};
@@ -68,7 +68,7 @@ pub enum ClientError {
     Quic(#[from] QuicError),
     /// The HTTPS connection or request failed, or its response holds no DNS response.
     #[error("HTTPS")]
-    Https(#[from] HttpsError),
+    Https(#[from] Http3Error),
     /// The server's name and port make no `DoH` template.
     #[error("no DoH template for the server")]
     Template(#[from] TemplateError),
@@ -111,8 +111,8 @@ impl ClientError {
             | Self::Tcp(TcpError::Trust(_))
             | Self::Quic(QuicError::Trust(_) | QuicError::Connect(_))
             | Self::Https(
-                HttpsError::Quic(QuicError::Trust(_) | QuicError::Connect(_))
-                | HttpsError::Request(_),
+                Http3Error::Quic(QuicError::Trust(_) | QuicError::Connect(_))
+                | Http3Error::Request(_),
             )
             | Self::Exchange(Failure::Encode(_)) => return true,
             #[cfg(feature = "odoh")]
@@ -122,7 +122,7 @@ impl ClientError {
             Self::Udp(error)
             | Self::Tcp(TcpError::Connect(error))
             | Self::Quic(QuicError::Bind(error))
-            | Self::Https(HttpsError::Quic(QuicError::Bind(error))) => error,
+            | Self::Https(Http3Error::Quic(QuicError::Bind(error))) => error,
             #[cfg(feature = "doc")]
             Self::Doc(DocError::Udp(error)) => error,
             #[cfg(feature = "doc")]
@@ -237,7 +237,7 @@ pub struct Client<N: Io = Compio> {
     udp: UdpPool<N>,
     tcp: TcpPool<N>,
     quic: QuicPool,
-    https: HttpsPool,
+    https: Http3Pool,
     /// The key configurations of the Oblivious `DoH` targets asked (D79).
     #[cfg(feature = "odoh")]
     odoh: odoh::Configs,
@@ -302,7 +302,7 @@ impl<N: Io> Client<N> {
             tcp: TcpPool::with_io(io.clone(), TCP_IDLE),
             io,
             quic: QuicPool::new(TCP_IDLE),
-            https: HttpsPool::new(TCP_IDLE),
+            https: Http3Pool::new(TCP_IDLE),
             #[cfg(feature = "odoh")]
             odoh: odoh::Configs::default(),
             cookies: RefCell::default(),
@@ -583,7 +583,7 @@ impl<N: Io> Client<N> {
                     *http = Some(reply.http);
                     Ok(self.answered(exchange, transport, reply.wire, deadline))
                 }
-                Err(HttpsError::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
+                Err(Http3Error::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
                 Err(error) => Err(error.into()),
             };
         }
@@ -681,7 +681,7 @@ impl<N: Io> Client<N> {
                 *http = Some(reply.http);
                 Ok(self.answered(exchange, Transport::Odoh, reply.wire, deadline))
             }
-            Err(OdohError::Https(HttpsError::TimedOut)) => {
+            Err(OdohError::Https(Http3Error::TimedOut)) => {
                 Ok(exchange.time_out(self.io.now().max(deadline)))
             }
             Err(error) => Err(error.into()),

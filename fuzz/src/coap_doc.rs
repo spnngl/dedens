@@ -6,10 +6,10 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use dedens_net::coap::block::{Block, BlockSize};
-use dedens_net::coap::doc::Query;
+use dedens_net::coap::dns::Query;
 use dedens_net::coap::exchange::{Exchange, Failure, MAX_RETRANSMIT, Next, Params, Response, Step};
 use dedens_net::coap::server::{Dedup, EXCHANGE_LIFETIME, Seen};
-use dedens_net::coap::{Code, Message, OptionNumber, Token, Type, doc};
+use dedens_net::coap::{Code, Message, OptionNumber, Token, Type, dns};
 
 /// A captured response of more than one block of 1024 bytes (RFC 9953's server size).
 const LARGE: &[u8] = include_bytes!("../../crates/dedens-proto/tests/testdata/txt_large.bin");
@@ -57,9 +57,9 @@ fn versions() -> [Vec<u8>; 3] {
 
 /// What a client must get for `body`: the DNS message with the least TTL taken off (RFC 9953 §4.3.2).
 fn served(body: &[u8]) -> Vec<u8> {
-    let mut dns = body.to_vec();
-    doc::take_max_age(&mut dns).expect("a captured message");
-    dns
+    let mut wire = body.to_vec();
+    dns::take_max_age(&mut wire).expect("a captured message");
+    wire
 }
 
 /// The listener's answer to `datagram` with `body` as its DNS answer, as `apps/dedensd/src/serve/coap.rs` makes
@@ -92,11 +92,11 @@ fn serve(
         }
     }
     *id = id.wrapping_add(1);
-    let path = doc::path_segments("/dns");
-    let reply = match doc::query(&request, &path) {
+    let path = dns::path_segments("/dns");
+    let reply = match dns::query(&request, &path) {
         Ok(_) => {
-            let reply = doc::response(&request, *id, body.to_vec())
-                .unwrap_or_else(|code| doc::error(&request, *id, code));
+            let reply = dns::response(&request, *id, body.to_vec())
+                .unwrap_or_else(|code| dns::error(&request, *id, code));
             let more = reply
                 .options
                 .block2()
@@ -104,19 +104,19 @@ fn serve(
                 .flatten()
                 .is_some_and(Block::more);
             assert_eq!(
-                doc::more_blocks(&request, body),
+                dns::more_blocks(&request, body),
                 reply.code == Code::CONTENT && more,
                 "the blocks kept are not the ones that go on"
             );
             reply
         }
-        Err(code) => doc::error(&request, *id, code),
+        Err(code) => dns::error(&request, *id, code),
     };
     if reply.code == Code::CONTENT && reply.options.block2().ok().flatten().is_some() {
         let tag = reply.options.get(OptionNumber::ETAG);
         assert_eq!(
             tag,
-            Some(&doc::etag(&served(body))[..]),
+            Some(&dns::etag(&served(body))[..]),
             "blocks without the ETag of the body"
         );
     }
@@ -130,28 +130,28 @@ fn serve(
 /// The Max-Age and query functions on bytes of any kind, and a request of any kind.
 fn stateless(bytes: &[u8]) {
     let mut copy = bytes.to_vec();
-    if let Ok(least) = doc::take_max_age(&mut copy) {
+    if let Ok(least) = dns::take_max_age(&mut copy) {
         let mut again = copy.clone();
         assert_eq!(
-            doc::take_max_age(&mut again).ok(),
+            dns::take_max_age(&mut again).ok(),
             Some(0),
             "a TTL left under the least"
         );
         assert!(
-            doc::add_max_age(&mut copy, least).is_ok(),
+            dns::add_max_age(&mut copy, least).is_ok(),
             "a message read once is read again"
         );
     }
     let Ok(request) = Message::parse(bytes) else {
         return;
     };
-    let path = doc::path_segments("/dns");
-    match doc::query(&request, &path) {
+    let path = dns::path_segments("/dns");
+    match dns::query(&request, &path) {
         Ok(Query::Dns(query)) => assert!(!query.is_empty(), "a query with no body"),
         Ok(Query::Block(_)) => {}
         Err(code) => assert!(!code.is_request(), "{code:?} is no answer"),
     }
-    if let Ok(reply) = doc::response(&request, 1, SMALL.to_vec()) {
+    if let Ok(reply) = dns::response(&request, 1, SMALL.to_vec()) {
         assert_eq!(reply.code, Code::CONTENT);
     }
 }
@@ -226,7 +226,7 @@ pub fn coap_doc(data: &[u8]) {
     let Ok(token) = Token::new(&[script.byte(), script.byte()]) else {
         return;
     };
-    let request = doc::request(&doc::path_segments("/dns"), query, token);
+    let request = dns::request(&dns::path_segments("/dns"), query, token);
     let mut model = Model {
         dedup: Dedup::new(EXCHANGE_LIFETIME, capacity),
         replays: HashMap::new(),

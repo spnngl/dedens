@@ -15,12 +15,12 @@ use compio::quic::h3::error::ConnectionError as H3Error;
 use compio::rustls::pki_types::ServerName;
 use dedens_dnssec::covered;
 use dedens_net::client::{Client, ClientError, Server};
-use dedens_net::coap::doc::path_segments;
+use dedens_net::coap::dns::path_segments;
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
 use dedens_net::doh::{DEFAULT_PATH, Template, TemplateError};
 use dedens_net::exchange::{self, Failure, Response};
-use dedens_net::https::HttpsError;
+use dedens_net::http3::Http3Error;
 use dedens_net::quic::QuicError;
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
@@ -471,9 +471,9 @@ fn no_reply(error: &anyhow::Error) -> bool {
                 QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
             )
             | ClientError::Https(
-                HttpsError::TimedOut
-                | HttpsError::Connection(H3Error::Timeout)
-                | HttpsError::Quic(
+                Http3Error::TimedOut
+                | Http3Error::Connection(H3Error::Timeout)
+                | Http3Error::Quic(
                     QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
                 ),
             ),

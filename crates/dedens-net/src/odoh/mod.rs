@@ -39,7 +39,7 @@ use crate::client::Client;
 use crate::client::{Server, local_io};
 use crate::doh::{self, Template, TemplateError};
 use crate::exchange::Http;
-use crate::https::{HttpsError, HttpsPool, Reply};
+use crate::http3::{Http3Error, Http3Pool, Reply};
 use crate::quic::QuicError;
 
 /// Where a target serves its key configurations: the well-known URI of public targets, which no RFC defines.
@@ -68,7 +68,7 @@ const PROXY_STATUS: HeaderName = HeaderName::from_static("proxy-status");
 pub enum OdohError {
     /// The HTTP/3 connection or request failed.
     #[error("HTTPS")]
-    Https(#[from] HttpsError),
+    Https(#[from] Http3Error),
     /// The proxy's or the target's name and port make no template.
     #[error("no template for the server")]
     Template(#[from] TemplateError),
@@ -110,10 +110,10 @@ impl OdohError {
             | Self::ProxyVariables
             | Self::Request(_)
             | Self::Https(
-                HttpsError::Quic(QuicError::Trust(_) | QuicError::Connect(_))
-                | HttpsError::Request(_),
+                Http3Error::Quic(QuicError::Trust(_) | QuicError::Connect(_))
+                | Http3Error::Request(_),
             ) => true,
-            Self::Https(HttpsError::Quic(QuicError::Bind(error))) => local_io(error),
+            Self::Https(Http3Error::Quic(QuicError::Bind(error))) => local_io(error),
             _ => false,
         }
     }
@@ -357,7 +357,7 @@ pub fn configs_lifetime(headers: &HeaderMap, now: SystemTime) -> Lifetime {
 /// What a target is asked for (D79).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// A `DoH` query, or a request that is none: [`Exchange::query`](crate::https::Exchange::query) says which.
+    /// A `DoH` query, or a request that is none: [`Incoming::query`](crate::http3::Incoming::query) says which.
     Dns,
     /// A POST of an encrypted query, its body the message.
     Oblivious,
@@ -366,7 +366,7 @@ pub enum Kind {
 }
 
 /// The kind and the query of a request to a target serving `DoH` and Oblivious `DoH` at `path`, for
-/// [`Pending::read_with`](crate::https::Pending::read_with) (RFC 9230 §4.1, RFC 8484 §4.1).
+/// [`Pending::read_with`](crate::http3::Pending::read_with) (RFC 9230 §4.1, RFC 8484 §4.1).
 ///
 /// A POST of the oblivious media type at `path` is [`Kind::Oblivious`], its body the query; any other request at
 /// `path` is `DoH`'s, as [`doh::server_request`] reads it. A GET of [`CONFIGS_PATH`], unless that is `path`, is
@@ -513,7 +513,7 @@ impl Configs {
     /// configurations that are none, a response that is not one, or no response before `deadline`.
     pub(crate) async fn exchange(
         &self,
-        https: &HttpsPool,
+        https: &Http3Pool,
         target: &Server,
         proxy: Option<&Server>,
         wire: &[u8],
@@ -606,7 +606,7 @@ impl Configs {
     /// asks for no keeping then makes a [`Notice`].
     async fn fetch(
         &self,
-        https: &HttpsPool,
+        https: &Http3Pool,
         (target, template): (&Server, &Template),
         proxied: bool,
         key: &Key,
@@ -666,7 +666,7 @@ impl Configs {
 /// Encrypts `wire` under the most preferred of `configs`, sends it to `proxy` or, without one, to `target`, and
 /// decrypts the response.
 async fn ask(
-    https: &HttpsPool,
+    https: &Http3Pool,
     (target, target_template): (&Server, &Template),
     (proxy, proxy_template): (Option<&Server>, Option<&Template>),
     configs: &dedens_odoh::Configs,

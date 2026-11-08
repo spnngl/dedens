@@ -8,7 +8,7 @@ use std::time::Instant;
 use coap_capture::{SERVER, capture, delivered, play, request_of};
 use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::exchange::{Exchange, Next, Params};
-use dedens_net::coap::{Code, Message, OptionNumber, Token, doc};
+use dedens_net::coap::{Code, Message, OptionNumber, Token, dns};
 use dedens_proto::rdata::{SvcParam, SvcParams};
 
 const QUERY: &[u8] = include_bytes!("testdata/doh/quad9_mx.query");
@@ -29,7 +29,7 @@ fn the_request_of_a_query_is_the_one_aiocoap_sends() {
     let capture = capture("fetch_doc");
     let first = delivered(&capture, true)[0];
     let token = first.message().token;
-    let request = doc::request(&segments(&["dns"]), QUERY.to_vec(), token);
+    let request = dns::request(&segments(&["dns"]), QUERY.to_vec(), token);
     let step = Exchange::start(
         request,
         SERVER,
@@ -43,7 +43,7 @@ fn the_request_of_a_query_is_the_one_aiocoap_sends() {
 
 #[test]
 fn the_request_says_fetch_and_dns_message() {
-    let request = doc::request(
+    let request = dns::request(
         &segments(&["a", "b"]),
         QUERY.to_vec(),
         Token::new(&[1, 2]).expect("a value"),
@@ -58,7 +58,7 @@ fn the_request_says_fetch_and_dns_message() {
     // The body is the query, FETCH having a body (RFC 8132 §2.3).
     assert_eq!(request.payload, QUERY);
     // The root path has no Uri-Path option.
-    let root = doc::request(&[], QUERY.to_vec(), Token::new(&[1, 2]).expect("a value"));
+    let root = dns::request(&[], QUERY.to_vec(), Token::new(&[1, 2]).expect("a value"));
     assert_eq!(root.options.get(OptionNumber::URI_PATH), None);
 }
 
@@ -120,14 +120,14 @@ fn the_query_goes_with_each_request_for_a_block() {
 fn docpath_makes_the_uri_path() {
     // RFC 9953 §3.2.1: `docpath=n,s` is the path /n/s; a bare `docpath` is the root path.
     let params = SvcParams::new(vec![SvcParam::DocPath(segments(&["n", "s"]))]).expect("a value");
-    let path = doc::docpath(&params).expect("a value");
-    let request = doc::request(&path, QUERY.to_vec(), Token::EMPTY);
+    let path = dns::docpath(&params).expect("a value");
+    let request = dns::request(&path, QUERY.to_vec(), Token::EMPTY);
     assert_eq!(request.options.uri_path().collect::<Vec<_>>(), [b"n", b"s"]);
     let root = SvcParams::new(vec![SvcParam::DocPath(Vec::new())]).expect("a value");
-    assert_eq!(doc::docpath(&root), Some(Vec::new()));
+    assert_eq!(dns::docpath(&root), Some(Vec::new()));
     // Without the parameter the record does not describe a DoC server.
     assert_eq!(
-        doc::docpath(&SvcParams::new(Vec::new()).expect("a value")),
+        dns::docpath(&SvcParams::new(Vec::new()).expect("a value")),
         None
     );
 }
@@ -146,7 +146,7 @@ fn rfc_9953_4_2_3_query_as_a_fetch_body() {
         &[0x00, 0x00, 0x1c, 0x00, 0x01],
     ]
     .concat();
-    let request = doc::request(
+    let request = dns::request(
         &segments(&["dns"]),
         query.clone(),
         Token::new(&[0xaa, 0xbb]).expect("a value"),

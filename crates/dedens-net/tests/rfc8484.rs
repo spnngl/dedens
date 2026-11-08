@@ -22,7 +22,7 @@ use dedens_net::doh::{
     server_response, wire,
 };
 use dedens_net::exchange::{Failure, Http, Options};
-use dedens_net::https::{HttpsError, Requests};
+use dedens_net::http3::{Http3Error, Requests};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
@@ -1054,7 +1054,7 @@ async fn s4_2_1_a_4xx_is_no_response() {
     assert!(
         matches!(
             error,
-            Err(ClientError::Https(HttpsError::Response(DohError::Status(
+            Err(ClientError::Https(Http3Error::Response(DohError::Status(
                 StatusCode::NOT_FOUND
             ))))
         ),
@@ -1172,7 +1172,7 @@ async fn s5_2_a_certificate_for_another_name_is_refused() {
         .exchange(query(), named(addr, "other.example"), &https(Method::Get))
         .await;
     assert!(
-        matches!(error, Err(ClientError::Https(HttpsError::Quic(_)))),
+        matches!(error, Err(ClientError::Https(Http3Error::Quic(_)))),
         "{error:?}"
     );
     assert!(seen.requests.borrow().is_empty());
@@ -1210,7 +1210,7 @@ async fn s4_2_2_a_response_header_section_past_the_limit_is_refused() {
     options.timeout = Duration::from_secs(5);
     let error = client.exchange(query(), named(addr, NAME), &options).await;
     assert!(
-        matches!(error, Err(ClientError::Https(HttpsError::Stream(_)))),
+        matches!(error, Err(ClientError::Https(Http3Error::Stream(_)))),
         "{error:?}"
     );
     assert_eq!(*seen.refused.borrow(), [8 << 10]);

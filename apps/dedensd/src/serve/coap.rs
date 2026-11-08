@@ -1,5 +1,5 @@
 //! DNS over CoAP (RFC 9953, D81): the requests of one UDP socket, each through the pipeline as any query and
-//! answered as [`dedens_net::coap::doc`] says.
+//! answered as [`dedens_net::coap::dns`] says.
 //!
 //! A CON request is answered with an ACK carrying the response, at whatever time it is ready: the client goes on
 //! retransmitting until then, and a retransmission is not asked again (RFC 7252 §4.5). A NON request gets a NON
@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use compio::BufResult;
 use compio::net::UdpSocket;
-use dedens_net::coap::doc::{
+use dedens_net::coap::dns::{
     BLOCK_SIZE, Query, discovery, error, more_blocks, path_segments, query, response,
 };
 use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFETIME, Seen};
