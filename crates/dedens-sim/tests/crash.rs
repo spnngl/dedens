@@ -19,12 +19,10 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{SECOND, SEEDS};
 
 /// Seeds for the scripts that run over both carriers or wait out the client's tries.
 const FEW: &[u64] = &[0, 7];
-
-const SECOND: Duration = Duration::from_secs(1);
 
 const MS: Duration = Duration::from_millis(1);
 
@@ -516,10 +514,15 @@ fn digest(seed: Seed) -> u64 {
 #[test]
 fn one_seed_gives_one_trace_in_two_processes() {
     let runs = std::cell::Cell::new(0);
-    seed::in_two_processes("one_seed_gives_one_trace_in_two_processes", FEW, |seed| {
-        runs.set(runs.get() + 1);
-        digest(seed)
-    });
+    seed::in_two_processes(
+        module_path!(),
+        "one_seed_gives_one_trace_in_two_processes",
+        FEW,
+        |seed| {
+            runs.set(runs.get() + 1);
+            digest(seed)
+        },
+    );
     // The helper runs the scenario, in this process or the child's.
     assert!(runs.get() > 0);
 }

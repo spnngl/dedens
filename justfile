@@ -335,10 +335,10 @@ fuzz-all seconds="60":
         cargo fuzz run --target "$host" "$target" "corpus/$target" ../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh -- -max_total_time={{ seconds }} $dict
     done
 
-# Every simulation scenario under `runs` random seeds (D133), or those of one file of crates/dedens-sim/tests:
-# just sim 100 dnssec. A failure prints its `DEDENS_SIM_SEED=<n>`.
-sim runs="100" test="*":
-    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test '{{ test }}'
+# Every simulation scenario under `runs` random seeds (D133), or those of one family, a module of
+# crates/dedens-sim/tests: just sim 100 dnssec. A failure prints its `DEDENS_SIM_SEED=<n>`.
+sim runs="100" family="":
+    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else { family + "::" } }}
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
 fuzz-smoke:

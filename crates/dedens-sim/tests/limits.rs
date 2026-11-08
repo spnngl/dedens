@@ -51,8 +51,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::Answers;
 
-/// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{SECOND, SEEDS};
 
 /// Fewer seeds for the scenarios that run through the stub's timeouts or validate.
 const FEW: &[u64] = &[0, 7];
@@ -63,11 +62,9 @@ const THREE: &[u64] = &[0, 7, 42];
 /// One seed for the scenario that runs twice in two processes.
 const ONE: &[u64] = &[0];
 
-const SECOND: Duration = Duration::from_secs(1);
-
 /// How long the stub waits for each try, and how many tries it makes (D27).
-const TIMEOUT: Duration = Duration::from_secs(5);
-const TRIES: u16 = 3;
+const STUB_TIMEOUT: Duration = Duration::from_secs(5);
+const STUB_TRIES: u16 = 3;
 
 /// Buckets of the rate limit and the shares: a million, so that the networks of a run do not share one.
 const TABLE: usize = 1 << 20;
@@ -195,9 +192,9 @@ impl Fate {
     /// A query that ran through its tries.
     const fn lost() -> Self {
         Self {
-            how: How::Failed(Failure::TimedOut { sends: TRIES }),
-            sends: TRIES,
-            wave: TRIES as u64,
+            how: How::Failed(Failure::TimedOut { sends: STUB_TRIES }),
+            sends: STUB_TRIES,
+            wave: STUB_TRIES as u64,
         }
     }
 }
@@ -230,7 +227,8 @@ fn fates(events: &[Event], of: impl Fn(IpAddr) -> bool) -> Vec<Fate> {
             fates.push(Fate {
                 how,
                 sends,
-                wave: u64::try_from(took.as_millis() / TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+                wave: u64::try_from(took.as_millis() / STUB_TIMEOUT.as_millis())
+                    .unwrap_or(u64::MAX),
             });
         }
     }
@@ -915,7 +913,7 @@ fn bucket(
     );
     let mut fates = Vec::new();
     let (mut pending, mut since) = (clients, 0);
-    for wave in 0..u64::from(TRIES) {
+    for wave in 0..u64::from(STUB_TRIES) {
         let tries = u16::try_from(wave + 1).unwrap_or(u16::MAX);
         let passed = pending.min(burst);
         fates.extend(times(
@@ -967,20 +965,25 @@ fn whatever_the_seed_picks_each_network_ends_as_the_limits_say() {
 #[test]
 fn a_limited_run_replays_in_two_processes() {
     let runs = std::cell::Cell::new(0);
-    seed::in_two_processes("a_limited_run_replays_in_two_processes", ONE, |seed| {
-        runs.set(runs.get() + 1);
-        let scene = Scene {
-            limits: Limits::open(2, 2)
-                .with_cookies()
-                .allowing(&[NETS[0], NETS[1]], Denial::Refuse),
-            client_cookies: true,
-            subnets: vec![
-                (Subnet::udp(NETS[0], 5), true),
-                (Subnet::tcp(NETS[1], 2), true),
-                (Subnet::udp(NETS[2], 4), false),
-            ],
-        };
-        trace::digest(&scene.run(seed))
-    });
+    seed::in_two_processes(
+        module_path!(),
+        "a_limited_run_replays_in_two_processes",
+        ONE,
+        |seed| {
+            runs.set(runs.get() + 1);
+            let scene = Scene {
+                limits: Limits::open(2, 2)
+                    .with_cookies()
+                    .allowing(&[NETS[0], NETS[1]], Denial::Refuse),
+                client_cookies: true,
+                subnets: vec![
+                    (Subnet::udp(NETS[0], 5), true),
+                    (Subnet::tcp(NETS[1], 2), true),
+                    (Subnet::udp(NETS[2], 4), false),
+                ],
+            };
+            trace::digest(&scene.run(seed))
+        },
+    );
     assert!(runs.get() > 0);
 }

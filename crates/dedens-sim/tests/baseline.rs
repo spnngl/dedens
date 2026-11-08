@@ -26,11 +26,10 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 
-/// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{SECOND, SEEDS};
 
 /// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time, and
-/// the file keeps to its budget.
+/// the module keeps to its budget.
 const FEW: &[u64] = &[0, 7];
 
 /// One client asks `example.com A` `asks` times over `carrier`, through a resolver with one upstream server.
@@ -193,8 +192,6 @@ fn a_seed_replays_to_the_same_trace() {
 
 /// The link between the resolver and the upstream server.
 const LINK: (Node, Node) = (Node::Resolver, Node::Upstream(0));
-
-const SECOND: Duration = Duration::from_secs(1);
 
 /// One client asks `example.com A` over UDP, once, with one upstream server holding `answers`; `setup` adds what
 /// goes wrong.
