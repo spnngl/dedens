@@ -1050,6 +1050,24 @@ Hardening of the release `dedensd` and `dedens`, `L` against `B` (`readelf -hlWd
 - The debug `dedens` and `dedensd` of `x86_64-unknown-linux-musl` (cross, Debian with `musl-tools`) are static-PIE:
   no `INTERP`, `FLAGS BIND_NOW`, `FLAGS_1 NOW PIE`. The release musl readout waits for step 01.
 
+## Test binaries (D162)
+
+A test binary per file (`tests/rfcNNNN.rs`, main at 786c2e6) against one per package (`tests/tests.rs`), the same
+1897 tests. Apple M5, 10 cores, macOS 27.2, rustc 1.99.1, Apple's `ld` (`CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=cc`),
+a shared machine (load average up to 10), 2026-11-08; each tree a `git archive` with an empty target directory,
+one run.
+
+| Measure | A binary per file | One per package |
+|---|---|---|
+| `cargo test --workspace --no-run`, cold | 43 s | 29 s |
+| The same after `touch crates/dedens-proto/src/lib.rs`, 3 rounds | 16 / 17 / 17 s | 5 / 5 / 6 s |
+| `target/` | 5.7 GB | 3.7 GB |
+| `target/debug/deps` | 3.5 GB | 2.3 GB |
+| Test executables | 129 | 14 |
+
+- The incremental build is the link's: each binary linked its crate's dependencies again. 14 is a binary per
+  package with tests, plus `dedens-cache`'s two that set their own `#[global_allocator]`.
+
 ## Allocators
 
 Which global allocator a static musl `dedensd` (D151) should carry: musl's mallocng (the default, no crate), mimalloc

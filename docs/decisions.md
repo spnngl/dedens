@@ -1353,7 +1353,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D162 (amends D13, D133, D140) A package's integration tests are one binary, `tests/tests.rs` (`autotests = false`
   and one `[[test]]`, as ripgrep), with a module per topic, not a file per RFC: 129 test binaries each linked their
   crate's dependencies (21 linked compio, rustls and quinn in `dedens-net` alone), and the link dominated an
-  incremental test build (`docs/benchmarks.md`). A topic module cites in its docs the RFCs and sections it tests, and
+  incremental test build: 14 binaries take it from 16-17 s to 5-6 s after a change to `dedens-proto`, and `target/`
+  from 5.7 to 3.7 GB (`docs/benchmarks.md`). A topic module cites in its docs the RFCs and sections it tests, and
   each test of an RFC section keeps the section in its name (`s4_1_4_...`); a topic gathering several RFCs gives each
   its own inner module or a `// --- RFC NNNN ---` part. The shared helpers are the module `util` (was `common/`), one
   copy linked once, so the `tests` binary has no `dead_code` allowance; a test file that needed a feature is a
