@@ -6,12 +6,12 @@
 mod common;
 
 use std::cell::{Cell, RefCell};
-use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
+use std::{fs, io};
 
 use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
@@ -29,6 +29,7 @@ use dedens_net::odoh::{
     configs_request, configs_response, names_target, proxy_error, request, response,
     target_response,
 };
+use dedens_net::quic::QuicError;
 use dedens_net::tls::Trust;
 use dedens_odoh::rand_core::TryRng;
 use dedens_odoh::{
@@ -971,6 +972,20 @@ async fn exchange_refuses_oblivious_without_a_proxy() {
         .expect_err("no proxy");
     assert!(matches!(error, ClientError::OdohWithoutProxy), "{error:?}");
     assert!(error.is_local());
+}
+
+/// D46: an Oblivious `DoH` socket that cannot be bound for want of resources is our failure; one the network
+/// refuses, or a status, is not.
+#[test]
+fn odoh_failures_of_ours_are_local() {
+    let bind = |kind| {
+        ClientError::Odoh(OdohError::Https(Http3Error::Quic(QuicError::Bind(
+            io::Error::from(kind),
+        ))))
+    };
+    assert!(bind(io::ErrorKind::OutOfMemory).is_local());
+    assert!(!bind(io::ErrorKind::ConnectionRefused).is_local());
+    assert!(!ClientError::Odoh(OdohError::Status(StatusCode::BAD_REQUEST)).is_local());
 }
 
 /// D79: configurations the caller gives are not fetched, and a 401 under them is the error: they are not fetched

@@ -7,13 +7,13 @@ use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::num::NonZero;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
 use common::{query, sent, start, t0};
 use compio::bytes::{Buf, Bytes};
-use compio::quic::{ServerBuilder, VarInt, h3};
+use compio::quic::{Connection, ServerBuilder, VarInt, h3};
 use compio::rustls::pki_types::ServerName;
 use compio::rustls::version::TLS13;
 use dedens_net::client::{Client, ClientError, Server};
@@ -22,11 +22,11 @@ use dedens_net::doh::{
     server_response, wire,
 };
 use dedens_net::exchange::{Failure, Http, Options};
-use dedens_net::http3::{Http3Error, Requests};
+use dedens_net::http3::{Http3Error, Http3Pool, Requests};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Message, Rcode, RecordType, Transport};
+use dedens_proto::{MAX_MESSAGE_LEN, Message, Rcode, RecordType, Transport};
 use futures_util::future::join_all;
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE};
 use http::{Response, StatusCode, Version};
@@ -646,6 +646,19 @@ fn s4_2_1_server_errors_are_200_with_max_age_0() {
     assert!(server_response(vec![1, 2, 3], &http::Method::POST).is_ok());
 }
 
+/// RFC 8484 §4.1: our server over HTTP/3 ([`our_server`]) reads the query a POST carries in its body.
+#[compio::test]
+async fn s4_1_our_server_reads_a_post() {
+    let certificates = certificates();
+    let (addr, _) = our_server(&certificates, false).await;
+    let response = trusting(certificates)
+        .exchange(query(), named(addr, NAME), &https(Method::Post))
+        .await
+        .expect("a response");
+    let answered = Message::decode(&response.wire).expect("a response").message;
+    assert_eq!(answered.questions, query().questions);
+}
+
 // --- captured responses
 
 /// What `capture.nu` saved of one exchange.
@@ -814,6 +827,8 @@ enum Serve {
     Status(u16),
     /// Each query answered, then a `GOAWAY`: no more requests on that connection.
     GoingAway,
+    /// The first query of a connection answered, the stream of each later one reset with this code.
+    ResettingAfterFirst(h3::error::Code),
     /// The first query of a connection answered, then the connection closed.
     ClosingAfterFirst,
     /// Never an answer.
@@ -872,56 +887,10 @@ async fn h3_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, Rc
                 else {
                     return;
                 };
+                let mut first = true;
                 while let Ok(Some(resolver)) = server.accept().await {
-                    let log = Rc::clone(&log);
-                    let handled = async move {
-                        let Ok((request, mut stream)) = resolver.resolve_request().await else {
-                            return;
-                        };
-                        let mut body = Vec::new();
-                        while let Ok(Some(chunk)) = stream.recv_data().await {
-                            body.extend(bytes_of(chunk));
-                        }
-                        let (head, ()) = request.into_parts();
-                        let request = http::Request::from_parts(head.clone(), ());
-                        log.requests.borrow_mut().push((head, body.clone()));
-                        let reply = match serve {
-                            Serve::Silent => {
-                                compio::time::sleep(Duration::from_secs(10)).await;
-                                return;
-                            }
-                            Serve::Status(status) => Response::builder()
-                                .status(status)
-                                .body(Vec::new())
-                                .expect("a response"),
-                            _ => {
-                                let query = server_request(&request, &body).expect("a query");
-                                server_response(answer(&query, Vec::new()), request.method())
-                                    .expect("a response")
-                            }
-                        };
-                        let (mut head, body) = reply.into_parts();
-                        if serve == Serve::BigHeaders {
-                            head.headers.insert(
-                                "x-padding",
-                                "a".repeat(16 << 10).parse().expect("a header value"),
-                            );
-                            // The client's settings reach the server on a stream of their own.
-                            compio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                        let sent = stream.send_response(Response::from_parts(head, ())).await;
-                        if let Err(h3::error::StreamError::HeaderTooBig { max_size, .. }) = &sent {
-                            log.refused.borrow_mut().push(*max_size);
-                            stream.stop_stream(h3::error::Code::H3_INTERNAL_ERROR);
-                            return;
-                        }
-                        sent.expect("the client reads");
-                        stream
-                            .send_data(Bytes::from(body))
-                            .await
-                            .expect("the client reads");
-                        stream.finish().await.expect("an open stream");
-                    };
+                    let handled = handle(resolver, serve, first, Rc::clone(&log));
+                    first = false;
                     match serve {
                         Serve::GoingAway => {
                             handled.await;
@@ -943,6 +912,67 @@ async fn h3_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, Rc
     })
     .detach();
     (addr, seen)
+}
+
+/// Reads the request of `resolver` into `log` and answers it as `serve` says; `first` is whether it is the first
+/// request of its connection.
+async fn handle(
+    resolver: h3::server::RequestResolver<Connection, Bytes>,
+    serve: Serve,
+    first: bool,
+    log: Rc<Seen>,
+) {
+    let Ok((request, mut stream)) = resolver.resolve_request().await else {
+        return;
+    };
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = stream.recv_data().await {
+        body.extend(bytes_of(chunk));
+    }
+    let (head, ()) = request.into_parts();
+    let request = http::Request::from_parts(head.clone(), ());
+    log.requests.borrow_mut().push((head, body.clone()));
+    if let Serve::ResettingAfterFirst(code) = serve
+        && !first
+    {
+        stream.stop_stream(code);
+        return;
+    }
+    let reply = match serve {
+        Serve::Silent => {
+            compio::time::sleep(Duration::from_secs(10)).await;
+            return;
+        }
+        Serve::Status(status) => Response::builder()
+            .status(status)
+            .body(Vec::new())
+            .expect("a response"),
+        _ => {
+            let query = server_request(&request, &body).expect("a query");
+            server_response(answer(&query, Vec::new()), request.method()).expect("a response")
+        }
+    };
+    let (mut head, body) = reply.into_parts();
+    if serve == Serve::BigHeaders {
+        head.headers.insert(
+            "x-padding",
+            "a".repeat(16 << 10).parse().expect("a header value"),
+        );
+        // The client's settings reach the server on a stream of their own.
+        compio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let sent = stream.send_response(Response::from_parts(head, ())).await;
+    if let Err(h3::error::StreamError::HeaderTooBig { max_size, .. }) = &sent {
+        log.refused.borrow_mut().push(*max_size);
+        stream.stop_stream(h3::error::Code::H3_INTERNAL_ERROR);
+        return;
+    }
+    sent.expect("the client reads");
+    stream
+        .send_data(Bytes::from(body))
+        .await
+        .expect("the client reads");
+    stream.finish().await.expect("an open stream");
 }
 
 fn https(method: Method) -> Options {
@@ -1102,11 +1132,96 @@ async fn s5_2_a_goaway_moves_queries_to_a_new_connection() {
     assert_eq!(seen.requests.borrow().len(), 3);
 }
 
-/// RFC 9114 §5.2: the `GOAWAY` of our server's [`Requests::shutdown`] after each answer moves each query to a new
+/// RFC 9114 §5.2: a request the client's h3 refuses after a `GOAWAY` (`RemoteClosing`), the connection still open,
+/// is sent on a new connection. The sleep lets the `GOAWAY` arrive first, best effort: a request that goes out
+/// before it is rejected by the server instead, the path `s5_2_a_rejected_request_is_sent_again_on_a_new_connection`
+/// covers.
+#[compio::test]
+async fn s5_2_a_goaway_seen_moves_the_next_query() {
+    let certificates = certificates();
+    let (addr, seen) = h3_server(&certificates, Serve::GoingAway).await;
+    let client = trusting(certificates);
+    for _ in 0..2 {
+        client
+            .exchange(query(), named(addr, NAME), &https(Method::Get))
+            .await
+            .expect("a response");
+        compio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen.connections.get(), 2);
+    assert_eq!(seen.requests.borrow().len(), 2);
+}
+
+/// RFC 9114 §4.1.1: a request reset with `H3_REQUEST_REJECTED` was not processed: it is sent again on a new
 /// connection.
 #[compio::test]
-async fn s5_2_our_server_shutting_down_sends_a_goaway() {
+async fn s5_2_a_rejected_request_is_sent_again_on_a_new_connection() {
     let certificates = certificates();
+    let rejecting = Serve::ResettingAfterFirst(h3::error::Code::H3_REQUEST_REJECTED);
+    let (addr, seen) = h3_server(&certificates, rejecting).await;
+    let client = trusting(certificates);
+    for _ in 0..2 {
+        client
+            .exchange(query(), named(addr, NAME), &https(Method::Get))
+            .await
+            .expect("a response");
+    }
+    assert_eq!(seen.connections.get(), 2);
+    assert_eq!(seen.requests.borrow().len(), 3);
+}
+
+/// RFC 9114 §4.1.1: a request reset with another code may have been processed: it is not sent again.
+#[compio::test]
+async fn s5_2_a_request_reset_otherwise_is_not_sent_again() {
+    let certificates = certificates();
+    let failing = Serve::ResettingAfterFirst(h3::error::Code::H3_INTERNAL_ERROR);
+    let (addr, seen) = h3_server(&certificates, failing).await;
+    let client = trusting(certificates);
+    let options = https(Method::Get);
+    client
+        .exchange(query(), named(addr, NAME), &options)
+        .await
+        .expect("a response");
+    let error = client.exchange(query(), named(addr, NAME), &options).await;
+    assert!(
+        matches!(error, Err(ClientError::Https(Http3Error::Stream(_)))),
+        "{error:?}"
+    );
+    assert_eq!(seen.connections.get(), 1);
+    assert_eq!(seen.requests.borrow().len(), 2);
+}
+
+/// RFC 8484 §6, D79: [`Http3Pool::send`] reads a body as long as its limit (a DNS message's most, for `DoH`), and
+/// refuses one a byte longer.
+#[compio::test]
+async fn s5_2_a_body_past_the_limit_is_refused() {
+    let certificates = certificates();
+    let (addr, _) = h3_server(&certificates, Serve::Answer).await;
+    let pool =
+        Http3Pool::new(Duration::from_secs(10)).trusting(Trust::Roots(vec![certificates.ca]));
+    let asked = request(&template(), &hex(WWW_QUERY), Method::Post).expect("a request");
+    let send = |limit| {
+        let name = ServerName::try_from(NAME).expect("a name");
+        pool.send(
+            addr,
+            name,
+            &asked,
+            limit,
+            Instant::now() + Duration::from_secs(5),
+        )
+    };
+    let (_, body) = send(MAX_MESSAGE_LEN).await.expect("a response");
+    let (_, same) = send(body.len())
+        .await
+        .expect("a body of the limit's length");
+    assert_eq!(same, body);
+    let refused = send(body.len() - 1).await;
+    assert!(matches!(refused, Err(Http3Error::TooLong)), "{refused:?}");
+}
+
+/// Our HTTP/3 server on the loopback address, answering each query, then sending a `GOAWAY` if `going_away`; it
+/// counts the connections.
+async fn our_server(certificates: &Certificates, going_away: bool) -> (SocketAddr, Rc<Cell<u32>>) {
     let config = certificates.config(&[&TLS13], b"h3");
     let endpoint = ServerBuilder::new_with_rustls_server_config(config)
         .bind("127.0.0.1:0")
@@ -1128,13 +1243,24 @@ async fn s5_2_our_server_shutting_down_sends_a_goaway() {
                     let exchange = pending.read("/dns-query").await.expect("a request");
                     let response = answer(exchange.query().expect("a query"), Vec::new());
                     exchange.respond(response).await.expect("the client reads");
-                    requests.shutdown().await.expect("a GOAWAY");
+                    if going_away {
+                        requests.shutdown().await.expect("a GOAWAY");
+                    }
                 }
             })
             .detach();
         }
     })
     .detach();
+    (addr, connections)
+}
+
+/// RFC 9114 §5.2: the `GOAWAY` of our server's [`Requests::shutdown`] after each answer moves each query to a new
+/// connection.
+#[compio::test]
+async fn s5_2_our_server_shutting_down_sends_a_goaway() {
+    let certificates = certificates();
+    let (addr, connections) = our_server(&certificates, true).await;
     let client = trusting(certificates);
     for _ in 0..3 {
         client
