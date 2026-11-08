@@ -73,6 +73,8 @@ exclude_re = [
   'link\.rs:\d+:\d+: replace \| with \^ in decode$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
   'client\.rs:\d+:\d+: replace discover -> Result<Vec<Vec<Box<\[u8\]>>>, ClientError> with ',
+  # Configurations that go stale at the very `Instant` they are read or kept: equal `Instant`s never happen.
+  'odoh/client\.rs:\d+:\d+: replace > with >= in Configs::(fresh|keep)$',
   # dedens-sim: a `read` that returns an empty or one-byte message makes the host loop on it without waiting, so the run
   # never ends (a timeout of the mutants run, not a failure).
   'framing\.rs:\d+:\d+: replace read -> io::Result<Vec<u8>> with ',

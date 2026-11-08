@@ -926,6 +926,43 @@ async fn s4_3_a_401_of_the_proxy_does_not_fetch_the_configurations_again() {
     assert_eq!(target.configs_asked.get(), 1);
 }
 
+/// RFC 9230 §4.3 with RFC 9209 §2, D79: asked without a proxy, a 401 is the target's, a `Proxy-Status` naming an
+/// error (from a reverse proxy in front of it) notwithstanding: the configurations are fetched again and the query
+/// asked again.
+#[compio::test]
+async fn s4_3_a_proxy_status_without_a_proxy_is_the_targets() {
+    let certificates = certificates();
+    let target = Target::new(17);
+    let handler = Rc::clone(&target);
+    let addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| {
+            let mut response = handler.handle(request, body);
+            if response.status() == StatusCode::UNAUTHORIZED {
+                response.headers_mut().insert(
+                    PROXY_STATUS,
+                    HeaderValue::from_static("cdn.example; error=http_request_denied"),
+                );
+            }
+            response
+        }),
+    )
+    .await;
+    let client = trusting(certificates);
+    let options = Options::default();
+    client
+        .exchange_oblivious(query(), named(addr, NAME), None, &options)
+        .await
+        .expect("a response");
+    *target.key.borrow_mut() = TargetKey::derive(&[18; 32]);
+    client
+        .exchange_oblivious(query(), named(addr, NAME), None, &options)
+        .await
+        .expect("a response with the new key");
+    assert_eq!(target.configs_asked.get(), 2);
+    assert_eq!(target.queries.borrow().len(), 2);
+}
+
 /// D79: a proxy URI that sets `targethost` is a URI template, which is not supported: refused before any request.
 #[compio::test]
 async fn s4_1_a_proxy_uri_with_the_variables_is_refused() {

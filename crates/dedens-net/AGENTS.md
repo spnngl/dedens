@@ -28,10 +28,11 @@ crate that touches sockets and timers.
   FETCH request of a query, the path of a `docpath`, the `/.well-known/core` request and the server's list of its
   resource, D95), `link.rs` (RFC 6690 link lists, and the path a link names on a server); no socket, no clock, no
   randomness; fuzzed by `parse_coap` and `parse_link_format`.
-- `src/odoh/mod.rs`, feature `odoh`: Oblivious DoH over `http3.rs` (D79): the sans-IO requests, responses and target
-  classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
-  `Client::exchange_oblivious`. `src/odoh/proxy.rs` is the proxy's side (D94): routing a request, the listed `Target`s,
-  the forwarded request and response, the `Proxy-Status` errors; fuzzed by `read_odoh_http`.
+- `src/odoh/mod.rs`, feature `odoh`: Oblivious DoH over `http3.rs` (D79): the requests, responses and target
+  classifier on `http` types, which send nothing themselves, and `Entropy`, the system's randomness; fuzzed by
+  `read_odoh_http`. `src/odoh/client.rs`: the configurations cache and the exchange, run by
+  `Client::exchange_oblivious`. `src/odoh/proxy.rs` is the proxy's side (D94): routing a request, the listed
+  `Target`s, the forwarded request and response, the `Proxy-Status` errors; fuzzed by `read_odoh_http`.
 - `src/doc.rs` (feature `doc`, D81): DoC over a UDP socket per query, CoAP's retransmission, the Max-Age added to the TTLs, all
   ended at the query's deadline (D109);
   the discovery of the resource by `/.well-known/core` (D95).

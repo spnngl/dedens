@@ -7,7 +7,7 @@
 //!
 //! The pools read no clock, spawn no task and open no socket but through their `Io`: `udp`, `tcp` and `client` deny
 //! `clippy::disallowed_methods`, whose list in the crate's `clippy.toml` fails their build when one does. The other
-//! modules on compio call it directly (D134): `quic`, `dial`, `http3` and `odoh`'s exchange run on compio's QUIC,
+//! modules on compio call it directly (D134): `quic`, `dial`, `http3` and `odoh::client` run on compio's QUIC,
 //! which has its own endpoint and clock, and no simulation runs `doc` yet. The lint is allowed elsewhere, as clippy
 //! takes its list per crate, not per module.
 
