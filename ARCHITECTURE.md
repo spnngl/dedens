@@ -13,12 +13,12 @@
 | `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over a sans-IO exchange; the client's UDP and TCP pools generic over the `Io` seam, `Compio` in production (D134); the sans-IO cores of DoH (D82) and CoAP (D80); Oblivious DoH over HTTP/3, `odoh` feature (D79); `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
-| `crates/dedens-testkit` | Test-only: the path of `testdata/` and the helpers the tests of several crates share (D161) | files |
+| `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the DNSSEC captures and RFC examples, the test certificates and the loopback responder of the command-line tests (features `certificates`, `responder`); public modules `dnssec`, `certificates` and `responder`, every other item at the root (D160) | files, sockets (`responder`) |
 | `crates/dedens-sim` | Simulation tests (D133, D134): the sans-IO server core and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network | simulated |
 | `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
 | `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122) | sockets, files, HTTP (lists) |
 | `fuzz/` | libFuzzer targets, own workspace | none |
-| `testdata/` | Real data the tests, benches, fuzz targets and simulations share: captures, RFC example zones, lists (D161) | |
+| `testdata/` | Real data the tests, benches, fuzz targets and simulations share: captures, RFC example zones, lists (D161) | read as files |
 
 Planned: `dedens-resolver`.
 

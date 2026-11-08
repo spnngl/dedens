@@ -1,7 +1,8 @@
 # testdata
 
 Real data read by the tests, benches, fuzz targets and simulations of more than one package (D161), through
-`dedens_testkit::path` or an `include_bytes!` of the file. Never edit a capture by hand: capture it again.
+`dedens_testkit` (`captured`, `dnssec::capture`, `zone`, `path` for any other file) or an `include_bytes!` of the
+file. Never edit a capture by hand: capture it again.
 
 - `proto/`: real responses from `just capture` (the queries of `capture.yaml`), read by
   `crates/dedens-proto/tests/captured.rs` and as the answers of the other crates' tests; fuzz seeds.
