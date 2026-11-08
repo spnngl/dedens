@@ -9,7 +9,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::{answer, listen};
 use common::{query, sent, start, t0};
 use compio::BufResult;
@@ -23,6 +22,7 @@ use dedens_net::tcp::{Link, TcpError, TcpPool, frame};
 use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 
 /// What the server saw.
 #[derive(Default)]

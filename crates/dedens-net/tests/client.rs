@@ -8,7 +8,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::certificates::{NAME, certificates, named};
 use common::cookie_of;
 use common::loopback::{answer, id, listen, responders, udp_responder};
 use compio::BufResult;
@@ -21,6 +20,7 @@ use dedens_net::tcp::{TcpError, frame};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{Message, Rcode, Transport};
+use dedens_testkit::certificates::{NAME, certificates, named};
 
 fn answer_plainly(query: &[u8]) -> Vec<u8> {
     answer(query, Vec::new())

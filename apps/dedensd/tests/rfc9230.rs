@@ -3,12 +3,6 @@
 //! a proxy (§4, D94): queries forwarded to the targets listed, the `Proxy-Status` of each failure (RFC 9209).
 #![cfg(feature = "odoh")]
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
 mod common;
 
 use std::net::{SocketAddr, UdpSocket};
@@ -18,7 +12,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, ServerBuilder, h3};
@@ -32,6 +25,7 @@ use dedens_net::tls::Trust;
 use dedens_odoh::{Configs, MEDIA_TYPE, encrypt_query};
 use dedens_proto::{Rcode, Transport};
 use dedens_testkit::captured;
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
 

@@ -1,18 +1,11 @@
 //! Serving DNS over HTTPS (RFC 8484) over HTTP/3 (RFC 9114), on addresses behind `https://` with the certificate of
 //! `tls` (D84): the answers, their `cache-control`, the statuses of requests that are no query, the path.
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
 mod common;
 
 use std::net::SocketAddr;
 use std::num::NonZero;
 
-use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, h3};
@@ -24,6 +17,7 @@ use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, Transport};
 use dedens_testkit::captured;
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{HeaderMap, StatusCode};
 

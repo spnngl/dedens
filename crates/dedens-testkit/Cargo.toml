@@ -9,9 +9,16 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+compio = { workspace = true, optional = true }
 # The base64 of the RFC examples (`dnssec::b64`).
 data-encoding.workspace = true
+dedens-net = { workspace = true, optional = true }
 dedens-proto.workspace = true
+rcgen = { workspace = true, optional = true }
+
+[features]
+# The certificates of the TLS, QUIC and HTTPS tests (`certificates`).
+certificates = ["dep:compio", "dep:dedens-net", "dep:rcgen"]
 
 [lints]
 workspace = true

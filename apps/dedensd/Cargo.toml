@@ -49,10 +49,9 @@ doc = ["dedens-net/doc"]
 [dev-dependencies]
 clap_mangen.workspace = true
 dedens-scenario.workspace = true
-dedens-testkit.workspace = true
+dedens-testkit = { workspace = true, features = ["certificates"] }
 flate2.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
-rcgen.workspace = true
 serde_json.workspace = true
 
 # D135: `just loom`.
@@ -66,11 +65,6 @@ harness = false
 [[bench]]
 name = "udp"
 harness = false
-
-# D143: rcgen serves `crates/dedens-net/tests/common/certificates.rs`, a module of the tests and benches by `#[path]`,
-# outside this package: cargo-shear reads none.
-[package.metadata.cargo-shear]
-ignored = ["rcgen"]
 
 [lints]
 workspace = true

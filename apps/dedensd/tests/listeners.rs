@@ -1,12 +1,6 @@
 //! Listening over TLS (RFC 7858) and QUIC (RFC 9250), on addresses behind `tls://` and `quic://` with the
 //! certificate of `tls` (D66), replaced by a reload.
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
 mod common;
 
 use std::net::{SocketAddr, UdpSocket};
@@ -16,7 +10,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, decode, framed, query_for, write_config};
 use compio::io::AsyncWriteExt;
 use compio::quic::crypto::rustls::QuicClientConfig;
@@ -33,6 +26,7 @@ use dedens_net::quic::read_message;
 use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, Transport};
 use dedens_testkit::captured;
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 
 /// The certificate and key of `certificates` in PEM files beside the configuration file `config`.
 fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) {

@@ -3,12 +3,6 @@
 //! configuration without `access` answers the local networks, a reload changes the lists, and a network that is no
 //! network stops the start. Every client is `127.0.0.1`.
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
 mod common;
 
 use std::io::{ErrorKind, Read, Write};
@@ -17,7 +11,6 @@ use std::num::NonZero;
 use std::process::Command;
 use std::time::Duration;
 
-use certificates::{NAME, certificates, named};
 use common::{Server, ask_tcp, ask_udp, decode, framed, write_config};
 use compio::runtime::Runtime;
 use dedens_net::client::Client;
@@ -25,6 +18,7 @@ use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 
 /// The configuration of a server answering `www.example.` from a hosts stage at `listen`, with `access` (lines of
 /// the file, or none).
@@ -230,10 +224,7 @@ fn a_network_that_is_no_network_stops_the_start() {
 
 /// The reply of a server over HTTP/3 behind `https://` with `certificate`, `Ok` to the query, 200 carrying whatever
 /// message the server made, or the error of a client that got no message.
-fn ask_https(
-    server: SocketAddr,
-    ca: &certificates::Certificates,
-) -> Result<Message<'static>, String> {
+fn ask_https(server: SocketAddr, ca: &Certificates) -> Result<Message<'static>, String> {
     let client = Client::new().trusting(Trust::Roots(vec![ca.ca.clone()]));
     let mut options = Options::default();
     options.transport = Transport::Https;
@@ -249,7 +240,7 @@ fn ask_https(
 }
 
 /// A server over HTTP/3 with the certificates of `ca` and `access`.
-fn serving_https(ca: &certificates::Certificates, access: &str) -> Server {
+fn serving_https(ca: &Certificates, access: &str) -> Server {
     let config = write_config("");
     let (certificate, key) = (
         config.with_extension("crt.pem"),

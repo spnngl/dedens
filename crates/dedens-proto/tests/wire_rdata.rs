@@ -100,7 +100,7 @@ fn ttl_offsets_skip_a_stray_opt_record() {
     wire.extend([0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0]);
     let mut offsets = Vec::new();
     ttl_offsets(&wire, |at| offsets.push(at)).expect("readable");
-    assert_eq!(offsets, []);
+    assert_eq!(offsets, Vec::<u16>::new());
 }
 
 #[test]

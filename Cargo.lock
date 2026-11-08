@@ -902,7 +902,6 @@ dependencies = [
  "insta",
  "mimalloc",
  "predicates",
- "rcgen",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -971,7 +970,6 @@ dependencies = [
  "http",
  "idna",
  "proptest",
- "rcgen",
  "rustls-platform-verifier",
  "thiserror",
  "tracing",
@@ -1067,8 +1065,11 @@ dependencies = [
 name = "dedens-testkit"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "data-encoding",
+ "dedens-net",
  "dedens-proto",
+ "rcgen",
 ]
 
 [[package]]
@@ -1098,7 +1099,6 @@ dependencies = [
  "metrics-util",
  "mimalloc",
  "nix",
- "rcgen",
  "serde",
  "serde-saphyr",
  "serde_json",

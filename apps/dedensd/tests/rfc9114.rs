@@ -3,12 +3,6 @@
 //! reads the stream meanwhile, so the QUIC windows reopen and nothing but the bytes the connection received bounds
 //! the buffer.
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
 mod common;
 
 use std::cell::Cell;
@@ -16,7 +10,6 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Duration;
 
-use certificates::{Certificates, NAME, certificates, named};
 use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::io::AsyncWriteExt;
@@ -33,6 +26,7 @@ use dedens_net::http3::H3_EXCESSIVE_LOAD;
 use dedens_net::tls::Trust;
 use dedens_proto::{Rcode, Transport};
 use dedens_testkit::captured;
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use futures_util::future::join_all;
 
 /// What a client may send before the server must have closed the connection: the budget of D119 is 4 MiB, and the

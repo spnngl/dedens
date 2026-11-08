@@ -14,13 +14,7 @@ use compio::rustls::version::TLS13;
 use compio::rustls::{
     DEFAULT_VERSIONS, ServerConfig, ServerConnection, StreamOwned, SupportedProtocolVersion,
 };
-
-#[path = "../../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(
-    dead_code,
-    reason = "shared with the tests of dedens-net, which use all of it"
-)]
-mod certificates;
+use dedens_testkit::certificates;
 
 /// The transport a query came over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -35,7 +35,7 @@ Tests:
   (`list parsed` events, D120).
 - `tests/encrypted.rs` asks upstream over TLS and QUIC, with the responder of `apps/dedens/tests/common` and its test
   certificates.
-- `tests/listeners.rs` answers over TLS and QUIC with the certificates of `crates/dedens-net/tests/common`, and checks
+- `tests/listeners.rs` answers over TLS and QUIC with the certificates of `dedens_testkit::certificates`, and checks
   that a TLS key others can read is refused (D115); every test that writes a key file goes through
   `common::write_key`, which makes it 0600.
 - `tests/rfc8484.rs` serves DoH over HTTP/3; `tests/rfc9230.rs` the target and the proxy; `tests/rfc9953.rs` DoC

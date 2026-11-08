@@ -6,7 +6,6 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use certificates::{Certificates, NAME, certificates, named};
 use compio::BufResult;
 use compio::bytes::Bytes;
 use compio::io::AsyncWriteExt;
@@ -18,11 +17,8 @@ use dedens_net::exchange::Options;
 use dedens_net::tcp::frame;
 use dedens_net::tls::Trust;
 use dedens_proto::{Flags, Message, Question, RecordType, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use futures_util::future::join_all;
-
-#[path = "../tests/common/certificates.rs"]
-#[allow(dead_code, reason = "shared with the tests, which use all of it")]
-mod certificates;
 
 /// How long each measure runs.
 const RUN: Duration = Duration::from_secs(3);
