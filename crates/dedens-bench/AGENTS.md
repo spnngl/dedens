@@ -18,4 +18,4 @@ bench-dnsperf` runs the working tree's `dedensd` under perf in the container (no
 `target/profile/`.
 
 `tests/repo.rs` is the repository checks (D140): decision numbers cited and their amendments, coverage paths and
-rows, `CLAUDE.md` links.
+rows, `CLAUDE.md` links, a crate's `clippy.toml` repeating the root one.

@@ -1,5 +1,5 @@
 # The workspace's clippy.toml (the root `clippy.toml`), repeated: a crate's file replaces it, so a change there is
-# made here too.
+# made here too (`crates/dedens-bench/tests/repo.rs` checks it).
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
