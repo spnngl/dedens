@@ -39,15 +39,15 @@ crate that touches sockets and timers.
 - `src/client.rs`: the exchange run over the transports, with random IDs, the spare IDs of its fallbacks (D114) and
   cookies per server.
 - `src/resolv_conf.rs`: `/etc/resolv.conf` read (servers, search list, ndots); fuzzed by `parse_resolv_conf`.
-- `tests/rfcNNNN.rs`: the exchange driven by hand; `rfc7858.rs`, `rfc9250.rs`, `rfc9221.rs`, `rfc8484.rs` and `rfc9230.rs`
-  against loopback TLS, QUIC and HTTP/3 servers too, with certificates of `dedens_testkit::certificates`.
-  `tests/udp.rs`, `tests/tcp.rs`, `tests/client.rs`: the transports and the client against scripted servers on the loopback address
-  (`tests/common/loopback.rs`); `tests/common/` builds messages and steps. `rfc8484.rs` and `rfc9461.rs` run
-  `doh` on the RFC examples and on the responses of public servers in `testdata/doh/` (`capture.nu` has
-  the commands). `rfc7252.rs`, `rfc7959.rs` and `rfc8132.rs` drive `coap` on the RFC figures and on the
-  datagrams of aiocoap in `testdata/coap/` (`capture.nu` has the commands; `tests/coap_capture/` reads them).
-  `rfc6690.rs` reads the link lists of the RFC. `rfc9953.rs` (feature `doc`) runs the DoC client against a scripted CoAP
-  server on loopback. The one ignored test of `rfc9230.rs` asks public ODoH targets (`just odoh-live`).
+- `tests/tests.rs`: one test binary, a module per topic (D162). `exchange.rs`: the exchange driven by hand;
+  `tls.rs`, `quic.rs`, `doh.rs` and `odoh.rs` (feature `odoh`) against loopback TLS, QUIC and HTTP/3 servers too,
+  with certificates of `dedens_testkit::certificates`. `udp.rs`, `tcp.rs`, `client.rs`: the transports and the
+  client against scripted servers on the loopback address (`util/loopback.rs`); `util/` builds messages and steps.
+  `doh.rs` runs `doh` on the RFC examples and on the responses of public servers in `testdata/doh/` (`capture.nu`
+  has the commands). `coap.rs` drives `coap` on the RFC figures and on the datagrams of aiocoap in
+  `testdata/coap/` (`capture.nu` has the commands; `util/coap_capture.rs` reads them), reads the link lists of RFC
+  6690, and (feature `doc`) runs the DoC client against a scripted CoAP server on loopback. The one ignored test
+  of `odoh.rs` asks public ODoH targets (`just odoh-live`).
 
 `benches/transports.rs` runs DoQ and DoH3 against loopback servers (`cargo bench -p dedens-net --bench transports`);
 `benches/pools.rs` the UDP and TCP pools of the `Client` (`--bench pools`).

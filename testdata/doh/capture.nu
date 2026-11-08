@@ -3,7 +3,7 @@
 # DNS message. The queries have ID 0 and an OPT record advertising 1232 bytes, as `dedens` sends them. Run from this
 # directory: `nu capture.nu`. Never edit the saved files by hand. `curl --http3` is not in every curl: the system's
 # has none, so HTTP/3 captures wait for one that has.
-# Tested by `crates/dedens-net/tests/rfc8484.rs`.
+# Tested by `crates/dedens-net/tests/doh.rs`.
 
 const captures = [
     {id: cloudflare_a, url: "https://cloudflare-dns.com/dns-query", name: [example com], type: 1, method: GET}

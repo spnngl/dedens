@@ -1,15 +1,23 @@
-//! TCP pool on the loopback address (RFC 1035 §4.2.2, RFC 7766 §6.2, RFC 7828 §3.2).
-
-mod common;
+//! DNS over TCP: the connection, its queries and its framing.
+//!
+//! - TCP pool on the loopback address (RFC 1035 §4.2.2, RFC 7766 §6.2, RFC 7828 §3.2).
+//! - RFC 7766 §5 and RFC 1035 §4.2.1: a truncated response over UDP sends the query again over TCP; §10: without
+//!   delay.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use common::loopback::{CLOSED, Peer, answer, id, listen, query_with_id};
+use dedens_net::exchange::Options;
+use dedens_net::io::{Compio, Io, Stream};
 use dedens_net::tcp::{TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
-use dedens_proto::{Message, Record};
+use dedens_proto::{Flags, Message, Rcode, Record, Transport};
+
+use crate::util::loopback::{CLOSED, Peer, answer, id, listen, query_with_id};
+use crate::util::{expect_response, expect_send, query, response, server, start, t0, udp, wire};
+
+// --- TCP pool ---
 
 /// The IDs of a connection.
 const IDS: usize = 1 << 16;
@@ -201,7 +209,7 @@ async fn no_response_before_the_deadline_times_out() {
 #[compio::test]
 async fn a_query_shorter_than_a_header_is_refused() {
     let result = pool()
-        .exchange(common::server(), &[0; 11], deadline())
+        .exchange(crate::util::server(), &[0; 11], deadline())
         .await;
     assert!(matches!(result, Err(TcpError::BadLength(11))), "{result:?}");
 }
@@ -267,7 +275,7 @@ async fn the_server_keepalive_shortens_the_idle_timeout() {
     response.additional = vec![record("ns.example.com. 300 IN A 192.0.2.53")];
     response.edns.as_mut().expect("EDNS").options =
         vec![EdnsOption::Padding(3), EdnsOption::Keepalive(Some(5))];
-    peer.write(&[common::wire(&response)]).await;
+    peer.write(&[crate::util::wire(&response)]).await;
     assert!(asked.await.expect("joined").is_ok());
     let open = compio::time::timeout(Duration::from_millis(100), peer.read()).await;
     assert!(open.is_err(), "closed before its timeout");
@@ -388,7 +396,7 @@ async fn a_connection_not_open_in_time_is_a_connect_error() {
     let pool = TcpPool::new(Duration::from_millis(100));
     let result = pool
         .exchange(
-            common::server(),
+            crate::util::server(),
             &query_with_id(20),
             Instant::now() + Duration::from_secs(10),
         )
@@ -632,4 +640,80 @@ async fn a_query_finding_every_id_taken_opens_a_connection() {
     fresh.write(&[answer(&query, Vec::new())]).await;
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
     drop((waiting, reading));
+}
+
+// --- RFC 7766 §5 and RFC 1035 §4.2.1 ---
+
+#[test]
+fn a_truncated_response_moves_the_query_to_tcp() {
+    let now = t0();
+    let query = query();
+    let exchange = start(&query, Options::default(), now);
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let exchange = expect_send(udp(exchange, &wire(&truncated), now));
+    assert_eq!(exchange.transport(), Transport::Tcp);
+    // The query again, with another ID (D114) and the TCP options (tests/rfc7828.rs).
+    let mut over_tcp = crate::util::sent(&exchange);
+    over_tcp.edns.as_mut().expect("EDNS").options.clear();
+    assert_eq!(over_tcp.header.id, crate::util::SPARE_IDS[0]);
+    over_tcp.header.id = query.header.id;
+    assert_eq!(over_tcp, query);
+    assert_eq!(exchange.sends(), 2);
+
+    // The UDP socket is gone: only TCP counts now.
+    let full = wire(&response(&crate::util::sent(&exchange), Rcode::NOERROR));
+    let exchange = crate::util::expect_wait(udp(exchange, &full, now));
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, full.clone(), now));
+    assert_eq!(got.transport, Transport::Tcp);
+    assert_eq!(got.sends, 2);
+}
+
+/// dig's `+ignore`.
+#[test]
+fn without_tcp_fallback_a_truncated_response_is_the_response() {
+    let now = t0();
+    let query = query();
+    let mut options = Options::default();
+    options.tcp_fallback = false;
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let got = expect_response(udp(start(&query, options, now), &wire(&truncated), now));
+    assert_eq!(got.transport, Transport::Udp);
+    assert_eq!(got.wire, wire(&truncated));
+}
+
+#[test]
+fn a_truncated_response_over_tcp_is_the_response() {
+    let now = t0();
+    let query = query();
+    let mut options = Options::default();
+    options.transport = Transport::Tcp;
+    let exchange = start(&query, options, now);
+    assert_eq!(exchange.transport(), Transport::Tcp);
+    let mut truncated = response(&query, Rcode::NOERROR);
+    truncated.header.flags = truncated.header.flags.with(Flags::TC);
+    let got = expect_response(exchange.receive(server(), Transport::Tcp, wire(&truncated), now));
+    assert_eq!(got.wire, wire(&truncated));
+}
+
+#[test]
+fn over_tcp_the_source_address_is_the_connection() {
+    let now = t0();
+    let query = query();
+    let mut options = Options::default();
+    options.transport = Transport::Tcp;
+    let exchange = start(&query, options, now);
+    let other = "198.51.100.1:4242".parse().expect("a socket address");
+    let full = wire(&response(&query, Rcode::NOERROR));
+    expect_response(exchange.receive(other, Transport::Tcp, full.clone(), now));
+}
+
+/// RFC 7766 §10: a connection sends its queries without delay, `TCP_NODELAY` set on compio's stream.
+#[compio::test]
+async fn s10_a_connection_sends_without_delay() {
+    let (_listener, addr) = listen().await;
+    let stream = Compio.tcp_connect(addr).await.expect("a connection");
+    Stream::set_nodelay(&stream, true).expect("no delay");
+    assert!(stream.nodelay().expect("the option"));
 }

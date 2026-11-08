@@ -1,7 +1,6 @@
 //! Helpers shared by the exchange tests: messages are built with `dedens-proto`, time is made up.
 
-#![allow(dead_code, reason = "each test file uses its own subset")]
-
+pub(crate) mod coap_capture;
 pub(crate) mod loopback;
 
 use std::net::SocketAddr;
