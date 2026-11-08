@@ -4,10 +4,10 @@ use hpke::rand_core::CryptoRng;
 use hpke::{Deserializable as _, OpModeS, Serializable as _};
 use zeroize::Zeroizing;
 
-use crate::config::ObliviousDoHConfigContents;
+use crate::config::ConfigContents;
 use crate::error::ExchangeError;
 use crate::exchange::{NK, QUERY_INFO, RESPONSE_EXPORT, Secrets, aad};
-use crate::message::{MessageType, ObliviousDoHMessage, ObliviousDoHMessagePlaintext};
+use crate::message::{Message, MessagePlaintext, MessageType};
 use crate::suite::{Aead, Kdf, Kem};
 
 /// What the client keeps of a query to read its response; its secrets are wiped when it is dropped.
@@ -32,13 +32,13 @@ pub struct QueryContext {
 /// [`ExchangeError::Encapsulation`] when the key exchange fails, [`ExchangeError::Encrypt`] when the AEAD
 /// refuses.
 pub fn encrypt_query(
-    config: &ObliviousDoHConfigContents,
+    config: &ConfigContents,
     dns_query: &[u8],
     padding: usize,
     rng: &mut impl CryptoRng,
-) -> Result<(ObliviousDoHMessage, QueryContext), ExchangeError> {
+) -> Result<(Message, QueryContext), ExchangeError> {
     let query_plaintext =
-        Zeroizing::new(ObliviousDoHMessagePlaintext::new(dns_query.to_vec(), padding)?.encode());
+        Zeroizing::new(MessagePlaintext::new(dns_query.to_vec(), padding)?.encode());
     let public_key = <Kem as hpke::Kem>::PublicKey::from_bytes(config.public_key())
         .map_err(|_| ExchangeError::Encapsulation)?;
     let (encapsulated, mut context) =
@@ -53,8 +53,7 @@ pub fn encrypt_query(
         .map_err(|_| ExchangeError::Encrypt)?;
 
     let encrypted = [encapsulated.to_bytes().as_slice(), &sealed].concat();
-    let message =
-        ObliviousDoHMessage::new(MessageType::Query, config.key_id().to_vec(), encrypted)?;
+    let message = Message::new(MessageType::Query, config.key_id().to_vec(), encrypted)?;
     let secrets = Secrets {
         exporter,
         query_plaintext,
@@ -76,8 +75,8 @@ pub fn encrypt_query(
 /// padding is not zeros.
 pub fn decrypt_response(
     context: &QueryContext,
-    message: &ObliviousDoHMessage,
-) -> Result<ObliviousDoHMessagePlaintext, ExchangeError> {
+    message: &Message,
+) -> Result<MessagePlaintext, ExchangeError> {
     if message.message_type() != MessageType::Response {
         return Err(ExchangeError::WrongType {
             expected: MessageType::Response,
@@ -87,7 +86,7 @@ pub fn decrypt_response(
     let nonce = <[u8; NK]>::try_from(message.key_id())
         .map_err(|_| ExchangeError::ResponseNonceLength(message.key_id().len()))?;
     let plaintext = context.secrets.open(&nonce, message.encrypted_message())?;
-    Ok(ObliviousDoHMessagePlaintext::parse(&plaintext)?)
+    Ok(MessagePlaintext::parse(&plaintext)?)
 }
 
 #[cfg(test)]
@@ -117,14 +116,13 @@ mod tests {
                 .expect("32 bytes");
             let key = TargetKey::derive(&seed);
             for transaction in vector["transactions"].as_array().expect("an array") {
-                let query = ObliviousDoHMessage::parse(&hex(&transaction["obliviousQuery"]))
-                    .expect("parses");
+                let query = Message::parse(&hex(&transaction["obliviousQuery"])).expect("parses");
                 let (_, target) = decrypt_query(&key, &query).expect("decrypts");
                 let client = QueryContext {
                     secrets: target.secrets,
                 };
-                let response = ObliviousDoHMessage::parse(&hex(&transaction["obliviousResponse"]))
-                    .expect("parses");
+                let response =
+                    Message::parse(&hex(&transaction["obliviousResponse"])).expect("parses");
                 let plaintext = decrypt_response(&client, &response).expect("decrypts");
                 assert_eq!(plaintext.dns_message(), hex(&transaction["response"]));
                 assert_eq!(

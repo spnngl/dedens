@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use dedens_bench::wire;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
-    ObliviousDoHConfigs, ObliviousDoHMessage, TargetKey, decrypt_query, decrypt_response,
-    encrypt_query, encrypt_response, query_padding, response_padding,
+    Configs, TargetKey, decrypt_query, decrypt_response, encrypt_query, encrypt_response,
+    query_padding, response_padding,
 };
 use dedens_proto::Message;
 use dedens_proto::edns::Edns;
@@ -61,15 +61,18 @@ fn key() -> TargetKey {
 }
 
 /// The target's key as a client reads it, from the config the target publishes.
-fn client_key(key: &TargetKey) -> dedens_odoh::ObliviousDoHConfigContents {
-    let wire = ObliviousDoHConfigs::new(vec![key.config().clone()])
+fn client_key(key: &TargetKey) -> dedens_odoh::ConfigContents {
+    let wire = Configs::new(vec![key.config().clone()])
         .encode()
         .expect("one config");
-    ObliviousDoHConfigs::parse(&wire).expect("parses").configs()[0].clone()
+    Configs::parse(&wire).expect("parses").configs()[0].clone()
 }
 
 /// A query encrypted, with the context a response needs.
-fn sealed_query(key: &TargetKey, query: &[u8]) -> (ObliviousDoHMessage, dedens_odoh::QueryContext) {
+fn sealed_query(
+    key: &TargetKey,
+    query: &[u8],
+) -> (dedens_odoh::Message, dedens_odoh::QueryContext) {
     encrypt_query(
         &client_key(key),
         query,

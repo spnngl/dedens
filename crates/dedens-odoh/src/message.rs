@@ -3,7 +3,7 @@
 use crate::error::WireError;
 use crate::wire::{Field, Reader};
 
-/// The `message_type` of an [`ObliviousDoHMessage`] (RFC 9230 §6.1).
+/// The `message_type` of a [`Message`] (RFC 9230 §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     /// A query, `0x01`.
@@ -42,13 +42,17 @@ impl MessageType {
 ///
 /// In a response, `key_id` carries the response nonce (§8 step 9).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObliviousDoHMessage {
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names of RFC 9230 §6.1"
+)]
+pub struct Message {
     message_type: MessageType,
     key_id: Field,
     encrypted_message: Field,
 }
 
-impl ObliviousDoHMessage {
+impl Message {
     /// A message of the given parts.
     ///
     /// # Errors
@@ -122,12 +126,12 @@ impl ObliviousDoHMessage {
 ///
 /// The padding is its length alone, so a padding that is not all zeros cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObliviousDoHMessagePlaintext {
+pub struct MessagePlaintext {
     dns_message: Field,
     padding: u16,
 }
 
-impl ObliviousDoHMessagePlaintext {
+impl MessagePlaintext {
     /// A plaintext of `dns_message` followed by `padding` zero bytes.
     ///
     /// # Errors
@@ -231,22 +235,18 @@ mod tests {
 
     #[test]
     fn message_round_trips() {
-        let message =
-            ObliviousDoHMessage::new(MessageType::Response, vec![1; 16], vec![2, 3]).expect("fits");
+        let message = Message::new(MessageType::Response, vec![1; 16], vec![2, 3]).expect("fits");
         assert_eq!(
             message.encode(),
             [&[2, 0, 16][..], &[1; 16], &[0, 2, 2, 3]].concat()
         );
-        assert_eq!(ObliviousDoHMessage::parse(&message.encode()), Ok(message));
+        assert_eq!(Message::parse(&message.encode()), Ok(message));
     }
 
     #[test]
     fn plaintext_round_trips() {
-        let plaintext = ObliviousDoHMessagePlaintext::new(vec![7, 8], 3).expect("fits");
+        let plaintext = MessagePlaintext::new(vec![7, 8], 3).expect("fits");
         assert_eq!(plaintext.encode(), [0, 2, 7, 8, 0, 3, 0, 0, 0]);
-        assert_eq!(
-            ObliviousDoHMessagePlaintext::parse(&plaintext.encode()),
-            Ok(plaintext)
-        );
+        assert_eq!(MessagePlaintext::parse(&plaintext.encode()), Ok(plaintext));
     }
 }

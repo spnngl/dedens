@@ -4,16 +4,16 @@ use hpke::rand_core::CryptoRng;
 use hpke::{Deserializable as _, Kem as _, OpModeR, Serializable as _};
 use zeroize::Zeroizing;
 
-use crate::config::{ObliviousDoHConfigContents, PUBLIC_KEY_LEN};
+use crate::config::{ConfigContents, PUBLIC_KEY_LEN};
 use crate::error::{ExchangeError, WireError};
 use crate::exchange::{NK, QUERY_INFO, RESPONSE_EXPORT, Secrets, aad};
-use crate::message::{MessageType, ObliviousDoHMessage, ObliviousDoHMessagePlaintext};
+use crate::message::{Message, MessagePlaintext, MessageType};
 use crate::suite::{Aead, Kdf, Kem};
 
 /// The HPKE key pair a target decrypts queries with, and the config that publishes its public half.
 pub struct TargetKey {
     private_key: <Kem as hpke::Kem>::PrivateKey,
-    config: ObliviousDoHConfigContents,
+    config: ConfigContents,
 }
 
 // Hand-written so that the private key never reaches a log.
@@ -36,13 +36,13 @@ impl TargetKey {
         let public_key: [u8; PUBLIC_KEY_LEN] = public_key.to_bytes().into();
         Self {
             private_key,
-            config: ObliviousDoHConfigContents::new(public_key),
+            config: ConfigContents::new(public_key),
         }
     }
 
     /// The config to publish (RFC 9230 §5).
     #[must_use]
-    pub const fn config(&self) -> &ObliviousDoHConfigContents {
+    pub const fn config(&self) -> &ConfigContents {
         &self.config
     }
 }
@@ -64,8 +64,8 @@ pub struct ResponseContext {
 /// [`ExchangeError::Decapsulation`] and [`ExchangeError::Decrypt`] when HPKE fails.
 pub fn decrypt_query(
     key: &TargetKey,
-    message: &ObliviousDoHMessage,
-) -> Result<(ObliviousDoHMessagePlaintext, ResponseContext), ExchangeError> {
+    message: &Message,
+) -> Result<(MessagePlaintext, ResponseContext), ExchangeError> {
     if message.message_type() != MessageType::Query {
         return Err(ExchangeError::WrongType {
             expected: MessageType::Query,
@@ -97,7 +97,7 @@ pub fn decrypt_query(
         .export(RESPONSE_EXPORT, exporter.as_mut_slice())
         .map_err(|_| ExchangeError::Decrypt)?;
 
-    let plaintext = ObliviousDoHMessagePlaintext::parse(&query_plaintext)?;
+    let plaintext = MessagePlaintext::parse(&query_plaintext)?;
     let secrets = Secrets {
         exporter,
         query_plaintext,
@@ -125,12 +125,12 @@ pub fn encrypt_response(
     dns_response: &[u8],
     padding: usize,
     rng: &mut impl CryptoRng,
-) -> Result<ObliviousDoHMessage, ExchangeError> {
-    let plaintext = ObliviousDoHMessagePlaintext::new(dns_response.to_vec(), padding)?.encode();
+) -> Result<Message, ExchangeError> {
+    let plaintext = MessagePlaintext::new(dns_response.to_vec(), padding)?.encode();
     let mut nonce = [0; NK];
     rng.fill_bytes(&mut nonce);
     let encrypted = context.secrets.seal(&nonce, &plaintext)?;
-    Ok(ObliviousDoHMessage::new(
+    Ok(Message::new(
         MessageType::Response,
         nonce.to_vec(),
         encrypted,
