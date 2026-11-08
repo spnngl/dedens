@@ -1,5 +1,5 @@
 ---
-source: apps/dedens/tests/cli.rs
+source: apps/dedens/tests/transports.rs
 expression: "redact(&out, server.addr.port())"
 ---
 example.com. A  NOERROR  N ms from 127.0.0.1:PORT over DoH (HTTP/3 200)

@@ -1,5 +1,5 @@
 ---
-source: apps/dedens/tests/cli.rs
+source: apps/dedens/tests/output.rs
 expression: out
 ---
 40 alt4.gmail-smtp-in.l.google.com.
