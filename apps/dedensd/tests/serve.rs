@@ -11,12 +11,11 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{
-    Responder, Server, ask_tcp, ask_udp, config, decode, framed, query_for, read_framed, silent,
-};
+use common::{Server, ask_tcp, ask_udp, config, decode, framed, query_for, read_framed, silent};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Message, Opcode, Rcode};
 use dedens_testkit::captured;
+use dedens_testkit::responder::Responder;
 
 #[test]
 fn queries_over_udp_and_tcp_are_forwarded() {
@@ -203,6 +202,6 @@ fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     // Resolution went on and refreshed the entry.
     thread::sleep(Duration::from_millis(800));
     let fresh = ask_udp(server.addr, &query_for(&response, 3));
-    assert_eq!((upstream.queries(), errors(&fresh)), (2, vec![]));
+    assert_eq!((upstream.queries().len(), errors(&fresh)), (2, vec![]));
     assert!(fresh.answer.iter().all(|record| record.ttl.get() <= 3));
 }

@@ -897,7 +897,6 @@ dependencies = [
  "dedens-proto",
  "dedens-scenario",
  "dedens-testkit",
- "http",
  "idna",
  "insta",
  "mimalloc",
@@ -1068,8 +1067,11 @@ dependencies = [
  "compio",
  "data-encoding",
  "dedens-net",
+ "dedens-odoh",
  "dedens-proto",
+ "http",
  "rcgen",
+ "tempfile",
 ]
 
 [[package]]

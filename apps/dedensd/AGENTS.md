@@ -29,12 +29,12 @@ resolution and the forward (D94). RFC behaviour belongs in `crates/dedens-server
 Tests:
 
 - `tests/serve.rs`, `tests/reload.rs` and `tests/end_to_end.rs` run the binary on loopback against a responder
-  answering captured bytes (`tests/common/mod.rs`), reading its events as JSON, the default log format
+  answering captured bytes (`dedens_testkit::responder`), reading its events as JSON, the default log format
   (`Server::event`); `tests/end_to_end.yaml`, a `dedens` query file, holds what the replies must be.
 - `tests/lists.rs` serves lists from a loopback HTTP server; `tests/reload.rs` also counts the lists a reload reads
   (`list parsed` events, D120).
-- `tests/encrypted.rs` asks upstream over TLS and QUIC, with the responder of `apps/dedens/tests/common` and its test
-  certificates.
+- `tests/encrypted.rs` asks upstream over TLS and QUIC, with the responder of `dedens_testkit::responder`, the one
+  `dedens`'s tests use, and its test certificates.
 - `tests/listeners.rs` answers over TLS and QUIC with the certificates of `dedens_testkit::certificates`, and checks
   that a TLS key others can read is refused (D115); every test that writes a key file goes through
   `common::write_key`, which makes it 0600.

@@ -1,4 +1,4 @@
-//! Shared by the tests running `dedensd`: a loopback upstream answering captured bytes, a running server with its
+//! Shared by the tests running `dedensd`: a running server with its
 //! configuration file, and DNS over UDP and TCP with the standard library.
 
 #![allow(dead_code, reason = "each test file uses part of these")]
@@ -14,8 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dedens_net::tcp::frame;
-use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
-use dedens_testkit::{captured, dnssec};
+use dedens_proto::Message;
 use serde_json::Value;
 
 /// A query, under `id`, for the question of `response`.
@@ -26,138 +25,6 @@ pub(crate) fn query_for(response: &[u8], id: u16) -> Vec<u8> {
         .questions
         .swap_remove(0);
     Message::query(id, question).to_vec().expect("a query fits")
-}
-
-/// The question of `wire`, if it reads; names compare without case (RFC 4343).
-fn question(wire: &[u8]) -> Option<(Name<'static>, RecordType)> {
-    let question = Message::decode(wire)
-        .ok()?
-        .message
-        .questions
-        .into_iter()
-        .next()?;
-    Some((question.name.into_owned(), question.qtype))
-}
-
-/// A loopback upstream over UDP and TCP on one port, answering each query with the capture asking its question,
-/// under the query's ID; silent to other questions.
-pub(crate) struct Responder {
-    pub(crate) addr: SocketAddr,
-    queries: Arc<AtomicUsize>,
-    asked: Arc<Mutex<Vec<(Name<'static>, RecordType)>>>,
-}
-
-impl Responder {
-    /// Answers with the captures named `cases`.
-    pub(crate) fn start(cases: &[&str]) -> Self {
-        let captures = cases.iter().map(|case| captured(case)).collect();
-        Self::answering(captures, Duration::ZERO, 1)
-    }
-
-    /// Answers with the captures of `dedens-dnssec` named `cases`, each query `delay` late.
-    pub(crate) fn dnssec(cases: &[&str], delay: Duration) -> Self {
-        let captures = cases.iter().map(|case| dnssec::capture(case)).collect();
-        Self::answering(captures, delay, 0)
-    }
-
-    /// Answers with the capture named `case`, its records' TTL `ttl`, every query after the first `delay` late.
-    pub(crate) fn slow(case: &str, ttl: u32, delay: Duration) -> Self {
-        let mut message = decode(&captured(case));
-        let ttl = Ttl::new(ttl).expect("a TTL");
-        for record in &mut message.answer {
-            record.ttl = ttl;
-        }
-        Self::answering(vec![message.to_vec().expect("it fits")], delay, 1)
-    }
-
-    /// Answers each of `responses` to its question, the queries after the first `undelayed` ones `delay` late.
-    fn answering(responses: Vec<Vec<u8>>, delay: Duration, undelayed: usize) -> Self {
-        let captures: Arc<[_]> = responses
-            .into_iter()
-            .map(|wire| (question(&wire).expect("a captured question"), wire))
-            .collect();
-        let queries = Arc::new(AtomicUsize::new(0));
-        let questions = Arc::new(Mutex::new(Vec::new()));
-        let reply = {
-            let queries = Arc::clone(&queries);
-            let questions = Arc::clone(&questions);
-            move |query: &[u8]| {
-                // A port is reused as soon as it closes: what comes may be meant for the socket before, such as
-                // the packets a QUIC server of another test keeps sending to the port of a client that is gone.
-                if !is_query(query) {
-                    return None;
-                }
-                if queries.fetch_add(1, Ordering::Relaxed) >= undelayed {
-                    thread::sleep(delay);
-                }
-                let asked = question(query)?;
-                questions
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(asked.clone());
-                let (_, wire) = captures.iter().find(|(question, _)| *question == asked)?;
-                let mut answer = wire.clone();
-                answer[..2].copy_from_slice(&query[..2]);
-                Some(answer)
-            }
-        };
-        // The port UDP got may be taken over TCP by a test running beside this one: take another.
-        let (udp, tcp, addr) = loop {
-            let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
-            let addr = udp.local_addr().expect("its address");
-            if let Ok(tcp) = TcpListener::bind(addr) {
-                break (udp, tcp, addr);
-            }
-        };
-        let for_udp = reply.clone();
-        thread::spawn(move || {
-            let mut buf = vec![0; 65535];
-            while let Ok((len, peer)) = udp.recv_from(&mut buf) {
-                if let Some(answer) = for_udp(&buf[..len]) {
-                    let _ = udp.send_to(&answer, peer);
-                }
-            }
-        });
-        // A thread per connection: on Linux each `dedensd` thread opens its own, and one kept open must not hold
-        // up the others.
-        thread::spawn(move || {
-            for mut stream in tcp.incoming().flatten() {
-                let reply = reply.clone();
-                thread::spawn(move || {
-                    while let Some(query) = read_framed(&mut stream) {
-                        if let Some(answer) = reply(&query) {
-                            let _ = stream.write_all(&framed(&answer));
-                        }
-                    }
-                });
-            }
-        });
-        Self {
-            addr,
-            queries,
-            asked: questions,
-        }
-    }
-
-    /// How many times `name` was asked for `qtype`, over both transports.
-    pub(crate) fn asked(&self, name: &str, qtype: RecordType) -> usize {
-        let name: Name<'static> = name.parse().expect("a name");
-        let asked = self.asked.lock().unwrap_or_else(PoisonError::into_inner);
-        asked
-            .iter()
-            .filter(|question| **question == (name.clone(), qtype))
-            .count()
-    }
-
-    /// The queries received so far, over both transports.
-    pub(crate) fn queries(&self) -> usize {
-        self.queries.load(Ordering::Relaxed)
-    }
-}
-
-/// Whether `wire` is a query: a message that reads, and is no response.
-fn is_query(wire: &[u8]) -> bool {
-    Message::decode(wire).is_ok_and(|decoded| !decoded.message.header.flags.contains(Flags::QR))
 }
 
 /// A loopback upstream that never answers.

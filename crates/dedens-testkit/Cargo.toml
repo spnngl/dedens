@@ -13,12 +13,19 @@ compio = { workspace = true, optional = true }
 # The base64 of the RFC examples (`dnssec::b64`).
 data-encoding.workspace = true
 dedens-net = { workspace = true, optional = true }
+dedens-odoh = { workspace = true, optional = true }
 dedens-proto.workspace = true
+http = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [features]
 # The certificates of the TLS, QUIC and HTTPS tests (`certificates`).
 certificates = ["dep:compio", "dep:dedens-net", "dep:rcgen"]
+# The loopback server of the command-line tests (`responder`), and its experimental transports (D69).
+responder = ["certificates", "dep:http", "dep:tempfile"]
+odoh = ["responder", "dedens-net/odoh", "dep:dedens-odoh"]
+doc = ["responder", "dedens-net/doc"]
 
 [lints]
 workspace = true

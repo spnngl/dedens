@@ -9,10 +9,11 @@ mod common;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use common::{Responder, Server, query_for};
+use common::{Server, query_for};
 use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_testkit::captured;
+use dedens_testkit::responder::Responder;
 use futures_util::future::join_all;
 
 /// How long each measure runs.

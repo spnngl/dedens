@@ -2,18 +2,13 @@
 //! the usage errors.
 #![cfg(feature = "odoh")]
 
-#[allow(
-    dead_code,
-    reason = "shared with the other tests of the command, which use all of it"
-)]
-mod common;
-
 use std::io::Write as _;
 
 use assert_cmd::Command;
-use common::{Responder, TLS_NAME, Transport};
 use dedens_odoh::{Configs, TargetKey};
 use dedens_proto::Message;
+use dedens_testkit::certificates::NAME;
+use dedens_testkit::responder::{Responder, Transport};
 use predicates::str::contains;
 
 /// The command, without colors and with a resolv.conf that does not exist.
@@ -45,8 +40,8 @@ fn a_query_goes_through_a_proxy_to_a_target() {
     let (server, ca) = Responder::oblivious(&["a"], TargetKey::derive(&[7; 32]));
     let ca = format!("--tls-ca={}", ca.path().display());
     let port = server.addr.port();
-    let target = format!("@https://127.0.0.1:{port}#{TLS_NAME}");
-    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{TLS_NAME}");
+    let target = format!("@https://127.0.0.1:{port}#{NAME}");
+    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{NAME}");
     let out = run(&[&target, &proxy, &ca, "example.com"], 0);
     assert!(out.contains("over ODoH (HTTP/3 200)"), "{out}");
     let out = run(&[&target, &proxy, &ca, "example.com", "--json"], 0);
@@ -87,8 +82,8 @@ fn odoh_config_gives_the_configurations() {
     let (server, ca) = Responder::oblivious(&["a"], TargetKey::derive(&[7; 32]));
     let ca = format!("--tls-ca={}", ca.path().display());
     let port = server.addr.port();
-    let target = format!("@https://127.0.0.1:{port}#{TLS_NAME}");
-    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{TLS_NAME}");
+    let target = format!("@https://127.0.0.1:{port}#{NAME}");
+    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{NAME}");
     let configs = |seed: u8| {
         let mut file = tempfile::NamedTempFile::new().expect("a file");
         let key = TargetKey::derive(&[seed; 32]);

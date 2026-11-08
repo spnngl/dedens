@@ -1,10 +1,12 @@
-//! A loopback DNS server for the command's tests: it answers over UDP and TCP, or TLS, QUIC or HTTP/3, with the captured responses of
-//! `testdata/proto`, their ID and question set to the query's, and keeps every query it gets.
+//! A loopback DNS server for the tests of `dedens` and `dedensd`: it answers over UDP and TCP, or TLS, QUIC, HTTP/3
+//! or CoAP, with the captured responses of `testdata/proto` and `testdata/dnssec`, their ID and question set to the
+//! query's, and keeps every query it gets.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use compio::BufResult;
 use compio::bytes::{Buf, Bytes};
@@ -14,14 +16,21 @@ use compio::rustls::version::TLS13;
 use compio::rustls::{
     DEFAULT_VERSIONS, ServerConfig, ServerConnection, StreamOwned, SupportedProtocolVersion,
 };
-use dedens_testkit::certificates;
+use dedens_proto::{Message, Name, RecordType, Ttl};
+use tempfile::NamedTempFile;
+
+use crate::certificates;
 
 /// The transport a query came over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Transport {
+pub enum Transport {
+    /// UDP.
     Udp,
+    /// TCP.
     Tcp,
+    /// TLS (RFC 7858).
     Tls,
+    /// QUIC (RFC 9250).
     Quic,
     /// HTTP/3, a GET.
     HttpsGet,
@@ -35,14 +44,11 @@ pub(crate) enum Transport {
     Coap,
 }
 
-/// The queries received, in order, with their transport.
-type Log = Arc<Mutex<Vec<(Transport, Vec<u8>)>>>;
-
 /// A running server; its threads live as long as the test.
-pub(crate) struct Responder {
+pub struct Responder {
     /// Its address, the same port for UDP and TCP.
-    pub(crate) addr: SocketAddr,
-    queries: Log,
+    pub addr: SocketAddr,
+    upstream: Arc<Upstream>,
 }
 
 /// One captured response and the question it answers.
@@ -52,26 +58,136 @@ struct Canned {
     wire: Vec<u8>,
 }
 
-impl Responder {
-    /// Serves the captured responses named, `"a"` for `a.bin`: a query whose name (in any case) and type are
-    /// those of one gets it, the truncated one over UDP when there are two; any other query gets no answer.
-    pub(crate) fn start(names: &[&str]) -> Self {
-        Self::serve(names, &[], false)
+/// What a server answers, and how.
+struct Upstream {
+    canned: Vec<Canned>,
+    /// The queries received, in order, with their transport.
+    queries: Mutex<Vec<(Transport, Vec<u8>)>>,
+    /// Whether every second query over UDP gets no answer.
+    flaky: bool,
+    /// How late each query past the first `undelayed` is answered.
+    delay: Duration,
+    undelayed: usize,
+}
+
+impl Upstream {
+    fn new(canned: Vec<Canned>) -> Self {
+        Self {
+            canned,
+            queries: Mutex::default(),
+            flaky: false,
+            delay: Duration::ZERO,
+            undelayed: 0,
+        }
     }
 
-    /// As [`Responder::start`], with more responses, as their wire: a forged one answers a question instead of
-    /// the capture of it, which is then not named.
-    pub(crate) fn start_with(names: &[&str], wires: &[Vec<u8>]) -> Self {
-        Self::serve(names, wires, false)
+    /// Keeps `query`, come over `transport`, and gives its answer, if any.
+    fn reply(&self, query: &[u8], transport: Transport) -> Option<Vec<u8>> {
+        let mut queries = self.queries.lock().unwrap_or_else(PoisonError::into_inner);
+        queries.push((transport, query.to_vec()));
+        let count = queries.len();
+        drop(queries);
+        if self.flaky && transport == Transport::Udp && count.is_multiple_of(2) {
+            return None;
+        }
+        if count > self.undelayed {
+            thread::sleep(self.delay);
+        }
+        self.answer(query, transport)
+    }
+
+    /// The captured response to `query`, its ID and question bytes those of the query: the truncated one over UDP
+    /// when there are two.
+    fn answer(&self, query: &[u8], transport: Transport) -> Option<Vec<u8>> {
+        let (key, end) = question(query)?;
+        let mut matching = self.canned.iter().filter(|c| c.key == key);
+        let first = matching.next()?;
+        let chosen = match matching.next() {
+            Some(second) if first.truncated != (transport == Transport::Udp) => second,
+            _ => first,
+        };
+        let mut response = chosen.wire.clone();
+        response[..2].copy_from_slice(&query[..2]);
+        response.get_mut(12..end)?.copy_from_slice(&query[12..end]);
+        Some(response)
+    }
+}
+
+impl Responder {
+    /// Serves the captured responses named, `"a"` for `a.bin`: a query whose name (in any case) and type are those
+    /// of one gets it, the truncated one over UDP when there are two; any other query gets no answer.
+    ///
+    /// # Panics
+    ///
+    /// When a capture cannot be read or no port is free.
+    #[must_use]
+    pub fn start(names: &[&str]) -> Self {
+        Self::serve(Upstream::new(canned_with(names, &[])))
+    }
+
+    /// As [`Responder::start`], with more responses, as their wire: a forged one answers a question instead of the
+    /// capture of it, which is then not named.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn start_with(names: &[&str], wires: &[Vec<u8>]) -> Self {
+        Self::serve(Upstream::new(canned_with(names, wires)))
     }
 
     /// As [`Responder::start`], but every second UDP query gets no answer.
-    pub(crate) fn flaky(names: &[&str]) -> Self {
-        Self::serve(names, &[], true)
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn flaky(names: &[&str]) -> Self {
+        Self::serve(Upstream {
+            flaky: true,
+            ..Upstream::new(canned_with(names, &[]))
+        })
     }
 
-    fn serve(names: &[&str], wires: &[Vec<u8>], flaky: bool) -> Self {
-        let canned = canned_with(names, wires);
+    /// As [`Responder::start`], each query answered `delay` late.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn delayed(names: &[&str], delay: Duration) -> Self {
+        Self::serve(Upstream {
+            delay,
+            ..Upstream::new(canned_with(names, &[]))
+        })
+    }
+
+    /// Serves the capture named `name`, its answer records' TTL `ttl`, every query after the first `delay` late.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`], or when `ttl` is no TTL.
+    #[must_use]
+    pub fn slow(name: &str, ttl: u32, delay: Duration) -> Self {
+        let wire = read(name);
+        let mut message = Message::decode(&wire)
+            .expect("a captured response decodes")
+            .message;
+        let ttl = Ttl::new(ttl).expect("a TTL");
+        for record in &mut message.answer {
+            record.ttl = ttl;
+        }
+        let wire = message.to_vec().expect("it fits");
+        Self::serve(Upstream {
+            delay,
+            undelayed: 1,
+            ..Upstream::new(canned_with(&[], &[wire]))
+        })
+    }
+
+    /// Answers over UDP and TCP on one port.
+    fn serve(upstream: Upstream) -> Self {
+        // The port UDP got may be taken over TCP by a test running beside this one: take another.
         let (udp, tcp) = loop {
             let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
             if let Ok(tcp) = TcpListener::bind(udp.local_addr().expect("bound")) {
@@ -80,93 +196,93 @@ impl Responder {
         };
         let responder = Self {
             addr: udp.local_addr().expect("bound"),
-            queries: Arc::default(),
+            upstream: Arc::new(upstream),
         };
-        let (queries, answers) = (Arc::clone(&responder.queries), Arc::clone(&canned));
+        let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
             while let Ok((len, from)) = udp.recv_from(&mut buf) {
-                let query = buf[..len].to_vec();
-                if !is_query(&query) {
+                let query = &buf[..len];
+                if !is_query(query) {
                     continue;
                 }
-                let mut log = queries.lock().expect("unpoisoned");
-                log.push((Transport::Udp, query.clone()));
-                let dropped = flaky && log.len() % 2 == 0;
-                drop(log);
-                if !dropped && let Some(response) = answer(&answers, &query, Transport::Udp) {
-                    udp.send_to(&response, from).expect("sent");
+                if let Some(response) = upstream.reply(query, Transport::Udp) {
+                    let _ = udp.send_to(&response, from);
                 }
             }
         });
-        let queries = Arc::clone(&responder.queries);
+        let upstream = Arc::clone(&responder.upstream);
+        // A thread per connection: on Linux each `dedensd` thread opens its own, and one kept open must not hold up
+        // the others.
         thread::spawn(move || {
             for stream in tcp.incoming().flatten() {
-                let (queries, canned) = (Arc::clone(&queries), Arc::clone(&canned));
-                thread::spawn(move || serve_stream(stream, Transport::Tcp, &queries, &canned));
+                let upstream = Arc::clone(&upstream);
+                thread::spawn(move || serve_stream(stream, Transport::Tcp, &upstream));
             }
         });
         responder
     }
 
-    /// The queries received so far, in order.
-    pub(crate) fn queries(&self) -> Vec<(Transport, Vec<u8>)> {
-        self.queries.lock().expect("unpoisoned").clone()
+    /// The queries received so far, in order, with their transport.
+    #[must_use]
+    pub fn queries(&self) -> Vec<(Transport, Vec<u8>)> {
+        self.upstream
+            .queries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// How many times `name`, in presentation format, was asked for `qtype`, over any transport.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is no name.
+    #[must_use]
+    pub fn asked(&self, name: &str, qtype: RecordType) -> usize {
+        let name: Name<'static> = name.parse().expect("a name");
+        self.queries()
+            .iter()
+            .filter_map(|(_, query)| Message::decode(query).ok())
+            .filter(|decoded| {
+                decoded
+                    .message
+                    .questions
+                    .first()
+                    .is_some_and(|question| question.name == name && question.qtype == qtype)
+            })
+            .count()
     }
 
     /// `@` and the address, for the command line.
-    pub(crate) fn at(&self) -> String {
+    #[must_use]
+    pub fn at(&self) -> String {
         format!("@{}", self.addr)
     }
-}
 
-/// Answers each query of a connection over `transport`, TCP or TLS.
-fn serve_stream(
-    mut stream: impl Read + Write,
-    transport: Transport,
-    queries: &Mutex<Vec<(Transport, Vec<u8>)>>,
-    canned: &[Canned],
-) {
-    let mut len = [0; 2];
-    while stream.read_exact(&mut len).is_ok() {
-        let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
-        if stream.read_exact(&mut query).is_err() {
-            return;
-        }
-        queries
-            .lock()
-            .expect("unpoisoned")
-            .push((transport, query.clone()));
-        if let Some(response) = answer(canned, &query, transport) {
-            let len = u16::try_from(response.len()).expect("a response under 64 KiB");
-            let _ = stream.write_all(&[&len.to_be_bytes()[..], &response].concat());
-            let _ = stream.flush();
-        }
-    }
-}
-
-/// The name the certificate of [`Responder::tls`] holds, with 127.0.0.1.
-pub(crate) use certificates::NAME as TLS_NAME;
-
-impl Responder {
-    /// As [`Responder::start`], over TLS only (RFC 7858), with a certificate signed by a certificate authority
-    /// made for the test, whose PEM file comes with it.
-    pub(crate) fn tls(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+    /// As [`Responder::start`], over TLS only (RFC 7858), with a certificate signed by a certificate authority made
+    /// for the test, whose PEM file comes with it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn tls(names: &[&str]) -> (Self, NamedTempFile) {
         let (config, pem) = certified(DEFAULT_VERSIONS, b"dot");
         let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").expect("a TCP port");
         let responder = Self {
             addr: listener.local_addr().expect("bound"),
-            queries: Arc::default(),
+            upstream: Arc::new(Upstream::new(canned_with(names, &[]))),
         };
-        let (queries, canned) = (Arc::clone(&responder.queries), canned(names));
+        let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (queries, canned) = (Arc::clone(&queries), Arc::clone(&canned));
+                let upstream = Arc::clone(&upstream);
                 let connection = ServerConnection::new(Arc::clone(&config)).expect("a TLS session");
                 thread::spawn(move || {
                     let tls = StreamOwned::new(connection, stream);
-                    serve_stream(tls, Transport::Tls, &queries, &canned);
+                    serve_stream(tls, Transport::Tls, &upstream);
                 });
             }
         });
@@ -174,10 +290,15 @@ impl Responder {
     }
 
     /// As [`Responder::tls`], over QUIC only (RFC 9250): each query on its stream, answered on it.
-    pub(crate) fn quic(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn quic(names: &[&str]) -> (Self, NamedTempFile) {
         let (config, pem) = certified(&[&TLS13], b"doq");
-        let (queries, canned): (Log, _) = (Arc::default(), canned(names));
-        let log = Arc::clone(&queries);
+        let upstream = Arc::new(Upstream::new(canned_with(names, &[])));
+        let serving = Arc::clone(&upstream);
         let (bound, addr) = mpsc::channel();
         thread::spawn(move || {
             let runtime = compio::runtime::Runtime::new().expect("a runtime");
@@ -190,7 +311,7 @@ impl Responder {
                     .send(endpoint.local_addr().expect("bound"))
                     .expect("the test waits");
                 while let Some(incoming) = endpoint.wait_incoming().await {
-                    let (log, canned) = (Arc::clone(&log), Arc::clone(&canned));
+                    let upstream = Arc::clone(&serving);
                     compio::runtime::spawn(async move {
                         // A client that refuses the certificate ends here.
                         let Ok(connecting) = incoming.accept() else {
@@ -204,10 +325,7 @@ impl Responder {
                             let (Ok(_), Some(query)) = (read, bytes.get(2..)) else {
                                 return;
                             };
-                            log.lock()
-                                .expect("unpoisoned")
-                                .push((Transport::Quic, query.to_vec()));
-                            if let Some(response) = answer(&canned, query, Transport::Quic) {
+                            if let Some(response) = upstream.reply(query, Transport::Quic) {
                                 let len =
                                     u16::try_from(response.len()).expect("a response under 64 KiB");
                                 let _ = send
@@ -222,32 +340,36 @@ impl Responder {
             });
         });
         let addr = addr.recv().expect("the server's address");
-        (Self { addr, queries }, pem)
+        (Self { addr, upstream }, pem)
     }
-}
 
-impl Responder {
     /// As [`Responder::start`], over HTTP/3 only (RFC 8484 over RFC 9114), on any path: each query on its request
     /// stream, answered on it.
-    pub(crate) fn https(names: &[&str]) -> (Self, tempfile::NamedTempFile) {
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[must_use]
+    pub fn https(names: &[&str]) -> (Self, NamedTempFile) {
         Self::h3(names, None)
     }
 
     /// As [`Responder::https`], and an Oblivious `DoH` target with `key` (RFC 9230 §8) and its own proxy: its
     /// configurations at the well-known path, oblivious messages opened wherever they come.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
     #[cfg(feature = "odoh")]
-    #[allow(dead_code, reason = "only the tests of Oblivious `DoH` use it")]
-    pub(crate) fn oblivious(
-        names: &[&str],
-        key: dedens_odoh::TargetKey,
-    ) -> (Self, tempfile::NamedTempFile) {
+    #[must_use]
+    pub fn oblivious(names: &[&str], key: dedens_odoh::TargetKey) -> (Self, NamedTempFile) {
         Self::h3(names, Some(Arc::new(key)))
     }
 
-    fn h3(names: &[&str], key: Option<Arc<Key>>) -> (Self, tempfile::NamedTempFile) {
+    fn h3(names: &[&str], key: Option<Arc<Key>>) -> (Self, NamedTempFile) {
         let (config, pem) = certified(&[&TLS13], b"h3");
-        let (queries, canned): (Log, _) = (Arc::default(), canned(names));
-        let log = Arc::clone(&queries);
+        let upstream = Arc::new(Upstream::new(canned_with(names, &[])));
+        let serving = Arc::clone(&upstream);
         let (bound, addr) = mpsc::channel();
         thread::spawn(move || {
             let runtime = compio::runtime::Runtime::new().expect("a runtime");
@@ -260,7 +382,7 @@ impl Responder {
                     .send(endpoint.local_addr().expect("bound"))
                     .expect("the test waits");
                 while let Some(incoming) = endpoint.wait_incoming().await {
-                    let (log, canned, key) = (Arc::clone(&log), Arc::clone(&canned), key.clone());
+                    let (upstream, key) = (Arc::clone(&serving), key.clone());
                     compio::runtime::spawn(async move {
                         let Ok(connecting) = incoming.accept() else {
                             return;
@@ -274,8 +396,7 @@ impl Responder {
                             return;
                         };
                         while let Ok(Some(resolver)) = server.accept().await {
-                            let (log, canned, key) =
-                                (Arc::clone(&log), Arc::clone(&canned), key.clone());
+                            let (upstream, key) = (Arc::clone(&upstream), key.clone());
                             compio::runtime::spawn(async move {
                                 let Ok((request, mut stream)) = resolver.resolve_request().await
                                 else {
@@ -288,7 +409,7 @@ impl Responder {
                                 #[cfg(feature = "odoh")]
                                 if let Some(key) = &key {
                                     let (head, body) =
-                                        oblivious_answer(key, &request, &body, &log, &canned);
+                                        oblivious_answer(key, &request, &body, &upstream);
                                     let _ = stream
                                         .send_response(http::Response::from_parts(head, ()))
                                         .await;
@@ -306,10 +427,7 @@ impl Responder {
                                     http::Method::POST => Transport::HttpsPost,
                                     _ => Transport::HttpsGet,
                                 };
-                                log.lock()
-                                    .expect("unpoisoned")
-                                    .push((transport, query.clone()));
-                                let Some(wire) = answer(&canned, &query, Transport::Quic) else {
+                                let Some(wire) = upstream.reply(&query, transport) else {
                                     return;
                                 };
                                 let Ok(response) =
@@ -332,25 +450,29 @@ impl Responder {
             });
         });
         let addr = addr.recv().expect("the server's address");
-        (Self { addr, queries }, pem)
+        (Self { addr, upstream }, pem)
     }
-}
 
-#[cfg(feature = "doc")]
-impl Responder {
     /// As [`Responder::start`], over CoAP only (RFC 9953), at `path`: the answers of the library's own server side
-    /// ([`dedens_net::coap::dns`]), the same `dedensd` serves with, `/.well-known/core` too (D95). Any other path gets 4.04.
-    pub(crate) fn coap(names: &[&str], path: &str) -> Self {
+    /// ([`dedens_net::coap::dns`]), the same `dedensd` serves with, `/.well-known/core` too (D95). Any other path
+    /// gets 4.04.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::start`].
+    #[cfg(feature = "doc")]
+    #[must_use]
+    pub fn coap(names: &[&str], path: &str) -> Self {
         use dedens_net::coap::Message;
         use dedens_net::coap::dns::{Query, discovery, error, path_segments, query, response};
 
-        let (canned, path) = (canned(names), path_segments(path));
+        let path = path_segments(path);
         let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
         let responder = Self {
             addr: socket.local_addr().expect("bound"),
-            queries: Arc::default(),
+            upstream: Arc::new(Upstream::new(canned_with(names, &[]))),
         };
-        let queries = Arc::clone(&responder.queries);
+        let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
             while let Ok((len, from)) = socket.recv_from(&mut buf) {
@@ -367,17 +489,11 @@ impl Responder {
                     Err(code) => error(&request, 1, code),
                     // Nothing is kept here for the blocks past the first.
                     Ok(Query::Block(_)) => error(&request, 1, dedens_net::coap::Code::BAD_REQUEST),
-                    Ok(Query::Dns(dns)) => {
-                        queries
-                            .lock()
-                            .expect("unpoisoned")
-                            .push((Transport::Coap, dns.to_vec()));
-                        match answer(&canned, dns, Transport::Tcp) {
-                            Some(wire) => response(&request, 1, wire)
-                                .unwrap_or_else(|code| error(&request, 1, code)),
-                            None => continue,
-                        }
-                    }
+                    Ok(Query::Dns(dns)) => match upstream.reply(dns, Transport::Coap) {
+                        Some(wire) => response(&request, 1, wire)
+                            .unwrap_or_else(|code| error(&request, 1, code)),
+                        None => continue,
+                    },
                 };
                 socket
                     .send_to(&reply.to_vec().expect("it writes"), from)
@@ -385,6 +501,22 @@ impl Responder {
             }
         });
         responder
+    }
+}
+
+/// Answers each query of a connection over `transport`, TCP or TLS.
+fn serve_stream(mut stream: impl Read + Write, transport: Transport, upstream: &Upstream) {
+    let mut len = [0; 2];
+    while stream.read_exact(&mut len).is_ok() {
+        let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
+        if stream.read_exact(&mut query).is_err() {
+            return;
+        }
+        if let Some(response) = upstream.reply(&query, transport) {
+            let len = u16::try_from(response.len()).expect("a response under 64 KiB");
+            let _ = stream.write_all(&[&len.to_be_bytes()[..], &response].concat());
+            let _ = stream.flush();
+        }
     }
 }
 
@@ -400,8 +532,7 @@ fn oblivious_answer(
     key: &Key,
     request: &http::Request<()>,
     body: &[u8],
-    log: &Mutex<Vec<(Transport, Vec<u8>)>>,
-    canned: &[Canned],
+    upstream: &Upstream,
 ) -> (http::response::Parts, Vec<u8>) {
     use dedens_net::odoh::{self, Entropy, Kind};
     use dedens_odoh::{Configs, Message};
@@ -431,10 +562,7 @@ fn oblivious_answer(
                 None | Some(Err(_)) => status(http::StatusCode::BAD_REQUEST),
                 Some(Ok((plaintext, context))) => {
                     let query = plaintext.into_dns_message();
-                    log.lock()
-                        .expect("unpoisoned")
-                        .push((Transport::Oblivious, query.clone()));
-                    match answer(canned, &query, Transport::Quic) {
+                    match upstream.reply(&query, Transport::Oblivious) {
                         None => status(http::StatusCode::SERVICE_UNAVAILABLE),
                         Some(wire) => {
                             let mut entropy = Entropy::new().expect("randomness");
@@ -457,60 +585,48 @@ fn oblivious_answer(
     response.into_parts()
 }
 
-/// A server configuration for TLS versions `versions` and protocol `alpn`, with a certificate for [`TLS_NAME`] and
-/// 127.0.0.1 signed by a certificate authority made for the test; and that authority's PEM file.
+/// A server configuration for TLS versions `versions` and protocol `alpn`, with a certificate for
+/// [`certificates::NAME`] and 127.0.0.1 signed by a certificate authority made for the test; and that authority's PEM
+/// file.
 fn certified(
     versions: &[&'static SupportedProtocolVersion],
     alpn: &[u8],
-) -> (ServerConfig, tempfile::NamedTempFile) {
+) -> (ServerConfig, NamedTempFile) {
     let certificates = certificates::certificates();
-    let mut pem = tempfile::NamedTempFile::new().expect("a temporary file");
+    let mut pem = NamedTempFile::new().expect("a temporary file");
     pem.write_all(certificates.ca_pem.as_bytes())
         .expect("written");
     (certificates.config(versions, alpn), pem)
 }
 
-/// The captured responses named, `"a"` for `a.bin`, from the captures of the protocol or of DNSSEC (no name is in
-/// both).
-fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
-    canned_with(names, &[])
+/// The captured response named `name`, `"a"` for `a.bin`, from the captures of the protocol or of DNSSEC (no name
+/// is in both).
+fn read(name: &str) -> Vec<u8> {
+    let file = format!("{name}.bin");
+    let mut found = ["proto", "dnssec"]
+        .map(|dir| crate::path(dir).join(&file))
+        .into_iter()
+        .filter(|path| path.exists());
+    let path = found.next().expect("a captured response");
+    assert_eq!(found.next(), None, "{name}: a capture of both");
+    std::fs::read(path).expect("captured response")
 }
 
-/// As [`canned`], and the responses in `wires`.
-fn canned_with(names: &[&str], wires: &[Vec<u8>]) -> Arc<Vec<Canned>> {
-    let dirs = ["proto", "dnssec"].map(dedens_testkit::path);
-    let canned = names.iter().map(|name| {
-        let file = format!("{name}.bin");
-        let dir = dirs
-            .iter()
-            .find(|dir| dir.join(&file).exists())
-            .expect("a captured response");
-        std::fs::read(dir.join(file)).expect("captured response")
-    });
-    let canned = canned.chain(wires.iter().cloned()).map(|wire| {
-        let (key, _) = question(&wire).expect("a question");
-        Canned {
-            key,
-            truncated: wire[2] & 0x02 != 0,
-            wire,
-        }
-    });
-    Arc::new(canned.collect())
-}
-
-/// The captured response to `query`, its ID and question bytes those of the query.
-fn answer(canned: &[Canned], query: &[u8], transport: Transport) -> Option<Vec<u8>> {
-    let (key, end) = question(query)?;
-    let mut matching = canned.iter().filter(|c| c.key == key);
-    let first = matching.next()?;
-    let chosen = match matching.next() {
-        Some(second) if first.truncated != (transport == Transport::Udp) => second,
-        _ => first,
-    };
-    let mut response = chosen.wire.clone();
-    response[..2].copy_from_slice(&query[..2]);
-    response[12..end].copy_from_slice(&query[12..end]);
-    Some(response)
+/// The captured responses named, and the responses in `wires`.
+fn canned_with(names: &[&str], wires: &[Vec<u8>]) -> Vec<Canned> {
+    names
+        .iter()
+        .map(|name| read(name))
+        .chain(wires.iter().cloned())
+        .map(|wire| {
+            let (key, _) = question(&wire).expect("a question");
+            Canned {
+                key,
+                truncated: wire[2] & 0x02 != 0,
+                wire,
+            }
+        })
+        .collect()
 }
 
 /// Whether a datagram is a query: a header (RFC 1035 §4.1.1) of a message that is no response, with one question and
