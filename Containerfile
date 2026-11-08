@@ -4,7 +4,7 @@
 #   binaries  the two binaries and their notices alone (just release)
 #   (last)    the dedensd image, FROM scratch, run as an unprivileged user: just image
 
-# The tag is rust-toolchain.toml's channel (checked by crates/dedens-bench/tests/repo.rs); Renovate keeps the digest.
+# The tag is rust-toolchain.toml's channel (checked by crates/dedens-repo/tests/repo.rs); Renovate keeps the digest.
 FROM docker.io/library/rust:1.99.1-alpine@sha256:98e4492621c23872a502a7171b7d2b105fdc114276856f71051f38bf94ee26aa AS build
 
 # lld: Alpine's own, see `.cargo/lld-cc`; ca-certificates: the bundle the image carries (D57).

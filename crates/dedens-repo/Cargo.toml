@@ -1,0 +1,17 @@
+[package]
+name = "dedens-repo"
+description = "The repository checks (D140): facts the documents rely on, kept true by the gate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+
+[lints]
+workspace = true

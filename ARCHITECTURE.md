@@ -15,6 +15,7 @@
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
 | `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the DNSSEC captures and RFC examples, the test certificates and the loopback responder of the command-line tests (features `certificates`, `responder`); public modules `dnssec`, `certificates` and `responder`, every other item at the root (D160) | files, sockets (`responder`) |
 | `crates/dedens-sim` | Simulation tests (D133, D134): the sans-IO server core and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network | simulated |
+| `crates/dedens-repo` | The repository checks of the gate (D140, D163), its tests alone: decisions, RFC coverage, `CLAUDE.md` links, pinned Rust | files (`git ls-files`) |
 | `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
 | `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122) | sockets, files, HTTP (lists) |
 | `fuzz/` | libFuzzer targets, own workspace | none |

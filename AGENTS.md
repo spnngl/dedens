@@ -6,7 +6,7 @@ it holds.
 
 Read `docs/decisions.md` before any task. Record a new or changed decision there in the same change as the code,
 under a new number; mark a replaced one superseded, and name an amendment in both headers
-(`crates/dedens-bench/tests/repo.rs` checks the numbers and the pairs, D140). Open questions go to
+(`crates/dedens-repo/tests/repo.rs` checks the numbers and the pairs, D140). Open questions go to
 `docs/TODECIDE.md`.
 
 `PLAN.md` and `plan/` are local and git-ignored: phase order and each phase's "Done when". Read `PLAN.md` when
