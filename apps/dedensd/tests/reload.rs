@@ -1,15 +1,12 @@
 //! `dedensd` reloading its configuration file on SIGHUP (D55): the new pipeline answers, and one that does not read
 //! leaves the running one in place; a list is read once, and again only when it changed (D120).
 
-#![cfg(unix)]
-
-mod common;
-
 use std::net::IpAddr;
 
-use common::{Server, ask_udp};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Question, Rcode, RecordType};
+
+use crate::util::{Server, ask_udp};
 
 /// A server answering `www.example.` from a hosts stage.
 fn hosts(listen: &str, address: &str) -> String {

@@ -1,8 +1,6 @@
 //! Shared by the tests running `dedensd`: a running server with its
 //! configuration file, and DNS over UDP and TCP with the standard library.
 
-#![allow(dead_code, reason = "each test file uses part of these")]
-
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};

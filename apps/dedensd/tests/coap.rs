@@ -1,21 +1,18 @@
 //! Serving DNS over CoAP (RFC 9953), on addresses behind `coap://` (D81): the answers and their Max-Age, the codes of
 //! requests that are no query, retransmissions, blocks of a large response, and the warning for CoAP being
 //! unprotected (§6).
-#![cfg(feature = "doc")]
-
-mod common;
-
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, UdpSocket};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Server, decode, query_for, write_config};
 use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
 use dedens_proto::{Message as ProtoMessage, Question, RecordType};
 use dedens_testkit::captured;
 use dedens_testkit::responder::Responder;
+
+use crate::util::{Server, decode, query_for, write_config};
 
 /// The path `dedensd` serves `DoC` at in these tests.
 const PATH: &[&[u8]] = &[b"dns", b"query"];

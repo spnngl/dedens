@@ -1,15 +1,14 @@
 //! The validator's questions in flight are shared (D86): queries that need the same DS or DNSKEY of the same server
 //! at the same time send it once. Run on loopback against a responder answering the captures of `dedens-dnssec`.
 
-mod common;
-
 use std::thread;
 use std::time::Duration;
 
-use common::{Server, ask_udp, query_for};
 use dedens_proto::{Rcode, RecordType};
 use dedens_testkit::dnssec::capture;
 use dedens_testkit::responder::Responder;
+
+use crate::util::{Server, ask_udp, query_for};
 
 /// Clients asking at once.
 const CLIENTS: u16 = 8;

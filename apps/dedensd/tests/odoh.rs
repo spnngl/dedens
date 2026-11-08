@@ -1,10 +1,6 @@
 //! Serving Oblivious `DoH` (RFC 9230 §8) as a target on the HTTP/3 listener (D79): the configurations at their
 //! well-known path, queries opened and answered through the pipeline, the statuses of §4.3, a key from a file; and as
 //! a proxy (§4, D94): queries forwarded to the targets listed, the `Proxy-Status` of each failure (RFC 9209).
-#![cfg(feature = "odoh")]
-
-mod common;
-
 use std::net::{SocketAddr, UdpSocket};
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,7 +8,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, ServerBuilder, h3};
 use compio::runtime::{Runtime, spawn};
@@ -29,6 +24,8 @@ use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use dedens_testkit::responder::Responder;
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
+
+use crate::util::{Server, decode, query_for, write_config};
 
 /// `dedensd` answering over HTTP/3 with the certificate of `certificates`, forwarding to `upstream`; `odoh` is the
 /// lines of its `odoh` section, none for a server that is no target.
@@ -51,7 +48,7 @@ fn serving_trusting(
         config.with_extension("ca.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    common::write_key(&key, &certificates.key_pem);
+    crate::util::write_key(&key, &certificates.key_pem);
     std::fs::write(&authority, &trusted.ca_pem).expect("the authority written");
     Server::configured(|listen| {
         format!(
@@ -287,7 +284,7 @@ fn a_key_file_fixes_the_configurations() {
     let upstream = Responder::start(&["a"]);
     let ca = certificates();
     let key = write_config("");
-    common::write_key(&key, format!("{}\n", "5a".repeat(32)));
+    crate::util::write_key(&key, format!("{}\n", "5a".repeat(32)));
     let section = format!("odoh:\n  key: '{}'\n", key.display());
     let (one, two) = (
         serving(&ca, &section, upstream.addr),

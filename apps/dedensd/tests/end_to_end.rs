@@ -2,12 +2,11 @@
 //! server, its reply held to the query's expectations, the way `dedens -f` does; a caching forwarder asks its
 //! upstream once per question.
 
-mod common;
-
-use common::{Server, ask_tcp, ask_udp};
 use dedens_proto::Question;
 use dedens_scenario::QueryFile;
 use dedens_testkit::responder::Responder;
+
+use crate::util::{Server, ask_tcp, ask_udp};
 
 #[test]
 fn replies_meet_the_query_file() {

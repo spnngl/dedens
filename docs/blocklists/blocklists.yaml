@@ -1,4 +1,4 @@
-# Published blocklists (D87, D88). `apps/dedensd/tests/blocklists.rs` reads this file: `cargo test` checks its
+# Published blocklists (D87, D88). `apps/dedensd/tests/lists.rs` reads this file: `cargo test` checks its
 # fields, `just blocklists` downloads every list and checks its `format`, its `updated` and its source's `status`.
 # Facts checked at each source on 2026-11-01.
 #

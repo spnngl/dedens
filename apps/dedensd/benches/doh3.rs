@@ -2,13 +2,13 @@
 //! the client a `dedens-net` `Client` on one thread. Run with `cargo bench -p dedensd --bench doh3`; numbers go to
 //! `docs/benchmarks.md`.
 
-#[path = "../tests/common/mod.rs"]
-mod common;
+#[path = "../tests/util.rs"]
+#[expect(dead_code, reason = "the bench uses part of the tests' helpers")]
+mod util;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use common::{Server, decode, query_for};
 use dedens_net::client::Client;
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
@@ -18,6 +18,7 @@ use dedens_testkit::captured;
 use dedens_testkit::certificates::{NAME, certificates, named};
 use dedens_testkit::responder::Responder;
 use futures_util::future::join_all;
+use util::{Server, decode, query_for};
 
 /// How long each measure runs.
 const RUN: Duration = Duration::from_secs(3);
@@ -52,13 +53,13 @@ async fn rate(client: &Client, addr: SocketAddr, options: &Options, in_flight: u
 fn main() {
     let certificates = certificates();
     let upstream = Responder::start(&["a"]);
-    let config = common::write_config("");
+    let config = util::write_config("");
     let (certificate, key) = (
         config.with_extension("crt.pem"),
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    common::write_key(&key, &certificates.key_pem);
+    util::write_key(&key, &certificates.key_pem);
     let server = Server::configured(|listen| {
         format!(
             "listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",

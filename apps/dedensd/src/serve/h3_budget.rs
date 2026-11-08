@@ -22,7 +22,7 @@ use super::TCP_IDLE;
 use super::isolate::Origin;
 
 /// The bytes an HTTP/3 connection may receive before `GOAWAY`: 4 MiB, some 25 000 `DoH` GETs of 170 bytes (measured
-/// in `tests/rfc9114.rs`), so a client at 1 000 queries a second changes connection every 25 s. It is the memory an
+/// in `tests/doh.rs`), so a client at 1 000 queries a second changes connection every 25 s. It is the memory an
 /// attacker may make one connection hold for as long as it stays under it, and `TCP_CONNECTIONS` times that is
 /// what a thread accepts (1 GiB): a smaller budget rotates honest clients more often, a larger one costs memory (D119).
 const BUDGET: u64 = 4 << 20;

@@ -2,12 +2,8 @@
 //! followed, a no-op when the process already is that user, and, started as root on Linux, ends up as the user with
 //! no capability left in any thread while it serves on :53 and reloads.
 //!
-//! The last test needs Linux and root, and is `#[ignore]`d: `sudo -E cargo test -p dedensd --test privileges --
-//! --ignored` (or in a root container). It skips with a message anywhere else.
-
-#![cfg(unix)]
-
-mod common;
+//! The last test needs Linux and root, and is `#[ignore]`d: `sudo -E cargo test -p dedensd --test tests --
+//! --ignored privileges::` (or in a root container). It skips with a message anywhere else.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt as _;
@@ -17,9 +13,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{Server, ask_tcp, ask_udp, validate, write_config};
 use dedens_proto::{Message, Question, RecordType};
 use serde_json::Value;
+
+use crate::util::{Server, ask_tcp, ask_udp, validate, write_config};
 
 /// A field of a `/proc/PID/status` text: `Uid`, `Gid`, `CapEff`, ...; its values, split on blanks.
 fn field(status: &str, name: &str) -> Option<Vec<String>> {

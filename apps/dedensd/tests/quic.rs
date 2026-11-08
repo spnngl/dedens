@@ -1,13 +1,12 @@
 //! The QUIC DATAGRAM extension (RFC 9221) is not used: `dedensd` answers over QUIC streams (RFC 9250), reads no
 //! DATAGRAM frame, and so advertises no datagram support (D107).
 
-mod common;
-
-use common::{Server, write_config};
 use compio::quic::{ClientBuilder, VarInt};
 use compio::runtime::Runtime;
 use dedens_testkit::certificates::{NAME, certificates};
 use dedens_testkit::responder::Responder;
+
+use crate::util::{Server, write_config};
 
 /// RFC 9221 §3: a server that does not support DATAGRAM frames leaves `max_datagram_frame_size` out, so a client
 /// sees no size it may send. quinn derives the parameter from its receive buffer, 1.25 MB unless unset. That a
@@ -23,7 +22,7 @@ fn s3_a_quic_server_advertises_no_datagram_support() {
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &ca.server_pem).expect("the certificate written");
-    common::write_key(&key, &ca.key_pem);
+    crate::util::write_key(&key, &ca.key_pem);
     let server = Server::configured(|listen| {
         format!(
             "listen: ['quic://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",

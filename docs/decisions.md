@@ -1032,7 +1032,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Tests: `crates/dedens-net/tests/odoh.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
     headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch, and the
     ignored live one), `tests/interop/odoh.py` (by hand: `odoh-rs` against `dedensd`),
-    `apps/dedensd/tests/rfc9230.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
+    `apps/dedensd/tests/odoh.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
 
 - D80 (amends D69) CoAP is our own sans-IO codec, `dedens_net::coap` (RFC 7252, RFC 7959, RFC 8132), for DoC (RFC 9953):
   no crate of CoAP is pulled in, since DoC needs a small part of it and the rest would carry its own socket, clock
@@ -1759,7 +1759,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (maintainer, licence, how it is built) and its main lists, each with its URL, what it holds, how often it
   changes and its `format`, measured: names, `*.name` and hosts lines, which `dedensd` reads (D56), adblock rules,
   URLs, and addresses or networks (IP feeds, kept for their information: `dedensd` blocks names, not
-  addresses). `apps/dedensd/tests/blocklists.rs` reads it into typed structs: `cargo test` checks the file
+  addresses). `apps/dedensd/tests/lists.rs` reads it into typed structs: `cargo test` checks the file
   offline; `just blocklists` (ignored, outside `just check`) downloads each list as `dedensd` does (D57; 120 s,
   3 tries since oisd answers 503 now and then) and checks that most of its lines are of its format, and that a
   list of a format `dedensd` reads reads as a downloaded list. Licences differ: several forbid commercial use or
@@ -2043,7 +2043,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     token at debug, with neither. Stats: `dedensd_odoh_proxied_total{status}`, the status one of those above or
     `other`. No rate limit per client on the forwards: the deployment's (D90; D113 limits UDP only; the target's decapsulations are D117's). The pool keeps
     a slot per address a listed name resolved to (`docs/TODECIDE.md`).
-  - Tests: `apps/dedensd/tests/rfc9230.rs` (a real `dedensd` as proxy to a real one, or to a test HTTP/3 server that
+  - Tests: `apps/dedensd/tests/odoh.rs` (a real `dedensd` as proxy to a real one, or to a test HTTP/3 server that
     records what it sees: the client's query answered, the proxy answering as a target too, the target's 200 and its
     401 returned with their `received-status`, never cached, two forwards on one connection and no header of the
     client at the target, each of the statuses above with its `Proxy-Status` except `dns_timeout`, which no test can
@@ -2118,7 +2118,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     seccomp filter, `kernel.io_uring_disabled`), with a `warn!` nobody sees, so the "serving" event has a `driver`
     field (`io_uring`, `poll`, or `mixed` if the threads differ), and on Linux a thread on `poll` is a warning at
     start, with the count of threads on it. compio's own logging (its `enable_log` feature) stays off: it
-    instruments the driver's hot path, unmeasured. `tests/serve.rs` expects `io_uring` on Linux, unless
+    instruments the driver's hot path, unmeasured. `tests/listeners.rs` expects `io_uring` on Linux, unless
     `DEDENS_TEST_ALLOW_POLL` is set (a container whose seccomp filter refuses it); the fallback itself is tested
     by forcing it (D147).
   - UDP receive (amends D64): the pause after a failed receive is per task, and the lock on the socket's stream is
@@ -2274,8 +2274,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_variable_cannot_inject_yaml`, `a_value_is_the_text_it_stands_for` (every text of up to three characters
     from an alphabet of YAML's syntax, in five templates: read back as that text or refused, which stands for a
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
-    `threads_default_to_the_cores_on_linux` (`config/limits.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
-    Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
+    `threads_default_to_the_cores_on_linux` (`config/limits.rs`), `threads_set_the_serving_threads` (`tests/listeners.rs`).
+    Test and bench key files are written 0600 (`util::write_key`). No hot path touched, no bench.
 - D116 (amends D22, D44; amended by D118) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
   - Memory (L12). `capacity` counts everything a shard holds: the keys and responses, and `SLOT_COST` for each slot
     of the slab, live or free. `SLOT_COST` is the sum of what a slot takes in each table at the worst moment of its
@@ -2390,7 +2390,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`dedens-server/tests/dnssec.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
     (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
     `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
-    (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/rfc9230.rs`),
+    (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/odoh.rs`),
     `a_client_share_is_set_per_stage_and_reload_keeps_the_keys` (`config/upstream.rs`), `an_odoh_target_has_limits` (`config/keys.rs`). No
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
     `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
@@ -2510,7 +2510,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - The h3 fix (hyperium/h3 branch, not in 0.0.8): a declared length above a bound is refused before the frame is
     buffered (RFC 9114 §7.1, §10.5), unknown frames are discarded as they arrive. The budget goes when a release
     carries it (`docs/TODECIDE.md`).
-  - Tests (`apps/dedensd/tests/rfc9114.rs`): `s10_5_a_control_frame_that_never_ends_closes_the_connection`,
+  - Tests (`apps/dedensd/tests/doh.rs`, `h3_frames`): `s10_5_a_control_frame_that_never_ends_closes_the_connection`,
     `s10_5_request_headers_that_never_end_close_the_connection` (written first, red without the budget: 27 MiB and
     64 MiB sent, no `H3_EXCESSIVE_LOAD`; green: closed before the sent bytes pass the bound), and
     `s5_2_a_busy_connection_is_rotated_not_closed` (60 000 queries over dedens' own client, all answered, the
