@@ -18,14 +18,14 @@ use compio::quic::{Connection, VarInt};
 use dedens_net::http3::H3_EXCESSIVE_LOAD;
 use dedens_net::quic::RECEIVE_WINDOW;
 
-use crate::isolate::Origin;
-use crate::serve::TCP_IDLE;
+use super::TCP_IDLE;
+use super::isolate::Origin;
 
 /// The bytes an HTTP/3 connection may receive before `GOAWAY`: 4 MiB, some 25 000 `DoH` GETs of 170 bytes (measured
 /// in `tests/rfc9114.rs`), so a client at 1 000 queries a second changes connection every 25 s. It is the memory an
 /// attacker may make one connection hold for as long as it stays under it, and `TCP_CONNECTIONS` times that is
 /// what a thread accepts (1 GiB): a smaller budget rotates honest clients more often, a larger one costs memory (D119).
-pub(crate) const BUDGET: u64 = 4 << 20;
+const BUDGET: u64 = 4 << 20;
 
 /// The time between two checks: 50 a second per thread, whatever the number of connections. A peer that returns its
 /// credit at once sends [`RECEIVE_WINDOW`] bytes a round trip, so a connection holds at most [`BUDGET`] plus
@@ -38,7 +38,7 @@ const CHECK: Duration = Duration::from_millis(20);
 const DRAIN: Duration = TCP_IDLE;
 
 /// The state of one HTTP/3 connection's budget.
-pub(crate) struct Budget {
+pub(super) struct Budget {
     connection: Connection,
     peer: SocketAddr,
     /// When the connection passed [`BUDGET`]: it is being sent `GOAWAY`.
@@ -49,17 +49,17 @@ pub(crate) struct Budget {
 
 impl Budget {
     /// Whether the connection received [`BUDGET`] bytes: no request is to be taken on it.
-    pub(crate) fn passed(&self) -> bool {
+    pub(super) fn passed(&self) -> bool {
         self.passed.get().is_some()
     }
 
     /// Whether no request is being answered.
-    pub(crate) fn quiet(&self) -> bool {
+    pub(super) fn quiet(&self) -> bool {
         self.flights.get() == 0
     }
 
     /// A request taken: held until it is answered, it keeps the budget checked.
-    pub(crate) fn fly(self: &Rc<Self>) -> Flight {
+    pub(super) fn fly(self: &Rc<Self>) -> Flight {
         self.flights.set(self.flights.get() + 1);
         Flight(Rc::clone(self))
     }
@@ -91,7 +91,7 @@ impl Budget {
 }
 
 /// A request being answered on a connection with a [`Budget`].
-pub(crate) struct Flight(Rc<Budget>);
+pub(super) struct Flight(Rc<Budget>);
 
 impl Drop for Flight {
     fn drop(&mut self) {
@@ -101,7 +101,7 @@ impl Drop for Flight {
 
 /// The HTTP/3 connections of one thread that are checked.
 #[derive(Default)]
-pub(crate) struct Connections {
+pub(super) struct Connections {
     /// Weak: the budget lives as long as the connection's service and its requests, and no longer.
     list: RefCell<Vec<Weak<Budget>>>,
     /// Whether [`sweep`] runs; it ends when the list is empty.
@@ -111,7 +111,7 @@ pub(crate) struct Connections {
 impl Connections {
     /// Starts checking `connection` from `origin`'s peer; the check ends with the returned budget's last holder. The
     /// sweep, if it starts, is a task of `origin`'s listener (D121).
-    pub(crate) fn register(self: &Rc<Self>, connection: Connection, origin: &Origin) -> Rc<Budget> {
+    pub(super) fn register(self: &Rc<Self>, connection: Connection, origin: &Origin) -> Rc<Budget> {
         let budget = Rc::new(Budget {
             connection,
             peer: origin.peer,

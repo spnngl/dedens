@@ -24,8 +24,9 @@ use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFE
 use dedens_net::coap::{Code, Message, Type};
 use dedens_proto::Transport;
 
-use super::{ERROR_PAUSE, Slot, Slots, Started, Thread, answer, start};
-use crate::isolate::{Listener, Origin};
+use super::isolate::{Listener, Origin};
+use super::upstream::answer;
+use super::{ERROR_PAUSE, Slot, Slots, Started, Thread, start};
 
 /// The largest request read, in bytes (D105): a datagram over it is read to here and refused 4.13. A query fits the
 /// largest block, 1024 bytes (RFC 7959 §2.2), and the header, token and options of a request take far less than the

@@ -394,7 +394,7 @@ mod loom_tests {
     use super::*;
     use crate::sync::{Arc, model};
 
-    /// What a serving thread holds: `Thread` in `serve.rs`.
+    /// What a serving thread holds: `Thread` in `serve/mod.rs`.
     struct Serving {
         current: Arc<Current>,
         wake: sync::Receiver<()>,
@@ -413,14 +413,14 @@ mod loom_tests {
             }
         }
 
-        /// What a query does first, as `Thread::pipeline` in `serve.rs`: takes the pipeline of a newer generation.
+        /// What a query does first, as `Thread::pipeline` in `serve/mod.rs`: takes the pipeline of a newer generation.
         fn query(&mut self) {
             if let Some((generation, pipeline)) = self.current.newer(self.generation) {
                 (self.generation, self.pipeline) = (generation, pipeline);
             }
         }
 
-        /// The `follow` task of `serve.rs`, which ends here once the thread holds generation `last`: no query comes, a
+        /// The `follow` task of `serve/mod.rs`, which ends here once the thread holds generation `last`: no query comes, a
         /// wake-up is the only way to the new pipeline. A wake-up that never comes is a deadlock loom reports.
         fn follow(&mut self, last: u64) {
             while self.generation < last {

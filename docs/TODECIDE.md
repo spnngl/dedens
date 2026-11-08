@@ -44,7 +44,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 - HTTP/3 byte budget (D119): `dedensd` sends `GOAWAY` to an HTTP/3 connection after `BUDGET` bytes received, as h3
   0.0.8 buffers a frame of any declared length. A fix is written for hyperium/h3 (a declared length above a bound is
-  refused before the frame is buffered, unknown frames discarded). Default: replace the budget (`src/h3_budget.rs` and
+  refused before the frame is buffered, unknown frames discarded). Default: replace the budget (`src/serve/h3_budget.rs` and
   its sweeper) by the fix once an h3 release with it is in compio's `h3` feature and `tests/rfc9114.rs` passes
   without it; keep the windows. Until then the rotation of honest connections stays.
 - The client's side of the same (D119): the server a client dials is trusted by its operator, but h3 reads its control

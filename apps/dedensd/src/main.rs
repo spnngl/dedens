@@ -14,8 +14,6 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod config;
 mod download;
 mod flights;
-mod h3_budget;
-mod isolate;
 mod lists;
 #[cfg(feature = "odoh")]
 mod odoh;
@@ -40,6 +38,7 @@ use dedens_server::Pipeline;
 use crate::config::Config;
 use crate::lists::Store;
 use crate::reload::{Current, Fixed};
+use crate::serve::isolate;
 
 /// A DNS server: answers from its cache and forwards the rest to upstream servers.
 #[derive(Debug, Parser)]

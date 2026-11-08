@@ -24,7 +24,7 @@ exclude_re = [
   # The default trace hook does nothing: its body only marks the argument used.
   'io\.rs:\d+:\d+: replace Io::sending with \(\)$',
   # How queries are batched into one write is not seen by the server; equal `Instant`s never happen.
-  'tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
+  'net/src/tcp\.rs:\d+:\d+: replace < with (<=|==|>) in write$',
   # `Same` hashes `u64` keys through `write_u64`; `write` is never called.
   '<impl Hasher for Same>::write( with |$)',
   # The label counts only save work (D110): a count held with no name, or no skip of a name shorter than the shortest
@@ -95,9 +95,9 @@ exclude_re = [
   # dedens-sim: a connection whose reply could not be written is read on until the read fails too: the same end.
   'resolver\.rs:\d+:\d+: replace \|= with &= in connection$',
   # One UDP send more in flight than `UDP_SENDS`: no peer can tell how many replies go out in one submission.
-  'serve/mod\.rs:\d+:\d+: replace < with <= in send_replies$',
+  'serve/udp\.rs:\d+:\d+: replace < with <= in send_replies$',
   # A connection closed 10 s after `GOAWAY` or a nanosecond later: equal `Instant`s never happen.
-  'h3_budget\.rs:\d+:\d+: replace > with >= in Budget::check$',
+  'serve/h3_budget\.rs:\d+:\d+: replace > with >= in Budget::check$',
   # dedensd: root only, tested by `tests/privileges.rs` under sudo in CI's own job, not by the mutants shards: the
   # groups of the user dropped to (Linux), and off Linux a function not built there.
   'privileges/unix\.rs:\d+:\d+: replace groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
