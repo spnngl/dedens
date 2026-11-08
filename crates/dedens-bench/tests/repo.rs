@@ -488,29 +488,94 @@ fn missing_paths(coverage: &Source, exists: impl Fn(&str) -> bool) -> Vec<String
     problems
 }
 
-/// A `tests/rfcNNNN.rs` of a crate or an app whose RFC has no row in the table.
-fn missing_rows(coverage: &Source, tracked: &[String]) -> Vec<String> {
-    let covered: BTreeSet<&str> = rows(coverage)
+/// Whether `path` is a Rust file under a `tests/` folder of a crate or an app, at any depth.
+fn is_test_file(path: &str) -> bool {
+    let file = Path::new(path);
+    let owned = path.starts_with("crates/") || path.starts_with("apps/");
+    let in_tests = file
+        .ancestors()
+        .skip(1)
+        .any(|folder| folder.file_name() == Some(OsStr::new("tests")));
+    owned && in_tests && file.extension() == Some(OsStr::new("rs"))
+}
+
+/// The RFC numbers a text cites as `RFC NNNN` or `RFCs NNNN, NNNN and NNNN`, in order, repeats included.
+fn rfcs_cited(text: &str) -> impl Iterator<Item = &str> {
+    let mut cited = Vec::new();
+    for (at, cue) in text.match_indices("RFC") {
+        let after = &text[at + cue.len()..];
+        let (mut rest, plural) = match (after.strip_prefix("s "), after.strip_prefix(' ')) {
+            (Some(rest), _) => (rest, true),
+            (None, Some(rest)) => (rest, false),
+            (None, None) => continue,
+        };
+        loop {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                break;
+            }
+            cited.push(&rest[..digits]);
+            rest = &rest[digits..];
+            let next = [", and ", " and ", ", "]
+                .iter()
+                .find_map(|separator| rest.strip_prefix(separator));
+            match next {
+                Some(next) if plural => rest = next,
+                _ => break,
+            }
+        }
+    }
+    cited.into_iter()
+}
+
+/// An RFC that a test file (`is_test_file`, holding a `#[test]` or a `#[...::test]` of a runtime) cites in its module docs (`//!` lines, `RFC NNNN`)
+/// whose row in the table is missing, or does not name the file in its Tests cell (a path, braces and a `*`
+/// allowed). Test files group by topic, not by RFC, so the docs are where a file says which RFCs it tests; a file of
+/// helpers alone tests none.
+fn missing_rows(coverage: &Source, files: &[Source]) -> Vec<String> {
+    let named: BTreeMap<&str, Vec<String>> = rows(coverage)
         .filter_map(|(_, cells)| {
-            let first = *cells.get(1)?;
-            first.split("rfc").nth(1)
+            let [_, rfc, _, _, _, tests, _] = cells.as_slice() else {
+                return None;
+            };
+            let rest = rfc.split("rfc").nth(1)?;
+            let number = &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()];
+            let paths = tests.split('`').skip(1).step_by(2).flat_map(expand);
+            Some((number, paths.collect()))
         })
-        .map(|rest| &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()])
         .collect();
-    tracked
+    let mut problems = Vec::new();
+    let tests = files
         .iter()
-        .filter_map(|path| {
-            let file = Path::new(path);
-            let number = file.file_stem()?.to_str()?.strip_prefix("rfc")?;
-            let in_tests = file.parent()?.file_name()? == "tests";
-            let owned = path.starts_with("crates/") || path.starts_with("apps/");
-            let is_test = file.extension()? == "rs"
-                && !number.is_empty()
-                && number.bytes().all(|b| b.is_ascii_digit());
-            (in_tests && owned && is_test && !covered.contains(number))
-                .then(|| format!("{path}: RFC {number} has no row in {COVERAGE}"))
-        })
-        .collect()
+        .filter(|file| is_test_file(&file.path))
+        .filter(|file| {
+            ["#[test]", "::test]"]
+                .iter()
+                .any(|mark| file.text.contains(mark))
+        });
+    for file in tests {
+        let doc: Vec<&str> = file
+            .text
+            .lines()
+            .filter_map(|line| Some(line.trim_start().strip_prefix("//!")?.trim()))
+            .collect();
+        let doc = doc.join(" ");
+        let cited: BTreeSet<&str> = rfcs_cited(&doc).collect();
+        for number in cited {
+            let problem = match named.get(number) {
+                None => "has no row",
+                Some(paths) if !paths.iter().any(|p| matches_glob(p, &file.path)) => {
+                    "has a row that does not name it"
+                }
+                Some(_) => continue,
+            };
+            problems.push(format!(
+                "{}: RFC {number} {problem} in {COVERAGE}",
+                file.path
+            ));
+        }
+    }
+    problems
 }
 
 // --- AGENTS.md beside its CLAUDE.md ---
@@ -607,7 +672,12 @@ fn coverage_paths_exist() {
 
 #[test]
 fn rfc_test_files_have_a_coverage_row() {
-    report(&missing_rows(&read(COVERAGE), &tracked()));
+    let files: Vec<Source> = tracked()
+        .iter()
+        .filter(|path| is_test_file(path))
+        .map(|path| read(path))
+        .collect();
+    report(&missing_rows(&read(COVERAGE), &files));
 }
 
 #[test]
@@ -762,22 +832,47 @@ fn missing_coverage_paths_fail() {
 
 #[test]
 fn rfc_test_files_without_a_row_fail() {
-    let coverage = Source::new(COVERAGE, "| [1](https://x/rfc1) | A | done | `c` | `t` |\n");
-    let tracked: Vec<String> = [
-        "crates/a/tests/rfc1.rs",
-        "crates/a/tests/rfc2.rs",
-        "apps/b/tests/rfc3.rs",
-        "crates/a/tests/rfc2_extra.rs",
-        "crates/a/src/rfc4.rs",
-        "tests/rfc5.rs",
-    ]
-    .map(str::to_owned)
-    .into();
+    let coverage = Source::new(
+        COVERAGE,
+        "| [1](https://x/rfc1) | A | done | `c` | `crates/a/tests/{wire,text}.rs` |\n\
+         | [2](https://x/rfc2) | B | done | `c` | `crates/a/tests/w*.rs` |\n",
+    );
+    let files = [
+        Source::new(
+            "crates/a/tests/wire.rs",
+            "//! RFC 1 §2, RFC 2 and RFC 1.\n#[test]\nfn f() {} // RFC 9\n",
+        ),
+        Source::new(
+            "crates/a/tests/text.rs",
+            "//! What RFC 1 and RFC\n//! 2 say; RFC x.\n#[test]\n",
+        ),
+        Source::new(
+            "apps/b/tests/topic.rs",
+            "mod x {\n    //! RFC 3\n    #[test]\n}\n",
+        ),
+        Source::new("apps/b/tests/util/mod.rs", "//! RFC 7, helpers alone\n"),
+        Source::new(
+            "crates/a/tests/udp.rs",
+            "//! RFC 1 and RFC 8\n#[compio::test]\n",
+        ),
+        Source::new(
+            "crates/a/tests/deep/topic.rs",
+            "//! RFCs 9, 10 and 1, §2.\n#[test]\n",
+        ),
+        Source::new("crates/a/src/lib.rs", "//! RFC 4\n#[test]\n"),
+        Source::new("tests/c.rs", "//! RFC 5\n#[test]\n"),
+        Source::new("crates/a/tests/notes.md", "//! RFC 6\n#[test]\n"),
+    ];
     assert_eq!(
-        missing_rows(&coverage, &tracked),
+        missing_rows(&coverage, &files),
         [
-            "crates/a/tests/rfc2.rs: RFC 2 has no row in docs/rfc/coverage.md",
-            "apps/b/tests/rfc3.rs: RFC 3 has no row in docs/rfc/coverage.md",
+            "crates/a/tests/text.rs: RFC 2 has a row that does not name it in docs/rfc/coverage.md",
+            "apps/b/tests/topic.rs: RFC 3 has no row in docs/rfc/coverage.md",
+            "crates/a/tests/udp.rs: RFC 1 has a row that does not name it in docs/rfc/coverage.md",
+            "crates/a/tests/udp.rs: RFC 8 has no row in docs/rfc/coverage.md",
+            "crates/a/tests/deep/topic.rs: RFC 1 has a row that does not name it in docs/rfc/coverage.md",
+            "crates/a/tests/deep/topic.rs: RFC 10 has no row in docs/rfc/coverage.md",
+            "crates/a/tests/deep/topic.rs: RFC 9 has no row in docs/rfc/coverage.md",
         ]
     );
 }
