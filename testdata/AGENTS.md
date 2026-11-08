@@ -5,7 +5,7 @@ Real data read by the tests, benches, fuzz targets and simulations of more than 
 file. Never edit a capture by hand: capture it again.
 
 - `proto/`: real responses from `just capture` (the queries of `capture.yaml`), read by
-  `crates/dedens-proto/tests/captured.rs` and as the answers of the other crates' tests; fuzz seeds.
+  `crates/dedens-proto/tests/message.rs` and as the answers of the other crates' tests; fuzz seeds.
 - `dnssec/`: real responses from `just capture-dnssec` (the queries of `capture.yaml`), `captured_at` the "now"
   of the tests, `README.md` what each shows and the verdict a validator gives. Read by
   `crates/dedens-dnssec/tests/captured.rs` and `captured_rrsig.rs`, and as the upstream of the validation tests;

@@ -1,8 +1,9 @@
 # dedens-proto tests
 
-Conformance tests, each test of an RFC file (`rfc1035.rs`) prefixed by its section (`s4_1_4_...`); topic
-files (`message.rs`, `wire_rdata.rs`, `query.rs`, `text.rs`) for what spans RFCs. Shared helpers and proptest
-strategies: `common/mod.rs`.
+One test binary, `tests.rs` (D162): a module per topic (`wire`, `message`, `rdata`, `dnssec`, `svcb`, `edns`,
+`text`), each citing in its docs the RFCs and sections it tests, and each test of an RFC section prefixed by it
+(`s4_1_4_...`). Shared helpers and proptest strategies: `util.rs`.
 
-- `captured.rs` reads the responses of `testdata/proto/`; zone tests read `testdata/zones/`.
-- `snapshots/`: insta snapshots; accept a reviewed change with `INSTA_UPDATE=always cargo test`.
+- `message.rs` reads the responses of `testdata/proto/`; zone tests read `testdata/zones/`.
+- `snapshots/`: insta snapshots, named `tests__<module>__<test>`; accept a reviewed change with
+  `INSTA_UPDATE=always cargo test`.

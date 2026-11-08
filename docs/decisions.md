@@ -683,7 +683,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (RFC 7871), TCP keepalive (RFC 7828), NSID (RFC 5001). Typed SVCB keys: RFC 9460 keys 0-6 and dohpath (RFC
   9461). Others opaque. An opaque option (`UnknownOption::new`) refuses data that reads as its typed option, so
   an option has one form and equals itself read back.
-- D13 (amended by D159) Topic modules, RDATA and conformance tests by RFC (`crates/dedens-proto/AGENTS.md`). Rejected strict
+- D13 (amended by D159, D162) Topic modules, RDATA and conformance tests by RFC (`crates/dedens-proto/AGENTS.md`). Rejected strict
   `rfcNNNN/` folders: names, the header and rcodes are each defined across several RFCs.
 - D19 Codes (type, class, opcode, rcode, EDNS option, SVCB key) are newtypes with named constants, not enums
   with an `Unknown` arm: every value has one representation and a new code is one constant. `Record` has no
@@ -1297,7 +1297,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
-- D140 (builds on D16; amended by D161) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the
+- D140 (builds on D16; amended by D161, D162) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the
   tracked files (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of
   `.gitignore`). A decision cited in the text files of `crates/`, `apps/`, `fuzz/`, `testdata/` and `docs/` (not RFC
   archives or captured data) and in the `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A
@@ -1305,9 +1305,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   and the reverse; a supersession of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each
   other; `builds on` and `completes` are one-sided, and a clause naming decisions in another form fails. Every path in a
   Code or Tests cell of `docs/rfc/coverage.md` exists (braces and a `*` in the last component allowed), every
-  `tests/rfcNNNN.rs` has its row, every `AGENTS.md` has its `CLAUDE.md` symlink. Each check runs once on a small broken
-  input in the same file. No `syn`: nothing here parses Rust, string matching does it, with no new dependency. Not
-  checked: that a row lists its test file, or that its status is true.
+  RFC a test file cites in its module docs has a row naming the file (D162), every `AGENTS.md` has its `CLAUDE.md`
+  symlink. Each check runs once on a small broken input in the same file. No `syn`: nothing here parses Rust, string
+  matching does it, with no new dependency. Not checked: that a row's status is true.
 - D138 (builds on D14, D16) Profiles are sampled, never instrumented. `just profile <bench> [filter]` runs a bench
   target under samply (launching needs no `samply setup`), the bench profile's line tables giving the names; `DEDENS_PERF=1
   just bench-dnsperf` runs the working tree's `dedensd` under `perf record --call-graph dwarf` in the container, built
@@ -1351,6 +1351,21 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`cargo test -p dedens-proto`), not in the workspace's. `testdata/` is one of the folders D140 reads for decisions and
   one a coverage path may start at. Rejected: data kept in its first reader with the others reaching in (the paths it
   replaced).
+- D162 (amends D13, D133, D140) A package's integration tests are one binary, `tests/tests.rs` (`autotests = false`
+  and one `[[test]]`, as ripgrep), with a module per topic, not a file per RFC: 129 test binaries each linked their
+  crate's dependencies (21 linked compio, rustls and quinn in `dedens-net` alone), and the link dominated an
+  incremental test build (`docs/benchmarks.md`). A topic module cites in its docs the RFCs and sections it tests, and
+  each test of an RFC section keeps the section in its name (`s4_1_4_...`); a topic gathering several RFCs gives each
+  its own inner module or a `// --- RFC NNNN ---` part. The shared helpers are the module `util` (was `common/`), one
+  copy linked once, so the `tests` binary has no `dead_code` allowance; a test file that needed a feature is a
+  `#[cfg(feature)]` module. A test that sets its own `#[global_allocator]` (`dedens-cache`'s `allocations.rs` and
+  `memory.rs`) keeps its binary: the allocator is the process's. Those two binaries, and the benches that include
+  `util` by `#[path]` (`dedensd`'s `doh3.rs` and `udp.rs`), use part of it, under `#[expect(dead_code)]`. D140's
+  coverage check reads the RFCs a file with tests cites in its module docs, where it read `tests/rfcNNNN.rs` names.
+  A simulation family (D133) is a module of `dedens-sim`'s binary, its 2 s budget the module's, and
+  `seed::in_two_processes` names the test by its module path. Commands name the binary and a module filter:
+  `cargo test -p dedensd --test tests -- --ignored privileges::`. Rejected: a folder per topic with a file per RFC
+  (the RFC is the module docs' and the test names'), a binary per file (the link time this removes).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),
@@ -2451,7 +2466,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_top_level_domain_is_no_plain_entry`, `a_top_level_domain_is_an_entry_when_the_lists_take_them`,
     `a_hosts_line_leaves_a_top_level_domain_out` (`dedens-plugins/tests/blocklist.rs`);
     `blocklists_take_top_level_domains_when_told` (`config/sources.rs`); `a_mark_follows_the_stored_response`
-    (`dedens-cache/tests/cache.rs`); `tests/rfc6672.rs` (`Name::from_uncompressed`);
+    (`dedens-cache/tests/cache.rs`); `dedens-proto/tests/rdata.rs` (`Name::from_uncompressed`);
     `a_response_a_plugin_replaces_is_stored_and_refused_on_a_hit`,
     `a_response_a_plugin_after_the_cache_replaces_is_not_stored`,
     `a_response_no_plugin_replaces_is_cached_and_reviewed_once`, `a_reload_reviews_an_entry_again_once`,
@@ -2688,7 +2703,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 
 ## Simulation tests
 
-- D133 (amends D26; amended by D134) Simulation tests: the sans-IO cores run as hosts of a simulated network,
+- D133 (amends D26; amended by D134, D162) Simulation tests: the sans-IO cores run as hosts of a simulated network,
   `turmoil` 0.7.2, so lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`,
   `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
   (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve/`,
