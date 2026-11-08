@@ -42,13 +42,13 @@ exclude_re = [
   'replace \+ with \* in <impl Reviewer for Blocklist>::review$',
   # The name hash (D112): or-ing the product's halves only biases its bits, which names are compared in full past.
   # By column: the function's other `^` is caught.
-  'wire\.rs:\d+:32: replace \^ with \| in mix$',
+  'name_table\.rs:\d+:32: replace \^ with \| in mix$',
   # A label of 8 bytes is one word either way; one of a multiple of 8 mixes its last word twice, the same for
   # every name; `w << 8` has no low bits for `|` and `^` to tell apart.
-  'wire\.rs:\d+:\d+: replace (> with >=|< with <=|\| with \^) in fold$',
+  'name_table\.rs:\d+:\d+: replace (> with >=|< with <=|\| with \^) in fold$',
   # The midpoint stays in `low..high` for `low` of at least LONGEST_FIRST: the search finds the same suffix, in
   # more lookups.
-  'wire\.rs:\d+:\d+: replace - with / in Writer<.a>::put_name_found$',
+  'wire/mod\.rs:\d+:\d+: replace - with / in Writer<.a>::put_name_found$',
   # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
   'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
   # Read by dedensd only, whose tests do not run for a mutant of dedens-server.
