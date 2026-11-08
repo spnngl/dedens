@@ -3,10 +3,11 @@
 
 mod common;
 
-use common::{Responder, Server, write_config};
+use common::{Server, write_config};
 use compio::quic::{ClientBuilder, VarInt};
 use compio::runtime::Runtime;
 use dedens_testkit::certificates::{NAME, certificates};
+use dedens_testkit::responder::Responder;
 
 /// RFC 9221 §3: a server that does not support DATAGRAM frames leaves `max_datagram_frame_size` out, so a client
 /// sees no size it may send. quinn derives the parameter from its receive buffer, 1.25 MB unless unset. That a

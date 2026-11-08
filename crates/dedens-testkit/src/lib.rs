@@ -3,14 +3,17 @@
 //!
 //! A dev-dependency, but a dependency of `dedens-sim`, whose library code reads the data. The unit tests of
 //! `dedens-proto` (in `src/`) get another build of the crate than this one links: they take paths and bytes from
-//! here, never a `Name` or a `Message`; so do those of `dedens-net` with the `certificates` feature.
+//! here, never a `Name` or a `Message`.
 //!
-//! By default the kit depends on `dedens-proto` alone. The feature `certificates` adds the TLS certificates of
-//! the encrypted transports' tests, on `dedens-net`, compio and rcgen.
+//! By default the kit depends on `dedens-proto` and data-encoding alone. The feature `certificates` adds the TLS
+//! certificates of the encrypted transports' tests, on `dedens-net`, compio and rcgen; `responder` adds the
+//! loopback server the tests of `dedens` and `dedensd` query, and `odoh` and `doc` its experimental transports.
 
 #[cfg(feature = "certificates")]
 pub mod certificates;
 pub mod dnssec;
+#[cfg(feature = "responder")]
+pub mod responder;
 
 use std::path::PathBuf;
 

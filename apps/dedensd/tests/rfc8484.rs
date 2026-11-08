@@ -6,7 +6,7 @@ mod common;
 use std::net::SocketAddr;
 use std::num::NonZero;
 
-use common::{Responder, Server, decode, query_for, write_config};
+use common::{Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, h3};
 use compio::runtime::{Runtime, spawn};
@@ -18,6 +18,7 @@ use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, Transport};
 use dedens_testkit::captured;
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
+use dedens_testkit::responder::Responder;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{HeaderMap, StatusCode};
 
@@ -158,7 +159,7 @@ fn s4_1_clients_get_and_post_answers() {
             "{method:?}"
         );
     }
-    assert_eq!(upstream.queries(), 2);
+    assert_eq!(upstream.queries().len(), 2);
 }
 
 /// §5.1: a GET's `cache-control` has the least TTL of the answer; a POST's has none.
@@ -238,7 +239,7 @@ fn s4_2_1_requests_that_are_no_query_get_statuses() {
         assert_eq!(got.status, status, "{uri}");
         assert!(got.body.is_empty(), "{uri}");
     }
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// §3: the service is at the path of the listener, `/dns-query` unless set; another path is 404.

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Responder, Server, decode, query_for, write_config};
+use common::{Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, ServerBuilder, h3};
 use compio::runtime::{Runtime, spawn};
@@ -26,6 +26,7 @@ use dedens_odoh::{Configs, MEDIA_TYPE, encrypt_query};
 use dedens_proto::{Rcode, Transport};
 use dedens_testkit::captured;
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
+use dedens_testkit::responder::Responder;
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
 
@@ -164,7 +165,7 @@ fn s8_a_client_is_answered_through_the_pipeline() {
         (reply.rcode(), &reply.answer),
         (Rcode::NOERROR, &decode(&response).answer)
     );
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
 }
 
 /// RFC 9230 §5, D79: the configurations are served at the well-known path and may be kept an hour; only a GET
@@ -215,7 +216,7 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
     assert_eq!(got.body, Vec::<u8>::new());
     let got = send(one.addr, &ca, post(), b"not a message");
     assert_eq!(got.status, StatusCode::BAD_REQUEST);
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// A valid sealed query of the target at `addr`, as a client sends it.
@@ -277,7 +278,7 @@ fn a_flood_is_refused_past_two_posts(config: &str) {
         statuses.contains(&StatusCode::SERVICE_UNAVAILABLE),
         "a post is refused: {statuses:?}"
     );
-    assert_eq!(upstream.queries(), opened);
+    assert_eq!(upstream.queries().len(), opened);
 }
 
 /// D79: a key file fixes the key across restarts; without one each start makes its own.
@@ -547,10 +548,10 @@ fn s4_a_client_is_answered_through_a_proxy() {
         (through.rcode(), &through.answer),
         (Rcode::NOERROR, &decode(&response).answer)
     );
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
     let itself = runtime.block_on(ask(named(proxy.addr, NAME), None));
     assert_eq!(itself.rcode(), Rcode::NOERROR);
-    assert_eq!(upstream.queries(), 2);
+    assert_eq!(upstream.queries().len(), 2);
 }
 
 /// RFC 9230 §4.3, D94: the target's response goes back with its status and body, never cacheable, marked
@@ -583,7 +584,7 @@ fn s4_3_the_targets_response_is_returned_and_never_cached() {
         }
         assert_ne!(got.body.len(), 0);
     }
-    assert_eq!(upstream.queries(), 2);
+    assert_eq!(upstream.queries().len(), 2);
     // The target's 401, for a query to another key, as it is.
     let foreign = sealed_query(other.addr, &ca);
     let got = through(&proxy, &ca, &path, &foreign);
@@ -680,7 +681,7 @@ fn s4_1_a_proxy_that_cannot_forward_says_why() {
         assert_eq!(got.headers[CACHE_CONTROL], "no-cache, no-store", "{path}");
     }
     // Nothing reached the target: it was never asked.
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
     // A request for the proxy is a POST of the media type, as a target's is.
     let path = forwarding(&host, "/dns-query");
     let get = request(proxy.addr, http::Method::GET, &path, None);

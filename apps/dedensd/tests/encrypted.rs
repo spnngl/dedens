@@ -2,20 +2,14 @@
 //! against `upstream_ca`: asked whatever transport the client came over, on one connection.
 
 mod common;
-#[path = "../../dedens/tests/common/mod.rs"]
-#[allow(
-    dead_code,
-    unreachable_pub,
-    reason = "the loopback responder of the command's tests, which use all of it"
-)]
-mod responder;
 
 use std::path::Path;
 
 use common::{Server, ask_tcp, ask_udp, decode, query_for};
 use dedens_proto::Rcode;
 use dedens_testkit::captured;
-use responder::{Responder, TLS_NAME, Transport};
+use dedens_testkit::certificates::NAME;
+use dedens_testkit::responder::{Responder, Transport};
 
 /// `dedensd` forwarding to `upstream` alone, trusting the certificate authority of `ca`.
 fn forwarding(upstream: &str, ca: &Path) -> Server {
@@ -35,10 +29,7 @@ fn encrypted_upstream_servers_answer_clients_over_udp_and_tcp() {
         ("tls", Transport::Tls, Responder::tls(&["a"])),
         ("quic", Transport::Quic, Responder::quic(&["a"])),
     ] {
-        let server = forwarding(
-            &format!("{scheme}://{}#{TLS_NAME}", responder.addr),
-            ca.path(),
-        );
+        let server = forwarding(&format!("{scheme}://{}#{NAME}", responder.addr), ca.path());
         let reply = ask_udp(server.addr, &query_for(&response, 1));
         assert_eq!(
             (reply.rcode(), &reply.answer),
@@ -69,7 +60,7 @@ fn an_https_upstream_server_answers_clients_over_udp_and_tcp() {
     let (responder, ca) = Responder::https(&["a"]);
     for path in ["", "/doh"] {
         let server = forwarding(
-            &format!("https://{}{path}#{TLS_NAME}", responder.addr),
+            &format!("https://{}{path}#{NAME}", responder.addr),
             ca.path(),
         );
         for (id, ask) in [(1, ask_udp as fn(_, &_) -> _), (2, ask_tcp)] {

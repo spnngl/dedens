@@ -8,7 +8,7 @@ mod common;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use common::{Responder, Server, decode, query_for};
+use common::{Server, decode, query_for};
 use dedens_net::client::Client;
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
@@ -16,6 +16,7 @@ use dedens_net::tls::Trust;
 use dedens_proto::Transport;
 use dedens_testkit::captured;
 use dedens_testkit::certificates::{NAME, certificates, named};
+use dedens_testkit::responder::Responder;
 use futures_util::future::join_all;
 
 /// How long each measure runs.

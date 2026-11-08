@@ -10,11 +10,12 @@ use std::net::{SocketAddr, UdpSocket};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Responder, Server, decode, query_for, write_config};
+use common::{Server, decode, query_for, write_config};
 use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
 use dedens_proto::{Message as ProtoMessage, Question, RecordType};
 use dedens_testkit::captured;
+use dedens_testkit::responder::Responder;
 
 /// The path `dedensd` serves `DoC` at in these tests.
 const PATH: &[&[u8]] = &[b"dns", b"query"];
@@ -221,7 +222,7 @@ fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
         assert!(response.payload.is_empty(), "{name}");
         assert_eq!(response.token, request.token, "{name}");
     }
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// RFC 7252 §5.10.1, §5.10.8.1: a request naming the host and port, or asking for any representation, is a query as
@@ -260,7 +261,7 @@ fn s4_5_a_retransmitted_request_is_not_asked_again() {
         replies.push(buf[..len].to_vec());
     }
     assert_eq!(replies[0], replies[1]);
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
 }
 
 /// RFC 7252 §4.5, §4.8: the same CON request sent 100 times is answered 5 times at most: by the processing, then by
@@ -284,7 +285,7 @@ fn s4_8_a_request_sent_again_and_again_is_answered_again_at_most_max_retransmit_
         replays += 1;
     }
     assert_eq!(replays, 4);
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
 }
 
 /// `bytes` sent as they are: the datagram `server` sends back, `None` after a second of silence.
@@ -309,7 +310,7 @@ fn s3_a_message_of_a_thousand_options_is_rejected_with_a_reset() {
         send_raw(server.addr, &wire),
         Some(Message::empty(Type::Reset, 0x0bad))
     );
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// RFC 7252 §4.6, D105: the server reads 2048 bytes of a datagram, which hold a query of 1024 (the largest block, RFC
@@ -348,7 +349,7 @@ fn d105_a_datagram_over_2048_bytes_is_refused_4_13() {
             None
         );
     }
-    assert!(upstream.queries() <= 1);
+    assert!(upstream.queries().len() <= 1);
 }
 
 /// D105: 256 requests are answered at once per socket and the others dropped, though a thread holds 1024 upstream
@@ -378,12 +379,12 @@ fn d105_requests_waiting_for_the_upstream_are_bounded() {
     }
     // The upstream was asked once for the answered request and once for each request that had a task.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while upstream.queries() < 1 + 256 && Instant::now() < deadline {
+    while upstream.queries().len() < 1 + 256 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
-        upstream.queries(),
+        upstream.queries().len(),
         1 + 256,
         "queries that reached the upstream"
     );
@@ -409,7 +410,7 @@ fn s4_5_a_non_request_sent_again_is_ignored() {
         socket.send_to(&datagram, server.addr).expect("sent");
     }
     assert!(socket.recv(&mut buf).is_err(), "a reply to a duplicate");
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
 }
 
 /// RFC 7252 §4.3: a ping, a CON message that is empty, is answered with a RST.
@@ -451,7 +452,7 @@ fn s4_2_a_message_format_error_is_rejected_with_a_reset() {
     non.kind = Type::NonConfirmable;
     assert_eq!(ask_raw(&broken(&non, &|first| *first |= 0x0F)), None);
     assert_eq!(ask_raw(&broken(&request, &|first| *first |= 0x80)), None);
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// RFC 9953 §4.3, RFC 7959 §2.4: a response over 1024 bytes goes in blocks of 1024, each asked for with the query
@@ -538,7 +539,7 @@ fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
         let response = ask(&tagged(id, tag, block));
         assert_eq!(response.code, Code::BAD_REQUEST, "{id}");
     }
-    assert_eq!(upstream.queries(), 1);
+    assert_eq!(upstream.queries().len(), 1);
 }
 
 /// D105: a response kept for the next blocks is served `1 + MAX_RETRANSMIT` times its size in bytes of blocks, then
@@ -584,7 +585,7 @@ fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
     assert_eq!(block, 64);
     assert_eq!(replies, 5 * len / 64);
     // The first block of each client only.
-    assert_eq!(upstream.queries(), 2);
+    assert_eq!(upstream.queries().len(), 2);
 }
 
 /// RFC 9953 §4.3.2: the TTLs in the response, less their least, and that least as the Max-Age, reach the client
@@ -665,7 +666,7 @@ fn s3_1_the_well_known_core_lists_the_resource() {
         Some(Options::LINK_FORMAT)
     );
     assert_eq!(response.payload, b"</dns/query>;rt=core.dns;ct=553");
-    assert_eq!(upstream.queries(), 0);
+    assert_eq!(upstream.queries().len(), 0);
 }
 
 /// RFC 6690 §4.1: the filter keeps the link when the resource type matches, as a complete value or a prefix with `*`;

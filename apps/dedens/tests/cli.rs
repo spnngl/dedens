@@ -1,14 +1,14 @@
 //! The command against a loopback server answering with captured responses: every option, each output, query
 //! files, the exit codes (D33).
 
-mod common;
-
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
-use common::{Responder, TLS_NAME, Transport};
 use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode};
 use dedens_proto::{Class, Flags, Message, Name, Record, RecordType};
+use dedens_testkit::certificates::NAME;
+use dedens_testkit::responder::{Responder, Transport};
+use dedens_testkit::{captured, dnssec};
 use predicates::prelude::*;
 use predicates::str::contains;
 
@@ -268,7 +268,7 @@ fn tls_servers_answer_once_their_certificate_verifies() {
     let (server, ca) = Responder::tls(&["a"]);
     let ca = format!("--tls-ca={}", ca.path().display());
     let port = server.addr.port();
-    let named = format!("@tls://127.0.0.1:{port}#{TLS_NAME}");
+    let named = format!("@tls://127.0.0.1:{port}#{NAME}");
     for args in [
         vec![named.as_str(), &ca],
         vec![&format!("@tls://127.0.0.1:{port}"), &ca],
@@ -294,7 +294,7 @@ fn quic_servers_answer_once_their_certificate_verifies() {
     let ca = format!("--tls-ca={}", ca.path().display());
     let port = server.addr.port();
     for args in [
-        vec![format!("@quic://127.0.0.1:{port}#{TLS_NAME}"), ca.clone()],
+        vec![format!("@quic://127.0.0.1:{port}#{NAME}"), ca.clone()],
         vec![
             "@127.0.0.1".to_owned(),
             "+quic".to_owned(),
@@ -333,12 +333,12 @@ fn https_servers_answer_once_their_certificate_verifies() {
     let port = server.addr.port();
     let sets: [(Vec<String>, Transport); 5] = [
         (
-            vec![format!("@https://127.0.0.1:{port}#{TLS_NAME}"), ca.clone()],
+            vec![format!("@https://127.0.0.1:{port}#{NAME}"), ca.clone()],
             Transport::HttpsGet,
         ),
         (
             vec![
-                format!("@https://127.0.0.1:{port}/other/path#{TLS_NAME}"),
+                format!("@https://127.0.0.1:{port}/other/path#{NAME}"),
                 ca.clone(),
             ],
             Transport::HttpsGet,
@@ -403,7 +403,7 @@ fn https_servers_answer_once_their_certificate_verifies() {
 fn https_output_in_each_format() {
     let (server, ca) = Responder::https(&["a"]);
     let ca = format!("--tls-ca={}", ca.path().display());
-    let at = format!("@https://127.0.0.1:{}#{TLS_NAME}", server.addr.port());
+    let at = format!("@https://127.0.0.1:{}#{NAME}", server.addr.port());
     for (name, flag) in [
         ("https_human", "--format=human"),
         ("https_json", "--json"),
@@ -982,10 +982,9 @@ fn save_wire_writes_each_response() {
         .assert()
         .success();
     let saved = std::fs::read(out.join("example.com_A.bin")).expect("saved");
-    let captured = std::fs::read(dedens_testkit::path("proto/a.bin")).expect("captured");
     assert_eq!(
         saved[2..],
-        captured[2..],
+        captured("a")[2..],
         "the response as received, its ID aside"
     );
 }
@@ -1276,9 +1275,6 @@ fn repeat_counts_the_unanswered_and_keeps_the_answer() {
     assert_eq!(report["latency"]["errors"].as_u64(), Some(2));
 }
 
-/// When the DNSSEC captures were taken, Unix seconds: the clock of validation (`DEDENS_NOW`).
-const CAPTURED_AT: &str = include_str!("../../../testdata/dnssec/captured_at");
-
 /// The captures `cloudflare.com` A is validated from: its answer and the chain of trust down to it.
 const SECURE: [&str; 6] = [
     "alg13_a",
@@ -1312,7 +1308,7 @@ const BOGUS: [&str; 6] = [
 fn validating(server: &Responder, name: &str, args: &[&str]) -> Command {
     let mut command = dedens();
     command
-        .env("DEDENS_NOW", CAPTURED_AT.trim())
+        .env("DEDENS_NOW", dnssec::captured_at().to_string())
         .arg(server.at())
         .arg(name)
         .args(args);
@@ -1347,16 +1343,13 @@ fn a_secure_response_is_shown_with_its_verdict_in_every_format() {
     }
 }
 
-const ALG13_A: &[u8] = include_bytes!("../../../testdata/dnssec/alg13_a.bin");
-
 /// D76: a secure response is shown as the validator covers it (`dedens_dnssec::covered`): the answer
 /// of a real capture with what the verdict is not about added, an upstream's injection, is not shown under it:
 /// unrelated sets, signatures that sign nothing, other classes, authority sets off the names, the additional
 /// section.
 #[test]
 fn a_secure_response_is_shown_as_far_as_it_was_verified() {
-    let decoded = Message::decode(ALG13_A).expect("a capture");
-    let mut forged = decoded.message.into_owned();
+    let mut forged = dnssec::response("alg13_a");
     let a = forged.answer[0].clone();
     let signature = forged
         .answer
@@ -1445,12 +1438,7 @@ const CROSSED: [&str; 8] = [
 /// A cut in two, its signed CNAME alone and the rest of the chain.
 #[test]
 fn a_chain_that_stops_short_is_chased() {
-    let wire =
-        std::fs::read(dedens_testkit::path("dnssec/cname_to_insecure.bin")).expect("a capture");
-    let genuine = Message::decode(&wire)
-        .expect("a message")
-        .message
-        .into_owned();
+    let genuine = dnssec::response("cname_to_insecure");
     let head = "www.ripe.net.".parse::<Name<'static>>().expect("a name");
     let next = "www.ripe.net.edgekey.net."
         .parse::<Name<'static>>()
@@ -1551,7 +1539,7 @@ fn a_dnssec_expectation_fails_the_run_with_exit_1() {
         );
         std::fs::write(&file, queries).expect("written");
         let out = dedens()
-            .env("DEDENS_NOW", CAPTURED_AT.trim())
+            .env("DEDENS_NOW", dnssec::captured_at().to_string())
             .arg("-f")
             .arg(&file)
             .assert()
@@ -1595,10 +1583,7 @@ fn validation_needs_what_it_sets() {
 
 /// The records of `id`'s answer section of type `keep`, as zone text.
 fn records_of(id: &str, keep: RecordType) -> String {
-    let wire = std::fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("a capture");
-    let decoded = Message::decode(&wire).expect("a message");
-    decoded
-        .message
+    dnssec::response(id)
         .answer
         .iter()
         .filter(|record| record.rtype() == keep)

@@ -31,15 +31,14 @@ mimalloc.workspace = true
 
 [features]
 # D69: experimental transports, off by default.
-odoh = ["dedens-net/odoh"]
-doc = ["dedens-net/doc"]
+odoh = ["dedens-net/odoh", "dedens-testkit/odoh"]
+doc = ["dedens-net/doc", "dedens-testkit/doc"]
 
 [dev-dependencies]
 assert_cmd.workspace = true
 clap_mangen.workspace = true
 dedens-odoh.workspace = true
-dedens-testkit = { workspace = true, features = ["certificates"] }
-http.workspace = true
+dedens-testkit = { workspace = true, features = ["responder"] }
 insta.workspace = true
 predicates.workspace = true
 serde.workspace = true

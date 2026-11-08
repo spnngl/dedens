@@ -4,9 +4,10 @@
 
 mod common;
 
-use common::{Responder, Server, ask_tcp, ask_udp};
+use common::{Server, ask_tcp, ask_udp};
 use dedens_proto::Question;
 use dedens_scenario::QueryFile;
+use dedens_testkit::responder::Responder;
 
 #[test]
 fn replies_meet_the_query_file() {
@@ -37,5 +38,5 @@ fn replies_meet_the_query_file() {
     }
     assert_eq!(failures, Vec::<String>::new());
     // Five questions; the rest came from the cache.
-    assert_eq!(upstream.queries(), 5);
+    assert_eq!(upstream.queries().len(), 5);
 }

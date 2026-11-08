@@ -49,7 +49,7 @@ doc = ["dedens-net/doc"]
 [dev-dependencies]
 clap_mangen.workspace = true
 dedens-scenario.workspace = true
-dedens-testkit = { workspace = true, features = ["certificates"] }
+dedens-testkit = { workspace = true, features = ["responder"] }
 flate2.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 serde_json.workspace = true

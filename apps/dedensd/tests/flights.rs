@@ -6,9 +6,10 @@ mod common;
 use std::thread;
 use std::time::Duration;
 
-use common::{Responder, Server, ask_udp, query_for};
+use common::{Server, ask_udp, query_for};
 use dedens_proto::{Rcode, RecordType};
 use dedens_testkit::dnssec::capture;
+use dedens_testkit::responder::Responder;
 
 /// Clients asking at once.
 const CLIENTS: u16 = 8;
@@ -28,7 +29,7 @@ fn concurrent_queries_send_the_root_keys_question_once() {
     // The responder answers one query at a time, each late: the validator's first question, sent when the first
     // client's answer arrives, queues behind the other clients' and is answered last, so that every query asks it
     // while it is in flight.
-    let responder = Responder::dnssec(&["alg8_a", "root_dnskey"], Duration::from_millis(150));
+    let responder = Responder::delayed(&["alg8_a", "root_dnskey"], Duration::from_millis(150));
     let server = Server::configured(|listen| validating(listen, &responder.addr.to_string()));
     let query = query_for(&capture("alg8_a"), 1);
     let clients: Vec<_> = (0..CLIENTS)
