@@ -36,7 +36,7 @@ exclude_re = [
   'replace && with \|\| in Names::same$',
   # The review: an answer with no DNAME holds nothing to read after the CNAME of a hop (a second CNAME of a name is
   # ignored), and one of DNAMEs only has no CNAME to stop at. By column too: the function's other `==` is caught.
-  'blocklist\.rs:\d+:54: replace == with != in <impl Reviewer for Blocklist>::review$',
+  'blocklist/mod\.rs:\d+:54: replace == with != in <impl Reviewer for Blocklist>::review$',
   # A hop that starts at the CNAME the last one followed, not after it, finds the same: that CNAME is of the name
   # before (a loop to itself aside, whose name's second CNAME RFC 1034 §3.6.2 forbids).
   'replace \+ with \* in <impl Reviewer for Blocklist>::review$',
