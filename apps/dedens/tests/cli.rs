@@ -1434,6 +1434,65 @@ fn validation_asks_the_chain_of_the_same_server_with_do_cd_and_rd() {
     assert_eq!(asked, want.map(|(n, t)| (n.to_owned(), t.to_owned())));
 }
 
+/// The zones `cname_to_insecure` crosses: the chain of trust of `ripe.net`, and the DS `edgekey.net` and
+/// `akamaiedge.net` lack.
+const CROSSED: [&str; 8] = [
+    "root_dnskey",
+    "net_ds",
+    "net_dnskey",
+    "ripe_net_ds",
+    "ripe_net_dnskey",
+    "leaf_www_ripe_net_ds",
+    "edgekey_net_ds",
+    "akamaiedge_net_ds",
+];
+
+/// D76: a CNAME chain that stops short of the type asked is chased: the name it goes on at is asked of the same
+/// server and validated on its own, the verdict that of its answer. The responses are the capture of `www.ripe.net`
+/// A cut in two, its signed CNAME alone and the rest of the chain.
+#[test]
+fn a_chain_that_stops_short_is_chased() {
+    let capture = format!(
+        "{}/../../crates/dedens-dnssec/tests/testdata/cname_to_insecure.bin",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let wire = std::fs::read(capture).expect("a capture");
+    let genuine = Message::decode(&wire)
+        .expect("a message")
+        .message
+        .into_owned();
+    let head = "www.ripe.net.".parse::<Name<'static>>().expect("a name");
+    let next = "www.ripe.net.edgekey.net."
+        .parse::<Name<'static>>()
+        .expect("a name");
+    let (first, rest): (Vec<_>, Vec<_>) = genuine
+        .answer
+        .iter()
+        .cloned()
+        .partition(|record| record.name == head);
+    let response = |name: &Name<'static>, answer: Vec<Record<'static>>| {
+        let mut message = genuine.clone();
+        message.questions[0].name = name.clone();
+        message.answer = answer;
+        message.authority.clear();
+        message.additional.clear();
+        message.to_vec().expect("the message fits")
+    };
+    let server = Responder::start_with(&CROSSED, &[response(&head, first), response(&next, rest)]);
+    let output = validating(&server, "www.ripe.net", &["+validate", "--json"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("one JSON object");
+    assert_eq!(report["dnssec"]["status"], "insecure", "{report}");
+    let chased = queries(&server)
+        .iter()
+        .any(|(_, query)| query.questions[0].name == next);
+    assert!(chased, "{report}");
+}
+
 #[test]
 fn an_unsigned_zone_is_insecure_not_a_failure() {
     let server = Responder::start(&INSECURE);
