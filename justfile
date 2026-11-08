@@ -340,6 +340,43 @@ fuzz-all seconds="60":
 sim runs="100" family="":
     DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else { family + "::" } }}
 
+# The wall time of each simulation family run alone, then of them all, as `just check` runs them (the workspace's
+# debug build with every feature, the fixed seeds): over D133's budgets, 2 s a family and 10 s the crate, it says
+# so and fails. Outside the gate, as the time is the machine's (D164).
+sim-time:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unset DEDENS_SIM_SEED DEDENS_SIM_RUNS
+    # The gate's build, so the artifacts of `just check` serve: features unify over the workspace.
+    exe="$(cargo test --workspace --all-features --no-run --test tests --message-format=json \
+        | jq -r 'select(.reason == "compiler-artifact" and .target.kind == ["test"]
+            and (.manifest_path | endswith("/crates/dedens-sim/Cargo.toml"))) | .executable')"
+    # The first run of a new binary pays macOS's check of it, 0.5 s and more, which no family should.
+    "$exe" --list > /dev/null
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    TIMEFORMAT=%3R
+    over=0
+    # Times the tests the filter `$3` selects, all without one, against `$2` seconds; a failure prints their output.
+    measure() {
+        local name="$1" budget="$2" took
+        if ! took=$( { time "$exe" ${3:+"$3"} > "$log" 2>&1; } 2>&1 ); then
+            cat "$log"
+            exit 1
+        fi
+        if awk -v took="$took" -v budget="$budget" 'BEGIN { exit !(took > budget) }'; then
+            printf '%-10s %7s s  over %s s\n' "$name" "$took" "$budget"
+            over=1
+        else
+            printf '%-10s %7s s\n' "$name" "$took"
+        fi
+    }
+    for family in $(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util); do
+        measure "$family" 2 "$family::"
+    done
+    measure crate 10
+    exit "$over"
+
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
 fuzz-smoke:
     cargo test --manifest-path fuzz/Cargo.toml --lib
