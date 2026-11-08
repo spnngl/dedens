@@ -1,4 +1,4 @@
-//! The validator against the captured responses (`testdata/README.md`): a scripted caller answers each question
+//! The validator against the captured responses (`testdata/dnssec/README.md`): a scripted caller answers each question
 //! it asks from the captures, at the time of the capture, and the verdict is the one the README gives (RFC 4035
 //! §4.3), but for what an opt-out proof covers, which is insecure (RFC 5155 §9.2, D75).
 

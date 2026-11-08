@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use dedens_proto::edns::{Cookie, Edns, EdnsOption, EdnsView};
 use dedens_proto::{
@@ -53,8 +52,7 @@ fn assert_agrees(wire: &[u8]) {
 
 #[test]
 fn every_capture_reads_as_decoded() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata");
-    for entry in fs::read_dir(dir).expect("testdata directory") {
+    for entry in fs::read_dir(dedens_testkit::path("proto")).expect("testdata directory") {
         let path = entry.expect("entry").path();
         if path.extension().is_some_and(|e| e == "bin") {
             assert_agrees(&fs::read(path).expect("captured file"));

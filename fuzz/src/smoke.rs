@@ -1,8 +1,7 @@
-//! Stable-toolchain stand-in for a short fuzz run: replays every captured response in
-//! `crates/dedens-proto/tests/testdata/`, `crates/dedens-dnssec/tests/testdata/` and
-//! `crates/dedens-odoh/tests/testdata/`, and the zone files of `crates/dedens-proto/tests/zones/` and
-//! `crates/dedens-dnssec/tests/zones/`, plus truncated and bit-flipped variants through each target. Any panic
-//! fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it into a test).
+//! Stable-toolchain stand-in for a short fuzz run: replays every captured response in `testdata/proto/`,
+//! `testdata/dnssec/` and `testdata/odoh/`, and the zone files of `testdata/zones/`, plus truncated and
+//! bit-flipped variants through each target. Any panic fails the test and the offending input is written under
+//! `target/fuzz-smoke-crash/` (turn it into a test).
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,14 +22,8 @@ fn root() -> &'static Path {
 /// Captured responses and example zone files: every target gets every seed, whatever format it parses.
 fn seeds() -> Vec<(String, Vec<u8>)> {
     let mut seeds = Vec::new();
-    for dir in [
-        "dedens-proto/tests/testdata",
-        "dedens-proto/tests/zones",
-        "dedens-dnssec/tests/testdata",
-        "dedens-dnssec/tests/zones",
-        "dedens-odoh/tests/testdata",
-    ] {
-        let dir = root().join("../crates").join(dir);
+    for dir in ["proto", "zones", "dnssec", "odoh"] {
+        let dir = root().join("../testdata").join(dir);
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
             let path = entry.expect("dir entry").path();
             let name = path
@@ -46,9 +39,9 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
     seeds
 }
 
-/// The first datagram each way of every CoAP capture of `crates/dedens-net/tests/testdata/coap/` (hex lines).
+/// The first datagram each way of every CoAP capture of `testdata/coap/` (hex lines).
 fn coap_seeds() -> Vec<(String, Vec<u8>)> {
-    let dir = root().join("../crates/dedens-net/tests/testdata/coap");
+    let dir = root().join("../testdata/coap");
     let mut seeds = Vec::new();
     for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
         let path = entry.expect("dir entry").path();
@@ -155,7 +148,7 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "doh response".into(),
             [
                 &b"\x80\x00100\x00Sun, 06 Nov 1994 08:49:37 GMT\x00"[..],
-                include_bytes!("../../crates/dedens-proto/tests/testdata/aaaa.bin"),
+                include_bytes!("../../testdata/proto/aaaa.bin"),
             ]
             .concat(),
         ),
@@ -164,7 +157,7 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "odoh http".into(),
             [
                 &b"\x11\x01\x3b\x9a\xca\x01\x00no-cache, no-store\x000\x00Sun, 06 Nov 1994 08:49:37 GMT\x00"[..],
-                include_bytes!("../../crates/dedens-odoh/tests/testdata/odoh-go-query.bin"),
+                include_bytes!("../../testdata/odoh/odoh-go-query.bin"),
             ]
             .concat(),
         ),

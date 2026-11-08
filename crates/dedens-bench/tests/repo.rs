@@ -13,11 +13,11 @@ const DECISIONS: &str = "docs/decisions.md";
 /// The RFC coverage table, from the workspace root.
 const COVERAGE: &str = "docs/rfc/coverage.md";
 /// Folders whose files cite decisions; `AGENTS.md` files anywhere do too.
-const CITING_FOLDERS: [&str; 4] = ["crates/", "apps/", "fuzz/", "docs/"];
+const CITING_FOLDERS: [&str; 5] = ["crates/", "apps/", "fuzz/", "docs/", "testdata/"];
 /// Extensions of the text files that cite decisions; RFC archives and captured data are not read.
 const CITING_EXTENSIONS: [&str; 9] = ["rs", "md", "toml", "yaml", "sh", "go", "c", "py", "nu"];
 /// Where a path of a coverage cell starts.
-const PATH_ROOTS: [&str; 5] = ["crates/", "apps/", "fuzz/", "tests/", "docs/"];
+const PATH_ROOTS: [&str; 6] = ["crates/", "apps/", "fuzz/", "tests/", "docs/", "testdata/"];
 
 // --- Inputs ---
 

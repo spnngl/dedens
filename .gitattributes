@@ -96,10 +96,10 @@ Cargo.lock text
 
 # Byte-exact test data: captured DNS messages, zone files the tests and fuzz targets read, snapshots.
 **/testdata/**                     binary
-**/testdata/*.yaml                 -binary text eol=lf diff merge
-**/testdata/*.md                   -binary text eol=lf diff merge
-crates/dedens-dnssec/tests/testdata/captured_at -binary text eol=lf diff merge
-crates/dedens-proto/tests/zones/** -text
+**/testdata/**/*.yaml              -binary text eol=lf diff merge
+**/testdata/**/*.md                -binary text eol=lf diff merge
+testdata/dnssec/captured_at        -binary text eol=lf diff merge
+testdata/zones/**                  -binary text eol=lf diff merge
 *.snap                             text eol=lf
 
 # Verbatim RFC copies (`just rfc-archive`): collapsed in diffs.

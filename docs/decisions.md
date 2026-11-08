@@ -315,8 +315,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   name that an opt-out NSEC3 covers is `Proof::opt_out` (RFC 5155 §9.2: the name may be an unsigned delegation, so
   no AD; Unbound does the same): set for a name error, wildcard no data and wildcard answer, never for a name the
   records match. A DS question whose next closer name is in an opt-out span is an `InsecureDelegation` even when the
-  response also proves the wildcard absent. Tests: RFC 4035 Appendix B (the Appendix A zone, in `tests/zones/`), RFC
-  5155 Appendix B, RFC 6840 §4, RFC 9276, RFC 9824, and every negative capture of `tests/testdata/`; the proptests
+  response also proves the wildcard absent. Tests: RFC 4035 Appendix B (the Appendix A zone, in `testdata/zones/`),
+  RFC 5155 Appendix B, RFC 6840 §4, RFC 9276, RFC 9824, and every negative capture of `testdata/dnssec/`; the proptests
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
@@ -377,7 +377,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   of another carry proofs of both). A wildcard
   expansion also needs the no-closer proof of `prove_wildcard_answer`, else bogus (RFC 4035 §5.3.4). An opt-out
   proof, in a denial, a wildcard answer or the DS of a delegation, is insecure, `OptOut`, never secure (RFC 5155
-  §9.2): `tests/testdata/README.md` says so of `google_com_ds`, `edgekey_net_ds`, `nxdomain_nsec3_optout` and
+  §9.2): `testdata/dnssec/README.md` says so of `google_com_ds`, `edgekey_net_ds`, `nxdomain_nsec3_optout` and
   `nxdomain_nsec3_salt`. Only verified NSEC and NSEC3 records signed by the zone reach `denial`. A negative proof
   lasts at most three hours and the SOA's TTL and MINIMUM (RFC 9077 §3.4), and the keys' TTL. Failures: a
   signature or DS that fails is bogus with `SigError::ede`; a DS no key matches, bogus with EDE 9; an unsupported
@@ -500,7 +500,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   EDE when bogus or indeterminate; `+short` prints nothing of it but a line to stderr for the last two, like a
   violation. The expectation `dnssec: secure|insecure|bogus|indeterminate` (D34) fails the query as any other,
   exit 1. Exit codes stay D33's: a bogus response alone exits 0, since the verdict is the answer the tool
-  gives. Tests: `apps/dedens/tests/cli.rs` against the captures of `crates/dedens-dnssec/tests/testdata` at their
+  gives. Tests: `apps/dedens/tests/cli.rs` against the captures of `testdata/dnssec` at their
   `captured_at`: secure, insecure and bogus in each format, the questions asked, a wrong or a right anchor file,
   a negative anchor, the expectation, the usage errors; by hand against 1.1.1.1, `cloudflare.com` is secure and
   `dnssec-failed.org` bogus with EDE 9.
@@ -1011,7 +1011,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     relays of `DNSCrypt/dnscrypt-resolvers` `v3/odoh-servers.md` and `odoh-relays.md`): every target below answers
     HTTP/3 and serves, at `/.well-known/odohconfigs`, one config of version 1 with the one suite of D78 (no other
     suite, no unusable config, in any of the five or the dnscry.pt ones): `odoh.cloudflare-dns.com` (`no-cache,
-    no-store`, so the warning above; its key is the one of `tests/testdata/odohconfigs-cloudflare.bin`),
+    no-store`, so the warning above; its key is the one of `testdata/odoh/odohconfigs-cloudflare.bin`),
     `odoh.crypto.sx`, `doh.tiar.app` (path `/odoh`), `dope.snowstorm.love` and `doh.tiarap.org` (path `/odoh`); the others send `max-age=86400` or no `cache-control`, so no warning. Each answered the CLI asked directly (the target as
     its own proxy) and through `odoh-relay.edgecompute.app` (Fastly, path `/`, HTTP/3: `targethost` and `targetpath`
     with `/odoh` and `/dns-query` accepted), except `doh.tiarap.org`, which this relay refuses (403 for that
@@ -1069,7 +1069,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     segments allowed, the text a comma-separated list, no segment the root path. One empty segment prints in the
     `key10="\000"` form, a single empty item being no different from the empty list in the text.
   - Tests read datagrams captured from aiocoap (`capture.py`) and from libcoap 4.3.5b (`capture_libcoap.py`, its
-    `coap-server` and `coap-client` through a logging proxy, `tests/testdata/coap/`; the real DNS answers of 2808 and
+    `coap-server` and `coap-client` through a logging proxy, `testdata/coap/`; the real DNS answers of 2808 and
     1280 bytes it blocks are DoH captures). Checked live against libcoap: our client against `coap-server` (FETCH
     of a stored DNS answer, Block2 in 3 blocks of 1024, Max-Age 60 by default), and `coap-client` against
     `dedensd` (below, D81). Taken from the captures: libcoap's client sends an empty token, Uri-Port and Request-Tag
@@ -1207,7 +1207,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `https.rs`), where h3 states none; a response with a larger header section
     is refused as a stream error (`HttpsError::Stream`), the request not sent again. 8 KiB is ten times the largest
     header section of the responses captured from Cloudflare, Google, Quad9 and AdGuard (797 bytes, counted as
-    RFC 9114 §4.2.2 does: name, value and 32 per field; `tests/testdata/doh/*.headers`) and what servers commonly
+    RFC 9114 §4.2.2 does: name, value and 32 per field; `testdata/doh/*.headers`) and what servers commonly
     take of a request; a server that sends more is no DoH server worth asking. The body limit is unchanged, and the
     QUIC receive windows are step 12's.
   - DoQ (RFC 9250 §4.3.3): a response stream that is not one message behind its length closes the connection with
@@ -1298,7 +1298,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
-- D140 (builds on D16) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the tracked files
+- D140 (builds on D16; amended by D161) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the tracked files
   (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of `.gitignore`). A decision
   cited in the text files of `crates/`, `apps/`, `fuzz/` and `docs/` (not RFC archives or captured data) and in the
   `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A header's `amends`, `supersedes` or
@@ -1327,6 +1327,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   cargo-shear does not read (rcgen in `dedens` and `dedensd`, data-encoding in `dedens-bench`), and
   `dedens-bench`'s dependencies, regular ones the benches alone use (D14). The first run found nothing else.
   Rejected: cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
+- D161 (amends D140; builds on D14, D16) Test data read by more than one package lives at the root, in `testdata/`:
+  `proto/` and `dnssec/` (the captures of `just capture` and `just capture-dnssec`), `zones/` (the RFC example
+  zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte for
+  byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names it:
+  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself. A package reads the data through
+  it, never through another package's directory (`../dedens-*/tests/`), which tied each test to where another
+  crate kept its files. `testdata/` is one of the folders D140 reads for decisions and one a coverage path may
+  start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),

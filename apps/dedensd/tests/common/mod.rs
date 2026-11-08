@@ -17,22 +17,14 @@ use dedens_net::tcp::frame;
 use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
 use serde_json::Value;
 
-/// A captured response of `dedens-proto`'s test data.
+/// A captured response of `testdata/proto`.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/../../crates/dedens-proto/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(path).expect("a captured response")
+    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
-/// A captured response of `dedens-dnssec`'s test data.
+/// A captured response of `testdata/dnssec`.
 pub(crate) fn captured_dnssec(case: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/../../crates/dedens-dnssec/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(path).expect("a captured response")
+    std::fs::read(dedens_testkit::path(&format!("dnssec/{case}.bin"))).expect("a captured response")
 }
 
 /// A query, under `id`, for the question of `response`.

@@ -1,5 +1,5 @@
 # Queries to `dedensd` forwarding to a loopback upstream that answers the captures of
-# crates/dedens-proto/tests/testdata; read by tests/end_to_end.rs, which ignores `server`.
+# testdata/proto; read by tests/end_to_end.rs, which ignores `server`.
 options: {adflag: false, cookie: false}
 queries:
   - name: example.com

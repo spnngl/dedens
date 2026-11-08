@@ -38,6 +38,7 @@ doc = ["dedens-net/doc"]
 assert_cmd.workspace = true
 clap_mangen.workspace = true
 dedens-odoh.workspace = true
+dedens-testkit.workspace = true
 http.workspace = true
 insta.workspace = true
 predicates.workspace = true

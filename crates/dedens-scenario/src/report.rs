@@ -528,12 +528,12 @@ mod tests {
     const CAPTURED: [(&str, &[u8], HasOption); 3] = [
         (
             "nsid",
-            include_bytes!("../../dedens-proto/tests/testdata/nsid.bin"),
+            include_bytes!("../../../testdata/proto/nsid.bin"),
             |o| matches!(o, OptionReport::Nsid { .. }),
         ),
         (
             "cookie",
-            include_bytes!("../../dedens-proto/tests/testdata/cookie.bin"),
+            include_bytes!("../../../testdata/proto/cookie.bin"),
             |o| {
                 matches!(
                     o,
@@ -546,7 +546,7 @@ mod tests {
         ),
         (
             "ede",
-            include_bytes!("../../dedens-proto/tests/testdata/ede.bin"),
+            include_bytes!("../../../testdata/proto/ede.bin"),
             |o| {
                 matches!(
                     o,

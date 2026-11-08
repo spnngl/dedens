@@ -25,6 +25,7 @@ dedens-odoh.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
+dedens-testkit.workspace = true
 divan.workspace = true
 http.workspace = true
 # Zone file readers, for `benches/zone.rs`.

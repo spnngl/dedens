@@ -32,6 +32,7 @@ tracing = ["dep:tracing"]
 [dev-dependencies]
 compio = { workspace = true, features = ["macros"] }
 dedens-odoh.workspace = true
+dedens-testkit.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
 

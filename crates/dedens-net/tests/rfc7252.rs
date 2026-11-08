@@ -1,5 +1,5 @@
 //! CoAP (RFC 7252): the message format of §3, the examples of Appendix A byte for byte, the reliability of §4
-//! and the exchanges of §5, with datagrams captured from aiocoap (`tests/testdata/coap/capture.py`).
+//! and the exchanges of §5, with datagrams captured from aiocoap (`testdata/coap/capture.py`).
 
 mod coap_capture;
 

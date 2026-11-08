@@ -1,5 +1,5 @@
 //! RFC 4035 in the validating forward stage (D77): what a validating resolver answers (§3.2), caches (§4.5, §4.7)
-//! and sends (§4.6, §4.8). Upstream answers from the captures of `dedens-dnssec` (`testdata/README.md`), the
+//! and sends (§4.6, §4.8). Upstream answers from the captures of `testdata/dnssec` (its `README.md`), the
 //! validation at the time of their run.
 
 mod common;

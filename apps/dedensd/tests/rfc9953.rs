@@ -498,7 +498,7 @@ fn s4_3_a_large_response_goes_in_blocks() {
 }
 
 /// RFC 8132 §2.5, RFC 7959 §2.4: a client that asks for the next blocks without the body of its FETCH (libcoap and
-/// aiocoap do, `tests/testdata/coap/libcoap_fetch_doc_block2.txt`) gets them, found by its `Request-Tag`; any other
+/// aiocoap do, `testdata/coap/libcoap_fetch_doc_block2.txt`) gets them, found by its `Request-Tag`; any other
 /// request of the kind has no body to answer.
 #[test]
 fn s4_3_the_next_blocks_are_asked_for_without_the_query() {

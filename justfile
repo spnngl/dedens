@@ -307,7 +307,7 @@ fuzz target="decode_message" seconds="300" fork="0":
     # A target with a token dictionary in dicts/ gets it.
     dict=""
     if [[ -f "dicts/{{ target }}.dict" ]]; then dict="-dict=dicts/{{ target }}.dict"; fi
-    cargo fuzz run --target "$host" {{ target }} "corpus/{{ target }}" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{ seconds }} -fork={{ fork }} $dict
+    cargo fuzz run --target "$host" {{ target }} "corpus/{{ target }}" ../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh -- -max_total_time={{ seconds }} -fork={{ fork }} $dict
 
 # Shrink a target's corpus to the inputs that add coverage (libFuzzer's `-merge=1`).
 fuzz-cmin target:
@@ -331,7 +331,7 @@ fuzz-all seconds="60":
         mkdir -p "corpus/$target"
         dict=""
         if [[ -f "dicts/$target.dict" ]]; then dict="-dict=dicts/$target.dict"; fi
-        cargo fuzz run --target "$host" "$target" "corpus/$target" ../crates/dedens-proto/tests/testdata ../crates/dedens-proto/tests/zones ../crates/dedens-dnssec/tests/testdata ../crates/dedens-dnssec/tests/zones ../crates/dedens-odoh/tests/testdata -- -max_total_time={{ seconds }} $dict
+        cargo fuzz run --target "$host" "$target" "corpus/$target" ../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh -- -max_total_time={{ seconds }} $dict
     done
 
 # Every simulation scenario under `runs` random seeds (D133), or those of one file of crates/dedens-sim/tests:
@@ -349,17 +349,17 @@ fuzz-smoke:
 capture-to dir *ids:
     cargo run -p dedens -- -f {{ dir }}/capture.yaml --save-wire {{ dir }} {{ prepend("--only=", ids) }}
 
-# Capture fresh responses into crates/dedens-proto/tests/testdata/: the queries of its capture.yaml, or those
+# Capture fresh responses into testdata/proto/: the queries of its capture.yaml, or those
 # with the ids given.
-capture *ids: (capture-to "crates/dedens-proto/tests/testdata" ids)
+capture *ids: (capture-to "testdata/proto" ids)
 
-# Capture the DNSSEC set of crates/dedens-dnssec/tests/testdata/ anew: every query of its capture.yaml, and
+# Capture the DNSSEC set of testdata/dnssec/ anew: every query of its capture.yaml, and
 # `captured_at`, the Unix time of the run's end (signatures made on demand start at the time of the query). The
 # directory is replaced only when every query succeeded: new bytes, same coverage.
 capture-dnssec:
     #!/usr/bin/env bash
     set -euo pipefail
-    dir=crates/dedens-dnssec/tests/testdata
+    dir=testdata/dnssec
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     cp "$dir/capture.yaml" "$tmp/"

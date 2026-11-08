@@ -966,11 +966,8 @@ fn query_files_go_to_every_server_given() {
 
 #[test]
 fn the_capture_file_reads() {
-    let text = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/dedens-proto/tests/testdata/capture.yaml"
-    ))
-    .expect("capture.yaml");
+    let text =
+        std::fs::read_to_string(dedens_testkit::path("proto/capture.yaml")).expect("capture.yaml");
     dedens_scenario::QueryFile::parse(&text).expect("a query file");
 }
 
@@ -985,11 +982,7 @@ fn save_wire_writes_each_response() {
         .assert()
         .success();
     let saved = std::fs::read(out.join("example.com_A.bin")).expect("saved");
-    let captured = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/dedens-proto/tests/testdata/a.bin"
-    ))
-    .expect("captured");
+    let captured = std::fs::read(dedens_testkit::path("proto/a.bin")).expect("captured");
     assert_eq!(
         saved[2..],
         captured[2..],
@@ -1284,7 +1277,7 @@ fn repeat_counts_the_unanswered_and_keeps_the_answer() {
 }
 
 /// When the DNSSEC captures were taken, Unix seconds: the clock of validation (`DEDENS_NOW`).
-const CAPTURED_AT: &str = include_str!("../../../crates/dedens-dnssec/tests/testdata/captured_at");
+const CAPTURED_AT: &str = include_str!("../../../testdata/dnssec/captured_at");
 
 /// The captures `cloudflare.com` A is validated from: its answer and the chain of trust down to it.
 const SECURE: [&str; 6] = [
@@ -1354,7 +1347,7 @@ fn a_secure_response_is_shown_with_its_verdict_in_every_format() {
     }
 }
 
-const ALG13_A: &[u8] = include_bytes!("../../../crates/dedens-dnssec/tests/testdata/alg13_a.bin");
+const ALG13_A: &[u8] = include_bytes!("../../../testdata/dnssec/alg13_a.bin");
 
 /// D76: a secure response is shown as the validator covers it (`dedens_dnssec::covered`): the answer
 /// of a real capture with what the verdict is not about added, an upstream's injection, is not shown under it:
@@ -1452,11 +1445,8 @@ const CROSSED: [&str; 8] = [
 /// A cut in two, its signed CNAME alone and the rest of the chain.
 #[test]
 fn a_chain_that_stops_short_is_chased() {
-    let capture = format!(
-        "{}/../../crates/dedens-dnssec/tests/testdata/cname_to_insecure.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let wire = std::fs::read(capture).expect("a capture");
+    let wire =
+        std::fs::read(dedens_testkit::path("dnssec/cname_to_insecure.bin")).expect("a capture");
     let genuine = Message::decode(&wire)
         .expect("a message")
         .message
@@ -1605,11 +1595,7 @@ fn validation_needs_what_it_sets() {
 
 /// The records of `id`'s answer section of type `keep`, as zone text.
 fn records_of(id: &str, keep: RecordType) -> String {
-    let path = format!(
-        "{}/../../crates/dedens-dnssec/tests/testdata/{id}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let wire = std::fs::read(path).expect("a capture");
+    let wire = std::fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("a capture");
     let decoded = Message::decode(&wire).expect("a message");
     decoded
         .message

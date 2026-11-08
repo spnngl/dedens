@@ -1,6 +1,6 @@
 /*
  * Unbound's codec on the inputs of the Rust benches (D14): the captured
- * responses of crates/dedens-proto/tests/testdata/ and the generated zone of
+ * responses of testdata/proto/ and the generated zone of
  * `examples/zone.rs`, read from the file given as the only argument. `just
  * bench-unbound` builds it against a pinned Unbound release.
  *
@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
     char *data;
     size_t len;
     int n = snprintf(path, sizeof(path),
-                     "%s/../dedens-proto/tests/testdata/%s.bin", BENCH_DIR,
+                     "%s/../../testdata/proto/%s.bin", BENCH_DIR,
                      cases[i]);
     if (n < 0 || (size_t)n >= sizeof(path))
       die("test data path longer than 4095 bytes: move the checkout");

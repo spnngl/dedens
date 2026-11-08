@@ -15,6 +15,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 data-encoding.workspace = true
+dedens-testkit.workspace = true
 proptest.workspace = true
 
 [lints]

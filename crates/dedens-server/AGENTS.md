@@ -3,7 +3,7 @@
 The server's query pipeline (D23, D41, D43). Sans-IO: `Pipeline::query` returns a `Step`: a reply, a drop, a
 reply then a refresh, or an upstream request the caller sends (`apps/dedensd`, with `dedens-net`). Plugin stages
 (D54) implement `Plugin`. The stages are tested in `tests/forward.rs`, `tests/cache.rs` and `tests/plugin.rs`;
-upstream answers are the captures of `crates/dedens-proto/tests/testdata`.
+upstream answers are the captures of `testdata/proto`.
 `Pipeline::receive` checks QR, opcode and question of each upstream response itself, not trusting the transport (D111,
 `forward::usable`, `tests/rfc5452.rs`); the ID is the transport's.
 
@@ -11,7 +11,7 @@ A forward stage may validate (D77, `src/validate.rs`): the pipeline turns each q
 `dedens_dnssec::Validation` into a `Step::Upstream`, so `apps/dedensd` needs no change per question. Only `Secure`
 sets AD, the upstream's AD is never read, and a secure response is cut by `dedens_dnssec::covered`
 to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
-captures of `crates/dedens-dnssec/tests/testdata` at their `captured_at`. `Allowance` bounds what queries cost
+captures of `testdata/dnssec` at their `captured_at`. `Allowance` bounds what queries cost
 the validator (D77, `tests/limits.rs`) and each client network's `Budget` share of it (D117, `src/budget.rs`, also
 `dedensd`'s ODoH decapsulations): a query past either is shed in `Pipeline::query`, before any question. Feature
 `metrics` (D30): the validation, access, rate limit and cookie counters, `src/metrics.rs` (`tests/metrics.rs`).

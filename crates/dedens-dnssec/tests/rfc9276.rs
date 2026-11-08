@@ -52,7 +52,7 @@ fn the_limit_is_inclusive() {
 #[test]
 fn the_default_limit_is_150() {
     assert_eq!(MaxIterations::default(), MaxIterations(150));
-    let zone = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");
+    let zone = zone("rfc5155_appendix_a.zone");
     let nsec3 = pick(
         &zone,
         RecordType::NSEC3,
@@ -113,7 +113,7 @@ fn hashing_is_counted_by_the_budget() {
 #[test]
 fn the_budget_runs_out_in_the_middle_of_a_proof() {
     let records = pick(
-        &zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone"),
+        &zone("rfc5155_appendix_a.zone"),
         RecordType::NSEC3,
         &[
             "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.",
@@ -147,7 +147,7 @@ fn the_budget_runs_out_in_the_middle_of_a_proof() {
 /// Derived: the iterations of real records of RFC 5155 Appendix A are rewritten.
 #[test]
 fn the_limit_applies_to_every_set_of_parameters() {
-    let zone = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");
+    let zone = zone("rfc5155_appendix_a.zone");
     let owners = [
         "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.",
         "35mthgpgcu1qg68fab165klnsnk3dpvl.example.",

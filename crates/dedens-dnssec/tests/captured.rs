@@ -1,5 +1,5 @@
-//! The DNSSEC responses captured by `just capture-dnssec` (`testdata/capture.yaml`, described in
-//! `testdata/README.md`): they decode without a violation, re-encode to an equal message, show what the README
+//! The DNSSEC responses captured by `just capture-dnssec` (`testdata/dnssec/capture.yaml`, described in
+//! `testdata/dnssec/README.md`): they decode without a violation, re-encode to an equal message, show what the README
 //! says they do, and their signatures are valid at `captured_at` but where they are not meant to be.
 
 use std::fs;

@@ -8,7 +8,6 @@
 )]
 
 use std::fs;
-use std::path::PathBuf;
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, MaxIterations, Proof, Unproven};
@@ -19,10 +18,9 @@ use dedens_proto::{
 
 use crate::common::name;
 
-/// The records of the zone file at `path`, relative to the crate.
-pub fn zone(path: &str) -> Vec<Record<'static>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
-    let text = fs::read(path).expect("zone file");
+/// The records of the zone file `file` of `testdata/zones/`.
+pub fn zone(file: &str) -> Vec<Record<'static>> {
+    let text = fs::read(dedens_testkit::path("zones").join(file)).expect("zone file");
     ZoneReader::new(&text, None)
         .filter_map(|entry| match entry.expect("a valid zone") {
             ZoneEntry::Record(decoded) => Some(decoded.record),
@@ -45,10 +43,9 @@ pub fn pick(
         .collect()
 }
 
-/// The captured response `testdata/<id>.bin`.
+/// The captured response `testdata/dnssec/<id>.bin`.
 pub fn capture(id: &str) -> Message<'static> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/testdata/{id}.bin"));
-    let wire = fs::read(path).expect("captured file");
+    let wire = fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("captured file");
     Message::decode(&wire)
         .expect("decodes")
         .message

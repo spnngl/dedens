@@ -28,6 +28,7 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+dedens-testkit.workspace = true
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 

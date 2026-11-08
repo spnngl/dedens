@@ -134,13 +134,9 @@ fn plain(wire: &[u8], question: &Question<'static>) -> Vec<u8> {
     out
 }
 
-/// A response captured from a real server, in `crates/dedens-proto/tests/testdata`.
+/// A response captured from a real server, in `testdata/proto`.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/../dedens-proto/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(path).expect("a captured response")
+    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// The captured response `case`, decoded.
@@ -209,7 +205,7 @@ impl Answers {
     }
 
     /// Answers the question of each `.bin` response of the directory `dir`, such as
-    /// `crates/dedens-dnssec/tests/testdata`, taken in the order of their names; of two for one question, the
+    /// `testdata/dnssec`, taken in the order of their names; of two for one question, the
     /// first is the one.
     ///
     /// # Panics
@@ -675,7 +671,7 @@ mod tests {
 
     #[test]
     fn signatures_come_only_to_a_query_with_do() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
+        let dir = dedens_testkit::path("dnssec");
         let answers = Answers::new().directory(&dir);
         // Whether the response holds data, and whether it holds signatures or proofs, in any section.
         let got = |name: &str, do_bit: bool| {
@@ -718,7 +714,7 @@ mod tests {
 
     #[test]
     fn a_directory_holds_the_first_response_of_each_question() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
+        let dir = dedens_testkit::path("dnssec");
         let answers = Answers::new().directory(&dir);
         let count = answers.expected().count();
         assert!(count > 100, "{count}");

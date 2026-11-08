@@ -7,7 +7,6 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
@@ -740,11 +739,8 @@ async fn s4_3_a_401_under_fresh_configurations_fails() {
 /// Cloudflare's key, so it answers 401.
 #[compio::test]
 async fn s5_the_captured_configurations_are_kept_though_forbidden() {
-    let captured = fs::read(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../dedens-odoh/tests/testdata/odohconfigs-cloudflare.bin"),
-    )
-    .expect("the captured configurations");
+    let captured = fs::read(dedens_testkit::path("odoh/odohconfigs-cloudflare.bin"))
+        .expect("the captured configurations");
     let certificates = certificates();
     let mut target = Target::new(7);
     Rc::get_mut(&mut target).expect("one owner").cache_control = "no-cache, no-store";

@@ -53,9 +53,9 @@ pub fn canonical_name(text: &str) -> Vec<u8> {
     name.to_wire(&mut buf).to_ascii_lowercase()
 }
 
-/// The directory of the captured responses (`testdata/README.md`), from `dedens-dnssec` or `dedens-bench`.
+/// The directory of the captured responses (`testdata/dnssec/README.md`), from `dedens-dnssec` or `dedens-bench`.
 pub fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata")
+    dedens_testkit::path("dnssec")
 }
 
 /// The ids of every captured file.

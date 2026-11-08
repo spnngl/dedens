@@ -1,5 +1,5 @@
 //! FETCH (RFC 8132 §2) as DNS over CoAP uses it (RFC 9953 §3.2, §4.2): the request a query makes, captured from
-//! aiocoap (`tests/testdata/coap/capture.py`), and the `docpath` of an SVCB record as its path.
+//! aiocoap (`testdata/coap/capture.py`), and the `docpath` of an SVCB record as its path.
 
 mod coap_capture;
 
@@ -11,8 +11,8 @@ use dedens_net::coap::exchange::{Exchange, Next, Params};
 use dedens_net::coap::{Code, Message, OptionNumber, Token, dns};
 use dedens_proto::rdata::{SvcParam, SvcParams};
 
-const QUERY: &[u8] = include_bytes!("testdata/doh/quad9_mx.query");
-const ANSWER: &[u8] = include_bytes!("testdata/doh/quad9_mx.body");
+const QUERY: &[u8] = include_bytes!("../../../testdata/doh/quad9_mx.query");
+const ANSWER: &[u8] = include_bytes!("../../../testdata/doh/quad9_mx.body");
 
 fn segments(segments: &[&str]) -> Vec<Box<[u8]>> {
     segments.iter().map(|s| s.as_bytes().into()).collect()

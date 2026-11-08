@@ -1,5 +1,5 @@
 //! Block-wise transfers (RFC 7959): the Block option value of §2.2, the exchanges of §3 driven by hand, and
-//! multi-block exchanges captured from aiocoap (tests/testdata/coap/capture.py).
+//! multi-block exchanges captured from aiocoap (testdata/coap/capture.py).
 
 mod coap_capture;
 
@@ -634,11 +634,11 @@ fn captured_fetch_in_64_byte_blocks() {
     assert_eq!(played.result.expect("a value").payload.len(), 161);
 }
 
-// Captured from libcoap (tests/testdata/coap/capture_libcoap.py).
+// Captured from libcoap (testdata/coap/capture_libcoap.py).
 
 /// Real DNS responses over `DoH`, of 2808 and 1280 bytes: longer than a libcoap block.
-const TXT: &[u8] = include_bytes!("testdata/coap/dns_txt.body");
-const DNSKEY: &[u8] = include_bytes!("testdata/coap/dns_dnskey.body");
+const TXT: &[u8] = include_bytes!("../../../testdata/coap/dns_txt.body");
+const DNSKEY: &[u8] = include_bytes!("../../../testdata/coap/dns_dnskey.body");
 
 /// What the client of libcoap adds to every request and ours does not: the port of the URI (RFC 7252 §5.10.1) and a
 /// Request-Tag (RFC 9175 §3.2).

@@ -4,7 +4,6 @@ mod common;
 
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
 
 use common::{dns, zone_record};
 use dedens_proto::rdata::{RData, Soa};
@@ -13,7 +12,7 @@ use dedens_proto::{
 };
 use proptest::prelude::*;
 
-/// Every record of `reader`, `$INCLUDE`s read from `tests/zones/` through `files`, which maps their names.
+/// Every record of `reader`, `$INCLUDE`s read from `testdata/zones/` through `files`, which maps their names.
 fn read(
     reader: &mut ZoneReader<'_>,
     files: &[(&str, &str)],
@@ -37,10 +36,7 @@ fn read(
 }
 
 fn zone_file(name: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/zones")
-        .join(name);
-    fs::read(path).expect("zone file")
+    fs::read(dedens_testkit::path("zones").join(name)).expect("zone file")
 }
 
 fn zone(text: &str) -> Result<Vec<Record<'static>>, TextError> {

@@ -447,11 +447,8 @@ mod tests {
 
     /// A signed answer to an A query: the A records and their RRSIG.
     fn signed() -> Message<'static> {
-        let wire = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../dedens-dnssec/tests/testdata/alg13_a.bin"
-        ))
-        .expect("the capture is there");
+        let wire = std::fs::read(dedens_testkit::path("dnssec/alg13_a.bin"))
+            .expect("the capture is there");
         let mut message = crate::upstream::decode(&wire);
         // The validation tests' captures set AD only when a validator did.
         message.header.flags = message.header.flags.without(Flags::AD);

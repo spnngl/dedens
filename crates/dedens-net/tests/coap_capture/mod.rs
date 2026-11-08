@@ -1,4 +1,4 @@
-//! The captures of `tests/testdata/coap/capture.py` and a way to play them against an [`Exchange`].
+//! The captures of `testdata/coap/capture.py` and a way to play them against an [`Exchange`].
 #![allow(dead_code, reason = "each test file uses its own subset")]
 
 use std::net::SocketAddr;
@@ -30,7 +30,7 @@ impl Datagram {
 }
 
 fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/coap")
+    dedens_testkit::path("coap")
 }
 
 /// The ids of all captures.

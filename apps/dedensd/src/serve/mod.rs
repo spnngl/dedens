@@ -482,11 +482,8 @@ mod tests {
 
     /// A query for `example.com` A, ID 7, and the response captured from 1.1.1.1 (`dedens-proto`'s `a.bin`).
     pub(super) fn example_com_a() -> (Vec<u8>, Vec<u8>) {
-        let response = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/dedens-proto/tests/testdata/a.bin"
-        ))
-        .expect("a captured response");
+        let response =
+            std::fs::read(dedens_testkit::path("proto/a.bin")).expect("a captured response");
         let question = Message::decode(&response)
             .expect("decodes")
             .message

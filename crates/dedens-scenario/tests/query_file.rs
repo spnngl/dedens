@@ -8,9 +8,9 @@ use dedens_proto::{Flags, Message, Name, Question, RecordType, Transport};
 use dedens_scenario::{CookieOption, DnssecStatus, Id, Latency, Options, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.
-const A: &[u8] = include_bytes!("../../dedens-proto/tests/testdata/a.bin");
+const A: &[u8] = include_bytes!("../../../testdata/proto/a.bin");
 /// The captured NXDOMAIN for `nonexistent.invalid. A`, the root SOA in authority.
-const NXDOMAIN: &[u8] = include_bytes!("../../dedens-proto/tests/testdata/nxdomain_soa.bin");
+const NXDOMAIN: &[u8] = include_bytes!("../../../testdata/proto/nxdomain_soa.bin");
 
 const YAML: &str = "
 server: 1.1.1.1

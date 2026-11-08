@@ -4,7 +4,6 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
 
 use common::{T0, a, dns, insert, query, record, response};
 use dedens_cache::{Cache, Hit, Lookup, StalePolicy};
@@ -104,17 +103,14 @@ proptest! {
     }
 }
 
-/// Responses captured from public servers (`dedens-proto` and `dedens-dnssec` testdata): for every buffer size, from
+/// Responses captured from public servers (`testdata/proto` and `testdata/dnssec`): for every buffer size, from
 /// the least to one that takes all, the hit is the response encoded into it, so the cuts stored with real answers,
 /// referrals and signed responses are the ones `encode_truncated` makes.
 #[test]
 fn a_truncated_hit_of_a_captured_response_is_the_response_encoded_into_the_buffer() {
     let (mut stored, mut cut, mut tc_set, mut tc_clear) = (0, 0, 0, 0);
-    for crate_dir in ["../dedens-proto", "../dedens-dnssec"] {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(crate_dir)
-            .join("tests/testdata");
-        for entry in fs::read_dir(dir).expect("testdata directory") {
+    for set in ["proto", "dnssec"] {
+        for entry in fs::read_dir(dedens_testkit::path(set)).expect("testdata directory") {
             let path = entry.expect("an entry").path();
             if path.extension().is_none_or(|ext| ext != "bin") {
                 continue;

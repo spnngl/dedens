@@ -25,12 +25,12 @@ use dedens_net::doc::DocError;
 use dedens_net::exchange::{Failure as DnsFailure, Options as DnsOptions};
 use dedens_proto::{Message as Dns, Transport};
 
-/// A query for gmail.com MX with ID 0, and the response of Quad9 to it (testdata/doh), whose TTLs are 1822, 1822,
+/// A query for gmail.com MX with ID 0, and the response of Quad9 to it (`testdata/doh`), whose TTLs are 1822, 1822,
 /// 1822, 1822 and 1822 for the answer and 0 for its OPT record.
-const QUERY: &[u8] = include_bytes!("testdata/doh/quad9_mx.query");
-const ANSWER: &[u8] = include_bytes!("testdata/doh/quad9_mx.body");
+const QUERY: &[u8] = include_bytes!("../../../testdata/doh/quad9_mx.query");
+const ANSWER: &[u8] = include_bytes!("../../../testdata/doh/quad9_mx.body");
 /// Another response of 99 bytes, over a block of 64 as `ANSWER` is, for a server whose answer changes.
-const OTHER: &[u8] = include_bytes!("testdata/doh/google_aaaa.body");
+const OTHER: &[u8] = include_bytes!("../../../testdata/doh/google_aaaa.body");
 
 /// How the server answers.
 #[derive(Clone)]

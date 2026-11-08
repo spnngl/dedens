@@ -114,7 +114,7 @@ mod tests {
 
     /// The NSEC records of the example zone of RFC 4035 Appendix A, which chain all of its names.
     fn chain() -> Vec<Record<'static>> {
-        let mut records = zone("tests/zones/rfc4035_appendix_a.zone");
+        let mut records = zone("rfc4035_appendix_a.zone");
         records.retain(|r| r.rtype() == RecordType::NSEC);
         records
     }

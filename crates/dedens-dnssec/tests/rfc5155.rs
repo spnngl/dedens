@@ -150,7 +150,7 @@ fn the_512_bit_zone_key_of_appendix_a_is_unusable() {
     );
 }
 
-// The denials of §8 and Appendix B, from the NSEC3 records of Appendix A, `../dedens-proto/tests/zones`.
+// The denials of §8 and Appendix B, from the NSEC3 records of Appendix A, `testdata/zones`.
 
 const APEX: &str = "example.";
 /// The TTL of every record of Appendix A.
@@ -170,11 +170,7 @@ const WILDCARD_W: &str = "r53bq7cc2uvmubfu5ocmm6pers9tk9en";
 fn nsec3s(hashes: &[&str]) -> Vec<Record<'static>> {
     let owners: Vec<String> = hashes.iter().map(|h| format!("{h}.example.")).collect();
     let owners: Vec<&str> = owners.iter().map(String::as_str).collect();
-    pick(
-        &zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone"),
-        RecordType::NSEC3,
-        &owners,
-    )
+    pick(&zone("rfc5155_appendix_a.zone"), RecordType::NSEC3, &owners)
 }
 
 /// A proof of `fact` over a covered next closer name, whose record has the opt-out flag (all of Appendix A do).

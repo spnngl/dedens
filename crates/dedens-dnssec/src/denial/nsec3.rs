@@ -248,7 +248,7 @@ mod tests {
             name in names(),
             bytes in any::<[u8; 20]>(),
         ) {
-            let mut records = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");
+            let mut records = zone("rfc5155_appendix_a.zone");
             records.retain(|r| r.rtype() == RecordType::NSEC3);
             let apex: Name<'static> = "example.".parse().expect("a name");
             let chain = Chain::new(&apex, &records, MaxIterations::default())
