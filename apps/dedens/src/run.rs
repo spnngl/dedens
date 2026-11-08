@@ -13,7 +13,7 @@ use anyhow::{Context, anyhow, bail};
 use compio::quic::ConnectionError;
 use compio::quic::h3::error::ConnectionError as H3Error;
 use compio::rustls::pki_types::ServerName;
-use dedens_dnssec::validator::covered;
+use dedens_dnssec::covered;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::doc::path_segments;
 #[cfg(feature = "doc")]

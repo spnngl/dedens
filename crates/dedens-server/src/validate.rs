@@ -11,7 +11,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use dedens_dnssec::validator::{Cost, Next, Validation, Validator, Verdict, covered};
+use dedens_dnssec::{Cost, MAX_CHASES, Next, Validation, Validator, Verdict, covered};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Decoded, Flags, Message, Question, RecordType, Ttl};
 
@@ -24,11 +24,6 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// Questions one client query may cost upstream, the validator's own limit and the chasing of CNAME chains
 /// included: past it the verdict is indeterminate.
 const MAX_QUESTIONS: u16 = 64;
-
-/// Names of a CNAME chain one client query chases, as far as `dedens` chases (`apps/dedens/src/validate.rs`): past
-/// it the verdict is indeterminate. The validator leaves the chasing to the caller, and an upstream's chain is
-/// untrusted input.
-const MAX_CHASES: u8 = 8;
 
 /// SHA-1 blocks of NSEC3 hashing that cost one unit of [`Allowance`]: 4096 blocks take about as long as a
 /// signature check of the slowest key (`docs/benchmarks.md`).
@@ -507,8 +502,8 @@ mod tests {
     fn a_query_the_allowance_refuses_keeps_its_unit_of_the_share() {
         let validating = Validating::new(
             Validator::new(
-                dedens_dnssec::anchor::TrustAnchors::root(),
-                dedens_dnssec::validator::Limits::default(),
+                dedens_dnssec::TrustAnchors::root(),
+                dedens_dnssec::Limits::default(),
             ),
             Arc::new(|| 0),
         )

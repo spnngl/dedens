@@ -7,7 +7,7 @@ signatures. `captured_at` is the Unix time of the run: the tests pass it as "now
 valid would be out of their window.
 
 Verdicts are those of RFC 4035 §4.3 for the response alone, given the chain files below it and the root KSK of
-`root_dnskey` as the only trust anchor; `dedens_dnssec::validator` (D75) gives them, `tests/validator.rs` checks them.
+`root_dnskey` as the only trust anchor; `dedens_dnssec::Validator` (D75) gives them, `tests/validator.rs` checks them.
 They were checked on 2026-11-01 (the wildcard rows, `delv` of BIND included, and the captures of `ph`, `ws`, `internet.nl` and
 `nist.gov`, on 2026-11-01 too) against 8.8.8.8 and 9.9.9.9 without CD (`ad` set: Secure, no `ad`: Insecure,
 SERVFAIL: Bogus). One difference: those resolvers set `ad` on an answer an opt-out NSEC3 leaves open, and the
