@@ -1329,22 +1329,22 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
 - D161 (amends D140, D143; builds on D14, D16) Test data read by more than one package lives at the root, in
   `testdata/`: `proto/` and `dnssec/` (the captures of `just capture` and `just capture-dnssec`), `zones/` (the RFC
-  example zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved
-  byte for byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names
-  it: `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `hex`, `dns` and
-  `zone` replace the copies each crate's tests kept; `dnssec` holds the DNSSEC captures by question (`Captures`),
-  their `captured_at`, and the RFC examples' keys and signatures with the data an RRSIG signs, which
-  `benches/dnssec.rs` of `dedens-bench` reached by `#[path]`. The feature `certificates` adds the TLS certificates
-  the encrypted transports' tests make (D60), on `dedens-net`, compio and rcgen, which `dedens` and `dedensd`
-  included from `dedens-net`'s tests by `#[path]`; the default build depends on `dedens-proto` alone. The feature
-  `responder` adds the loopback server the tests of `dedens` and `dedensd` query, one for both where each kept its
-  own: it serves the captures named over UDP and TCP, TLS, QUIC or HTTP/3 (Oblivious `DoH` and CoAP with `odoh` and
-  `doc`), matches a question by its name without case and its type, answers with the query's ID and question, and
-  keeps every query with its transport. A package reads the data through the kit, never through another package's
-  directory (`../dedens-*/tests/`), which tied each test to where another crate kept its files, and no test
-  includes another package's file by `#[path]`. Cargo unifies features over a workspace build, so `dedens-proto`'s
-  tests link `dedens-net` there too. `testdata/` is one of the folders D140 reads for decisions and one a coverage
-  path may start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).
+  example zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte
+  for byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names it:
+  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `hex`, `dns` and `zone`
+  replace the copies each crate's tests kept; `dnssec` holds the DNSSEC captures by question (`Captures`), their
+  `captured_at`, and the RFC examples' keys and signatures with the data an RRSIG signs, which `benches/dnssec.rs` of
+  `dedens-bench` reached by `#[path]`. The feature `certificates` adds the TLS certificates the encrypted transports'
+  tests make (D60), on `dedens-net`, compio and rcgen, which `dedens` and `dedensd` included from `dedens-net`'s tests
+  by `#[path]`; the default build depends on `dedens-proto` alone. The feature `responder` adds the loopback server the
+  tests of `dedens` and `dedensd` query, one for both where each kept its own: it serves the captures named over UDP and
+  TCP, TLS, QUIC or HTTP/3 (Oblivious `DoH` and CoAP with `odoh` and `doc`), matches a question by its name without case
+  and its type, answers with the query's ID and question, and keeps every query with its transport. A package reads the
+  data through the kit, never through another package's directory (`../dedens-*/tests/`), which tied each test to where
+  another crate kept its files, and no test includes another package's file by `#[path]`. cargo-mutants skips the kit,
+  test code as `tests/` is (`.cargo/mutants.toml`). Cargo unifies features over a workspace build, so `dedens-proto`'s
+  tests link `dedens-net` there too. `testdata/` is one of the folders D140 reads for decisions and one a coverage path
+  may start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),
