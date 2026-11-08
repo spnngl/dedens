@@ -1963,8 +1963,8 @@ mod client {
     //! DNS over CoAP (RFC 9953), against a scripted CoAP server on the loopback address: the request a query makes (§4.1,
     //! §4.2), the response and its Max-Age (§4.3), what the client does with an error (§4.3.1), and the discovery of the
     //! resource (§3.1, D95). The server's side of
-    //! the protocol, and the requests as aiocoap sends them, are tested with RFC 8132 and RFC 7959 (`rfc8132.rs`,
-    //! `rfc7959.rs`).
+    //! the protocol, and the requests as aiocoap sends them, are tested with RFC 8132 and RFC 7959 (`fetch`,
+    //! `blockwise`).
 
     use std::cell::RefCell;
     use std::net::SocketAddr;

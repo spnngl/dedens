@@ -842,7 +842,7 @@ mod compact {
 mod captured {
     //! Every negative response of `testdata/dnssec/capture.yaml` (described in its `README.md`) proves what its rcode
     //! and question say: a name error, no data, a wildcard no data or an unsigned delegation, by NSEC or NSEC3 of
-    //! any parameters, opt-out or not. The records are those of the response, whose signatures `captured.rs` and
+    //! any parameters, opt-out or not. The records are those of the response, whose signatures `rrsig::captured` and
     //! the validator check; here they are trusted.
 
     use std::fs;

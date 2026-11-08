@@ -653,7 +653,7 @@ fn a_truncated_response_moves_the_query_to_tcp() {
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     let exchange = expect_send(udp(exchange, &wire(&truncated), now));
     assert_eq!(exchange.transport(), Transport::Tcp);
-    // The query again, with another ID (D114) and the TCP options (tests/rfc7828.rs).
+    // The query again, with another ID (D114) and the TCP options (tests/exchange.rs).
     let mut over_tcp = crate::util::sent(&exchange);
     over_tcp.edns.as_mut().expect("EDNS").options.clear();
     assert_eq!(over_tcp.header.id, crate::util::SPARE_IDS[0]);

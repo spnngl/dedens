@@ -699,7 +699,7 @@ mod rrl {
 
 mod cookies {
     //! RFC 7873 §5.2 and §5.4 in the server core (D113): a query with a Client Cookie is answered with a Server Cookie
-    //! (made as RFC 9018 says, `tests/rfc9018.rs`), on every transport and from the cache; an invalid Server Cookie is
+    //! (made as RFC 9018 says, `server_cookies`), on every transport and from the cache; an invalid Server Cookie is
     //! treated as none, so the query is answered; a query without a question but with a cookie is a request for one.
 
     use std::net::IpAddr;
