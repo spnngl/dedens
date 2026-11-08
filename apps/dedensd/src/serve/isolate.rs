@@ -42,7 +42,7 @@ pub(crate) fn describe() {
 
 thread_local! {
     /// Whether the code running on this thread is under a catch of ours: its panic is logged by [`Origin::panicked`],
-    /// with the listener and the client, so the hook of [`hook`] keeps quiet.
+    /// with the listener and the client, so the hook of [`hook`] keeps quiet ([`Hooked::Kept`]).
     static CAUGHT: Cell<bool> = const { Cell::new(false) };
     /// Where the last caught panic happened, from the hook to the log of the catch.
     static AT: Cell<Option<String>> = const { Cell::new(None) };
@@ -63,24 +63,55 @@ impl Drop for Caught {
     }
 }
 
-/// Sets the panic hook: a panic nobody catches is logged through `tracing` with its thread and place, as the last
-/// words of the thread (`main` ends the process); one a catch of ours has is left to it, which adds the listener and
-/// the client, and rate-limits what it logs (D121). Without a hook, the default one writes each panic to stderr.
+/// Sets the panic hook, which does what [`Hooked`] says (D121). Without a hook, the default one writes each panic to
+/// stderr. Process-wide, so no test sets it: a test of [`Hooked::new`] stands for it.
 pub(crate) fn hook() {
     panic::set_hook(Box::new(|info: &PanicHookInfo<'_>| {
+        let thread = thread::current();
         let at = info.location().map(ToString::to_string);
-        if CAUGHT.get() {
-            AT.set(at);
-        } else {
-            let thread = thread::current();
-            tracing::error!(
-                thread = thread.name().unwrap_or("unnamed"),
-                at = at.as_deref(),
-                panic = message(info.payload()),
-                "panic"
-            );
+        match Hooked::new(CAUGHT.get(), thread.name(), at, info.payload()) {
+            Hooked::Kept { at } => AT.set(at),
+            Hooked::Logged { thread, at, panic } => {
+                tracing::error!(thread, at = at.as_deref(), panic, "panic");
+            }
         }
     }));
+}
+
+/// What the panic hook does with a panic (D121).
+#[derive(Debug, PartialEq, Eq)]
+enum Hooked<'a> {
+    /// A catch of ours has it, and logs it with the listener and the client, rate-limited: the hook keeps where it
+    /// happened, for that log.
+    Kept { at: Option<String> },
+    /// No catch has it: the hook logs it through `tracing` with its thread and place, as the last words of the thread
+    /// (`main` ends the process).
+    Logged {
+        thread: &'a str,
+        at: Option<String>,
+        panic: &'a str,
+    },
+}
+
+impl<'a> Hooked<'a> {
+    /// What the hook does with a panic at `at` saying `payload`, on the thread named `thread`, under a catch of ours
+    /// if `caught`.
+    fn new(
+        caught: bool,
+        thread: Option<&'a str>,
+        at: Option<String>,
+        payload: &'a (dyn Any + Send),
+    ) -> Self {
+        if caught {
+            Self::Kept { at }
+        } else {
+            Self::Logged {
+                thread: thread.unwrap_or("unnamed"),
+                at,
+                panic: message(payload),
+            }
+        }
+    }
 }
 
 /// Runs `step`, which is not to await, under a catch.
@@ -316,7 +347,6 @@ pub(super) mod tests {
     use std::cell::Cell;
     use std::panic::panic_any;
     use std::pin::pin;
-    use std::sync::{Arc, Mutex, PoisonError};
 
     use futures_util::future::select;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
@@ -409,63 +439,46 @@ pub(super) mod tests {
         );
     }
 
-    /// The messages of the events logged on this thread while `body` runs.
-    fn logged(body: impl FnOnce()) -> Vec<String> {
-        #[derive(Clone, Default)]
-        struct Written(Arc<Mutex<Vec<u8>>>);
-        impl io::Write for Written {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let written = Written::default();
-        let writer = written.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(move || writer.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            // A callsite another test registers as this subscriber comes may keep the interest it computed before,
-            // none (tracing-core stores it after the subscriber's own rebuild): the event would be lost. Ask again.
-            tracing::callsite::rebuild_interest_cache();
-            body();
-        });
-        let bytes = written.0.lock().unwrap_or_else(PoisonError::into_inner);
-        String::from_utf8_lossy(&bytes)
-            .lines()
-            .map(|line| {
-                let event: serde_json::Value = serde_json::from_str(line).expect("an event");
-                event["fields"]["message"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-            .collect()
-    }
-
-    /// D121: the hook logs a panic no catch has; one a catch has is logged by the catch alone, and the thread is no
-    /// longer under it once the catch ends.
+    /// D121: the hook logs a panic no catch has, with its thread and place; one a catch has is the catch's to log,
+    /// the hook keeping only where it happened.
     #[test]
     fn the_hook_logs_the_panics_no_catch_has() {
-        let previous = panic::take_hook();
-        hook();
-        let messages = logged(|| {
-            let caught = listener().guard(PEER, || panic_any::<&str>("caught"));
-            assert_eq!(caught, None::<()>);
-            assert!(catch_unwind(|| panic_any::<&str>("uncaught")).is_err());
-        });
-        panic::set_hook(previous);
+        let at = || Some("src/main.rs:1:1".to_owned());
+        let payload: &(dyn Any + Send) = &"a bug";
         assert_eq!(
-            messages,
-            ["task panicked: dropped, the listener goes on", "panic"]
+            Hooked::new(true, Some("main"), at(), payload),
+            Hooked::Kept { at: at() }
         );
+        assert_eq!(
+            Hooked::new(false, Some("main"), at(), payload),
+            Hooked::Logged {
+                thread: "main",
+                at: at(),
+                panic: "a bug"
+            }
+        );
+        assert_eq!(
+            Hooked::new(false, None, None, payload),
+            Hooked::Logged {
+                thread: "unnamed",
+                at: None,
+                panic: "a bug"
+            }
+        );
+    }
+
+    /// D121: a thread is under a catch only while it runs one, panicking or not, so the hook leaves the catch only
+    /// the panics it has.
+    #[test]
+    fn a_thread_is_under_a_catch_while_it_runs_one() {
+        let listener = listener();
+        assert_eq!(listener.guard(PEER, || CAUGHT.get()), Some(true));
+        assert!(!CAUGHT.get());
+        assert_eq!(
+            listener.guard(PEER, || panic_any::<&str>("a bug")),
+            None::<()>
+        );
+        assert!(!CAUGHT.get());
     }
 
     #[test]

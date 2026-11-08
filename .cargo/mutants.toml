@@ -104,6 +104,9 @@ exclude_re = [
   'serve/upstream\.rs:\d+:\d+: replace match guard !error\.is_local\(\) with true in answer$',
   # D86: the flag keeps the flights of clients over UDP apart from those over a connection; inverted, it still does.
   'serve/upstream\.rs:\d+:\d+: replace == with != in answer$',
+  # D121: the panic hook is process-wide, so no test sets it (it would race the other tests' panics); `Hooked::new`,
+  # which decides what it does, is tested.
+  'serve/isolate\.rs:\d+:\d+: replace hook with \(\)$',
   # dedensd: root only, tested by `tests/privileges.rs` under sudo in CI's own job, not by the mutants shards: the
   # groups of the user dropped to (Linux), and off Linux a function not built there.
   'privileges/unix\.rs:\d+:\d+: replace groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
