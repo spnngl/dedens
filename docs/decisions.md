@@ -940,7 +940,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - `ExchangeError::UnknownKey` is the 401 of §4.3 and every other failure of `decrypt_query` the 400. HTTP (the
     media type, §4.1's ban on caching, discovery) belongs to `dedens-net`.
   - Tests: RFC 9180 A.1.1, the vectors of `cloudflare/odoh-go` (the target side, byte for byte), the config
-    Cloudflare serves, and round trips (`tests/rfc9230.rs`); the client side reads the odoh-go responses through
+    Cloudflare serves, and round trips (`tests/odoh.rs`); the client side reads the odoh-go responses through
     the target's secrets (the vectors hold no ephemeral key). Failure paths are tested: small-order keys,
     ciphertext shorter than the tag, non-zero padding in a response, bounds. Fuzz targets `parse_odoh_configs`,
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its

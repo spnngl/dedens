@@ -1,6 +1,6 @@
 # ODoH test data
 
-Read by `crates/dedens-odoh/tests/rfc9230.rs` (and, as seeds, by the fuzz smoke test).
+Read by `crates/dedens-odoh/tests/odoh.rs` (and, as seeds, by the fuzz smoke test).
 
 | File | Source | Holds |
 |---|---|---|
@@ -16,4 +16,4 @@ The vectors hold no ephemeral key to replay, so the client side reads the `obliv
 context made from the target's secrets (a unit test of `crates/dedens-odoh/src/client.rs`), and encrypts by round trips and the live
 exchange recorded in `docs/decisions.md` (D78).
 
-RFC 9180's own vectors (Appendix A.1.1) are in `crates/dedens-odoh/tests/rfc9180.rs`.
+RFC 9180's own vectors (Appendix A.1.1) are in `crates/dedens-odoh/tests/hpke.rs`.
