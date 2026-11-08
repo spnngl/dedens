@@ -29,11 +29,16 @@ turmoil.workspace = true
 
 [dev-dependencies]
 dedens-dnssec.workspace = true
+divan.workspace = true
 rcgen.workspace = true
 
 [[test]]
 name = "tests"
 path = "tests/tests.rs"
+
+[[bench]]
+name = "driver"
+harness = false
 
 [lints]
 workspace = true
