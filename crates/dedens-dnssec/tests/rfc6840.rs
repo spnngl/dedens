@@ -5,13 +5,12 @@
 //! RFC 6840 §4.1 (NSEC and NSEC3 at a delegation or a DNAME), §4.3 (the CNAME bit of a no data), §4.4 (what shows
 //! an insecure delegation), on the example zone of RFC 4035 Appendix A (D74). The zone has no DNAME, CNAME or
 //! empty-non-terminal-wildcard case, and no capture does: the tests marked "Derived" build their NSEC records with
-//! `support::nsec`, shaped as the zone's NSEC for `b.example.` (owner, next name, types, RRSIG, NSEC), with the
-//! bitmap the RFC section names.
+//! `common::denial::nsec`, shaped as the zone's NSEC for `b.example.` (owner, next name, types, RRSIG, NSEC), with
+//! the bitmap the RFC section names.
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
+use common::denial::{nsec, pick, prove};
 use common::{name, rrset, rrsig_set};
 use dedens_dnssec::crypto::{Budget, ds_digest, key_tag};
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
@@ -21,7 +20,6 @@ use dedens_testkit::dnssec::{
     RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rrsig, canonical_name, dnskey_rdata,
 };
 use dedens_testkit::zone;
-use support::{nsec, pick, prove};
 
 /// A name in wire form, in the case given.
 fn wire(text: &str) -> Vec<u8> {

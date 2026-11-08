@@ -2,13 +2,11 @@
 //! of the RFC 4035 and RFC 5155 example zones, with their TTLs changed (derived: the RFCs give one TTL to all).
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
+use common::denial::{pick, prove, prove_wildcard};
 use dedens_dnssec::denial::Fact;
 use dedens_proto::{Record, RecordType, Ttl};
 use dedens_testkit::zone;
-use support::{pick, prove, prove_wildcard};
 
 const APEX: &str = "example.";
 

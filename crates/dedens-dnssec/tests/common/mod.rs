@@ -13,6 +13,8 @@ use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature, Verified};
 use dedens_proto::{MAX_NAME_LEN, Message, Name, Record};
 use dedens_testkit::dnssec::{Rrsig, b64, canonical_name};
 
+pub mod denial;
+
 // spellchecker:off
 /// RFC 4034 §5.4: the key of `dskey.example.com.` (algorithm 5, key tag 60485), the DNSKEY that RFC 4034 and
 /// RFC 4509 give a DS for.
