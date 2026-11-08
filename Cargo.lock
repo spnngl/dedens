@@ -1057,6 +1057,7 @@ dependencies = [
  "dedens-proto",
  "dedens-server",
  "dedens-testkit",
+ "divan",
  "getrandom 0.4.3",
  "rcgen",
  "thiserror",

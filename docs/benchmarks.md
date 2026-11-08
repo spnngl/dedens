@@ -1068,6 +1068,48 @@ one run.
 - The incremental build is the link's: each binary linked its crate's dependencies again. 14 is a binary per
   package with tests, plus `dedens-cache`'s two that set their own `#[global_allocator]`.
 
+## Simulation time (D133, D164)
+
+`just sim-time`: wall time of each family of `dedens-sim`'s `tests` binary run alone, then of the binary whole, in
+`just check`'s build (debug, `--workspace --all-features`) under the fixed seeds. Apple M5, 10 cores, macOS 27.2,
+rustc 1.99.1, a shared machine (another worktree building; each round waits for a 1-minute load average under 4),
+2026-11-08. Seconds, median of 3 rounds; before is main at ac8ccd0, after the cut of `dnssec`'s shed seeds (D164).
+
+| Family | before | after |
+|---|---|---|
+| `baseline` | 1.30 | 1.30 |
+| `crash` | 1.62 | 1.65 |
+| `dnssec` | 3.23 | 1.88 |
+| `forged` | 1.10 | 1.12 |
+| `limits` | 1.23 | 1.21 |
+| `loss` | 1.36 | 1.35 |
+| `partition` | 0.80 | 0.81 |
+| `pools` | 0.59 | 0.58 |
+| `replay` | 0.06 | 0.06 |
+| The binary | 7.18 | 6.65 |
+
+- `dnssec` alone, the two builds alternated over 5 rounds: 3.26 s before, 1.91 s after. Its client-share scenario
+  took 2.79 s before (3 seeds), 0.92 s after (1); its allowance one 1.75 s, then 0.59 s. Its slowest tests are now
+  at one seed: `a_validating_run_replays_in_two_processes` 1.09 s alone, 1.3 to 1.5 s beside the 15 others.
+- One seed less for the property test `whatever_the_validators_questions_suffer_the_verdict_stands_or_servfails`
+  (`FEW` to `ONE`) took `dnssec` from 1.91 to 1.83 s: not done, the module's time is its longest tests'.
+- The first run of a binary just linked takes 0.5 to 0.7 s more (macOS checks it): `baseline` timed 2.03 s first.
+  `just sim-time` runs `--list` before timing.
+
+`cargo bench -p dedens-sim --bench driver` (`benches/driver.rs`): one client asks `example.com. A` of the resolver over
+UDP, seed 0, the topology built inside the timed run. `answered`: the upstream answers with the capture `a`, 54
+simulated milliseconds. `silent`: the upstream never answers, the resolver tries until it gives up, 6.01 simulated
+seconds. Divan medians, 100 samples; 3 runs of the release bench, then one of `--profile dev`, the tests' build.
+
+| Run | release, run 1 | run 2 | run 3 | dev |
+|---|---|---|---|---|
+| `answered` | 286 µs | 207 µs | 162 µs | 1.34 ms |
+| `silent` | 8.14 ms | 8.18 ms | 8.16 ms | 110 ms |
+
+- A simulated second costs 1.36 ms in release, 18 ms in the tests' debug build: a family's 2 s buys about 110
+  simulated seconds of one-host scenarios on one thread. The idle steps dominate, turmoil's tick being 1 ms.
+- `answered` moves 1.8x between runs (setup under the load's noise); `silent`, 1%, is the number to compare.
+
 ## Allocators
 
 Which global allocator a static musl `dedensd` (D151) should carry: musl's mallocng (the default, no crate), mimalloc
