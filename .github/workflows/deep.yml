@@ -2,7 +2,8 @@ name: deep
 
 # The slow checks of each pull request, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
 # reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
-# a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133);
+# a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133); `sim-time`
+# times each family under its fixed seeds against D133's budgets, and fails over one (`just sim-time`, D164);
 # `careful` runs the tests on a checked standard library under AddressSanitizer, a job per package (`just careful
 # address`, D144).
 on:
@@ -81,6 +82,22 @@ jobs:
       - run: just sim 100 "$TEST"
         env:
           TEST: ${{ matrix.test }}
+  sim-time:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: just sim-time
   # One careful job per package: the workspace's tests under AddressSanitizer outlast any one job.
   packages:
     runs-on: ubuntu-26.04

@@ -17,6 +17,7 @@ scenario. A run must replay from its seed; these rules keep it so.
   `stale_ttl` to match.
 
 Each family is a module `tests/<family>.rs` of the one binary (D162): scripted tests under the fixed seeds of
-`tests/util.rs`, under 2 s for the module in `just check` (this crate under 10 s); one property test whose seed
-picks the faults, which `just sim` runs under many random seeds; one `seed::in_two_processes` test. A failing seed
-becomes a fixed seed of the scripted tests, with a comment naming what it caught.
+`tests/util.rs`, under 2 s for the module in `just check` (this crate under 10 s), which `just sim-time` measures;
+one property test whose seed picks the faults, which `just sim` runs under many random seeds; one
+`seed::in_two_processes` test. A failing seed becomes a fixed seed of the scripted tests, with a comment naming what
+it caught.

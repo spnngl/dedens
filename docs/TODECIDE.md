@@ -176,6 +176,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
+- The `dnssec` simulation family at its floor (D133, D164): 1.9 s of its 2 s in `just check` on an Apple M5, its
+  slowest tests at one seed (`a_validating_run_replays_in_two_processes`,
+  `a_lost_ds_and_dnskey_response_is_asked_again_and_the_verdict_stands`), so its next test leaves no fixed seed to
+  cut. Default: split the module in two families, the limits (`a_query_past_*`, `a_client_over_its_share_*`) one of
+  them, when `just sim-time` puts it over.
 - DoH servers where HTTP/3 does not answer (21 of the 44 URLs of `providers.yaml`, November 2026): 19 do not
   advertise `h3`; the two of UncensoredDNS do, but the QUIC handshake stalls after their first flight. They sit
   under `https_h2`, parsed but not asked, until HTTP/2 (D62). Default: find whether our client or their
