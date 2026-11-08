@@ -3,11 +3,12 @@
 The server binary (D42, D44): `src/main.rs` parses flags, starts the threads (never dropping a runtime) and logs the
 driver, warning on Linux when it is `poll`, `src/config/` reads the YAML configuration into a pipeline (D44): `mod.rs`
 the file, its bounds and the build, one file a part (`listen`, `upstream`, `limits`, `access`, `sources`, `env` for
-`${VAR}`, `keys` with the key-file check shared with `src/odoh.rs`, D115), `src/serve.rs` binds the sockets and runs the
-UDP, TCP, TLS, QUIC, DoH over HTTP/3, DoC (`src/serve/coap.rs`, feature `doc`: its replays, blocks and slots are
-bounded, D105) and upstream tasks around `dedens_server::Pipeline`; UDP replies go through each socket's `Outbox`, one
-sender a socket, two tasks receiving (D123); `src/isolate.rs` isolates a task's panic and restarts a listener that
-ended (D121), `src/h3_budget.rs` rotates an HTTP/3 connection past its byte budget (D119), `src/reload.rs` swaps the
+`${VAR}`, `keys` with the key-file check shared with `src/odoh.rs`, D115), `src/serve/` binds the sockets and runs the
+tasks around `dedens_server::Pipeline`, one file a transport: `udp`, `tcp` (and TLS), `quic` (DoQ), `http3` (DoH and
+ODoH), `coap` (DoC, feature `doc`: its replays, blocks and slots are bounded, D105), and `upstream` for the queries
+asked upstream; UDP replies go through each socket's `Outbox`, one sender a socket, two tasks receiving (D123);
+`isolate.rs` isolates a task's panic and restarts a listener that ended (D121), `h3_budget.rs` rotates an HTTP/3
+connection past its byte budget (D119). `src/reload.rs` swaps the
 pipeline and the TLS certificate on SIGHUP (D55, D66) and once the lists `src/download.rs` fetches (D57, D104)
 changed, waking each thread to take it (D107). `src/lists.rs` keeps the lists read across reloads, one `Names` per
 source and one merged set per stage side, so that a reload reads the lists that changed and no other (D120).
@@ -15,7 +16,7 @@ source and one merged set per stage side, so that a reload reads the lists that 
 `privileges/unix.rs` makes its calls, `privileges/not_unix.rs` stands in for them off Unix.
 `access` (D91) is read in `src/config/access.rs`; `Config::warn_access` warns at start (`src/main.rs`) and at each reload
 (`src/reload.rs`) of a public listen address with no `access`, and of an empty `allow`; the listeners in
-`src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot. `src/config/` reads
+`src/serve/` close or ignore a client that a `drop` denial denies, before it takes a slot. `src/config/` reads
 `rrl` and `cookies` (D113, `limits.rs`), `client_share` (`upstream.rs`) and `odoh.budget`/`odoh.client_budget` (D117,
 `keys.rs`), and the cache's `max_entry_bytes`, `min_ttl` and `max_ttl` (D116, D124, `sources.rs`) too.
 `src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
@@ -59,5 +60,5 @@ Tests:
   whose seccomp filter refuses it.
 - `benches/doh3.rs` measures DoH over HTTP/3 and `benches/udp.rs` UDP (`docs/benchmarks.md`).
 
-Measure a change to `src/serve.rs` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it
+Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it
 in `docs/benchmarks.md`.

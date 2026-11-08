@@ -302,7 +302,7 @@ mod tests {
 }
 
 /// Every interleaving of the threads that ask one question or two (D135, `just loom`). They end by asking, as
-/// `serve.rs` does, so that a query a flight strands is a deadlock loom reports.
+/// `serve/upstream.rs` does, so that a query a flight strands is a deadlock loom reports.
 #[cfg(test)]
 #[cfg(dedens_loom)]
 mod loom_tests {
@@ -349,7 +349,7 @@ mod loom_tests {
             response
         }
 
-        /// A query as `fetch` in `serve.rs` makes it: asks, and lands the flight with its own bytes at once, or
+        /// A query as `fetch` in `serve/upstream.rs` makes it: asks, and lands the flight with its own bytes at once, or
         /// takes the response of the query that asks.
         fn ask(&self, flights: &Flights) -> Asked {
             match block_on(flights.enter(&self.key)) {

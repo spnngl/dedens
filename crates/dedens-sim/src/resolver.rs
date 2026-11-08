@@ -1,5 +1,5 @@
 //! The resolver host: a [`Pipeline`] served over UDP and TCP, as `dedensd` serves it (D42, D43, D45, D46;
-//! `apps/dedensd/src/serve.rs`: `start` and `answer`).
+//! `apps/dedensd/src/serve/`: `start` and `answer`).
 //!
 //! The pipeline is the scenario's: [`Resolver::build`] makes a new one at each start of the host, as a restarted
 //! `dedensd` has an empty cache. [`pipeline`] is the default, a cache and a forwarder. A cache the scenario builds

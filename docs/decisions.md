@@ -105,7 +105,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   by that string). Read: the suite passes on both musl targets (the `musl` job), `just release` builds twice identical on
   both, and the image on the VPS answers UDP, TCP and DoT as uid 10001 with no capability and blocks a listed name. Two
   tests of that suite are flaky whatever the allocator (each failed in a run and passed on rerun):
-  `isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
+  `serve::isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
   (1 run in 400: two networks hash to one of 256 buckets). Rejected:
   mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152).
 - D153 (builds on D57, D122, D150, D151; amended by D156, D158) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
@@ -471,7 +471,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   validation deadline, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
   holds the validator's closure. Tests: `tests/rfc4035.rs` and
   `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
-  `dedens-cache/tests/checked.rs`, the configuration tests of `config.rs`; bench `hit_secure` of `benches/server.rs`.
+  `dedens-cache/tests/checked.rs`, the configuration tests of `config/`; bench `hit_secure` of `benches/server.rs`.
 
 - D76 (amends D32, D34, D37, D40, D69; amended by D86) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
   the server is a transport, never trusted. `validate` is an `Options` field, so a query file carries it, and it
@@ -2109,7 +2109,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   in compio (commit `8b82dbc` on `spnngl/compio` branch `fix/fusion-poll-set-result-v0.19`, on top of 0.19.2), taken
   through `[patch.crates-io]` of `compio-driver` at that commit, the one git source `deny.toml` allows, until a
   compio release has the fix; then the patch goes. Rejected: reading one datagram at a time on `poll` in dedensd
-  (a second receive path to keep). `serve.rs` tests the fallback by building the runtime on `poll`
+  (a second receive path to keep). `serve/mod.rs` tests the fallback by building the runtime on `poll`
   (`a_udp_socket_answers_on_the_poll_driver`), which every Linux and macOS run of the gate does.
 
 - D106 (amends D71, D74, D75, D77; amended by D117) Validation cost counts what it costs: the debt of the admission bucket stops at
@@ -2448,7 +2448,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`Dialer`): `STREAM_RECEIVE_WINDOW` and `CLIENT_RECEIVE_WINDOW`, larger, since the replies of every client of a
     forwarder share one connection to an upstream (D61, D83) and the window over the round trip caps its throughput.
     The windows bound what is in flight, not what h3 buffers (above).
-  - Budget (`apps/dedensd/src/h3_budget.rs`): the server counts the bytes an HTTP/3 connection received (quinn's
+  - Budget (`apps/dedensd/src/serve/h3_budget.rs`): the server counts the bytes an HTTP/3 connection received (quinn's
     `stats().udp_rx.bytes`, the datagrams, before they are decrypted) and, at `BUDGET`, sends `GOAWAY` (RFC 9114
     §5.2, h3's `Connection::shutdown(0)`): the connection rotates, as a long one does, and the memory h3 holds for
     it goes with it. It is closed with `H3_EXCESSIVE_LOAD` (0x107, §8.1, §10.5) once it passes `BUDGET` plus
@@ -2513,7 +2513,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D121 (amends D46, D64, D119; builds on D47, D107) A panic ends one task, a listener loop that ends starts again, and a
   thread whose runtime panics ends the process (audit S6). compio already catches and hides a task's panic, so the
   loss was narrower than written: a listener loop that ended, and the runtime.
-  - Tasks and listeners (`isolate.rs`): each task runs under `catch_unwind` (`Origin::spawn`, and `guard_async` for the
+  - Tasks and listeners (`serve/isolate.rs`): each task runs under `catch_unwind` (`Origin::spawn`, and `guard_async` for the
     whole turn of a UDP datagram); a panic is logged with listener, peer and location, counted by
     `dedensd_task_panics_total{listener}` and never propagated. A panic hook sends uncaught ones to `tracing`, and the
     log is limited per listener to one a second, with `suppressed`. A query gives back its place on its connection
@@ -2526,8 +2526,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     take datagrams of sockets still in their `SO_REUSEPORT` group, a share of queries lost with no sign.
   - Open (`docs/TODECIDE.md`): a panic inside a compio-quic worker is hidden in compio's task; bare `spawn`s in
     `dedens-net`. Rejected: forking compio.
-  - Tests: `serve.rs` (65 queries panic on one connection, the 66th is answered; a listener panics and answers again;
-    100 restarts under load, Linux), `isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
+  - Tests: `serve/mod.rs` (65 queries panic on one connection, the 66th is answered; a listener panics and answers again;
+    100 restarts under load, Linux), `serve/isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
 - D122 (amends D42, D44, D55, D66, D104, D107, D115) `dedensd` drops root once its sockets are bound, from the audit (S5): a
@@ -2573,7 +2573,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D123 (amends D48, D51, D63; builds on D107, D121) Replies to UDP queries go through a queue and one sender a
   socket, the tasks answering on it drop from four to two, and the `io_uring` flags of D51 stay (audit P2, P12). Each
   of D48's tasks waited for its reply to go out before receiving again, so each reply cost its own `io_uring_enter`.
-  Now `Outbox` (`serve.rs`), made with the socket beside its supervised loop so a restart (D121) keeps it, takes the
+  Now `Outbox` (`serve/udp.rs`), made with the socket beside its supervised loop so a restart (D121) keeps it, takes the
   replies, made at once or after upstream, in a bounded queue (64, `flume`) that `send_replies`, one more future of
   the socket's task, sends from, up to 64 at once: the replies of one turn of the runtime go out in one submission.
   A task whose reply finds the queue full waits, so nothing grows. The reply buffers move with the replies (D63: a
@@ -2600,7 +2600,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `tcp` 0.0045 → 0.0083 enters a query with `DEFER_TASKRUN`, the other modes equal (`docs/benchmarks.md`).
   - Rejected: `SQPOLL` (D51 again): on the server's core the rates halve; on a core of its own it gains over one core
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
-  - Tests: `serve.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
+  - Tests: `serve/udp.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
     `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`).
 - D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up (`Current`) and of the
   query flights (`Flights`), the two places where `dedensd`'s threads share state by a protocol of their own. D86's
@@ -2615,7 +2615,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     given a slot that holds one message, wakes its receiver and closes with either end; not flume's internals.
     Rejected: flume itself under loom, whose atomics and locks loom cannot see, so no interleaving of it would be
     tried; `loom::sync::Notify` and `mpsc`, which have no `Future` to receive from, so no query could wait on them
-    as it does in `serve.rs`. The `Arc<[u8]>` of a response stays std's: loom's `Arc` has no `From<&[T]>`.
+    as it does in `serve/upstream.rs`. The `Arc<[u8]>` of a response stays std's: loom's `Arc` has no `From<&[T]>`.
   - What the threads run is the server's own code: `Current::newer` (the generation check of `Thread::pipeline`) and
     `Flights::enter` (the join and rejoin of `fetch`) were moved out of `serve.rs` for it.
   - `just loom` lints the loom-only code with clippy, then runs the `loom_tests` modules beside the code under
@@ -2667,7 +2667,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D133 (amends D26; amended by D134) Simulation tests: the sans-IO cores run as hosts of a simulated network,
   `turmoil` 0.7.2, so lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`,
   `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
-  (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve.rs`,
+  (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve/`,
   `start` and `answer`) and runs `dedens-net`'s own client (D134), and one scenario family a `tests/<family>.rs`.
   The compio layer of the server stays tested over loopback (D26). What the driver offers, what a scenario uses and the rules for both are
   in `crates/dedens-sim/AGENTS.md`.

@@ -120,11 +120,11 @@ struct Named {
 
 /// The listener a task serves, shared by its tasks.
 #[derive(Clone, Debug)]
-pub(crate) struct Listener(Rc<Named>);
+pub(super) struct Listener(Rc<Named>);
 
 impl Listener {
     /// The listener of `scheme` on `addr`, if known.
-    pub(crate) fn new(scheme: &str, addr: Option<SocketAddr>) -> Self {
+    pub(super) fn new(scheme: &str, addr: Option<SocketAddr>) -> Self {
         let name = match addr {
             Some(addr) => format!("{scheme}://{addr}"),
             None => format!("{scheme}://"),
@@ -175,14 +175,14 @@ impl Listener {
 
     /// Runs `step`, which is not to await, for the client at `peer`: `None` if it panicked, the panic logged and
     /// counted.
-    pub(crate) fn guard<T>(&self, peer: SocketAddr, step: impl FnOnce() -> T) -> Option<T> {
+    pub(super) fn guard<T>(&self, peer: SocketAddr, step: impl FnOnce() -> T) -> Option<T> {
         caught_now(step)
             .map_err(|payload| self.panicked(Some(peer), &*payload))
             .ok()
     }
 
     /// As [`Listener::guard`], for a step that awaits.
-    pub(crate) async fn guard_async<T>(
+    pub(super) async fn guard_async<T>(
         &self,
         peer: SocketAddr,
         step: impl Future<Output = T>,
@@ -202,17 +202,17 @@ impl fmt::Display for Listener {
 
 /// Where a task comes from: the listener it serves and the client it answers.
 #[derive(Clone, Debug)]
-pub(crate) struct Origin {
+pub(super) struct Origin {
     listener: Listener,
-    pub(crate) peer: SocketAddr,
+    pub(super) peer: SocketAddr,
 }
 
 impl Origin {
-    pub(crate) fn listener(&self) -> &Listener {
+    pub(super) fn listener(&self) -> &Listener {
         &self.listener
     }
 
-    pub(crate) fn new(listener: &Listener, peer: SocketAddr) -> Self {
+    pub(super) fn new(listener: &Listener, peer: SocketAddr) -> Self {
         Self {
             listener: listener.clone(),
             peer,
@@ -221,12 +221,12 @@ impl Origin {
 
     /// Runs `task` alone on the thread's runtime, not waited for: if it panics, that is logged and counted, and
     /// nothing else ends. Dropping the task on the way gives back what it held, as slots.
-    pub(crate) fn spawn(self, task: impl Future<Output = ()> + 'static) {
+    pub(super) fn spawn(self, task: impl Future<Output = ()> + 'static) {
         self.run(task).detach();
     }
 
     /// As [`Origin::spawn`], but dropping the handle ends the task.
-    pub(crate) fn spawn_joinable(
+    pub(super) fn spawn_joinable(
         &self,
         task: impl Future<Output = ()> + 'static,
     ) -> JoinHandle<()> {
@@ -243,7 +243,7 @@ impl Origin {
 }
 
 /// What a panic said, if it said a string.
-pub(crate) fn message(payload: &(dyn Any + Send)) -> &str {
+fn message(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&str>()
         .copied()
@@ -262,17 +262,17 @@ pub(crate) fn fatal(payload: &(dyn Any + Send)) -> io::Error {
 
 /// How long a listener waits before it starts again.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Backoff {
+pub(super) struct Backoff {
     /// The first pause.
-    pub(crate) first: Duration,
+    pub(super) first: Duration,
     /// The pause never grows past this.
-    pub(crate) max: Duration,
+    pub(super) max: Duration,
     /// A run this long is healthy: the next pause is the first again.
-    pub(crate) healthy: Duration,
+    pub(super) healthy: Duration,
 }
 
 /// The pauses of a listener: 10 ms, doubling up to 5 s, the first again after a minute of service (D121).
-pub(crate) const BACKOFF: Backoff = Backoff {
+pub(super) const BACKOFF: Backoff = Backoff {
     first: Duration::from_millis(10),
     max: Duration::from_secs(5),
     healthy: Duration::from_secs(60),
@@ -291,7 +291,7 @@ impl Backoff {
 /// Runs the loop `start` makes, and again each time it ends or panics, after a pause of `backoff`; never ends. A
 /// restart is logged and counted. What a loop holds that outlives it, its socket, is `start`'s to keep: a panic
 /// leaves it as it was.
-pub(crate) async fn supervise<F: Future<Output = ()>>(
+pub(super) async fn supervise<F: Future<Output = ()>>(
     listener: &Listener,
     backoff: Backoff,
     mut start: impl FnMut() -> F,
@@ -312,7 +312,7 @@ pub(crate) async fn supervise<F: Future<Output = ()>>(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(super) mod tests {
     use std::cell::Cell;
     use std::panic::panic_any;
     use std::pin::pin;
@@ -340,7 +340,7 @@ pub(crate) mod tests {
 
     /// The panics and restarts counted, as (metric, listener, count), from what `recorder` saw: one snapshot, as it
     /// takes the counts.
-    pub(crate) fn counted(recorder: &DebuggingRecorder) -> Vec<(String, String, u64)> {
+    pub(in crate::serve) fn counted(recorder: &DebuggingRecorder) -> Vec<(String, String, u64)> {
         let mut counts: Vec<_> = recorder
             .snapshotter()
             .snapshot()
