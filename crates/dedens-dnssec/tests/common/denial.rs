@@ -1,17 +1,9 @@
 //! Helpers of the denial tests: records picked from an example zone or a capture, and a proof asked of them.
-//! Included with `#[path = "common/denial.rs"] mod support;`.
-
-#![allow(
-    dead_code,
-    unreachable_pub,
-    reason = "each test crate uses a subset of a shared module"
-)]
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, MaxIterations, Proof, Unproven};
 use dedens_proto::rdata::{Nsec, Nsec3, RData, TypeBitmap};
-use dedens_proto::{Class, Message, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
-use dedens_testkit::dnssec;
+use dedens_proto::{Class, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
 
 use crate::common::name;
 
@@ -27,15 +19,6 @@ pub fn pick(
         .filter(|r| r.rtype() == rtype && owners.contains(&r.name))
         .cloned()
         .collect()
-}
-
-/// The captured response `testdata/dnssec/<id>.bin`.
-pub fn capture(id: &str) -> Message<'static> {
-    let wire = dnssec::capture(id);
-    Message::decode(&wire)
-        .expect("decodes")
-        .message
-        .into_owned()
 }
 
 /// Asks for the proof of `qname` and `qtype` in the zone `apex` with the default limit and budget.

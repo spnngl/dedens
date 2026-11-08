@@ -4,16 +4,15 @@
 //! the validator check; here they are trusted.
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
 use std::fs;
 
+use common::denial::{prove, prove_wildcard};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Name, Rcode, Record, RecordType, Ttl};
-use support::{capture, prove, prove_wildcard};
+use dedens_testkit::dnssec::response;
 
 const NAME_ERROR: Fact = Fact::NameError { compact: false };
 const COMPACT_NAME_ERROR: Fact = Fact::NameError { compact: true };
@@ -111,7 +110,7 @@ fn least_ttl(message: &Message<'_>) -> Ttl {
 #[test]
 fn every_negative_capture_proves_what_it_says() {
     for (id, fact, opt_out) in EXPECTED {
-        let message = capture(id);
+        let message = response(id);
         let question = &message.questions[0];
         let proof = prove(
             &apex(&message).to_string(),
@@ -145,7 +144,7 @@ fn every_capture_with_a_denial_is_listed() {
         }) else {
             continue;
         };
-        let message = capture(&id);
+        let message = response(&id);
         let negative = message.rcode() == Rcode::NXDOMAIN || message.answer.is_empty();
         if negative && message.authority.iter().any(is_denial) {
             assert!(
@@ -163,7 +162,7 @@ fn every_capture_with_a_denial_is_listed() {
 fn the_ds_of_each_label_of_a_reverse_name_is_there_or_proven_absent() {
     for n in 1..=34 {
         let id = format!("ip6_ds_{n}");
-        let message = capture(&id);
+        let message = response(&id);
         if !message.answer.is_empty() {
             continue;
         }
@@ -182,7 +181,7 @@ fn the_ds_of_each_label_of_a_reverse_name_is_there_or_proven_absent() {
 /// The answer's RRSIG has fewer labels than its owner, and the NSEC3 of the response covers the next closer name.
 #[test]
 fn wildcard_expansion_is_proven() {
-    let message = capture("wildcard_answer");
+    let message = response("wildcard_answer");
     let question = &message.questions[0];
     let labels = message
         .answer
@@ -209,7 +208,7 @@ fn wildcard_expansion_is_proven() {
 /// SHA-1 blocks, as many as the iterations make of each.
 #[test]
 fn proofs_cost_a_few_hashes() {
-    let message = capture("nxdomain_nsec3_iterations");
+    let message = response("nxdomain_nsec3_iterations");
     let question = &message.questions[0];
     let mut budget = Budget::default();
     let before = budget.nsec3_blocks_left();

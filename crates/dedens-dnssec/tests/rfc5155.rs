@@ -2,9 +2,8 @@
 //! the 512-bit key of Appendix A that D71 refuses), and the denials of §8 against the responses of Appendix B.
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
+use common::denial::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard};
 use common::name;
 use data_encoding::BASE32HEX_NOPAD;
 use dedens_dnssec::crypto::{
@@ -14,7 +13,6 @@ use dedens_dnssec::denial::{self, Fact, MaxIterations, Proof, Unproven};
 use dedens_proto::{Nsec3HashAlgorithm, Question, Record, RecordType, SecAlgorithm, Ttl};
 use dedens_testkit::dnssec::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, signed_data};
 use dedens_testkit::zone;
-use support::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard};
 
 const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
 const ITERATIONS: u16 = 12;

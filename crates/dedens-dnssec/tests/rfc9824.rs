@@ -3,16 +3,15 @@
 //! responses.
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
+use common::denial::{pick, prove};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations, Unproven};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
 use dedens_proto::{Class, Message, Rcode, Record, RecordType};
+use dedens_testkit::dnssec::response;
 use dedens_testkit::zone;
-use support::{capture, pick, prove};
 
 fn denials(message: &Message<'static>) -> Vec<Record<'static>> {
     message
@@ -27,7 +26,7 @@ fn denials(message: &Message<'static>) -> Vec<Record<'static>> {
 /// the name does not exist, and 06 sees it was not an NXDOMAIN.
 #[test]
 fn nxname_is_a_name_error() {
-    let message = capture("nxname_cloudflare");
+    let message = response("nxname_cloudflare");
     assert_eq!(message.rcode(), Rcode::NOERROR);
     let proof = prove(
         "cloudflare.com.",
@@ -51,7 +50,7 @@ fn nxname_is_a_name_error() {
 /// §3.2: the NSEC at `cloudflare.com.` lists its types, and no SRV: no data.
 #[test]
 fn compact_no_data_is_no_data() {
-    let message = capture("nodata_compact");
+    let message = response("nodata_compact");
     let records = denials(&message);
     let proof = prove(
         "cloudflare.com.",
@@ -75,7 +74,7 @@ fn compact_no_data_is_no_data() {
 /// §3.5, §9: NXNAME is not a type to answer: the question is refused with EDE 30 before any record is read.
 #[test]
 fn nxname_is_not_a_question() {
-    let message = capture("nxname_cloudflare");
+    let message = response("nxname_cloudflare");
     let refused = prove(
         "cloudflare.com.",
         "nonexistent.cloudflare.com.",

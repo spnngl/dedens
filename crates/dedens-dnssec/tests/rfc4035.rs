@@ -6,9 +6,8 @@
 //! Appendix A, `testdata/zones/rfc4035_appendix_a.zone` (D74).
 
 mod common;
-#[path = "common/denial.rs"]
-mod support;
 
+use common::denial::{nsec, pick, prove, prove_wildcard};
 use common::{check, name, rrset, rrset_in, rrsig_set};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
@@ -16,7 +15,6 @@ use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{Record, RecordType, Ttl};
 use dedens_testkit::dnssec::{RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rrsig, dnskey_rdata};
 use dedens_testkit::zone;
-use support::{nsec, pick, prove, prove_wildcard};
 
 // 2004-04-09T18:36:19Z and 2004-05-09T18:36:19Z.
 const INCEPTION: u32 = 1_081_535_779;
