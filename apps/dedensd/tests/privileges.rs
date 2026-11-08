@@ -2,8 +2,9 @@
 //! followed, a no-op when the process already is that user, and, started as root on Linux, ends up as the user with
 //! no capability left in any thread while it serves on :53 and reloads.
 //!
-//! The last test needs Linux and root, and is `#[ignore]`d: `sudo -E cargo test -p dedensd --test tests --
-//! --ignored privileges::` (or in a root container). It skips with a message anywhere else.
+//! The last test needs Linux and root, and is `#[ignore]`d: `sudo -E env "PATH=$PATH" cargo test -p dedensd --test
+//! tests -- --ignored privileges::` (`sudo` resets the PATH), or in a root container. It skips with a message
+//! anywhere else.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt as _;

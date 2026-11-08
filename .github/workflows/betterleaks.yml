@@ -1,4 +1,4 @@
-# Secret scanning of the git history, findings in code scanning.
+# Secret scanning of the git history, on each pull request and by hand; findings in code scanning.
 name: betterleaks
 
 on:

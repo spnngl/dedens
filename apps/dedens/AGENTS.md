@@ -2,19 +2,5 @@
 
 The dig-like CLI (D18, D32, D33): a thin binary over `dedens-net` and `dedens-scenario`, errors through `anyhow`.
 
-- `src/args.rs`: dig's tokens turned into long flags, then clap; the words turned into names and types.
-- `src/run/mod.rs`: the queries of the command line or of a query file, asked concurrently on one compio runtime,
-  each printed in order as soon as it is ready (D32); the exit code. `run/server.rs`: the servers they go to, from
-  the command line or `resolv.conf`.
-- `src/output.rs`: `Format`: human (default), short, JSON and YAML outputs of a `dedens_scenario::Report` (D37).
-- `src/idn.rs`: Unicode names to A-labels, mixed-script warnings.
-- `src/validate.rs`: `+validate` (D76), the glue over `dedens_dnssec::Validator`: asks each question it wants of the
-  server of the query, chases a CNAME chain, builds the report's `dnssec` (a secure response is shown as `covered`); `DEDENS_NOW` is its clock.
-- `src/trace.rs`: `+trace` (D40), from the bundled `src/named.root`, which `just root-hints` refreshes.
-- `tests/tests.rs`: one test binary, a module per topic (D162): `output.rs`, `options.rs`, `transports.rs`,
-  `files.rs`, `trace.rs` and `validate.rs` run the binary against `dedens_testkit::responder`, a UDP and TCP (or TLS,
-  QUIC, HTTP/3 or CoAP) loopback server answering with the captured responses of `testdata/proto`; `odoh.rs`
-  `+odoh-proxy` (D79) against its loopback target, with the `odoh` feature; `providers.rs` the file of public
-  resolvers. Insta snapshots in `tests/snapshots/`, named `tests__<module>__<name>`, accepted with
-  `INSTA_UPDATE=always` after review. `DEDENS_RESOLV_CONF` points the binary at a test `resolv.conf`. The loopback server also serves the captures of
-  `testdata/dnssec`, which `+validate` is tested with at their `captured_at` (`DEDENS_NOW`).
+- The tests run the binary against `dedens_testkit::responder`. `DEDENS_RESOLV_CONF` points it at a test
+  `resolv.conf`; `DEDENS_NOW` sets the clock of `+validate`, the `captured_at` of `testdata/dnssec/`.

@@ -3,7 +3,8 @@
 //! A [`Message`](crate::Message) holds the OPT record as an [`Edns`] value, not among its records (D8). A typed
 //! option (D12) with a type of its own has a file named after it; NSID, keepalive and padding are arms of
 //! [`EdnsOption`]'s decode and encode (D159). Every other option, and an option whose content is invalid, stays
-//! [`EdnsOption::Unknown`].
+//! [`EdnsOption::Unknown`]; a message decoded with an invalid one records a
+//! [`Violation::InvalidOption`](crate::Violation::InvalidOption) (D9).
 
 mod cookie;
 mod ede;

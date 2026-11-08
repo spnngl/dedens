@@ -1,8 +1,8 @@
 # dédéns
 
 DNS library, the dig-like CLI `dedens` and the server `dedensd`. Write the ASCII `dedens` wherever "é" is not
-allowed. [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the crates and documents; each folder's `AGENTS.md` says what
-it holds.
+allowed. [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the crates and documents; the `//!` docs say what each module
+holds; a folder's `AGENTS.md` holds what its code cannot say: invariants, traps, where a change must also go.
 
 Read `docs/decisions.md` before any task. Record a new or changed decision there in the same change as the code,
 under a new number; mark a replaced one superseded, and name an amendment in both headers
@@ -21,7 +21,9 @@ present; anything worth keeping goes to `docs/`.
   implementing one. When an RFC section lands, update its row in `docs/rfc/coverage.md` in the same change (`repo.rs`
   checks the row's paths, and that each RFC a test file cites in its module docs has a row naming it).
   A package's integration tests are one binary, `tests/tests.rs`, a module per topic citing its RFCs and sections in
-  its docs; a new test of an RFC section starts with it (`s4_1_4_...`) (D162).
+  its docs; a new test of an RFC section starts with it (`s4_1_4_...`) (D162). Its insta snapshots are in
+  `tests/snapshots/`, named `tests__<module>__<test>`; after a review, accept a change with
+  `INSTA_UPDATE=always cargo test -p <package>`.
 - Test data is real: captured responses and RFC example zones, never invented bytes. A parser of outside data
   gets a fuzz target. A performance claim gets a bench, recorded in `docs/benchmarks.md`.
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the

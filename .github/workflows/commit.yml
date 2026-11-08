@@ -1,5 +1,5 @@
-# Every commit of a pull request follows Conventional Commits (AGENTS.md,
-# "Rules").
+# Every commit of a pull request follows Conventional Commits (AGENTS.md, "Rules"): checked when the pull request
+# opens, gets commits or is edited.
 name: conventional-commits
 
 on:

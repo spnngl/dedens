@@ -1,6 +1,6 @@
 name: renovate
 
-# Validates renovate.json5 when it or this workflow changes.
+# Validates renovate.json5 when a pull request or a push to main changes it or this workflow.
 on:
   push:
     branches:
