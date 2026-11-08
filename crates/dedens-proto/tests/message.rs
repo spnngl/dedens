@@ -372,10 +372,12 @@ fn truncated(message: &Message<'_>, size: usize) -> (Message<'static>, bool) {
     assert!(encoded.len <= size);
     let decoded = Message::decode(&buf[..encoded.len]).expect("a decodable message");
     assert_eq!(decoded.violations, []);
-    assert_eq!(
-        decoded.message.header.flags.contains(Flags::TC),
-        encoded.truncated
-    );
+    // TC joins the flags of the message, which stay with its opcode and rcode (RFC 1035 §4.1.1).
+    let mut header = message.header;
+    if encoded.truncated {
+        header.flags = header.flags.with(Flags::TC);
+    }
+    assert_eq!(decoded.message.header, header);
     (decoded.message.into_owned(), encoded.truncated)
 }
 
