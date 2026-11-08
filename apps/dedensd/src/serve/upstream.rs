@@ -176,3 +176,113 @@ fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
         frame(wire)
     }
 }
+
+// The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
+#[cfg(test)]
+#[cfg(not(dedens_loom))]
+mod tests {
+    use std::cell::Cell;
+    use std::net::IpAddr;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use compio::BufResult;
+    use compio::net::UdpSocket;
+    use compio::runtime::{Runtime, spawn};
+    use dedens_net::tls::Trust;
+    use dedens_proto::{Message, Rcode, Transport};
+    use dedens_server::{Pipeline, Server, Step, Via};
+
+    use super::{answer, target};
+    use crate::lists::Store;
+    use crate::reload::Current;
+    use crate::serve::tests::example_com_a;
+    use crate::serve::{Thread, now};
+
+    /// D42: a server that fails on our side, here a QUIC one at an unspecified address, which QUIC will not dial,
+    /// gives the query up with SERVFAIL, the next server not asked; a server that does not answer passes the query
+    /// to the next.
+    #[test]
+    fn a_local_failure_gives_up_where_a_silent_server_passes_on() {
+        let (query, response) = example_com_a();
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let responder = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let next = responder.local_addr().expect("its address");
+            let asked = Rc::new(Cell::new(0));
+            let counted = Rc::clone(&asked);
+            spawn(async move {
+                loop {
+                    let BufResult(received, request) =
+                        responder.recv_from(Vec::with_capacity(512)).await;
+                    let Ok((_, peer)) = received else { return };
+                    counted.set(counted.get() + 1);
+                    let mut reply = response.clone();
+                    reply[..2].copy_from_slice(&request[..2]);
+                    if responder.send_to(reply, peer).await.0.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
+            for (first, rcode, asked_next) in [
+                ("quic://0.0.0.0", Rcode::SERVFAIL, 0),
+                ("192.0.2.1", Rcode::NOERROR, 1),
+            ] {
+                asked.set(0);
+                let text = format!(
+                    "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{first}', '{next}']\n    timeout_ms: 200\n    tries: 1\n"
+                );
+                let config = crate::config::read(
+                    &text,
+                    |_| None,
+                    &Pipeline::default(),
+                    &mut Store::default(),
+                )
+                .expect("read");
+                let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
+                let pipeline = thread.pipeline();
+                let mut out = vec![0; 65535];
+                let from = IpAddr::from([127, 0, 0, 1]);
+                let Step::Upstream(upstream) =
+                    pipeline.query(&query, Transport::Udp, from, now(), &mut out)
+                else {
+                    panic!("asked upstream")
+                };
+                let mut replies = Vec::new();
+                answer(&thread, &pipeline, upstream, Transport::Udp, async |reply| {
+                    replies.push(reply);
+                })
+                .await;
+                let [reply] = &replies[..] else {
+                    panic!("one reply after {first}: {replies:?}")
+                };
+                let reply = Message::decode(reply).expect("decodes").message;
+                assert_eq!((reply.rcode(), asked.get()), (rcode, asked_next), "{first}");
+            }
+        });
+    }
+
+    /// D65: a plain server is asked over UDP for a client over UDP and over TCP for one over a connection; another
+    /// is asked over its own transport whatever the client's.
+    #[test]
+    fn a_plain_server_is_asked_over_the_clients_transport() {
+        let plain = Server {
+            addr: ([192, 0, 2, 1], 53).into(),
+            via: Via::Plain,
+        };
+        let tls = Server {
+            addr: ([192, 0, 2, 1], 853).into(),
+            via: Via::Tls(None),
+        };
+        for (client, plain_over) in [
+            (Transport::Udp, Transport::Udp),
+            (Transport::Tcp, Transport::Tcp),
+            (Transport::Tls, Transport::Tcp),
+            (Transport::Https, Transport::Tcp),
+        ] {
+            assert_eq!(target(&plain, client).1, plain_over, "{client:?}");
+            assert_eq!(target(&tls, client).1, Transport::Tls, "{client:?}");
+        }
+    }
+}

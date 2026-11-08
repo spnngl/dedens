@@ -1,6 +1,7 @@
 //! What the server says of itself: its `tracing` events on stderr, as JSON or text (D30), and the start's
 //! "serving" event with the driver its threads run on, warning of `poll` on Linux (D107).
 
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
 
 use clap::ValueEnum;
@@ -17,20 +18,32 @@ pub(crate) enum LogFormat {
 
 /// Prints `tracing` events on stderr, in `format`: info, debug with `-v`, trace with `-vv` (D30).
 pub(crate) fn diagnostics(verbose: u8, format: LogFormat) {
-    let level = match verbose {
-        0 => tracing::Level::INFO,
-        1 => tracing::Level::DEBUG,
-        _ => tracing::Level::TRACE,
-    };
     let events = tracing_subscriber::fmt()
-        .with_max_level(level)
+        .with_max_level(level(verbose))
         .with_writer(io::stderr);
     match format {
         LogFormat::Json => events.json().init(),
         LogFormat::Text => events
-            .with_ansi(io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+            .with_ansi(colored(
+                io::stderr().is_terminal(),
+                std::env::var_os("NO_COLOR").as_deref(),
+            ))
             .init(),
     }
+}
+
+/// The most detailed events printed for `verbose`, the count of `-v`: info, debug with `-v`, trace with `-vv`.
+fn level(verbose: u8) -> tracing::Level {
+    match verbose {
+        0 => tracing::Level::INFO,
+        1 => tracing::Level::DEBUG,
+        _ => tracing::Level::TRACE,
+    }
+}
+
+/// Whether text events are coloured: on a `terminal`, unless `NO_COLOR` is set, to any value.
+fn colored(terminal: bool, no_color: Option<&OsStr>) -> bool {
+    terminal && no_color.is_none()
 }
 
 /// Logs that the server is serving `listen`, on the `drivers` of its threads, and warns of a driver that is a loss.
@@ -92,9 +105,31 @@ impl Driver {
 
 #[cfg(test)]
 mod tests {
-    use compio::driver::DriverType::{IoUring, Poll};
+    use std::ffi::OsStr;
 
-    use super::Driver;
+    use compio::driver::DriverType::{IoUring, Poll};
+    use tracing::Level;
+
+    use super::{Driver, colored, level};
+
+    /// Info by default, debug with `-v`, trace with `-vv` or more.
+    #[test]
+    fn each_v_prints_more_detail() {
+        let levels: Vec<_> = (0..=3).map(level).collect();
+        assert_eq!(
+            levels,
+            [Level::INFO, Level::DEBUG, Level::TRACE, Level::TRACE]
+        );
+    }
+
+    /// Text is coloured on a terminal only, and not even there once `NO_COLOR` is set.
+    #[test]
+    fn text_is_coloured_on_a_terminal_without_no_color() {
+        assert!(colored(true, None));
+        assert!(!colored(false, None));
+        assert!(!colored(true, Some(OsStr::new("1"))));
+        assert!(!colored(false, Some(OsStr::new("1"))));
+    }
 
     /// D107: a Linux server on `poll` warns, a server on `io_uring` or elsewhere does not; the threads' drivers are
     /// one name, `mixed` when they differ, `none` without threads.

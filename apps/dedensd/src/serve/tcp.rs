@@ -132,7 +132,7 @@ async fn connection(
     // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
     let (pending, done) = flume::bounded::<()>(TCP_PENDING);
     'read: loop {
-        while replies.queued.get() > TCP_QUEUED {
+        while replies.full() {
             if wait_room.recv_async().await.is_err() {
                 break 'read;
             }
@@ -190,6 +190,11 @@ impl Replies {
     fn push(&self, wire: &[u8]) -> bool {
         // A reply fits 65535 bytes.
         frame(wire).is_none_or(|framed| self.queue(framed))
+    }
+
+    /// Whether more than [`TCP_QUEUED`] bytes wait for the writer: reading waits (RFC 7766 §10).
+    fn full(&self) -> bool {
+        self.queued.get() > TCP_QUEUED
     }
 
     /// Queues `framed`, a reply behind its length, as [`Replies::push`] does.
@@ -354,15 +359,18 @@ mod tests {
             }
             let total = 200 * 1002;
             assert_eq!(replies.queued.get(), total);
+            assert!(replies.full());
             // A batch takes replies until it holds 65535 bytes, 66 of them: the first write leaves more than
             // 128 KiB queued, the second not.
             open.send(()).expect("open");
             compio::time::sleep(Duration::from_millis(50)).await;
             assert!(wait_room.is_empty());
             assert_eq!(replies.queued.get(), total - 66 * 1002);
+            assert!(replies.full());
             open.send(()).expect("open");
             wait_room.recv_async().await.expect("room");
             assert!(replies.queued.get() <= TCP_QUEUED);
+            assert!(!replies.full());
             for _ in 0..2 {
                 open.send(()).expect("open");
             }
@@ -373,5 +381,51 @@ mod tests {
                 [66 * 1002, 66 * 1002, 66 * 1002, 2 * 1002]
             );
         });
+    }
+
+    /// A batch takes no reply more once it holds a message's size: five replies of 65535 bytes in all, behind their
+    /// lengths, go out together, the sixth after.
+    #[test]
+    fn a_batch_of_a_message_size_takes_no_more() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let (sender, queue) = flume::unbounded();
+            let replies = Replies {
+                sender,
+                queued: Rc::default(),
+            };
+            let (room, _wait_room) = flume::bounded(1);
+            let (open, gate) = flume::unbounded();
+            let batches = Rc::default();
+            let writer = Gated {
+                gate,
+                batches: Rc::clone(&batches),
+            };
+            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let reply = vec![0; 13105];
+            for _ in 0..6 {
+                assert!(replies.push(&reply));
+            }
+            for _ in 0..2 {
+                open.send(()).expect("open");
+            }
+            drop(replies);
+            writing.await.expect("the writer ends");
+            assert_eq!(*batches.borrow(), [5 * 13107, 13107]);
+        });
+    }
+
+    /// D47: reading waits once more than 128 KiB of replies are queued, not at 128 KiB.
+    #[test]
+    fn reading_waits_past_128_kib_queued() {
+        let (sender, _queue) = flume::unbounded();
+        let replies = Replies {
+            sender,
+            queued: Rc::default(),
+        };
+        assert!(replies.queue(vec![0; TCP_QUEUED]));
+        assert!(!replies.full());
+        assert!(replies.queue(vec![0]));
+        assert!(replies.full());
     }
 }

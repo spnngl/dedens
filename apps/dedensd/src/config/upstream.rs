@@ -376,6 +376,7 @@ mod tests {
         };
         assert!(!validates(MINIMAL));
         assert!(!validates(&format!("{MINIMAL}    dnssec: off\n")));
+        assert!(!validates(&format!("{MINIMAL}    dnssec: 'off'\n")));
         assert!(validates(&format!("{MINIMAL}    dnssec: validate\n")));
         assert!(validates(&format!(
             "{MINIMAL}    dnssec: validate\n    insecure: [corp.example, internal]\n"

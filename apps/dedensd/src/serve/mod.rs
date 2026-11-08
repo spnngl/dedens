@@ -446,7 +446,7 @@ fn now() -> u32 {
 #[cfg(not(dedens_loom))]
 mod tests {
     use std::cell::Cell;
-    use std::net::SocketAddr;
+    use std::net::{IpAddr, SocketAddr};
     use std::pin::pin;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -459,8 +459,8 @@ mod tests {
     use compio::runtime::{Runtime, spawn};
     use dedens_net::tcp::{frame, read_message};
     use dedens_net::tls::Trust;
-    use dedens_proto::{Message, Question, Rcode, RecordType};
-    use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage};
+    use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
+    use dedens_server::{Answer, Forward, Pipeline, Plugin, Reviewer, Stage, Step};
     use futures_util::future::select;
     use metrics_util::debugging::DebuggingRecorder;
     use socket2::{Domain, Socket, Type};
@@ -470,13 +470,31 @@ mod tests {
     use super::tcp::{TCP_PENDING, tcp};
     use super::udp::{Outbox, udp};
     use super::{
-        Slots, Thread, UPSTREAM_QUERIES, first_end, follow, runtime, runtime_on, supervised_with,
+        Slots, Started, Thread, UPSTREAM_QUERIES, first_end, follow, now, runtime, runtime_on,
+        socket, start, supervised_with,
     };
     use crate::lists::Store;
     use crate::reload::Current;
 
     pub(super) fn udp_listener() -> Listener {
         Listener::new("udp", Some(SocketAddr::from(([127, 0, 0, 1], 53))))
+    }
+
+    /// A query for `example.com` A, ID 7, and the response captured from 1.1.1.1 (`dedens-proto`'s `a.bin`).
+    pub(super) fn example_com_a() -> (Vec<u8>, Vec<u8>) {
+        let response = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/dedens-proto/tests/testdata/a.bin"
+        ))
+        .expect("a captured response");
+        let question = Message::decode(&response)
+            .expect("decodes")
+            .message
+            .questions
+            .swap_remove(0)
+            .into_owned();
+        let query = Message::query(7, question).to_vec().expect("a query fits");
+        (query, response)
     }
 
     #[test]
@@ -487,6 +505,52 @@ mod tests {
         let bound = super::local(&socket).expect("its address");
         assert_eq!(bound.ip(), asked.ip());
         assert_ne!(bound.port(), 0);
+    }
+
+    /// A TCP listener reuses its address, so that a restarted server binds while the last one's connections wait
+    /// out `TIME_WAIT`; a UDP socket has nothing to wait out.
+    #[test]
+    fn a_tcp_socket_reuses_its_address() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let tcp = socket(addr, Type::STREAM).expect("a TCP socket");
+        assert!(tcp.reuse_address().expect("read"));
+        let udp = socket(addr, Type::DGRAM).expect("a UDP socket");
+        assert!(!udp.reuse_address().expect("read"));
+    }
+
+    /// A cache hit that asks for a prefetch is sent to the client, then asked upstream in a place of the thread's
+    /// upstream queries: the captured response of `example.com` A, cached a second ago, is past
+    /// `prefetch_percent: 100`.
+    #[test]
+    fn a_hit_to_prefetch_is_sent_then_asked_upstream() {
+        let text = "listen: ['127.0.0.1:53']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    prefetch_percent: 100\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        let config =
+            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
+                .expect("read");
+        let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
+        let pipeline = thread.pipeline();
+        let (query, response) = example_com_a();
+        let from = IpAddr::from([127, 0, 0, 1]);
+        let mut out = vec![0; 65535];
+        let cached_at = now();
+        let Step::Upstream(upstream) =
+            pipeline.query(&query, Transport::Tcp, from, cached_at, &mut out)
+        else {
+            panic!("a miss")
+        };
+        let step = pipeline.receive(upstream, Some(&response), cached_at, &mut out);
+        assert!(matches!(step, Step::Reply(_)), "{step:?}");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while now() == cached_at && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut sent = 0;
+        let started = start(&thread, &pipeline, &query, Transport::Tcp, from, |_| {
+            sent += 1;
+            true
+        });
+        assert_eq!(sent, 1, "the cached reply");
+        assert!(matches!(started, Some(Started::Upstream(..))));
     }
 
     #[test]
