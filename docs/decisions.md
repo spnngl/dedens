@@ -2817,22 +2817,29 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     come and answers each in a task of its own, as the pool pipelines (RFC 7766 §6.2.1.1); a TCP query to a
     host that does not answer ends in `TcpError::Connect(TimedOut)` at the pool's idle timeout (`docs/TODECIDE.md`);
     the IDs are drawn in another order, which changed some fixed seeds.
-- D164 (amends D133; builds on D103) D133's time budget is measured, outside the gate: `just sim-time` times each
-  family of `dedens-sim`'s `tests` binary run alone (the filter `<family>::`, its tests on the harness's threads),
-  then the binary whole, in `just check`'s build under the fixed seeds, and fails when a family takes over 2 s or the
-  binary over 10 s. The gate's build is `cargo test --workspace --all-features`, whose features unify over the
-  workspace (`dedens-bench`'s `metrics` turns on the cache's counters): `-p dedens-sim` alone would time other code,
-  where the workspace's build reuses the gate's artifacts. The crate's time is the binary's: `src/`'s unit tests take
-  milliseconds. The binary runs once (`--list`) before the timings: macOS checks a new executable on its first run,
-  0.5 s and more. Wall time is the machine's and its load's, so a gate on it would fail on a slower or busier one;
-  the `sim-time` job of `deep.yml` runs the recipe on each pull request, informational as `mutants` (D103).
+- D164 (amends D133; builds on D103; amended by D165) D133's time budget is measured, outside the gate: `just
+  sim-time` times each family of `dedens-sim`'s `tests` binary run alone (the filter `<family>::`, its tests on the
+  harness's threads), then the binary whole, in `just check`'s build under the fixed seeds, and fails when a family
+  takes over 2 s or the binary over 10 s. The gate's build is `cargo test --workspace --all-features`, whose
+  features unify over the workspace (`dedens-bench`'s `metrics` turns on the cache's counters): `-p dedens-sim` alone
+  would time other code, where the workspace's build reuses the gate's artifacts. The crate's time is the binary's:
+  `src/`'s unit tests take milliseconds. The binary runs once (`--list`) before the timings: macOS checks a new
+  executable on its first run, 0.5 s and more. Wall time is the machine's and its load's, so a gate on it would fail
+  on a slower or busier one; the `sim-time` job of `deep.yml` runs the recipe on each pull request, informational as `mutants` (D103).
   - First measure (Apple M5, `docs/benchmarks.md`): `dnssec` took 3.2 s, the others 0.06 to 1.6 s, the binary
     7.2 s. Its two shed scenarios ran seed 0 and the two seeds that had failed one of them, the client-share one 2.8 s
     alone; each now runs the seed that failed it: `dnssec` 1.9 s, the binary 6.6 s. The module is near its
-    floor, its tests at one seed setting it (`docs/TODECIDE.md`).
+    floor, its tests at one seed setting it (D165).
   - `benches/driver.rs` (divan) times the driver: a run whose one query is answered, its fixed cost, and one whose
     upstream server is silent, six simulated seconds that turmoil steps a millisecond at a time. The silent run's
     median moves by 1% between runs, where the families' wall times move with the load. The scenarios stay `#[test]`s of
     `tests/`: a bench of each family's would need them in `src/`, or a family included by `#[path]`, its tests gone
     outside the harness and its helpers dead code.
   - Rejected: a timeout per test in the gate (the machine's speed again); libtest's `--report-time` (nightly).
+- D165 (amends D164; builds on D133, D162) A family over its 2 s budget with no fixed seed left to cut splits in
+  two: two modules of `dedens-sim`'s `tests` binary, each timed by `just sim-time` and run by a `sim` job of its own
+  (`deep.yml` lists the binary's modules). `dnssec` is the first at its floor (D164): when `just sim-time` puts it
+  over, its limit scenarios (`a_query_past_*`, `a_client_over_its_share_*`, D117's allowance and shares) go to a
+  second family, `dnssec_limits` (`limits` is taken), and the verdicts and the cache stay in `dnssec`.
+  Until then it stays one module. Rejected: a smaller scenario (D133 cuts seeds, never the scenario); a split ahead
+  of the measure (two modules to keep for a family still within its budget).
