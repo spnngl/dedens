@@ -225,7 +225,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
   file. The CMS signature of §3.2 is not checked: the file and its `.p7s` come from the same site, so the
   check proves nothing the HTTPS fetch does not; the test is that every bundled DS matches a key of the
-  captured root DNSKEY RRset (`tests/rfc9718.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
+  captured root DNSKEY RRset (`tests/anchor.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
   anchors are zone text read by `ZoneReader` (the parser the fuzz targets already feed, so no new target), as
   Unbound's `trust-anchor-file`: absolute owners, class IN only, TTL defaulted to 0, DS and DNSKEY only (a CDS
   or CDNSKEY is not an anchor), no `$INCLUDE` (the library reads no file), at least one record (an empty set
@@ -285,11 +285,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   that list says where compression pointers may occur (RFC 3597 §4), and DNAME and KX are not in it.
   `WireRdata::wire` (`dedens-proto`) returns the RDATA uncompressed for it. Tests: RFC examples and the 00b
   captures, every signed `RRset` of them verifies, and fails 1 s after expiration, 1 s before inception and
-  with a byte of RDATA flipped (`tests/captured_rrsig.rs`); `benchmarks.md` has the cost of a whole `verify`;
+  with a byte of RDATA flipped (`tests/rrsig.rs`); `benchmarks.md` has the cost of a whole `verify`;
   the fuzz target `rrsig_verify` runs the grouping, `verify_any` and `trusted_keys` over the records of any
   message and asserts that no input makes data insecure. RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for
   `example.com.`, which has 2: as an `RRset` it is `BadLabels` (RFC 4035 §5.3.1), and `crypto` checks the
-  signature over its bytes (`tests/rfc8080.rs`).
+  signature over its bytes (`tests/algorithms.rs`).
 - D74 (amends D69; amended by D106) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3
   records the caller verified, each signed by the zone's `apex` (step 06 checks; this trusts them and the module docs list
   what it owes). `prove` answers a question that got a name error, no data or a referral, `prove_wildcard_answer` one
@@ -2191,7 +2191,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `budget.rs`,
     `the_debt_of_queries_in_flight_is_at_most_a_burst` and `a_flood_in_flight_asks_no_more_than_the_burst_allows` in
     `dedens-server/tests/limits.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
-    `dedens-dnssec/tests/rfc5155.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
+    `dedens-dnssec/tests/denial.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
     `crypto/budget.rs` (block boundaries, the paid hash).
 
 - D111 (amends D41) `Pipeline::receive` checks each upstream response against the question sent, as `dedens-net`

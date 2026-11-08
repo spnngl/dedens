@@ -15,7 +15,7 @@ validator does not (RFC 5155 §9.2): the rows say Insecure (opt-out) where it is
 types stay, keys, signatures and denial records change. To test the window alone, give a Secure capture a "now"
 before its inception or after its expiration: Bogus.
 
-`ids` below are file names; `<zone>` is the zone's name with `_` for `.`. `crates/dedens-dnssec/tests/captured.rs`
+`ids` below are file names; `<zone>` is the zone's name with `_` for `.`. `crates/dedens-dnssec/tests/validator.rs`
 reads the set.
 
 ## Chain of trust

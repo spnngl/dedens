@@ -5,10 +5,10 @@ use dedens_dnssec::denial::{self, MaxIterations, Proof, Unproven};
 use dedens_proto::rdata::{Nsec, Nsec3, RData, TypeBitmap};
 use dedens_proto::{Class, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
 
-use crate::common::name;
+use crate::util::name;
 
 /// The records of type `rtype` owned by one of `owners`: what a response would carry.
-pub fn pick(
+pub(crate) fn pick(
     records: &[Record<'static>],
     rtype: RecordType,
     owners: &[&str],
@@ -22,7 +22,7 @@ pub fn pick(
 }
 
 /// Asks for the proof of `qname` and `qtype` in the zone `apex` with the default limit and budget.
-pub fn prove(
+pub(crate) fn prove(
     apex: &str,
     qname: &str,
     qtype: RecordType,
@@ -38,7 +38,7 @@ pub fn prove(
 }
 
 /// Asks for the proof that `qname`, answered with an RRSIG of `labels` labels, came from a wildcard.
-pub fn prove_wildcard(
+pub(crate) fn prove_wildcard(
     apex: &str,
     qname: &str,
     labels: u8,
@@ -55,7 +55,7 @@ pub fn prove_wildcard(
 }
 
 /// An NSEC record of the example zone, `owner` to `next`, with the types of `types`.
-pub fn nsec(owner: &str, next: &str, types: &[RecordType]) -> Record<'static> {
+pub(crate) fn nsec(owner: &str, next: &str, types: &[RecordType]) -> Record<'static> {
     let data = Nsec {
         next: name(next),
         types: TypeBitmap::from_types(types.iter().copied()),
@@ -69,7 +69,7 @@ pub fn nsec(owner: &str, next: &str, types: &[RecordType]) -> Record<'static> {
 }
 
 /// `record`, an NSEC3, with another hash algorithm, flags and iterations.
-pub fn nsec3_with(
+pub(crate) fn nsec3_with(
     record: &Record<'static>,
     algorithm: Nsec3HashAlgorithm,
     flags: u8,
@@ -94,7 +94,7 @@ pub fn nsec3_with(
 }
 
 /// `record`, an NSEC3, made with another salt.
-pub fn nsec3_salted(record: &Record<'static>, salt: &[u8]) -> Record<'static> {
+pub(crate) fn nsec3_salted(record: &Record<'static>, salt: &[u8]) -> Record<'static> {
     let n = nsec3(record);
     let n = Nsec3::new(
         n.hash_algorithm,
@@ -114,7 +114,7 @@ pub fn nsec3_salted(record: &Record<'static>, salt: &[u8]) -> Record<'static> {
 }
 
 /// The NSEC3 RDATA of `record`.
-pub fn nsec3(record: &Record<'static>) -> Nsec3<'static> {
+pub(crate) fn nsec3(record: &Record<'static>) -> Nsec3<'static> {
     match record.data() {
         RData::Nsec3(n) => Some(n.into_owned()),
         _ => None,

@@ -2,23 +2,17 @@
 //! on code under test. The examples themselves and the data an RRSIG signs (RFC 4034 §3.1.8.1) are in
 //! `dedens_testkit::dnssec`.
 
-#![allow(
-    dead_code,
-    unreachable_pub,
-    reason = "each test crate uses a subset of a shared module"
-)]
-
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature, Verified};
 use dedens_proto::{MAX_NAME_LEN, Message, Name, Record};
 use dedens_testkit::dnssec::{Rrsig, b64, canonical_name};
 
-pub mod denial;
+pub(crate) mod denial;
 
 // spellchecker:off
 /// RFC 4034 §5.4: the key of `dskey.example.com.` (algorithm 5, key tag 60485), the DNSKEY that RFC 4034 and
 /// RFC 4509 give a DS for.
-pub const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
+pub(crate) const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
     fwJr1AYtsmx3TGkJaNXVbfi/
     2pHm822aJ5iI9BMzNXxeYCmZ
     DRD99WYwYqUSdjMmmAphXdvx
@@ -29,13 +23,13 @@ pub const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
 // spellchecker:on
 
 /// A name in presentation format.
-pub fn name(text: &str) -> Name<'static> {
+pub(crate) fn name(text: &str) -> Name<'static> {
     text.parse().expect("a name")
 }
 
 /// The records of one owner and type, class IN, as a decoder reads them from the answer of a message built by
 /// hand with `rdatas` as given (names inside them in any case): none when the message does not decode cleanly.
-pub fn try_records(
+pub(crate) fn try_records(
     owner: &str,
     rtype: u16,
     ttl: u32,
@@ -45,7 +39,7 @@ pub fn try_records(
 }
 
 /// [`try_records`] of class `class` (1 is IN).
-pub fn try_records_in(
+pub(crate) fn try_records_in(
     class: u16,
     owner: &str,
     rtype: u16,
@@ -83,12 +77,17 @@ pub fn try_records_in(
 }
 
 /// [`try_records`] of RDATA that decodes.
-pub fn records(owner: &str, rtype: u16, ttl: u32, rdatas: &[Vec<u8>]) -> Vec<Record<'static>> {
+pub(crate) fn records(
+    owner: &str,
+    rtype: u16,
+    ttl: u32,
+    rdatas: &[Vec<u8>],
+) -> Vec<Record<'static>> {
     try_records(owner, rtype, ttl, rdatas).expect("decodes without a violation")
 }
 
 /// Whether `sigs` sign `rrset` under `keys` at `now`, with the default budget.
-pub fn check(
+pub(crate) fn check(
     rrset: &RrSet<'_>,
     sigs: &RrSet<'_>,
     keys: &RrSet<'_>,
@@ -104,20 +103,20 @@ pub fn check(
 }
 
 /// An `RRset` of class `class` (1 is IN), as [`rrset`].
-pub fn rrset_in(class: u16, owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
+pub(crate) fn rrset_in(class: u16, owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
     let records = try_records_in(class, owner, rtype, 3600, rdatas).expect("decodes");
     RrSet::group(&records).pop().expect("one RRset")
 }
 
 /// An `RRset` of the records `rdatas` at `owner`, TTL 3600.
-pub fn rrset(owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
+pub(crate) fn rrset(owner: &str, rtype: u16, rdatas: &[Vec<u8>]) -> RrSet<'static> {
     RrSet::group(&records(owner, rtype, 3600, rdatas))
         .pop()
         .expect("one RRset")
 }
 
 /// The RRSIG record of `rrsig` over `owner`'s `RRset`, with its signature in base64, as an `RRset` (TTL 3600).
-pub fn rrsig_set(owner: &str, rrsig: &Rrsig<'_>, signature: &str) -> RrSet<'static> {
+pub(crate) fn rrsig_set(owner: &str, rrsig: &Rrsig<'_>, signature: &str) -> RrSet<'static> {
     let mut rdata = rrsig.type_covered.to_be_bytes().to_vec();
     rdata.extend([rrsig.algorithm, rrsig.labels]);
     rdata.extend(rrsig.original_ttl.to_be_bytes());
