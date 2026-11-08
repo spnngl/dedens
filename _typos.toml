@@ -16,7 +16,7 @@ extend-exclude = [
 ]
 [default]
 # RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:
-# the base64 keys and signatures of the RFC examples (`crates/dedens-dnssec/tests/common/mod.rs`).
+# the base64 keys and signatures of the RFC examples (`crates/dedens-dnssec/tests/util/mod.rs`).
 extend-ignore-re = [
   '\("fo", "(Zm8=|cpng)"\)',
   '(?s)//\s*spellchecker:off.*?//\s*spellchecker:on',
