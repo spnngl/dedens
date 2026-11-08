@@ -110,8 +110,10 @@ exclude_re = [
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run; Kani's harnesses, built only under `cfg(kani)` and checked by `just kani`
-# (D145).
+# (D145). The test kit, test code as `tests/` is, which cargo-mutants never mutates: its mutants would only show which
+# helpers the kit's own tests skip, the packages whose tests use it not being run for them (D161).
 exclude_globs = [
+  "crates/dedens-testkit/**",
   "apps/dedensd/src/sync/loom_slot.rs",
   "apps/dedensd/src/privileges/not_unix.rs",
   "crates/dedens-proto/src/proofs.rs",
