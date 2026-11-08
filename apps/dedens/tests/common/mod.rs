@@ -346,10 +346,10 @@ impl Responder {
 #[cfg(feature = "doc")]
 impl Responder {
     /// As [`Responder::start`], over CoAP only (RFC 9953), at `path`: the answers of the library's own server side
-    /// ([`dedens_net::coap::doc`]), the same `dedensd` serves with, `/.well-known/core` too (D95). Any other path gets 4.04.
+    /// ([`dedens_net::coap::dns`]), the same `dedensd` serves with, `/.well-known/core` too (D95). Any other path gets 4.04.
     pub(crate) fn coap(names: &[&str], path: &str) -> Self {
         use dedens_net::coap::Message;
-        use dedens_net::coap::doc::{Query, discovery, error, path_segments, query, response};
+        use dedens_net::coap::dns::{Query, discovery, error, path_segments, query, response};
 
         let (canned, path) = (canned(names), path_segments(path));
         let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");

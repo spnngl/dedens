@@ -18,7 +18,7 @@ use http::{HeaderValue, Request, Response, StatusCode};
 
 use super::{Kind, PROXY_STATUS, check_message, classify};
 use crate::doh;
-use crate::https::HttpsError;
+use crate::http3::Http3Error;
 use crate::quic::QuicError;
 
 /// The port of a target that gives none: HTTPS's (RFC 9230 §4.1 expects the standard port).
@@ -211,7 +211,7 @@ pub enum Route<P> {
 }
 
 /// The route and the query, the body of a request to a listener at `path` that is the proxy `proxy` too, if any, for
-/// [`Pending::read_with`](crate::https::Pending::read_with) (RFC 9230 §4.1).
+/// [`Pending::read_with`](crate::http3::Pending::read_with) (RFC 9230 §4.1).
 ///
 /// At `path`, a request whose query has `targethost` or `targetpath` is for the proxy, and any other is
 /// [`classify`]'s. The proxy's must be a POST of the oblivious media type with a body (405, 415, 400, 413 as
@@ -432,17 +432,17 @@ impl ProxyError {
     /// What `error` says about the exchange with the target, `connected` once the connection to it was up: a timeout
     /// is the connection's before, the response's after.
     #[must_use]
-    pub fn of(error: &HttpsError, connected: bool) -> Self {
+    pub fn of(error: &Http3Error, connected: bool) -> Self {
         match error {
-            HttpsError::TimedOut if connected => Self::HttpResponseTimeout,
-            HttpsError::TimedOut | HttpsError::Quic(QuicError::TimedOut) => Self::ConnectionTimeout,
-            HttpsError::Quic(QuicError::Connection(error)) => connection(error),
-            HttpsError::Quic(QuicError::Stream(_)) | HttpsError::Stream(_) => {
+            Http3Error::TimedOut if connected => Self::HttpResponseTimeout,
+            Http3Error::TimedOut | Http3Error::Quic(QuicError::TimedOut) => Self::ConnectionTimeout,
+            Http3Error::Quic(QuicError::Connection(error)) => connection(error),
+            Http3Error::Quic(QuicError::Stream(_)) | Http3Error::Stream(_) => {
                 Self::ConnectionTerminated
             }
-            HttpsError::Connection(_) | HttpsError::Response(_) => Self::HttpProtocolError,
-            HttpsError::TooLong => Self::HttpResponseBodySize,
-            HttpsError::Quic(_) | HttpsError::Request(_) => Self::ProxyInternalError,
+            Http3Error::Connection(_) | Http3Error::Response(_) => Self::HttpProtocolError,
+            Http3Error::TooLong => Self::HttpResponseBodySize,
+            Http3Error::Quic(_) | Http3Error::Request(_) => Self::ProxyInternalError,
         }
     }
 }
@@ -831,27 +831,27 @@ mod tests {
             ProxyInternalError,
         };
         let of = |error| ProxyError::of(&error, false);
-        assert_eq!(of(HttpsError::TimedOut), ConnectionTimeout);
+        assert_eq!(of(Http3Error::TimedOut), ConnectionTimeout);
         assert_eq!(
-            ProxyError::of(&HttpsError::TimedOut, true),
+            ProxyError::of(&Http3Error::TimedOut, true),
             HttpResponseTimeout
         );
         assert_eq!(HttpResponseTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(of(HttpsError::TooLong), HttpResponseBodySize);
+        assert_eq!(of(Http3Error::TooLong), HttpResponseBodySize);
         assert_eq!(
-            of(HttpsError::Quic(QuicError::Connection(
+            of(Http3Error::Quic(QuicError::Connection(
                 ConnectionError::TimedOut
             ))),
             ConnectionTimeout
         );
         assert_eq!(
-            of(HttpsError::Quic(QuicError::Connection(
+            of(Http3Error::Quic(QuicError::Connection(
                 ConnectionError::Reset
             ))),
             ConnectionTerminated
         );
         assert_eq!(
-            of(HttpsError::Quic(QuicError::Bind(io::Error::other(
+            of(Http3Error::Quic(QuicError::Bind(io::Error::other(
                 "no socket"
             )))),
             ProxyInternalError

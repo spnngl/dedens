@@ -19,7 +19,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D160 (builds on D1, D159) A library crate exports each public item at one path: its modules are private and
   `lib.rs` re-exports their public items at the root, one sorted `pub use` list, as ripgrep's `grep-*` crates.
   Exceptions, each a public module whose items are not re-exported: `dedens-net` keeps every module public, as
-  several of its items share a name (`Exchange` x3, `Options`, `Response`, `Failure`, `Link`); `dedens-proto` keeps
+  several of its items share a name (`Exchange` x2, `Options`, `Response`, `Failure`, `Link`); `dedens-proto` keeps
   `rdata` and `edns` (`rdata::RData`, `edns::Edns`; `edns::Option` would shadow `std`) and `dedens-dnssec` keeps
   `crypto`, `rrsig` and `denial`, families a reader names, and flattens `anchor` and `validator`. Every other library
   crate is flat. A name read at the root carries what the module gave it: `ZoneEntry`, not `text::Entry`; an error

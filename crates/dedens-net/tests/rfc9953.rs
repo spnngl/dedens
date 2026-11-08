@@ -14,7 +14,7 @@ use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::coap::block::{Block, BlockSize, slice};
-use dedens_net::coap::doc::{
+use dedens_net::coap::dns::{
     Query, add_max_age, discovery, etag, more_blocks, path_segments, query as doc_query, response,
     take_max_age,
 };

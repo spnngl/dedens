@@ -39,10 +39,11 @@ const MAX_FIELD_SECTION: u64 = 80 << 10;
 /// (797 bytes), and what servers commonly take of a request (D109).
 const MAX_RESPONSE_FIELD_SECTION: u64 = 8 << 10;
 
-/// Why an HTTPS exchange failed.
+/// Why an HTTP/3 exchange failed: a connection or stream error of RFC 9114 §8, or a response that holds no DNS
+/// response (RFC 8484 §4.2).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum HttpsError {
+pub enum Http3Error {
     /// The QUIC connection cannot be opened or failed: no TLS or socket, a refused certificate, the idle timeout.
     #[error("QUIC")]
     Quic(#[from] QuicError),
@@ -75,9 +76,10 @@ pub struct Reply {
     pub http: Http,
 }
 
-/// HTTP/3 connections, one per server and name, closed by the QUIC idle timeout.
+/// HTTP/3 connections, one per server and name, shared by concurrent requests (RFC 8484 §5.2) and reused for the next
+/// ones (RFC 9114 §3.3), left after a `GOAWAY` (RFC 9114 §5.2), closed by the QUIC idle timeout.
 #[derive(Debug)]
-pub struct HttpsPool {
+pub struct Http3Pool {
     dialer: Dialer,
     connections: Slots<Open>,
 }
@@ -92,7 +94,7 @@ struct Open {
     going_away: Rc<Cell<bool>>,
 }
 
-impl HttpsPool {
+impl Http3Pool {
     /// No connection yet; those opened close after `idle` without a packet, unless the server asks for less.
     #[must_use]
     pub fn new(idle: Duration) -> Self {
@@ -120,7 +122,7 @@ impl HttpsPool {
     ///
     /// # Errors
     ///
-    /// [`HttpsError`]: no connection, a failed request, an HTTP response that holds no DNS response, or none before
+    /// [`Http3Error`]: no connection, a failed request, an HTTP response that holds no DNS response, or none before
     /// `deadline`.
     pub async fn exchange(
         &self,
@@ -130,8 +132,8 @@ impl HttpsPool {
         method: Method,
         wire: &[u8],
         deadline: Instant,
-    ) -> Result<Reply, HttpsError> {
-        let request = doh::request(template, wire, method).map_err(HttpsError::Request)?;
+    ) -> Result<Reply, Http3Error> {
+        let request = doh::request(template, wire, method).map_err(Http3Error::Request)?;
         let (head, body) = self
             .send(addr, name, &request, MAX_MESSAGE_LEN, deadline)
             .await?;
@@ -151,29 +153,29 @@ impl HttpsPool {
     ///
     /// # Errors
     ///
-    /// [`HttpsError`]: no connection, or none before `deadline`.
+    /// [`Http3Error`]: no connection, or none before `deadline`.
     pub async fn connect(
         &self,
         addr: SocketAddr,
         name: ServerName<'static>,
         deadline: Instant,
-    ) -> Result<(), HttpsError> {
+    ) -> Result<(), Http3Error> {
         compio::time::timeout_at(deadline, self.connection(&(addr, name)))
             .await
-            .unwrap_or(Err(HttpsError::TimedOut))
+            .unwrap_or(Err(Http3Error::TimedOut))
             .map(|_| ())
     }
 
     /// Sends `request` to the server at `addr`, whose certificate must hold `name`, and returns the response's head
-    /// and body, of whatever status and type: what `DoH` makes of it is [`HttpsPool::exchange`]'s, and what
+    /// and body, of whatever status and type: what `DoH` makes of it is [`Http3Pool::exchange`]'s, and what
     /// Oblivious `DoH` makes is the caller's (D79).
     ///
-    /// A request is sent again once on a new connection as [`HttpsPool::exchange`] says. A body longer than `limit`
+    /// A request is sent again once on a new connection as [`Http3Pool::exchange`] says. A body longer than `limit`
     /// bytes is an error: a DNS message at most, or what Oblivious `DoH` adds to one (D79).
     ///
     /// # Errors
     ///
-    /// [`HttpsError`]: no connection, a failed request, a body longer than `limit`, or no response before
+    /// [`Http3Error`]: no connection, a failed request, a body longer than `limit`, or no response before
     /// `deadline`.
     pub async fn send(
         &self,
@@ -182,7 +184,7 @@ impl HttpsPool {
         request: &Request<Vec<u8>>,
         limit: usize,
         deadline: Instant,
-    ) -> Result<(Response<()>, Vec<u8>), HttpsError> {
+    ) -> Result<(Response<()>, Vec<u8>), Http3Error> {
         let server = (addr, name);
         let asked = async {
             let (open, reused) = self.connection(&server).await?;
@@ -199,11 +201,11 @@ impl HttpsPool {
         };
         compio::time::timeout_at(deadline, asked)
             .await
-            .unwrap_or(Err(HttpsError::TimedOut))
+            .unwrap_or(Err(Http3Error::TimedOut))
     }
 
     /// The open connection to `server`, reused, or a new one.
-    async fn connection(&self, server: &Peer) -> Result<(Open, bool), HttpsError> {
+    async fn connection(&self, server: &Peer) -> Result<(Open, bool), Http3Error> {
         let slot = self.connections.slot(server);
         let mut slot = slot.lock().await;
         if let Some(open) = slot.as_ref()
@@ -217,7 +219,7 @@ impl HttpsPool {
             .max_field_section_size(MAX_RESPONSE_FIELD_SECTION)
             .build(connection.clone())
             .await
-            .map_err(HttpsError::Connection)?;
+            .map_err(Http3Error::Connection)?;
         // The connection's control stream is read, and `GOAWAY` heeded, while this task runs: until the
         // connection closes.
         compio::runtime::spawn(async move { driver.wait_idle().await }).detach();
@@ -233,10 +235,10 @@ impl HttpsPool {
 impl Open {
     /// Whether `error` came from a connection the server was done with: a request the server did not process, a
     /// `GOAWAY`, or a connection closed meanwhile.
-    fn dropped(&self, error: &HttpsError) -> bool {
+    fn dropped(&self, error: &Http3Error) -> bool {
         match error {
-            HttpsError::Stream(StreamError::RemoteClosing) => true,
-            HttpsError::Stream(StreamError::RemoteTerminate { code }) => {
+            Http3Error::Stream(StreamError::RemoteClosing) => true,
+            Http3Error::Stream(StreamError::RemoteTerminate { code }) => {
                 *code == Code::H3_REQUEST_REJECTED
             }
             _ => self.connection.close_reason().is_some(),
@@ -250,7 +252,7 @@ async fn ask(
     open: &Open,
     request: &Request<Vec<u8>>,
     limit: usize,
-) -> Result<(Response<()>, Vec<u8>), HttpsError> {
+) -> Result<(Response<()>, Vec<u8>), Http3Error> {
     let (parts, body) = request.clone().into_parts();
     let sent = open
         .requests
@@ -261,7 +263,7 @@ async fn ask(
         if matches!(error, StreamError::RemoteClosing) {
             open.going_away.set(true);
         }
-        HttpsError::Stream(error)
+        Http3Error::Stream(error)
     })?;
     let mut stream = Stream { inner, read: false };
     if !body.is_empty() {
@@ -270,19 +272,19 @@ async fn ask(
             .inner
             .send_data(body)
             .await
-            .map_err(HttpsError::Stream)?;
+            .map_err(Http3Error::Stream)?;
     }
-    stream.inner.finish().await.map_err(HttpsError::Stream)?;
+    stream.inner.finish().await.map_err(Http3Error::Stream)?;
     let head = stream
         .inner
         .recv_response()
         .await
-        .map_err(HttpsError::Stream)?;
+        .map_err(Http3Error::Stream)?;
     let mut body = Vec::new();
-    while let Some(chunk) = stream.inner.recv_data().await.map_err(HttpsError::Stream)? {
+    while let Some(chunk) = stream.inner.recv_data().await.map_err(Http3Error::Stream)? {
         append(&mut body, chunk);
         if body.len() > limit {
-            return Err(HttpsError::TooLong);
+            return Err(Http3Error::TooLong);
         }
     }
     stream.read = true;
@@ -328,14 +330,14 @@ impl Requests {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Connection`] when the client breaks the protocol or the connection closes.
-    pub async fn new(connection: Connection) -> Result<Self, HttpsError> {
+    /// [`Http3Error::Connection`] when the client breaks the protocol or the connection closes.
+    pub async fn new(connection: Connection) -> Result<Self, Http3Error> {
         let mut builder = h3::server::builder();
         builder.max_field_section_size(MAX_FIELD_SECTION);
         let inner = builder
             .build(connection)
             .await
-            .map_err(HttpsError::Connection)?;
+            .map_err(Http3Error::Connection)?;
         Ok(Self { inner })
     }
 
@@ -345,9 +347,9 @@ impl Requests {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Connection`] when the client breaks the protocol or the connection closes.
-    pub async fn accept(&mut self) -> Result<Option<Pending>, HttpsError> {
-        let resolver = self.inner.accept().await.map_err(HttpsError::Connection)?;
+    /// [`Http3Error::Connection`] when the client breaks the protocol or the connection closes.
+    pub async fn accept(&mut self) -> Result<Option<Pending>, Http3Error> {
+        let resolver = self.inner.accept().await.map_err(Http3Error::Connection)?;
         Ok(resolver.map(Pending))
     }
 
@@ -357,9 +359,9 @@ impl Requests {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Connection`] when the connection closed.
-    pub async fn shutdown(&mut self) -> Result<(), HttpsError> {
-        self.inner.shutdown(0).await.map_err(HttpsError::Connection)
+    /// [`Http3Error::Connection`] when the connection closed.
+    pub async fn shutdown(&mut self) -> Result<(), Http3Error> {
+        self.inner.shutdown(0).await.map_err(Http3Error::Connection)
     }
 }
 
@@ -368,15 +370,15 @@ pub struct Pending(h3::server::RequestResolver<Connection, Bytes>);
 
 impl Pending {
     /// Reads the request head and, to the end or past a DNS message's size, its body, for the service at `path`:
-    /// the query it holds, or the status to answer with ([`Exchange::query`]).
+    /// the query it holds, or the status to answer with ([`Incoming::query`]).
     ///
     /// The status is 404 for another path (RFC 9110 §15.5.5), else [`doh::server_request`]'s. The authority and the
     /// scheme are not checked: the server answers for the names its certificate holds.
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Stream`] for a request the client broke (RFC 9114 §4.1.2: the stream is reset) or cut.
-    pub async fn read(self, path: &str) -> Result<Exchange, HttpsError> {
+    /// [`Http3Error::Stream`] for a request the client broke (RFC 9114 §4.1.2: the stream is reset) or cut.
+    pub async fn read(self, path: &str) -> Result<Incoming, Http3Error> {
         self.read_with(MAX_MESSAGE_LEN, |request, body| {
             let query = if request.uri().path() == path {
                 doh::server_request(request, body)
@@ -389,7 +391,7 @@ impl Pending {
     }
 
     /// As [`Pending::read`], for a service that is not `DoH` alone: `classify` makes of the request head and body
-    /// what the service takes of them, the kind of request and what [`Exchange::query`] gives (Oblivious `DoH`, D79).
+    /// what the service takes of them, the kind of request and what [`Incoming::query`] gives (Oblivious `DoH`, D79).
     /// The body is read to the end or past `limit` bytes: a DNS message's size, or what Oblivious `DoH` adds to it.
     ///
     /// # Errors
@@ -399,18 +401,18 @@ impl Pending {
         self,
         limit: usize,
         classify: impl FnOnce(&Request<()>, &[u8]) -> (K, Result<Vec<u8>, StatusCode>),
-    ) -> Result<Exchange<K>, HttpsError> {
-        let (request, mut stream) = self.0.resolve_request().await.map_err(HttpsError::Stream)?;
+    ) -> Result<Incoming<K>, Http3Error> {
+        let (request, mut stream) = self.0.resolve_request().await.map_err(Http3Error::Stream)?;
         let mut body = Vec::new();
         while body.len() <= limit
-            && let Some(chunk) = stream.recv_data().await.map_err(HttpsError::Stream)?
+            && let Some(chunk) = stream.recv_data().await.map_err(Http3Error::Stream)?
         {
             // At most one byte past the limit is kept, whatever the size of the chunk.
             let room = limit.saturating_add(1) - body.len();
             append(&mut body, chunk.take(room));
         }
         let (kind, query) = classify(&request, &body);
-        Ok(Exchange {
+        Ok(Incoming {
             stream,
             method: request.method().clone(),
             query,
@@ -419,15 +421,16 @@ impl Pending {
     }
 }
 
-/// A request read, to answer on its stream; `K` is the kind [`Pending::read_with`]'s classifier gave it.
-pub struct Exchange<K = ()> {
+/// A request read, to answer on its stream (RFC 9114 §4.1, RFC 8484 §4); `K` is the kind [`Pending::read_with`]'s
+/// classifier gave it.
+pub struct Incoming<K = ()> {
     stream: h3::server::RequestStream<BidiStream<Bytes>, Bytes>,
     method: http::Method,
     query: Result<Vec<u8>, StatusCode>,
     kind: K,
 }
 
-impl<K> Exchange<K> {
+impl<K> Incoming<K> {
     /// The kind of request its classifier gave it.
     #[must_use]
     pub const fn kind(&self) -> &K {
@@ -444,7 +447,7 @@ impl<K> Exchange<K> {
         }
     }
 
-    /// The DNS query, or the status to [`reject`](Exchange::reject) the request with.
+    /// The DNS query, or the status to [`reject`](Incoming::reject) the request with.
     ///
     /// # Errors
     ///
@@ -458,11 +461,11 @@ impl<K> Exchange<K> {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Response`] for a message that is not a DNS one, [`HttpsError::Stream`] for a stream the client
+    /// [`Http3Error::Response`] for a message that is not a DNS one, [`Http3Error::Stream`] for a stream the client
     /// reset or a connection that closed.
-    pub async fn respond(self, dns_response: Vec<u8>) -> Result<(), HttpsError> {
+    pub async fn respond(self, dns_response: Vec<u8>) -> Result<(), Http3Error> {
         let response = doh::server_response(dns_response, &self.method)
-            .map_err(|error| HttpsError::Response(error.into()))?;
+            .map_err(|error| Http3Error::Response(error.into()))?;
         self.respond_with(response).await
     }
 
@@ -471,8 +474,8 @@ impl<K> Exchange<K> {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Stream`] for a stream the client reset or a connection that closed.
-    pub async fn respond_with(self, response: Response<Vec<u8>>) -> Result<(), HttpsError> {
+    /// [`Http3Error::Stream`] for a stream the client reset or a connection that closed.
+    pub async fn respond_with(self, response: Response<Vec<u8>>) -> Result<(), Http3Error> {
         let (head, body) = response.into_parts();
         self.send(Response::from_parts(head, ()), body).await
     }
@@ -481,25 +484,25 @@ impl<K> Exchange<K> {
     ///
     /// # Errors
     ///
-    /// [`HttpsError::Stream`] for a stream the client reset or a connection that closed.
-    pub async fn reject(self, status: StatusCode) -> Result<(), HttpsError> {
+    /// [`Http3Error::Stream`] for a stream the client reset or a connection that closed.
+    pub async fn reject(self, status: StatusCode) -> Result<(), Http3Error> {
         let mut response = Response::new(());
         *response.status_mut() = status;
         self.send(response, Vec::new()).await
     }
 
-    async fn send(mut self, head: Response<()>, body: Vec<u8>) -> Result<(), HttpsError> {
+    async fn send(mut self, head: Response<()>, body: Vec<u8>) -> Result<(), Http3Error> {
         let stream = &mut self.stream;
         stream
             .send_response(head)
             .await
-            .map_err(HttpsError::Stream)?;
+            .map_err(Http3Error::Stream)?;
         if !body.is_empty() {
             stream
                 .send_data(Bytes::from(body))
                 .await
-                .map_err(HttpsError::Stream)?;
+                .map_err(Http3Error::Stream)?;
         }
-        stream.finish().await.map_err(HttpsError::Stream)
+        stream.finish().await.map_err(Http3Error::Stream)
     }
 }

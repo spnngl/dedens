@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, ensure};
 use compio::net::ToSocketAddrsAsync as _;
-use dedens_net::https::HttpsPool;
+use dedens_net::http3::Http3Pool;
 use dedens_net::odoh::MAX_BODY;
 use dedens_net::odoh::proxy::{
     Destination, Host, ProxyError, Target, failure, forward_request, forwarded,
@@ -68,7 +68,7 @@ impl Settings {
 /// of forwards in flight (D94).
 #[derive(Debug)]
 pub(crate) struct Forwarder {
-    pool: HttpsPool,
+    pool: Http3Pool,
     resolved: RefCell<HashMap<Target, (SocketAddr, Instant)>>,
     in_flight: Cell<usize>,
 }
@@ -77,7 +77,7 @@ impl Forwarder {
     /// A forwarder checking the certificates of targets against `trust`.
     pub(crate) fn new(trust: Trust) -> Self {
         Self {
-            pool: HttpsPool::new(IDLE).trusting(trust),
+            pool: Http3Pool::new(IDLE).trusting(trust),
             resolved: RefCell::default(),
             in_flight: Cell::new(0),
         }

@@ -18,7 +18,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio
   change to surface worker panics, once one is proposed upstream.
 - Bare `spawn`s in `dedens-net` whose panics nothing logs or counts (D121): the upstream UDP pool `crates/dedens-net/src/udp.rs:95`,
-  the read and write halves of a TCP exchange `crates/dedens-net/src/tcp.rs:332` and `:450`, `crates/dedens-net/src/https.rs:223`.
+  the read and write halves of a TCP exchange `crates/dedens-net/src/tcp.rs:332` and `:450`, `crates/dedens-net/src/http3.rs:223`.
   compio hides each; the client of a query then times out. Default: a `dedens-net` helper like `Origin::spawn` (a
   counter by name), once a second user of it exists.
 - Export of `dedensd_task_panics_total` and `dedensd_listener_restarts_total` (D121): no exporter is installed

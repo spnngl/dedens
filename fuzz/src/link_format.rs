@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 
 use dedens_net::coap::link::{Link, parse};
-use dedens_net::coap::{Code, Message, Options, Token, Type, doc};
+use dedens_net::coap::{Code, Message, Options, Token, Type, dns};
 
 /// Both families, and a port that is not the default one.
 const SERVERS: [([u8; 4], u16); 2] = [([192, 0, 2, 1], 5683), ([127, 0, 0, 1], 40000)];
@@ -70,7 +70,7 @@ pub fn parse_link_format(data: &[u8]) {
         options,
         payload: Vec::new(),
     };
-    let reply = doc::discovery(&request, 1, &path).expect("a request for the list is answered");
+    let reply = dns::discovery(&request, 1, &path).expect("a request for the list is answered");
     assert_eq!(reply.code, Code::CONTENT);
     let links = parse(&reply.payload).unwrap_or_else(|e| {
         panic!(

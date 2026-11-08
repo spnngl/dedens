@@ -8,7 +8,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use super::doc::path_segments;
+use super::dns::path_segments;
 
 /// The port of a `coap` URI without one (RFC 7252 §6.1).
 const COAP_PORT: u16 = 5683;

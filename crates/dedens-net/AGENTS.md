@@ -7,7 +7,7 @@ crate that touches sockets and timers.
   no randomness.
 - `src/io.rs`: the seam (D134): `Io`, the clock, tasks, timers, randomness and sockets the UDP and TCP pools and
   `Client` use; `Compio` is production, `dedens-sim` supplies another. `clippy.toml` bans the direct calls in
-  `udp.rs`, `tcp.rs` and `client.rs`.
+  `udp.rs`, `tcp.rs` and `client.rs`; it repeats the root `clippy.toml` first, which it replaces for this crate.
 - `src/udp.rs`, `src/tcp.rs`: the transports, thin over `Io`; `udp.rs` muxes queries on a pool of sockets
   per server (D50), a few datagrams kept per query (D108); `tcp.rs` keeps one connection per server, TCP or TLS,
   writing the queries queued meanwhile together, a bounded queue (D108).
@@ -16,18 +16,19 @@ crate that touches sockets and timers.
   client's receive windows (D119), no QUIC datagrams (D107).
 - `src/quic.rs`: one QUIC connection per server, a stream per query, closed on a response not framed (D61, D109); the
   receive windows of both sides (`RECEIVE_WINDOW`, `STREAM_RECEIVE_WINDOW`, `CLIENT_RECEIVE_WINDOW`, D119).
-- `src/https.rs`: one HTTP/3 connection per server, a request stream per query, opened again after GOAWAY or a
-  close (D83); the `h3` crate's connection driver runs as a task.
+- `src/http3.rs`: HTTP/3, client and server: one connection per server, a request stream per query, opened again
+  after GOAWAY or a close (D83), the `h3` crate's connection driver run as a task; the server's `Requests` and
+  `Incoming` (D84).
 - `src/doh.rs`: the sans-IO core of DoH (D82), for client, server and ODoH, on `http` types, no HTTP version: URI
   templates, requests and responses, the server's reading of a request and its response; fuzzed by
   `parse_doh_template`, `server_request` and `read_doh_response`.
 - `src/coap/`: the sans-IO CoAP codec and exchanges of DoC (D80): `message.rs` (RFC 7252 messages, options, codes),
   `block.rs` (RFC 7959 Block options, reassembly, slicing), `exchange.rs` (client: retransmission, matching,
-  separate responses, block-wise transfers), `server.rs` (deduplication of CON and NON requests, responses kept for the next blocks, D105), `doc.rs` (the
+  separate responses, block-wise transfers), `server.rs` (deduplication of CON and NON requests, responses kept for the next blocks, D105), `dns.rs` (the
   FETCH request of a query, the path of a `docpath`, the `/.well-known/core` request and the server's list of its
   resource, D95), `link.rs` (RFC 6690 link lists, and the path a link names on a server); no socket, no clock, no
   randomness; fuzzed by `parse_coap` and `parse_link_format`.
-- `src/odoh.rs`, feature `odoh`: Oblivious DoH over `https.rs` (D79): the sans-IO requests, responses and target
+- `src/odoh/mod.rs`, feature `odoh`: Oblivious DoH over `http3.rs` (D79): the sans-IO requests, responses and target
   classifier on `http` types, the configurations cache, `Entropy`; fuzzed by `read_odoh_http`. Run by
   `Client::exchange_oblivious`. `src/odoh/proxy.rs` is the proxy's side (D94): routing a request, the listed `Target`s,
   the forwarded request and response, the `Proxy-Status` errors; fuzzed by `read_odoh_http`.

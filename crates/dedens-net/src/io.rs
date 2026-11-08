@@ -5,8 +5,11 @@
 //! calls they made before. A test supplies another [`Io`], such as `dedens-sim`'s on a simulated network, and runs
 //! the same pools on it. Buffers are owned and come back with the result, as compio's do (D4).
 //!
-//! The pools read no clock, spawn no task and open no socket but through their `Io`: clippy's
-//! `disallowed-methods` in `clippy.toml` fails the build of `udp`, `tcp` and `client` when one does.
+//! The pools read no clock, spawn no task and open no socket but through their `Io`: `udp`, `tcp` and `client` deny
+//! `clippy::disallowed_methods`, whose list in the crate's `clippy.toml` fails their build when one does. The other
+//! modules on compio call it directly (D134): `quic`, `dial`, `http3` and `odoh`'s exchange run on compio's QUIC,
+//! which has its own endpoint and clock, and no simulation runs `doc` yet. The lint is allowed elsewhere, as clippy
+//! takes its list per crate, not per module.
 
 use std::fmt::Debug;
 use std::future::Future;

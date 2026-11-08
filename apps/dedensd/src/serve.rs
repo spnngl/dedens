@@ -34,7 +34,7 @@ use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError, Server};
 use dedens_net::doh::Method;
 use dedens_net::exchange::{Options, Response};
-use dedens_net::https::{Exchange, HttpsError, Pending, Requests};
+use dedens_net::http3::{Http3Error, Incoming, Pending, Requests};
 #[cfg(feature = "odoh")]
 use dedens_net::odoh::proxy::{Destination, ProxyError, Route, failure, rejection, route};
 #[cfg(feature = "odoh")]
@@ -1141,14 +1141,14 @@ async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread
     if let Some(target) = &thread.odoh {
         return oblivious(pending, path, peer, thread, target).await;
     }
-    let exchange = match compio::time::timeout(TCP_IDLE, pending.read(path)).await {
-        Ok(Ok(exchange)) => exchange,
+    let incoming = match compio::time::timeout(TCP_IDLE, pending.read(path)).await {
+        Ok(Ok(incoming)) => incoming,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
         Err(_) => return tracing::debug!(%peer, "HTTP/3 request timed out"),
     };
     let pipeline = thread.pipeline();
     let mut first = None;
-    let started = match exchange.query() {
+    let started = match incoming.query() {
         Ok(query) => start(
             thread,
             &pipeline,
@@ -1160,19 +1160,19 @@ async fn request(pending: Pending, path: &str, peer: SocketAddr, thread: &Thread
                 true
             },
         ),
-        Err(status) => return reject(exchange, status, peer).await,
+        Err(status) => return reject(incoming, status, peer).await,
     };
-    let mut exchange = Some(exchange);
+    let mut incoming = Some(incoming);
     if let Some(wire) = first {
-        respond_http(&mut exchange, wire, peer).await;
+        respond_http(&mut incoming, wire, peer).await;
     }
     if let Some(Started::Upstream(upstream, slot)) = started {
-        let deliver = async |wire| respond_http(&mut exchange, wire, peer).await;
+        let deliver = async |wire| respond_http(&mut incoming, wire, peer).await;
         answer(thread, &pipeline, upstream, Transport::Https, deliver).await;
         drop(slot);
     }
-    if let Some(exchange) = exchange {
-        reject(exchange, StatusCode::BAD_REQUEST, peer).await;
+    if let Some(incoming) = incoming {
+        reject(incoming, StatusCode::BAD_REQUEST, peer).await;
     }
 }
 
@@ -1191,24 +1191,24 @@ async fn oblivious(
     let read = pending.read_with(MAX_BODY, |request, body| {
         route(request, body, path, target.proxy.as_ref())
     });
-    let exchange = match compio::time::timeout(TCP_IDLE, read).await {
-        Ok(Ok(exchange)) => exchange,
+    let incoming = match compio::time::timeout(TCP_IDLE, read).await {
+        Ok(Ok(incoming)) => incoming,
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 request failed"),
         Err(_) => return tracing::debug!(%peer, "HTTP/3 request timed out"),
     };
-    let (transport, mut context, query) = match (exchange.kind(), exchange.query()) {
+    let (transport, mut context, query) = match (incoming.kind(), incoming.query()) {
         // Not `DoH` requests: not counted (D84).
         (Route::Target(Kind::Configs), Err(status)) => {
-            sent(exchange.reject(status), peer).await;
+            sent(incoming.reject(status), peer).await;
             return;
         }
         (Route::Malformed(status), _) => {
             let response = rejection(*status);
-            return proxied(exchange, response, peer).await;
+            return proxied(incoming, response, peer).await;
         }
-        (_, Err(status)) => return reject(exchange, status, peer).await,
+        (_, Err(status)) => return reject(incoming, status, peer).await,
         (Route::Target(Kind::Configs), Ok(_)) => {
-            sent(exchange.respond_with(target.configs()), peer).await;
+            sent(incoming.respond_with(target.configs()), peer).await;
             return;
         }
         (Route::Proxy(proxy, destination), Ok(body)) => {
@@ -1218,7 +1218,7 @@ async fn oblivious(
             } else {
                 forward(proxy, destination, body, thread).await
             };
-            return proxied(exchange, response, peer).await;
+            return proxied(incoming, response, peer).await;
         }
         (Route::Target(Kind::Oblivious), Ok(body)) => {
             // The target opens it only for a client with budget left, the opening being work an unauthenticated
@@ -1229,7 +1229,7 @@ async fn oblivious(
                 .is_some_and(|limit| limit.exempts(peer.ip()));
             match target.open(peer.ip(), now(), exempt, body) {
                 Ok((query, context)) => (Transport::Odoh, Some(context), query),
-                Err(status) => return reject(exchange, status, peer).await,
+                Err(status) => return reject(incoming, status, peer).await,
             }
         }
         (Route::Target(Kind::Dns), Ok(query)) => (Transport::Https, None, query.to_vec()),
@@ -1240,17 +1240,17 @@ async fn oblivious(
         first = Some(wire.to_vec());
         true
     });
-    let mut exchange = Some(exchange);
+    let mut incoming = Some(incoming);
     if let Some(wire) = first {
-        respond_sealed(&mut exchange, &mut context, wire, peer).await;
+        respond_sealed(&mut incoming, &mut context, wire, peer).await;
     }
     if let Some(Started::Upstream(upstream, slot)) = started {
-        let deliver = async |wire| respond_sealed(&mut exchange, &mut context, wire, peer).await;
+        let deliver = async |wire| respond_sealed(&mut incoming, &mut context, wire, peer).await;
         answer(thread, &pipeline, upstream, transport, deliver).await;
         drop(slot);
     }
-    if let Some(exchange) = exchange {
-        reject(exchange, StatusCode::BAD_REQUEST, peer).await;
+    if let Some(incoming) = incoming {
+        reject(incoming, StatusCode::BAD_REQUEST, peer).await;
     }
 }
 
@@ -1285,63 +1285,63 @@ const fn proxied_status(status: StatusCode) -> &'static str {
     }
 }
 
-/// Answers `exchange` with `response` of the proxy role, and counts it (D94).
+/// Answers `incoming` with `response` of the proxy role, and counts it (D94).
 #[cfg(feature = "odoh")]
 async fn proxied(
-    exchange: Exchange<Route<&Proxy>>,
+    incoming: Incoming<Route<&Proxy>>,
     response: http::Response<Vec<u8>>,
     peer: SocketAddr,
 ) {
     let status = proxied_status(response.status());
     metrics::counter!(ODOH_PROXIED, "status" => status).increment(1);
-    sent(exchange.respond_with(response), peer).await;
+    sent(incoming.respond_with(response), peer).await;
 }
 
 #[cfg(feature = "odoh")]
 const ODOH_PROXIED: &str = "dedensd_odoh_proxied_total";
 
-/// Answers 200 with `wire` on `exchange`, sealed for the client when `context` holds what that takes, unless it was
+/// Answers 200 with `wire` on `incoming`, sealed for the client when `context` holds what that takes, unless it was
 /// answered already.
 #[cfg(feature = "odoh")]
 async fn respond_sealed(
-    exchange: &mut Option<Exchange<Route<&Proxy>>>,
+    incoming: &mut Option<Incoming<Route<&Proxy>>>,
     context: &mut Option<ResponseContext>,
     wire: Vec<u8>,
     peer: SocketAddr,
 ) {
     let Some(context) = context.take() else {
-        return respond_http(exchange, wire, peer).await;
+        return respond_http(incoming, wire, peer).await;
     };
-    let Some(exchange) = exchange.take() else {
+    let Some(incoming) = incoming.take() else {
         return;
     };
     match odoh::seal(context, &wire) {
         Ok(response) => {
-            count_doh(exchange.method(), StatusCode::OK);
-            sent(exchange.respond_with(response), peer).await;
+            count_doh(incoming.method(), StatusCode::OK);
+            sent(incoming.respond_with(response), peer).await;
         }
-        Err(status) => reject(exchange, status, peer).await,
+        Err(status) => reject(incoming, status, peer).await,
     }
 }
 
-/// Answers 200 with `wire` on `exchange`, unless it was answered already.
-async fn respond_http<K>(exchange: &mut Option<Exchange<K>>, wire: Vec<u8>, peer: SocketAddr) {
-    if let Some(exchange) = exchange.take() {
-        count_doh(exchange.method(), StatusCode::OK);
-        sent(exchange.respond(wire), peer).await;
+/// Answers 200 with `wire` on `incoming`, unless it was answered already.
+async fn respond_http<K>(incoming: &mut Option<Incoming<K>>, wire: Vec<u8>, peer: SocketAddr) {
+    if let Some(incoming) = incoming.take() {
+        count_doh(incoming.method(), StatusCode::OK);
+        sent(incoming.respond(wire), peer).await;
     }
 }
 
 /// Answers `status` without a message.
-async fn reject<K>(exchange: Exchange<K>, status: StatusCode, peer: SocketAddr) {
-    count_doh(exchange.method(), status);
-    sent(exchange.reject(status), peer).await;
+async fn reject<K>(incoming: Incoming<K>, status: StatusCode, peer: SocketAddr) {
+    count_doh(incoming.method(), status);
+    sent(incoming.reject(status), peer).await;
 }
 
 /// Waits for the response `write` to `peer` to go out, at most [`TCP_WRITE`]: a client that grants no credit to
 /// receive it loses the request, as a TCP one reading too slowly loses its connection (D47). The write is boxed: the
 /// futures of the HTTP/3 request tasks are large already.
-async fn sent(write: impl Future<Output = Result<(), HttpsError>>, peer: SocketAddr) {
+async fn sent(write: impl Future<Output = Result<(), Http3Error>>, peer: SocketAddr) {
     match compio::time::timeout(TCP_WRITE, Box::pin(write)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::debug!(%peer, %error, "HTTP/3 response failed"),
