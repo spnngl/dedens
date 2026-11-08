@@ -144,6 +144,7 @@ zeroize = "1.9.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
+missing_docs = "warn"
 unreachable_pub = "warn"
 unnameable_types = "warn"
 # D135: dedensd's own cfg for loom: `--cfg loom` also switches tokio, event-listener and concurrent-queue to loom's

@@ -8,13 +8,7 @@
 //! hosts; [`topology`] builds a run, [`stub`] checks its queries, and [`trace`] records it.
 
 #![forbid(unsafe_code)]
-#![warn(
-    missing_docs,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::print_stdout,
-    clippy::print_stderr
-)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod attacker;
 pub mod client;
