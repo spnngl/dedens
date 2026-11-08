@@ -10,8 +10,8 @@ ended (D121), `src/h3_budget.rs` rotates an HTTP/3 connection past its byte budg
 pipeline and the TLS certificate on SIGHUP (D55, D66) and once the lists `src/download.rs` fetches (D57, D104)
 changed, waking each thread to take it (D107). `src/lists.rs` keeps the lists read across reloads, one `Names` per
 source and one merged set per stage side, so that a reload reads the lists that changed and no other (D120).
-`src/privileges.rs` resolves `user` and `group` before the sockets are bound and drops root after (D122);
-`src/privileges/not_unix.rs` stands in for its calls off Unix.
+`src/privileges/mod.rs` resolves `user` and `group` before the sockets are bound and drops root after (D122);
+`privileges/unix.rs` makes its calls, `privileges/not_unix.rs` stands in for them off Unix.
 `access` (D91) is read in `src/config.rs`; `Config::warn_access` warns at start (`src/main.rs`) and at each reload
 (`src/reload.rs`) of a public listen address with no `access`, and of an empty `allow`; the listeners in
 `src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot. `src/config.rs` reads
