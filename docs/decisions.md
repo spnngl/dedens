@@ -2537,7 +2537,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     nothing else is tested; elsewhere either key is refused when the file is read, `validate` included. The target is
     resolved before any socket is bound, so a name that does not exist, a `user` or a group that is root, or a numeric
     uid with no passwd entry and no `group` ends the start at once.
-  - Order (`src/privileges.rs`, called from `src/main.rs`): after the sockets are bound and the keys, lists and
+  - Order (`src/privileges/mod.rs`, called from `src/main.rs`): after the sockets are bound and the keys, lists and
     certificates of the start are read, before the first thread starts (a second thread is refused: `NO_NEW_PRIVS` is
     inherited by the threads started after it): `initgroups` (the groups that list the user, plus `group`; none for
     a numeric id with no entry), `setgid`, `setuid`. Then the real, effective and saved ids are read back, no group
