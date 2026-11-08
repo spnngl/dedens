@@ -8,8 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits, Validator};
+use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::{Flags, Message, Name, Rcode, RecordType, Transport};
 use dedens_server::{Forward, Pipeline, Stage, Step, Validating};
 

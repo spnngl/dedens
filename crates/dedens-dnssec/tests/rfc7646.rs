@@ -6,7 +6,7 @@ mod common;
 use std::fmt::Write as _;
 
 use common::name;
-use dedens_dnssec::anchor::TrustAnchors;
+use dedens_dnssec::TrustAnchors;
 
 const DS: &str = "2BB183AF5F22588179A53B0A98631FAD1A292118";
 

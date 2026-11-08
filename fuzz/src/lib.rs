@@ -17,11 +17,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
-use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::denial::{self, MaxIterations};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
+use dedens_dnssec::{Limits, Next, TrustAnchors, Validator, Verdict};
 use dedens_net::coap::block::{Block, BlockSize, slice};
 use dedens_net::coap::exchange::{Exchange, Params, Request};
 use dedens_net::coap::{Code, MAX_OPTIONS, Message as CoapMessage};

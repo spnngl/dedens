@@ -12,8 +12,7 @@ use common::{
     Captures, captured_at, client_query, decode, run_captured, run_captured_from, run_together,
     validating_under, wire,
 };
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits, Validator};
+use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Rcode, RecordType, Transport};
 use dedens_server::{

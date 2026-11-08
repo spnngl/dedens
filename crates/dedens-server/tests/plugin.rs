@@ -9,8 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{decode, dns, run, servers, wire};
 use dedens_cache::{Cache, Config};
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits, Validator};
+use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Edns, EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{

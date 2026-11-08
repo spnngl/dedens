@@ -1,5 +1,5 @@
 //! `+validate` (D76): `dedens` as a validating stub resolver (RFC 4035 §4.9). The server is a transport, never
-//! trusted: its AD flag is not read. This is glue over `dedens_dnssec::validator`, which owns the chain of trust;
+//! trusted: its AD flag is not read. This is glue over `dedens_dnssec::Validator`, which owns the chain of trust;
 //! it asks each question the validation wants, of the server the query went to, and follows a CNAME chain that
 //! the response leaves unfinished, validating each answer on its own.
 
@@ -7,14 +7,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
+use dedens_dnssec::{Limits, MAX_CHASES, Next, TrustAnchors, Validator, Verdict};
 use dedens_proto::edns::{ExtendedError, InfoCode};
 use dedens_proto::{Message, Name, Question};
 use dedens_scenario::{DnssecReport, DnssecStatus, Options};
-
-/// The CNAME chains one query follows past its first response, as far as a resolver follows one.
-const CHASE: usize = 8;
 
 /// The validators of a run: one for each set of trust anchors, so that queries with the same share it, and the
 /// clock (`DEDENS_NOW`, Unix seconds, for tests).
@@ -97,8 +93,8 @@ impl Judge {
             let Verdict::Incomplete { next, .. } = verdict else {
                 break;
             };
-            if hop == CHASE {
-                verdict = indeterminate(format!("the CNAME chain is longer than {CHASE}"));
+            if hop == MAX_CHASES {
+                verdict = indeterminate(format!("the CNAME chain is longer than {MAX_CHASES}"));
                 break;
             }
             tracing::debug!(%next, "validation follows a CNAME");

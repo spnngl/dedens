@@ -35,8 +35,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits as ValidatorLimits, Validator};
+use dedens_dnssec::{Limits as ValidatorLimits, TrustAnchors, Validator};
 use dedens_net::exchange::Failure;
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};

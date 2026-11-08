@@ -66,6 +66,12 @@ pub enum Delegation {
     },
 }
 
+/// The most names of a CNAME chain a caller chases for one query (D76, D77).
+///
+/// Past it the verdict is indeterminate: the chain is the upstream's, untrusted input, and a loop of CNAMEs
+/// never ends otherwise, which is an error (RFC 1034 §3.6.2).
+pub const MAX_CHASES: u8 = 8;
+
 /// The outcome of a validation: what the caller does with the response (RFC 4035 §4.3, RFC 4033 §5).
 ///
 /// What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is
@@ -84,7 +90,7 @@ pub enum Verdict {
     },
     /// What the response holds is authenticated, but the CNAME chain it follows ends before the type asked:
     /// ask for it at `next`. The answer is incomplete, so it never carries AD; the caller that chases the
-    /// chain validates each response, bounds the number of links (a loop of CNAMEs has no end) and does not
+    /// chain validates each response, bounds the number of links ([`MAX_CHASES`]) and does not
     /// use `next`, which the server chose, as 0x20 entropy.
     Incomplete {
         /// The name the chain leads to and the response does not answer.

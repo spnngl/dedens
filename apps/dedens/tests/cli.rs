@@ -1356,7 +1356,7 @@ fn a_secure_response_is_shown_with_its_verdict_in_every_format() {
 
 const ALG13_A: &[u8] = include_bytes!("../../../crates/dedens-dnssec/tests/testdata/alg13_a.bin");
 
-/// D76: a secure response is shown as the validator covers it (`dedens_dnssec::validator::covered`): the answer
+/// D76: a secure response is shown as the validator covers it (`dedens_dnssec::covered`): the answer
 /// of a real capture with what the verdict is not about added, an upstream's injection, is not shown under it:
 /// unrelated sets, signatures that sign nothing, other classes, authority sets off the names, the additional
 /// section.

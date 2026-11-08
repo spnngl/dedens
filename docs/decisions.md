@@ -220,7 +220,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `nsec3_hash` have the fuzz target `dnssec_crypto`. Rejected: aws-lc-rs (a C build, a second backend beside
   rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone would justify one, see
   TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
-- D72 Trust anchors are `dedens_dnssec::anchor::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
+- D72 Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
   and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
   that `just root-anchors` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
   (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
@@ -320,7 +320,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
-- D75 (amends D69; amended by D86, D106) The validator is `dedens_dnssec::validator`, sans-IO:
+- D75 (amends D69; amended by D86, D106) The validator is `dedens_dnssec::Validator`, sans-IO:
   `Validator::new(TrustAnchors, Limits)` (shared, `Clone`, `Send + Sync`) and `start(question, response, now) ->
   Validation` for the final answer to a question, `start_referral` for a referral. The caller drives a `Validation`:
   `step()` is `Next::Ask(question)`, to send with RD, DO and CD set (RFC 6840 §5.9) and give back with
@@ -337,7 +337,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   §3.2.3, RFC 6840 §5.8), what the response lacks is proven absent, and the rcode agrees with the proof (a name error
   is NXDOMAIN, or NOERROR when compact, RFC 9824; no data is NOERROR; NXDOMAIN with an answer is bogus). It does not
   cover the additional section, other classes, the sets off the name path (Bailiwick, below), or the unsigned CNAME a
-  DNAME synthesizes (RFC 6672 §5.3.3). `validator::covered(&Message)` is the one definition of what Secure covers:
+  DNAME synthesizes (RFC 6672 §5.3.3). `covered(&Message)` is the one definition of what Secure covers:
   the response cut to the records it is about, computed with the validator's own predicates (the same `Parsed` and
   `synthesized`), so the two cannot drift; a caller hands out or shows `covered` of a secure response, never the
   response. It drops the additional section, other classes, the sets off the path, the RRSIGs that sign nothing,
@@ -426,11 +426,11 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   is read from or written to the answer cache, and each answer is untrusted input to the validator. A key cache
   (06b) slots into `Validating`, not the pipeline. Prefetch and stale refresh validate as any query.
   Verdicts (`dedens_validations_total{verdict}`): AD is set by `Secure` alone, never from the upstream's bit, and
-  only for a client with DO or AD (RFC 6840 §5.8). A secure response is cut by `validator::covered` (D75) to
+  only for a client with DO or AD (RFC 6840 §5.8). A secure response is cut by `covered` (D75) to
   what the verdict covers before it is served or cached: the additional section, other classes, the sets the
   validator ignores and the RRSIGs that sign nothing are dropped (RFC 4035 §3.2.3); the CNAME a DNAME makes stays.
   Every TTL is capped at the verdict's. `Incomplete`: the answer of
-  `next` is validated apart, at most 8 names a query (as `dedens`; `next` is the upstream's, not 0x20 entropy, and
+  `next` is validated apart, at most 8 names a query (`MAX_CHASES`, as `dedens`; `next` is the upstream's, not 0x20 entropy, and
   dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
   incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
   indeterminate. All the questions of a query, the chase included, are at most 64 (`MAX_QUESTIONS`; the
@@ -476,7 +476,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D76 (amends D32, D34, D37, D40, D69; amended by D86) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
   the server is a transport, never trusted. `validate` is an `Options` field, so a query file carries it, and it
   sets DO and CD on the query (the response is wanted even when it is bogus, RFC 6840 §5.9; RD stays as the user
-  has it) and gives `dedens_dnssec::validator` the response: `apps/dedens/src/validate.rs` is the glue, a loop
+  has it) and gives `dedens_dnssec::Validator` the response: `apps/dedens/src/validate.rs` is the glue, a loop
   `step()`, send, `answer()` (D75). Each `Next::Ask` goes to the same server over the same transport, with the
   query's own options (UDP with the TCP fallback, TLS, QUIC, HTTPS, CoAP, ODoH proxy), and an unanswered or
   unreadable one is `answer(None)`. One `Validator` per set of anchors in a run, shared by its queries and its key
@@ -484,8 +484,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   question). The
   upstream's AD bit is never read: the human report names it `AD set by the server` once a verdict is shown, apart
   from the verdict. Only `Secure` is shown as validated, and then only what it covers (D75): the report of a
-  secure response is `validator::covered` of it, as dedensd serves it; `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
-  asked of the same server and validated on its own, at most 8 times, then indeterminate; the verdict is that of
+  secure response is `covered` of it, as dedensd serves it; `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
+  asked of the same server and validated on its own, at most 8 times (`MAX_CHASES`), then indeterminate; the verdict is that of
   the last answer, never an AD of the first. `Referral` cannot come of `start`; a `Referral` or `Incomplete`
   that reaches the report is indeterminate. `--trust-anchor FILE` (DS or DNSKEY records in zone text,
   `TrustAnchors::read`, D72) replaces the bundled root anchors, `--insecure NAME` (repeatable, `insecure:` a list

@@ -5,11 +5,10 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
-use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, Nsec3Blocks, Verifications};
 use dedens_dnssec::denial::MaxIterations;
-use dedens_dnssec::validator::{
-    Cost, Delegation, InsecureReason, Limits, Next, Validator, Verdict, covered,
+use dedens_dnssec::{
+    Cost, Delegation, InsecureReason, Limits, Next, TrustAnchors, Validator, Verdict, covered,
 };
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec, RData, Rrsig};

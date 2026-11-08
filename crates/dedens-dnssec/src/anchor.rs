@@ -1,10 +1,4 @@
-//! Trust anchors: the keys validation starts from (RFC 4033 §2, RFC 4035 §4.4), and negative trust anchors, the
-//! names below which it stops (RFC 7646).
-//!
-//! An anchor is DS records, DNSKEY records or both, per zone. A DNSKEY anchor is trusted as is; a DS anchor is
-//! trusted through the DNSKEY that matches it (RFC 4035 §4.4), which is the validator's check, not this module's.
-//! The root's anchors are bundled ([`TrustAnchors::root`], RFC 9718); a user's come from zone text
-//! ([`TrustAnchors::read`]). Anchors do not change while running: RFC 5011 is left out (D72).
+//! Trust anchors (RFC 4035 §4.4, RFC 7646, D72); [`TrustAnchors`] says what they are.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +8,7 @@ use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEnt
 /// The root's DS records, written by `just root-anchors` from IANA's `root-anchors.xml` (RFC 9718 §2).
 const ROOT: &str = include_str!("root.ds");
 
-/// The records that anchor one zone: at least one, as only [`TrustAnchors::read`] makes them.
+/// The records that anchor one zone (RFC 4035 §4.4): at least one, as only [`TrustAnchors::read`] makes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anchor {
     ds: Vec<Ds<'static>>,
@@ -35,7 +29,7 @@ impl Anchor {
     }
 }
 
-/// Why anchor text is refused; each variant names its line, from 1.
+/// Why anchor text is refused (RFC 4035 §4.4); each variant names its line, from 1.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum AnchorError {
@@ -80,7 +74,13 @@ pub enum AnchorError {
     Empty,
 }
 
-/// The trust anchors of a validator: one [`Anchor`] per zone, and the negative trust anchors.
+/// The trust anchors of a validator: the keys validation starts from (RFC 4033 §2, RFC 4035 §4.4), one
+/// [`Anchor`] per zone, and negative trust anchors, the names below which it stops (RFC 7646).
+///
+/// An anchor is DS records, DNSKEY records or both, per zone. A DNSKEY anchor is trusted as is; a DS anchor is
+/// trusted through the DNSKEY that matches it (RFC 4035 §4.4), which is the validator's check, not this type's.
+/// The root's anchors are bundled ([`TrustAnchors::root`], RFC 9718); a user's come from zone text
+/// ([`TrustAnchors::read`]). Anchors do not change while running: RFC 5011 is left out (D72).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustAnchors {
     zones: HashMap<Name<'static>, Anchor>,

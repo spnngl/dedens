@@ -7,10 +7,9 @@ use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
-use dedens_dnssec::anchor::TrustAnchors;
 use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_dnssec::validator::{Limits, Next, Validator, Verdict};
+use dedens_dnssec::{Limits, Next, TrustAnchors, Validator, Verdict};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{
     DigestType, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm, Transport,

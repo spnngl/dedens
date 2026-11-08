@@ -9,8 +9,7 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use dedens_cache::Config;
-use dedens_dnssec::anchor::TrustAnchors;
-use dedens_dnssec::validator::{Limits, Validator};
+use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_net::client::ClientError;
 use dedens_net::exchange::Failure;
 use dedens_net::tcp::TcpError;
