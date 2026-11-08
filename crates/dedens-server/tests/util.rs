@@ -1,8 +1,6 @@
 //! Builders shared by the server tests: a forwarder, captured upstream responses, and a driver that plays the
 //! transport.
 
-#![allow(dead_code, reason = "each test file uses part of the helpers")]
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -159,7 +157,7 @@ pub(crate) fn validating() -> Pipeline {
 }
 
 /// [`validating`] with `anchors`.
-pub(crate) fn validating_with(anchors: TrustAnchors) -> Pipeline {
+fn validating_with(anchors: TrustAnchors) -> Pipeline {
     let validator = Validator::new(anchors, Limits::default());
     let clock = std::sync::Arc::new(captured_at);
     validating_under(Validating::new(validator, clock))

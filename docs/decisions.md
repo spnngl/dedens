@@ -451,7 +451,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   5/6 (no DNSSEC verdict was reached). Each client network has a share of it too (D117); the bucket
   here is the global one. A hit in the cache stage costs no unit, a client with CD
   none; a warm validation (D86) two. Measured: `serve_shed` 0.11 µs, `serve_warm` 6.2 µs, `serve_cold` 110 µs, no
-  slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/limits.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
+  slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/dnssec.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
   in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came, for at most `max_insecure_ttl` (D93). `Bogus`: SERVFAIL with the EDE code
   (RFC 8914; the code only: the OPT of a reply carries no text), and the response cached for `Config::bogus_ttl`
   (60 s, Unbound's `val-bogus-ttl`; RFC 4035 §4.7: small, assigned), never served stale; a hit answers
@@ -468,8 +468,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
   §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
   validation deadline, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
-  holds the validator's closure. Tests: `tests/rfc4035.rs` and
-  `tests/rfc6840.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
+  holds the validator's closure. Tests: `tests/dnssec.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
   `dedens-cache/tests/checked.rs`, the configuration tests of `config/`; bench `hit_secure` of `benches/server.rs`.
 
 - D76 (amends D32, D34, D37, D40, D69; amended by D86) `dedens +validate` is a validating stub resolver (RFC 4035 §4.9, RFC 4033 §5):
@@ -1927,7 +1926,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Cookies (RFC 7873 §5.2, RFC 9018). A query with a COOKIE option gets a fresh Server Cookie in its reply, on every
     transport, after its own cookie is checked: version 1, SipHash-2-4 (`siphasher`) of the Client Cookie, version,
     reserved bytes, timestamp and client address, so servers of other makes sharing the secret accept it (§4.4;
-    Appendix A.1-A.4 are the tests of `tests/rfc9018.rs`). Valid is version 1, 16 bytes, from at most an hour ago and
+    Appendix A.1-A.4 are the tests of `tests/access.rs`). Valid is version 1, 16 bytes, from at most an hour ago and
     five minutes ahead (§4.3), hash matching one of the secrets; reserved bytes are hashed as received (§4.2). Only the
     first COOKIE option of a request counts (RFC 7873 §5.2; `Options` in `dedens-proto` skips the others). A cookie is
     not forwarded upstream.
@@ -2190,7 +2189,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `MAX_CHASES`), 73 728 blocks, 18 units, 6.6 ms of hashing at most; the `Allowance` charges it as it goes.
   - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `budget.rs`,
     `the_debt_of_queries_in_flight_is_at_most_a_burst` and `a_flood_in_flight_asks_no_more_than_the_burst_allows` in
-    `dedens-server/tests/limits.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
+    `dedens-server/tests/dnssec.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
     `dedens-dnssec/tests/denial.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
     `crypto/budget.rs` (block boundaries, the paid hash).
 
@@ -2238,7 +2237,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - ANY, rejected: §4.2, a synthesized HINFO (or §4.1, one cached RRset): it needs a record for names that do not
     exist or are CNAMEs, a signature for DO, and a TTL, each a new claim by a forwarder that does not know the zone;
     §4.3, a guess: needs upstream. Truncation says nothing about the data.
-  Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/exchange.rs`,
+  Tests: `dedens-server/tests/{dnssec,wire}.rs`, `dedens-net/tests/exchange.rs`,
   `dedens-cache/tests/checked.rs`.
 - D115 (amends D42, D44, D45, D57, D66, D79; amended by D120, D122) Configuration bounds, from the audit (L14, L15, E5): what the file
   says is held to what the server can bear, and what a variable holds cannot become configuration.
@@ -2388,7 +2387,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     D113 says).
   - Limits are in `docs/TODECIDE.md`. Tests: `a_client_over_its_share_cannot_shed_another_client`,
     `a_proven_client_is_not_shed_by_the_unproven_ones_of_its_network`, `an_exempt_source_has_no_share`
-    (`dedens-server/tests/limits.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
+    (`dedens-server/tests/dnssec.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
     (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
     `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
     (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/rfc9230.rs`),
@@ -2471,7 +2470,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_response_a_plugin_after_the_cache_replaces_is_not_stored`,
     `a_response_no_plugin_replaces_is_cached_and_reviewed_once`, `a_reload_reviews_an_entry_again_once`,
     `a_plugin_does_not_review_its_own_answers`, `a_plugin_after_the_forward_stage_is_not_asked`,
-    `a_validated_response_is_reviewed` (`dedens-server/tests/plugin.rs`); fuzz `parse_lists` runs a chain of
+    `a_validated_response_is_reviewed` (`dedens-server/tests/stages.rs`); fuzz `parse_lists` runs a chain of
     arbitrary names through a blocklist, a cache and a forward stage, the reply and the hit checked against a
     plain model. Bench: `benches/blocklist.rs` `review`, `hit`.
 - D119 (amends D61, D83, D109; amended by D121; builds on D117) What a QUIC peer can make the server hold, from the audit (S2): h3

@@ -4,12 +4,12 @@
 //!
 //! Left to other tests, which this family cites rather than repeats:
 //!
-//! - The bucket, the slip count and the refill, a query at a time: `rrl.rs` (`a_burst_passes_then_the_rate_limits`,
+//! - The bucket, the slip count and the refill, a query at a time: `access.rs` (`a_burst_passes_then_the_rate_limits`,
 //!   `the_bucket_refills_per_second`, `one_in_slip_is_answered`) and `budget.rs` of `dedens-server`.
 //! - The cookie of a reply, valid, forged, stale or of another address, and the slip as BADCOOKIE: RFC 7873 §5.2 to
-//!   §5.4 and RFC 9018 in `crates/dedens-server/tests/rfc7873.rs` and `rfc9018.rs`.
+//!   §5.4 and RFC 9018 in `crates/dedens-server/tests/access.rs`.
 //! - A share of validation spent by one client, its neighbour in the /24, a proven client and an exempt source:
-//!   `crates/dedens-server/tests/limits.rs` (`a_client_over_its_share_cannot_shed_another_client`,
+//!   `crates/dedens-server/tests/dnssec.rs` (`a_client_over_its_share_cannot_shed_another_client`,
 //!   `a_proven_client_is_not_shed_by_the_unproven_ones_of_its_network`, `an_exempt_source_has_no_share`).
 //! - The access lists, one query at a time: `crates/dedens-server/src/access.rs` and the pipeline's tests.
 //!

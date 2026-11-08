@@ -1,15 +1,8 @@
 //! The counters of the `metrics` feature (D30, D91, D113).
 
-#![cfg(feature = "metrics")]
-
-mod common;
-
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use common::{
-    captured_at, client_query, forwarder, query_for, run_captured, validating_under, wire,
-};
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, RecordType, Transport};
@@ -20,6 +13,10 @@ use dedens_server::{
 use dedens_testkit::captured;
 use dedens_testkit::dnssec::Captures;
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+use crate::util::{
+    captured_at, client_query, forwarder, query_for, run_captured, validating_under, wire,
+};
 
 /// The counter `dedensd_access_denied_total{action}` counts the queries a denied client sent, by action.
 #[test]

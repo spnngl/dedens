@@ -5,8 +5,8 @@
 //! The upstream server answers each question the captures hold: the client's, and the DS, DNSKEY and denial
 //! questions of the validator, which are upstream queries like any other (D77). What the sans-IO tests settle is
 //! left to them: the verdict of each capture and its extended error (`crates/dedens-dnssec/tests/validator.rs`,
-//! `crates/dedens-server/tests/rfc4035.rs`, RFC 4035 §3.2.3, §5), and the accounts of the allowance and the shares
-//! on a clock the test drives (`crates/dedens-server/tests/limits.rs`). Here the questions and the answers go
+//! `crates/dedens-server/tests/dnssec.rs`, RFC 4035 §3.2.3, §5), and the accounts of the allowance and the shares
+//! on a clock the test drives (`dnssec.rs` too). Here the questions and the answers go
 //! over the simulated network, and what is checked is that the verdicts, the cache and the limits hold when those
 //! packets are lost, late, or never come, and as the time of the run moves.
 //!

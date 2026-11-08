@@ -15,8 +15,8 @@
 //! - Each check on one message at a time: `crates/dedens-net/tests/exchange.rs`
 //!   (`a_forged_formerr_without_a_question_causes_no_downgrade`, `a_changed_query_goes_with_a_spare_id`,
 //!   `a_wrong_client_cookie_is_dropped`, `an_exchange_with_only_wrong_cookies_fails_as_forged`,
-//!   `a_missing_cookie_is_dropped_once_the_server_sent_one`, `a_late_response_to_an_earlier_try_is_taken`), and in `crates/dedens-server/tests/rfc5452.rs`
-//!   the core's own check of QR, opcode and question (D111).
+//!   `a_missing_cookie_is_dropped_once_the_server_sent_one`, `a_late_response_to_an_earlier_try_is_taken`), and in
+//!   `crates/dedens-server/tests/stages.rs` the core's own check of QR, opcode and question (D111).
 //! - What the socket does with a datagram nobody waits for: `crates/dedens-net/tests/udp.rs`
 //!   (`a_query_waits_for_its_id`).
 //! - One forgery in a race and one late copy over the run: `baseline.rs`.

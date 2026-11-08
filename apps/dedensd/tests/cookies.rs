@@ -1,6 +1,6 @@
 //! `dedensd` giving Server Cookies (RFC 7873 §5.2, RFC 9018, D113) and leaving loopback out of the rate limit: the
 //! source of every client here is `127.0.0.1`, which cannot be spoofed from outside, so it is not limited however
-//! low `rrl` sets the rate. The limit itself is tested on the pipeline, `crates/dedens-server/tests/rrl.rs`.
+//! low `rrl` sets the rate. The limit itself is tested on the pipeline, `crates/dedens-server/tests/access.rs`.
 
 mod common;
 
