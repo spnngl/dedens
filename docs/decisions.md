@@ -2712,7 +2712,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     - Clocks: the cores read none (`Exchange` and `Pipeline` take the time as an argument; checked in
       `dedens-proto`, `-cache`, `-server`, `-dnssec` and `dedens-net`'s `exchange`); the driver passes tokio's
       simulated one. A core that read the real clock would escape simulated time: a bug here.
-    - `NEXT_ID` (`crates/dedens-server/src/pipeline.rs`): D118's mark of a pipeline, compared with its own entries
+    - `NEXT_ID` (`crates/dedens-server/src/pipeline/mod.rs`): D118's mark of a pipeline, compared with its own entries
       only. Its value cannot change a trace.
     - D112's per-process seed of the encoder's name table: it picks slots for compression pointers, and the decoded
       content is the same; a locally built reply may differ in length by a few bytes from one process to another,
