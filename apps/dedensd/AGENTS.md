@@ -20,9 +20,9 @@ source and one merged set per stage side, so that a reload reads the lists that 
 `src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
 `src/sync.rs` names the `Arc`, `Mutex`, atomics and one-message channel of `reload.rs` and `flights.rs`: std's and
 flume's, loom's under `--cfg dedens_loom` (`just loom`, D135); use it for state those two share between threads.
-`src/odoh.rs`, feature `odoh`, is the Oblivious DoH target on the HTTP/3 listeners: its key, its configurations, and
-opening and sealing messages (D79); `src/odoh/proxy.rs` is its proxy role: the listed targets, their resolution and
-the forward (D94). RFC behaviour belongs in `crates/dedens-server` and its sans-IO tests.
+`src/odoh.rs`, feature `odoh`, is the Oblivious DoH target on the HTTP/3 listeners, `odoh::Service`: its key, its
+configurations, and opening and sealing messages (D79); `src/odoh/proxy.rs` is its proxy role: the listed targets, their
+resolution and the forward (D94). RFC behaviour belongs in `crates/dedens-server` and its sans-IO tests.
 
 Tests:
 
