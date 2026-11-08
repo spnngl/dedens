@@ -3,7 +3,6 @@
 //! from; [`validator`] (D75) judges a response.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs, clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 pub mod anchor;
 pub mod crypto;

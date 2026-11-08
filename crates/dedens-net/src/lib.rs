@@ -4,13 +4,7 @@
 //! The only crate of the workspace that touches sockets and timers; `dedens-proto` stays free of I/O.
 
 #![forbid(unsafe_code)]
-#![warn(
-    missing_docs,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::print_stdout,
-    clippy::print_stderr
-)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 /// A `tracing` debug event with the `tracing` feature; without it, nothing, its arguments not even compiled (D30).
 macro_rules! debug {

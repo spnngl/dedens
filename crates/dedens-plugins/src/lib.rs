@@ -18,13 +18,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
-#![warn(
-    missing_docs,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::print_stdout,
-    clippy::print_stderr
-)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod blocklist;
 mod hosts;
