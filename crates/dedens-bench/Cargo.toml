@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+autotests = false
 
 [features]
 # The cache's counters on, with no recorder: the cost of the toggle (D30).
@@ -93,6 +94,10 @@ ignored = [
   "http",
   "metrics-util",
 ]
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
 
 [lints]
 workspace = true

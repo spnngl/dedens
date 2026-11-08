@@ -17,5 +17,6 @@ Where time goes (D138): `just profile <bench> [filter]` runs a bench target unde
 bench-dnsperf` runs the working tree's `dedensd` under perf in the container (not a base-against-tree run); both write to
 `target/profile/`.
 
-`tests/repo.rs` is the repository checks (D140): decision numbers cited and their amendments, coverage paths and
-rows, `CLAUDE.md` links, a crate's `clippy.toml` repeating the root one.
+`tests/tests.rs` is the one test binary (D162): `repo.rs` the repository checks (D140): decision numbers cited and their amendments, coverage paths and
+rows, `CLAUDE.md` links, a crate's `clippy.toml` repeating the root one; `zone.rs` that the zone readers of `benches/zone.rs` read the same
+zone.
