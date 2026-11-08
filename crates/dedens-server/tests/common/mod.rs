@@ -55,13 +55,9 @@ pub(crate) fn dns(text: &str) -> Name<'static> {
         .expect("a valid name")
 }
 
-/// A response captured from a real server, in `crates/dedens-proto/tests/testdata`.
+/// A response captured from a real server, in `testdata/proto`.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/../dedens-proto/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(path).expect("a captured response")
+    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// `response` with its header flags also holding `flags`.
@@ -170,18 +166,14 @@ pub(crate) fn reply(
         .expect("a reply")
 }
 
-/// The captured responses of `dedens-dnssec` (its `testdata/README.md`), by the question each answers: the upstream
+/// The captured responses of `testdata/dnssec` (its `README.md`), by the question each answers: the upstream
 /// of the validation tests.
 pub(crate) struct Captures(HashMap<(Name<'static>, RecordType), Vec<u8>>);
 
 impl Captures {
     pub(crate) fn new() -> Self {
-        let dir = format!(
-            "{}/../dedens-dnssec/tests/testdata",
-            env!("CARGO_MANIFEST_DIR")
-        );
         let mut all = HashMap::new();
-        for entry in std::fs::read_dir(dir).expect("the captures") {
+        for entry in std::fs::read_dir(dedens_testkit::path("dnssec")).expect("the captures") {
             let path = entry.expect("an entry").path();
             if path.extension().is_some_and(|extension| extension == "bin") {
                 let wire = std::fs::read(&path).expect("a capture");
@@ -193,7 +185,7 @@ impl Captures {
         Self(all)
     }
 
-    /// The capture `id`, as `testdata/README.md` names it.
+    /// The capture `id`, as `testdata/dnssec/README.md` names it.
     /// The same captures, `wire` answering its question instead of the one captured.
     pub(crate) fn with(mut self, wire: Vec<u8>) -> Self {
         let message = decode(&wire).into_owned();
@@ -209,11 +201,7 @@ impl Captures {
     }
 
     pub(crate) fn get(id: &str) -> Vec<u8> {
-        std::fs::read(format!(
-            "{}/../dedens-dnssec/tests/testdata/{id}.bin",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .expect("a capture")
+        std::fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("a capture")
     }
 
     pub(crate) fn answer(&self, request: &Message<'_>) -> Option<&[u8]> {
@@ -226,14 +214,11 @@ impl Captures {
 
 /// The Unix time of the capture run: when the signatures are valid.
 pub(crate) fn captured_at() -> u64 {
-    std::fs::read_to_string(format!(
-        "{}/../dedens-dnssec/tests/testdata/captured_at",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("captured_at")
-    .trim()
-    .parse()
-    .expect("Unix time in seconds")
+    std::fs::read_to_string(dedens_testkit::path("dnssec/captured_at"))
+        .expect("captured_at")
+        .trim()
+        .parse()
+        .expect("Unix time in seconds")
 }
 
 /// A pipeline with a cache, then forwarding to [`servers`] and validating against the root's trust anchor at

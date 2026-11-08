@@ -252,11 +252,7 @@ const RRSIG: RecordType = RecordType::RRSIG;
 const SOA: RecordType = RecordType::SOA;
 
 fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
-    pick(
-        &zone("tests/zones/rfc4035_appendix_a.zone"),
-        RecordType::NSEC,
-        owners,
-    )
+    pick(&zone("rfc4035_appendix_a.zone"), RecordType::NSEC, owners)
 }
 
 /// §4.1: `b.example.` is a delegation, so its NSEC is the parent's and proves no name below it.

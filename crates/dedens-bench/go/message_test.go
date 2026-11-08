@@ -15,7 +15,7 @@ var cases = []string{"a", "mx", "txt_large"}
 
 func wire(b *testing.B, name string) []byte {
 	b.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "dedens-proto", "tests", "testdata", name+".bin"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "proto", name+".bin"))
 	if err != nil {
 		b.Fatal(err)
 	}

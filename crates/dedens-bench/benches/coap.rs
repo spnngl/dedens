@@ -1,5 +1,5 @@
 //! CoAP for DNS over CoAP (D80): a `DoC` request and response read and written, on the datagrams of
-//! `crates/dedens-net/tests/testdata/coap/fetch_doc.txt` (aiocoap's FETCH for `gmail.com MX` and the real response),
+//! `testdata/coap/fetch_doc.txt` (aiocoap's FETCH for `gmail.com MX` and the real response),
 //! and a whole exchange of them, through `Exchange`.
 
 use std::hint::black_box;
@@ -19,11 +19,8 @@ fn main() {
 
 /// The captured datagrams: the request, then the response.
 fn captured() -> [Vec<u8>; 2] {
-    let path = format!(
-        "{}/../dedens-net/tests/testdata/coap/fetch_doc.txt",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let text = std::fs::read_to_string(&path).expect("the capture is there");
+    let text = std::fs::read_to_string(dedens_testkit::path("coap/fetch_doc.txt"))
+        .expect("the capture is there");
     let mut datagrams = text
         .lines()
         .filter(|line| !line.starts_with('#'))

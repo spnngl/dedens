@@ -234,15 +234,14 @@ pub fn denial(data: &[u8]) {
 }
 
 /// The Unix time of the capture run, "now" for the signatures of the captured seeds.
-const CAPTURED_AT: &str = include_str!("../../crates/dedens-dnssec/tests/testdata/captured_at");
+const CAPTURED_AT: &str = include_str!("../../testdata/dnssec/captured_at");
 
 /// A captured response, as the bytes it was saved as and as a message.
 type Captured = (Vec<u8>, Message<'static>);
 
-/// The captured responses a validation is answered from: the real chains of `tests/testdata/`.
+/// The captured responses a validation is answered from: the real chains of `testdata/dnssec/`.
 static POOL: LazyLock<Vec<Captured>> = LazyLock::new(|| {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/dedens-dnssec/tests/testdata");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/dnssec");
     let mut pool: Vec<Captured> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()

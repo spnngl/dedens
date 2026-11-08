@@ -19,21 +19,13 @@ fn with_ttls(mut records: Vec<Record<'static>>, ttls: &[u32]) -> Vec<Record<'sta
 }
 
 fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
-    pick(
-        &zone("tests/zones/rfc4035_appendix_a.zone"),
-        RecordType::NSEC,
-        owners,
-    )
+    pick(&zone("rfc4035_appendix_a.zone"), RecordType::NSEC, owners)
 }
 
 fn nsec3s(hashes: &[&str]) -> Vec<Record<'static>> {
     let owners: Vec<String> = hashes.iter().map(|h| format!("{h}.example.")).collect();
     let owners: Vec<&str> = owners.iter().map(String::as_str).collect();
-    pick(
-        &zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone"),
-        RecordType::NSEC3,
-        &owners,
-    )
+    pick(&zone("rfc5155_appendix_a.zone"), RecordType::NSEC3, &owners)
 }
 
 #[test]

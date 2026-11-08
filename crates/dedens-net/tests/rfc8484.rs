@@ -1,5 +1,5 @@
 //! DNS over HTTPS (RFC 8484): the examples of §4.1.1 and §4.2.2 byte for byte, the status codes of a server,
-//! the freshness of §5.1, and responses captured from public servers (`tests/testdata/doh/capture.nu`).
+//! the freshness of §5.1, and responses captured from public servers (`testdata/doh/capture.nu`).
 
 mod common;
 
@@ -672,7 +672,7 @@ struct Capture {
 }
 
 fn capture(id: &str) -> Capture {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/doh");
+    let dir = dedens_testkit::path("doh");
     let read = |extension: &str| std::fs::read(dir.join(format!("{id}.{extension}"))).expect(id);
     let text = String::from_utf8(read("headers")).expect("ASCII headers");
     let mut lines = text.lines();

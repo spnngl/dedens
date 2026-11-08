@@ -1,4 +1,4 @@
-//! Responses captured from public servers by `just capture` (`testdata/capture.yaml`): they decode without a violation and
+//! Responses captured from public servers by `just capture` (`testdata/proto/capture.yaml`): they decode without a violation and
 //! re-encode to an equal message.
 
 use std::fs;
@@ -9,7 +9,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Rcode, Record, RecordType};
 
 fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata")
+    dedens_testkit::path("proto")
 }
 
 fn capture(name: &str) -> Message<'static> {

@@ -1,10 +1,9 @@
-//! The blocklist plugin (D54, D56) on published lists: the heads of `StevenBlack/hosts`
-//! (`testdata/stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists`
-//! (`testdata/hagezi-light.txt`), of its Multi PRO in the wildcard format (`testdata/hagezi-pro-wildcard.txt`) and
-//! of its referral allowlist (`testdata/hagezi-referral-allow.txt`), each with a few lines of further down. Blocked
-//! answers carry the Extended DNS Error Blocked (RFC 8914 §4.16). Texts that are no lists: the head of the Multi
-//! LIGHT in Adblock syntax (`testdata/hagezi-light.adblock`) and nginx's 404 page, as `dl-cdn.alpinelinux.org`
-//! serves it (`testdata/nginx-404.html`).
+//! The blocklist plugin (D54, D56) on published lists, in `testdata/plugins/`: the heads of `StevenBlack/hosts`
+//! (`stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists` (`hagezi-light.txt`), of its Multi
+//! PRO in the wildcard format (`hagezi-pro-wildcard.txt`) and of its referral allowlist
+//! (`hagezi-referral-allow.txt`), each with a few lines of further down. Blocked answers carry the Extended DNS Error
+//! Blocked (RFC 8914 §4.16). Texts that are no lists: the head of the Multi LIGHT in Adblock syntax
+//! (`hagezi-light.adblock`) and nginx's 404 page, as `dl-cdn.alpinelinux.org` serves it (`nginx-404.html`).
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -19,12 +18,12 @@ use dedens_proto::{
 };
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step};
 
-const STEVENBLACK: &str = include_str!("testdata/stevenblack.hosts");
-const HAGEZI: &str = include_str!("testdata/hagezi-light.txt");
-const WILDCARD: &str = include_str!("testdata/hagezi-pro-wildcard.txt");
-const REFERRAL: &str = include_str!("testdata/hagezi-referral-allow.txt");
-const ADBLOCK: &str = include_str!("testdata/hagezi-light.adblock");
-const NGINX_404: &str = include_str!("testdata/nginx-404.html");
+const STEVENBLACK: &str = include_str!("../../../testdata/plugins/stevenblack.hosts");
+const HAGEZI: &str = include_str!("../../../testdata/plugins/hagezi-light.txt");
+const WILDCARD: &str = include_str!("../../../testdata/plugins/hagezi-pro-wildcard.txt");
+const REFERRAL: &str = include_str!("../../../testdata/plugins/hagezi-referral-allow.txt");
+const ADBLOCK: &str = include_str!("../../../testdata/plugins/hagezi-light.adblock");
+const NGINX_404: &str = include_str!("../../../testdata/plugins/nginx-404.html");
 
 fn lists(text: &str) -> Lists {
     let mut lists = Lists::new();
@@ -776,13 +775,9 @@ fn a_line_that_fails_leaves_none_of_its_names() {
     assert_eq!(names.check(Tlds::Allow).map(|read| read.skipped), Ok(1));
 }
 
-/// A response captured from a real server, in the `testdata` of `dedens-proto` or `dedens-dnssec`.
-fn capture(crate_name: &str, id: &str) -> Message<'static> {
-    let path = format!(
-        "{}/../{crate_name}/tests/testdata/{id}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let wire = std::fs::read(path).expect("a capture");
+/// A response captured from a real server, in `testdata/proto` or `testdata/dnssec` (`set`).
+fn capture(set: &str, id: &str) -> Message<'static> {
+    let wire = std::fs::read(dedens_testkit::path(&format!("{set}/{id}.bin"))).expect("a capture");
     Message::decode(&wire)
         .expect("a capture decodes")
         .message
@@ -793,13 +788,13 @@ fn capture(crate_name: &str, id: &str) -> Message<'static> {
 fn chains() -> Vec<Message<'static>> {
     vec![
         // `www.ripe.net.` CNAME `www.ripe.net.edgekey.net.` CNAME `e337066.dscb.akamaiedge.net.`
-        capture("dedens-dnssec", "cname_to_insecure"),
+        capture("dnssec", "cname_to_insecure"),
         // `www.icann.org.` CNAME `www.icann.org.cdn.cloudflare.net.`
-        capture("dedens-dnssec", "cname_cross_zone"),
+        capture("dnssec", "cname_cross_zone"),
         // `www.github.com.` CNAME `github.com.`, and its address.
-        capture("dedens-proto", "cname_chain"),
+        capture("proto", "cname_chain"),
         // `dname.sidnlabs.nl.` DNAME `example.nl.`, and the CNAME made from it.
-        capture("dedens-dnssec", "dname_answer"),
+        capture("dnssec", "dname_answer"),
     ]
 }
 
@@ -867,7 +862,7 @@ fn blocklist_of(block: &str) -> Blocklist {
 /// `example.nl.` as the DNAME's target only (RFC 6672 §2.1).
 #[test]
 fn a_listed_dname_target_blocks_the_response() {
-    let mut response = capture("dedens-dnssec", "dname_answer");
+    let mut response = capture("dnssec", "dname_answer");
     assert_eq!(
         targets(&response),
         ["wWw.example.nl."],
@@ -889,7 +884,7 @@ fn a_listed_dname_target_blocks_the_response() {
 /// answering a query for its owner leads nowhere, whatever its target.
 #[test]
 fn a_dname_does_not_redirect_its_owner() {
-    let mut response = capture("dedens-dnssec", "dname_answer");
+    let mut response = capture("dnssec", "dname_answer");
     let owner = response
         .answer
         .iter()
@@ -905,7 +900,7 @@ fn a_dname_does_not_redirect_its_owner() {
 /// the DNAME it was made from, the DNAME's target is still checked, though the CNAME's target is allowed.
 #[test]
 fn a_dname_after_its_cname_is_checked() {
-    let mut response = capture("dedens-dnssec", "dname_answer");
+    let mut response = capture("dnssec", "dname_answer");
     let blocklist = blocklist("example.nl\n", "www.example.nl\n", Action::Nxdomain);
     assert!(review(&blocklist, &response).is_some(), "as captured");
     response
@@ -920,7 +915,7 @@ fn a_dname_after_its_cname_is_checked() {
 /// (D118).
 #[test]
 fn the_allowlist_decides_for_targets_as_for_names() {
-    let response = capture("dedens-dnssec", "cname_to_insecure");
+    let response = capture("dnssec", "cname_to_insecure");
     let listed = "akamaiedge.net\n";
     for (allow, passes) in [
         ("e337066.dscb.akamaiedge.net\n", true),
@@ -939,7 +934,7 @@ fn the_allowlist_decides_for_targets_as_for_names() {
 /// question's type, whatever the chain.
 #[test]
 fn a_blocked_response_is_answered_as_the_action_says() {
-    let response = capture("dedens-dnssec", "cname_to_insecure");
+    let response = capture("dnssec", "cname_to_insecure");
     for (action, rcode, records) in [
         (Action::Nxdomain, Rcode::NXDOMAIN, false),
         (Action::Nodata, Rcode::NOERROR, false),
@@ -1022,7 +1017,7 @@ fn a_chain_over_the_bound_is_servfail() {
 /// the capture holds a DNAME and the CNAME made from it, and the listed name is found through either.
 #[test]
 fn a_dname_and_its_cname_are_one_hop() {
-    let response = capture("dedens-dnssec", "dname_answer");
+    let response = capture("dnssec", "dname_answer");
     let types = response
         .answer
         .iter()
@@ -1061,7 +1056,7 @@ fn resolve(pipeline: &Pipeline, response: &Message<'_>) -> Message<'static> {
 /// instead of the addresses of the tracker; a list that holds none of the chain leaves the response as it is.
 #[test]
 fn a_chain_to_a_listed_name_is_not_served() {
-    let response = capture("dedens-dnssec", "cname_to_insecure");
+    let response = capture("dnssec", "cname_to_insecure");
     let pipeline = pipeline("akamaiedge.net\n", Action::Nxdomain);
     let reply = resolve(&pipeline, &response);
     assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NXDOMAIN, 0));

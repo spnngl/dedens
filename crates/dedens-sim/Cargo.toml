@@ -14,6 +14,7 @@ dedens-cache.workspace = true
 dedens-net.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
+dedens-testkit.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = [

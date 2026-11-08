@@ -15,11 +15,8 @@ CNAMEs a caller chases), `covered.rs` the response cut to what a Secure verdict 
 server alike, `cache.rs` the key cache the validator shares between its validations (D86): written by `settle`,
 read by `zone_of`, only what the data decided.
 
-- `tests/testdata/`: real responses from `just capture-dnssec` (the queries of `capture.yaml`), `captured_at`
-  the "now" of the tests, `README.md` what each shows and the verdict a validator gives. Read by
-  `tests/captured.rs` and `tests/captured_rrsig.rs`; fuzz seeds. Regenerate with `just capture-dnssec`.
-- `tests/zones/`: example zones of RFCs read by the tests (RFC 4035 Appendix A; RFC 5155 Appendix A is in
-  `dedens-proto`). `tests/common/denial.rs`: helpers of the denial tests; `tests/denial_captured.rs` checks each
+- `tests/captured.rs` and `tests/captured_rrsig.rs` read the captures of `testdata/dnssec/`; the denial tests the
+  example zones of `testdata/zones/` (RFC 4035 and RFC 5155 Appendix A). `tests/common/denial.rs`: helpers of the denial tests; `tests/denial_captured.rs` checks each
   negative capture proves what its rcode says, and lists them: a new capture with a denial goes in its table. The
   fuzz target `denial` (`fuzz/`) runs `prove` on any records; `rrsig_verify` runs the `rrsig` checks; `validate`
   runs a `Validation` on any response. `tests/validator.rs` answers the validator's questions from the captures.

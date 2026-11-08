@@ -1,0 +1,12 @@
+[package]
+name = "dedens-testkit"
+description = "Test data and helpers shared by the tests, benches, fuzz targets and simulations of the workspace."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

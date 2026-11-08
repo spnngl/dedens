@@ -1,5 +1,5 @@
 //! Family 05, DNSSEC: the validating resolver (D77) of the run, over the captured signed zones of
-//! `crates/dedens-dnssec/tests/testdata`, with the clock of the run set at the time of the capture (`captured_at`)
+//! `testdata/dnssec`, with the clock of the run set at the time of the capture (`captured_at`)
 //! so that their signatures are valid, and a few runs set later.
 //!
 //! The upstream server answers each question the captures hold: the client's, and the DS, DNSKEY and denial
@@ -18,7 +18,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroU8;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -111,7 +111,7 @@ fn zone_of(name: &str) -> Zone {
 const COSTLY: &str = "b.8.6.0.0.0.1.c.0.0.0.0.0.0.0.0.2.2.0.0.8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa";
 
 fn testdata() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata")
+    dedens_testkit::path("dnssec")
 }
 
 /// The Unix time the captures were taken at, when their signatures are valid.

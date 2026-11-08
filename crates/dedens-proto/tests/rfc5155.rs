@@ -3,16 +3,14 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
 
 use common::{decode_record, encode_record, rdata_wire, record_wire};
 use dedens_proto::rdata::{Nsec3, Nsec3Error, Nsec3Param, RData, TypeBitmap};
 use dedens_proto::{Nsec3HashAlgorithm, Record, RecordType, ZoneEntry, ZoneReader};
 
-/// The records of Appendix A's signed zone, `tests/zones/rfc5155_appendix_a.zone`.
+/// The records of Appendix A's signed zone, `testdata/zones/rfc5155_appendix_a.zone`.
 fn appendix_a() -> Vec<Record<'static>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/zones/rfc5155_appendix_a.zone");
-    let text = fs::read(path).expect("zone file");
+    let text = fs::read(dedens_testkit::path("zones/rfc5155_appendix_a.zone")).expect("zone file");
     let mut records = Vec::new();
     for entry in ZoneReader::new(&text, None) {
         match entry.expect("a valid zone") {

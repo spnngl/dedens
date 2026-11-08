@@ -1,4 +1,4 @@
-//! The hosts plugin (D54) on the example file of hosts(5) (Linux man-pages, `testdata/hosts.5`): A and AAAA
+//! The hosts plugin (D54) on the example file of hosts(5) (Linux man-pages, `testdata/plugins/hosts.5`): A and AAAA
 //! records for its names (RFC 1035 §3.4.1, RFC 3596 §2.1), PTR records for the reverse names of its addresses
 //! (RFC 1035 §3.5, RFC 3596 §2.5), no data for other types (RFC 2308 §2.2).
 
@@ -9,7 +9,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, RecordType, Transport, Ttl};
 use dedens_server::{Forward, Pipeline, Stage, Step};
 
-const HOSTS: &str = include_str!("testdata/hosts.5");
+const HOSTS: &str = include_str!("../../../testdata/plugins/hosts.5");
 
 fn pipeline(fallthrough: bool) -> Pipeline {
     let hosts = Hosts::new(HOSTS, Ttl::from_wire(3600), fallthrough).expect("the example reads");

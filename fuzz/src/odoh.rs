@@ -387,7 +387,7 @@ impl TryRng for Fixed {
 
 impl TryCryptoRng for Fixed {}
 
-/// The target of the `odoh-go` vector (`crates/dedens-odoh/tests/testdata/README.md`): its `public_key_seed`, so
+/// The target of the `odoh-go` vector (`testdata/odoh/README.md`): its `public_key_seed`, so
 /// that the captured query below decrypts.
 static ODOH_KEY: LazyLock<TargetKey> = LazyLock::new(|| {
     TargetKey::derive(&[
@@ -398,8 +398,7 @@ static ODOH_KEY: LazyLock<TargetKey> = LazyLock::new(|| {
 });
 
 /// A query `odoh-go` encrypted for [`ODOH_KEY`].
-const ODOH_QUERY: &[u8] =
-    include_bytes!("../../crates/dedens-odoh/tests/testdata/odoh-go-query.bin");
+const ODOH_QUERY: &[u8] = include_bytes!("../../testdata/odoh/odoh-go-query.bin");
 
 /// The context of a query of our own: no response of the fuzzer can authenticate under it. Made once, since
 /// the key exchange is slow unoptimized.

@@ -13,6 +13,6 @@ The dig-like CLI (D18, D32, D33): a thin binary over `dedens-net` and `dedens-sc
 - `src/trace.rs`: `+trace` (D40), from the bundled `src/named.root`, which `just root-hints` refreshes.
 - `tests/odoh.rs`: `+odoh-proxy` (D79) against the loopback target of `tests/common`, with the `odoh` feature.
 - `tests/cli.rs`: the binary against `tests/common`, a UDP and TCP (or TLS, QUIC, HTTP/3 or CoAP) loopback server answering
-  with the captured responses of `crates/dedens-proto/tests/testdata`; insta snapshots in `tests/snapshots/`, accepted with
+  with the captured responses of `testdata/proto`; insta snapshots in `tests/snapshots/`, accepted with
   `INSTA_UPDATE=always` after review. `DEDENS_RESOLV_CONF` points the binary at a test `resolv.conf`. The loopback server also serves the captures of
-  `crates/dedens-dnssec/tests/testdata`, which `+validate` is tested with at their `captured_at` (`DEDENS_NOW`).
+  `testdata/dnssec`, which `+validate` is tested with at their `captured_at` (`DEDENS_NOW`).

@@ -273,11 +273,8 @@ mod tests {
     use super::*;
 
     fn captured(name: &str) -> Message<'static> {
-        let path = format!(
-            "{}/../../crates/dedens-proto/tests/testdata/{name}.bin",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let wire = std::fs::read(path).expect("captured response");
+        let wire = std::fs::read(dedens_testkit::path(&format!("proto/{name}.bin")))
+            .expect("captured response");
         Message::decode(&wire)
             .expect("decodes")
             .message

@@ -4,7 +4,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use common::{dnskey_rdata, name};
 use dedens_dnssec::crypto::{ds_digest, key_tag};
@@ -46,7 +45,7 @@ fn s2_bundled_anchors_are_the_roots_ds_records() {
 
 #[test]
 fn s2_bundled_anchors_match_the_captured_root_dnskeys() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/root_dnskey.bin");
+    let path = dedens_testkit::path("dnssec/root_dnskey.bin");
     let wire = fs::read(path).expect("captured root DNSKEY response");
     let decoded = Message::decode(&wire).expect("decodes");
     let message = decoded.message.into_owned();

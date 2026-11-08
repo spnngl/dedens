@@ -2,8 +2,8 @@
 
 Simulation tests (D133): the sans-IO cores, `dedens_net::exchange` and `dedens_server::Pipeline`, as hosts of a
 seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`; the driver in `src/` mirrors
-`dedensd`'s glue and leaves out what D133 lists. Scenarios use captured responses (`crates/dedens-proto/tests/testdata`,
-`crates/dedens-dnssec/tests/testdata`).
+`dedensd`'s glue and leaves out what D133 lists. Scenarios use captured responses (`testdata/proto`,
+`testdata/dnssec`).
 
 - `src/seed.rs`: `Seed`, `each` (runs a scenario under the fixed seeds, `DEDENS_SIM_SEED` or `DEDENS_SIM_RUNS`, and
   prints a failing seed), `in_two_processes`, `Rng` (IDs, cookies and fault times of a host).
@@ -63,10 +63,10 @@ What a scenario uses, so that it adds test files and no driver code:
 - Resolver: `Topology::resolver(|upstreams| pipeline)` builds the pipeline at each start (stages, access lists, rate
   limits, cookies, a validator). A cache in it must have `shards: 1`: `pipeline_with`, `pipeline_forwarding` (a `Forward` of the
   scenario's timeout and tries) and `pipeline_validating` force it. A validating stage takes `wall_clock()` as its clock, with `Topology::epoch` at the time of the
-  captures (`captured_at` of `crates/dedens-dnssec/tests/testdata`). The oracle's `Rules::floor` and `stale_ttl`
+  captures (`captured_at` of `testdata/dnssec`). The oracle's `Rules::floor` and `stale_ttl`
   must be the cache's `min_ttl` and `stale_answer_ttl` where the scenario changes them. A forward target other than
   plain DNS panics. `Answers::file`,
-  `directory` hold any captures (`<id>.bin` of `crates/dedens-dnssec/tests/testdata` too); `Answers::cookies` has the
+  `directory` hold any captures (`<id>.bin` of `testdata/dnssec` too); `Answers::cookies` has the
   server set a cookie of its own.
 - Clients start 5 ms into the run, after the hosts bound their ports (turmoil starts hosts in no fixed order, and a
   datagram to a port not bound yet is lost). `World::client`, or `World::client_at(ip, ..)` for sources in chosen networks (outside 192.168.0.0/16,

@@ -18,5 +18,8 @@ dedens-server.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
+[dev-dependencies]
+dedens-testkit.workspace = true
+
 [lints]
 workspace = true

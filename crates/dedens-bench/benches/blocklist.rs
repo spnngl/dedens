@@ -17,11 +17,11 @@ use dedens_server::{Forward, Pipeline, Plugin, Stage, Step};
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
 const BLOCK: [&str; 3] = [
-    include_str!("../../dedens-plugins/tests/testdata/stevenblack.hosts"),
-    include_str!("../../dedens-plugins/tests/testdata/hagezi-light.txt"),
-    include_str!("../../dedens-plugins/tests/testdata/hagezi-pro-wildcard.txt"),
+    include_str!("../../../testdata/plugins/stevenblack.hosts"),
+    include_str!("../../../testdata/plugins/hagezi-light.txt"),
+    include_str!("../../../testdata/plugins/hagezi-pro-wildcard.txt"),
 ];
-const ALLOW: &str = include_str!("../../dedens-plugins/tests/testdata/hagezi-referral-allow.txt");
+const ALLOW: &str = include_str!("../../../testdata/plugins/hagezi-referral-allow.txt");
 
 fn main() {
     divan::main();
@@ -202,7 +202,7 @@ fn hit(bencher: divan::Bencher<'_, '_>, reviewed: bool) {
     let query = Message::query(7, Question::new(name, RecordType::A))
         .to_vec()
         .expect("a query fits");
-    let response = include_bytes!("../../dedens-dnssec/tests/testdata/cname_to_insecure.bin");
+    let response = include_bytes!("../../../testdata/dnssec/cname_to_insecure.bin");
     let mut out = vec![0; 1232];
     let client = Ipv4Addr::LOCALHOST.into();
     let Step::Upstream(asked) = pipeline.query(&query, Transport::Udp, client, 0, &mut out) else {

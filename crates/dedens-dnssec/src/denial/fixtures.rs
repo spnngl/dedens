@@ -1,14 +1,12 @@
 //! Test fixtures shared by the proptests of `nsec` and `nsec3`: the example zones of RFC 4035 and RFC 5155
 //! Appendix A, and names around theirs.
 
-use std::path::Path;
-
 use dedens_proto::{Name, Record, ZoneEntry, ZoneReader};
 use proptest::prelude::*;
 
-/// The records of the zone file at `path`, relative to the crate.
-pub(super) fn zone(path: &str) -> Vec<Record<'static>> {
-    let text = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).expect("zone file");
+/// The records of the zone file `file` of `testdata/zones/`.
+pub(super) fn zone(file: &str) -> Vec<Record<'static>> {
+    let text = std::fs::read(dedens_testkit::path("zones").join(file)).expect("zone file");
     ZoneReader::new(&text, None)
         .filter_map(|e| match e.expect("a zone") {
             ZoneEntry::Record(decoded) => Some(decoded.record),

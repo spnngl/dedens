@@ -1,4 +1,4 @@
-//! Every negative response of `testdata/capture.yaml` (described in `testdata/README.md`) proves what its rcode
+//! Every negative response of `testdata/dnssec/capture.yaml` (described in its `README.md`) proves what its rcode
 //! and question say: a name error, no data, a wildcard no data or an unsigned delegation, by NSEC or NSEC3 of
 //! any parameters, opt-out or not. The records are those of the response, whose signatures `captured.rs` and
 //! the validator check; here they are trusted.
@@ -8,7 +8,6 @@ mod common;
 mod support;
 
 use std::fs;
-use std::path::PathBuf;
 
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, Fact, MaxIterations};
@@ -136,8 +135,7 @@ fn every_negative_capture_proves_what_it_says() {
 /// A new capture with a denial in it has to be added to the tables above.
 #[test]
 fn every_capture_with_a_denial_is_listed() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/testdata");
-    for entry in fs::read_dir(dir).expect("testdata directory") {
+    for entry in fs::read_dir(dedens_testkit::path("dnssec")).expect("testdata directory") {
         let path = entry.expect("entry").path();
         let Some(id) = path.extension().is_some_and(|e| e == "bin").then(|| {
             path.file_stem()

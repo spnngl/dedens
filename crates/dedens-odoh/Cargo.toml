@@ -16,6 +16,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 data-encoding.workspace = true
+dedens-testkit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

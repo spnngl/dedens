@@ -1,7 +1,7 @@
-//! The signatures and DS records of the captured responses (`testdata/README.md`) through `dedens_dnssec::rrsig`:
-//! every signed `RRset` verifies at `captured_at` with the keys of its signer, fails after its expiration and
-//! before its inception, and fails with one byte of its RDATA changed; every zone's DNSKEY `RRset` is vouched
-//! for by its DS records, or not, as the README says.
+//! The signatures and DS records of the captured responses (`testdata/dnssec/README.md`) through
+//! `dedens_dnssec::rrsig`: every signed `RRset` verifies at `captured_at` with the keys of its signer, fails after
+//! its expiration and before its inception, and fails with one byte of its RDATA changed; every zone's DNSKEY
+//! `RRset` is vouched for by its DS records, or not, as the README says.
 
 mod common;
 

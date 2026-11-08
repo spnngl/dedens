@@ -6,7 +6,7 @@
 
 The client is Cloudflare's `odoh-rs` (`odoh-rs/`, from crates.io: it seals a query to the target's configurations and
 opens the response) and `aioquic` (the HTTP/3 POSTs and GET: the system's curl has no HTTP/3). The queries are the
-captured ones of `crates/dedens-net/tests/testdata/doh/`; the answers come from 8.8.8.8, so the network is needed.
+captured ones of `testdata/doh/`; the answers come from 8.8.8.8, so the network is needed.
 
 Run from the repository root, with `uv` and a Rust toolchain:
 
@@ -40,7 +40,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-DOH = ROOT / "crates/dedens-net/tests/testdata/doh"
+DOH = ROOT / "testdata/doh"
 MEDIA_TYPE = "application/oblivious-dns-message"
 NAME = "localhost"
 UPSTREAM = "8.8.8.8"

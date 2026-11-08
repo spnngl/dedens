@@ -1,12 +1,11 @@
 //! RFC 9230: configs (§5), message formats (§6.1), the query and response encryption (§6.2, §7, §8).
 //!
 //! Real data: the config Cloudflare serves, and the vectors of `cloudflare/odoh-go`; both are described in
-//! `testdata/README.md`. Nothing else in RFC 9230 is a byte-level example.
+//! `testdata/odoh/README.md`. Nothing else in RFC 9230 is a byte-level example.
 
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use common::{Replay, hex};
 use dedens_odoh::{
@@ -19,12 +18,7 @@ use ring::{aead, hkdf};
 use serde::Deserialize;
 
 fn testdata(name: &str) -> Vec<u8> {
-    fs::read(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/testdata")
-            .join(name),
-    )
-    .expect("test data file")
+    fs::read(dedens_testkit::path("odoh").join(name)).expect("test data file")
 }
 
 #[derive(Deserialize)]

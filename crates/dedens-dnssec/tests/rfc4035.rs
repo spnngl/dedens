@@ -3,7 +3,7 @@
 //! checks that RFC 4035 leaves open (D73).
 //!
 //! RFC 4035 §5.2, §5.4: the denials of existence of Appendix B, from the NSEC records of the example zone of
-//! Appendix A, `tests/zones/rfc4035_appendix_a.zone` (D74).
+//! Appendix A, `testdata/zones/rfc4035_appendix_a.zone` (D74).
 
 mod common;
 #[path = "common/denial.rs"]
@@ -459,11 +459,7 @@ const APEX: &str = "example.";
 const TTL: Ttl = Ttl::from_wire(3600);
 
 fn nsecs(owners: &[&str]) -> Vec<Record<'static>> {
-    pick(
-        &zone("tests/zones/rfc4035_appendix_a.zone"),
-        RecordType::NSEC,
-        owners,
-    )
+    pick(&zone("rfc4035_appendix_a.zone"), RecordType::NSEC, owners)
 }
 
 fn proof(fact: Fact) -> Proof {

@@ -7,7 +7,7 @@
 /// 1.2 kB.
 pub const CASES: [&str; 3] = ["a", "mx", "txt_large"];
 
-/// The captured response `case` from `crates/dedens-proto/tests/testdata/`.
+/// The captured response `case` from `testdata/proto/`.
 ///
 /// # Panics
 ///
@@ -18,11 +18,8 @@ pub const CASES: [&str; 3] = ["a", "mx", "txt_large"];
     reason = "a bench without its input has nothing to measure"
 )]
 pub fn wire(case: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/../dedens-proto/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(&path).unwrap_or_else(|e| panic!("captured response {path}: {e}"))
+    let path = dedens_testkit::path(&format!("proto/{case}.bin"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("captured response {}: {e}", path.display()))
 }
 
 /// Hosts in the benched zone: about three records each, so about 100 000 records.

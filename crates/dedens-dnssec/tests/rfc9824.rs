@@ -1,5 +1,5 @@
 //! RFC 9824 (compact denial of existence): an NSEC or NSEC3 with NXNAME in its bitmap, under NOERROR, proves a
-//! name error; one with the types of the name proves no data. The Cloudflare captures of `testdata/` are the
+//! name error; one with the types of the name proves no data. The Cloudflare captures of `testdata/dnssec/` are the
 //! responses.
 
 mod common;
@@ -93,7 +93,7 @@ fn nxname_is_not_a_question() {
 /// denial by NSEC3.
 #[test]
 fn nsec3_nxname_is_a_name_error() {
-    let zone = zone("../dedens-proto/tests/zones/rfc5155_appendix_a.zone");
+    let zone = zone("rfc5155_appendix_a.zone");
     let records: Vec<_> = pick(
         &zone,
         RecordType::NSEC3,

@@ -13,6 +13,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+dedens-testkit.workspace = true
 insta.workspace = true
 proptest.workspace = true
 

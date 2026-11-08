@@ -141,13 +141,9 @@ pub(crate) fn min_cache(min_ttl: u32) -> Cache {
     .expect("a valid config")
 }
 
-/// A response captured from a real server, in `crates/dedens-proto/tests/testdata`.
+/// A response captured from a real server, in `testdata/proto`.
 pub(crate) fn captured(case: &str) -> Vec<u8> {
-    std::fs::read(format!(
-        "{}/../dedens-proto/tests/testdata/{case}.bin",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("a captured response")
+    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// The query a captured response answers: its question, RD set, EDNS without DO.

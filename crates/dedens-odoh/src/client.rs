@@ -107,9 +107,10 @@ mod tests {
     /// client's context is made from the target's: both hold the same exporter secret and query plaintext.
     #[test]
     fn decrypts_the_responses_of_odoh_go() {
-        let vectors: Value =
-            serde_json::from_str(include_str!("../tests/testdata/odoh-go-test-vectors.json"))
-                .expect("the vectors");
+        let vectors: Value = serde_json::from_str(include_str!(
+            "../../../testdata/odoh/odoh-go-test-vectors.json"
+        ))
+        .expect("the vectors");
         for vector in vectors.as_array().expect("an array") {
             let seed: [u8; 32] = hex(&vector["public_key_seed"])
                 .try_into()

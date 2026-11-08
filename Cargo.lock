@@ -896,6 +896,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-proto",
  "dedens-scenario",
+ "dedens-testkit",
  "http",
  "idna",
  "insta",
@@ -923,6 +924,7 @@ dependencies = [
  "dedens-plugins",
  "dedens-proto",
  "dedens-server",
+ "dedens-testkit",
  "divan",
  "domain",
  "hickory-proto",
@@ -935,6 +937,7 @@ name = "dedens-cache"
 version = "0.1.0"
 dependencies = [
  "dedens-proto",
+ "dedens-testkit",
  "metrics",
  "metrics-util",
  "proptest",
@@ -949,6 +952,7 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "dedens-proto",
+ "dedens-testkit",
  "proptest",
  "ring",
  "thiserror",
@@ -961,6 +965,7 @@ dependencies = [
  "compio",
  "dedens-odoh",
  "dedens-proto",
+ "dedens-testkit",
  "flume",
  "futures-util",
  "getrandom 0.4.3",
@@ -979,6 +984,7 @@ name = "dedens-odoh"
 version = "0.1.0"
 dependencies = [
  "data-encoding",
+ "dedens-testkit",
  "hpke",
  "ring",
  "serde",
@@ -993,6 +999,7 @@ version = "0.1.0"
 dependencies = [
  "dedens-proto",
  "dedens-server",
+ "dedens-testkit",
  "serde",
  "thiserror",
 ]
@@ -1001,6 +1008,7 @@ dependencies = [
 name = "dedens-proto"
 version = "0.1.0"
 dependencies = [
+ "dedens-testkit",
  "insta",
  "proptest",
  "thiserror",
@@ -1026,6 +1034,7 @@ dependencies = [
  "dedens-cache",
  "dedens-dnssec",
  "dedens-proto",
+ "dedens-testkit",
  "ipnet",
  "metrics",
  "metrics-util",
@@ -1047,12 +1056,17 @@ dependencies = [
  "dedens-net",
  "dedens-proto",
  "dedens-server",
+ "dedens-testkit",
  "getrandom 0.4.3",
  "rcgen",
  "thiserror",
  "tokio",
  "turmoil",
 ]
+
+[[package]]
+name = "dedens-testkit"
+version = "0.1.0"
 
 [[package]]
 name = "dedensd"
@@ -1070,6 +1084,7 @@ dependencies = [
  "dedens-proto",
  "dedens-scenario",
  "dedens-server",
+ "dedens-testkit",
  "flate2",
  "flume",
  "futures-util",

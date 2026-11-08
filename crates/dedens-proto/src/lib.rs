@@ -10,7 +10,7 @@
 //! assert_eq!(Message::decode(&query)?.message.questions.len(), 1);
 //!
 //! // The response 1.1.1.1 gave (`just capture`): borrowed from the bytes, the rules it breaks beside it.
-//! let response = Message::decode(include_bytes!("../tests/testdata/a.bin"))?;
+//! let response = Message::decode(include_bytes!("../../../testdata/proto/a.bin"))?;
 //! assert!(response.violations.is_empty());
 //! for record in &response.message.answer {
 //!     assert!(matches!(record.data(), RData::A(_)));

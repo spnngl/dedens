@@ -6,13 +6,13 @@ extend-exclude = [
   "apps/dedens/src/named.root",
   "apps/dedensd/tests/end_to_end.yaml",
   # RFC 5155 appendix A, as published.
-  "crates/dedens-proto/tests/zones/rfc5155_appendix_a.zone",
+  "testdata/zones/rfc5155_appendix_a.zone",
   # RFC 4035 appendix A, as published.
-  "crates/dedens-dnssec/tests/zones/rfc4035_appendix_a.zone",
+  "testdata/zones/rfc4035_appendix_a.zone",
   # Blocklists and hosts files, as published.
-  "crates/dedens-plugins/tests/testdata/",
+  "testdata/plugins/",
   # Hex of captured CoAP datagrams.
-  "crates/dedens-net/tests/testdata/coap/",
+  "testdata/coap/",
 ]
 [default]
 # RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:

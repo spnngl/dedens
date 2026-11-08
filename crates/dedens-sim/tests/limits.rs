@@ -31,7 +31,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -590,7 +589,7 @@ const COLD: [&str; 5] = [
 /// `SHARE_REFILL` a second. The links of the resolver take no time, so that what a run asks is within one second of
 /// its clock.
 fn validating_world(seed: Seed, share: u32) -> World {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dedens-dnssec/tests/testdata");
+    let dir = dedens_testkit::path("dnssec");
     let at: u64 = std::fs::read_to_string(dir.join("captured_at"))
         .expect("the time of the capture")
         .trim()

@@ -746,7 +746,7 @@ extra hop. Three runs on a quiet machine agree within 1%.
 
 ## DNSSEC `RRset` verification (D73)
 
-`benches/dnssec.rs`, `verify_rrset`: one `rrsig::verify` of a captured `RRset` (`crates/dedens-dnssec/tests/testdata`)
+`benches/dnssec.rs`, `verify_rrset`: one `rrsig::verify` of a captured `RRset` (`testdata/dnssec`)
 with its RRSIG and key: the checks of RFC 4035 §5.3.1, the canonical form and order of the RDATA, the signed data
 and the signature. Microseconds.
 
@@ -831,7 +831,7 @@ the tables by name or an `RwLock` is for a measured need (TODECIDE). Not measure
 
 ## CoAP (D80)
 
-`benches/coap.rs`, medians in nanoseconds, one run, on the datagrams of `tests/testdata/coap/fetch_doc.txt`: aiocoap's
+`benches/coap.rs`, medians in nanoseconds, one run, on the datagrams of `testdata/coap/fetch_doc.txt`: aiocoap's
 FETCH for the quad9 MX query (38 B payload) and the real response (161 B payload). `exchange` starts the request
 and reads the response through `Exchange`, copying the request in.
 

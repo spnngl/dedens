@@ -1,9 +1,8 @@
 //! A loopback DNS server for the command's tests: it answers over UDP and TCP, or TLS, QUIC or HTTP/3, with the captured responses of
-//! `crates/dedens-proto/tests/testdata`, their ID and question set to the query's, and keeps every query it gets.
+//! `testdata/proto`, their ID and question set to the query's, and keeps every query it gets.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -485,9 +484,7 @@ fn canned(names: &[&str]) -> Arc<Vec<Canned>> {
 
 /// As [`canned`], and the responses in `wires`.
 fn canned_with(names: &[&str], wires: &[Vec<u8>]) -> Arc<Vec<Canned>> {
-    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates");
-    let dirs =
-        ["dedens-proto", "dedens-dnssec"].map(|krate| crates.join(krate).join("tests/testdata"));
+    let dirs = ["proto", "dnssec"].map(dedens_testkit::path);
     let canned = names.iter().map(|name| {
         let file = format!("{name}.bin");
         let dir = dirs
