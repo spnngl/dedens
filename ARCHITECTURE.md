@@ -4,21 +4,22 @@
 
 | Path | Role | I/O |
 |---|---|---|
-| `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS; public modules `rdata` and `edns`, every other item at the root (D160) | none (sans-IO) |
+| `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
-| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures (`crypto/`; `rrsig/`: an `RRset` by its RRSIG and DNSKEY, a DNSKEY `RRset` by its DS), denial of existence, chain of trust and the verdict on a response (`Validator`); public modules `crypto`, `rrsig` and `denial`, every other item at the root (D160) | none (sans-IO), time passed in |
-| `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69): configurations, message encryption | none (sans-IO) |
-| `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over a sans-IO exchange; the client's UDP and TCP pools generic over the `Io` seam, `Compio` in production (D134); the sans-IO cores of DoH (D82) and CoAP (D80); Oblivious DoH over HTTP/3, `odoh` feature (D79); `resolv.conf` | sockets, timers |
+| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response | none (sans-IO), time passed in |
+| `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69, D78): configurations, message encryption | none (sans-IO) |
+| `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over sans-IO cores; the client's pools behind the `Io` seam (D134); Oblivious DoH, `odoh` feature (D79); `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
-| `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the DNSSEC captures and RFC examples, the test certificates and the loopback responder of the command-line tests (features `certificates`, `responder`); public modules `dnssec`, `certificates` and `responder`, every other item at the root (D160) | files, sockets (`responder`) |
+| `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the RFC examples' keys, the test certificates and the loopback responder of the binaries' tests | files, sockets (`responder`) |
 | `crates/dedens-sim` | Simulation tests (D133, D134): the sans-IO server core and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network | simulated |
 | `crates/dedens-repo` | The repository checks of the gate (D140, D163), its tests alone: decisions, RFC coverage, `CLAUDE.md` links, pinned Rust | files (`git ls-files`) |
 | `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
 | `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122) | sockets, files, HTTP (lists) |
-| `fuzz/` | libFuzzer targets, own workspace | none |
+| `deploy/` | What a release ships beside the binaries (D153, D156, D158): the image's `dedensd.yaml`, the deb and rpm packages' files (systemd unit, sysusers, maintainer scripts, man pages that `just man` writes and each binary's tests compare with its command line), the licence report's `about.toml` | none |
+| `fuzz/` | libFuzzer targets of the parsers of outside data, own workspace | none |
 | `testdata/` | Real data the tests, benches, fuzz targets and simulations share: captures, RFC example zones, lists (D161) | read as files |
 
 Planned: `dedens-resolver`.
