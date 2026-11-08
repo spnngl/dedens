@@ -16,19 +16,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   2024-05), monoio (5 commits a year), glommio (dead since 2025-04), tokio's `io-uring` feature (files only), raw
   `io-uring` (we would write a runtime). Fallback: tokio. Risk: compio is 0.x, contained by D5.
 - D5 `dedens-proto` is sans-IO, so a runtime change touches one crate and the server reuses the codec as is.
-- D160 (builds on D1, D159) A library crate exports each public item at one path: its modules are private and
-  `lib.rs` re-exports their public items at the root, one sorted `pub use` list, as ripgrep's `grep-*` crates.
-  Exceptions, each a public module whose items are not re-exported: `dedens-net` keeps every module public, as
+- D160 (builds on D1, D159; amended by D161) A library crate exports each public item at one path: its modules are
+  private and `lib.rs` re-exports their public items at the root, one sorted `pub use` list, as ripgrep's `grep-*`
+  crates. Exceptions, each a public module whose items are not re-exported: `dedens-net` keeps every module public, as
   several of its items share a name (`Exchange` x2, `Options`, `Response`, `Failure`, `Link`); `dedens-proto` keeps
   `rdata` and `edns` (`rdata::RData`, `edns::Edns`; `edns::Option` would shadow `std`) and `dedens-dnssec` keeps
   `crypto`, `rrsig` and `denial`, families a reader names, and flattens `anchor` and `validator`. Every other library
-  crate is flat. A name read at the root carries what the module gave it: `ZoneEntry`, not `text::Entry`; an error
-  is `<Thing>Error` (`SubnetError`, `CookieError`). A crate re-exports none of its dependencies' items (`Transport`
-  is `dedens_proto::Transport` only). The workspace lint `unnameable_types` flags a type the API hands out that no
-  path names, as an item of a private module the root forgot. Why: an item reachable at two paths gets imported
-  both ways (`Transport` was imported from four), and a reader cannot tell they are one item. Rejected: every
-  module public with no re-export (the paths repeat the type, `name::Name`); a glob `pub use` (hides what is
-  exported).
+  crate is flat. A name read at the root carries what the module gave it: `ZoneEntry`, not `text::Entry`; an error is
+  `<Thing>Error` (`SubnetError`, `CookieError`). A crate re-exports none of its dependencies' items (`Transport` is
+  `dedens_proto::Transport` only). The workspace lint `unnameable_types` flags a type the API hands out that no path
+  names, as an item of a private module the root forgot. Why: an item reachable at two paths gets imported both ways
+  (`Transport` was imported from four), and a reader cannot tell they are one item. Rejected: every module public with
+  no re-export (the paths repeat the type, `name::Name`); a glob `pub use` (hides what is exported).
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
@@ -1298,17 +1297,17 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
-- D140 (builds on D16; amended by D161) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the tracked files
-  (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of `.gitignore`). A decision
-  cited in the text files of `crates/`, `apps/`, `fuzz/` and `docs/` (not RFC archives or captured data) and in the
-  `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A header's `amends`, `supersedes` or
-  `narrows` is matched by the other's `amended by`, `superseded by` or `narrowed by`, and the reverse; a supersession
-  of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each other; `builds on` and
-  `completes` are one-sided, and a clause naming decisions in another form fails. Every path in a Code or Tests cell
-  of `docs/rfc/coverage.md` exists (braces and a `*` in the last component allowed), every `tests/rfcNNNN.rs` has its
-  row, every `AGENTS.md` has its `CLAUDE.md` symlink. Each check runs once on a small broken input in the same file.
-  No `syn`: nothing here parses Rust, string matching does it, with no new dependency. Not checked: that a row lists
-  its test file, or that its status is true.
+- D140 (builds on D16; amended by D161) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the
+  tracked files (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of
+  `.gitignore`). A decision cited in the text files of `crates/`, `apps/`, `fuzz/`, `testdata/` and `docs/` (not RFC
+  archives or captured data) and in the `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A
+  header's `amends`, `supersedes` or `narrows` is matched by the other's `amended by`, `superseded by` or `narrowed by`,
+  and the reverse; a supersession of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each
+  other; `builds on` and `completes` are one-sided, and a clause naming decisions in another form fails. Every path in a
+  Code or Tests cell of `docs/rfc/coverage.md` exists (braces and a `*` in the last component allowed), every
+  `tests/rfcNNNN.rs` has its row, every `AGENTS.md` has its `CLAUDE.md` symlink. Each check runs once on a small broken
+  input in the same file. No `syn`: nothing here parses Rust, string matching does it, with no new dependency. Not
+  checked: that a row lists its test file, or that its status is true.
 - D138 (builds on D14, D16) Profiles are sampled, never instrumented. `just profile <bench> [filter]` runs a bench
   target under samply (launching needs no `samply setup`), the bench profile's line tables giving the names; `DEDENS_PERF=1
   just bench-dnsperf` runs the working tree's `dedensd` under `perf record --call-graph dwarf` in the container, built
@@ -1327,24 +1326,31 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   dependency of a module another package holds, reached by `#[path]`, which cargo-shear does not read (rcgen in
   `dedens` and `dedensd`, data-encoding in `dedens-bench`), went with those modules (D161). Rejected:
   cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
-- D161 (amends D140, D143; builds on D14, D16) Test data read by more than one package lives at the root, in
+- D161 (amends D140, D143, D160; builds on D14, D16) Test data read by more than one package lives at the root, in
   `testdata/`: `proto/` and `dnssec/` (the captures of `just capture` and `just capture-dnssec`), `zones/` (the RFC
   example zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte
   for byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names it:
-  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `hex`, `dns` and `zone`
-  replace the copies each crate's tests kept; `dnssec` holds the DNSSEC captures by question (`Captures`), their
-  `captured_at`, and the RFC examples' keys and signatures with the data an RRSIG signs, which `benches/dnssec.rs` of
-  `dedens-bench` reached by `#[path]`. The feature `certificates` adds the TLS certificates the encrypted transports'
-  tests make (D60), on `dedens-net`, compio and rcgen, which `dedens` and `dedensd` included from `dedens-net`'s tests
-  by `#[path]`; the default build depends on `dedens-proto` alone. The feature `responder` adds the loopback server the
-  tests of `dedens` and `dedensd` query, one for both where each kept its own: it serves the captures named over UDP and
-  TCP, TLS, QUIC or HTTP/3 (Oblivious `DoH` and CoAP with `odoh` and `doc`), matches a question by its name without case
-  and its type, answers with the query's ID and question, and keeps every query with its transport. A package reads the
-  data through the kit, never through another package's directory (`../dedens-*/tests/`), which tied each test to where
-  another crate kept its files, and no test includes another package's file by `#[path]`. cargo-mutants skips the kit,
-  test code as `tests/` is (`.cargo/mutants.toml`). Cargo unifies features over a workspace build, so `dedens-proto`'s
-  tests link `dedens-net` there too. `testdata/` is one of the folders D140 reads for decisions and one a coverage path
-  may start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).
+  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `message` (a capture
+  decoded without a violation), `hex`, `dns` and `zone` replace the copies each crate's tests kept; `dnssec` holds the
+  DNSSEC captures (`capture`, `response` decoded) and by question (`Captures`), their `captured_at`, and the RFC
+  examples' keys and signatures with the data an RRSIG signs, which `benches/dnssec.rs` of `dedens-bench` reached by
+  `#[path]`. The feature `certificates` adds the TLS certificates the encrypted transports' tests make (D60), on
+  `dedens-net`, compio and rcgen, which `dedens` and `dedensd` included from `dedens-net`'s tests by `#[path]`; the
+  default build depends on `dedens-proto` and data-encoding (the RFC examples' base64) alone. The feature `responder`
+  adds the loopback server the tests of `dedens` and `dedensd` query, one for both where each kept its own: it serves
+  the captures named over UDP and TCP, TLS, QUIC or HTTP/3 (Oblivious `DoH` and CoAP with `odoh` and `doc`), matches a
+  question by its name without case and its type, answers with the query's ID and question, and keeps every query with
+  its transport. A package reads the data through the kit, never through another package's directory
+  (`../dedens-*/tests/`), which tied each test to where another crate kept its files, and no test includes another
+  package's file by `#[path]`. cargo-mutants skips the kit, test code as `tests/` is (`.cargo/mutants.toml`). The kit's
+  public modules are one per concern, as D160's exceptions: `dnssec`, and `certificates` and `responder` behind their
+  features; none is re-exported, so each item has one path. The unit tests of `dedens-proto` get another build of the
+  crate than the kit links and take paths and bytes from it; those of `dedens-dnssec` take `zone`'s records, of the one
+  `dedens-proto` both link, the kit not depending on `dedens-dnssec`. Cargo unifies features over a workspace build, so
+  in `just check` `dedens-proto`'s tests link `dedens-net` too: the build without the network stack holds per package
+  (`cargo test -p dedens-proto`), not in the workspace's. `testdata/` is one of the folders D140 reads for decisions and
+  one a coverage path may start at. Rejected: data kept in its first reader with the others reaching in (the paths it
+  replaced).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),
