@@ -61,7 +61,7 @@ jobs:
       # keeps HOME, so rustup finds its toolchains; the PATH is passed through `env`, which `sudo` would reset.
       - name: Privileges (root)
         if: runner.os == 'Linux'
-        run: sudo -E env "PATH=$PATH" cargo test -p dedensd --test privileges -- --ignored
+        run: sudo -E env "PATH=$PATH" cargo test -p dedensd --test tests -- --ignored 'privileges::'
 
   # The static musl binaries we ship (D151): the whole test suite on each architecture's musl target, natively in a
   # `rust:alpine` container of the runner's architecture (`just musl`), then dedensd's root-only `privileges` tests,
@@ -92,7 +92,7 @@ jobs:
         run: just musl "$TARGET"
       - env:
           TARGET: ${{ matrix.target }}
-        run: just musl "$TARGET" test -p dedensd --test privileges -- --ignored
+        run: just musl "$TARGET" test -p dedensd --test tests -- --ignored 'privileges::'
 
   # Build matrix and dependency checks: platform-independent, Linux only.
   deps:

@@ -209,9 +209,10 @@ careful sanitizer="" package="":
 
 # cargo on a musl target (D151), natively in a `rust:alpine` container of the host's architecture, with no cross
 # toolchain: `target` is that architecture's `<arch>-unknown-linux-musl`, `cmd` the cargo arguments, the tests by
-# default. The root test: just musl x86_64-unknown-linux-musl test -p dedensd --test privileges -- --ignored. The
-# image is the one of rust-toolchain.toml (its components stay out: rustup would download them on each run); lld is
-# Alpine's own (`lld-cc`), git and procps-ng (BusyBox's `ps` has no `-p`) are for the repository and `rfc7766` tests.
+# default. The root test: just musl x86_64-unknown-linux-musl test -p dedensd --test tests -- --ignored privileges::.
+# The image is the one of rust-toolchain.toml (its components stay out: rustup would download them on each run); lld
+# is Alpine's own (`lld-cc`), git and procps-ng (BusyBox's `ps` has no `-p`) are for the repository and
+# `listeners::tcp_frames` tests.
 # Unconfined seccomp, for io_uring, which the host's `kernel.io_uring_disabled` must allow. A linked worktree's `.git`
 # points outside the mount, so the repository tests need a clone.
 # Volumes, dedens-musl-registry and dedens-musl-<arch>, keep the registry and the build between runs.
@@ -374,7 +375,7 @@ providers:
 
 # Oblivious DoH against public targets: a stale key gets the 401, one refetch and an answer (RFC 9230 §4.3, D79).
 odoh-live:
-    cargo test -p dedens-net --features odoh --test rfc9230 -- --ignored --nocapture
+    cargo test -p dedens-net --features odoh --test tests -- --ignored odoh:: --nocapture
 
 # `dedensd` as an Oblivious DoH target for Cloudflare's odoh-rs over HTTP/3 (aioquic): needs uv and the network.
 odoh-interop:
@@ -383,7 +384,7 @@ odoh-interop:
 # Download every list of docs/blocklists/blocklists.yaml and check its format and freshness (D87, D88).
 # GITHUB_TOKEN, when set, lifts GitHub's limit of 60 API requests an hour.
 blocklists:
-    cargo test -p dedensd --test blocklists -- --ignored --nocapture
+    cargo test -p dedensd --test tests -- --ignored lists::published --nocapture
 
 # Install the pinned RAPx and the nightly's rustc internals. Needs Z3: `brew install z3` or
 # `apt-get install libz3-dev`.

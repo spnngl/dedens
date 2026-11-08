@@ -1,16 +1,22 @@
-//! Listening over TLS (RFC 7858) and QUIC (RFC 9250), on addresses behind `tls://` and `quic://` with the
-//! certificate of `tls` (D66), replaced by a reload.
+//! `dedensd`'s listeners and upstreams over real sockets: UDP and TCP, TLS and QUIC on both sides, and broken TCP
+//! frames.
+//!
+//! - Listening over TLS (RFC 7858) and QUIC (RFC 9250), on addresses behind `tls://` and `quic://` with the certificate
+//!   of `tls` (D66), replaced by a reload.
+//! - `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured bytes,
+//!   several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start that fails
+//!   on a taken address, SIGTERM and SIGINT ending it, `validate` reading a configuration file without binding, and
+//!   expired data answering a client kept waiting while resolution goes on (RFC 8767 §5).
 
-mod common;
-
-use std::net::{SocketAddr, UdpSocket};
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Server, decode, framed, query_for, write_config};
 use compio::io::AsyncWriteExt;
 use compio::quic::crypto::rustls::QuicClientConfig;
 use compio::quic::{
@@ -24,10 +30,17 @@ use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::Options;
 use dedens_net::quic::read_message;
 use dedens_net::tls::Trust;
-use dedens_proto::{Message, Rcode, Transport};
+use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::{Message, Opcode, Rcode, Transport};
 use dedens_testkit::captured;
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use dedens_testkit::responder::Responder;
+
+use crate::util::{
+    Server, ask_tcp, ask_udp, config, decode, framed, query_for, read_framed, silent, write_config,
+};
+
+// --- Listening over TLS (RFC 7858) and QUIC (RFC 9250), on addresses behind `tls ---
 
 /// The certificate and key of `certificates` in PEM files beside the configuration file `config`.
 fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) {
@@ -36,7 +49,7 @@ fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) 
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    common::write_key(&key, &certificates.key_pem);
+    crate::util::write_key(&key, &certificates.key_pem);
     (certificate, key)
 }
 
@@ -122,7 +135,7 @@ fn a_reload_replaces_the_certificate() {
     let (old, new) = (certificates(), certificates());
     let (mut server, certificate, key) = listening(&old, upstream.addr);
     std::fs::write(&certificate, &new.server_pem).expect("the certificate replaced");
-    common::write_key(&key, &new.key_pem);
+    crate::util::write_key(&key, &new.key_pem);
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     for transport in [Transport::Tls, Transport::Quic] {
@@ -145,7 +158,7 @@ fn a_key_readable_by_others_is_refused() {
         std::fs::set_permissions(&key, std::fs::Permissions::from_mode(mode)).expect("mode set");
     };
     mode(0o644);
-    let (code, stderr) = common::validate(&text);
+    let (code, stderr) = crate::util::validate(&text);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("by others"), "{stderr}");
     server.hang_up();
@@ -156,7 +169,7 @@ fn a_key_readable_by_others_is_refused() {
     assert!(error.contains("by others"), "{error}");
     assert!(ask(server.addr, Transport::Tls, &ca).is_ok());
     mode(0o640);
-    let (code, stderr) = common::validate(&text);
+    let (code, stderr) = crate::util::validate(&text);
     assert_eq!(code, Some(0), "{stderr}");
     // The key is owned by the user running the test. `guard_key` warns of its group unless the key is root-owned and
     // the process is root (which reads any key, the read after the drop being the check), so as root it stays quiet.
@@ -165,7 +178,7 @@ fn a_key_readable_by_others_is_refused() {
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     mode(0o600);
-    let (code, stderr) = common::validate(&text);
+    let (code, stderr) = crate::util::validate(&text);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(!stderr.contains("by its group"), "{stderr}");
 }
@@ -330,4 +343,506 @@ fn a_quic_reply_the_client_does_not_read_is_given_up() {
         assert!(read.expect("an end within 30 s").is_err(), "no reply came");
         connection.close(VarInt::from_u32(0), b"");
     });
+}
+
+// --- `dedensd` over real sockets on loopback ---
+
+#[test]
+fn queries_over_udp_and_tcp_are_forwarded() {
+    let response = captured("a");
+    let upstream = decode(&response);
+    // No minimum TTL: the records come back as captured.
+    let server = Server::start(Responder::start(&["a"]).addr, "    min_ttl: 0\n");
+    let reply = ask_udp(server.addr, &query_for(&response, 1));
+    assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
+    assert_eq!(reply.answer, upstream.answer);
+    let reply = ask_tcp(server.addr, &query_for(&response, 2));
+    assert_eq!((reply.header.id, reply.rcode()), (2, Rcode::NOERROR));
+    assert_eq!(reply.answer, upstream.answer);
+}
+
+/// D115: `threads` sets the serving threads, which the "serving" event counts; more than one needs Linux, where
+/// `SO_REUSEPORT` spreads queries.
+#[test]
+fn threads_set_the_serving_threads() {
+    let response = captured("a");
+    let upstream = Responder::start(&["a"]);
+    let threads: u64 = if cfg!(target_os = "linux") { 3 } else { 1 };
+    let server = Server::configured(|listen| {
+        format!(
+            "threads: {threads}\nlisten: ['{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 1000\n    tries: 1\n",
+            upstream.addr
+        )
+    });
+    assert_eq!(server.serving["fields"]["threads"], threads);
+    let reply = ask_udp(server.addr, &query_for(&response, 1));
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+}
+
+#[test]
+fn a_tcp_connection_answers_several_queries() {
+    let response = captured("a");
+    let server = Server::start(Responder::start(&["a"]).addr, "");
+    // The opcode is bits 1 to 4 of the third byte (RFC 1035 §4.1.1).
+    let mut notify = query_for(&response, 3);
+    notify[2] = notify[2] & 0x87 | Opcode::NOTIFY.0 << 3;
+    let mut stream = TcpStream::connect(server.addr).expect("connected");
+    for query in [query_for(&response, 1), query_for(&response, 2), notify] {
+        stream.write_all(&framed(&query)).expect("sent");
+    }
+    let mut replies: Vec<_> = (0..3)
+        .map(|_| {
+            let reply = decode(&read_framed(&mut stream).expect("a reply"));
+            (reply.header.id, reply.rcode())
+        })
+        .collect();
+    replies.sort_unstable();
+    assert_eq!(
+        replies,
+        [(1, Rcode::NOERROR), (2, Rcode::NOERROR), (3, Rcode::NOTIMP)]
+    );
+}
+
+#[test]
+fn a_silent_upstream_gets_servfail() {
+    let (_socket, upstream) = silent();
+    let server = Server::start(upstream, "");
+    let reply = ask_udp(server.addr, &query_for(&captured("a"), 1));
+    assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::SERVFAIL));
+}
+
+/// D107: the start says which driver the threads run on, as compio falls back from `io_uring` to `poll` without
+/// anyone seeing (D51). Linux has `io_uring` from 5.19, the floor: `poll` there fails the test, unless
+/// `DEDENS_TEST_ALLOW_POLL` is set, for a container whose seccomp filter refuses `io_uring`.
+#[test]
+fn the_start_logs_the_driver() {
+    let (_socket, upstream) = silent();
+    let server = Server::start(upstream, "");
+    let driver = server.serving["fields"]["driver"].as_str();
+    let known: &[_] = if !cfg!(target_os = "linux") {
+        &["poll", "iocp"]
+    } else if std::env::var_os("DEDENS_TEST_ALLOW_POLL").is_some() {
+        &["io_uring", "poll"]
+    } else {
+        &["io_uring"]
+    };
+    assert!(
+        driver.is_some_and(|driver| known.contains(&driver)),
+        "{driver:?}"
+    );
+}
+
+/// D157: SIGTERM and SIGINT end the server at once, with success and its reason logged; as PID 1 of the image the
+/// kernel would drop either without a handler.
+#[cfg(unix)]
+#[test]
+fn sigterm_and_sigint_end_the_server() {
+    for (name, signal) in [("TERM", "SIGTERM"), ("INT", "SIGINT")] {
+        let (_socket, upstream) = silent();
+        let mut server = Server::start(upstream, "");
+        server.signal(name);
+        let stopped = server.event("dedensd ends: stopped").expect("logged");
+        assert_eq!(stopped["fields"]["signal"], signal);
+        let status = server.exited().expect("exited");
+        assert!(status.success(), "{signal}: {status}");
+    }
+}
+
+#[test]
+fn a_taken_address_fails_the_start() {
+    let taken = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+    let addr = taken.local_addr().expect("its address").to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_dedensd"))
+        .arg("--config")
+        .arg(config(&addr, "127.0.0.1", ""))
+        .output()
+        .expect("dedensd runs");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("cannot bind UDP {addr}")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn validate_reads_the_configuration_without_binding() {
+    let taken = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+    let path = config(
+        &taken.local_addr().expect("its address").to_string(),
+        "${UPSTREAM}",
+        "",
+    );
+    let validate = |upstream: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dedensd"));
+        command.arg("validate").arg("--config").arg(&path);
+        match upstream {
+            Some(upstream) => command.env("UPSTREAM", upstream),
+            None => command.env_remove("UPSTREAM"),
+        };
+        command.output().expect("dedensd runs")
+    };
+    let output = validate(Some("127.0.0.1"));
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stdout).ends_with(": valid\n"));
+    let output = validate(None);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("variable `UPSTREAM` is not set"),
+        "{stderr}"
+    );
+}
+
+/// The extended error codes of `reply`.
+fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
+    let options = reply.edns.iter().flat_map(|edns| &edns.options);
+    options
+        .filter_map(|option| match option {
+            EdnsOption::Ede(error) => Some(error.code),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
+    let response = captured("a");
+    let upstream = Responder::slow("a", 3, Duration::from_millis(500));
+    // No minimum TTL, which would keep the 3 seconds of the answer fresh for a minute.
+    let server = Server::start(
+        upstream.addr,
+        "    min_ttl: 0\n    stale_answer_after_ms: 200\n",
+    );
+    let first = ask_udp(server.addr, &query_for(&response, 1));
+    assert_eq!(errors(&first), []);
+    // Past the TTL, upstream answers 500 ms late, within the 1 s timeout: expired data answers once the 200 ms
+    // timer runs out.
+    thread::sleep(Duration::from_millis(3200));
+    let asked = Instant::now();
+    let stale = ask_udp(server.addr, &query_for(&response, 2));
+    assert!(
+        (Duration::from_millis(200)..Duration::from_millis(450)).contains(&asked.elapsed()),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!((stale.header.id, stale.rcode()), (2, Rcode::NOERROR));
+    assert_eq!(errors(&stale), [InfoCode::STALE_ANSWER]);
+    assert!(stale.answer.iter().all(|record| record.ttl.get() == 30));
+    // Resolution went on and refreshed the entry.
+    thread::sleep(Duration::from_millis(800));
+    let fresh = ask_udp(server.addr, &query_for(&response, 3));
+    assert_eq!((upstream.queries().len(), errors(&fresh)), (2, vec![]));
+    assert!(fresh.answer.iter().all(|record| record.ttl.get() <= 3));
+}
+
+mod upstreams {
+    //! Upstream servers over TLS (RFC 7858) and QUIC (RFC 9250), given as `tls://` and `quic://` (D65), checked
+    //! against `upstream_ca`: asked whatever transport the client came over, on one connection.
+
+    use std::path::Path;
+
+    use dedens_proto::Rcode;
+    use dedens_testkit::captured;
+    use dedens_testkit::certificates::NAME;
+    use dedens_testkit::responder::{Responder, Transport};
+
+    use crate::util::{Server, ask_tcp, ask_udp, decode, query_for};
+
+    /// `dedensd` forwarding to `upstream` alone, trusting the certificate authority of `ca`.
+    fn forwarding(upstream: &str, ca: &Path) -> Server {
+        Server::configured(|listen| {
+            format!(
+                "listen: ['{listen}']\nupstream_ca: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
+                ca.display()
+            )
+        })
+    }
+
+    #[test]
+    fn encrypted_upstream_servers_answer_clients_over_udp_and_tcp() {
+        let response = captured("a");
+        let upstream = decode(&response);
+        for (scheme, transport, (responder, ca)) in [
+            ("tls", Transport::Tls, Responder::tls(&["a"])),
+            ("quic", Transport::Quic, Responder::quic(&["a"])),
+        ] {
+            let server = forwarding(&format!("{scheme}://{}#{NAME}", responder.addr), ca.path());
+            let reply = ask_udp(server.addr, &query_for(&response, 1));
+            assert_eq!(
+                (reply.rcode(), &reply.answer),
+                (Rcode::NOERROR, &upstream.answer),
+                "{scheme}"
+            );
+            let reply = ask_tcp(server.addr, &query_for(&response, 2));
+            assert_eq!(
+                (reply.rcode(), &reply.answer),
+                (Rcode::NOERROR, &upstream.answer),
+                "{scheme}"
+            );
+            let transports: Vec<_> = responder
+                .queries()
+                .into_iter()
+                .map(|(over, _)| over)
+                .collect();
+            assert_eq!(transports, [transport; 2], "{scheme}");
+        }
+    }
+
+    /// D84: an upstream server behind `https://` is asked over HTTP/3 by GET (RFC 8484 §4.1), at its path or
+    /// `/dns-query`, whatever transport the client came over.
+    #[test]
+    fn an_https_upstream_server_answers_clients_over_udp_and_tcp() {
+        let response = captured("a");
+        let upstream = decode(&response);
+        let (responder, ca) = Responder::https(&["a"]);
+        for path in ["", "/doh"] {
+            let server = forwarding(
+                &format!("https://{}{path}#{NAME}", responder.addr),
+                ca.path(),
+            );
+            for (id, ask) in [(1, ask_udp as fn(_, &_) -> _), (2, ask_tcp)] {
+                let reply = ask(server.addr, &query_for(&response, id));
+                assert_eq!(
+                    (reply.rcode(), &reply.answer),
+                    (Rcode::NOERROR, &upstream.answer),
+                    "{path}"
+                );
+            }
+        }
+        let transports: Vec<_> = responder
+            .queries()
+            .into_iter()
+            .map(|(over, _)| over)
+            .collect();
+        assert_eq!(transports, [Transport::HttpsGet; 4]);
+    }
+
+    /// RFC 8310 §8.1: without a name given, the certificate must hold the address, which the responder's does.
+    #[test]
+    fn a_certificate_is_checked_against_the_name_given_else_the_address() {
+        let response = captured("a");
+        let (responder, ca) = Responder::tls(&["a"]);
+        let server = forwarding(&format!("tls://{}", responder.addr), ca.path());
+        let reply = ask_udp(server.addr, &query_for(&response, 1));
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+        let server = forwarding(
+            &format!("tls://{}#other.example", responder.addr),
+            ca.path(),
+        );
+        let reply = ask_udp(server.addr, &query_for(&response, 2));
+        assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    }
+}
+
+#[cfg(unix)]
+mod tcp_frames {
+    //! RFC 7766 on `dedensd`'s TCP listener, §6.2.3 and §8: a connection that sends a broken frame costs nothing but its
+    //! slot. A length prefix with no message behind it (the frame that made aardvark-dns spin at 100% CPU,
+    //! CVE-2026-35406), a length of 0, half a prefix, and a message that trickles in all end the connection, or leave it
+    //! to the idle close (D47); a full frame holding a message that does not read gets FORMERR and the connection
+    //! stays. Meanwhile a second client's UDP and TCP queries are answered, and the server's CPU time does not grow.
+
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::TcpStream;
+    use std::process::Command;
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
+
+    use dedens_proto::Rcode;
+    use dedens_testkit::captured;
+    use dedens_testkit::responder::Responder;
+
+    use crate::util::{Server, ask_tcp, ask_udp, decode, framed, query_for, read_framed};
+
+    /// The idle time of a TCP connection (D47).
+    const IDLE: Duration = Duration::from_secs(10);
+
+    /// How long a connection may last past [`IDLE`]: a loaded machine reads late, it does not hold a connection open.
+    const SLACK: Duration = Duration::from_secs(20);
+
+    /// How long the server's CPU time is watched.
+    const WINDOW: Duration = Duration::from_secs(4);
+
+    /// The CPU time the server may use in [`WINDOW`]: `ps` gives whole seconds on Linux, so a few milliseconds of work
+    /// can show as one, where a thread spinning for [`WINDOW`] shows at least three. CPU time, not queries answered late,
+    /// because it does not move with the load of the machine.
+    const CPU_LIMIT: f64 = 2.0;
+
+    /// A server forwarding to a responder, and the query both clients ask.
+    struct Fixture {
+        server: Server,
+        query: Vec<u8>,
+        _upstream: Responder,
+    }
+
+    impl Fixture {
+        fn start() -> Self {
+            let upstream = Responder::start(&["a"]);
+            let fixture = Self {
+                server: Server::start(upstream.addr, ""),
+                query: query_for(&captured("a"), 1),
+                _upstream: upstream,
+            };
+            fixture.assert_served();
+            fixture
+        }
+
+        /// A second client, over UDP and over a new TCP connection, gets its answer.
+        fn assert_served(&self) {
+            for reply in [
+                ask_udp(self.server.addr, &self.query),
+                ask_tcp(self.server.addr, &self.query),
+            ] {
+                assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
+            }
+        }
+
+        /// The CPU seconds the server used so far.
+        fn cpu(&self) -> f64 {
+            let output = Command::new("ps")
+                .args(["-o", "time=", "-p", &self.server.pid().to_string()])
+                .output()
+                .expect("ps runs");
+            let text = String::from_utf8(output.stdout).expect("ps writes text");
+            // `[DD-][[hh:]mm:]ss[.cc]`, the CPU time of every thread, on Linux and on macOS.
+            let (days, clock) = text.trim().split_once('-').unwrap_or(("0", text.trim()));
+            let number = |text: &str| text.parse::<f64>().expect("a number of ps's time");
+            let clock = clock
+                .split(':')
+                .fold(0.0, |total, part| total * 60.0 + number(part));
+            number(days) * 86400.0 + clock
+        }
+
+        /// The server answers a second client at both ends of [`WINDOW`], and used less than [`CPU_LIMIT`] seconds of
+        /// CPU since `before`, a reading of [`Fixture::cpu`].
+        fn assert_unharmed(&self, before: f64) {
+            self.assert_served();
+            thread::sleep(WINDOW);
+            self.assert_served();
+            let used = self.cpu() - before;
+            assert!(used < CPU_LIMIT, "{used} s of CPU in {WINDOW:?}");
+        }
+    }
+
+    /// Reads `stream` until the server closes it, each second writing a byte if `trickle`, on a thread: its time. The
+    /// server sends nothing more, and closes within [`IDLE`] and [`SLACK`].
+    fn until_closed(mut stream: TcpStream, trickle: bool) -> JoinHandle<Duration> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("a timeout");
+        thread::spawn(move || {
+            let start = Instant::now();
+            loop {
+                assert!(
+                    start.elapsed() < IDLE + SLACK,
+                    "open after {:?}",
+                    start.elapsed()
+                );
+                if trickle && stream.write_all(&[0]).is_err() {
+                    return start.elapsed();
+                }
+                match stream.read(&mut [0; 1]) {
+                    Ok(read) => {
+                        assert_eq!(read, 0, "the server wrote to a broken connection");
+                        return start.elapsed();
+                    }
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    // Reset: closed with the bytes we sent unread.
+                    Err(_) => return start.elapsed(),
+                }
+            }
+        })
+    }
+
+    /// A connection to the server, which `bytes` open: sent as they are. A reply that does not come fails the test
+    /// within 10 s, as in [`ask_tcp`], and does not hang it.
+    fn connect(fixture: &Fixture, bytes: &[u8]) -> TcpStream {
+        let mut stream = TcpStream::connect(fixture.server.addr).expect("connected");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("a timeout");
+        stream.write_all(bytes).expect("sent");
+        stream
+    }
+
+    /// The length of a 60-byte message, as aardvark-dns's test sends it.
+    const SIXTY: [u8; 2] = 60_u16.to_be_bytes();
+
+    /// A length with nothing behind it, the client gone: the connection ends, and no thread spins.
+    #[test]
+    fn a_length_alone_then_a_close_costs_no_cpu() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        drop(connect(&fixture, &SIXTY));
+        fixture.assert_unharmed(before);
+    }
+
+    /// The same, the client silent and not gone: the idle close ends it, while others are served.
+    #[test]
+    fn a_length_alone_then_silence_is_closed_by_the_idle_time() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        let closed = until_closed(connect(&fixture, &SIXTY), false);
+        fixture.assert_unharmed(before);
+        closed.join().expect("closed within the idle time");
+    }
+
+    /// Half of a length (RFC 7766 §8: a message may arrive in pieces), the client gone.
+    #[test]
+    fn one_byte_of_a_length_then_a_close_costs_no_cpu() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        drop(connect(&fixture, &SIXTY[..1]));
+        fixture.assert_unharmed(before);
+    }
+
+    /// A length of 0 is an empty message: it reads nothing, as a UDP datagram of no bytes, is not answered, and leaves
+    /// the connection to the next message and then to the idle close.
+    #[test]
+    fn a_length_of_zero_is_skipped_and_the_connection_idles_out() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        let mut stream = connect(&fixture, &framed(&[]));
+        stream.write_all(&framed(&fixture.query)).expect("sent");
+        // The first reply is the query's, so the empty message got none.
+        let reply = decode(&read_framed(&mut stream).expect("a reply"));
+        assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
+        let closed = until_closed(stream, false);
+        fixture.assert_unharmed(before);
+        closed.join().expect("closed within the idle time");
+    }
+
+    /// A length promising more than comes, a byte a second: the time of the whole message is limited, not the time
+    /// between bytes, so the connection is closed long before the 60 bytes are in.
+    #[test]
+    fn a_message_trickling_in_is_closed_by_the_idle_time() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        let closed = until_closed(connect(&fixture, &SIXTY), true);
+        fixture.assert_unharmed(before);
+        let open = closed.join().expect("closed within the idle time");
+        assert!(open < Duration::from_secs(60), "{open:?}");
+    }
+
+    /// A frame whole, holding a header that counts a question and carries none: FORMERR to it (RFC 1035 §4.1.1), and the
+    /// connection stays for the next query, and for the idle close.
+    #[test]
+    fn a_whole_frame_of_a_malformed_message_gets_formerr_and_the_connection_stays() {
+        let fixture = Fixture::start();
+        let before = fixture.cpu();
+        // The header of the query, which counts one question: QDCOUNT is its bytes 4 and 5.
+        let header = &fixture.query[..12];
+        assert_eq!(header[4..6], [0, 1]);
+        let mut stream = connect(&fixture, &framed(header));
+        let reply = decode(&read_framed(&mut stream).expect("a reply"));
+        assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::FORMERR));
+        stream.write_all(&framed(&fixture.query)).expect("sent");
+        let reply = decode(&read_framed(&mut stream).expect("a second reply"));
+        assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
+        let closed = until_closed(stream, false);
+        fixture.assert_unharmed(before);
+        closed.join().expect("closed within the idle time");
+    }
 }
