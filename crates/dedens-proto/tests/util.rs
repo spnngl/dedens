@@ -1,7 +1,5 @@
 //! Shared proptest strategies and helpers of the integration tests.
 
-#![allow(dead_code, reason = "each test crate uses a subset")]
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dedens_proto::edns::{
