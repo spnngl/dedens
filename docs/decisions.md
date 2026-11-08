@@ -1319,14 +1319,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   profiled server are not kept, and a claim of speed is still a bench (D14). Rejected: hotpath, which instruments each
   measured function at about 40 ns a call against the 84-185 ns of a cache hit, needs a feature in each crate (doubling
   `just hack`), and brings a counting allocator that collides with the benches'.
-- D143 (builds on D16; amended by D161) Unused dependencies fail the gate: `just check` runs cargo-shear (`--locked --deny-warnings`)
-  over the workspace and over `fuzz/`, a workspace of its own. It parses the sources with rust-analyzer's parser and
-  builds nothing: 0.3 s each (2026-11-03). A false positive goes in the package's
+- D143 (builds on D16; amended by D161) Unused dependencies fail the gate: `just check` runs cargo-shear
+  (`--locked --deny-warnings`) over the workspace and over `fuzz/`, a workspace of its own. It parses the sources with
+  rust-analyzer's parser and builds nothing: 0.3 s each (2026-11-03). A false positive goes in the package's
   `[package.metadata.cargo-shear] ignored`, its reason beside it; cargo-shear reports an entry that suppresses
-  nothing. Two kinds so far: a dependency of a module another package holds, reached by `#[path]`, which
-  cargo-shear does not read (rcgen in `dedens` and `dedensd`), and
-  `dedens-bench`'s dependencies, regular ones the benches alone use (D14). The first run found nothing else.
-  Rejected: cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
+  nothing. One kind left: `dedens-bench`'s dependencies, regular ones the benches alone use (D14). The other, a
+  dependency of a module another package holds, reached by `#[path]`, which cargo-shear does not read (rcgen in
+  `dedens` and `dedensd`, data-encoding in `dedens-bench`), went with those modules (D161). Rejected:
+  cargo-udeps (nightly, builds every target), cargo-machete (regular expressions over the sources).
 - D161 (amends D140, D143; builds on D14, D16) Test data read by more than one package lives at the root, in `testdata/`:
   `proto/` and `dnssec/` (the captures of `just capture` and `just capture-dnssec`), `zones/` (the RFC example
   zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte for
@@ -1334,9 +1334,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `hex`, `dns` and `zone`
   replace the copies each crate's tests kept; `dnssec` holds the DNSSEC captures by question (`Captures`), their
   `captured_at`, and the RFC examples' keys and signatures with the data an RRSIG signs, which `benches/dnssec.rs`
-  of `dedens-bench` reached by `#[path]`. A package reads the data through it, never through another package's
-  directory (`../dedens-*/tests/`), which tied each test to where another crate kept its files. `testdata/` is one of the folders D140 reads for decisions and one a coverage path may
-  start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).
+  of `dedens-bench` reached by `#[path]`. The feature `certificates` adds the TLS certificates the encrypted
+  transports' tests make (D60), on `dedens-net`, compio and rcgen, which `dedens` and `dedensd` included from
+  `dedens-net`'s tests by `#[path]`; the default build depends on `dedens-proto` alone. A package reads the data
+  through the kit, never through another package's directory (`../dedens-*/tests/`), which tied each test to where
+  another crate kept its files, and no test includes a file by `#[path]`. Cargo unifies features over a workspace
+  build, so `dedens-proto`'s tests link `dedens-net` there too. `testdata/` is one of the folders D140 reads for
+  decisions and one a coverage path may start at. Rejected: data kept in its first reader with the others reaching
+  in (the paths it replaced).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),

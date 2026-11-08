@@ -9,7 +9,6 @@ use std::num::NonZero;
 use std::rc::Rc;
 use std::time::Duration;
 
-use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
 use common::{query, sent, start, t0};
 use compio::BufResult;
@@ -23,6 +22,7 @@ use dedens_net::tcp::frame;
 use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 
 /// How the server answers.
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -32,9 +32,8 @@ tracing = ["dep:tracing"]
 [dev-dependencies]
 compio = { workspace = true, features = ["macros"] }
 dedens-odoh.workspace = true
-dedens-testkit.workspace = true
+dedens-testkit = { workspace = true, features = ["certificates"] }
 proptest.workspace = true
-rcgen.workspace = true
 
 [[bench]]
 name = "pools"

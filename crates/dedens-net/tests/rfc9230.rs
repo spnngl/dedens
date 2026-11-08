@@ -12,7 +12,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fs, io};
 
-use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
 use common::query;
 use compio::bytes::{Buf, Bytes};
@@ -36,6 +35,7 @@ use dedens_odoh::{
     encrypt_response, query_padding, response_padding,
 };
 use dedens_proto::{Message, Rcode, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};

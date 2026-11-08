@@ -2,7 +2,6 @@
 
 #![allow(dead_code, reason = "each test file uses its own subset")]
 
-pub(crate) mod certificates;
 pub(crate) mod loopback;
 
 use std::net::SocketAddr;

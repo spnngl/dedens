@@ -2,16 +2,12 @@
 //! the client a `dedens-net` `Client` on one thread. Run with `cargo bench -p dedensd --bench doh3`; numbers go to
 //! `docs/benchmarks.md`.
 
-#[path = "../../../crates/dedens-net/tests/common/certificates.rs"]
-#[allow(dead_code, reason = "shared with the tests, which use all of it")]
-mod certificates;
 #[path = "../tests/common/mod.rs"]
 mod common;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use certificates::{NAME, certificates, named};
 use common::{Responder, Server, decode, query_for};
 use dedens_net::client::Client;
 use dedens_net::doh::Method;
@@ -19,6 +15,7 @@ use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::Transport;
 use dedens_testkit::captured;
+use dedens_testkit::certificates::{NAME, certificates, named};
 use futures_util::future::join_all;
 
 /// How long each measure runs.

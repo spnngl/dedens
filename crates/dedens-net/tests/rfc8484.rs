@@ -9,7 +9,6 @@ use std::num::NonZero;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use common::certificates::{Certificates, NAME, certificates, named};
 use common::loopback::answer;
 use common::{query, sent, start, t0};
 use compio::bytes::{Buf, Bytes};
@@ -27,6 +26,7 @@ use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
 use dedens_proto::{MAX_MESSAGE_LEN, Message, Rcode, RecordType, Transport};
+use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use dedens_testkit::hex;
 use futures_util::future::join_all;
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE};

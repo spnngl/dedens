@@ -3,8 +3,13 @@
 //!
 //! A dev-dependency, but a dependency of `dedens-sim`, whose library code reads the data. The unit tests of
 //! `dedens-proto` (in `src/`) get another build of the crate than this one links: they take paths and bytes from
-//! here, never a `Name` or a `Message`.
+//! here, never a `Name` or a `Message`; so do those of `dedens-net` with the `certificates` feature.
+//!
+//! By default the kit depends on `dedens-proto` alone. The feature `certificates` adds the TLS certificates of
+//! the encrypted transports' tests, on `dedens-net`, compio and rcgen.
 
+#[cfg(feature = "certificates")]
+pub mod certificates;
 pub mod dnssec;
 
 use std::path::PathBuf;
