@@ -1012,6 +1012,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-repo"
+version = "0.1.0"
+
+[[package]]
 name = "dedens-scenario"
 version = "0.1.0"
 dependencies = [

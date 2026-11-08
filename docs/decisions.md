@@ -1296,9 +1296,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
-- D140 (builds on D16; amended by D161, D162) Repository checks in the gate, `crates/dedens-bench/tests/repo.rs`, over the
-  tracked files (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the rest of
-  `.gitignore`). A decision cited in the text files of `crates/`, `apps/`, `fuzz/`, `testdata/` and `docs/` (not RFC
+- D140 (builds on D16; amended by D161, D162, D163) Repository checks in the gate, `crates/dedens-repo/tests/repo.rs`
+  (D163), over the tracked files (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the
+  rest of `.gitignore`). A decision cited in the text files of `crates/`, `apps/`, `fuzz/`, `testdata/` and `docs/` (not RFC
   archives or captured data) and in the `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A
   header's `amends`, `supersedes` or `narrows` is matched by the other's `amended by`, `superseded by` or `narrowed by`,
   and the reverse; a supersession of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each
@@ -1366,6 +1366,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `seed::in_two_processes` names the test by its module path. Commands name the binary and a module filter:
   `cargo test -p dedensd --test tests -- --ignored privileges::`. Rejected: a folder per topic with a file per RFC
   (the RFC is the module docs' and the test names'), a binary per file (the link time this removes).
+- D163 (amends D140) The repository checks are a package of their own, `crates/dedens-repo`: they check the
+  repository, not benchmarks, and a reader looks for them by name. `tests/repo.rs` moved from
+  `crates/dedens-bench/tests/` unchanged, still finding the root at `CARGO_MANIFEST_DIR/../..`; the library is empty
+  (a package needs a target) and the package depends on nothing, so `cargo test -p dedens-repo` builds `std` alone
+  where `dedens-bench`'s tests built the benches' dependencies. Its binary is D162's form, `tests/tests.rs` with the
+  module `repo`, as `dedens-bench` is left with `zone`: a lone `tests/repo.rs` binary would be a second layout for a
+  package of one topic. `cargo test --workspace` runs it, so the gate is unchanged. Rejected: an `xtask` (a command
+  to remember, outside `cargo test`).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),
