@@ -155,7 +155,7 @@ fn world(
 
 /// [`world_now`] where a bogus verdict is kept for `bogus_ttl` seconds in place of 60: a run of seconds, not of
 /// minutes, as the simulation's cost is the time it simulates. The default is the sans-IO test's
-/// (`rfc4035.rs`, `bogus_data_is_cached_for_sixty_seconds`).
+/// (`dedens-server/tests/dnssec.rs`, `bogus_data_is_cached_for_sixty_seconds`).
 fn world_keeping_bogus(seed: Seed, bogus_ttl: u32) -> World {
     let validating = validating();
     Topology::new()
@@ -516,9 +516,9 @@ fn a_chain_question_nobody_answers_ends_in_servfail_with_an_ede_never_insecure()
 // 3. Forged or broken data.
 
 /// The four captures that fail validation: SERVFAIL with the validator's extended error and an empty answer, as
-/// the sans-IO tests have them (`rfc4035.rs`, `a_bogus_answer_is_servfail_with_an_extended_error`), over either
-/// transport, and the records the client may not have do not come in the authority or additional sections either
-/// (the oracle's bare SERVFAIL).
+/// the sans-IO tests have them (`dedens-server/tests/dnssec.rs`,
+/// `a_bogus_answer_is_servfail_with_an_extended_error`), over either transport, and the records the client may not
+/// have do not come in the authority or additional sections either (the oracle's bare SERVFAIL).
 #[test]
 fn a_bogus_answer_is_servfail_with_the_validators_ede_over_either_transport() {
     seed::each(SEEDS, |seed| {
