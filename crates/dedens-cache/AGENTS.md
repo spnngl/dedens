@@ -5,13 +5,14 @@ complexity of each operation: update both in the same change as the behaviour th
 
 Sans-IO: the caller passes the time in seconds, so tests drive the clock. Speed is benched in
 `crates/dedens-bench/benches/cache.rs`. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in
-`tests/metrics.rs`.
+`tests/metrics.rs`. The integration tests are one binary, `tests/tests.rs` (D162), but for `allocations.rs` and
+`memory.rs`: each sets the process's `#[global_allocator]`, so each is a binary of its own.
 
 ## Invariants
 
 - A hit, whole or cut to `out`, copies and patches under the shard lock: no decode, no allocation
   (`tests/allocations.rs`; the `hit` bench of `crates/dedens-bench/benches/server.rs` counts them too). The cut reads
-  the offsets `Response::build` stored; `tests/rfc2181.rs` holds it to `Message::encode_truncated`, so change both
+  the offsets `Response::build` stored; `tests/rfc.rs` holds it to `Message::encode_truncated`, so change both
   together.
 - Every change to an entry goes through `Shard::update`, which keeps `small_bytes` and `main_bytes` exact; the
   proptest in `src/shard.rs` (`Shard::check`) asserts it, so extend `check` with any new field that costs bytes. What a

@@ -7,14 +7,18 @@
 //! both, and the transient buffers of an insert are gone by then. One test per file: the allocator counts every
 //! thread.
 
-mod common;
+#[expect(
+    dead_code,
+    reason = "this binary, of one test, uses part of the helpers"
+)]
+mod util;
 
 use std::alloc::System;
 
-use common::{T0, a, query, response};
 use dedens_cache::{Cache, Config, StalePolicy};
 use dedens_proto::{Message, Query, Rcode, RecordType};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use util::{T0, a, query, response};
 
 #[global_allocator]
 static ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -80,7 +84,7 @@ fn large(cache: &Cache, i: usize) {
 
 fn fail(cache: &Cache, i: usize) {
     let asked = query(1, &name(i), RecordType::A);
-    let _ = cache.fail(&common::key_of(&asked), T0);
+    let _ = cache.fail(&util::key_of(&asked), T0);
 }
 
 #[test]

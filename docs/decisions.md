@@ -1986,7 +1986,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     separate minimum for negative answers (Unbound's `cache-min-negttl`; one setting until a deployment asks);
     raising only the lifetime and serving the zone's TTLs (clients would re-ask at once: the flood stays); bounding
     `Secure` by a guess of the expiration (a validator change, TODECIDE).
-  - Tests: `dedens-cache/tests/{rfc2308,rfc8767,cache,checked}.rs` on the captured responses of `dedens-proto`, the
+  - Tests: `dedens-cache/tests/{rfc,cache,checked}.rs` on the captured responses of `dedens-proto`, the
     configuration tests of `apps/dedensd/src/config/`. Tests that count the zone's seconds set `min_ttl: 0`.
 - D94 (amends D79, D84, D91; amended by D117) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
   [HOST[:PORT]], timeout_ms}}` makes each `https://` listener forward the requests that name a target. `targets` is
@@ -2331,14 +2331,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `Message::encode_truncated` does (D10). The end of each record is its TTL offset, plus 6, plus its RDLENGTH. The
     cut keeps the records that fit, and only whole `RRset`s of the additional section when only those are lost: the
     bytes of `encode_truncated`, and TC set exactly when it sets it (an answer or authority record lost).
-    `tests/rfc2181.rs` (RFC 2181 §9) holds the two to each other for random messages and sizes and for every buffer
+    `tests/rfc.rs` (RFC 2181 §9) holds the two to each other for random messages and sizes and for every buffer
     size over the captured responses; the fuzz target `cache_insert` compares the bytes and whether anything was
     cut. `hit_truncated` allocates nothing and is within 1.1x of a hit that fits whole (the audit asked for 2x;
     `docs/benchmarks.md`). `Shared`, its `Arc` and the second phase of `Cache::lookup` are gone: a response is one
     `Box<[u8]>`. A response with a stray OPT record (no TTL offset) is refused as `Violations`. A stale hit
     leaves room for its EDE option (`STALE_ROOM`) only for a query with EDNS, the only one the server appends it
     for; without EDNS the whole 512 bytes are the answer's.
-  Tests: `dedens-cache/tests/{memory,allocations,rfc2181}.rs`, `Shard` unit tests
+  Tests: `dedens-cache/tests/{memory,allocations,rfc}.rs`, `Shard` unit tests
   (`an_eviction_passes_over_a_bounded_number_of_entries`,
   `a_spent_eviction_takes_from_small_before_main`, `a_shard_mostly_free_is_compacted`),
   `tests/cache.rs` (`an_entry_over_max_entry_bytes_is_refused`, `max_entry_bytes_is_inclusive`,

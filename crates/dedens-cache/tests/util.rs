@@ -1,7 +1,5 @@
 //! Builders shared by the cache tests.
 
-#![allow(dead_code, reason = "each test file uses part of the helpers")]
-
 use std::net::Ipv4Addr;
 
 use dedens_cache::{Cache, Config, Key, Lookup, NotCached, StalePolicy};
