@@ -17,7 +17,7 @@
 
 use crate::access::Denial;
 use crate::cookie::Standing;
-use crate::rrl::Verdict;
+use crate::rrl::Admission;
 use crate::validate::Outcome;
 
 /// The counter of denied queries.
@@ -96,11 +96,11 @@ impl Limited {
         }
     }
 
-    pub(crate) fn count(&self, verdict: Verdict) {
-        match verdict {
-            Verdict::Pass => return,
-            Verdict::Slip => &self.slipped,
-            Verdict::Drop => &self.dropped,
+    pub(crate) fn count(&self, admission: Admission) {
+        match admission {
+            Admission::Pass => return,
+            Admission::Slip => &self.slipped,
+            Admission::Drop => &self.dropped,
         }
         .increment(1);
     }
@@ -116,7 +116,7 @@ impl Limited {
         clippy::unused_self,
         reason = "the same calls with and without the feature"
     )]
-    pub(crate) const fn count(&self, _: Verdict) {}
+    pub(crate) const fn count(&self, _: Admission) {}
 }
 
 /// The counters of queries by cookie.

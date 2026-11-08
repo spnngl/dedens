@@ -39,5 +39,5 @@ pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream};
 pub use plugin::{Answer, Plugin, Records, Reviewer};
-pub use rrl::{Config as RateLimitConfig, MAX_BURST, Rate, RateLimit, RateLimitError, Verdict};
+pub use rrl::{Admission, MAX_BURST, Rate, RateLimit, RateLimitConfig, RateLimitError};
 pub use validate::{Allowance, Clock, DEFAULT_SHARE, Validating};

@@ -19,7 +19,7 @@ use crate::cookie::{Cookies, Standing};
 use crate::forward::{self, Forward, Server};
 use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
-use crate::rrl::{RateLimit, Verdict};
+use crate::rrl::{Admission, RateLimit};
 use crate::validate::{Admitted, Check, Outcome, Progress, Source, present};
 
 /// A stage of the pipeline (D23).
@@ -172,7 +172,7 @@ impl Pipeline {
     pub fn limits(&self, from: IpAddr, now: u32) -> bool {
         self.rate_limit
             .as_ref()
-            .is_some_and(|limit| limit.check(from, now, false) != Verdict::Pass)
+            .is_some_and(|limit| limit.check(from, now, false) != Admission::Pass)
     }
 
     /// What the access lists do to the client at `from` (D91), `None` when it is answered. Counts nothing: for a
@@ -275,13 +275,13 @@ impl Pipeline {
             cookies.verify(request.as_ref(), from)
         });
         // A source that proved its address with a cookie is not spoofed (RFC 7873 §5.2.5).
-        let verdict = match &self.rate_limit {
+        let admission = match &self.rate_limit {
             Some(limit) if transport == Transport::Udp && standing != Standing::Valid => {
                 limit.check(from, now, true)
             }
-            _ => Verdict::Pass,
+            _ => Admission::Pass,
         };
-        if verdict == Verdict::Drop {
+        if admission == Admission::Drop {
             return Step::Drop;
         }
         let fresh = self
@@ -290,7 +290,7 @@ impl Pipeline {
             .zip(request)
             .map(|(cookies, request)| cookies.issue(request.client(), from));
         let client = Client::of(&query, transport).with_cookie(fresh);
-        if verdict == Verdict::Slip {
+        if admission == Admission::Slip {
             return slip(&client, out);
         }
         let rcode = if !query.violations().is_empty() {
