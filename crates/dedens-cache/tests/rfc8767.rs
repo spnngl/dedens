@@ -3,11 +3,11 @@
 mod common;
 
 use common::{
-    T0, a, captured, insert, key_of, lookup, min_cache, query, query_of, response, small_cache,
-    ttls,
+    T0, a, insert, key_of, lookup, min_cache, query, query_of, response, small_cache, ttls,
 };
 use dedens_cache::{Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::{Rcode, RecordType};
+use dedens_testkit::captured;
 
 fn cached() -> (dedens_cache::Cache, Vec<u8>) {
     let cache = small_cache();

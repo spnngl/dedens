@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{decode, dns, run, servers, wire};
+use common::{decode, run, servers, wire};
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Edns, EdnsOption, InfoCode};
@@ -16,6 +16,7 @@ use dedens_proto::{
     Class, Flags, Message, Name, Opcode, Query, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Reviewer, Stage, Validating};
+use dedens_testkit::dns;
 
 /// Answers A queries for `local.test.` with `count` addresses, and blocks `blocked.test.`.
 #[derive(Debug)]

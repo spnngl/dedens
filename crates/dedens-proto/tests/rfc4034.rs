@@ -153,7 +153,7 @@ fn s3_3_example_reads_writes_and_reads_again() {
         (3, 86400, 2642)
     );
     assert_eq!(sig.expiration, 1_048_354_263);
-    assert_eq!(sig.signer, common::dns("example.com."));
+    assert_eq!(sig.signer, dedens_testkit::dns("example.com."));
     assert_eq!(sig.signature().len(), 128);
     assert_eq!(rdata_wire(&rec)[..4], [0, 1, 5, 3]);
     round_trips(&rec);
@@ -222,7 +222,7 @@ fn s4_3_example_reads_writes_and_reads_again() {
     let RData::Nsec(nsec) = rec.data() else {
         panic!("not NSEC")
     };
-    assert_eq!(nsec.next, common::dns("host.example.com."));
+    assert_eq!(nsec.next, dedens_testkit::dns("host.example.com."));
     let types: Vec<RecordType> = nsec.types.types().collect();
     assert_eq!(
         types,

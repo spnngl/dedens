@@ -12,11 +12,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::{
-    Responder, Server, ask_tcp, ask_udp, captured, config, decode, framed, query_for, read_framed,
-    silent,
+    Responder, Server, ask_tcp, ask_udp, config, decode, framed, query_for, read_framed, silent,
 };
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Message, Opcode, Rcode};
+use dedens_testkit::captured;
 
 #[test]
 fn queries_over_udp_and_tcp_are_forwarded() {

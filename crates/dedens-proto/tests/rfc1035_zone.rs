@@ -5,11 +5,12 @@ mod common;
 use std::fmt::Write as _;
 use std::fs;
 
-use common::{dns, zone_record};
+use common::zone_record;
 use dedens_proto::rdata::{RData, Soa};
 use dedens_proto::{
     Class, DecodedRecord, Record, RecordType, TextError, TextErrorKind, Ttl, ZoneEntry, ZoneReader,
 };
+use dedens_testkit::dns;
 use proptest::prelude::*;
 
 /// Every record of `reader`, `$INCLUDE`s read from `testdata/zones/` through `files`, which maps their names.

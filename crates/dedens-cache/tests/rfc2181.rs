@@ -5,11 +5,12 @@ mod common;
 
 use std::fs;
 
-use common::{T0, a, dns, insert, query, record, response};
+use common::{T0, a, insert, query, record, response};
 use dedens_cache::{Cache, Hit, Lookup, StalePolicy};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Query, Rcode, Record, RecordType};
+use dedens_testkit::dns;
 use proptest::prelude::*;
 
 /// Owners of the records: the question's and others, so that the records of an `RRset` may be apart.

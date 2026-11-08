@@ -2,12 +2,13 @@
 
 mod common;
 
-use common::{data_class, data_type, decode_record, dns, record_wire, zone_record};
+use common::{data_class, data_type, decode_record, record_wire, zone_record};
 use dedens_proto::rdata::RData;
 use dedens_proto::{
     Class, DecodeErrorKind, DecodedRecord, Name, NameError, Record, RecordType, TextError,
     TextErrorKind, Ttl, ZoneEntry, ZoneReader,
 };
+use dedens_testkit::dns;
 use proptest::prelude::*;
 
 fn parse(text: &str) -> Result<Record<'static>, TextError> {

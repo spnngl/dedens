@@ -9,13 +9,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dedens_bench::wire;
 use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Message, Transport};
 use dedens_server::{
     Cookies, Forward, Pipeline, Rate, RateLimit, RateLimitConfig, Secret, Secrets, Stage, Step,
 };
+use dedens_testkit::captured;
 use divan::Bencher;
 
 #[global_allocator]
@@ -32,7 +32,7 @@ fn source() -> IpAddr {
 
 /// The query for the captured response `a`, with `cookie` in its EDNS.
 fn query(cookie: Option<Cookie>) -> Vec<u8> {
-    let response = wire("a");
+    let response = captured("a");
     let message = Message::decode(&response).expect("decodes").message;
     let mut query = Message::query(7, message.questions[0].clone());
     query.edns = Some(Edns {
@@ -94,7 +94,7 @@ fn pipeline(limit: Option<RateLimit>, cookies: Option<Cookies>) -> Pipeline {
     else {
         unreachable!("an empty cache sends the query upstream");
     };
-    let step = pipeline.receive(upstream, Some(&wire("a")), 0, &mut out);
+    let step = pipeline.receive(upstream, Some(&captured("a")), 0, &mut out);
     assert!(matches!(step, Step::Reply(_)), "{step:?}");
     pipeline
 }

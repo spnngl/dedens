@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Question, Rcode, Transport};
+pub(crate) use dedens_testkit::captured;
 use tokio::task::JoinSet;
 use turmoil::net::{TcpStream, UdpSocket};
 
@@ -132,11 +133,6 @@ fn plain(wire: &[u8], question: &Question<'static>) -> Vec<u8> {
         .expect("a message it decoded encodes");
     out.truncate(len);
     out
-}
-
-/// A response captured from a real server, in `testdata/proto`.
-pub(crate) fn captured(case: &str) -> Vec<u8> {
-    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// The captured response `case`, decoded.

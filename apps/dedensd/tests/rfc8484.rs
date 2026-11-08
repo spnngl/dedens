@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::num::NonZero;
 
 use certificates::{Certificates, NAME, certificates, named};
-use common::{Responder, Server, captured, decode, query_for, write_config};
+use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, h3};
 use compio::runtime::{Runtime, spawn};
@@ -23,6 +23,7 @@ use dedens_net::doh::{MEDIA_TYPE, Method, Template, request};
 use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, Transport};
+use dedens_testkit::captured;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{HeaderMap, StatusCode};
 

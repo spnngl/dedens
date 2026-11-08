@@ -4,10 +4,11 @@
 
 mod common;
 
-use common::{T0, a, captured, dns, lookup, query_with, response, small_cache, small_config, ttls};
+use common::{T0, a, lookup, query_with, response, small_cache, small_config, ttls};
 use dedens_cache::{Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Message, Query, Rcode, RecordType};
+use dedens_testkit::{captured, dns};
 
 /// Stores a response for `www.example` A with AD as `upstream_ad` says, as `checked`.
 fn store(cache: &Cache, upstream_ad: bool, checked: Checked) {

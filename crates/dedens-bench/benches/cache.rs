@@ -15,10 +15,11 @@ use std::hint::black_box;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dedens_bench::{CASES, wire};
+use dedens_bench::CASES;
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Query, Question, Record, RecordType, Ttl};
+use dedens_testkit::captured;
 use divan::Bencher;
 
 #[global_allocator]
@@ -77,7 +78,7 @@ fn hit_once(cache: &Cache, query: &[u8], out: &mut [u8]) -> usize {
 
 #[divan::bench(args = CASES)]
 fn hit(bencher: Bencher<'_, '_>, case: &str) {
-    let response = wire(case);
+    let response = captured(case);
     let query = query_for(&response);
     let cache = cache();
     if !insert_at_0(&cache, &query, &response) {
@@ -92,7 +93,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
 /// Its time is compared to `hit` of the same case, which copies the response whole.
 #[divan::bench]
 fn hit_truncated(bencher: Bencher<'_, '_>) {
-    let response = wire("txt_large");
+    let response = captured("txt_large");
     let query = query_for(&response);
     let cache = cache();
     assert!(insert_at_0(&cache, &query, &response), "cacheable");
@@ -111,7 +112,7 @@ fn hit_truncated(bencher: Bencher<'_, '_>) {
 
 #[divan::bench(args = CASES)]
 fn insert(bencher: Bencher<'_, '_>, case: &str) {
-    let response = wire(case);
+    let response = captured(case);
     let decoded = Message::decode(&response).expect("decodes");
     let query = query_for(&response);
     let query = Query::read(&query).expect("a valid query");

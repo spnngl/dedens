@@ -2,8 +2,9 @@
 
 mod common;
 
-use common::{captured, decode, forwarder, query_for, run, wire};
+use common::{decode, forwarder, query_for, run, wire};
 use dedens_proto::{Rcode, Transport};
+use dedens_testkit::captured;
 
 #[test]
 fn two_questions_get_formerr_without_asking_upstream() {

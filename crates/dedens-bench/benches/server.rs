@@ -8,12 +8,13 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use dedens_bench::{CASES, wire};
+use dedens_bench::CASES;
 use dedens_cache::{Cache, Checked, Config};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Message, Query, Question, Record, RecordType, Transport, Ttl};
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step};
+use dedens_testkit::captured;
 use divan::Bencher;
 
 #[global_allocator]
@@ -63,7 +64,7 @@ fn caching(query: &[u8], response: &[u8]) -> Pipeline {
 /// A query missing the cache, sent upstream, then the response stored and the reply made from it.
 #[divan::bench(args = CASES)]
 fn miss(bencher: Bencher<'_, '_>, case: &str) {
-    let response = wire(case);
+    let response = captured(case);
     let query = query_for(&response);
     let mut out = vec![0; 1232];
     bencher
@@ -87,7 +88,7 @@ fn miss(bencher: Bencher<'_, '_>, case: &str) {
 /// A query answered from the cache: read, looked up, copied and patched into a 1232-byte buffer.
 #[divan::bench(args = CASES)]
 fn hit(bencher: Bencher<'_, '_>, case: &str) {
-    let response = wire(case);
+    let response = captured(case);
     let query = query_for(&response);
     let pipeline = caching(&query, &response);
     let mut out = vec![0; 1232];
@@ -107,7 +108,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
 /// nothing until a panic, and nothing is allocated.
 #[divan::bench(args = CASES)]
 fn hit_guarded(bencher: Bencher<'_, '_>, case: &str) {
-    let response = wire(case);
+    let response = captured(case);
     let query = query_for(&response);
     let pipeline = caching(&query, &response);
     let mut out = vec![0; 1232];
@@ -129,7 +130,7 @@ fn hit_guarded(bencher: Bencher<'_, '_>, case: &str) {
 /// `checked`, the verdict of a validating stage (D77), and a hit on it: the hit path of a validating forwarder, whose
 /// stage only differs from the plain one when the cache misses.
 fn dnssec_hit(bencher: Bencher<'_, '_>, case: &str, checked: Checked) {
-    let response = wire(case);
+    let response = captured(case);
     let question = Message::decode(&response)
         .expect("decodes")
         .message

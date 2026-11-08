@@ -5,12 +5,13 @@
 use std::hint::black_box;
 use std::time::{Duration, UNIX_EPOCH};
 
-use dedens_bench::{CASES, wire};
+use dedens_bench::CASES;
 use dedens_net::doh::{
     MEDIA_TYPE, Method, Template, request, response, server_request, server_response,
 };
 use dedens_proto::Message;
 use dedens_proto::edns::Edns;
+use dedens_testkit::captured;
 use divan::Bencher;
 use http::header::{AGE, CONTENT_TYPE};
 
@@ -27,7 +28,7 @@ fn template() -> Template {
 
 /// A query for the captured response `case`, ID 0 with EDNS, as a `DoH` client sends it.
 fn query_for(case: &str) -> Vec<u8> {
-    let response = wire(case);
+    let response = captured(case);
     let message = Message::decode(&response).expect("decodes").message;
     let mut query = Message::query(0, message.questions[0].clone().into_owned());
     query.edns = Some(Edns::default());
@@ -60,7 +61,7 @@ fn http_response(age: u32) -> http::Response<()> {
 /// The response as received: parsed, the TTLs untouched.
 #[divan::bench(args = CASES)]
 fn response_fresh(bencher: Bencher<'_, '_>, case: &str) {
-    let (headers, body) = (http_response(0), wire(case));
+    let (headers, body) = (http_response(0), captured(case));
     let now = UNIX_EPOCH + Duration::from_secs(1_793_522_455);
     bencher
         .bench_local(|| response(black_box(&headers), black_box(&body), now).expect("a response"));
@@ -69,7 +70,7 @@ fn response_fresh(bencher: Bencher<'_, '_>, case: &str) {
 /// The response a cache kept for 10 seconds: every TTL lowered.
 #[divan::bench(args = CASES)]
 fn response_aged(bencher: Bencher<'_, '_>, case: &str) {
-    let (headers, body) = (http_response(10), wire(case));
+    let (headers, body) = (http_response(10), captured(case));
     let now = UNIX_EPOCH + Duration::from_secs(1_793_522_455);
     bencher
         .bench_local(|| response(black_box(&headers), black_box(&body), now).expect("a response"));
@@ -85,7 +86,7 @@ fn server_request_get(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn server_response_get(bencher: Bencher<'_, '_>, case: &str) {
-    let body = wire(case);
+    let body = captured(case);
     bencher.bench_local(|| {
         server_response(black_box(body.clone()), &http::Method::GET).expect("a response")
     });

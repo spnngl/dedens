@@ -9,12 +9,13 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::{
-    Captures, caching_with, captured, client_query, decode, dns, forwarder, query_for, run,
-    servers, validating, wire,
+    Captures, caching_with, client_query, decode, forwarder, query_for, run, servers, validating,
+    wire,
 };
 use dedens_cache::Config;
 use dedens_proto::{Class, Flags, Message, Opcode, Rcode, RecordType, Transport};
 use dedens_server::Step;
+use dedens_testkit::{captured, dns};
 
 /// The capture `case` with `alter` applied.
 fn altered(case: &str, alter: impl FnOnce(&mut Message<'static>)) -> Vec<u8> {

@@ -12,8 +12,9 @@ mod responder;
 
 use std::path::Path;
 
-use common::{Server, ask_tcp, ask_udp, captured, decode, query_for};
+use common::{Server, ask_tcp, ask_udp, decode, query_for};
 use dedens_proto::Rcode;
+use dedens_testkit::captured;
 use responder::{Responder, TLS_NAME, Transport};
 
 /// `dedensd` forwarding to `upstream` alone, trusting the certificate authority of `ca`.

@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use certificates::{Certificates, NAME, certificates, named};
-use common::{Responder, Server, captured, decode, framed, query_for, write_config};
+use common::{Responder, Server, decode, framed, query_for, write_config};
 use compio::io::AsyncWriteExt;
 use compio::quic::crypto::rustls::QuicClientConfig;
 use compio::quic::{
@@ -32,6 +32,7 @@ use dedens_net::exchange::Options;
 use dedens_net::quic::read_message;
 use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, Transport};
+use dedens_testkit::captured;
 
 /// The certificate and key of `certificates` in PEM files beside the configuration file `config`.
 fn write_pems(certificates: &Certificates, config: &Path) -> (PathBuf, PathBuf) {

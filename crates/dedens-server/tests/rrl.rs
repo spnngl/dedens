@@ -7,13 +7,14 @@ mod common;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use common::{captured, decode, forwarder, query_for, wire};
+use common::{decode, forwarder, query_for, wire};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, Rcode, Transport};
 use dedens_server::{
     Access, Admission, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit, RateLimitConfig,
     RateLimitError, Secret, Secrets, Step,
 };
+use dedens_testkit::captured;
 
 /// What the pipeline did with a query.
 #[derive(Debug, PartialEq, Eq)]

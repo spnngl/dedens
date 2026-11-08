@@ -2,9 +2,10 @@
 
 mod common;
 
-use common::{DSKEY, dnskey_rdata, hex, name};
+use common::{DSKEY, dnskey_rdata, name};
 use dedens_dnssec::crypto::{ds_digest, key_tag};
 use dedens_proto::DigestType;
+use dedens_testkit::hex;
 
 // RFC 9718 §2: `. IN DNSKEY 257 3 8`, the KSK-2017 (key tag 20326).
 const ROOT_KSK: &str = "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3

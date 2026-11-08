@@ -27,6 +27,7 @@ use dedens_net::tls::Trust;
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
 use dedens_proto::{MAX_MESSAGE_LEN, Message, Rcode, RecordType, Transport};
+use dedens_testkit::hex;
 use futures_util::future::join_all;
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE};
 use http::{Response, StatusCode, Version};
@@ -52,12 +53,6 @@ const WWW_RESPONSE: &str = "00 00 81 80 00 01 00 01  00 00 00 00 03 77 77 77
                             07 65 78 61 6d 70 6c 65  03 63 6f 6d 00 00 1c 00
                             01 c0 0c 00 1c 00 01 00  00 0e 7d 00 10 20 01 0d
                             b8 ab cd 00 12 00 01 00  02 00 03 00 04";
-
-fn hex(text: &str) -> Vec<u8> {
-    text.split_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
-        .collect()
-}
 
 fn template() -> Template {
     Template::parse(TEMPLATE).expect("a template")

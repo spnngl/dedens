@@ -7,12 +7,13 @@ mod common;
 
 use std::fs;
 
-use common::{Replay, hex};
+use common::Replay;
 use dedens_odoh::{
     ConfigContents, Configs, ExchangeError, Message, MessagePlaintext, MessageType, QUERY_BLOCK,
     RESPONSE_BLOCK, TargetKey, WireError, decrypt_query, decrypt_response, encrypt_query,
     encrypt_response, query_padding, response_padding, suite,
 };
+use dedens_testkit::hex;
 use hpke::{Deserializable as _, OpModeS, Serializable as _};
 use ring::{aead, hkdf};
 use serde::Deserialize;

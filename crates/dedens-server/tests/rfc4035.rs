@@ -237,7 +237,7 @@ fn the_ad_bit_of_upstream_is_ignored() {
 fn a_secure_answer_loses_its_additional_section() {
     let mut message = decode(&Captures::get("alg13_a")).into_owned();
     let mut extra = message.answer[0].clone();
-    extra.name = common::dns("unsigned.example.");
+    extra.name = dedens_testkit::dns("unsigned.example.");
     message.additional.push(extra);
     let captures = Captures::new().with(common::wire(&message));
     let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
@@ -256,7 +256,7 @@ fn record(
     data: &dedens_proto::rdata::RData<'_>,
 ) -> dedens_proto::Record<'static> {
     dedens_proto::Record {
-        name: common::dns(owner),
+        name: dedens_testkit::dns(owner),
         class: dedens_proto::Class::IN,
         ttl: dedens_proto::Ttl::from_wire(ttl),
         rdata: dedens_proto::WireRdata::new(data),
@@ -271,7 +271,7 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
     let mut message = decode(&Captures::get("alg13_a")).into_owned();
     let a = message.answer[0].clone();
     let foreign = |owner: &str| dedens_proto::Record {
-        name: common::dns(owner),
+        name: dedens_testkit::dns(owner),
         ..a.clone()
     };
     let signature = message
@@ -283,16 +283,16 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
     let ns = record(
         "unrelated.example.",
         300,
-        &dedens_proto::rdata::RData::Cname(common::dns("evil.example.")),
+        &dedens_proto::rdata::RData::Cname(dedens_testkit::dns("evil.example.")),
     );
     let genuine = message.answer.len();
     message.answer.push(foreign("other.example."));
     message.answer.push(dedens_proto::Record {
-        name: common::dns("other.example."),
+        name: dedens_testkit::dns("other.example."),
         ..signature.clone()
     });
     message.answer.push(dedens_proto::Record {
-        name: common::dns("orphan.cloudflare.com."),
+        name: dedens_testkit::dns("orphan.cloudflare.com."),
         ..signature
     });
     message.answer.push(dedens_proto::Record {
@@ -316,7 +316,7 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
             reply
                 .answer
                 .iter()
-                .all(|record| record.name == common::dns("cloudflare.com."))
+                .all(|record| record.name == dedens_testkit::dns("cloudflare.com."))
         );
     }
 }
@@ -332,9 +332,9 @@ fn a_second_record_in_the_cname_a_dname_makes_is_bogus() {
         .position(|record| record.rtype() == RecordType::CNAME)
         .expect("the synthesized CNAME");
     let evil = dedens_proto::Record {
-        rdata: dedens_proto::WireRdata::new(&dedens_proto::rdata::RData::Cname(common::dns(
-            "evil.example.",
-        ))),
+        rdata: dedens_proto::WireRdata::new(&dedens_proto::rdata::RData::Cname(
+            dedens_testkit::dns("evil.example."),
+        )),
         ..message.answer[at].clone()
     };
     message.answer.insert(at + 1, evil);
@@ -382,7 +382,7 @@ fn response_for(
     answer: Vec<dedens_proto::Record<'static>>,
 ) -> Vec<u8> {
     let mut message = genuine.clone();
-    message.questions[0].name = common::dns(name);
+    message.questions[0].name = dedens_testkit::dns(name);
     message.answer = answer;
     message.authority.clear();
     message.additional.clear();
@@ -397,7 +397,7 @@ fn split_chain() -> (Vec<u8>, Vec<u8>) {
         .answer
         .iter()
         .cloned()
-        .partition(|record| record.name == common::dns("www.ripe.net."));
+        .partition(|record| record.name == dedens_testkit::dns("www.ripe.net."));
     (
         response_for(&genuine, "www.ripe.net.", head),
         response_for(&genuine, "www.ripe.net.edgekey.net.", tail),
@@ -412,10 +412,9 @@ fn a_chain_that_stops_short_is_chased_and_not_secure() {
     let captures = Captures::new().with(head).with(tail);
     let query = client_query("www.ripe.net.", RecordType::A, Flags::AD, true);
     let done = run_captured(&validating(), &query, 0, &captures);
-    let chased = done
-        .requests
-        .iter()
-        .any(|request| request.questions[0].name == common::dns("www.ripe.net.edgekey.net."));
+    let chased = done.requests.iter().any(|request| {
+        request.questions[0].name == dedens_testkit::dns("www.ripe.net.edgekey.net.")
+    });
     assert!(chased);
     let reply = decode(&done.reply.expect("a reply")).into_owned();
     assert_eq!(reply.rcode(), Rcode::NOERROR);

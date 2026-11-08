@@ -7,15 +7,11 @@ use std::net::Ipv4Addr;
 use dedens_cache::{Cache, Config, Key, Lookup, NotCached, StalePolicy};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::{RData, Soa};
-use dedens_proto::{Class, Flags, Message, Name, Query, Question, Rcode, Record, RecordType, Ttl};
+use dedens_proto::{Class, Flags, Message, Query, Question, Rcode, Record, RecordType, Ttl};
+use dedens_testkit::dns;
 
 /// Seconds at which the tests store responses.
 pub(crate) const T0: u32 = 1_000;
-
-pub(crate) fn dns(text: &str) -> Name<'static> {
-    Name::from_labels(text.split('.').filter(|l| !l.is_empty()).map(str::as_bytes))
-        .expect("a valid name")
-}
 
 pub(crate) fn a(owner: &str, ttl: u32, last: u8) -> Record<'static> {
     record(owner, ttl, &RData::A(Ipv4Addr::new(192, 0, 2, last)))
@@ -139,11 +135,6 @@ pub(crate) fn min_cache(min_ttl: u32) -> Cache {
         ..small_config()
     })
     .expect("a valid config")
-}
-
-/// A response captured from a real server, in `testdata/proto`.
-pub(crate) fn captured(case: &str) -> Vec<u8> {
-    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// The query a captured response answers: its question, RD set, EDNS without DO.

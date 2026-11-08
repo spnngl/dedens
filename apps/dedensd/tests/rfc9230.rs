@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use certificates::{Certificates, NAME, certificates, named};
-use common::{Responder, Server, captured, decode, query_for, write_config};
+use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ClientBuilder, ServerBuilder, h3};
 use compio::runtime::{Runtime, spawn};
@@ -31,6 +31,7 @@ use dedens_net::odoh::{CONFIGS_PATH, Entropy};
 use dedens_net::tls::Trust;
 use dedens_odoh::{Configs, MEDIA_TYPE, encrypt_query};
 use dedens_proto::{Rcode, Transport};
+use dedens_testkit::captured;
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
 

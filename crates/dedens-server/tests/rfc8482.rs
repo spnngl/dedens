@@ -4,9 +4,10 @@
 
 mod common;
 
-use common::{caching, captured, decode, forwarder, query_for, run, wire};
+use common::{caching, decode, forwarder, query_for, run, wire};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{Class, Flags, Rcode, RecordType, Transport};
+use dedens_testkit::captured;
 
 /// The real ANY response, and its query with the EDNS and DO bit given.
 fn any(edns: Option<bool>) -> (Vec<u8>, Vec<u8>) {

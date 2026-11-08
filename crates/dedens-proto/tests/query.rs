@@ -64,7 +64,7 @@ fn every_capture_reads_as_decoded() {
 fn a_query_with_a_cookie_is_read_in_place() {
     let mut message = Message::query(
         9,
-        Question::new(common::dns("example.com."), RecordType::AAAA),
+        Question::new(dedens_testkit::dns("example.com."), RecordType::AAAA),
     );
     let cookie = Cookie::new([1, 2, 3, 4, 5, 6, 7, 8], None).expect("client cookie");
     if let Some(edns) = message.edns.as_mut() {
@@ -86,7 +86,10 @@ fn a_query_with_a_cookie_is_read_in_place() {
 
 #[test]
 fn append_adds_opt_after_the_records() {
-    let mut message = Message::query(3, Question::new(common::dns("example."), RecordType::A));
+    let mut message = Message::query(
+        3,
+        Question::new(dedens_testkit::dns("example."), RecordType::A),
+    );
     message.edns = None;
     message.additional = vec![common::rec(
         "example.",
@@ -104,7 +107,10 @@ fn append_adds_opt_after_the_records() {
 
 #[test]
 fn append_refuses_what_does_not_fit() {
-    let mut message = Message::query(3, Question::new(common::dns("example."), RecordType::A));
+    let mut message = Message::query(
+        3,
+        Question::new(dedens_testkit::dns("example."), RecordType::A),
+    );
     message.edns = None;
     let mut buf = [0; 40];
     let len = message.encode(&mut buf).expect("encodes");
