@@ -2,29 +2,29 @@
 
 The server's query pipeline (D23, D41, D43). Sans-IO: `Pipeline::query` returns a `Step`: a reply, a drop, a
 reply then a refresh, or an upstream request the caller sends (`apps/dedensd`, with `dedens-net`). Plugin stages
-(D54) implement `Plugin`. The stages are tested in `tests/forward.rs`, `tests/cache.rs` and `tests/plugin.rs`;
+(D54) implement `Plugin`. The integration tests are one binary, a module per topic (D162); the stages are tested in `tests/stages.rs`;
 upstream answers are the captures of `testdata/proto`.
 `Pipeline::receive` checks QR, opcode and question of each upstream response itself, not trusting the transport (D111,
-`forward::usable`, `tests/rfc5452.rs`); the ID is the transport's.
+`forward::usable`, `stages::upstream`); the ID is the transport's.
 
 A forward stage may validate (D77, `src/validate.rs`): the pipeline turns each question of a
 `dedens_dnssec::Validation` into a `Step::Upstream`, so `apps/dedensd` needs no change per question. Only `Secure`
 sets AD, the upstream's AD is never read, and a secure response is cut by `dedens_dnssec::covered`
-to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/rfc4035.rs` and `tests/rfc6840.rs`, answer from the
+to the records the verdict covers (the validator ignores the rest, so they must not come out under AD or be cached as secure). Its tests, `tests/dnssec.rs`, answer from the
 captures of `testdata/dnssec` at their `captured_at`. `Allowance` bounds what queries cost
-the validator (D77, `tests/limits.rs`) and each client network's `Budget` share of it (D117, `src/budget.rs`, also
+the validator (D77, `dnssec::limits`) and each client network's `Budget` share of it (D117, `src/budget.rs`, also
 `dedensd`'s ODoH decapsulations): a query past either is shed in `Pipeline::query`, before any question. Feature
 `metrics` (D30): the validation, access, rate limit and cookie counters, `src/metrics.rs` (`tests/metrics.rs`).
 
 `Pipeline::with_access` takes the client access lists (D91, `src/access.rs`): the caller passes the client's address
-to `Pipeline::query`, and a denied one is answered before any stage (`tests/rfc5358.rs`). Without lists, everyone is
+to `Pipeline::query`, and a denied one is answered before any stage (`access::networks`). Without lists, everyone is
 answered. Fuzzed by `parse_network` (the networks of a list) and `serve_query`.
 
 `Pipeline::with_rate_limit` and `with_cookies` (D113, `src/rrl.rs`, `src/cookie.rs`) take the rate limit per client
-network over UDP and DoC and the RFC 9018 Server Cookies; a valid Server Cookie skips the limit. `tests/rrl.rs`,
-`tests/rfc7873.rs` and `tests/rfc9018.rs` (RFC 9018 Appendix A vectors); the cost is in
+network over UDP and DoC and the RFC 9018 Server Cookies; a valid Server Cookie skips the limit. `tests/access.rs`
+(RFC 9018 Appendix A vectors in `access::server_cookies`); the cost is in
 `crates/dedens-bench/benches/rrl.rs`.
 
 `Plugin::reviewer` (D118) lets a plugin refuse the responses of the stages after it; a reviewed hit is marked with
-the pipeline's id (`Cache::mark`) and decoded once (`tests/plugin.rs`).
-ANY over UDP and DoC is answered empty with TC (D114, `tests/rfc8482.rs`).
+the pipeline's id (`Cache::mark`) and decoded once (`stages::plugin`).
+ANY over UDP and DoC is answered empty with TC (D114, `tests/wire.rs`).
