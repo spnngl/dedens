@@ -3,15 +3,15 @@
 
 #![allow(dead_code, reason = "each test file uses part of the helpers")]
 
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
-use dedens_proto::{Flags, Message, Name, Rcode, RecordType, Transport};
+use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
 use dedens_server::{Forward, Pipeline, Stage, Step, Validating};
 use dedens_testkit::dns;
+use dedens_testkit::dnssec::{self, Captures};
 
 /// The upstream servers of [`forwarder`], in order.
 pub(crate) fn servers() -> Vec<SocketAddr> {
@@ -147,59 +147,9 @@ pub(crate) fn reply(
         .expect("a reply")
 }
 
-/// The captured responses of `testdata/dnssec` (its `README.md`), by the question each answers: the upstream
-/// of the validation tests.
-pub(crate) struct Captures(HashMap<(Name<'static>, RecordType), Vec<u8>>);
-
-impl Captures {
-    pub(crate) fn new() -> Self {
-        let mut all = HashMap::new();
-        for entry in std::fs::read_dir(dedens_testkit::path("dnssec")).expect("the captures") {
-            let path = entry.expect("an entry").path();
-            if path.extension().is_some_and(|extension| extension == "bin") {
-                let wire = std::fs::read(&path).expect("a capture");
-                let message = decode(&wire).into_owned();
-                let question = message.questions.first().expect("a question");
-                all.insert((question.name.clone(), question.qtype), wire);
-            }
-        }
-        Self(all)
-    }
-
-    /// The capture `id`, as `testdata/dnssec/README.md` names it.
-    /// The same captures, `wire` answering its question instead of the one captured.
-    pub(crate) fn with(mut self, wire: Vec<u8>) -> Self {
-        let message = decode(&wire).into_owned();
-        let question = message.questions.first().expect("a question");
-        self.0.insert((question.name.clone(), question.qtype), wire);
-        self
-    }
-
-    /// The same captures without the answer to `name` and `qtype`: upstream stays silent.
-    pub(crate) fn without(mut self, name: &str, qtype: RecordType) -> Self {
-        self.0.remove(&(dns(name), qtype));
-        self
-    }
-
-    pub(crate) fn get(id: &str) -> Vec<u8> {
-        std::fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("a capture")
-    }
-
-    pub(crate) fn answer(&self, request: &Message<'_>) -> Option<&[u8]> {
-        let question = request.questions.first()?;
-        self.0
-            .get(&(question.name.clone().into_owned(), question.qtype))
-            .map(Vec::as_slice)
-    }
-}
-
-/// The Unix time of the capture run: when the signatures are valid.
+/// The Unix time of the capture run, as the validator's clock reads it.
 pub(crate) fn captured_at() -> u64 {
-    std::fs::read_to_string(dedens_testkit::path("dnssec/captured_at"))
-        .expect("captured_at")
-        .trim()
-        .parse()
-        .expect("Unix time in seconds")
+    u64::from(dnssec::captured_at())
 }
 
 /// A pipeline with a cache, then forwarding to [`servers`] and validating against the root's trust anchor at

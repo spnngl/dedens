@@ -5,9 +5,11 @@
 //! `dedens-proto` (in `src/`) get another build of the crate than this one links: they take paths and bytes from
 //! here, never a `Name` or a `Message`.
 
+pub mod dnssec;
+
 use std::path::PathBuf;
 
-use dedens_proto::Name;
+use dedens_proto::{Message, Name, Record, ZoneEntry, ZoneReader};
 
 /// The file or directory `relative` of the root `testdata/`, as `proto/a.bin` or `zones/`.
 #[must_use]
@@ -23,6 +25,19 @@ pub fn path(relative: &str) -> PathBuf {
 #[must_use]
 pub fn captured(case: &str) -> Vec<u8> {
     std::fs::read(path(&format!("proto/{case}.bin"))).expect("a captured response")
+}
+
+/// The message `wire` holds, as the captures do: decoded without a violation.
+///
+/// # Panics
+///
+/// When `wire` does not decode, or breaks a rule.
+#[must_use]
+#[track_caller]
+pub fn message(wire: &[u8]) -> Message<'static> {
+    let decoded = Message::decode(wire).expect("a message");
+    assert_eq!(decoded.violations, [], "a capture breaks no rule");
+    decoded.message.into_owned()
 }
 
 /// The bytes `text` writes in hexadecimal, as the RFCs print them: either case, split over lines and spaces.
@@ -60,6 +75,22 @@ pub fn dns(text: &str) -> Name<'static> {
         .expect("a valid name")
 }
 
+/// The records of the zone file `file` of `testdata/zones/`, its other entries left out.
+///
+/// # Panics
+///
+/// When the file cannot be read or is no valid zone.
+#[must_use]
+pub fn zone(file: &str) -> Vec<Record<'static>> {
+    let text = std::fs::read(path("zones").join(file)).expect("zone file");
+    ZoneReader::new(&text, None)
+        .filter_map(|entry| match entry.expect("a valid zone") {
+            ZoneEntry::Record(decoded) => Some(decoded.record),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +98,14 @@ mod tests {
     #[test]
     fn hex_reads_either_case_over_lines() {
         assert_eq!(hex("00 fF\n 1a"), [0x00, 0xff, 0x1a]);
+    }
+
+    #[test]
+    fn a_capture_is_a_message() {
+        assert_eq!(
+            message(&captured("a")).questions[0].name,
+            dns("example.com")
+        );
     }
 
     #[test]

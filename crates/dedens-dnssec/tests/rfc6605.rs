@@ -3,13 +3,13 @@
 
 mod common;
 
-use common::{
-    P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE, Rr, Rrsig, b64, check, dnskey_rdata, name,
-    rrset, rrsig_set, signed_data,
-};
+use common::{check, name, rrset, rrsig_set};
 use dedens_dnssec::crypto::{VerifyError, ds_digest, key_tag, verify};
 use dedens_dnssec::rrsig::{RrSet, SigError};
 use dedens_proto::{DigestType, SecAlgorithm};
+use dedens_testkit::dnssec::{
+    P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE, Rr, Rrsig, b64, dnskey_rdata, signed_data,
+};
 use dedens_testkit::hex;
 
 const P256_DS: &str = "b4c8c1fe2e7477127b27115656ad6256f424625bf5c1

@@ -15,13 +15,8 @@ use std::time::{Duration, Instant};
 
 use dedens_net::tcp::frame;
 use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
-use dedens_testkit::captured;
+use dedens_testkit::{captured, dnssec};
 use serde_json::Value;
-
-/// A captured response of `testdata/dnssec`.
-pub(crate) fn captured_dnssec(case: &str) -> Vec<u8> {
-    std::fs::read(dedens_testkit::path(&format!("dnssec/{case}.bin"))).expect("a captured response")
-}
 
 /// A query, under `id`, for the question of `response`.
 pub(crate) fn query_for(response: &[u8], id: u16) -> Vec<u8> {
@@ -61,7 +56,7 @@ impl Responder {
 
     /// Answers with the captures of `dedens-dnssec` named `cases`, each query `delay` late.
     pub(crate) fn dnssec(cases: &[&str], delay: Duration) -> Self {
-        let captures = cases.iter().map(|case| captured_dnssec(case)).collect();
+        let captures = cases.iter().map(|case| dnssec::capture(case)).collect();
         Self::answering(captures, delay, 0)
     }
 

@@ -12,14 +12,16 @@ mod common;
 #[path = "common/denial.rs"]
 mod support;
 
-use common::{
-    RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rrsig, canonical_name, dnskey_rdata, name, rrset, rrsig_set,
-};
+use common::{name, rrset, rrsig_set};
 use dedens_dnssec::crypto::{Budget, ds_digest, key_tag};
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
 use dedens_proto::{DigestType, Record, RecordType, Ttl};
-use support::{nsec, pick, prove, zone};
+use dedens_testkit::dnssec::{
+    RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rrsig, canonical_name, dnskey_rdata,
+};
+use dedens_testkit::zone;
+use support::{nsec, pick, prove};
 
 /// A name in wire form, in the case given.
 fn wire(text: &str) -> Vec<u8> {
@@ -160,7 +162,7 @@ fn ns1_rrsig(algorithm: u8, key_tag: u16, expiration: u32) -> Rrsig<'static> {
 }
 
 fn zsk() -> RrSet<'static> {
-    rrset("example.", 48, &[dnskey_rdata(256, 5, RFC4034_ZSK)])
+    rrset("example.", 48, &[dnskey_rdata(256, 5, RFC4035_ZSK)])
 }
 
 #[test]
@@ -169,30 +171,30 @@ fn s5_4_and_s5_12_one_valid_rrsig_is_enough_and_the_others_are_disregarded() {
     let good = rrsig_set(
         "ns1.example.",
         &ns1_rrsig(5, 38519, EXPIRATION),
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     );
     let others = [
         // §5.4: gibberish for a key we have, and a window that ended.
         rrsig_set(
             "ns1.example.",
             &ns1_rrsig(5, 38519, INCEPTION + 1),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         ),
         // §5.12: no DNSKEY of the tag, and an algorithm the DNSKEY RRset has none of.
         rrsig_set(
             "ns1.example.",
             &ns1_rrsig(5, 1, EXPIRATION),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         ),
         rrsig_set(
             "ns1.example.",
             &ns1_rrsig(200, 38519, EXPIRATION),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         ),
         rrsig_set(
             "ns1.example.",
             &ns1_rrsig(8, 38519, EXPIRATION),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         ),
     ];
     for other in &others {
@@ -214,7 +216,7 @@ fn s5_4_and_s5_12_one_valid_rrsig_is_enough_and_the_others_are_disregarded() {
 #[test]
 fn s5_11_a_validator_accepts_any_single_valid_path_from_the_ds_records() {
     // A DS RRset that signals a digest we do not support beside one that we do: the supported one is the path.
-    let key = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let key = dnskey_rdata(256, 5, RFC4035_ZSK);
     let ds = |digest_type: DigestType, digest: &[u8]| {
         let mut rdata = key_tag(&key).to_be_bytes().to_vec();
         rdata.extend([5, digest_type.0]);

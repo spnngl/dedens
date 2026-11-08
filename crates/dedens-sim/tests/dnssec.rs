@@ -116,12 +116,7 @@ fn testdata() -> PathBuf {
 
 /// The Unix time the captures were taken at, when their signatures are valid.
 fn captured_at() -> Duration {
-    let seconds = std::fs::read_to_string(testdata().join("captured_at"))
-        .expect("the time of the capture")
-        .trim()
-        .parse()
-        .expect("Unix time");
-    Duration::from_secs(seconds)
+    Duration::from_secs(dedens_testkit::dnssec::captured_at().into())
 }
 
 thread_local! {

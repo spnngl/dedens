@@ -17,6 +17,7 @@ use dedens_proto::{
     Class, Flags, Message, Name, Query, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step};
+use dedens_testkit::{captured, dnssec, message};
 
 const STEVENBLACK: &str = include_str!("../../../testdata/plugins/stevenblack.hosts");
 const HAGEZI: &str = include_str!("../../../testdata/plugins/hagezi-light.txt");
@@ -775,26 +776,17 @@ fn a_line_that_fails_leaves_none_of_its_names() {
     assert_eq!(names.check(Tlds::Allow).map(|read| read.skipped), Ok(1));
 }
 
-/// A response captured from a real server, in `testdata/proto` or `testdata/dnssec` (`set`).
-fn capture(set: &str, id: &str) -> Message<'static> {
-    let wire = std::fs::read(dedens_testkit::path(&format!("{set}/{id}.bin"))).expect("a capture");
-    Message::decode(&wire)
-        .expect("a capture decodes")
-        .message
-        .into_owned()
-}
-
 /// The captures whose answers hold a CNAME or a DNAME, with the question each answers (D118).
 fn chains() -> Vec<Message<'static>> {
     vec![
         // `www.ripe.net.` CNAME `www.ripe.net.edgekey.net.` CNAME `e337066.dscb.akamaiedge.net.`
-        capture("dnssec", "cname_to_insecure"),
+        dnssec::response("cname_to_insecure"),
         // `www.icann.org.` CNAME `www.icann.org.cdn.cloudflare.net.`
-        capture("dnssec", "cname_cross_zone"),
+        dnssec::response("cname_cross_zone"),
         // `www.github.com.` CNAME `github.com.`, and its address.
-        capture("proto", "cname_chain"),
+        message(&captured("cname_chain")),
         // `dname.sidnlabs.nl.` DNAME `example.nl.`, and the CNAME made from it.
-        capture("dnssec", "dname_answer"),
+        dnssec::response("dname_answer"),
     ]
 }
 
@@ -862,7 +854,7 @@ fn blocklist_of(block: &str) -> Blocklist {
 /// `example.nl.` as the DNAME's target only (RFC 6672 §2.1).
 #[test]
 fn a_listed_dname_target_blocks_the_response() {
-    let mut response = capture("dnssec", "dname_answer");
+    let mut response = dnssec::response("dname_answer");
     assert_eq!(
         targets(&response),
         ["wWw.example.nl."],
@@ -884,7 +876,7 @@ fn a_listed_dname_target_blocks_the_response() {
 /// answering a query for its owner leads nowhere, whatever its target.
 #[test]
 fn a_dname_does_not_redirect_its_owner() {
-    let mut response = capture("dnssec", "dname_answer");
+    let mut response = dnssec::response("dname_answer");
     let owner = response
         .answer
         .iter()
@@ -900,7 +892,7 @@ fn a_dname_does_not_redirect_its_owner() {
 /// the DNAME it was made from, the DNAME's target is still checked, though the CNAME's target is allowed.
 #[test]
 fn a_dname_after_its_cname_is_checked() {
-    let mut response = capture("dnssec", "dname_answer");
+    let mut response = dnssec::response("dname_answer");
     let blocklist = blocklist("example.nl\n", "www.example.nl\n", Action::Nxdomain);
     assert!(review(&blocklist, &response).is_some(), "as captured");
     response
@@ -915,7 +907,7 @@ fn a_dname_after_its_cname_is_checked() {
 /// (D118).
 #[test]
 fn the_allowlist_decides_for_targets_as_for_names() {
-    let response = capture("dnssec", "cname_to_insecure");
+    let response = dnssec::response("cname_to_insecure");
     let listed = "akamaiedge.net\n";
     for (allow, passes) in [
         ("e337066.dscb.akamaiedge.net\n", true),
@@ -934,7 +926,7 @@ fn the_allowlist_decides_for_targets_as_for_names() {
 /// question's type, whatever the chain.
 #[test]
 fn a_blocked_response_is_answered_as_the_action_says() {
-    let response = capture("dnssec", "cname_to_insecure");
+    let response = dnssec::response("cname_to_insecure");
     for (action, rcode, records) in [
         (Action::Nxdomain, Rcode::NXDOMAIN, false),
         (Action::Nodata, Rcode::NOERROR, false),
@@ -1017,7 +1009,7 @@ fn a_chain_over_the_bound_is_servfail() {
 /// the capture holds a DNAME and the CNAME made from it, and the listed name is found through either.
 #[test]
 fn a_dname_and_its_cname_are_one_hop() {
-    let response = capture("dnssec", "dname_answer");
+    let response = dnssec::response("dname_answer");
     let types = response
         .answer
         .iter()
@@ -1056,7 +1048,7 @@ fn resolve(pipeline: &Pipeline, response: &Message<'_>) -> Message<'static> {
 /// instead of the addresses of the tracker; a list that holds none of the chain leaves the response as it is.
 #[test]
 fn a_chain_to_a_listed_name_is_not_served() {
-    let response = capture("dnssec", "cname_to_insecure");
+    let response = dnssec::response("cname_to_insecure");
     let pipeline = pipeline("akamaiedge.net\n", Action::Nxdomain);
     let reply = resolve(&pipeline, &response);
     assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NXDOMAIN, 0));

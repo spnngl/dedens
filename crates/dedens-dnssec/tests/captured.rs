@@ -8,7 +8,7 @@ use dedens_proto::{Message, Rcode, Record, RecordType};
 
 mod common;
 
-use common::{capture, captured_at, dir, names};
+use dedens_testkit::dnssec::{captured_at, names, response};
 
 fn records<'a>(message: &'a Message<'static>) -> impl Iterator<Item = &'a Record<'static>> {
     message
@@ -80,14 +80,15 @@ fn types<'a>(records: &'a [Record<'static>]) -> impl Iterator<Item = RecordType>
 fn every_capture_decodes_and_round_trips() {
     let names = names();
     for name in &names {
-        let message = capture(name);
+        let message = response(name);
         let wire = message.to_vec().expect("encodes");
         let again = Message::decode(&wire).expect("decodes again");
         assert_eq!(again.violations, [], "{name}");
         assert_eq!(again.message, message, "{name}");
     }
     // One file per query of capture.yaml.
-    let yaml = fs::read_to_string(dir().join("capture.yaml")).expect("capture.yaml");
+    let yaml =
+        fs::read_to_string(dedens_testkit::path("dnssec/capture.yaml")).expect("capture.yaml");
     let queries = yaml.lines().filter(|l| l.starts_with("  - ")).count();
     assert_eq!(names.len(), queries);
 }
@@ -107,13 +108,13 @@ const EXPIRED: [&str; 5] = [
 fn signatures_are_valid_at_the_capture_time_but_the_expired_ones() {
     let now = captured_at();
     for name in names().iter().filter(|n| !EXPIRED.contains(&n.as_str())) {
-        for sig in rrsigs(&capture(name)) {
+        for sig in rrsigs(&response(name)) {
             assert!(sig.inception <= now && now <= sig.expiration, "{name}");
         }
     }
     // The expired ones: every signature of rhybar.cz's A answer ended before the capture.
     assert!(
-        rrsigs(&capture("bogus_expired"))
+        rrsigs(&response("bogus_expired"))
             .iter()
             .all(|sig| sig.expiration < now)
     );
@@ -124,7 +125,7 @@ fn signatures_are_valid_at_the_capture_time_but_the_expired_ones() {
 fn the_set_covers_the_algorithms_digests_and_nsec3_parameters() {
     let (mut algorithms, mut digests, mut nsec3) = (Vec::new(), Vec::new(), Vec::new());
     for name in names() {
-        let message = capture(&name);
+        let message = response(&name);
         algorithms.extend(rrsigs(&message).iter().map(|s| s.algorithm));
         for record in records(&message) {
             let bytes = rdata(record);
@@ -256,7 +257,7 @@ const SHAPES: [Shape; 10] = [
 fn each_capture_shows_what_the_readme_says() {
     for &(names, rcode, answer, authority) in &SHAPES {
         for name in names {
-            let message = capture(name);
+            let message = response(name);
             assert_eq!(message.rcode(), rcode, "{name}");
             for (section, wanted) in [(&message.answer, answer), (&message.authority, authority)] {
                 for rtype in wanted {
@@ -271,5 +272,5 @@ fn each_capture_shows_what_the_readme_says() {
         }
     }
     // An unsigned zone's answer carries no signature.
-    assert!(rrsigs(&capture("google_com_a")).is_empty());
+    assert!(rrsigs(&response("google_com_a")).is_empty());
 }

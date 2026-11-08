@@ -357,7 +357,7 @@ impl Reviewer for Gate {
 /// The captured response to `www.ripe.net. A`: a CNAME to `www.ripe.net.edgekey.net.`, to
 /// `e337066.dscb.akamaiedge.net.`, and its addresses.
 fn ripe() -> Vec<u8> {
-    common::Captures::get("cname_to_insecure")
+    dedens_testkit::dnssec::capture("cname_to_insecure")
 }
 
 /// A pipeline of the gate, a cache and a forward stage; `cache` is shared to be kept across pipelines.
@@ -532,7 +532,7 @@ fn a_validated_response_is_reviewed() {
         ),
     ]);
     let query = common::client_query("www.icann.org.", RecordType::A, Flags::NONE, true);
-    let captures = common::Captures::new();
+    let captures = dedens_testkit::dnssec::Captures::new();
     for _ in 0..2 {
         let done = common::run_captured(&pipeline, &query, 0, &captures);
         assert_eq!(

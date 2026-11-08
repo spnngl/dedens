@@ -939,14 +939,9 @@ fn a_truncated_response_over_tcp_is_refused_by_the_stub() {
 fn a_validating_resolver_vouches_for_a_captured_zone_at_the_time_of_the_capture() {
     seed::each(SEEDS, |seed| {
         let dir = dedens_testkit::path("dnssec");
-        let at: u64 = std::fs::read_to_string(dir.join("captured_at"))
-            .expect("the time of the capture")
-            .trim()
-            .parse()
-            .expect("Unix time in seconds");
         let mut world = Topology::new()
             .upstream(Answers::new().directory(&dir))
-            .epoch(UNIX_EPOCH + Duration::from_secs(at))
+            .epoch(UNIX_EPOCH + Duration::from_secs(dedens_testkit::dnssec::captured_at().into()))
             .resolver(|upstreams| {
                 let validator = Validator::new(TrustAnchors::root(), Limits::default());
                 pipeline_validating(upstreams, Validating::new(validator, wall_clock()))

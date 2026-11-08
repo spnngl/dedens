@@ -4,9 +4,10 @@
 
 mod common;
 
-use common::{Captures, client_query, decode, run_captured, validating, with_flags};
+use common::{client_query, decode, run_captured, validating, with_flags};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, RecordType};
+use dedens_testkit::dnssec::{Captures, capture};
 
 /// The reply to a query, the requests upstream, and what the pipeline replied.
 fn ask(
@@ -223,7 +224,7 @@ fn an_answer_that_leaves_the_secure_zone_has_no_ad() {
 #[test]
 fn the_ad_bit_of_upstream_is_ignored() {
     let pipeline = validating();
-    let lying = with_flags(Captures::get("google_com_a"), Flags::AD);
+    let lying = with_flags(capture("google_com_a"), Flags::AD);
     let captures = Captures::new().with(lying);
     let query = client_query("google.com.", RecordType::A, Flags::AD, true);
     let done = run_captured(&pipeline, &query, 0, &captures);
@@ -235,7 +236,7 @@ fn the_ad_bit_of_upstream_is_ignored() {
 /// is not handed out.
 #[test]
 fn a_secure_answer_loses_its_additional_section() {
-    let mut message = decode(&Captures::get("alg13_a")).into_owned();
+    let mut message = decode(&capture("alg13_a")).into_owned();
     let mut extra = message.answer[0].clone();
     extra.name = dedens_testkit::dns("unsigned.example.");
     message.additional.push(extra);
@@ -268,7 +269,7 @@ fn record(
 /// sets that are not at or above the answer, other classes.
 #[test]
 fn a_secure_answer_is_cut_to_what_was_verified() {
-    let mut message = decode(&Captures::get("alg13_a")).into_owned();
+    let mut message = decode(&capture("alg13_a")).into_owned();
     let a = message.answer[0].clone();
     let foreign = |owner: &str| dedens_proto::Record {
         name: dedens_testkit::dns(owner),
@@ -325,7 +326,7 @@ fn a_secure_answer_is_cut_to_what_was_verified() {
 /// checked as any CNAME, unsigned in a secure zone: bogus, never served under AD.
 #[test]
 fn a_second_record_in_the_cname_a_dname_makes_is_bogus() {
-    let mut message = decode(&Captures::get("dname_answer")).into_owned();
+    let mut message = decode(&capture("dname_answer")).into_owned();
     let at = message
         .answer
         .iter()
@@ -392,7 +393,7 @@ fn response_for(
 /// The signed CNAME of `www.ripe.net.` alone, and the rest of its chain: what two responses of upstream are, to
 /// the question for the name and to the one for the CNAME's target.
 fn split_chain() -> (Vec<u8>, Vec<u8>) {
-    let genuine = decode(&Captures::get("cname_to_insecure")).into_owned();
+    let genuine = decode(&capture("cname_to_insecure")).into_owned();
     let (head, tail): (Vec<_>, Vec<_>) = genuine
         .answer
         .iter()
@@ -464,7 +465,7 @@ fn a_refresh_that_turns_bogus_keeps_the_entry() {
     let ttl = decode(&first.reply.expect("a reply")).answer[0].ttl.get();
     assert!(ttl >= 20, "{ttl}");
 
-    let mut forged = decode(&Captures::get("alg13_a")).into_owned();
+    let mut forged = decode(&capture("alg13_a")).into_owned();
     for record in &mut forged.answer {
         if record.rtype() == RecordType::A {
             record.rdata = dedens_proto::WireRdata::new(&dedens_proto::rdata::RData::A(

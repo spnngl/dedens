@@ -1,5 +1,5 @@
-//! Responses captured from public servers by `just capture` (`testdata/proto/capture.yaml`): they decode without a violation and
-//! re-encode to an equal message.
+//! Responses captured from public servers by `just capture` (`testdata/proto/capture.yaml`): they decode without a
+//! violation and re-encode to an equal message.
 
 use std::fs;
 use std::path::PathBuf;
@@ -7,16 +7,10 @@ use std::path::PathBuf;
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Rcode, Record, RecordType};
+use dedens_testkit::{captured, message};
 
 fn dir() -> PathBuf {
     dedens_testkit::path("proto")
-}
-
-fn capture(name: &str) -> Message<'static> {
-    let wire = fs::read(dir().join(format!("{name}.bin"))).expect("captured file");
-    let decoded = Message::decode(&wire).expect("decodes");
-    assert_eq!(decoded.violations, [], "{name}");
-    decoded.message.into_owned()
 }
 
 #[test]
@@ -32,7 +26,10 @@ fn every_capture_decodes_and_round_trips() {
             .expect("stem")
             .to_string_lossy()
             .into_owned();
-        let message = capture(&name);
+        let wire = fs::read(&path).expect("captured file");
+        let decoded = Message::decode(&wire).expect("decodes");
+        assert_eq!(decoded.violations, [], "{name}");
+        let message = decoded.message;
         let wire = message.to_vec().expect("encodes");
         let again = Message::decode(&wire).expect("decodes again");
         assert_eq!(again.violations, [], "{name}");
@@ -44,7 +41,7 @@ fn every_capture_decodes_and_round_trips() {
 
 #[test]
 fn a_response_has_an_answer_and_opt() {
-    let message = capture("a");
+    let message = message(&captured("a"));
     assert!(message.header.flags.contains(Flags::QR));
     assert!(
         message
@@ -57,7 +54,7 @@ fn a_response_has_an_answer_and_opt() {
 
 #[test]
 fn a_cname_chain_ends_in_an_address() {
-    let message = capture("cname_chain");
+    let message = message(&captured("cname_chain"));
     assert!(matches!(
         message.answer.first().map(Record::data),
         Some(RData::Cname(_))
@@ -72,7 +69,7 @@ fn a_cname_chain_ends_in_an_address() {
 
 #[test]
 fn nxdomain_carries_the_zone_soa() {
-    let message = capture("nxdomain_soa");
+    let message = message(&captured("nxdomain_soa"));
     assert_eq!(message.rcode(), Rcode::NXDOMAIN);
     assert_eq!(message.answer, []);
     assert!(
@@ -85,7 +82,7 @@ fn nxdomain_carries_the_zone_soa() {
 
 #[test]
 fn a_large_txt_answer_decodes() {
-    let message = capture("txt_large");
+    let message = message(&captured("txt_large"));
     assert!(
         message
             .answer
@@ -97,19 +94,19 @@ fn a_large_txt_answer_decodes() {
 #[test]
 fn https_and_caa_and_srv_have_typed_data() {
     assert!(
-        capture("https")
+        message(&captured("https"))
             .answer
             .iter()
             .any(|r| matches!(r.data(), RData::Https(_)))
     );
     assert!(
-        capture("caa")
+        message(&captured("caa"))
             .answer
             .iter()
             .any(|r| matches!(r.data(), RData::Caa(_)))
     );
     assert!(
-        capture("srv")
+        message(&captured("srv"))
             .answer
             .iter()
             .any(|r| matches!(r.data(), RData::Srv(_)))
@@ -118,7 +115,7 @@ fn https_and_caa_and_srv_have_typed_data() {
 
 #[test]
 fn any_gets_a_minimal_hinfo_answer_rfc8482() {
-    let message = capture("any_rfc8482");
+    let message = message(&captured("any_rfc8482"));
     assert_eq!(message.answer.len(), 1);
     // HINFO has no typed RDATA in D11: it stays opaque.
     assert_eq!(
@@ -129,14 +126,14 @@ fn any_gets_a_minimal_hinfo_answer_rfc8482() {
 
 #[test]
 fn a_truncated_response_has_tc_and_no_records() {
-    let message = capture("truncated");
+    let message = message(&captured("truncated"));
     assert!(message.header.flags.contains(Flags::TC));
     assert_eq!(message.answer, []);
 }
 
 #[test]
 fn a_dnssec_failure_comes_with_an_extended_error() {
-    let message = capture("ede");
+    let message = message(&captured("ede"));
     assert_eq!(message.rcode(), Rcode::SERVFAIL);
     let edns = message.edns.expect("OPT");
     assert!(
@@ -148,7 +145,7 @@ fn a_dnssec_failure_comes_with_an_extended_error() {
 
 #[test]
 fn nsid_is_answered() {
-    let edns = capture("nsid").edns.expect("OPT");
+    let edns = message(&captured("nsid")).edns.expect("OPT");
     assert!(
         edns.options
             .iter()
@@ -158,7 +155,7 @@ fn nsid_is_answered() {
 
 #[test]
 fn a_cookie_is_returned_with_a_server_part() {
-    let edns = capture("cookie").edns.expect("OPT");
+    let edns = message(&captured("cookie")).edns.expect("OPT");
     let cookie = edns.options.iter().find_map(|o| match o {
         EdnsOption::Cookie(c) => Some(c),
         _ => None,
@@ -170,7 +167,7 @@ fn a_cookie_is_returned_with_a_server_part() {
 
 #[test]
 fn referrals_are_told_from_other_responses() {
-    let zone = |name: &str| capture(name).referral().map(ToString::to_string);
+    let zone = |name: &str| message(&captured(name)).referral().map(ToString::to_string);
     assert_eq!(zone("referral_root").as_deref(), Some("com."));
     assert_eq!(zone("referral_com").as_deref(), Some("example.com."));
     // An answer, NXDOMAIN and NODATA (with a SOA), an HINFO answer and SERVFAIL are not.

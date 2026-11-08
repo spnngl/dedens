@@ -1,4 +1,4 @@
-//! Helpers of the denial tests: records read from an example zone or a capture, and a proof asked of them.
+//! Helpers of the denial tests: records picked from an example zone or a capture, and a proof asked of them.
 //! Included with `#[path = "common/denial.rs"] mod support;`.
 
 #![allow(
@@ -7,27 +7,13 @@
     reason = "each test crate uses a subset of a shared module"
 )]
 
-use std::fs;
-
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{self, MaxIterations, Proof, Unproven};
 use dedens_proto::rdata::{Nsec, Nsec3, RData, TypeBitmap};
-use dedens_proto::{
-    Class, Message, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl, ZoneEntry, ZoneReader,
-};
+use dedens_proto::{Class, Message, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
+use dedens_testkit::dnssec;
 
 use crate::common::name;
-
-/// The records of the zone file `file` of `testdata/zones/`.
-pub fn zone(file: &str) -> Vec<Record<'static>> {
-    let text = fs::read(dedens_testkit::path("zones").join(file)).expect("zone file");
-    ZoneReader::new(&text, None)
-        .filter_map(|entry| match entry.expect("a valid zone") {
-            ZoneEntry::Record(decoded) => Some(decoded.record),
-            _ => None,
-        })
-        .collect()
-}
 
 /// The records of type `rtype` owned by one of `owners`: what a response would carry.
 pub fn pick(
@@ -45,7 +31,7 @@ pub fn pick(
 
 /// The captured response `testdata/dnssec/<id>.bin`.
 pub fn capture(id: &str) -> Message<'static> {
-    let wire = fs::read(dedens_testkit::path(&format!("dnssec/{id}.bin"))).expect("captured file");
+    let wire = dnssec::capture(id);
     Message::decode(&wire)
         .expect("decodes")
         .message

@@ -5,11 +5,12 @@ mod common;
 
 use std::fs;
 
-use common::{dnskey_rdata, name};
+use common::name;
 use dedens_dnssec::crypto::{ds_digest, key_tag};
 use dedens_dnssec::{AnchorError, TrustAnchors};
 use dedens_proto::rdata::{Ds, RData};
 use dedens_proto::{Class, Message, RecordType};
+use dedens_testkit::dnssec::dnskey_rdata;
 
 // RFC 9718 §2.3 (the DS RRset and the DNSKEY of KSK-2017, key tag 20326).
 const EXAMPLE: &str = "\

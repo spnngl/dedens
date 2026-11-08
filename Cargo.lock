@@ -916,7 +916,6 @@ dependencies = [
 name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
- "data-encoding",
  "dedens-cache",
  "dedens-dnssec",
  "dedens-net",
@@ -1068,6 +1067,7 @@ dependencies = [
 name = "dedens-testkit"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "dedens-proto",
 ]
 
