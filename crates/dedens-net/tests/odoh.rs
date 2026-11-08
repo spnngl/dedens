@@ -1,9 +1,6 @@
 //! Oblivious `DoH` (RFC 9230) over HTTP/3: the request of §4.2 byte for byte, the responses and statuses of §4.3, the
 //! configurations of a target (§5; their discovery is no RFC's), and exchanges with a loopback target, direct and
 //! through a loopback proxy (D79).
-#![cfg(feature = "odoh")]
-
-mod common;
 
 use std::cell::{Cell, RefCell};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -12,8 +9,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fs, io};
 
-use common::loopback::answer;
-use common::query;
 use compio::bytes::{Buf, Bytes};
 use compio::quic::{ServerBuilder, h3};
 use compio::rustls::pki_types::ServerName;
@@ -39,6 +34,9 @@ use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
+
+use crate::util::loopback::answer;
+use crate::util::query;
 
 /// The proxy of RFC 9230 §4.2, without the variables the client adds (D79)
 const PROXY: &str = "https://dnsproxy.example/dns-query";

@@ -1030,7 +1030,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`aioquic`) and opened every response; 401 for a key it does not hold, 400 for a damaged ciphertext
     (`tests/interop/odoh.py`). Not checked live: that a target refuses a badly padded query (tests only), and the
     size on the wire of our padded query.
-  - Tests: `crates/dedens-net/tests/rfc9230.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
+  - Tests: `crates/dedens-net/tests/odoh.rs` (the request of §4.2, §4.3's statuses, the captured Cloudflare
     headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch, and the
     ignored live one), `tests/interop/odoh.py` (by hand: `odoh-rs` against `dedensd`),
     `apps/dedensd/tests/rfc9230.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
@@ -1496,8 +1496,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   other work, other worktrees): a QUIC server keeps sending, after its client exited, to the client's old port, which
   another test's server then holds (seen: a log of three queries with a fourth that was 31 bytes of QUIC), and a
   client of a port freed to be closed is answered by whoever took it (seen: `a_closed_port_exits_9` exit 0). So
-  the UDP servers of `dedens_testkit::responder` and `crates/dedens-net/tests/common` and the CoAP one of
-  `rfc9953.rs` skip a datagram that is not a query, and closed-port tests use `127.0.0.1:1`,
+  the UDP servers of `dedens_testkit::responder` and `crates/dedens-net/tests/util` and the CoAP one of
+  `coap.rs` skip a datagram that is not a query, and closed-port tests use `127.0.0.1:1`,
   which the system never hands out. Rejected: a retry or a sleep (the stray is not late, it is not ours), a port
   range per test (the stray's sender does not know it). On macOS a datagram is queued without the control data
   (destination address, ECN) of the socket options set after it arrived, and `compio-quic` panics on one
@@ -2112,7 +2112,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - QUIC datagrams (RFC 9221 §3): both the server (`endpoint`) and `Dialer` set `datagram_receive_buffer_size(None)`.
     quinn's default of 1.25 MB made both advertise `max_datagram_frame_size` and buffer DATAGRAM frames nothing
     reads (RFC 9250 uses streams alone). Now a peer sees `max_datagram_size()` as `None`, which the tests check
-    (`tests/rfc9221.rs` of `dedens-net` and `dedensd`). That quinn then closes the connection on a DATAGRAM frame
+    (`tests/quic.rs` of `dedens-net` and `dedensd`). That quinn then closes the connection on a DATAGRAM frame
     (PROTOCOL_VIOLATION, as RFC 9221 §3 requires) is its behaviour, not tested here.
   - Driver (amends D51): Linux 5.19 is the floor for `io_uring` (`COOP_TASKRUN` and `TASKRUN_FLAG`), with no retry
     without those flags on EINVAL. compio falls back to `poll` when the ring cannot be made (before 5.19, a
@@ -2238,7 +2238,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - ANY, rejected: §4.2, a synthesized HINFO (or §4.1, one cached RRset): it needs a record for names that do not
     exist or are CNAMEs, a signature for DO, and a TTL, each a new claim by a forwarder that does not know the zone;
     §4.3, a guess: needs upstream. Truncation says nothing about the data.
-  Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/{rfc5452,rfc6891}.rs`,
+  Tests: `dedens-server/tests/{rfc6840,rfc8482}.rs`, `dedens-net/tests/exchange.rs`,
   `dedens-cache/tests/checked.rs`.
 - D115 (amends D42, D44, D45, D57, D66, D79; amended by D120, D122) Configuration bounds, from the audit (L14, L15, E5): what the file
   says is held to what the server can bear, and what a variable holds cannot become configuration.

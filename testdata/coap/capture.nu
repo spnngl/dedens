@@ -4,7 +4,7 @@
 # (milliseconds since the first, `c2s` client to server or `s2c` server to client, `-lost` if the proxy dropped it,
 # the datagram in hex). The bodies are real: the DoC query and response are the quad9 MX files of `../doh`, the long
 # body is the start of RFC 9953. Run from this directory: `nu capture.nu`. Never edit the saved files by hand.
-# Tested by `crates/dedens-net/tests/rfc7252.rs`, `rfc7959.rs` and `rfc8132.rs`. The `libcoap_*` files are libcoap 4.3.5b
+# Tested by `crates/dedens-net/tests/coap.rs`. The `libcoap_*` files are libcoap 4.3.5b
 # (`brew install libcoap`), made by `capture_libcoap.py` (same format; its `coap-server` and `coap-client` behind the same
 # proxy): run `uv run --with aiocoap==0.4.17 python capture_libcoap.py`. Its bodies are real DNS answers saved with
 # `dedens @https://dns.google/dns-query cloudflare.com TXT +dnssec --save-wire` (`dns_txt.body`, 2808 bytes) and the

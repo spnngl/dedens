@@ -1,15 +1,14 @@
 //! UDP pool on the loopback address (RFC 1035 §4.2.1, RFC 5452 §9.2).
 
-mod common;
-
 use std::io;
 use std::time::{Duration, Instant};
 
-use common::loopback::{CLOSED, answer, id, query_with_id, udp_responder};
 use compio::BufResult;
 use compio::net::UdpSocket;
 use dedens_net::udp::UdpPool;
 use dedens_proto::edns::EdnsOption;
+
+use crate::util::loopback::{CLOSED, answer, id, query_with_id, udp_responder};
 
 /// Room for any datagram of these tests.
 const SIZE: usize = 1232;

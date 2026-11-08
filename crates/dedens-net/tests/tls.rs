@@ -1,16 +1,12 @@
 //! DNS over TLS (RFC 7858), the strict privacy profile (RFC 8310 §6.6) and padding (RFC 8467 §4.1), against a
 //! loopback TLS server with certificates made for the test.
 
-mod common;
-
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::loopback::{answer, listen};
-use common::{query, sent, start, t0};
 use compio::BufResult;
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::rustls::DEFAULT_VERSIONS;
@@ -23,6 +19,9 @@ use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Message, Transport};
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
+
+use crate::util::loopback::{answer, listen};
+use crate::util::{query, sent, start, t0};
 
 /// What the server saw.
 #[derive(Default)]
@@ -283,7 +282,7 @@ async fn an_idle_connection_ends_with_close_notify() {
         TcpPool::new(Duration::from_millis(100)).trusting(Trust::Roots(vec![certificates.ca]));
     let link = Link::Tls(addr, ServerName::try_from(NAME).expect("a name"));
     let deadline = Instant::now() + Duration::from_secs(5);
-    pool.exchange(link, &common::wire(&query()), deadline)
+    pool.exchange(link, &crate::util::wire(&query()), deadline)
         .await
         .expect("a response");
     let end = compio::time::timeout(Duration::from_secs(2), server)

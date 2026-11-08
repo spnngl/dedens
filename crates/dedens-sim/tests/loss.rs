@@ -4,10 +4,10 @@
 //! Left to other tests, which this family cites rather than repeats:
 //!
 //! - The EDNS fallback is off in `dedensd` (`edns_fallback = false`, D46), so no scenario here loses a response to
-//!   it; the sans-IO exchange has its own (`crates/dedens-net/tests/rfc6891.rs`, `rfc8906.rs`).
+//!   it; the sans-IO exchange has its own (`crates/dedens-net/tests/exchange.rs`).
 //! - What the exchange does with a late response, a changed query and a spare ID, one message at a time:
-//!   `crates/dedens-net/tests/rfc1035.rs` (`a_late_response_to_an_earlier_try_is_taken`), `rfc5452.rs`
-//!   (`a_changed_query_goes_with_a_spare_id`) and `rfc7766.rs`.
+//!   `crates/dedens-net/tests/exchange.rs` (`a_late_response_to_an_earlier_try_is_taken`,
+//!   `a_changed_query_goes_with_a_spare_id`) and `tcp.rs`.
 //! - Queries pipelined on one TCP connection are the compio layer's (`crates/dedens-net/tests/tcp.rs`); the
 //!   driver here serves a connection's queries in order, one at a time.
 //!

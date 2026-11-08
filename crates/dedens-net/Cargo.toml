@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 compio.workspace = true
@@ -34,6 +35,10 @@ compio = { workspace = true, features = ["macros"] }
 dedens-odoh.workspace = true
 dedens-testkit = { workspace = true, features = ["certificates"] }
 proptest.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
 
 [[bench]]
 name = "pools"
