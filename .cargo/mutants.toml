@@ -95,7 +95,7 @@ exclude_re = [
   # dedens-sim: a connection whose reply could not be written is read on until the read fails too: the same end.
   'resolver\.rs:\d+:\d+: replace \|= with &= in connection$',
   # One UDP send more in flight than `UDP_SENDS`: no peer can tell how many replies go out in one submission.
-  'serve\.rs:\d+:\d+: replace < with <= in send_replies$',
+  'serve/mod\.rs:\d+:\d+: replace < with <= in send_replies$',
   # A connection closed 10 s after `GOAWAY` or a nanosecond later: equal `Instant`s never happen.
   'h3_budget\.rs:\d+:\d+: replace > with >= in Budget::check$',
   # dedensd: root only, tested by `tests/privileges.rs` under sudo in CI's own job, not by the mutants shards: the
