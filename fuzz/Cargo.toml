@@ -9,7 +9,7 @@ publish = false
 cargo-fuzz = true
 
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
-# function in `src/lib.rs`, which `cargo test --lib` also drives on stable with the captured responses in
+# function of `src/`, which `cargo test --lib` also drives on stable with the captured responses in
 # `crates/dedens-proto/tests/testdata/`, `crates/dedens-dnssec/tests/testdata/` and
 # `crates/dedens-odoh/tests/testdata/` as seeds (`just fuzz-smoke`).
 

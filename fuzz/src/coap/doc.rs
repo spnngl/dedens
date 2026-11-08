@@ -12,9 +12,9 @@ use dedens_net::coap::server::{Dedup, EXCHANGE_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, OptionNumber, Token, Type, dns};
 
 /// A captured response of more than one block of 1024 bytes (RFC 9953's server size).
-const LARGE: &[u8] = include_bytes!("../../crates/dedens-proto/tests/testdata/txt_large.bin");
+const LARGE: &[u8] = include_bytes!("../../../crates/dedens-proto/tests/testdata/txt_large.bin");
 /// A captured response of one block.
-const SMALL: &[u8] = include_bytes!("../../crates/dedens-proto/tests/testdata/aaaa.bin");
+const SMALL: &[u8] = include_bytes!("../../../crates/dedens-proto/tests/testdata/aaaa.bin");
 
 /// The most operations of one run.
 const OPERATIONS: usize = 64;
