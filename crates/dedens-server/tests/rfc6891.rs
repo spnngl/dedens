@@ -3,9 +3,10 @@
 
 mod common;
 
-use common::{captured, decode, forwarder, query_for, reply, run, wire};
+use common::{decode, forwarder, query_for, reply, run, wire};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{Flags, Rcode, Transport};
+use dedens_testkit::captured;
 
 #[test]
 fn replies_have_our_opt_record_when_the_query_had_one() {

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use certificates::{Certificates, NAME, certificates, named};
-use common::{Responder, Server, captured, decode, query_for, write_config};
+use common::{Responder, Server, decode, query_for, write_config};
 use compio::bytes::{Buf, Bytes};
 use compio::io::AsyncWriteExt;
 use compio::quic::h3::client::SendRequest;
@@ -32,6 +32,7 @@ use dedens_net::exchange::Options;
 use dedens_net::http3::H3_EXCESSIVE_LOAD;
 use dedens_net::tls::Trust;
 use dedens_proto::{Rcode, Transport};
+use dedens_testkit::captured;
 use futures_util::future::join_all;
 
 /// What a client may send before the server must have closed the connection: the budget of D119 is 4 MiB, and the

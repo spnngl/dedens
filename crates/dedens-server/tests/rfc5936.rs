@@ -3,8 +3,9 @@
 
 mod common;
 
-use common::{decode, dns, forwarder, run, wire};
+use common::{decode, forwarder, run, wire};
 use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
+use dedens_testkit::dns;
 
 #[test]
 fn zone_transfers_are_refused() {

@@ -12,12 +12,13 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use certificates::{NAME, certificates, named};
-use common::{Responder, Server, captured, decode, query_for};
+use common::{Responder, Server, decode, query_for};
 use dedens_net::client::Client;
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
 use dedens_proto::Transport;
+use dedens_testkit::captured;
 use futures_util::future::join_all;
 
 /// How long each measure runs.

@@ -8,12 +8,13 @@
 mod common;
 
 use common::{
-    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, check, dnskey_rdata, hex, name, rrset,
+    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, check, dnskey_rdata, name, rrset,
     rrsig_set, signed_data,
 };
 use dedens_dnssec::crypto::{Budget, VerifyError, ds_digest, key_tag, supported, verify};
 use dedens_dnssec::rrsig::{self, Key, SigError, Signature};
 use dedens_proto::{DigestType, SecAlgorithm};
+use dedens_testkit::hex;
 
 const ED25519_DS_1: &str = "3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79
     a304b";

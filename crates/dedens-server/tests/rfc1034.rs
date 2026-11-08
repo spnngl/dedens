@@ -5,10 +5,11 @@ mod common;
 
 use std::borrow::Cow;
 
-use common::{caching, captured, decode, forwarder, query_for, run_at, wire};
+use common::{caching, decode, forwarder, query_for, run_at, wire};
 use dedens_proto::edns::{Edns, EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, Transport};
 use dedens_server::Pipeline;
+use dedens_testkit::captured;
 
 /// `query` without RD.
 fn norec(mut query: Message<'static>) -> Message<'static> {

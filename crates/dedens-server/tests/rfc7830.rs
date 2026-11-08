@@ -6,10 +6,11 @@ mod common;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use common::{caching, captured, decode, forwarder, query_for, reply, run, wire};
+use common::{caching, decode, forwarder, query_for, reply, run, wire};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption, InfoCode};
 use dedens_proto::{Message, Rcode, Transport};
 use dedens_server::{Clock, Cookies, Secret, Secrets, Step};
+use dedens_testkit::captured;
 
 /// The query of the `a` capture, with EDNS and, when `padded`, an empty Padding option.
 fn query(padded: bool) -> Message<'static> {

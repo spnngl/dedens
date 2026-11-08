@@ -10,10 +10,11 @@ use std::hash::{BuildHasher, RandomState};
 use std::hint::black_box;
 use std::net::Ipv4Addr;
 
-use dedens_bench::{CASES, wire};
+use dedens_bench::CASES;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::rdata::{Mx, RData};
 use dedens_proto::{Class, Decoded, Message, Name, Query, Question, Record, RecordType, Ttl};
+use dedens_testkit::captured;
 use divan::Bencher;
 use domain::base::message_builder::StaticCompressor;
 use domain::base::{Message as DomainMessage, MessageBuilder};
@@ -30,14 +31,14 @@ fn main() {
 
 #[divan::bench(args = CASES)]
 fn decode_dedens(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     bencher.bench_local(|| Message::decode(black_box(&wire)).expect("decodes"));
 }
 
 /// Decode into the vectors of the previous message, as a server does; dropping the records is timed too.
 #[divan::bench(args = CASES)]
 fn decode_dedens_reusing(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     let mut spare = Decoded::default();
     bencher.bench_local(|| {
         let decoded = Message::decode_reusing(black_box(&wire), &mut spare).expect("decodes");
@@ -48,7 +49,7 @@ fn decode_dedens_reusing(bencher: Bencher<'_, '_>, case: &str) {
 /// Decode and drop the message, timing the drop too: the baseline of `decode_dedens_reusing`.
 #[divan::bench(args = CASES)]
 fn decode_dedens_dropped(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     bencher.bench_local(|| {
         drop(black_box(
             Message::decode(black_box(&wire)).expect("decodes"),
@@ -59,7 +60,7 @@ fn decode_dedens_dropped(bencher: Bencher<'_, '_>, case: &str) {
 /// Decode then copy out of the input, as a cache storing the message does.
 #[divan::bench(args = CASES)]
 fn decode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     bencher.bench_local(|| {
         Message::decode(black_box(&wire))
             .expect("decodes")
@@ -119,7 +120,7 @@ fn query_domain(bencher: Bencher<'_, '_>) {
 /// Decode, then read every record as its type: the work the other libraries do in their decode.
 #[divan::bench(args = CASES)]
 fn decode_typed_dedens(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     let mut spare = Decoded::default();
     bencher.bench_local(|| {
         let decoded = Message::decode_reusing(black_box(&wire), &mut spare).expect("decodes");
@@ -134,13 +135,13 @@ fn decode_typed_dedens(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn decode_hickory(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     bencher.bench_local(|| HickoryMessage::from_vec(black_box(&wire)).expect("decodes"));
 }
 
 #[divan::bench(args = CASES)]
 fn decode_domain(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     bencher.bench_local(|| {
         let message = DomainMessage::from_octets(black_box(wire.as_slice())).expect("decodes");
         let mut records = 0;
@@ -160,7 +161,7 @@ fn decode_domain(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn encode_dedens(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     let message = Message::decode(&wire).expect("decodes").message;
     let mut buf = vec![0; 4096];
     bencher.bench_local(|| message.encode(black_box(&mut buf)).expect("encodes"));
@@ -169,7 +170,7 @@ fn encode_dedens(bencher: Bencher<'_, '_>, case: &str) {
 /// Encode a message owning its bytes: no name to rebuild from compression pointers.
 #[divan::bench(args = CASES)]
 fn encode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
-    let message = Message::decode(&wire(case))
+    let message = Message::decode(&captured(case))
         .expect("decodes")
         .message
         .into_owned();
@@ -179,20 +180,20 @@ fn encode_dedens_owned(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn encode_dedens_to_vec(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     let message = Message::decode(&wire).expect("decodes").message;
     bencher.bench_local(|| black_box(&message).to_vec().expect("encodes"));
 }
 
 #[divan::bench(args = CASES)]
 fn encode_hickory_to_vec(bencher: Bencher<'_, '_>, case: &str) {
-    let message = HickoryMessage::from_vec(&wire(case)).expect("decodes");
+    let message = HickoryMessage::from_vec(&captured(case)).expect("decodes");
     bencher.bench_local(|| black_box(&message).to_vec().expect("encodes"));
 }
 
 #[divan::bench(args = CASES)]
 fn encode_domain_to_vec(bencher: Bencher<'_, '_>, case: &str) {
-    let wire = wire(case);
+    let wire = captured(case);
     let message = DomainMessage::from_octets(wire.as_slice()).expect("decodes");
     let questions: Vec<_> = message.question().map(|q| q.expect("question")).collect();
     let answer: Vec<_> = message

@@ -10,11 +10,12 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{caching, captured, decode, query_for, run_at, servers, wire, with_flags};
+use common::{caching, decode, query_for, run_at, servers, wire, with_flags};
 use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{Edns, EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, Transport};
 use dedens_server::{Forward, Pipeline, Stage, Step, Upstream};
+use dedens_testkit::captured;
 
 /// The reply at `now` to `query`, upstream answering `responses` in turn, and the servers asked.
 fn ask(

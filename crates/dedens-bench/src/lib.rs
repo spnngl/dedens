@@ -7,21 +7,6 @@
 /// 1.2 kB.
 pub const CASES: [&str; 3] = ["a", "mx", "txt_large"];
 
-/// The captured response `case` from `testdata/proto/`.
-///
-/// # Panics
-///
-/// When the file cannot be read: the benches have nothing to measure.
-#[must_use]
-#[expect(
-    clippy::panic,
-    reason = "a bench without its input has nothing to measure"
-)]
-pub fn wire(case: &str) -> Vec<u8> {
-    let path = dedens_testkit::path(&format!("proto/{case}.bin"));
-    std::fs::read(&path).unwrap_or_else(|e| panic!("captured response {}: {e}", path.display()))
-}
-
 /// Hosts in the benched zone: about three records each, so about 100 000 records.
 pub const ZONE_HOSTS: u32 = 33_334;
 

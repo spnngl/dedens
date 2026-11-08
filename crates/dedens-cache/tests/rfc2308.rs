@@ -3,12 +3,13 @@
 mod common;
 
 use common::{
-    T0, a, captured, insert, lookup, min_cache, query, query_of, record, response, retimed,
-    small_cache, small_config, soa, ttls,
+    T0, a, insert, lookup, min_cache, query, query_of, record, response, retimed, small_cache,
+    small_config, soa, ttls,
 };
 use dedens_cache::{Cache, Config, Lookup, NotCached, StalePolicy};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Rcode, RecordType, Ttl};
+use dedens_testkit::captured;
 
 const NEVER: StalePolicy = StalePolicy::Never;
 
@@ -279,7 +280,7 @@ fn failures_and_unusable_responses_are_refused() {
 }
 
 fn cname(owner: &str, ttl: u32, target: &str) -> dedens_proto::Record<'static> {
-    record(owner, ttl, &RData::Cname(common::dns(target)))
+    record(owner, ttl, &RData::Cname(dedens_testkit::dns(target)))
 }
 
 /// §2.2 NODATA after a CNAME chain: the chain and the denial live as long as the SOA allows, not the chain's TTL.

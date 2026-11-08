@@ -11,16 +11,7 @@ use dedens_cache::{Cache, Config};
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::{Flags, Message, Name, Rcode, RecordType, Transport};
 use dedens_server::{Forward, Pipeline, Stage, Step, Validating};
-
-/// The bytes `text` writes in hexadecimal, as RFC 9018 Appendix A writes them.
-pub(crate) fn hex(text: &str) -> Vec<u8> {
-    text.as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII"), 16).expect("hexadecimal")
-        })
-        .collect()
-}
+use dedens_testkit::dns;
 
 /// The upstream servers of [`forwarder`], in order.
 pub(crate) fn servers() -> Vec<SocketAddr> {
@@ -48,16 +39,6 @@ pub(crate) fn caching_with(config: Config) -> Pipeline {
         Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
         Stage::Forward(Forward::new(servers()).expect("servers")),
     ])
-}
-
-pub(crate) fn dns(text: &str) -> Name<'static> {
-    Name::from_labels(text.split('.').filter(|l| !l.is_empty()).map(str::as_bytes))
-        .expect("a valid name")
-}
-
-/// A response captured from a real server, in `testdata/proto`.
-pub(crate) fn captured(case: &str) -> Vec<u8> {
-    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
 }
 
 /// `response` with its header flags also holding `flags`.

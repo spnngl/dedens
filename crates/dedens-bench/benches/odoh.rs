@@ -8,7 +8,6 @@ use std::hint::black_box;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use dedens_bench::wire;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
     Configs, TargetKey, decrypt_query, decrypt_response, encrypt_query, encrypt_response,
@@ -17,6 +16,7 @@ use dedens_odoh::{
 use dedens_proto::Message;
 use dedens_proto::edns::Edns;
 use dedens_server::{Budget, Budgets, MAX_BUDGET, Slot};
+use dedens_testkit::captured;
 use divan::Bencher;
 
 #[global_allocator]
@@ -49,7 +49,7 @@ impl TryCryptoRng for Fixed {}
 
 /// The query for the captured response `a`, ID 0 with EDNS, as a client sends it.
 fn query() -> Vec<u8> {
-    let response = wire("a");
+    let response = captured("a");
     let message = Message::decode(&response).expect("decodes").message;
     let mut query = Message::query(0, message.questions[0].clone().into_owned());
     query.edns = Some(Edns::default());
@@ -111,7 +111,7 @@ fn decrypt_query_message(bencher: Bencher<'_, '_>) {
 
 #[divan::bench(args = ["a", "mx", "txt_large"])]
 fn encrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
-    let (key, query, response) = (key(), query(), wire(case));
+    let (key, query, response) = (key(), query(), captured(case));
     let (message, _) = sealed_query(&key, &query);
     bencher
         .with_inputs(|| decrypt_query(&key, &message).expect("decrypts").1)
@@ -128,7 +128,7 @@ fn encrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = ["a", "mx", "txt_large"])]
 fn decrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
-    let (key, query, response) = (key(), query(), wire(case));
+    let (key, query, response) = (key(), query(), captured(case));
     let (message, client) = sealed_query(&key, &query);
     let (_, context) = decrypt_query(&key, &message).expect("decrypts");
     let sealed = encrypt_response(

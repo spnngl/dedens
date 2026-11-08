@@ -8,9 +8,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use common::hex;
 use dedens_proto::edns::Cookie;
 use dedens_server::{Clock, Cookies, Secret, Secrets, Standing};
+use dedens_testkit::hex;
 
 const SECRET: &str = "e5e973e5a6b2a43f48e7dc849e37bfcf";
 const OLD: &str = "dd3bdf9344b678b185a6f5cb60fca715";

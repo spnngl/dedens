@@ -4,11 +4,12 @@
 mod common;
 
 use common::{
-    Captures, caching, captured, client_query, decode, forwarder, query_for, run, run_captured,
-    validating, wire, with_flags,
+    Captures, caching, client_query, decode, forwarder, query_for, run, run_captured, validating,
+    wire, with_flags,
 };
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{Flags, RecordType, Transport};
+use dedens_testkit::captured;
 
 /// No validator (D114): the AD bit of an upstream response is never passed on, whatever the client asked, and
 /// whatever the transport to upstream (RFC 6840 §5.8: AD only for data our validator checked; RFC 4035 §3.2.3).

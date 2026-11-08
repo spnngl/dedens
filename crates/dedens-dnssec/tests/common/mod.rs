@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
+use data_encoding::BASE64;
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature, Verified};
 use dedens_proto::{MAX_NAME_LEN, Message, Name, Record};
@@ -32,14 +32,6 @@ pub const DSKEY: &str = "AQOeiiR0GOMYkDshWoSKz9Xz
 pub fn b64(text: &str) -> Vec<u8> {
     let text: String = text.split_whitespace().collect();
     BASE64.decode(text.as_bytes()).expect("base64 in the RFC")
-}
-
-/// Hex as the RFCs print it, either case, split over lines and spaces.
-pub fn hex(text: &str) -> Vec<u8> {
-    let text: String = text.split_whitespace().collect();
-    HEXLOWER_PERMISSIVE
-        .decode(text.as_bytes())
-        .expect("hex in the RFC")
 }
 
 pub fn name(text: &str) -> Name<'static> {

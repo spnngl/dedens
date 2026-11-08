@@ -7,10 +7,11 @@ mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use common::{captured, decode, forwarder, query_for, wire};
+use common::{decode, forwarder, query_for, wire};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Rcode, Transport};
 use dedens_server::{Access, Denial, Network, NetworkError, Pipeline, Step};
+use dedens_testkit::captured;
 
 fn nets<const N: usize>(texts: [&str; N]) -> [Network; N] {
     texts.map(|text| text.parse().expect("a network"))

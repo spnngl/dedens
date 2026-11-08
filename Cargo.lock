@@ -1067,6 +1067,9 @@ dependencies = [
 [[package]]
 name = "dedens-testkit"
 version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+]
 
 [[package]]
 name = "dedensd"

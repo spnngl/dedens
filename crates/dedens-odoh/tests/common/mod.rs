@@ -49,10 +49,3 @@ impl TryRng for Replay {
 }
 
 impl TryCryptoRng for Replay {}
-
-/// The bytes of a lowercase hex string.
-pub(crate) fn hex(text: &str) -> Vec<u8> {
-    data_encoding::HEXLOWER
-        .decode(text.as_bytes())
-        .expect("valid hex")
-}

@@ -15,12 +15,8 @@ use std::time::{Duration, Instant};
 
 use dedens_net::tcp::frame;
 use dedens_proto::{Flags, Message, Name, RecordType, Ttl};
+use dedens_testkit::captured;
 use serde_json::Value;
-
-/// A captured response of `testdata/proto`.
-pub(crate) fn captured(case: &str) -> Vec<u8> {
-    std::fs::read(dedens_testkit::path(&format!("proto/{case}.bin"))).expect("a captured response")
-}
 
 /// A captured response of `testdata/dnssec`.
 pub(crate) fn captured_dnssec(case: &str) -> Vec<u8> {

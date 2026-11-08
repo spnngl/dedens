@@ -4,9 +4,10 @@ mod common;
 
 use std::net::Ipv4Addr;
 
-use common::{dns, rec};
+use common::rec;
 use dedens_proto::rdata::{Mx, RData, Srv};
 use dedens_proto::{Message, Question, RecordType};
+use dedens_testkit::dns;
 
 fn a() -> RData<'static> {
     RData::A(Ipv4Addr::new(192, 0, 2, 1))

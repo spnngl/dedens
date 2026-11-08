@@ -3,11 +3,10 @@
 
 mod common;
 
-use common::{
-    captured, decode, forwarder, query_for, reply, run, servers, wire, with_flags, with_rcode,
-};
+use common::{decode, forwarder, query_for, reply, run, servers, wire, with_flags, with_rcode};
 use dedens_proto::{Flags, Message, Opcode, Rcode, Transport};
 use dedens_server::Pipeline;
+use dedens_testkit::captured;
 
 #[test]
 fn a_forwarded_answer_comes_back_under_the_clients_id() {

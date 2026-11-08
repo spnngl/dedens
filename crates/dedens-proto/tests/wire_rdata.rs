@@ -4,11 +4,12 @@ mod common;
 
 use std::net::Ipv4Addr;
 
-use common::{dns, rec};
+use common::rec;
 use dedens_proto::rdata::{Mx, Opaque, RData};
 use dedens_proto::{
     Class, DecodeErrorKind, Message, Question, Record, RecordType, Ttl, ttl_offsets,
 };
+use dedens_testkit::dns;
 
 fn mx_response() -> Message<'static> {
     let mut response = Message::query(1, Question::new(dns("example.com"), RecordType::MX));

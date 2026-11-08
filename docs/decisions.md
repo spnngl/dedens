@@ -1331,7 +1331,8 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   `proto/` and `dnssec/` (the captures of `just capture` and `just capture-dnssec`), `zones/` (the RFC example
   zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte for
   byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names it:
-  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself. A package reads the data through
+  `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `hex` and `dns` replace
+  the copies each crate's tests kept. A package reads the data through
   it, never through another package's directory (`../dedens-*/tests/`), which tied each test to where another
   crate kept its files. `testdata/` is one of the folders D140 reads for decisions and one a coverage path may
   start at. Rejected: data kept in its first reader with the others reaching in (the paths it replaced).

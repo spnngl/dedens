@@ -3,8 +3,9 @@
 
 mod common;
 
-use common::{Replay, hex};
+use common::Replay;
 use dedens_odoh::suite::{AEAD_ID, Aead, KDF_ID, KEM_ID, Kdf, Kem};
+use dedens_testkit::hex;
 use hpke::{Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _};
 
 const INFO: &str = "4f6465206f6e2061204772656369616e2055726e";

@@ -14,10 +14,9 @@ use std::process::Command;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use common::{
-    Responder, Server, ask_tcp, ask_udp, captured, decode, framed, query_for, read_framed,
-};
+use common::{Responder, Server, ask_tcp, ask_udp, decode, framed, query_for, read_framed};
 use dedens_proto::Rcode;
+use dedens_testkit::captured;
 
 /// The idle time of a TCP connection (D47).
 const IDLE: Duration = Duration::from_secs(10);

@@ -5,10 +5,11 @@ mod common;
 use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use common::{captured, decode, dns, forwarder, query_for, run, wire};
+use common::{decode, forwarder, query_for, run, wire};
 use dedens_proto::edns::{ClientSubnet, Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, Message, Transport};
 use dedens_server::{Forward, Pipeline, Server, Stage, Step, Via};
+use dedens_testkit::{captured, dns};
 
 #[test]
 fn upstream_gets_the_question_and_our_edns_without_the_clients_options() {

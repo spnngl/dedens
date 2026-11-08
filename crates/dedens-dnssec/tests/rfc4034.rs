@@ -5,13 +5,14 @@ mod common;
 
 use common::{
     DSKEY, RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, b64, canonical_name, check, dnskey_rdata,
-    hex, name, rrset, rrsig_set, signed_data,
+    name, rrset, rrsig_set, signed_data,
 };
 use dedens_dnssec::crypto::{
     Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
 };
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{DigestType, MAX_LABEL_LEN, SecAlgorithm};
+use dedens_testkit::hex;
 
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
     LnXwDzvqp4tZVKp1sZMepFb8MvxhhW3y/0QZ

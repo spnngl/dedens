@@ -16,6 +16,7 @@ use dedens_proto::{
     Class, DecodeError, Decoded, DecodedRecord, DigestType, Flags, Header, Message, Name,
     Nsec3HashAlgorithm, Opcode, Question, Rcode, Record, RecordType, SecAlgorithm, Ttl, Violation,
 };
+use dedens_testkit::dns;
 use proptest::prelude::*;
 
 /// A name of up to 5 labels of 1 to 20 arbitrary bytes.
@@ -469,12 +470,6 @@ pub(crate) fn opt_message(options: &[u8]) -> Vec<u8> {
     );
     wire.extend_from_slice(options);
     wire
-}
-
-/// A name from its dotted text; `""` is the root.
-pub(crate) fn dns(text: &str) -> Name<'static> {
-    Name::from_labels(text.split('.').filter(|l| !l.is_empty()).map(str::as_bytes))
-        .expect("valid name")
 }
 
 /// An IN record with TTL 60.
