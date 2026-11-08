@@ -41,9 +41,12 @@ use crate::util::SEEDS;
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
 const ONE: &[u64] = &[0];
-/// [`ONE`], and seeds whose links take no time where the shed query starts: the server answers the query before
-/// at that instant, which `Run::served_for` counted for the shed query when it went by time.
-const SHED: &[u64] = &[0, 954_528_015_640_862_262, 721_027_006_700_900_320];
+/// For each shed scenario, the seed that failed it: its links take no time where the shed query starts, so the server
+/// answers the query before at that instant, which `Run::served_for` counted for the shed query when it went by time.
+/// One seed each: these runs are the family's longest, and with seed 0 and each other's seed the module took 3.2 s
+/// of its 2 s (D164).
+const ALLOWANCE_SHED: &[u64] = &[954_528_015_640_862_262];
+const SHARE_SHED: &[u64] = &[721_027_006_700_900_320];
 
 /// What a zone's answer is, with no fault: the verdict of the validator, which sets AD for the first only (D114).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -818,7 +821,7 @@ async fn until_shed(stub: &mut Stub) -> Result<usize, String> {
 /// allowance refills with time.
 #[test]
 fn a_query_past_the_allowance_is_shed_and_the_cache_is_still_answered() {
-    seed::each(SHED, |seed| {
+    seed::each(ALLOWANCE_SHED, |seed| {
         let spending = spending(
             Allowance {
                 per_second: 1,
@@ -888,7 +891,7 @@ fn a_client_over_its_share_is_shed_with_its_network_and_the_others_are_answered(
     const GREEDY: &str = "198.51.100.7";
     const NEIGHBOUR: &str = "198.51.100.200";
     const OTHER: &str = "203.0.113.9";
-    seed::each(SHED, |seed| {
+    seed::each(SHARE_SHED, |seed| {
         let spending = spending(
             Allowance::default(),
             Budget {
