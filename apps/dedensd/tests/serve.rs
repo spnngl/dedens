@@ -193,7 +193,7 @@ fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     let asked = Instant::now();
     let stale = ask_udp(server.addr, &query_for(&response, 2));
     assert!(
-        asked.elapsed() < Duration::from_millis(450),
+        (Duration::from_millis(200)..Duration::from_millis(450)).contains(&asked.elapsed()),
         "{:?}",
         asked.elapsed()
     );

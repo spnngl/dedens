@@ -343,6 +343,61 @@ const DOH_QUERIES: &str = "dedensd_doh_queries_total";
 #[cfg(not(dedens_loom))]
 mod tests {
 
+    /// D84: a `DoH` request is counted by method and status, a status `DoH` does not answer with as "other", and a
+    /// request without a method `DoH` uses as "other".
+    #[test]
+    fn doh_requests_are_counted_by_method_and_status() {
+        use dedens_net::doh::Method;
+        use http::StatusCode;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        use super::{DOH_QUERIES, count_doh};
+
+        let answered = [
+            (Some(Method::Get), 200, "get", "200"),
+            (Some(Method::Post), 400, "post", "400"),
+            (None, 401, "other", "401"),
+            (Some(Method::Get), 404, "get", "404"),
+            (Some(Method::Post), 405, "post", "405"),
+            (None, 413, "other", "413"),
+            (Some(Method::Get), 415, "get", "415"),
+            (Some(Method::Post), 500, "post", "other"),
+        ];
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            for (method, code, ..) in answered {
+                count_doh(method, StatusCode::from_u16(code).expect("a status"));
+            }
+        });
+        let mut counted: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DOH_QUERIES)
+            .map(|(key, _, _, value)| {
+                let labels: Vec<_> = key
+                    .key()
+                    .labels()
+                    .map(|label| label.value().to_owned())
+                    .collect();
+                (labels, value)
+            })
+            .collect();
+        counted.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected: Vec<_> = answered
+            .iter()
+            .map(|&(_, _, method, status)| {
+                (
+                    vec![method.to_owned(), status.to_owned()],
+                    DebugValue::Counter(1),
+                )
+            })
+            .collect();
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(counted, expected);
+    }
+
     /// D94: each status the proxy answers with has its label in the count, and another is "other".
     #[cfg(feature = "odoh")]
     #[test]

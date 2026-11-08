@@ -98,6 +98,12 @@ exclude_re = [
   'serve/udp\.rs:\d+:\d+: replace < with <= in send_replies$',
   # A connection closed 10 s after `GOAWAY` or a nanosecond later: equal `Instant`s never happen.
   'serve/h3_budget\.rs:\d+:\d+: replace > with >= in Budget::check$',
+  # D86: a flight whose lead failed on our side lets its followers ask for themselves, else hands them no response;
+  # telling the two apart takes two validations racing on one flight to a server failing on our side: costly to set
+  # up.
+  'serve/upstream\.rs:\d+:\d+: replace match guard !error\.is_local\(\) with true in answer$',
+  # D86: the flag keeps the flights of clients over UDP apart from those over a connection; inverted, it still does.
+  'serve/upstream\.rs:\d+:\d+: replace == with != in answer$',
   # dedensd: root only, tested by `tests/privileges.rs` under sudo in CI's own job, not by the mutants shards: the
   # groups of the user dropped to (Linux), and off Linux a function not built there.
   'privileges/unix\.rs:\d+:\d+: replace groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
