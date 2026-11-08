@@ -11,6 +11,6 @@ and the server's tests. No I/O: callers read the file and run the queries.
   checked apart, `check_dnssec`, as the crate does not validate.
 - `src/report.rs`: `Report`, what `dedens --json` and `--yaml` print; built from a `dedens_net` response or a
   decoded message; `DnssecReport`, the verdict of D76.
-- `tests/query_file.rs`: YAML and JSON files, and expectations against captured responses.
+- `tests/tests.rs`, the one test binary (D162): YAML and JSON files, and expectations against captured responses.
 
 Fuzz target: `parse_query_file`.
