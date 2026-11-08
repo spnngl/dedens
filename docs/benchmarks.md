@@ -104,6 +104,26 @@ state.write_u8(0);
 The `Hash` stays (D7 unchanged). The key cache (D86, D92) asks two tables, `name_map_get` (23 to 53 ns each) against
 4.6 µs for a warm validation: it stays at two lookups.
 
+### The table in a file of its own
+
+`NameTable` and its hash moved from `wire.rs` to `wire/name_table.rs` (D159), code unchanged: kept, as no bench
+that writes names got slower beyond its noise. The base (422d20d) and the moved tree, `message` and `server` built by
+`cargo bench --no-run` and linked by Apple's `cc`, not the repo's lld (the release build is codegen's, D150), run
+alternately from copies of the binaries, 10 rounds each, the order swapped each round, on an otherwise idle Apple M5.
+The median of the 10 runs' medians (`encode_64k` and `encode_truncated_dedens` in µs, the rest in ns); the delta in
+%; the noise, the larger of the two builds' (max − min) / median over the runs, in %:
+
+| Measure | Before | After | Delta | Noise |
+|---|---|---|---|---|
+| `encode_64k` `spread`/`collisions`/`chains`/`flips` | 165/150/163/257 | 169/151/160/259 | +2.5/+0.8/-2.1/+0.8 | 18/21/24/13 |
+| `encode_64k` `deep_fresh`/`deep_hit` | 2994/2414 | 3018/2411 | +0.8/-0.1 | 18/12 |
+| `encode_truncated_dedens` | 106 | 108 | +1.6 | 6 |
+| `encode_dedens` `a`/`mx`/`txt_large` | 58.2/409/178 | 57.6/405/180 | -1.1/-1.0/+1.1 | 8/6/10 |
+| `encode_dedens_owned` `a`/`mx`/`txt_large` | 51.5/299/174 | 51.7/301/175 | +0.3/+0.4/+0.7 | 10/10/14 |
+| `encode_dedens_to_vec` `a`/`mx`/`txt_large` | 64.9/412/383 | 65.1/409/384 | +0.3/-0.6/+0.3 | 8/7/6 |
+| server `miss` `a`/`mx`/`txt_large` | 760/1249/1581 | 760/1234/1571 | 0.0/-1.2/-0.7 | 6/8/5 |
+| server `plugin` | 56.3 | 55.8 | -0.9 | 7 |
+
 ## Unbound (D14)
 
 Unbound 1.26.2, `just bench-unbound` (`-O2`, median of 101 samples), next to `cargo bench -p dedens-bench` in
