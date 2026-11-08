@@ -27,9 +27,9 @@ const MAX_TABLE: usize = 1 << 24;
 
 /// What the limit of one address family is.
 ///
-/// Rates are of queries of one network, not of one address: the values of [`Config::default`] are those of Knot DNS,
-/// 50 queries per second and 125 at once for an address, times its multiplier for the prefix, 32 for a /24 of IPv4
-/// and 3 for a /56 of IPv6.
+/// Rates are of queries of one network, not of one address: the values of [`RateLimitConfig::default`] are those of
+/// Knot DNS, 50 queries per second and 125 at once for an address, times its multiplier for the prefix, 32 for a /24
+/// of IPv4 and 3 for a /56 of IPv6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rate {
     /// The length of the network that shares a bucket, in bits: 1 to 32 for IPv4, 1 to 128 for IPv6.
@@ -43,7 +43,7 @@ pub struct Rate {
 
 /// The settings of a [`RateLimit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Config {
+pub struct RateLimitConfig {
     /// The limit of IPv4 sources. An IPv4-mapped IPv6 address counts as IPv4.
     pub ipv4: Rate,
     /// The limit of IPv6 sources.
@@ -61,7 +61,7 @@ pub struct Config {
     pub exempt: Vec<Network>,
 }
 
-impl Default for Config {
+impl Default for RateLimitConfig {
     /// Knot DNS's defaults (`rate-limit` 50, `instant-limit` 125 per address, scaled by prefix in
     /// `src/knot/modules/rrl/functions.c`), with BIND 9's `slip` default of 2 and its prefix lengths of 24 and
     /// 56, over a table of 65 536 buckets, 512 KiB: D113.
@@ -87,7 +87,7 @@ impl Default for Config {
     }
 }
 
-/// A [`Config`] that does not make a limit.
+/// A [`RateLimitConfig`] that does not make a limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RateLimitError {
@@ -122,9 +122,9 @@ pub enum RateLimitError {
     Table(usize),
 }
 
-/// What to do with a query (D113).
+/// What [`RateLimit::check`] does with a query (D113).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
+pub enum Admission {
     /// Within the rate: answer.
     Pass,
     /// Over the rate, one in `slip`: answer with TC=1, or BADCOOKIE with a Server Cookie when the query carried a
@@ -137,7 +137,7 @@ pub enum Verdict {
 /// The rate limit of UDP queries by source network: a token bucket per network, in a table of fixed size.
 pub struct RateLimit {
     /// What it was made with, for a reload to tell whether to keep it.
-    config: Config,
+    config: RateLimitConfig,
     exempt: Access,
     hasher: RandomState,
     /// `len() - 1`, `len()` being a power of two.
@@ -168,7 +168,7 @@ impl RateLimit {
     /// # Panics
     ///
     /// Never: the table is at most 2^24 buckets, which fit a `u64`.
-    pub fn new(config: Config) -> Result<Self, RateLimitError> {
+    pub fn new(config: RateLimitConfig) -> Result<Self, RateLimitError> {
         for (family, rate, max) in [("IPv4", config.ipv4, 32), ("IPv6", config.ipv6, 128)] {
             if !(1..=max).contains(&rate.prefix) {
                 return Err(RateLimitError::Prefix {
@@ -207,12 +207,12 @@ impl RateLimit {
 
     /// The settings this limit was made with.
     #[must_use]
-    pub const fn config(&self) -> &Config {
+    pub const fn config(&self) -> &RateLimitConfig {
         &self.config
     }
 
-    /// Whether `from` is on the exempt list ([`Config::exempt`]): a source whose queries are not limited by
-    /// network, which the per-network budgets of validation and Oblivious `DoH` (D117) leave alone too.
+    /// Whether `from` is on the exempt list ([`RateLimitConfig::exempt`]): a source whose queries are not limited
+    /// by network, which the per-network budgets of validation and Oblivious `DoH` (D117) leave alone too.
     #[must_use]
     pub fn exempts(&self, from: IpAddr) -> bool {
         self.exempt.permits(from)
@@ -221,15 +221,15 @@ impl RateLimit {
     /// What to do with a UDP query from `from` at second `now` (the clock of the cache, D43), counted.
     ///
     /// `can_truncate` is whether a TC=1 answer exists on the transport: without it a slip is a drop, and the slip
-    /// count stays. Exempt sources ([`Config::exempt`]) pass.
+    /// count stays. Exempt sources ([`RateLimitConfig::exempt`]) pass.
     ///
     /// # Panics
     ///
     /// Never: the index is masked below the table length, which is a `usize`.
     #[must_use]
-    pub fn check(&self, from: IpAddr, now: u32, can_truncate: bool) -> Verdict {
+    pub fn check(&self, from: IpAddr, now: u32, can_truncate: bool) -> Admission {
         if self.exempt.permits(from) {
-            return Verdict::Pass;
+            return Admission::Pass;
         }
         let key = network(from, self.config.ipv4.prefix, self.config.ipv6.prefix);
         let rate = match key {
@@ -243,14 +243,14 @@ impl RateLimit {
             .get(index)
             .expect("the index is masked below the table length");
         let slip = if can_truncate { self.config.slip } else { 0 };
-        let mut verdict = Verdict::Pass;
+        let mut admission = Admission::Pass;
         bucket.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
             let (word, decided) = step(word, now, rate, slip);
-            verdict = decided;
+            admission = decided;
             word
         });
-        self.counted.count(verdict);
-        verdict
+        self.counted.count(admission);
+        admission
     }
 }
 
@@ -259,7 +259,7 @@ impl RateLimit {
 /// The bucket owes one token per query it passed and refills `rate.per_second` tokens per second, so it passes
 /// `burst` queries at once and `per_second` a second after. A limited query owes nothing: an attacker cannot dig a
 /// debt that locks a network out longer than the flood lasts.
-fn step(word: u64, now: u32, rate: Rate, slip: u8) -> (u64, Verdict) {
+fn step(word: u64, now: u32, rate: Rate, slip: u8) -> (u64, Admission) {
     let [l0, l1, l2, l3, d0, d1, d2, slips] = word.to_le_bytes();
     let last = u32::from_le_bytes([l0, l1, l2, l3]);
     let debt = u32::from_le_bytes([d0, d1, d2, 0]);
@@ -268,23 +268,23 @@ fn step(word: u64, now: u32, rate: Rate, slip: u8) -> (u64, Verdict) {
         .expect("what is owed less what is earned is at most what was owed, 24 bits");
     // A clock that went back keeps the later second.
     let last = last.max(now);
-    let (debt, slips, verdict) = if debt < rate.burst {
-        (debt + 1, slips, Verdict::Pass)
+    let (debt, slips, admission) = if debt < rate.burst {
+        (debt + 1, slips, Admission::Pass)
     } else if slip != 0 && slips + 1 >= slip {
-        (debt, 0, Verdict::Slip)
+        (debt, 0, Admission::Slip)
     } else {
         // Without a slip the count stays, and with one it is below `slip`, at most 10.
         (
             debt,
             if slip == 0 { slips } else { slips + 1 },
-            Verdict::Drop,
+            Admission::Drop,
         )
     };
     let [l0, l1, l2, l3] = last.to_le_bytes();
     let [d0, d1, d2, _] = debt.to_le_bytes();
     (
         u64::from_le_bytes([l0, l1, l2, l3, d0, d1, d2, slips]),
-        verdict,
+        admission,
     )
 }
 
@@ -298,21 +298,21 @@ mod tests {
         burst: 3,
     };
 
-    fn run(slip: u8, queries: &[u32]) -> Vec<Verdict> {
+    fn run(slip: u8, queries: &[u32]) -> Vec<Admission> {
         let mut word = 0;
         queries
             .iter()
             .map(|&now| {
-                let (next, verdict) = step(word, now, RATE, slip);
+                let (next, admission) = step(word, now, RATE, slip);
                 word = next;
-                verdict
+                admission
             })
             .collect()
     }
 
     #[test]
     fn a_burst_passes_then_the_rate_limits() {
-        use Verdict::{Drop, Pass};
+        use Admission::{Drop, Pass};
         assert_eq!(
             run(0, &[10, 10, 10, 10, 10]),
             [Pass, Pass, Pass, Drop, Drop]
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn the_bucket_refills_per_second() {
-        use Verdict::{Drop, Pass};
+        use Admission::{Drop, Pass};
         // Two tokens come back a second on.
         assert_eq!(
             run(0, &[10, 10, 10, 10, 11, 11, 11]),
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn one_in_slip_is_answered() {
-        use Verdict::{Drop, Pass, Slip};
+        use Admission::{Drop, Pass, Slip};
         assert_eq!(
             run(2, &[5, 5, 5, 5, 5, 5, 5]),
             [Pass, Pass, Pass, Drop, Slip, Drop, Slip]
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn a_clock_going_back_does_not_refill() {
-        use Verdict::{Drop, Pass};
+        use Admission::{Drop, Pass};
         assert_eq!(run(0, &[10, 10, 10, 9, 9]), [Pass, Pass, Pass, Drop, Drop]);
     }
 }

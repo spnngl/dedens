@@ -11,7 +11,7 @@ use common::{captured, decode, forwarder, query_for, wire};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, Rcode, Transport};
 use dedens_server::{
-    Access, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit, RateLimitConfig,
+    Access, Admission, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit, RateLimitConfig,
     RateLimitError, Secret, Secrets, Step,
 };
 
@@ -394,7 +394,7 @@ fn a_flood_from_many_networks_shares_a_fixed_table() {
     for network in 0..200_000_u32 {
         let [a, b, c, _] = network.to_be_bytes();
         let from = IpAddr::from([10 + (a % 100), b, c, 1]);
-        if limit.check(from, 10, true) == dedens_server::Verdict::Pass {
+        if limit.check(from, 10, true) == Admission::Pass {
             passed += 1;
         }
     }
