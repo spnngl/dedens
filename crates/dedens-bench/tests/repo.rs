@@ -559,6 +559,32 @@ fn image_rust_differs(containerfile: &str, toolchain: &str) -> Vec<String> {
     }
 }
 
+// --- A crate's clippy.toml ---
+
+/// A crate's `clippy.toml` (or `.clippy.toml`) that does not start, after its own opening comments, with the whole
+/// workspace file, comments included: clippy reads the nearest file alone, so a setting of the root one missing there
+/// is lost for that crate (D134).
+fn clippy_differs(workspace: &str, file: &Source) -> Vec<String> {
+    let workspace: Vec<&str> = workspace.lines().collect();
+    let lines: Vec<&str> = file.text.lines().collect();
+    let comments = lines
+        .iter()
+        .take_while(|line| line.starts_with('#'))
+        .count();
+    if (0..=comments).any(|start| {
+        lines
+            .get(start..)
+            .is_some_and(|rest| rest.starts_with(&workspace))
+    }) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{}: does not start with the root clippy.toml after its comments",
+            file.path
+        )]
+    }
+}
+
 // --- The tree ---
 
 #[test]
@@ -592,6 +618,17 @@ fn agents_files_have_their_claude_symlink() {
 }
 
 #[test]
+fn crate_clippy_files_repeat_the_root_one() {
+    let workspace = read("clippy.toml");
+    let problems: Vec<String> = tracked()
+        .iter()
+        .filter(|path| path.ends_with("/clippy.toml") || path.ends_with("/.clippy.toml"))
+        .flat_map(|path| clippy_differs(&workspace.text, &read(path)))
+        .collect();
+    report(&problems);
+}
+
+#[test]
 fn image_builds_with_the_pinned_rust() {
     let containerfile =
         fs::read_to_string(root().join("Containerfile")).expect("Containerfile reads");
@@ -601,6 +638,30 @@ fn image_builds_with_the_pinned_rust() {
 }
 
 // --- Each check fails on a small broken input ---
+
+#[test]
+fn a_crate_clippy_file_without_the_root_one_fails() {
+    let workspace = "a = true\nb = true\n";
+    let same = Source::new("x/clippy.toml", "# Why.\na = true\nb = true\n\nc = []\n");
+    let other = Source::new("x/clippy.toml", "# Why.\na = true\n\nc = []\n");
+    report(&clippy_differs(workspace, &same));
+    // The root file's own comments are part of it, not of the crate's.
+    let commented = "# Root.\na = true\n";
+    let repeated = Source::new("x/clippy.toml", "# Why.\n# Root.\na = true\n");
+    report(&clippy_differs(commented, &repeated));
+    assert_eq!(
+        clippy_differs(
+            commented,
+            &Source::new("x/clippy.toml", "# Why.\na = true\n")
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        clippy_differs(workspace, &other),
+        ["x/clippy.toml: does not start with the root clippy.toml after its comments"]
+    );
+}
 
 #[test]
 fn an_image_of_another_rust_fails() {
