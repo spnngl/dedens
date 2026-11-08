@@ -73,6 +73,9 @@ exclude_re = [
   'link\.rs:\d+:\d+: replace \| with \^ in decode$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
   'client\.rs:\d+:\d+: replace discover -> Result<Vec<Vec<Box<\[u8\]>>>, ClientError> with ',
+  # Without the `odoh` feature only, as above. The `odoh` one bears the same names, so its `Ok(None)` mutant goes too,
+  # though `apps/dedens/tests/odoh.rs` catches it; its other mutants stay.
+  'run/server\.rs:\d+:\d+: replace oblivious_proxy -> anyhow::Result<Option<Box<Server>>> with ',
   # Configurations that go stale at the very `Instant` they are read or kept: equal `Instant`s never happen.
   'odoh/client\.rs:\d+:\d+: replace > with >= in Configs::(fresh|keep)$',
   # dedens-sim: a `read` that returns an empty or one-byte message makes the host loop on it without waiting, so the run

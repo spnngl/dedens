@@ -1,32 +1,31 @@
 //! Running the queries of the command line or of a query file: at most [`IN_FLIGHT`] at a time, each result
-//! printed in order as soon as it is ready.
+//! printed in order as soon as it is ready. The servers they go to are chosen in the `server` module.
+
+mod server;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::net::SocketAddr;
+use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow, bail};
 use compio::quic::ConnectionError;
 use compio::quic::h3::error::ConnectionError as H3Error;
-use compio::rustls::pki_types::ServerName;
 use dedens_dnssec::covered;
 use dedens_net::client::{Client, ClientError, Server};
-use dedens_net::coap::dns::path_segments;
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
-use dedens_net::doh::{DEFAULT_PATH, Template, TemplateError};
 use dedens_net::exchange::{self, Failure, Response};
 use dedens_net::http3::Http3Error;
 use dedens_net::quic::QuicError;
-use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report};
 
+use self::server::{resolv_conf, server, servers};
 use crate::args::{self, Cli};
 use crate::idn;
 use crate::output::{self, Format, Printing};
@@ -597,208 +596,4 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             })
         })
         .collect()
-}
-
-/// The resolver configuration, from `DEDENS_RESOLV_CONF` when set (for tests), else /etc/resolv.conf.
-fn resolv_conf() -> anyhow::Result<ResolvConf> {
-    let path = std::env::var_os("DEDENS_RESOLV_CONF")
-        .map_or_else(|| PathBuf::from("/etc/resolv.conf"), PathBuf::from);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    Ok(ResolvConf::parse(&text))
-}
-
-/// The servers of the command line, in order, each once.
-fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>> {
-    let mut servers = Vec::new();
-    for named in cli.servers() {
-        let address = server(Some(named), conf, cli.port, &cli.options)?;
-        if !servers.contains(&address) {
-            servers.push(address);
-        }
-    }
-    Ok(servers)
-}
-
-/// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
-const ENCRYPTED_PORT: u16 = 853;
-
-/// The port of DNS over HTTPS (RFC 8484 §3, RFC 9110 §4.2.2).
-const HTTPS_PORT: u16 = 443;
-
-/// The port of CoAP (RFC 7252 §6.1; RFC 9953 §3).
-const COAP_PORT: u16 = 5683;
-
-/// The URI template of the `DoH` server `host` (an IPv6 address without brackets) at `port` and `path`.
-fn template(host: &str, port: u16, path: &str) -> Result<Template, TemplateError> {
-    let brackets = if host.contains(':') {
-        ("[", "]")
-    } else {
-        ("", "")
-    };
-    let port = if port == HTTPS_PORT {
-        String::new()
-    } else {
-        format!(":{port}")
-    };
-    Template::parse(&format!(
-        "https://{}{host}{}{port}{path}",
-        brackets.0, brackets.1
-    ))
-}
-
-/// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
-/// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
-/// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), `coap://` and a path after it for
-/// DNS over CoAP (D81), and `#NAME` after it for the name the server's certificate must hold, else its host name,
-/// else its address. With `+odoh-proxy`, the server must be an `https://` one: the target of Oblivious `DoH`
-/// through that proxy. Without a port, `port`, else 443 over HTTPS, else 5683 over CoAP, else 853 over TLS or QUIC
-/// (`options` or a scheme), else 53.
-fn server(
-    named: Option<&str>,
-    conf: Option<&ResolvConf>,
-    port: Option<u16>,
-    options: &Options,
-) -> anyhow::Result<Endpoint> {
-    let text = match named {
-        Some(text) => text,
-        None => conf
-            .and_then(|conf| conf.nameservers.first())
-            .ok_or_else(|| {
-                anyhow!("no server: give @server, or a nameserver in /etc/resolv.conf")
-            })?,
-    };
-    let given = text;
-    let (text, forced) = [
-        ("tls://", Transport::Tls),
-        ("quic://", Transport::Quic),
-        ("https://", Transport::Https),
-        ("coap://", Transport::Coap),
-    ]
-    .into_iter()
-    .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
-    .unwrap_or((text, None));
-    let (text, name) = match text.rsplit_once('#') {
-        Some((text, name)) => (text, Some(name)),
-        None => (text, None),
-    };
-    let https = forced == Some(Transport::Https);
-    // The target of Oblivious `DoH` is a server asked over HTTPS, the proxy a URI: both are found as one (D79).
-    let proxy = oblivious_proxy(options, forced, given)?;
-    let forced = proxy.as_ref().map_or(forced, |_| Some(Transport::Odoh));
-    let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
-    // CoAP is over UDP and unprotected: no other transport under it.
-    if coap
-        && (forced.is_some_and(|transport| transport != Transport::Coap)
-            || options.tcp == Some(true)
-            || options.encrypted()
-            || options.https())
-    {
-        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC, HTTPS or Oblivious DoH");
-    }
-    let (text, url_path) = match text.split_once('/') {
-        Some((host, path)) if https || forced == Some(Transport::Coap) => {
-            (host, Some(format!("/{path}")))
-        }
-        _ => (text, None),
-    };
-    let doh = https || options.https() || proxy.is_some();
-    let encrypted = (forced.is_some() && !coap) || options.encrypted() || doh;
-    // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
-    let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
-        Some((host, "")) => (host, None),
-        Some((host, port)) => (host, Some(port.strip_prefix(':').unwrap_or(port))),
-        None => match text.split_once(':') {
-            Some((host, port)) if !port.contains(':') => (host, Some(port)),
-            _ => (text, None),
-        },
-    };
-    let port = match written {
-        Some(written) => written
-            .parse()
-            .with_context(|| format!("server {given}: not a port"))?,
-        None => port.unwrap_or(match (doh, coap, encrypted) {
-            (true, ..) => HTTPS_PORT,
-            (_, true, _) => COAP_PORT,
-            (.., true) => ENCRYPTED_PORT,
-            _ => 53,
-        }),
-    };
-    // An address, its zone aside, has no name to check.
-    let literal = host
-        .split_once('%')
-        .map_or(host, |(address, _)| address)
-        .parse::<IpAddr>()
-        .is_ok();
-    let addr = match host.parse::<IpAddr>() {
-        Ok(ip) => SocketAddr::new(ip, port),
-        // A host name, or an address with its zone, which the system resolver reads.
-        Err(_) => (host, port)
-            .to_socket_addrs()
-            .with_context(|| format!("server {given}"))?
-            .next()
-            .ok_or_else(|| anyhow!("server {given}: no address"))?,
-    };
-    let name = name
-        .or((!literal).then_some(host))
-        .filter(|_| encrypted)
-        .map(|name| ServerName::try_from(name.to_owned()))
-        .transpose()
-        .with_context(|| format!("server {given}: not a name for TLS"))?;
-    let template = doh
-        .then(|| {
-            let path = url_path
-                .as_deref()
-                .or(options.https_path())
-                .unwrap_or(DEFAULT_PATH);
-            template(host, port, path).with_context(|| format!("server {given}"))
-        })
-        .transpose()?;
-    // The segments of the path of a `coap://` URI (RFC 7252 §6.4), the root path having none.
-    let docpath = path_segments(url_path.as_deref().filter(|_| coap).unwrap_or_default());
-    Ok(Endpoint {
-        server: Server {
-            addr,
-            name,
-            doh: template,
-            docpath,
-        },
-        forced,
-        proxy,
-    })
-}
-
-/// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
-/// without the option, an error for a target that is not an `https://` server.
-#[cfg(feature = "odoh")]
-fn oblivious_proxy(
-    options: &Options,
-    forced: Option<Transport>,
-    given: &str,
-) -> anyhow::Result<Option<Box<Server>>> {
-    let Some(uri) = options.odoh_proxy.as_deref() else {
-        return Ok(None);
-    };
-    if forced != Some(Transport::Https) {
-        bail!("server {given}: +odoh-proxy needs an https:// target server");
-    }
-    if !uri.starts_with("https://") {
-        bail!("+odoh-proxy {uri}: not an https:// URI");
-    }
-    Ok(Some(Box::new(
-        server(Some(uri), None, None, &Options::default())?.server,
-    )))
-}
-
-/// Without the `odoh` feature there is no Oblivious `DoH` to ask (D69).
-#[cfg(not(feature = "odoh"))]
-fn oblivious_proxy(
-    options: &Options,
-    _forced: Option<Transport>,
-    _given: &str,
-) -> anyhow::Result<Option<Box<Server>>> {
-    if options.odoh() {
-        bail!("+odoh-proxy: built without the odoh feature");
-    }
-    Ok(None)
 }
