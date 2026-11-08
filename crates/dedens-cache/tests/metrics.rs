@@ -1,15 +1,12 @@
 //! The counters of the `metrics` feature (D30).
 
-#![cfg(feature = "metrics")]
-
-mod common;
-
 use std::collections::HashMap;
 
-use common::{a, insert, key_of, lookup, query, response};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::{Query, Rcode, RecordType};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
+use crate::util::{a, insert, key_of, lookup, query, response};
 
 /// A cache whose counters go to the recorder behind the returned snapshotter.
 fn recorded(config: Config) -> (Cache, Snapshotter) {

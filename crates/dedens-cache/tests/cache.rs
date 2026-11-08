@@ -1,15 +1,9 @@
 //! Serving hits, keys, prefetch, truncation and the byte budget.
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{
-    T0, a, insert, key_of, lookup, min_cache, query, query_of, query_plain, query_with, response,
-    small_cache, small_config, ttls,
-};
 use dedens_cache::{
     Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
 };
@@ -17,6 +11,11 @@ use dedens_proto::edns::{ClientSubnet, Edns, EdnsOption};
 use dedens_proto::{Flags, Message, Opcode, Query, Rcode, RecordType};
 use dedens_testkit::{captured, dns};
 use proptest::prelude::*;
+
+use crate::util::{
+    T0, a, insert, key_of, lookup, min_cache, query, query_of, query_plain, query_with, response,
+    small_cache, small_config, ttls,
+};
 
 const NEVER: StalePolicy = StalePolicy::Never;
 

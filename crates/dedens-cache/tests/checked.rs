@@ -2,13 +2,12 @@
 //! bogus response is kept briefly (RFC 4035 §4.7), answers clients that check, and its data answers those that do
 //! not (RFC 4035 §3.2.2).
 
-mod common;
-
-use common::{T0, a, lookup, query_with, response, small_cache, small_config, ttls};
 use dedens_cache::{Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Message, Query, Rcode, RecordType};
 use dedens_testkit::{captured, dns};
+
+use crate::util::{T0, a, lookup, query_with, response, small_cache, small_config, ttls};
 
 /// Stores a response for `www.example` A with AD as `upstream_ad` says, as `checked`.
 fn store(cache: &Cache, upstream_ad: bool, checked: Checked) {

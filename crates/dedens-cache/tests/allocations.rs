@@ -1,14 +1,18 @@
 //! A hit allocates nothing, even one cut to fit a small buffer (D116). One test per file: the allocator counts
 //! every thread, and a second test's allocations would show in the first's.
 
-mod common;
+#[expect(
+    dead_code,
+    reason = "this binary, of one test, uses part of the helpers"
+)]
+mod util;
 
 use std::alloc::System;
 
-use common::{T0, a, insert, query, response};
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::{Query, Rcode, RecordType};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use util::{T0, a, insert, query, response};
 
 #[global_allocator]
 static ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
