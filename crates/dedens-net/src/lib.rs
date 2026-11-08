@@ -9,8 +9,8 @@
 //! - On compio: `udp`, `tcp`, `quic`, `http3`, `doc` (feature `doc`) the transports, `dial` the QUIC endpoints and
 //!   connections, `client` the exchange run over the transports, `io` the seam of the UDP and TCP pools (D134), `tls`
 //!   the TLS configurations, `odoh` (feature `odoh`, D79) Oblivious `DoH`: its requests, responses and target
-//!   classifier are sans-IO, but its configurations are fetched over `http3` and kept by the clock, and its client
-//!   draws the system's randomness.
+//!   classifier are sans-IO, but `odoh::client` fetches the configurations over `http3` and keeps them by the clock,
+//!   and `Entropy` draws the system's randomness.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]

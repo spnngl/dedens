@@ -240,7 +240,7 @@ pub struct Client<N: Io = Compio> {
     https: Http3Pool,
     /// The key configurations of the Oblivious `DoH` targets asked (D79).
     #[cfg(feature = "odoh")]
-    odoh: odoh::Configs,
+    odoh: odoh::client::Configs,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
     random: RefCell<Random>,
@@ -304,7 +304,7 @@ impl<N: Io> Client<N> {
             quic: QuicPool::new(TCP_IDLE),
             https: Http3Pool::new(TCP_IDLE),
             #[cfg(feature = "odoh")]
-            odoh: odoh::Configs::default(),
+            odoh: odoh::client::Configs::default(),
             cookies: RefCell::default(),
             random: RefCell::new(Random {
                 bytes: [0; RANDOM_BATCH],
