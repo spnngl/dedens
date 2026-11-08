@@ -411,7 +411,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
-  One `Validator` per stage, built by `config.rs` at each read; a reload keeps the one of a stage whose validation is
+  One `Validator` per stage, built by `config/upstream.rs` at each read; a reload keeps the one of a stage whose validation is
   unchanged, the tag of its anchors file text and negative anchors the same (D55, D86). The wall clock is
   the caller's (`Validating::new(validator, clock)`, Unix seconds): the pipeline's `now` is a monotonic `u32`.
   The glue is `dedens-server`'s `validate.rs`: `Check` owns a `Validation` and the client's answer, and the
@@ -464,7 +464,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   sets or clears AD from it (only `Secure` sets it, D114; clear on a secure entry served stale: expired data is no longer vouched for by the
   signatures), and nothing else of DNSSEC is in the cache. A reload keeps the cache stage only while every forward
   stage validates the same way (`Validating::tagged`: dnssec mode, trust anchor text, negative anchors, set by
-  `config.rs`): else entries from another validator, or none, would be served under the old AD and verdicts. It stores each response whole under the
+  `config/upstream.rs`): else entries from another validator, or none, would be served under the old AD and verdicts. It stores each response whole under the
   client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
   §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
@@ -510,7 +510,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   else, so the rules for what goes in live in one place, `Zone::lifetime`. It is inside the `Validator` behind a
   `Mutex` (the `Validator` stays `Clone`, `Send + Sync`; clones share it), and anchors and limits are fixed for a
   validator, so a change of trust anchors or negative anchors is a new `Validator` with an empty cache, and nothing
-  stale outlives it; a reload that changes neither keeps the `Validator`, so the keys stay (`config.rs` compares the
+  stale outlives it; a reload that changes neither keeps the `Validator`, so the keys stay (`config/sources.rs` compares the
   tag it gives `Validating`, as it does for the answer cache, D77). API, additive fields only: `Limits::key_cache` (`usize`, entries per table, default 4096; 0
   turns the cache off) and `Limits::key_cache_bytes` (`usize`, default 4 MiB); `Limits { .., ..Limits::default() }`
   as before. `Limits` is not `#[non_exhaustive]`: the integration tests and the callers of steps 07 and 08 build it
@@ -1851,7 +1851,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   ~40-byte query with up to 1232 bytes (a 1.2 kB TXT, `benches/server.rs`), to a source address anyone can forge, so a daemon safe by default
   cannot leave the limit to a firewall it may not have. Decided by the user. TCP, TLS, QUIC and HTTPS stay as D90 says:
   the handshake proves the address (QUIC answers Initial with Retry, D47) and a per-address cap stays the deployment's.
-  The settings are `rrl` and `cookies` in `apps/dedensd/src/config.rs`, the code `rrl.rs` and `cookie.rs` of
+  The settings are `rrl` and `cookies` in `apps/dedensd/src/config/limits.rs`, the code `rrl.rs` and `cookie.rs` of
   `dedens-server`; both are on by default.
   - What is limited. A UDP query, before any check but the access lists, so a FORMERR is limited too; a REFUSED of the
     access lists (D91) as well, since the default lists refuse every Internet source and that REFUSED is as spoofable
@@ -1922,7 +1922,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`Config::insecure_ttl`); a value is refused as `ConfigError::InsecureTtl` when 0 (a response kept for no time) or
   above `max_ttl`. Rejected: capping in `dedens-server`
   (the cache owns every stored TTL); a TTL for secure answers too (nothing asks for it). Tests:
-  `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config.rs`.
+  `dedens-cache/tests/checked.rs`, the configuration tests of `apps/dedensd/src/config/`.
 - D124 (amends D22, D43, D77, D93) The cache keeps a response at least `min_ttl` (default 60 s) and at most `max_ttl`
   (default 2 days, was 7), so that a flood of short-TTL names is not asked upstream again and again, and stale data is
   bounded by two days (audit step 23, Unbound's `cache-min-ttl`). `Response::build` raises the smallest TTL of the
@@ -1949,7 +1949,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     raising only the lifetime and serving the zone's TTLs (clients would re-ask at once: the flood stays); bounding
     `Secure` by a guess of the expiration (a validator change, TODECIDE).
   - Tests: `dedens-cache/tests/{rfc2308,rfc8767,cache,checked}.rs` on the captured responses of `dedens-proto`, the
-    configuration tests of `apps/dedensd/src/config.rs`. Tests that count the zone's seconds set `min_ttl: 0`.
+    configuration tests of `apps/dedensd/src/config/`. Tests that count the zone's seconds set `min_ttl: 0`.
 - D94 (amends D79, D84, D91; amended by D117) `dedensd` is an Oblivious DoH proxy too (RFC 9230 §4, `odoh` feature): `odoh: {proxy: {targets:
   [HOST[:PORT]], timeout_ms}}` makes each `https://` listener forward the requests that name a target. `targets` is
   required and not empty, a port is 443 unless given; a name is read strictly (UTS 46 with STD3 rules and the label
@@ -2236,7 +2236,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_variable_cannot_inject_yaml`, `a_value_is_the_text_it_stands_for` (every text of up to three characters
     from an alphabet of YAML's syntax, in five templates: read back as that text or refused, which stands for a
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
-    `threads_default_to_the_cores_on_linux` (`config.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
+    `threads_default_to_the_cores_on_linux` (`config/limits.rs`), `threads_set_the_serving_threads` (`tests/serve.rs`).
     Test and bench key files are written 0600 (`common::write_key`). No hot path touched, no bench.
 - D116 (amends D22, D44; amended by D118) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
   - Memory (L12). `capacity` counts everything a shard holds: the keys and responses, and `SLOT_COST` for each slot
@@ -2353,7 +2353,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
     `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
     (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/rfc9230.rs`),
-    `a_client_share_is_set_per_stage_and_reload_keeps_the_keys`, `an_odoh_target_has_limits` (`config.rs`). No
+    `a_client_share_is_set_per_stage_and_reload_keeps_the_keys` (`config/upstream.rs`), `an_odoh_target_has_limits` (`config/keys.rs`). No
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
     `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
     `decrypt_query_message` (`odoh.rs`).
@@ -2426,7 +2426,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     `a_dname_and_its_cname_are_one_hop`, `a_chain_to_a_listed_name_is_not_served`,
     `a_top_level_domain_is_no_plain_entry`, `a_top_level_domain_is_an_entry_when_the_lists_take_them`,
     `a_hosts_line_leaves_a_top_level_domain_out` (`dedens-plugins/tests/blocklist.rs`);
-    `blocklists_take_top_level_domains_when_told` (`config.rs`); `a_mark_follows_the_stored_response`
+    `blocklists_take_top_level_domains_when_told` (`config/sources.rs`); `a_mark_follows_the_stored_response`
     (`dedens-cache/tests/cache.rs`); `tests/rfc6672.rs` (`Name::from_uncompressed`);
     `a_response_a_plugin_replaces_is_stored_and_refused_on_a_hit`,
     `a_response_a_plugin_after_the_cache_replaces_is_not_stored`,

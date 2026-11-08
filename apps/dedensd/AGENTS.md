@@ -1,8 +1,9 @@
 # dedensd
 
 The server binary (D42, D44): `src/main.rs` parses flags, starts the threads (never dropping a runtime) and logs the
-driver, warning on Linux when it is `poll`, `src/config.rs` reads the YAML configuration into a pipeline (D44) and
-holds its bounds and the key-file check shared with `src/odoh.rs` (D115), `src/serve.rs` binds the sockets and runs the
+driver, warning on Linux when it is `poll`, `src/config/` reads the YAML configuration into a pipeline (D44): `mod.rs`
+the file, its bounds and the build, one file a part (`listen`, `upstream`, `limits`, `access`, `sources`, `env` for
+`${VAR}`, `keys` with the key-file check shared with `src/odoh.rs`, D115), `src/serve.rs` binds the sockets and runs the
 UDP, TCP, TLS, QUIC, DoH over HTTP/3, DoC (`src/serve/coap.rs`, feature `doc`: its replays, blocks and slots are
 bounded, D105) and upstream tasks around `dedens_server::Pipeline`; UDP replies go through each socket's `Outbox`, one
 sender a socket, two tasks receiving (D123); `src/isolate.rs` isolates a task's panic and restarts a listener that
@@ -12,11 +13,11 @@ changed, waking each thread to take it (D107). `src/lists.rs` keeps the lists re
 source and one merged set per stage side, so that a reload reads the lists that changed and no other (D120).
 `src/privileges/mod.rs` resolves `user` and `group` before the sockets are bound and drops root after (D122);
 `privileges/unix.rs` makes its calls, `privileges/not_unix.rs` stands in for them off Unix.
-`access` (D91) is read in `src/config.rs`; `Config::warn_access` warns at start (`src/main.rs`) and at each reload
+`access` (D91) is read in `src/config/access.rs`; `Config::warn_access` warns at start (`src/main.rs`) and at each reload
 (`src/reload.rs`) of a public listen address with no `access`, and of an empty `allow`; the listeners in
-`src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot. `src/config.rs` reads
-`rrl` and `cookies` (D113), `client_share` and `odoh.budget`/`odoh.client_budget` (D117), and the cache's
-`max_entry_bytes`, `min_ttl` and `max_ttl` (D116, D124) too.
+`src/serve.rs` close or ignore a client that a `drop` denial denies, before it takes a slot. `src/config/` reads
+`rrl` and `cookies` (D113, `limits.rs`), `client_share` (`upstream.rs`) and `odoh.budget`/`odoh.client_budget` (D117,
+`keys.rs`), and the cache's `max_entry_bytes`, `min_ttl` and `max_ttl` (D116, D124, `sources.rs`) too.
 `src/flights.rs` shares the validator's upstream questions in flight between the queries that need them (D86).
 `src/sync.rs` names the `Arc`, `Mutex`, atomics and one-message channel of `reload.rs` and `flights.rs`: std's and
 flume's, loom's under `--cfg dedens_loom` (`just loom`, D135); use it for state those two share between threads.
