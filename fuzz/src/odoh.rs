@@ -411,7 +411,7 @@ static ODOH_CLIENT: LazyLock<QueryContext> = LazyLock::new(|| {
 /// Arbitrary bytes as an `ODoH` query and as a response (RFC 9230 §7, §8): a forged message is refused, never a
 /// panic. A parsed query is also given the target key ID, so that it reaches the key exchange; only the
 /// ciphertext of `odoh-go` may authenticate. The exchange of well-formed messages is tested in
-/// `crates/dedens-odoh/tests/rfc9230.rs`.
+/// `crates/dedens-odoh/tests/odoh.rs`.
 ///
 /// # Panics
 ///

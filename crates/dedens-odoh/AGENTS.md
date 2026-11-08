@@ -10,6 +10,6 @@ Sans-IO: configurations and message encryption; the HTTP exchange lives in `dede
 | `src/client.rs`, `src/target.rs` | `encrypt_query`, `decrypt_response` (§7); `TargetKey`, `decrypt_query`, `encrypt_response` (§8) |
 | `src/exchange.rs`, `src/kdf.rs` | `Secrets`: the response key and nonce of §6.2 (`derive_secrets`, as `Secrets::derive`), `seal`, `open`, `aad`; HKDF on `ring` |
 | `src/wire.rs`, `src/error.rs` | the TLS-style reader and writer (RFC 8446 §3); `WireError`, `ExchangeError` |
-| `tests/rfc9180.rs`, `tests/rfc9230.rs` | the HPKE vectors through `suite`; the RFC 9230 vectors (`testdata/odoh/`) and the round trips |
+| `tests/tests.rs`: `hpke.rs`, `odoh.rs` | one test binary (D162): the HPKE vectors through `suite`; the RFC 9230 vectors (`testdata/odoh/`) and the round trips |
 
 HPKE comes from the `hpke` crate; `suite` names its types so that tests run RFC 9180's vectors through them.

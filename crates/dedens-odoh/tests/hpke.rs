@@ -1,12 +1,11 @@
 //! RFC 9180 Appendix A.1.1: the base-mode vectors of DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM,
 //! run through the suite of RFC 9230 §9 as `dedens_odoh::suite` names it.
 
-mod common;
-
-use common::Replay;
 use dedens_odoh::suite::{AEAD_ID, Aead, KDF_ID, KEM_ID, Kdf, Kem};
 use dedens_testkit::hex;
 use hpke::{Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _};
+
+use crate::util::Replay;
 
 const INFO: &str = "4f6465206f6e2061204772656369616e2055726e";
 const IKM_E: &str = "7268600d403fce431561aef583ee1613527cff655c1343f29812e66706df3234";

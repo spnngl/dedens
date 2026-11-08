@@ -3,11 +3,8 @@
 //! Real data: the config Cloudflare serves, and the vectors of `cloudflare/odoh-go`; both are described in
 //! `testdata/odoh/README.md`. Nothing else in RFC 9230 is a byte-level example.
 
-mod common;
-
 use std::fs;
 
-use common::Replay;
 use dedens_odoh::{
     ConfigContents, Configs, ExchangeError, Message, MessagePlaintext, MessageType, QUERY_BLOCK,
     RESPONSE_BLOCK, TargetKey, WireError, decrypt_query, decrypt_response, encrypt_query,
@@ -17,6 +14,8 @@ use dedens_testkit::hex;
 use hpke::{Deserializable as _, OpModeS, Serializable as _};
 use ring::{aead, hkdf};
 use serde::Deserialize;
+
+use crate::util::Replay;
 
 fn testdata(name: &str) -> Vec<u8> {
     fs::read(dedens_testkit::path("odoh").join(name)).expect("test data file")
