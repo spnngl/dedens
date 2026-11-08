@@ -49,6 +49,8 @@ exclude_re = [
   # The midpoint stays in `low..high` for `low` of at least LONGEST_FIRST: the search finds the same suffix, in
   # more lookups.
   'wire/mod\.rs:\d+:\d+: replace - with / in Writer<.a>::put_name_found$',
+  # A pointer's target is below POINTER_LIMIT, its two top bits clear: `0xC000 ^ target` is `0xC000 | target`.
+  'wire/mod\.rs:\d+:\d+: replace \| with \^ in Writer<.a>::(put_owner|put_name_found)$',
   # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
   'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
   # Read by dedensd only, whose tests do not run for a mutant of dedens-server.

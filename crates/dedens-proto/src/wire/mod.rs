@@ -571,4 +571,84 @@ mod tests {
         assert!(question.encode(&mut w).is_err());
         assert_eq!(w.len(), 40);
     }
+
+    /// A name ending in a pointer (RFC 1035 §4.1.4) fits in exactly the room its labels and pointer take; in a
+    /// byte less, nothing of it is written.
+    #[test]
+    fn a_compressed_name_fits_in_exactly_its_room() {
+        let base: Name<'static> = "example".parse().unwrap();
+        let name: Name<'static> = "www.example".parse().unwrap();
+        let room = HEADER_LEN + 9 + 4 + 2;
+        for (size, fits) in [(room, true), (room - 1, false)] {
+            let mut buf = vec![0; size];
+            let mut w = Writer::new(&mut buf);
+            w.put_bytes(&[0; HEADER_LEN]).unwrap();
+            w.put_name_compressed(&base).unwrap();
+            let at = w.len();
+            assert_eq!(w.put_name_compressed(&name).is_ok(), fits, "{size} bytes");
+            let written = if fits { &b"\x03www\xC0\x0C"[..] } else { &[] };
+            assert_eq!(w.written().get(at..), Some(written), "{size} bytes");
+        }
+    }
+
+    /// An owner looked up returns where the next record's owner may point to (RFC 1035 §4.1.4): its own offset when
+    /// it starts with labels, its target when it is only a pointer, and none for the root, whose one byte a pointer
+    /// would not shorten.
+    #[test]
+    fn an_owner_returns_where_to_point_to() {
+        let name: Name<'static> = "example".parse().unwrap();
+        let mut buf = [0; 64];
+        let mut w = Writer::new(&mut buf);
+        w.put_bytes(&[0; HEADER_LEN]).unwrap();
+        assert_eq!(w.put_owner(&name, None), Ok(Some(12)));
+        assert_eq!(w.put_owner(&name, None), Ok(Some(12)));
+        assert_eq!(w.put_owner(&Name::root(), None), Ok(None));
+        assert_eq!(
+            w.written().get(HEADER_LEN..),
+            Some(&b"\x07example\x00\xC0\x0C\x00"[..])
+        );
+    }
+
+    /// [`Writer::hold_back`], the room of the OPT record (RFC 6891 §7), keeps all of what is left, but not a byte
+    /// more.
+    #[test]
+    fn holding_back_keeps_up_to_what_is_left() {
+        let mut buf = [0; 11];
+        let mut w = Writer::new(&mut buf);
+        assert_eq!(w.hold_back(12), Err(EncodeError::BufferFull));
+        assert_eq!(w.hold_back(11), Ok(()));
+        assert_eq!(w.put_u8(0), Err(EncodeError::BufferFull));
+    }
+
+    /// A writer that never compresses names writes an owner in full, whatever offset it is given to point to.
+    #[test]
+    fn an_uncompressed_owner_is_written_in_full() {
+        let owner: Name<'static> = "example".parse().unwrap();
+        let mut buf = [0; 16];
+        let mut w = Writer::uncompressed(&mut buf);
+        assert_eq!(w.put_owner(&owner, Some(0)), Ok(None));
+        assert_eq!(w.written(), b"\x07example\x00");
+    }
+
+    /// The owner of a record set's second record points to the first's (RFC 1035 §4.1.4) by the offset
+    /// [`Writer::put_owner`] returned, also when the name table was full and could not remember it.
+    #[test]
+    fn an_owner_past_a_full_table_points_to_the_previous_one() {
+        let mut buf = [0; 4096];
+        let mut w = Writer::new(&mut buf);
+        w.put_bytes(&[0; HEADER_LEN]).unwrap();
+        for i in 0..256 {
+            let name: Name<'static> = format!("n{i}").parse().unwrap();
+            w.put_name_compressed(&name).unwrap();
+        }
+        let owner: Name<'static> = "example".parse().unwrap();
+        let previous = w.put_owner(&owner, None).unwrap();
+        assert!(previous.is_some());
+        let at = w.len();
+        assert_eq!(w.put_owner(&owner, previous), Ok(previous));
+        assert_eq!(w.len() - at, 2, "a pointer");
+        let at = w.len();
+        w.put_name_compressed(&owner).unwrap();
+        assert_eq!(w.len() - at, 9, "not in the full table: written in full");
+    }
 }
