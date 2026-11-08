@@ -590,14 +590,9 @@ const COLD: [&str; 5] = [
 /// its clock.
 fn validating_world(seed: Seed, share: u32) -> World {
     let dir = dedens_testkit::path("dnssec");
-    let at: u64 = std::fs::read_to_string(dir.join("captured_at"))
-        .expect("the time of the capture")
-        .trim()
-        .parse()
-        .expect("Unix time in seconds");
     let mut world = Topology::new()
         .upstream(Answers::new().directory(&dir))
-        .epoch(UNIX_EPOCH + Duration::from_secs(at))
+        .epoch(UNIX_EPOCH + Duration::from_secs(dedens_testkit::dnssec::captured_at().into()))
         .resolver(move |upstreams| {
             let limits = ValidatorLimits {
                 key_cache: 0,

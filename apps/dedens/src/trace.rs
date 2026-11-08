@@ -270,16 +270,9 @@ impl Tracer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use dedens_testkit::{captured, message};
 
-    fn captured(name: &str) -> Message<'static> {
-        let wire = std::fs::read(dedens_testkit::path(&format!("proto/{name}.bin")))
-            .expect("captured response");
-        Message::decode(&wire)
-            .expect("decodes")
-            .message
-            .into_owned()
-    }
+    use super::*;
 
     fn name(text: &str) -> Name<'static> {
         text.parse().expect("a name")
@@ -304,16 +297,20 @@ mod tests {
 
     #[test]
     fn referrals_lead_down_to_the_glue() {
-        let Ok(Step::Referral { zone, glue, names }) =
-            step(&captured("referral_root"), &example(), &Name::root())
-        else {
+        let Ok(Step::Referral { zone, glue, names }) = step(
+            &message(&captured("referral_root")),
+            &example(),
+            &Name::root(),
+        ) else {
             panic!("a referral from the root");
         };
         assert_eq!((zone, names.len(), glue.len()), (name("com."), 13, 26));
         assert!(glue[0].is_ipv4() && glue[1].is_ipv6());
-        let Ok(Step::Referral { zone, names, glue }) =
-            step(&captured("referral_com"), &example(), &name("com."))
-        else {
+        let Ok(Step::Referral { zone, names, glue }) = step(
+            &message(&captured("referral_com")),
+            &example(),
+            &name("com."),
+        ) else {
             panic!("a referral from com.");
         };
         assert_eq!(zone, name("example.com."));
@@ -326,7 +323,7 @@ mod tests {
     fn glue_is_only_taken_from_inside_the_zone() {
         // A com. server adding a name server in net. and its address: an address the com. servers cannot vouch
         // for (RFC 2181 §5.4.1).
-        let mut message = captured("referral_com");
+        let mut message = message(&captured("referral_com"));
         let record = |text: &str| text.parse::<Record<'static>>().expect("a record");
         message
             .authority
@@ -343,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_referral_must_come_closer() {
-        let message = captured("referral_root");
+        let message = message(&captured("referral_root"));
         // From the servers of com., a referral to com. goes nowhere.
         assert!(step(&message, &example(), &name("com.")).is_err());
         // A question outside com. is not led there.
@@ -355,7 +352,7 @@ mod tests {
     fn answers_nxdomain_and_authority_end_the_trace() {
         for capture in ["a", "nxdomain_soa", "nodata", "any_rfc8482"] {
             assert_eq!(
-                step(&captured(capture), &example(), &Name::root()).ok(),
+                step(&message(&captured(capture)), &example(), &Name::root()).ok(),
                 Some(Step::Done),
                 "{capture}"
             );
@@ -367,7 +364,7 @@ mod tests {
         // SERVFAIL, and a truncated response with neither answer nor referral.
         for capture in ["ede", "truncated"] {
             assert!(
-                step(&captured(capture), &example(), &Name::root()).is_err(),
+                step(&message(&captured(capture)), &example(), &Name::root()).is_err(),
                 "{capture}"
             );
         }

@@ -15,8 +15,6 @@ metrics = ["dedens-cache/metrics"]
 recorder = ["metrics", "dep:metrics-util"]
 
 [dependencies]
-# The RFC examples' keys and signatures, in base64, for `benches/dnssec.rs`.
-data-encoding.workspace = true
 dedens-cache.workspace = true
 dedens-dnssec.workspace = true
 dedens-net.workspace = true
@@ -79,11 +77,9 @@ harness = false
 name = "rrl"
 harness = false
 
-# D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14); data-encoding serves
-# `crates/dedens-dnssec/tests/common/mod.rs`, a module of `benches/dnssec.rs` by `#[path]`, outside this package.
+# D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14).
 [package.metadata.cargo-shear]
 ignored = [
-  "data-encoding",
   "dedens-cache",
   "dedens-dnssec",
   "dedens-net",

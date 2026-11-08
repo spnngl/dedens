@@ -1,6 +1,6 @@
 //! DNSSEC crypto (D71): one signature verification per validated algorithm and key size, on the RFC examples the
-//! tests verify (their keys and signatures are in `crates/dedens-dnssec/tests/common/mod.rs`), the DS digests
-//! and the NSEC3 hash. The numbers size `Budget`'s defaults (`docs/benchmarks.md`).
+//! tests verify (their keys and signatures are in `dedens_testkit::dnssec`), the DS digests and the NSEC3
+//! hash. The numbers size `Budget`'s defaults (`docs/benchmarks.md`).
 
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -18,15 +18,12 @@ use dedens_server::{
     Allowance, Budget as Share, Budgets, DEFAULT_SHARE, Forward, MAX_BUDGET, Pipeline, Stage, Step,
     Validating,
 };
-
-#[path = "../../dedens-dnssec/tests/common/mod.rs"]
-mod common;
-
-use common::{
+use dedens_testkit::dns;
+use dedens_testkit::dnssec::{
     ED25519_KEY_1, ED25519_SIGNATURE_1, P256_KEY, P256_SIGNATURE, P384_KEY, P384_SIGNATURE,
-    RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE,
+    RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE,
     URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2, URI_MX_SIGNATURE, URI_ZSK, b64, canonical_name,
-    capture, captured_at, dnskey_rdata, name, names, signed_data,
+    captured_at, dnskey_rdata, names, response, signed_data,
 };
 
 fn main() {
@@ -96,9 +93,9 @@ fn rsasha1_1024() -> Case {
     );
     case(
         SecAlgorithm::RSASHA1,
-        RFC4034_ZSK,
+        RFC4035_ZSK,
         signed_data(&sig, &[a_record("ns1.example.")]),
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     )
 }
 
@@ -255,8 +252,8 @@ fn verify_signature(bencher: divan::Bencher<'_, '_>, which: &str) {
 /// A DS digest of the 1024-bit RSA key under each type.
 #[divan::bench(args = [DigestType::SHA1, DigestType::SHA256, DigestType::SHA384])]
 fn ds(bencher: divan::Bencher<'_, '_>, digest: DigestType) {
-    let owner = name("example.");
-    let rdata = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let owner = dns("example.");
+    let rdata = dnskey_rdata(256, 5, RFC4035_ZSK);
     bencher.bench_local(|| {
         ds_digest(digest, black_box(&owner), black_box(&rdata)).expect("supported")
     });
@@ -266,7 +263,7 @@ fn ds(bencher: divan::Bencher<'_, '_>, digest: DigestType) {
 /// and 150, RFC 5155 §10.3's ceiling for 1024-bit keys.
 #[divan::bench(args = [0, 12, 150])]
 fn nsec3(bencher: divan::Bencher<'_, '_>, iterations: u16) {
-    let owner = name("www.example.com.");
+    let owner = dns("www.example.com.");
     let salt = [0xaa, 0xbb, 0xcc, 0xdd];
     bencher.bench_local(|| {
         nsec3_hash(
@@ -283,7 +280,7 @@ fn nsec3(bencher: divan::Bencher<'_, '_>, iterations: u16) {
 /// and 5 per iteration (D106), and the time should follow.
 #[divan::bench(args = [0, 64, 255])]
 fn nsec3_salt(bencher: divan::Bencher<'_, '_>, salt_len: usize) {
-    let owner = name("www.example.com.");
+    let owner = dns("www.example.com.");
     let salt = vec![0xaa; salt_len];
     bencher.bench_local(|| {
         nsec3_hash(
@@ -299,7 +296,7 @@ fn nsec3_salt(bencher: divan::Bencher<'_, '_>, salt_len: usize) {
 /// A captured signed `RRset`: the `RRset`, its RRSIG `RRset` and the DNSKEY `RRset` of the signer, all as the
 /// zones served them.
 fn captured(answer: &str, keys: &str) -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
-    let sets = |name: &str| RrSet::group(&common::capture(name).answer);
+    let sets = |name: &str| RrSet::group(&response(name).answer);
     let mut answer = sets(answer).into_iter();
     let data = answer.next().expect("the answer");
     let sigs = answer.next().expect("its RRSIG");
@@ -324,7 +321,7 @@ fn verify_rrset(bencher: divan::Bencher<'_, '_>, which: &str) {
         _ => ("alg15_a", "ed25519_nl_dnskey"),
     };
     let (data, sigs, keys) = captured(answer, keys);
-    let now = common::captured_at();
+    let now = captured_at();
     let sig = Signature::all(&sigs).into_iter().next().expect("an RRSIG");
     let key = Key::all(&keys)
         .into_iter()
@@ -347,7 +344,7 @@ static CAPTURES: LazyLock<HashMap<(Name<'static>, RecordType), Message<'static>>
     LazyLock::new(|| {
         names()
             .iter()
-            .map(|id| capture(id))
+            .map(|id| response(id))
             .filter_map(|message| {
                 let question = message.questions.first()?;
                 Some(((question.name.clone(), question.qtype), message))
@@ -377,7 +374,7 @@ static CAPTURED_AT: LazyLock<u64> = LazyLock::new(|| u64::from(captured_at()));
 /// The validator of the warm benches: the chain of `alg8_a` is in its cache.
 static WARM: LazyLock<Validator> = LazyLock::new(|| {
     let validator = Validator::new(TrustAnchors::root(), Limits::default());
-    let verdict = validate(&validator, &capture("alg8_a"));
+    let verdict = validate(&validator, &response("alg8_a"));
     assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
     validator
 });
@@ -386,7 +383,7 @@ static WARM: LazyLock<Validator> = LazyLock::new(|| {
 /// are verified (D86). Its threads share nothing: the scaling of the warm ones is read against this.
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn validate_cold(bencher: divan::Bencher<'_, '_>) {
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     bencher.bench(|| {
         let validator = Validator::new(TrustAnchors::root(), Limits::default());
         validate(&validator, black_box(&response))
@@ -396,7 +393,7 @@ fn validate_cold(bencher: divan::Bencher<'_, '_>) {
 /// The same under a validator whose key cache has the chain: no question, one signature check for the answer.
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn validate_warm(bencher: divan::Bencher<'_, '_>) {
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     let validator = &*WARM;
     bencher.bench(|| validate(validator, black_box(&response)));
 }
@@ -424,7 +421,7 @@ fn validating_pipeline(validator: Validator, allowance: Allowance, share: Share)
 
 /// A client query for the question of `alg8_a`, with DO.
 fn client_query() -> Vec<u8> {
-    let question = capture("alg8_a").questions[0].clone();
+    let question = response("alg8_a").questions[0].clone();
     let mut query = Message::query(7, question);
     query.edns = Some(Edns {
         flags: EdnsFlags::DO,

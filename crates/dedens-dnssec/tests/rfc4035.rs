@@ -9,15 +9,14 @@ mod common;
 #[path = "common/denial.rs"]
 mod support;
 
-use common::{
-    RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rrsig, check, dnskey_rdata, name, rrset, rrset_in,
-    rrsig_set,
-};
+use common::{check, name, rrset, rrset_in, rrsig_set};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{Fact, Proof, Unproven};
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{Record, RecordType, Ttl};
-use support::{nsec, pick, prove, prove_wildcard, zone};
+use dedens_testkit::dnssec::{RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rrsig, dnskey_rdata};
+use dedens_testkit::zone;
+use support::{nsec, pick, prove, prove_wildcard};
 
 // 2004-04-09T18:36:19Z and 2004-05-09T18:36:19Z.
 const INCEPTION: u32 = 1_081_535_779;
@@ -52,13 +51,13 @@ fn rrsig(type_covered: u16, labels: u8) -> Rrsig<'static> {
 }
 
 fn zsk() -> RrSet<'static> {
-    rrset("example.", 48, &[dnskey_rdata(256, 5, RFC4034_ZSK)])
+    rrset("example.", 48, &[dnskey_rdata(256, 5, RFC4035_ZSK)])
 }
 
 /// `owner MX 1 exchange`.
 fn mx(owner: &str, exchange: &str) -> RrSet<'static> {
     let mut rdata = 1_u16.to_be_bytes().to_vec();
-    rdata.extend(common::canonical_name(exchange));
+    rdata.extend(dedens_testkit::dnssec::canonical_name(exchange));
     rrset(owner, 15, &[rdata])
 }
 
@@ -151,17 +150,17 @@ fn the_ttl_kept_is_the_least_of_the_rrset_and_the_signature() {
     ))
     .pop()
     .expect("one RRset");
-    let sigs = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4034_NS1_SIGNATURE);
+    let sigs = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4035_NS1_SIGNATURE);
     let verified = check(&a, &sigs, &zsk(), INCEPTION).expect("verifies");
     assert_eq!(verified.ttl.get(), 100);
 }
 
 /// 20 copies of the right key, and a record the signature does not cover: every check fails.
 fn keytrap() -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
-    let rdata = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let rdata = dnskey_rdata(256, 5, RFC4035_ZSK);
     (
         rrset("ns1.example.", 1, &[vec![192, 0, 2, 2]]),
-        rrsig_set("ns1.example.", &rrsig(1, 2), RFC4034_NS1_SIGNATURE),
+        rrsig_set("ns1.example.", &rrsig(1, 2), RFC4035_NS1_SIGNATURE),
         rrset("example.", 48, &vec![rdata; 20]),
     )
 }
@@ -233,21 +232,21 @@ fn an_rrsig_of_an_unknown_algorithm_is_disregarded_not_a_way_to_insecurity() {
             algorithm: 200,
             ..rrsig(1, 2)
         },
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     );
     let keys = rrset(
         "example.",
         48,
         &[
-            dnskey_rdata(256, 5, RFC4034_ZSK),
-            dnskey_rdata(256, 200, RFC4034_ZSK),
+            dnskey_rdata(256, 5, RFC4035_ZSK),
+            dnskey_rdata(256, 200, RFC4035_ZSK),
         ],
     );
     let result = verify_any(&forged(), &signatures(&[&unknown]), &keys, INCEPTION);
     assert_eq!(result, Err(SigError::NoSignature));
     assert!(!result.unwrap_err().is_unsupported());
     // Beside an RRSIG that is known, the known one decides.
-    let known = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4034_NS1_SIGNATURE);
+    let known = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4035_NS1_SIGNATURE);
     let result = verify_any(
         &forged(),
         &signatures(&[&unknown, &known]),
@@ -275,20 +274,20 @@ fn a_ds_belongs_to_the_parent_and_a_dnskey_to_its_own_zone() {
             signer: "w.example.",
             ..rrsig(43, 2)
         },
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     );
     assert_eq!(
         verify_any(&ds, &signatures(&[&by_child]), &zsk(), INCEPTION),
         Err(SigError::BadSigner)
     );
     // The parent's signature on it passes the checks of the RRSIG, and fails only as a signature.
-    let by_parent = rrsig_set("w.example.", &rrsig(43, 2), RFC4034_NS1_SIGNATURE);
+    let by_parent = rrsig_set("w.example.", &rrsig(43, 2), RFC4035_NS1_SIGNATURE);
     assert_eq!(
         verify_any(&ds, &signatures(&[&by_parent]), &zsk(), INCEPTION),
         Err(SigError::BadSignature { key_tag: 38519 })
     );
-    let dnskey = rrset("w.example.", 48, &[dnskey_rdata(257, 5, RFC4034_ZSK)]);
-    let by_parent = rrsig_set("w.example.", &rrsig(48, 2), RFC4034_NS1_SIGNATURE);
+    let dnskey = rrset("w.example.", 48, &[dnskey_rdata(257, 5, RFC4035_ZSK)]);
+    let by_parent = rrsig_set("w.example.", &rrsig(48, 2), RFC4035_NS1_SIGNATURE);
     assert_eq!(
         verify_any(&dnskey, &signatures(&[&by_parent]), &zsk(), INCEPTION),
         Err(SigError::BadSigner)
@@ -345,13 +344,13 @@ fn fewer_labels_than_the_signer_has_is_invalid() {
 #[test]
 fn the_class_of_the_rrset_signature_and_key_must_be_the_same() {
     let a = rrset("ns1.example.", 1, &[vec![192, 0, 2, 1]]);
-    let sigs = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4034_NS1_SIGNATURE);
+    let sigs = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4035_NS1_SIGNATURE);
     let chaos = rrset_in(3, "ns1.example.", 1, &[vec![192, 0, 2, 1]]);
     assert_eq!(
         verify_any(&chaos, &signatures(&[&sigs]), &zsk(), INCEPTION),
         Err(SigError::NoSignature)
     );
-    let chaos_keys = rrset_in(3, "example.", 48, &[dnskey_rdata(256, 5, RFC4034_ZSK)]);
+    let chaos_keys = rrset_in(3, "example.", 48, &[dnskey_rdata(256, 5, RFC4035_ZSK)]);
     assert_eq!(
         verify_any(&a, &signatures(&[&sigs]), &chaos_keys, INCEPTION),
         Err(SigError::NoKey { key_tag: 38519 })
@@ -362,14 +361,14 @@ fn the_class_of_the_rrset_signature_and_key_must_be_the_same() {
 fn the_error_returned_is_the_one_closest_to_a_success() {
     // A missing key, a window that has ended, a signature that does not verify: the last is the closest, and
     // the order of the RRSIGs does not matter.
-    let bad = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4034_NS1_SIGNATURE);
+    let bad = rrsig_set("ns1.example.", &rrsig(1, 2), RFC4035_NS1_SIGNATURE);
     let nokey = rrsig_set(
         "ns1.example.",
         &Rrsig {
             key_tag: 1,
             ..rrsig(1, 2)
         },
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     );
     for sigs in [signatures(&[&nokey, &bad]), signatures(&[&bad, &nokey])] {
         assert_eq!(
@@ -412,7 +411,7 @@ fn failures_that_cost_no_verification_count_toward_the_cap_too() {
         },
     ] {
         let sets: Vec<RrSet<'static>> = (0..MAX_FAILED + 2)
-            .map(|_| rrsig_set("ns1.example.", &rrsig, RFC4034_NS1_SIGNATURE))
+            .map(|_| rrsig_set("ns1.example.", &rrsig, RFC4035_NS1_SIGNATURE))
             .collect();
         let sigs: Vec<Signature<'_>> = sets.iter().flat_map(Signature::all).collect();
         let mut budget = Budget::default();
@@ -441,7 +440,7 @@ fn rrsigs_without_a_key_do_not_count_toward_the_cap() {
                     key_tag: 1,
                     ..rrsig(1, 2)
                 },
-                RFC4034_NS1_SIGNATURE,
+                RFC4035_NS1_SIGNATURE,
             )
         })
         .collect();

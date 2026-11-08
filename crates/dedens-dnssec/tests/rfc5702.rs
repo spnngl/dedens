@@ -6,13 +6,14 @@
 
 mod common;
 
-use common::{
-    Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE, URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2,
-    URI_MX_SIGNATURE, URI_ZSK, b64, check, dnskey_rdata, rrset, rrsig_set, signed_data,
-};
+use common::{check, rrset, rrsig_set};
 use dedens_dnssec::crypto::{VerifyError, key_tag, supported, verify};
 use dedens_dnssec::rrsig::{RrSet, SigError};
 use dedens_proto::SecAlgorithm;
+use dedens_testkit::dnssec::{
+    Rr, Rrsig, SHA512_KEY, SHA512_SIGNATURE, URI_DNSKEY_SIGNATURE, URI_KSK_1, URI_KSK_2,
+    URI_MX_SIGNATURE, URI_ZSK, b64, dnskey_rdata, signed_data,
+};
 
 const EXAMPLE_NET_A: [u8; 4] = [192, 0, 2, 91];
 // 2000-01-01T00:00:00Z and 2030-01-01T00:00:00Z.
@@ -50,7 +51,7 @@ fn example_net_a_signed(algorithm: u8, key_tag: u16) -> Vec<u8> {
 
 fn uri_mx_signed() -> Vec<u8> {
     let mut rdata = 10_u16.to_be_bytes().to_vec();
-    rdata.extend(common::canonical_name("pechora.icann.org."));
+    rdata.extend(dedens_testkit::dnssec::canonical_name("pechora.icann.org."));
     let rrsig = Rrsig {
         type_covered: 15,
         algorithm: 8,
@@ -376,7 +377,7 @@ fn the_uri_arpa_mx_verifies_as_an_rrset() {
         signer: "uri.arpa.",
     };
     let mut mx = 10_u16.to_be_bytes().to_vec();
-    mx.extend(common::canonical_name("pechora.icann.org."));
+    mx.extend(dedens_testkit::dnssec::canonical_name("pechora.icann.org."));
     let (set, sigs) = (
         rrset("uri.arpa.", 15, &[mx]),
         rrsig_set("uri.arpa.", &rrsig, URI_MX_SIGNATURE),

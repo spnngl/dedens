@@ -5,14 +5,16 @@ mod common;
 #[path = "common/denial.rs"]
 mod support;
 
-use common::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, name, signed_data};
+use common::name;
 use data_encoding::BASE32HEX_NOPAD;
 use dedens_dnssec::crypto::{
     Budget, UnsupportedNsec3Hash, VerifyError, key_tag, nsec3_hash, verify,
 };
 use dedens_dnssec::denial::{self, Fact, MaxIterations, Proof, Unproven};
 use dedens_proto::{Nsec3HashAlgorithm, Question, Record, RecordType, SecAlgorithm, Ttl};
-use support::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard, zone};
+use dedens_testkit::dnssec::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, signed_data};
+use dedens_testkit::zone;
+use support::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard};
 
 const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
 const ITERATIONS: u16 = 12;

@@ -5,10 +5,11 @@
 
 mod common;
 
-use common::{capture, captured_at, names, try_records};
+use common::try_records;
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
 use dedens_proto::{Message, RecordType};
+use dedens_testkit::dnssec::{captured_at, names, response};
 
 /// An `RRset` of a capture and the RRSIG `RRset` at its owner.
 struct Signed {
@@ -40,7 +41,7 @@ impl Signed {
 
 /// The `RRsets` of the answer and authority sections that an RRSIG covers.
 fn signed(name: &str) -> Vec<Signed> {
-    let message: Message<'static> = capture(name);
+    let message: Message<'static> = response(name);
     let sets: Vec<RrSet<'static>> = [&message.answer, &message.authority]
         .into_iter()
         .flat_map(|section| RrSet::group(section))
@@ -67,7 +68,7 @@ fn zone_keys() -> Vec<RrSet<'static>> {
         .iter()
         .filter(|name| name.ends_with("_dnskey") || *name == "root_dnskey")
         .flat_map(|name| {
-            let message = capture(name);
+            let message = response(name);
             RrSet::group(&message.answer)
                 .into_iter()
                 .filter(|set| set.rtype() == RecordType::DNSKEY)
@@ -310,7 +311,7 @@ fn zone(id: &str) -> (Signed, RrSet<'static>) {
         .into_iter()
         .find(|item| item.data.rtype() == RecordType::DNSKEY)
         .expect("signed DNSKEY RRset");
-    let ds = capture(&format!("{id}_ds"));
+    let ds = response(&format!("{id}_ds"));
     let ds = RrSet::group(&ds.answer)
         .into_iter()
         .find(|set| set.rtype() == RecordType::DS)

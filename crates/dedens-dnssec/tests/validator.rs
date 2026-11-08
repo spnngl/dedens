@@ -18,7 +18,8 @@ use dedens_proto::{
 
 mod common;
 
-use common::{capture, captured_at, name, names};
+use common::name;
+use dedens_testkit::dnssec::{self, captured_at, names, response};
 
 /// What the scripted caller can answer: every capture, by the question it answers.
 struct Script(HashMap<(Name<'static>, RecordType), Message<'static>>);
@@ -28,7 +29,7 @@ impl Script {
         Self(
             names()
                 .iter()
-                .map(|id| capture(id))
+                .map(|id| response(id))
                 .filter_map(|message| {
                     let question = message.questions.first()?;
                     Some(((question.name.clone(), question.qtype), message))
@@ -89,7 +90,7 @@ impl Script {
 
     /// The verdict on the capture `id`.
     fn verdict(&self, id: &str) -> Verdict {
-        self.run(&Self::validator(), &capture(id), captured_at())
+        self.run(&Self::validator(), &response(id), captured_at())
     }
 }
 
@@ -210,7 +211,7 @@ fn the_covered_part_of_every_secure_capture_is_as_secure() {
     let script = Script::new();
     let validator = Script::validator();
     for id in SECURE {
-        let response = capture(id);
+        let response = response(id);
         let cut = covered(&response);
         let whole = script.run(&validator, &response, captured_at());
         assert_eq!(script.run(&validator, &cut, captured_at()), whole, "{id}");
@@ -223,7 +224,7 @@ fn the_covered_part_of_every_secure_capture_is_as_secure() {
 /// about is not touched.
 #[test]
 fn what_the_verdict_does_not_cover_is_cut() {
-    let plain = capture("alg8_a");
+    let plain = response("alg8_a");
     let a = plain
         .answer
         .iter()
@@ -270,7 +271,7 @@ fn what_the_verdict_does_not_cover_is_cut() {
 /// DNAME and the answer below it are as they were.
 #[test]
 fn the_cname_a_dname_makes_stays_without_signature() {
-    let response = capture("dname_answer");
+    let response = response("dname_answer");
     let cut = covered(&response);
     assert_eq!(cut.answer, response.answer);
     assert!(
@@ -312,7 +313,7 @@ fn a_reverse_name_of_34_labels_is_secure() {
     let script = Script::new();
     let (verdict, asked) = Script::drive(
         &Script::validator(),
-        &capture("ip6_ptr"),
+        &response("ip6_ptr"),
         captured_at(),
         |ask| script.answer(ask),
     );
@@ -406,7 +407,7 @@ fn an_answer_is_validated_from_the_root_down() {
     let script = Script::new();
     let (verdict, asked) = Script::drive(
         &Script::validator(),
-        &capture("alg8_a"),
+        &response("alg8_a"),
         captured_at(),
         |ask| script.answer(ask),
     );
@@ -428,7 +429,7 @@ fn a_zone_below_an_insecure_one_is_not_asked_for() {
     let script = Script::new();
     let (verdict, asked) = Script::drive(
         &Script::validator(),
-        &capture("cname_to_insecure"),
+        &response("cname_to_insecure"),
         captured_at(),
         |ask| script.answer(ask),
     );
@@ -448,7 +449,7 @@ fn a_zone_below_an_insecure_one_is_not_asked_for() {
 fn an_answer_nobody_gives_is_indeterminate() {
     let verdict = Script::drive(
         &Script::validator(),
-        &capture("alg8_a"),
+        &response("alg8_a"),
         captured_at(),
         |_| None,
     )
@@ -465,7 +466,7 @@ fn a_response_to_another_question_is_no_answer() {
     let wrong = script.answer(&Question::new(name("com"), RecordType::DNSKEY));
     let verdict = Script::drive(
         &Script::validator(),
-        &capture("alg8_a"),
+        &response("alg8_a"),
         captured_at(),
         |_| wrong,
     )
@@ -479,7 +480,7 @@ fn a_response_to_another_question_is_no_answer() {
 #[test]
 fn an_answer_with_another_rcode_is_indeterminate() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.header.rcode = Rcode::SERVFAIL;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(
@@ -495,7 +496,7 @@ const DAY: u32 = 86_400;
 fn an_expired_signature_is_bogus() {
     let script = Script::new();
     let later = captured_at() + 90 * DAY;
-    let verdict = script.run(&Script::validator(), &capture("alg8_a"), later);
+    let verdict = script.run(&Script::validator(), &response("alg8_a"), later);
     assert!(bogus(&verdict, InfoCode::SIGNATURE_EXPIRED), "{verdict:?}");
 }
 
@@ -503,7 +504,7 @@ fn an_expired_signature_is_bogus() {
 fn a_signature_not_yet_valid_is_bogus() {
     let script = Script::new();
     let earlier = captured_at() - 90 * DAY;
-    let verdict = script.run(&Script::validator(), &capture("alg8_a"), earlier);
+    let verdict = script.run(&Script::validator(), &response("alg8_a"), earlier);
     assert!(
         bogus(&verdict, InfoCode::SIGNATURE_NOT_YET_VALID),
         "{verdict:?}"
@@ -513,7 +514,7 @@ fn a_signature_not_yet_valid_is_bogus() {
 #[test]
 fn a_changed_record_is_bogus() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     let record = response
         .answer
         .iter_mut()
@@ -527,7 +528,7 @@ fn a_changed_record_is_bogus() {
 #[test]
 fn a_stripped_signature_is_bogus() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response
         .answer
         .retain(|record| record.rtype() != RecordType::RRSIG);
@@ -539,7 +540,7 @@ fn a_stripped_signature_is_bogus() {
 fn an_unsigned_answer_below_a_secure_zone_is_bogus() {
     // `nlnetlabs.nl` is signed and has no delegation to `www`: an A there with no RRSIG is a forgery.
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response
         .answer
         .retain(|record| record.rtype() != RecordType::RRSIG);
@@ -556,7 +557,7 @@ fn a_wildcard_answer_without_its_proof_is_bogus() {
     // RFC 4035 §5.3.4: the signature alone does not say that no closer name exists.
     let script = Script::new();
     for id in ["wildcard_answer", "wildcard_answer_nsec"] {
-        let mut response = capture(id);
+        let mut response = response(id);
         response.authority.clear();
         let verdict = script.run(&Script::validator(), &response, captured_at());
         assert!(bogus(&verdict, InfoCode::NSEC_MISSING), "{id}: {verdict:?}");
@@ -567,7 +568,7 @@ fn a_wildcard_answer_without_its_proof_is_bogus() {
 fn a_denial_without_its_records_is_bogus() {
     let script = Script::new();
     for id in ["nxdomain_nsec", "nodata_nsec3", "nxdomain_nsec3"] {
-        let mut response = capture(id);
+        let mut response = response(id);
         response.authority.clear();
         let verdict = script.run(&Script::validator(), &response, captured_at());
         assert!(bogus(&verdict, InfoCode::NSEC_MISSING), "{id}: {verdict:?}");
@@ -577,7 +578,7 @@ fn a_denial_without_its_records_is_bogus() {
 #[test]
 fn a_name_error_in_a_noerror_response_is_bogus() {
     let script = Script::new();
-    let mut response = capture("nxdomain_nsec");
+    let mut response = response("nxdomain_nsec");
     response.header.rcode = Rcode::NOERROR;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
@@ -586,7 +587,7 @@ fn a_name_error_in_a_noerror_response_is_bogus() {
 #[test]
 fn a_no_data_in_an_nxdomain_response_is_bogus() {
     let script = Script::new();
-    let mut response = capture("nodata_nsec");
+    let mut response = response("nodata_nsec");
     response.header.rcode = Rcode::NXDOMAIN;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
@@ -597,7 +598,7 @@ fn a_no_data_in_an_nxdomain_response_is_bogus() {
 #[test]
 fn an_insecure_delegation_in_an_nxdomain_response_is_bogus_unless_it_is_opt_out() {
     let script = Script::new();
-    let mut response = capture("jm_ds");
+    let mut response = response("jm_ds");
     response.header.rcode = Rcode::NXDOMAIN;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
@@ -614,7 +615,7 @@ fn nsec3_iterations_above_the_limit_are_insecure() {
     let validator = Validator::new(TrustAnchors::root(), limits);
     let verdict = script.run(
         &validator,
-        &capture("nxdomain_nsec3_iterations"),
+        &response("nxdomain_nsec3_iterations"),
         captured_at(),
     );
     assert_eq!(
@@ -635,7 +636,7 @@ fn too_many_questions_are_indeterminate() {
         ..Limits::default()
     };
     let validator = Validator::new(TrustAnchors::root(), limits);
-    let (verdict, asked) = Script::drive(&validator, &capture("alg8_a"), captured_at(), |ask| {
+    let (verdict, asked) = Script::drive(&validator, &response("alg8_a"), captured_at(), |ask| {
         script.answer(ask)
     });
     assert!(
@@ -653,7 +654,7 @@ fn a_name_too_deep_is_indeterminate() {
         ..Limits::default()
     };
     let validator = Validator::new(TrustAnchors::root(), limits);
-    let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
+    let verdict = script.run(&validator, &response("alg8_a"), captured_at());
     assert!(
         matches!(verdict, Verdict::Indeterminate { .. }),
         "{verdict:?}"
@@ -668,7 +669,7 @@ fn an_exhausted_budget_is_indeterminate_not_bogus() {
         ..Limits::default()
     };
     let validator = Validator::new(TrustAnchors::root(), limits);
-    let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
+    let verdict = script.run(&validator, &response("alg8_a"), captured_at());
     assert!(
         matches!(&verdict, Verdict::Indeterminate { ede } if ede.code == InfoCode::DNSSEC_INDETERMINATE),
         "{verdict:?}"
@@ -681,7 +682,7 @@ fn an_exhausted_budget_is_indeterminate_not_bogus() {
 fn a_validation_reports_what_it_cost() {
     let script = Script::new();
     let validator = Script::validator();
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     let question = response.questions.first().expect("a question").clone();
     let mut validation = validator.start(&question, &response, u64::from(captured_at()));
     assert_eq!(validation.cost(), Cost::default());
@@ -705,7 +706,7 @@ fn a_negative_trust_anchor_makes_a_name_insecure() {
     let mut anchors = TrustAnchors::root();
     anchors.add_negative(name("nl"));
     let validator = Validator::new(anchors, Limits::default());
-    let (verdict, asked) = Script::drive(&validator, &capture("alg8_a"), captured_at(), |ask| {
+    let (verdict, asked) = Script::drive(&validator, &response("alg8_a"), captured_at(), |ask| {
         script.answer(ask)
     });
     assert_eq!(
@@ -720,20 +721,20 @@ fn a_negative_trust_anchor_makes_a_name_insecure() {
 #[test]
 fn a_name_with_no_anchor_above_it_is_insecure() {
     let script = Script::new();
-    let nl = capture("nl_ds");
+    let nl = response("nl_ds");
     let text = zone_text(&nl, RecordType::DS);
     let validator = Validator::new(
         TrustAnchors::read(&text).expect("anchors"),
         Limits::default(),
     );
     // Under `nl` the anchor serves, and the answer is secure without a question about the root.
-    let (verdict, asked) = Script::drive(&validator, &capture("alg15_a"), captured_at(), |ask| {
+    let (verdict, asked) = Script::drive(&validator, &response("alg15_a"), captured_at(), |ask| {
         script.answer(ask)
     });
     assert!(secure(&verdict), "{verdict:?}");
     assert_eq!(asked.first().map(String::as_str), Some("nl. DNSKEY"));
     // Under `com` none does.
-    let verdict = script.run(&validator, &capture("alg13_a"), captured_at());
+    let verdict = script.run(&validator, &response("alg13_a"), captured_at());
     assert_eq!(
         verdict,
         Verdict::Insecure {
@@ -745,20 +746,20 @@ fn a_name_with_no_anchor_above_it_is_insecure() {
 #[test]
 fn an_anchor_of_keys_serves_as_one_of_ds_records() {
     let script = Script::new();
-    let root = capture("root_dnskey");
+    let root = response("root_dnskey");
     let text = zone_text(&root, RecordType::DNSKEY);
     let validator = Validator::new(
         TrustAnchors::read(&text).expect("anchors"),
         Limits::default(),
     );
-    let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
+    let verdict = script.run(&validator, &response("alg8_a"), captured_at());
     assert!(secure(&verdict), "{verdict:?}");
 }
 
 #[test]
 fn asking_again_repeats_and_answering_unasked_does_nothing() {
     let validator = Script::validator();
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     let question = response.questions.first().expect("a question");
     let mut validation = validator.start(question, &response, u64::from(captured_at()));
     validation.answer(None);
@@ -771,7 +772,7 @@ fn asking_again_repeats_and_answering_unasked_does_nothing() {
 fn nxname_is_not_a_type_to_ask_for() {
     let validator = Script::validator();
     let question = Question::new(name("example.nl"), RecordType::NXNAME);
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.questions = vec![question.clone()];
     let mut validation = validator.start(&question, &response, u64::from(captured_at()));
     let Next::Done(verdict) = validation.step() else {
@@ -825,7 +826,7 @@ fn a_forged_referral_is_no_secure_answer() {
     // No answer, and an NS record of the root in the authority section: nothing signs it, and nothing denies
     // the A of a name that exists.
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.answer.clear();
     response.authority = vec![ns(".", "a.root-servers.net")];
     let verdict = script.run(&Script::validator(), &response, captured_at());
@@ -841,7 +842,7 @@ fn a_real_referral_is_no_final_answer() {
 }
 
 fn referral(script: &Script, id: &str) -> Verdict {
-    let response = capture(id);
+    let response = response(id);
     let question = response.questions.first().expect("a question").clone();
     let mut validation =
         Script::validator().start_referral(&question, &response, u64::from(captured_at()));
@@ -879,7 +880,7 @@ fn a_referral_is_judged_by_its_delegation() {
 fn a_referral_cannot_claim_no_ds_for_a_signed_zone() {
     // The DS of `nlnetlabs.nl` taken out of the referral, which the parent signs: bogus, not insecure.
     let script = Script::new();
-    let mut response = capture("referral_signed");
+    let mut response = response("referral_signed");
     response
         .authority
         .retain(|record| !matches!(record.rtype(), RecordType::DS | RecordType::RRSIG));
@@ -897,7 +898,7 @@ fn a_referral_cannot_claim_no_ds_for_a_signed_zone() {
 
 #[test]
 fn a_response_that_is_no_referral_is_not_judged_as_one() {
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     let question = response.questions.first().expect("a question").clone();
     let mut validation =
         Script::validator().start_referral(&question, &response, u64::from(captured_at()));
@@ -913,7 +914,7 @@ fn the_signer_of_a_signature_does_not_pick_the_keys() {
     // and the answer is bogus, not insecure for lack of an anchor at `.`.
     let script = Script::new();
     let validator = nl_validator(&script);
-    let mut response = capture("alg15_a");
+    let mut response = response("alg15_a");
     with_rrsigs(&mut response, |rrsig| rrsig.signer = Name::root());
     let verdict = script.run(&validator, &response, captured_at());
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
@@ -924,7 +925,7 @@ fn the_signer_of_a_signature_does_not_pick_the_keys() {
 #[test]
 fn a_signature_of_an_ancestor_zone_is_no_signature_of_the_zone() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     with_rrsigs(&mut response, |rrsig| rrsig.signer = name("nl"));
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
@@ -933,7 +934,7 @@ fn a_signature_of_an_ancestor_zone_is_no_signature_of_the_zone() {
 #[test]
 fn a_junk_signature_before_the_real_one_does_not_make_the_answer_bogus() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     let junk = response
         .answer
         .iter()
@@ -962,7 +963,7 @@ fn a_junk_signature_before_the_real_one_does_not_make_the_answer_bogus() {
 #[test]
 fn an_answer_with_the_rcode_of_a_name_error_is_bogus() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.header.rcode = Rcode::NXDOMAIN;
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
@@ -971,7 +972,7 @@ fn an_answer_with_the_rcode_of_a_name_error_is_bogus() {
 #[test]
 fn an_unsigned_record_in_the_authority_section_of_a_secure_zone_is_bogus() {
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.authority.push(ns("nlnetlabs.nl", "evil.example"));
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(bogus(&verdict, InfoCode::RRSIGS_MISSING), "{verdict:?}");
@@ -980,7 +981,7 @@ fn an_unsigned_record_in_the_authority_section_of_a_secure_zone_is_bogus() {
 #[test]
 fn an_unsigned_record_in_the_authority_section_below_an_insecure_zone_changes_nothing() {
     let script = Script::new();
-    let mut response = capture("google_com_a");
+    let mut response = response("google_com_a");
     response.authority.push(ns("google.com", "evil.example"));
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert_eq!(
@@ -994,7 +995,7 @@ fn an_unsigned_record_in_the_authority_section_below_an_insecure_zone_changes_no
 #[test]
 fn a_cname_chain_that_stops_short_is_incomplete() {
     let script = Script::new();
-    let mut response = capture("cname_cross_zone");
+    let mut response = response("cname_cross_zone");
     let target = response
         .answer
         .iter()
@@ -1022,7 +1023,7 @@ fn is_rrsig_of(record: &Record<'_>, rtype: RecordType) -> bool {
 fn a_cname_hop_taken_out_is_bogus() {
     // The A of the target, at the name asked: the chain has no first hop, and nothing denies the name.
     let script = Script::new();
-    let mut response = capture("cname_cross_zone");
+    let mut response = response("cname_cross_zone");
     response.answer.retain(|record| {
         !matches!(record.rtype(), RecordType::CNAME) && !is_rrsig_of(record, RecordType::CNAME)
     });
@@ -1033,7 +1034,7 @@ fn a_cname_hop_taken_out_is_bogus() {
 #[test]
 fn a_cname_with_another_target_is_bogus() {
     let script = Script::new();
-    let mut response = capture("cname_cross_zone");
+    let mut response = response("cname_cross_zone");
     for record in &mut response.answer {
         if record.rtype() == RecordType::CNAME {
             record.rdata = WireRdata::new(&RData::Cname(name("evil.example")));
@@ -1046,7 +1047,7 @@ fn a_cname_with_another_target_is_bogus() {
 #[test]
 fn a_dname_with_another_target_is_bogus() {
     let script = Script::new();
-    let mut response = capture("dname_answer");
+    let mut response = response("dname_answer");
     for record in &mut response.answer {
         if record.rtype() == RecordType::DNAME {
             record.rdata = WireRdata::new(&RData::Opaque(
@@ -1067,7 +1068,7 @@ fn a_dname_with_another_target_is_bogus() {
 #[test]
 fn a_second_record_in_the_synthesized_cname_is_bogus() {
     let script = Script::new();
-    let mut response = capture("dname_answer");
+    let mut response = response("dname_answer");
     let at = response
         .answer
         .iter()
@@ -1091,7 +1092,7 @@ fn a_second_record_in_the_synthesized_cname_is_bogus() {
 fn a_cname_below_a_dname_that_is_gone_is_bogus() {
     // The synthesized CNAME is unsigned by rule only where a DNAME explains it (RFC 6672 §5.3.3).
     let script = Script::new();
-    let mut response = capture("dname_answer");
+    let mut response = response("dname_answer");
     response.answer.retain(|record| {
         !matches!(record.rtype(), RecordType::DNAME) && !is_rrsig_of(record, RecordType::DNAME)
     });
@@ -1102,11 +1103,11 @@ fn a_cname_below_a_dname_that_is_gone_is_bogus() {
 #[test]
 fn a_ds_taken_out_of_a_signed_delegation_is_bogus_not_insecure() {
     let script = Script::new();
-    let mut ds = capture("nl_ds");
+    let mut ds = response("nl_ds");
     ds.answer.clear();
     let verdict = Script::drive(
         &Script::validator(),
-        &capture("alg15_a"),
+        &response("alg15_a"),
         captured_at(),
         |ask| {
             if ask.name == name("nl") && ask.qtype == RecordType::DS {
@@ -1123,7 +1124,7 @@ fn a_ds_taken_out_of_a_signed_delegation_is_bogus_not_insecure() {
 #[test]
 fn a_denial_of_ds_without_signatures_is_bogus() {
     let script = Script::new();
-    let mut response = capture("jm_ds");
+    let mut response = response("jm_ds");
     response
         .authority
         .retain(|record| record.rtype() != RecordType::RRSIG);
@@ -1135,7 +1136,7 @@ fn a_denial_of_ds_without_signatures_is_bogus() {
 fn a_denial_of_ds_by_the_child_is_no_denial_by_the_parent() {
     // The NSEC of `nlnetlabs.nl` has SOA in its bitmap: it is the zone's own, and says nothing of a delegation.
     let script = Script::new();
-    let mut response = capture("nodata_nsec");
+    let mut response = response("nodata_nsec");
     response.questions = vec![Question::new(name("nlnetlabs.nl"), RecordType::DS)];
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
@@ -1145,7 +1146,7 @@ fn a_denial_of_ds_by_the_child_is_no_denial_by_the_parent() {
 fn a_denial_with_the_ds_bit_in_its_bitmap_is_bogus() {
     // `jm`'s NSEC with DS added to its bitmap: the signature no longer fits, and the record is no proof.
     let script = Script::new();
-    let mut response = capture("jm_ds");
+    let mut response = response("jm_ds");
     for record in &mut response.authority {
         if let RData::Nsec(nsec) = record.data() {
             let types = nsec.types.types().chain([RecordType::DS]);
@@ -1192,7 +1193,7 @@ fn a_response_in_mixed_case_is_as_secure_as_one_in_lowercase() {
         "wildcard_answer",
         "dname_answer",
     ] {
-        let mut response = capture(id);
+        let mut response = response(id);
         for question in &mut response.questions {
             question.name = mangled(&question.name);
         }
@@ -1207,7 +1208,7 @@ fn a_response_in_mixed_case_is_as_secure_as_one_in_lowercase() {
 #[test]
 fn a_response_to_another_question_is_indeterminate_at_once() {
     let validator = Script::validator();
-    let response = capture("alg8_a");
+    let response = response("alg8_a");
     let asked = [
         Question::new(name("example.nl"), RecordType::A),
         Question::new(name("nlnetlabs.nl"), RecordType::AAAA),
@@ -1236,7 +1237,7 @@ fn a_response_to_another_question_is_indeterminate_at_once() {
 #[test]
 fn a_truncated_response_is_indeterminate() {
     let validator = Script::validator();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.header.flags = response.header.flags.with(Flags::TC);
     let question = response.questions.first().expect("a question").clone();
     let mut validation = validator.start(&question, &response, u64::from(captured_at()));
@@ -1249,11 +1250,11 @@ fn a_truncated_response_is_indeterminate() {
 #[test]
 fn a_truncated_answer_to_a_question_of_the_validator_is_indeterminate_not_bogus() {
     let script = Script::new();
-    let mut truncated = capture("nl_dnskey");
+    let mut truncated = response("nl_dnskey");
     truncated.header.flags = truncated.header.flags.with(Flags::TC);
     let verdict = Script::drive(
         &Script::validator(),
-        &capture("alg15_a"),
+        &response("alg15_a"),
         captured_at(),
         |ask| {
             if ask.name == name("nl") && ask.qtype == RecordType::DNSKEY {
@@ -1281,7 +1282,7 @@ fn the_depth_is_counted_from_the_anchor_whatever_the_order() {
         };
         let validator = Validator::new(TrustAnchors::root(), limits);
         for id in ["alg8_a", "nodata_nsec"] {
-            let verdict = script.run(&validator, &capture(id), captured_at());
+            let verdict = script.run(&validator, &response(id), captured_at());
             assert_eq!(
                 secure(&verdict),
                 secure_wanted,
@@ -1308,7 +1309,7 @@ fn the_depth_is_counted_from_the_anchor_whatever_the_order() {
         RecordType::DS,
     );
     let validator = Validator::new(TrustAnchors::read(&text).expect("anchors"), limits);
-    let verdict = script.run(&validator, &capture("alg8_a"), captured_at());
+    let verdict = script.run(&validator, &response("alg8_a"), captured_at());
     assert!(secure(&verdict), "{verdict:?}");
 }
 
@@ -1326,7 +1327,7 @@ fn the_walk_asks_the_ds_of_an_empty_non_terminal_a_cname_and_a_wildcard() {
         ("wildcard_answer_nsec", "wildcard-test.internet.nl. DS"),
     ] {
         let (verdict, asked) =
-            Script::drive(&Script::validator(), &capture(id), captured_at(), |ask| {
+            Script::drive(&Script::validator(), &response(id), captured_at(), |ask| {
                 script.answer(ask)
             });
         assert!(secure(&verdict), "{id}: {verdict:?}");
@@ -1342,11 +1343,11 @@ fn a_referral_to_a_zone_of_an_unsupported_algorithm_is_unsigned() {
     // `ed448.nl` has a DS the parent signs, of an algorithm `ring` lacks (D71): a delegation that is signed,
     // but to a zone this validator cannot validate (RFC 4035 §5.2, RFC 6840 §5.2).
     let script = Script::new();
-    let mut response = capture("alg8_a");
+    let mut response = response("alg8_a");
     response.questions = vec![Question::new(name("www.ed448.nl"), RecordType::A)];
     response.header.flags = response.header.flags.without(Flags::AA);
     response.answer.clear();
-    response.authority = capture("ed448_nl_ds").answer;
+    response.authority = dnssec::response("ed448_nl_ds").answer;
     response.authority.push(ns("ed448.nl", "ns1.ed448.nl"));
     let question = response.questions.first().expect("a question").clone();
     let mut validation =
@@ -1374,7 +1375,7 @@ fn records_that_are_not_part_of_the_answer_are_neither_walked_nor_checked() {
     // asked for them, and they change no verdict: the caller strips them from what it hands on.
     let script = Script::new();
     let validator = Script::validator();
-    let plain = capture("alg8_a");
+    let plain = response("alg8_a");
     let (verdict, asked) =
         Script::drive(&validator, &plain, captured_at(), |ask| script.answer(ask));
     let mut response = plain.clone();
@@ -1407,16 +1408,20 @@ fn proofs_of_two_zones_in_one_response_are_each_checked_by_their_zone() {
     // The DNAME of `sidnlabs.nl` with the AAAA it leads to in `example.nl`, and a proof from each zone: the
     // NSEC3 records of the one are not checked with the keys of the other (D75).
     let script = Script::new();
-    let mut response = capture("dname_answer");
-    response.authority.extend(capture("ent_nsec3").authority);
+    let mut response = response("dname_answer");
     response
         .authority
-        .extend(capture("leaf_www_example_nl_ds").authority);
+        .extend(dnssec::response("ent_nsec3").authority);
+    response
+        .authority
+        .extend(dnssec::response("leaf_www_example_nl_ds").authority);
     let verdict = script.run(&Script::validator(), &response, captured_at());
     assert!(secure(&verdict), "{verdict:?}");
     // And a proof of neither zone is still forged data: bogus.
-    let mut other = capture("dname_answer");
-    other.authority.extend(capture("nxdomain_nsec3").authority);
+    let mut other = dnssec::response("dname_answer");
+    other
+        .authority
+        .extend(dnssec::response("nxdomain_nsec3").authority);
     let verdict = script.run(&Script::validator(), &other, captured_at());
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
 }
@@ -1438,7 +1443,7 @@ fn drive_capture(
     id: &str,
     now: u32,
 ) -> (Verdict, Vec<String>) {
-    Script::drive(validator, &capture(id), now, |ask| script.answer(ask))
+    Script::drive(validator, &response(id), now, |ask| script.answer(ask))
 }
 
 #[test]
@@ -1528,7 +1533,7 @@ fn an_answer_nobody_gave_is_not_kept() {
             .then(|| script.answer(ask))
             .flatten()
     };
-    let (verdict, _) = Script::drive(&validator, &capture("alg8_a"), captured_at(), silent);
+    let (verdict, _) = Script::drive(&validator, &response("alg8_a"), captured_at(), silent);
     assert!(
         matches!(verdict, Verdict::Indeterminate { .. }),
         "{verdict:?}"
@@ -1602,7 +1607,7 @@ fn the_cost_limits_still_bound_a_validation_under_a_bogus_zone() {
     let (script, validator) = cached();
     // The first fills the cache with the keys of `cz`, which the others find.
     drive_capture(&script, &validator, "bogus_expired", captured_at());
-    let response = capture("bogus_expired");
+    let response = response("bogus_expired");
     let question = response.questions.first().expect("a question").clone();
     for _ in 0..5 {
         let mut validation = validator.start(&question, &response, u64::from(captured_at()));
@@ -1622,11 +1627,11 @@ fn the_cost_limits_still_bound_a_validation_under_a_bogus_zone() {
 #[test]
 fn a_forged_ds_in_one_validation_poisons_no_other() {
     let (script, validator) = cached();
-    let mut forged = capture("nl_ds");
+    let mut forged = response("nl_ds");
     with_rrsigs(&mut forged, |rrsig| {
         rrsig.key_tag = rrsig.key_tag.wrapping_add(1);
     });
-    let (verdict, _) = Script::drive(&validator, &capture("alg8_a"), captured_at(), |ask| {
+    let (verdict, _) = Script::drive(&validator, &response("alg8_a"), captured_at(), |ask| {
         if ask.name == name("nl") && ask.qtype == RecordType::DS {
             Some(&forged)
         } else {
@@ -1679,7 +1684,7 @@ fn with_nl_keys<'s>(
 
 /// A signature of `nl`'s keys that no longer checks: the TTL it signed is not the one it is given.
 fn bad_signature_of_nl_keys() -> Message<'static> {
-    let mut keys = capture("nl_dnskey");
+    let mut keys = response("nl_dnskey");
     with_rrsigs(&mut keys, |rrsig| rrsig.original_ttl += 1);
     keys
 }
@@ -1689,7 +1694,7 @@ fn a_dnskey_answer_without_signatures_given_to_start_is_never_kept() {
     // `start` takes its response as the answer to its own question: a DNSKEY answer fetched without DO is no
     // proof about `nl`, and must not make `nl` bogus for the validations after it (D86, D92).
     let (script, validator) = cached();
-    let mut seeded = capture("nl_dnskey");
+    let mut seeded = response("nl_dnskey");
     seeded
         .answer
         .retain(|record| record.rtype() != RecordType::RRSIG);
@@ -1717,22 +1722,22 @@ fn a_dnskey_answer_that_proves_nothing_is_never_kept() {
     // An empty answer, a lame server or a replay says nothing lasting of the zone: bogus for this validation,
     // asked again by the next (D86, D92).
     let (script, validator) = cached();
-    let mut empty = capture("nl_dnskey");
+    let mut empty = response("nl_dnskey");
     empty.answer.clear();
     let (verdict, _) = Script::drive(
         &validator,
-        &capture("alg8_a"),
+        &response("alg8_a"),
         captured_at(),
         with_nl_keys(&script, &empty),
     );
     assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
-    let mut unsigned = capture("nl_dnskey");
+    let mut unsigned = response("nl_dnskey");
     unsigned
         .answer
         .retain(|record| record.rtype() != RecordType::RRSIG);
     let (verdict, _) = Script::drive(
         &validator,
-        &capture("alg8_a"),
+        &response("alg8_a"),
         captured_at(),
         with_nl_keys(&script, &unsigned),
     );
@@ -1751,7 +1756,7 @@ fn a_failure_an_answerer_can_force_is_the_validation_it_lied_to_and_no_other() {
     let forged = bad_signature_of_nl_keys();
     let (first, _) = Script::drive(
         &validator,
-        &capture("alg8_a"),
+        &response("alg8_a"),
         at,
         with_nl_keys(&script, &forged),
     );

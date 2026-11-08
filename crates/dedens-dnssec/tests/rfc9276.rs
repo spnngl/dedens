@@ -9,7 +9,8 @@ use dedens_dnssec::crypto::{Budget, BudgetExhausted, Nsec3Blocks, Verifications}
 use dedens_dnssec::denial::{self, MaxIterations, Unproven};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Nsec3HashAlgorithm, Question, RecordType};
-use support::{capture, nsec3_with, pick, prove, zone};
+use dedens_testkit::zone;
+use support::{capture, nsec3_with, pick, prove};
 
 /// The captured NSEC3 name error of `nonexistent-xyz123.dev.`: 1 iteration.
 fn iterating() -> (Question<'static>, Vec<dedens_proto::Record<'static>>) {

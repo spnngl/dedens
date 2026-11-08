@@ -7,7 +7,8 @@ mod support;
 
 use dedens_dnssec::denial::Fact;
 use dedens_proto::{Record, RecordType, Ttl};
-use support::{pick, prove, prove_wildcard, zone};
+use dedens_testkit::zone;
+use support::{pick, prove, prove_wildcard};
 
 const APEX: &str = "example.";
 

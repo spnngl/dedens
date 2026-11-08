@@ -3,15 +3,15 @@
 
 mod common;
 
-use common::{
-    DSKEY, RFC4034_NS1_SIGNATURE, RFC4034_ZSK, Rr, Rrsig, b64, canonical_name, check, dnskey_rdata,
-    name, rrset, rrsig_set, signed_data,
-};
+use common::{DSKEY, check, name, rrset, rrsig_set};
 use dedens_dnssec::crypto::{
     Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
 };
 use dedens_dnssec::rrsig::{self, Key, MAX_FAILED, RrSet, SigError, Signature};
 use dedens_proto::{DigestType, MAX_LABEL_LEN, SecAlgorithm};
+use dedens_testkit::dnssec::{
+    RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rr, Rrsig, b64, canonical_name, dnskey_rdata, signed_data,
+};
 use dedens_testkit::hex;
 
 const KSK: &str = "AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXl
@@ -54,7 +54,7 @@ fn ns1_signed(algorithm: u8) -> Vec<u8> {
 }
 
 fn dnskey_signed(algorithm: u8) -> Vec<u8> {
-    let rrset = [dnskey_rdata(256, 5, RFC4034_ZSK), dnskey_rdata(257, 5, KSK)]
+    let rrset = [dnskey_rdata(256, 5, RFC4035_ZSK), dnskey_rdata(257, 5, KSK)]
         .into_iter()
         .map(|rdata| Rr {
             owner: "example.",
@@ -68,7 +68,7 @@ fn dnskey_signed(algorithm: u8) -> Vec<u8> {
 fn key_tags_are_the_rfcs() {
     // §5.4: "key id = 60485"; RFC 4035 Appendix A: the tags in the RRSIGs.
     assert_eq!(key_tag(&dnskey_rdata(256, 5, DSKEY)), 60485);
-    assert_eq!(key_tag(&dnskey_rdata(256, 5, RFC4034_ZSK)), 38519);
+    assert_eq!(key_tag(&dnskey_rdata(256, 5, RFC4035_ZSK)), 38519);
     assert_eq!(key_tag(&dnskey_rdata(257, 5, KSK)), 9465);
 }
 
@@ -130,8 +130,8 @@ fn ds_digest_types_other_than_sha1_sha256_sha384_are_unsupported() {
 #[test]
 fn rsasha1_example_signature_verifies_under_algorithms_5_and_7() {
     // RFC 4035 Appendix A, signed under 5; 7 verifies as 5 does (RFC 5155 §2), whatever the RRSIG's field says.
-    let key = b64(RFC4034_ZSK);
-    let signature = b64(RFC4034_NS1_SIGNATURE);
+    let key = b64(RFC4035_ZSK);
+    let signature = b64(RFC4035_NS1_SIGNATURE);
     let signed = ns1_signed(5);
     for algorithm in [SecAlgorithm::RSASHA1, SecAlgorithm::RSASHA1_NSEC3_SHA1] {
         assert_eq!(
@@ -144,7 +144,7 @@ fn rsasha1_example_signature_verifies_under_algorithms_5_and_7() {
 
 #[test]
 fn rsasha1_dnskey_rrset_verifies_in_canonical_order() {
-    // The `RRset` sorts by RDATA (§6.3): the RFC4034_ZSK (flags 256) before the KSK (257).
+    // The `RRset` sorts by RDATA (§6.3): the RFC4035_ZSK (flags 256) before the KSK (257).
     let signed = dnskey_signed(5);
     assert_eq!(
         verify(
@@ -159,8 +159,8 @@ fn rsasha1_dnskey_rrset_verifies_in_canonical_order() {
 
 #[test]
 fn rsasha1_example_does_not_verify_after_a_change() {
-    let key = b64(RFC4034_ZSK);
-    let signature = b64(RFC4034_NS1_SIGNATURE);
+    let key = b64(RFC4035_ZSK);
+    let signature = b64(RFC4035_NS1_SIGNATURE);
     let mut signed = ns1_signed(5);
     // The TTL in the RRSIG RDATA, 3600 → 3601.
     *signed.get_mut(7).expect("TTL") ^= 1;
@@ -202,12 +202,12 @@ fn appendix_a() -> (RrSet<'static>, RrSet<'static>, RrSet<'static>) {
         rrsig_set(
             "ns1.example.",
             &rrsig(1, 5, 2, 38519),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         ),
         rrset(
             "example.",
             48,
-            &[dnskey_rdata(256, 5, RFC4034_ZSK), dnskey_rdata(257, 5, KSK)],
+            &[dnskey_rdata(256, 5, RFC4035_ZSK), dnskey_rdata(257, 5, KSK)],
         ),
     )
 }
@@ -337,14 +337,14 @@ fn rrsig_fields_must_match_the_rrset_and_the_key() {
     let wrong_zone = rrsig_set(
         "ns1.example.org.",
         &rrsig(1, 5, 3, 38519),
-        RFC4034_NS1_SIGNATURE,
+        RFC4035_NS1_SIGNATURE,
     );
     assert_eq!(
         check(&elsewhere, &wrong_zone, &keys, INCEPTION),
         Err(SigError::BadSigner)
     );
     // A key tag no DNSKEY has.
-    let no_key = rrsig_set("ns1.example.", &rrsig(1, 5, 2, 1), RFC4034_NS1_SIGNATURE);
+    let no_key = rrsig_set("ns1.example.", &rrsig(1, 5, 2, 1), RFC4035_NS1_SIGNATURE);
     assert_eq!(
         check(&a, &no_key, &keys, INCEPTION),
         Err(SigError::NoKey { key_tag: 1 })
@@ -361,7 +361,7 @@ fn a_window_that_ends_before_it_starts_is_its_own_error() {
     let (a, _, keys) = appendix_a();
     let mut sig = rrsig(1, 5, 2, 38519);
     (sig.inception, sig.expiration) = (EXPIRATION, INCEPTION);
-    let sigs = rrsig_set("ns1.example.", &sig, RFC4034_NS1_SIGNATURE);
+    let sigs = rrsig_set("ns1.example.", &sig, RFC4035_NS1_SIGNATURE);
     assert_eq!(
         check(&a, &sigs, &keys, INCEPTION),
         Err(SigError::ExpiredBeforeValid { key_tag: 38519 })
@@ -375,7 +375,7 @@ fn the_window_wraps_in_serial_arithmetic() {
     let (a, _, keys) = appendix_a();
     let mut sig = rrsig(1, 5, 2, 38519);
     (sig.inception, sig.expiration) = (u32::MAX - 9, 5);
-    let sigs = rrsig_set("ns1.example.", &sig, RFC4034_NS1_SIGNATURE);
+    let sigs = rrsig_set("ns1.example.", &sig, RFC4035_NS1_SIGNATURE);
     assert_eq!(
         check(&a, &sigs, &keys, 0),
         Err(SigError::BadSignature { key_tag: 38519 })
@@ -393,9 +393,9 @@ fn the_window_wraps_in_serial_arithmetic() {
 #[test]
 fn a_key_signs_only_with_the_zone_bit_and_without_revoke() {
     let (a, sigs, _) = appendix_a();
-    let zsk = |flags| rrset("example.", 48, &[dnskey_rdata(flags, 5, RFC4034_ZSK)]);
+    let zsk = |flags| rrset("example.", 48, &[dnskey_rdata(flags, 5, RFC4035_ZSK)]);
     // The flags are in the key tag: the RRSIG names the tag the changed key has.
-    let tag = |flags| key_tag(&dnskey_rdata(flags, 5, RFC4034_ZSK));
+    let tag = |flags| key_tag(&dnskey_rdata(flags, 5, RFC4035_ZSK));
     for (flags, expected) in [
         (0, SigError::NotZoneKey { key_tag: tag(0) }),
         (
@@ -408,7 +408,7 @@ fn a_key_signs_only_with_the_zone_bit_and_without_revoke() {
         let sigs = rrsig_set(
             "ns1.example.",
             &rrsig(1, 5, 2, tag(flags)),
-            RFC4034_NS1_SIGNATURE,
+            RFC4035_NS1_SIGNATURE,
         );
         assert_eq!(check(&a, &sigs, &zsk(flags), INCEPTION), Err(expected));
     }
@@ -488,7 +488,7 @@ fn a_sha1_ds_is_ignored_only_beside_a_stronger_digest_of_its_own_key() {
     let (_, _, keys) = appendix_a();
     let sigs = rrsig_set("example.", &rrsig(48, 5, 1, 9465), DNSKEY_SIGNATURE);
     let ksk = dnskey_rdata(257, 5, KSK);
-    let zsk = dnskey_rdata(256, 5, RFC4034_ZSK);
+    let zsk = dnskey_rdata(256, 5, RFC4035_ZSK);
     let ds = rrset(
         "example.",
         43,

@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use common::{
-    Captures, captured_at, client_query, decode, run_captured, run_captured_from, run_together,
+    captured_at, client_query, decode, run_captured, run_captured_from, run_together,
     validating_under, wire,
 };
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
@@ -19,6 +19,7 @@ use dedens_server::{
     Allowance, Budget, Budgets, Clock, Cookies, Pipeline, RateLimit, RateLimitConfig, Secret,
     Secrets, Validating,
 };
+use dedens_testkit::dnssec::Captures;
 
 /// The second the queries start at, far from 0 so that a clock gone back can be tried.
 const START: u32 = 1_000_000;

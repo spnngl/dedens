@@ -7,13 +7,13 @@
 
 mod common;
 
-use common::{
-    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, check, dnskey_rdata, name, rrset,
-    rrsig_set, signed_data,
-};
+use common::{check, name, rrset, rrsig_set};
 use dedens_dnssec::crypto::{Budget, VerifyError, ds_digest, key_tag, supported, verify};
 use dedens_dnssec::rrsig::{self, Key, SigError, Signature};
 use dedens_proto::{DigestType, SecAlgorithm};
+use dedens_testkit::dnssec::{
+    ED25519_KEY_1, ED25519_SIGNATURE_1, Rr, Rrsig, b64, dnskey_rdata, signed_data,
+};
 use dedens_testkit::hex;
 
 const ED25519_DS_1: &str = "3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79
@@ -36,7 +36,7 @@ const ED448_SIGNATURE: &str = "Nmc0rgGKpr3GKYXcB1JmqqS4NYwhmechvJTqVzt3jR+Qy/lSL
 /// `example.com. 3600 IN MX 10 mail.example.com.` signed with the RFC's windows.
 fn mx_signed(algorithm: u8, key_tag: u16) -> Vec<u8> {
     let mut rdata = 10_u16.to_be_bytes().to_vec();
-    rdata.extend(common::canonical_name("mail.example.com."));
+    rdata.extend(dedens_testkit::dnssec::canonical_name("mail.example.com."));
     let rrsig = Rrsig {
         type_covered: 15,
         algorithm,
@@ -205,7 +205,7 @@ fn the_examples_label_count_is_refused_as_an_rrset() {
         signer: "example.com.",
     };
     let mut mx = 10_u16.to_be_bytes().to_vec();
-    mx.extend(common::canonical_name("mail.example.com."));
+    mx.extend(dedens_testkit::dnssec::canonical_name("mail.example.com."));
     let sigs = rrsig_set("example.com.", &rrsig, ED25519_SIGNATURE_1);
     let keys = rrset("example.com.", 48, &[dnskey_rdata(257, 15, ED25519_KEY_1)]);
     assert_eq!(
@@ -236,7 +236,7 @@ fn an_ed448_key_leaves_the_algorithm_unsupported() {
         signer: "example.com.",
     };
     let mut mx = 10_u16.to_be_bytes().to_vec();
-    mx.extend(common::canonical_name("mail.example.com."));
+    mx.extend(dedens_testkit::dnssec::canonical_name("mail.example.com."));
     let sigs = rrsig_set("example.com.", &rrsig, ED448_SIGNATURE);
     let keys = rrset("example.com.", 48, &[dnskey_rdata(257, 16, ED448_KEY)]);
     let mx_rdata = mx.clone();

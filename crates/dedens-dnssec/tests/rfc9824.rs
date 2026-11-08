@@ -11,7 +11,8 @@ use dedens_dnssec::denial::{self, Fact, MaxIterations, Unproven};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
 use dedens_proto::{Class, Message, Rcode, Record, RecordType};
-use support::{capture, pick, prove, zone};
+use dedens_testkit::zone;
+use support::{capture, pick, prove};
 
 fn denials(message: &Message<'static>) -> Vec<Record<'static>> {
     message

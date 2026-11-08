@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use common::{
-    Captures, captured_at, client_query, forwarder, query_for, run_captured, validating_under, wire,
+    captured_at, client_query, forwarder, query_for, run_captured, validating_under, wire,
 };
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
@@ -18,6 +18,7 @@ use dedens_server::{
     Secret, Secrets, Validating,
 };
 use dedens_testkit::captured;
+use dedens_testkit::dnssec::Captures;
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 /// The counter `dedensd_access_denied_total{action}` counts the queries a denied client sent, by action.
