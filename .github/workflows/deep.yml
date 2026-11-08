@@ -1,6 +1,6 @@
 name: deep
 
-# The slow checks, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
+# The slow checks of each pull request, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
 # reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
 # a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133);
 # `careful` runs the tests on a checked standard library under AddressSanitizer, a job per package (`just careful

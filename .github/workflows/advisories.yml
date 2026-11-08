@@ -1,7 +1,7 @@
 name: advisories
 
-# RustSec advisories published against crates no pull request touches: ci.yml's `deny` job sees them on pull
-# requests only (D141).
+# RustSec advisories published against crates no pull request touches, daily and by hand: ci.yml's `deny` job sees
+# them on pull requests only (D141).
 on:
   schedule:
     - cron: "0 5 * * *"

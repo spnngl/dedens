@@ -1,6 +1,7 @@
 //! An attacker on an upstream server's host: it shares the server's port 53 socket, as turmoil cannot spoof a source
 //! address, so what it sends reaches the resolver as if the server had: the source address of the response, which
-//! RFC 5452 §4.4 and §9.1 have the resolver match, is the one thing it cannot get wrong.
+//! RFC 5452 §4.4 and §9.1 have the resolver match, is the one thing it cannot get wrong. turmoil gives ephemeral
+//! ports in sequence: a scenario whose attacker must guess the resolver's port may as well know it.
 
 use std::fmt;
 use std::net::SocketAddr;
