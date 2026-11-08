@@ -6,7 +6,7 @@
 //! questions of the validator, which are upstream queries like any other (D77). What the sans-IO tests settle is
 //! left to them: the verdict of each capture and its extended error (`crates/dedens-dnssec/tests/validator.rs`,
 //! `crates/dedens-server/tests/dnssec.rs`, RFC 4035 §3.2.3, §5), and the accounts of the allowance and the shares
-//! on a clock the test drives (`dnssec.rs` too). Here the questions and the answers go
+//! on a clock the test drives (`crates/dedens-server/tests/dnssec.rs` too). Here the questions and the answers go
 //! over the simulated network, and what is checked is that the verdicts, the cache and the limits hold when those
 //! packets are lost, late, or never come, and as the time of the run moves.
 //!
@@ -36,8 +36,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-/// The seeds the scripted tests run under, apart from those of `just sim`.
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::SEEDS;
 /// For the scenarios that take a world for each case.
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
@@ -1088,9 +1087,14 @@ fn whatever_the_validators_questions_suffer_the_verdict_stands_or_servfails() {
 #[test]
 fn a_validating_run_replays_in_two_processes() {
     let runs = Cell::new(0);
-    seed::in_two_processes("a_validating_run_replays_in_two_processes", ONE, |seed| {
-        runs.set(runs.get() + 1);
-        trace::digest(&weather_run(seed))
-    });
+    seed::in_two_processes(
+        module_path!(),
+        "a_validating_run_replays_in_two_processes",
+        ONE,
+        |seed| {
+            runs.set(runs.get() + 1);
+            trace::digest(&weather_run(seed))
+        },
+    );
     assert!(runs.get() > 0);
 }

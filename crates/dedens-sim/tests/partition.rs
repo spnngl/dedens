@@ -23,14 +23,11 @@ use dedens_sim::trace::{Event, What};
 use dedens_sim::upstream::Answers;
 use tokio::time::Instant;
 
-/// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{SECOND, SEEDS};
 
 /// Fewer seeds for the scenarios in which a query runs through its timeouts: each costs the most wall time, and the
-/// file keeps to its budget.
+/// module keeps to its budget.
 const FEW: &[u64] = &[0, 7];
-
-const SECOND: Duration = Duration::from_secs(1);
 
 /// How long the resolver waits for each try of a query to an upstream server, and how many tries it makes: two
 /// seconds for each server, so that two cut off ones end a query before the stub's own five-second timeout.

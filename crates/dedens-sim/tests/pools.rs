@@ -26,7 +26,7 @@ use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{SECOND, SEEDS};
 
 /// Seeds for the scenarios with TLS: a handshake is the slowest thing the simulation does.
 const FEW: &[u64] = &[0, 7];
@@ -35,8 +35,6 @@ const FEW: &[u64] = &[0, 7];
 const ONE: &[u64] = &[0];
 
 const MS: Duration = Duration::from_millis(1);
-
-const SECOND: Duration = Duration::from_secs(1);
 
 /// The name the server's certificate holds.
 const NAME: &str = "dns.example";
@@ -139,10 +137,15 @@ fn dot_queries_share_one_connection() {
 #[test]
 fn a_dot_run_replays_in_two_processes() {
     let runs = Cell::new(0);
-    seed::in_two_processes("a_dot_run_replays_in_two_processes", FEW, |seed| {
-        runs.set(runs.get() + 1);
-        trace::digest(&dot(seed).0)
-    });
+    seed::in_two_processes(
+        module_path!(),
+        "a_dot_run_replays_in_two_processes",
+        FEW,
+        |seed| {
+            runs.set(runs.get() + 1);
+            trace::digest(&dot(seed).0)
+        },
+    );
     assert!(runs.get() > 0);
 }
 

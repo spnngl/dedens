@@ -28,6 +28,8 @@ seeded [turmoil](https://docs.rs/turmoil) network. Test-only, `publish = false`;
 - `src/trace.rs`: `Trace`, `Event`, `What`, `digest`: what the hosts did, in order, for assertions and for comparing
   runs.
 - `src/port.rs`, `src/framing.rs`: port 53 over UDP and TCP with its tasks; the 2-byte TCP framing.
+- `tests/tests.rs`: one test binary, a module per family (D162); `tests/util.rs` the seeds of `just check` and the
+  stub's and forward stage's timeouts the families share.
 - `tests/baseline.rs`: perfect network, then each fault and the attacker once, then the seed picking the faults.
 - `tests/partition.rs`: upstream servers and clients cut off, healed and held; the seed cuts and heals links.
 - `tests/replay.rs`: one seed in two processes gives one trace.
@@ -93,9 +95,10 @@ Rules for a driver and a scenario:
 - A scenario that needs something the driver lacks adds it to `src/` here, small, rather than a copy in `tests/`.
 - A `HashMap` or a clock in the driver would break replay: `BTreeMap`, and `tokio::time` only. Stages that hash with a
   per-process seed (rate limits, budgets, the blocklist) and the validator's hash maps are D133's determinism list: a
-  family that adds one calls `seed::in_two_processes` from its own file, with a scenario that uses it.
+  family that adds one calls `seed::in_two_processes(module_path!(), ..)` from its own module, with a scenario that
+  uses it.
 
-Families of tests, each in its own `tests/<family>.rs`: scripted tests under fixed seeds, which `just check` runs in
-under 2 s for the family (this crate under 10 s); one property test where the seed picks the faults, which `just sim`
-runs under many random seeds; and one `seed::in_two_processes` test. A failing seed becomes a fixed seed of the
-scripted tests, with a comment naming what it caught.
+Families of tests, each a module `tests/<family>.rs` of the one binary: scripted tests under fixed seeds, which
+`just check` runs in under 2 s for the module (this crate under 10 s); one property test where the seed picks the
+faults, which `just sim` runs under many random seeds; and one `seed::in_two_processes` test. A failing seed becomes
+a fixed seed of the scripted tests, with a comment naming what it caught.

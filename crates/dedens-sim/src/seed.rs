@@ -104,8 +104,9 @@ fn digest_in(output: &str) -> Option<u64> {
 /// and in a new process of the test binary, and compares. What the cores draw per process (hash seeds, counters)
 /// must not show in a trace.
 ///
-/// Call it from a test named `test`, alone in its function: the second process runs that test, and `in_two_processes`
-/// then prints the digest of the seed in `DEDENS_SIM_PRINT_DIGEST` and returns instead of spawning.
+/// Call it from a test named `test`, alone in its function, with the `module_path!()` of that function: the second
+/// process runs that test, and `in_two_processes` then prints the digest of the seed in `DEDENS_SIM_PRINT_DIGEST` and
+/// returns instead of spawning.
 ///
 /// # Panics
 ///
@@ -114,16 +115,17 @@ fn digest_in(output: &str) -> Option<u64> {
     clippy::print_stdout,
     reason = "the first process reads the digest on the standard output of the second"
 )]
-pub fn in_two_processes(test: &str, fixed: &[u64], digest: impl Fn(Seed) -> u64) {
+pub fn in_two_processes(module: &str, test: &str, fixed: &[u64], digest: impl Fn(Seed) -> u64) {
     if let Ok(seed) = std::env::var(CHILD_VAR) {
         let seed = Seed(seed.trim().parse().expect("a seed"));
         println!("{DIGEST_PREFIX}{:016x}", digest(seed));
         return;
     }
     let exe = std::env::current_exe().expect("the test binary has a path");
+    let test = test_path(module, test);
     each(fixed, |seed| {
         let output = std::process::Command::new(&exe)
-            .args(["--exact", test, "--nocapture"])
+            .args(["--exact", &test, "--nocapture"])
             .env(CHILD_VAR, seed.0.to_string())
             .output()
             .expect("the test binary runs");
@@ -132,6 +134,15 @@ pub fn in_two_processes(test: &str, fixed: &[u64], digest: impl Fn(Seed) -> u64)
         let there = digest_in(&stdout).expect("the second process printed its digest");
         assert_eq!(there, digest(seed), "{stdout}");
     });
+}
+
+/// The name the test harness gives test `test` of module `module`, a `module_path!()`: the path without the crate's
+/// name, which a binary of many modules needs to tell apart two tests of one name.
+fn test_path(module: &str, test: &str) -> String {
+    match module.split_once("::") {
+        Some((_, inside)) => format!("{inside}::{test}"),
+        None => test.to_owned(),
+    }
 }
 
 /// A generator of numbers from a seed (SplitMix64): the IDs and cookies of the queries of a host, and the times

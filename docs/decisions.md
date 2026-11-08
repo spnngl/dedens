@@ -2767,7 +2767,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   - Time: the tests of a family run under 2 s in `just check` (debug build), the crate under 10 s; a family over the
     budget runs fewer fixed seeds, not a smaller scenario.
   - `just sim 100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
-    `sim` jobs of `.github/workflows/deep.yml` run it on pull requests, one per scenario file (`just sim 100
+    `sim` jobs of `.github/workflows/deep.yml` run it on pull requests, one per family (`just sim 100
     dnssec`, 30 minutes each), informational, outside the gate as `mutants` (D103); the workflow's `loom` job is
     D135's. One job for them all took 19 minutes, and past 30 when GitHub's runners ran 2.5 times slower
     (2026-11-03).

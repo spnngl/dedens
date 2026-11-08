@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 compio.workspace = true
@@ -29,6 +30,10 @@ turmoil.workspace = true
 [dev-dependencies]
 dedens-dnssec.workspace = true
 rcgen.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
 
 [lints]
 workspace = true

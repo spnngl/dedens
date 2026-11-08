@@ -39,24 +39,13 @@ use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 use turmoil::net::UdpSocket;
 
-/// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
-const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
+use crate::util::{FORWARD_TIMEOUT, FORWARD_TRIES, SECOND, SEEDS, TIMEOUT, TRIES};
 
 /// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time.
 const FEW: &[u64] = &[0, 7];
 
 /// One seed for the scenarios that run for minutes of simulated time, the costliest of all.
 const ONE: &[u64] = &[0];
-
-const SECOND: Duration = Duration::from_secs(1);
-
-/// How long the stub waits for a response to each try, and how many tries it makes (D27).
-const TIMEOUT: Duration = Duration::from_secs(5);
-const TRIES: u32 = 3;
-
-/// How long a forward stage waits for a response to each try, and how many tries it makes of one server (D45).
-const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
-const FORWARD_TRIES: u32 = 2;
 
 /// The link between the one client and the resolver, and the one between the resolver and the upstream server.
 const STUB_LINK: (Node, Node) = (Node::Client(0), Node::Resolver);
@@ -880,9 +869,14 @@ fn whatever_the_links_lose_and_delay_queries_end_well() {
 #[test]
 fn a_lossy_run_replays_in_two_processes() {
     let runs = std::cell::Cell::new(0);
-    seed::in_two_processes("a_lossy_run_replays_in_two_processes", ONE, |seed| {
-        runs.set(runs.get() + 1);
-        trace::digest(&lossy(seed).events)
-    });
+    seed::in_two_processes(
+        module_path!(),
+        "a_lossy_run_replays_in_two_processes",
+        ONE,
+        |seed| {
+            runs.set(runs.get() + 1);
+            trace::digest(&lossy(seed).events)
+        },
+    );
     assert!(runs.get() > 0);
 }
