@@ -34,12 +34,12 @@ const _: () = assert!(PUBLIC_KEY_LEN == 32 && 3 * 2 + 2 + PUBLIC_KEY_LEN == 40);
 /// } ObliviousDoHConfigContents;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObliviousDoHConfigContents {
+pub struct ConfigContents {
     public_key: [u8; PUBLIC_KEY_LEN],
     key_id: [u8; KEY_ID_LEN],
 }
 
-impl ObliviousDoHConfigContents {
+impl ConfigContents {
     /// The contents for a target's public key; the key ID follows from them.
     #[must_use]
     pub fn new(public_key: [u8; PUBLIC_KEY_LEN]) -> Self {
@@ -114,14 +114,14 @@ impl ObliviousDoHConfigContents {
 /// [`encode`](Self::encode) of what [`parse`](Self::parse) read writes the configs this crate can use, not a
 /// copy of the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObliviousDoHConfigs {
-    configs: Vec<ObliviousDoHConfigContents>,
+pub struct Configs {
+    configs: Vec<ConfigContents>,
 }
 
-impl ObliviousDoHConfigs {
+impl Configs {
     /// A list of configs, most preferred first.
     #[must_use]
-    pub const fn new(configs: Vec<ObliviousDoHConfigContents>) -> Self {
+    pub const fn new(configs: Vec<ConfigContents>) -> Self {
         Self { configs }
     }
 
@@ -145,7 +145,7 @@ impl ObliviousDoHConfigs {
             let version = reader.u16()?;
             let contents = reader.vec16()?;
             if version == VERSION
-                && let Some(contents) = ObliviousDoHConfigContents::parse(contents)
+                && let Some(contents) = ConfigContents::parse(contents)
             {
                 configs.push(contents);
             }
@@ -176,7 +176,7 @@ impl ObliviousDoHConfigs {
 
     /// The usable configs, most preferred first.
     #[must_use]
-    pub fn configs(&self) -> &[ObliviousDoHConfigContents] {
+    pub fn configs(&self) -> &[ConfigContents] {
         &self.configs
     }
 }

@@ -12,7 +12,7 @@ use std::io::Write as _;
 
 use assert_cmd::Command;
 use common::{Responder, TLS_NAME, Transport};
-use dedens_odoh::{ObliviousDoHConfigs, TargetKey};
+use dedens_odoh::{Configs, TargetKey};
 use dedens_proto::Message;
 use predicates::str::contains;
 
@@ -92,7 +92,7 @@ fn odoh_config_gives_the_configurations() {
     let configs = |seed: u8| {
         let mut file = tempfile::NamedTempFile::new().expect("a file");
         let key = TargetKey::derive(&[seed; 32]);
-        let encoded = ObliviousDoHConfigs::new(vec![key.config().clone()])
+        let encoded = Configs::new(vec![key.config().clone()])
             .encode()
             .expect("configurations encode");
         file.write_all(&encoded).expect("written");

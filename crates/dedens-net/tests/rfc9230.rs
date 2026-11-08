@@ -32,8 +32,8 @@ use dedens_net::odoh::{
 use dedens_net::tls::Trust;
 use dedens_odoh::rand_core::TryRng;
 use dedens_odoh::{
-    MEDIA_TYPE, MessageType, ObliviousDoHConfigContents, ObliviousDoHConfigs, ObliviousDoHMessage,
-    TargetKey, decrypt_query, encrypt_query, encrypt_response, query_padding, response_padding,
+    ConfigContents, Configs, MEDIA_TYPE, MessageType, TargetKey, decrypt_query, encrypt_query,
+    encrypt_response, query_padding, response_padding,
 };
 use dedens_proto::{Message, Rcode, Transport};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
@@ -52,7 +52,7 @@ const MAX_AGE: u32 = 7200;
 /// The header of a proxy's errors.
 const PROXY_STATUS: HeaderName = HeaderName::from_static("proxy-status");
 
-fn message() -> ObliviousDoHMessage {
+fn message() -> dedens_odoh::Message {
     let key = TargetKey::derive(&[1; 32]);
     let mut entropy = Entropy::new().expect("randomness");
     encrypt_query(key.config(), b"query", 0, &mut entropy)
@@ -497,7 +497,7 @@ impl Target {
             (Kind::Configs, Ok(_)) => {
                 self.configs_asked.set(self.configs_asked.get() + 1);
                 let encoded = self.configs.borrow().clone().unwrap_or_else(|| {
-                    ObliviousDoHConfigs::new(vec![self.key.borrow().config().clone()])
+                    Configs::new(vec![self.key.borrow().config().clone()])
                         .encode()
                         .expect("configurations encode")
                 });
@@ -508,7 +508,7 @@ impl Target {
                 reply
             }
             (Kind::Oblivious, Ok(body)) => {
-                let Ok(message) = ObliviousDoHMessage::parse(&body) else {
+                let Ok(message) = dedens_odoh::Message::parse(&body) else {
                     return status(StatusCode::BAD_REQUEST);
                 };
                 match decrypt_query(&self.key.borrow(), &message) {
@@ -682,7 +682,7 @@ async fn s4_3_kept_configurations_given_are_fetched_again_after_a_401() {
     )
     .await;
     let client = trusting(certificates);
-    let stale = ObliviousDoHConfigs::new(vec![TargetKey::derive(&[16; 32]).config().clone()])
+    let stale = Configs::new(vec![TargetKey::derive(&[16; 32]).config().clone()])
         .encode()
         .expect("configurations encode");
     assert!(matches!(
@@ -709,7 +709,7 @@ async fn s4_3_a_401_under_fresh_configurations_fails() {
     let target = Target::new(5);
     let other = TargetKey::derive(&[6; 32]);
     *target.configs.borrow_mut() = Some(
-        ObliviousDoHConfigs::new(vec![other.config().clone()])
+        Configs::new(vec![other.config().clone()])
             .encode()
             .expect("configurations encode"),
     );
@@ -987,7 +987,7 @@ async fn s5_pinned_configurations_are_not_fetched() {
     .await;
     let client = trusting(certificates);
     let encode = |key: &TargetKey| {
-        ObliviousDoHConfigs::new(vec![key.config().clone()])
+        Configs::new(vec![key.config().clone()])
             .encode()
             .expect("configurations encode")
     };
@@ -1029,7 +1029,7 @@ const LIVE_TARGETS: [(&str, &str); 2] = [
 ];
 
 /// The configurations `host` serves, fetched by curl: the client has no way to hand them out.
-fn live_configs(host: &str) -> ObliviousDoHConfigs {
+fn live_configs(host: &str) -> Configs {
     let output = Command::new("curl")
         .args([
             "--silent",
@@ -1043,14 +1043,14 @@ fn live_configs(host: &str) -> ObliviousDoHConfigs {
         .output()
         .expect("curl runs");
     assert!(output.status.success(), "{host}: {output:?}");
-    ObliviousDoHConfigs::parse(&output.stdout).expect("the configurations of the target")
+    Configs::parse(&output.stdout).expect("the configurations of the target")
 }
 
 /// `configs` with the first key changed by one bit: a key the target does not hold, as one it rotated away.
-fn stale(configs: &ObliviousDoHConfigs) -> Vec<u8> {
+fn stale(configs: &Configs) -> Vec<u8> {
     let mut key = *configs.configs()[0].public_key();
     key[0] ^= 1;
-    ObliviousDoHConfigs::new(vec![ObliviousDoHConfigContents::new(key)])
+    Configs::new(vec![ConfigContents::new(key)])
         .encode()
         .expect("configurations encode")
 }

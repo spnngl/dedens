@@ -1,8 +1,8 @@
 //! Oblivious DNS over HTTPS (RFC 9230), sans-IO and experimental: target configurations and the encryption of
 //! queries and responses (D78).
 //!
-//! - [`ObliviousDoHConfigs`]: the public keys a target publishes (§5).
-//! - [`ObliviousDoHMessage`], [`ObliviousDoHMessagePlaintext`]: the wire formats (§6.1).
+//! - [`Configs`]: the public keys a target publishes (§5).
+//! - [`Message`], [`MessagePlaintext`]: the wire formats (§6.1).
 //! - [`encrypt_query`], [`decrypt_response`]: the client (§7).
 //! - [`TargetKey`], [`decrypt_query`], [`encrypt_response`]: the target (§8).
 //!
@@ -10,6 +10,7 @@
 //! is reproducible under test. The one cipher suite is the one RFC 9230 §9 requires ([`suite`]).
 
 #![forbid(unsafe_code)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod client;
 mod config;
@@ -21,14 +22,12 @@ mod target;
 mod wire;
 
 pub use client::{QueryContext, decrypt_response, encrypt_query};
-pub use config::{
-    KEY_ID_LEN, ObliviousDoHConfigContents, ObliviousDoHConfigs, PUBLIC_KEY_LEN, VERSION,
-};
+pub use config::{ConfigContents, Configs, KEY_ID_LEN, PUBLIC_KEY_LEN, VERSION};
 pub use error::{ExchangeError, WireError};
 pub use hpke::rand_core;
 pub use message::{
-    MessageType, ObliviousDoHMessage, ObliviousDoHMessagePlaintext, QUERY_BLOCK, RESPONSE_BLOCK,
-    query_padding, response_padding,
+    Message, MessagePlaintext, MessageType, QUERY_BLOCK, RESPONSE_BLOCK, query_padding,
+    response_padding,
 };
 pub use target::{ResponseContext, TargetKey, decrypt_query, encrypt_response};
 

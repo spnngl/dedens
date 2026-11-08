@@ -5,8 +5,8 @@ Sans-IO: configurations and message encryption; the HTTP exchange lives in `dede
 
 | File | Holds |
 |---|---|
-| `src/config.rs` | `ObliviousDoHConfigs` and `ObliviousDoHConfigContents` (§5), the key ID (§6.1) |
-| `src/message.rs` | `ObliviousDoHMessage`, `ObliviousDoHMessagePlaintext` (§6.1), padding helpers (§11) |
+| `src/config.rs` | `Configs` and `ConfigContents` (§5), the key ID (§6.1) |
+| `src/message.rs` | `Message`, `MessagePlaintext` (§6.1), padding helpers (§11) |
 | `src/client.rs`, `src/target.rs` | `encrypt_query`, `decrypt_response` (§7); `TargetKey`, `decrypt_query`, `encrypt_response` (§8) |
 | `src/exchange.rs`, `src/kdf.rs` | `Secrets`: the response key and nonce of §6.2 (`derive_secrets`, as `Secrets::derive`), `seal`, `open`, `aad`; HKDF on `ring` |
 | `src/wire.rs`, `src/error.rs` | the TLS-style reader and writer (RFC 8446 §3); `WireError`, `ExchangeError` |

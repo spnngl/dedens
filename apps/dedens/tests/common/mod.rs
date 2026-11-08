@@ -411,7 +411,7 @@ fn oblivious_answer(
     canned: &[Canned],
 ) -> (http::response::Parts, Vec<u8>) {
     use dedens_net::odoh::{self, Entropy, Kind};
-    use dedens_odoh::{ObliviousDoHConfigs, ObliviousDoHMessage};
+    use dedens_odoh::{Configs, Message};
     let status = |status| {
         http::Response::builder()
             .status(status)
@@ -422,13 +422,13 @@ fn oblivious_answer(
     let response = match (kind, query) {
         (_, Err(code)) => status(code),
         (Kind::Configs, Ok(_)) => {
-            let configs = ObliviousDoHConfigs::new(vec![key.config().clone()])
+            let configs = Configs::new(vec![key.config().clone()])
                 .encode()
                 .expect("configurations encode");
             odoh::configs_response(configs, 3600)
         }
         (Kind::Oblivious, Ok(message)) => {
-            let opened = ObliviousDoHMessage::parse(&message)
+            let opened = Message::parse(&message)
                 .ok()
                 .map(|message| dedens_odoh::decrypt_query(key, &message));
             match opened {

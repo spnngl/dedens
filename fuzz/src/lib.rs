@@ -28,8 +28,8 @@ use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
-    MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, ObliviousDoHMessagePlaintext,
-    QueryContext, TargetKey, decrypt_query, decrypt_response, encrypt_query,
+    Configs, MessagePlaintext, MessageType, QueryContext, TargetKey, decrypt_query,
+    decrypt_response, encrypt_query,
 };
 use dedens_plugins::{
     Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Merged, Names, Origin, Tlds,
@@ -1254,7 +1254,7 @@ fn digest_checked(digest: DigestType, owner: &Name<'_>, dnskey_rdata: &[u8]) {
 ///
 /// When a list does not read back as itself.
 pub fn parse_odoh_configs(data: &[u8]) {
-    let Ok(configs) = ObliviousDoHConfigs::parse(data) else {
+    let Ok(configs) = Configs::parse(data) else {
         return;
     };
     assert!(
@@ -1265,7 +1265,7 @@ pub fn parse_odoh_configs(data: &[u8]) {
     );
     // A list of configs this crate cannot use has nothing to write (D78).
     if let Ok(written) = configs.encode() {
-        assert_eq!(ObliviousDoHConfigs::parse(&written), Ok(configs));
+        assert_eq!(Configs::parse(&written), Ok(configs));
     }
 }
 
@@ -1276,10 +1276,10 @@ pub fn parse_odoh_configs(data: &[u8]) {
 ///
 /// When a structure does not write back to the bytes it was read from.
 pub fn parse_odoh_message(data: &[u8]) {
-    if let Ok(message) = ObliviousDoHMessage::parse(data) {
+    if let Ok(message) = dedens_odoh::Message::parse(data) {
         assert_eq!(message.encode(), data);
     }
-    if let Ok(plaintext) = ObliviousDoHMessagePlaintext::parse(data) {
+    if let Ok(plaintext) = MessagePlaintext::parse(data) {
         assert_eq!(plaintext.encode(), data);
     }
 }
@@ -1547,7 +1547,7 @@ fn odoh_classify(shape: u8, body: &[u8]) {
 /// message: the target's authority and path are its `targethost` and `targetpath`, percent-encoded.
 fn odoh_proxy_request(path: &[u8], body: &[u8]) {
     use dedens_net::odoh;
-    if let Ok(message) = ObliviousDoHMessage::parse(body)
+    if let Ok(message) = dedens_odoh::Message::parse(body)
         && let target_path = format!("/{}", String::from_utf8_lossy(path))
         && let Ok(authority) = "target.example:8443".parse()
         && let Ok(target) = Template::relative(authority, &target_path)
@@ -1655,20 +1655,20 @@ static ODOH_CLIENT: LazyLock<QueryContext> = LazyLock::new(|| {
 ///
 /// When a forged message is accepted.
 pub fn odoh_decrypt(data: &[u8]) {
-    let Ok(message) = ObliviousDoHMessage::parse(data) else {
+    let Ok(message) = dedens_odoh::Message::parse(data) else {
         return;
     };
     let key = &*ODOH_KEY;
     let _ = decrypt_query(key, &message);
     if message.message_type() == MessageType::Query
-        && let Ok(grafted) = ObliviousDoHMessage::new(
+        && let Ok(grafted) = dedens_odoh::Message::new(
             MessageType::Query,
             key.config().key_id().to_vec(),
             message.encrypted_message().to_vec(),
         )
         && decrypt_query(key, &grafted).is_ok()
     {
-        let known = ObliviousDoHMessage::parse(ODOH_QUERY).expect("the captured query parses");
+        let known = dedens_odoh::Message::parse(ODOH_QUERY).expect("the captured query parses");
         assert_eq!(message.encrypted_message(), known.encrypted_message());
     }
     assert!(decrypt_response(&ODOH_CLIENT, &message).is_err());

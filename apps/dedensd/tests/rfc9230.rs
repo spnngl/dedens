@@ -29,7 +29,7 @@ use dedens_net::client::{Client, Server as Peer};
 use dedens_net::exchange::Options;
 use dedens_net::odoh::{CONFIGS_PATH, Entropy};
 use dedens_net::tls::Trust;
-use dedens_odoh::{MEDIA_TYPE, ObliviousDoHConfigs, encrypt_query};
+use dedens_odoh::{Configs, MEDIA_TYPE, encrypt_query};
 use dedens_proto::{Rcode, Transport};
 use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, FORWARDED, LOCATION, VIA};
 use http::{HeaderMap, StatusCode};
@@ -184,7 +184,7 @@ fn s5_the_configurations_are_served() {
     assert_eq!(got.status, StatusCode::OK);
     assert_eq!(got.headers[CACHE_CONTROL], "max-age=3600");
     assert_eq!(
-        ObliviousDoHConfigs::parse(&got.body)
+        Configs::parse(&got.body)
             .expect("configurations")
             .configs()
             .len(),
@@ -205,7 +205,7 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
         serving(&ca, "odoh: {}\n", upstream.addr),
         serving(&ca, "odoh: {}\n", upstream.addr),
     );
-    let parsed = ObliviousDoHConfigs::parse(&configs(other.addr, &ca)).expect("configurations");
+    let parsed = Configs::parse(&configs(other.addr, &ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
     let (message, _) = encrypt_query(
         &parsed.configs()[0],
@@ -225,7 +225,7 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
 
 /// A valid sealed query of the target at `addr`, as a client sends it.
 fn valid_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
-    let parsed = ObliviousDoHConfigs::parse(&configs(addr, ca)).expect("configurations");
+    let parsed = Configs::parse(&configs(addr, ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
     let (message, _) = encrypt_query(
         &parsed.configs()[0],
@@ -395,7 +395,7 @@ fn proxy_status(got: &Got) -> &str {
 
 /// A query for the target at `addr`, encrypted to its configurations.
 fn sealed_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
-    let parsed = ObliviousDoHConfigs::parse(&configs(addr, ca)).expect("configurations");
+    let parsed = Configs::parse(&configs(addr, ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
     let (message, _) = encrypt_query(
         &parsed.configs()[0],

@@ -25,8 +25,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
-    ExchangeError, MEDIA_TYPE, MessageType, ObliviousDoHConfigs, ObliviousDoHMessage, WireError,
-    decrypt_response, encrypt_query, query_padding,
+    ExchangeError, MEDIA_TYPE, Message, MessageType, WireError, decrypt_response, encrypt_query,
+    query_padding,
 };
 use dedens_proto::MAX_MESSAGE_LEN;
 use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName};
@@ -246,7 +246,7 @@ fn encode_component(text: &str) -> String {
 pub fn request(
     proxy: Option<&Template>,
     target: &Template,
-    message: &ObliviousDoHMessage,
+    message: &Message,
 ) -> Result<Request<Vec<u8>>, http::Error> {
     let uri = match proxy {
         Some(proxy) => format!(
@@ -287,7 +287,7 @@ pub fn configs_request(target: &Template) -> Result<Request<Vec<u8>>, http::Erro
 ///
 /// [`OdohError::Status`] for a status that is not 2xx, [`OdohError::ContentType`] for a type other than
 /// [`MEDIA_TYPE`], [`OdohError::Wire`] for a body that is no message.
-pub fn response<T>(response: &Response<T>, body: &[u8]) -> Result<ObliviousDoHMessage, OdohError> {
+pub fn response<T>(response: &Response<T>, body: &[u8]) -> Result<Message, OdohError> {
     if !response.status().is_success() {
         return Err(OdohError::Status(response.status()));
     }
@@ -295,7 +295,7 @@ pub fn response<T>(response: &Response<T>, body: &[u8]) -> Result<ObliviousDoHMe
     if !doh::is_media_type(headers, MEDIA_TYPE) {
         return Err(OdohError::ContentType(headers.get(CONTENT_TYPE).cloned()));
     }
-    Ok(ObliviousDoHMessage::parse(body)?)
+    Ok(Message::parse(body)?)
 }
 
 /// How long a client keeps the configurations of a response (D79).
@@ -409,7 +409,7 @@ fn check_message(body: &[u8]) -> Result<(), StatusCode> {
 /// The 200 response carrying the encrypted `message`: of the oblivious media type, and not to be cached, by the proxy
 /// or anyone (RFC 9230 §4.1, §4.3).
 #[must_use]
-pub fn target_response(message: &ObliviousDoHMessage) -> Response<Vec<u8>> {
+pub fn target_response(message: &Message) -> Response<Vec<u8>> {
     let mut response = Response::new(message.encode());
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static(MEDIA_TYPE));
@@ -481,7 +481,7 @@ pub enum Notice {
 /// A target's configurations and when they stop being fresh.
 #[derive(Debug)]
 struct Known {
-    configs: ObliviousDoHConfigs,
+    configs: dedens_odoh::Configs,
     until: Instant,
 }
 
@@ -494,7 +494,7 @@ pub(crate) struct Configs {
     /// Fetched, at most [`MAX_TARGETS`].
     known: RefCell<HashMap<Key, Known>>,
     /// Given by the caller, never fetched again nor dropped: a 401 for them is an error.
-    pinned: RefCell<HashMap<Key, ObliviousDoHConfigs>>,
+    pinned: RefCell<HashMap<Key, dedens_odoh::Configs>>,
     /// Not yet taken by [`Configs::take_notices`].
     notices: RefCell<Vec<Notice>>,
 }
@@ -569,7 +569,7 @@ impl Configs {
     /// configurations.
     pub(crate) fn pin(&self, target: &Server, bytes: &[u8]) -> Result<(), OdohError> {
         let key = (target.addr, target.template()?.authority().clone());
-        let configs = ObliviousDoHConfigs::parse(bytes)?;
+        let configs = dedens_odoh::Configs::parse(bytes)?;
         self.pinned.borrow_mut().insert(key, configs);
         Ok(())
     }
@@ -583,7 +583,7 @@ impl Configs {
     /// configurations.
     pub(crate) fn keep_given(&self, target: &Server, bytes: &[u8]) -> Result<(), OdohError> {
         let key = (target.addr, target.template()?.authority().clone());
-        self.keep(&key, &ObliviousDoHConfigs::parse(bytes)?, MIN_KEPT);
+        self.keep(&key, &dedens_odoh::Configs::parse(bytes)?, MIN_KEPT);
         Ok(())
     }
 
@@ -593,7 +593,7 @@ impl Configs {
     }
 
     /// The configurations of `key` while they are fresh.
-    fn fresh(&self, key: &Key) -> Option<ObliviousDoHConfigs> {
+    fn fresh(&self, key: &Key) -> Option<dedens_odoh::Configs> {
         self.known
             .borrow()
             .get(key)
@@ -611,7 +611,7 @@ impl Configs {
         proxied: bool,
         key: &Key,
         deadline: Instant,
-    ) -> Result<ObliviousDoHConfigs, OdohError> {
+    ) -> Result<dedens_odoh::Configs, OdohError> {
         let request = configs_request(template).map_err(OdohError::Request)?;
         let (head, body) = https
             .send(
@@ -625,7 +625,7 @@ impl Configs {
         if !head.status().is_success() {
             return Err(OdohError::Configs(head.status()));
         }
-        let configs = ObliviousDoHConfigs::parse(&body)?;
+        let configs = dedens_odoh::Configs::parse(&body)?;
         let lifetime = configs_lifetime(head.headers(), SystemTime::now());
         if proxied && lifetime.forbidden {
             let notice = Notice::ConfigsNotToBeKept(key.1.clone());
@@ -640,7 +640,7 @@ impl Configs {
 
     /// Keeps `configs` for `key` for `keep`, dropping what is stale, and the soonest to be stale when there are
     /// [`MAX_TARGETS`].
-    fn keep(&self, key: &Key, configs: &ObliviousDoHConfigs, keep: Duration) {
+    fn keep(&self, key: &Key, configs: &dedens_odoh::Configs, keep: Duration) {
         let now = Instant::now();
         let mut known = self.known.borrow_mut();
         known.retain(|_, known| known.until > now);
@@ -669,7 +669,7 @@ async fn ask(
     https: &HttpsPool,
     (target, target_template): (&Server, &Template),
     (proxy, proxy_template): (Option<&Server>, Option<&Template>),
-    configs: &ObliviousDoHConfigs,
+    configs: &dedens_odoh::Configs,
     wire: &[u8],
     deadline: Instant,
 ) -> Result<Reply, OdohError> {
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn the_kept_configurations_are_bounded() {
         let configs = Configs::default();
-        let parsed = ObliviousDoHConfigs::new(vec![TargetKey::derive(&[7; 32]).config().clone()]);
+        let parsed = dedens_odoh::Configs::new(vec![TargetKey::derive(&[7; 32]).config().clone()]);
         for port in 0..u16::try_from(MAX_TARGETS * 2).expect("a small number") {
             let key = (
                 SocketAddr::from(([127, 0, 0, 1], 1000 + port)),

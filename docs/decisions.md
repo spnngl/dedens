@@ -912,7 +912,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   target could not keep a key), our own HPKE (a key schedule to keep right for no gain; the crate passes RFC 9180
   Appendix A.1.1 here), the `odoh-rs` crate (D3: protocol code is ours; its code was read for the scheme only),
   `aws-lc-rs` (a second native crypto library next to `ring`; not evaluated further).
-  - Configs: `ObliviousDoHConfigs::parse` keeps the configs of version 1 with that suite and skips every other, as
+  - Configs: `Configs::parse` keeps the configs of version 1 with that suite and skips every other, as
     §5 tells clients and `odoh-rs` does: another version, KEM, KDF or AEAD, and one of ours that is malformed (a
     field past its config, bytes after its fields, an empty key or one that is not 32 bytes). A list whose own
     framing is broken (truncated, trailing bytes, empty) is an error, as is a list with no usable config
@@ -2329,7 +2329,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     stage, default 1000 and 2000, a tenth of the allowance, so that ten networks at their share spend all of it
     and no one network can: 2000 units are about 160 cold validations (`docs/benchmarks.md`). A reload keeps the
     key cache and restarts the shares only when the setting changed.
-  - ODoH (S14). Before `ObliviousDoHMessage::parse` and the HPKE open, `Target::open` takes one unit of the
+  - ODoH (S14). Before `Message::parse` and the HPKE open, `Target::open` takes one unit of the
     client network's budget (`odoh.client_budget`, default 1000 and 2000: 3.5% of a core at 34.6 µs a
     decapsulation) and one of the global one (`odoh.budget`, default 10 000 and 20 000: a third of a core), and
     gives the first back if the second refuses. A QUIC peer completed its handshake: its address is proven.

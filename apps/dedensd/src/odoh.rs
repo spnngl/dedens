@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail, ensure};
 use dedens_net::odoh::{self, Entropy};
 use dedens_odoh::{
-    ExchangeError, ObliviousDoHConfigs, ObliviousDoHMessage, ResponseContext, TargetKey,
-    decrypt_query, encrypt_response, response_padding,
+    ExchangeError, ResponseContext, TargetKey, decrypt_query, encrypt_response, response_padding,
 };
 use dedens_server::{Budget, Budgets, DEFAULT_SHARE, Slot};
 use http::{Response, StatusCode};
@@ -124,7 +123,7 @@ impl Target {
             "ODoH requests answered 503 before being opened: the client network or all clients were over their budget."
         );
         let key = TargetKey::derive(&secret);
-        let configs = ObliviousDoHConfigs::new(vec![key.config().clone()])
+        let configs = dedens_odoh::Configs::new(vec![key.config().clone()])
             .encode()
             .context("`odoh`: the configurations do not encode")?;
         Ok(Self {
@@ -179,7 +178,7 @@ impl Target {
             }
             return Err(limited("global", from));
         }
-        let message = ObliviousDoHMessage::parse(body).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let message = dedens_odoh::Message::parse(body).map_err(|_| StatusCode::BAD_REQUEST)?;
         match decrypt_query(&self.key, &message) {
             Ok((plaintext, context)) => Ok((plaintext.into_dns_message(), context)),
             Err(ExchangeError::UnknownKey) => Err(StatusCode::UNAUTHORIZED),
@@ -262,7 +261,7 @@ fn digit(digit: u8) -> Option<u8> {
 mod tests {
     use std::io::Write as _;
 
-    use dedens_odoh::{ObliviousDoHConfigs, encrypt_query};
+    use dedens_odoh::encrypt_query;
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -357,7 +356,7 @@ mod tests {
     #[test]
     fn queries_open_and_replies_seal() {
         let target = Target::new(None, Limits::default()).expect("a target");
-        let configs = ObliviousDoHConfigs::parse(&target.configs).expect("configurations");
+        let configs = dedens_odoh::Configs::parse(&target.configs).expect("configurations");
         let mut entropy = Entropy::new().expect("randomness");
         let (message, context) =
             encrypt_query(&configs.configs()[0], b"query", 0, &mut entropy).expect("a query");
@@ -367,7 +366,7 @@ mod tests {
         assert_eq!(wire, b"query");
         let response = seal(sealing, b"reply").expect("seals");
         assert_eq!(response.status(), StatusCode::OK);
-        let sealed = ObliviousDoHMessage::parse(response.body()).expect("a message");
+        let sealed = dedens_odoh::Message::parse(response.body()).expect("a message");
         let plaintext = dedens_odoh::decrypt_response(&context, &sealed).expect("a reply");
         assert_eq!(plaintext.dns_message(), b"reply");
         let other = Target::new(None, Limits::default()).expect("a target");
@@ -384,7 +383,7 @@ mod tests {
     /// A target of `limits` and a source of its queries: each call is a fresh query for it.
     fn flooded(limits: Limits) -> (Target, impl FnMut() -> Vec<u8>) {
         let target = Target::new(None, limits).expect("a target");
-        let configs = ObliviousDoHConfigs::parse(&target.configs).expect("configurations");
+        let configs = dedens_odoh::Configs::parse(&target.configs).expect("configurations");
         let mut entropy = Entropy::new().expect("randomness");
         let query = move || {
             let (message, _) =
