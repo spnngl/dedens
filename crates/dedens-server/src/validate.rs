@@ -382,10 +382,21 @@ impl Check {
                 self.asking = question;
                 self.ask()
             }
-            Next::Done(Verdict::Incomplete { .. }) if self.chases >= MAX_CHASES => {
+            Next::Done(verdict) => self.settle(verdict),
+        }
+    }
+
+    /// What follows `verdict`, that of the response validated last: the outcome, or the next name of its CNAME chain
+    /// to ask, up to [`MAX_CHASES`] names (D77).
+    ///
+    /// Apart from [`Check::advance`] so that a test can give it the verdicts of a chain longer than the limit, which
+    /// only signatures make and no capture holds.
+    fn settle(&mut self, verdict: Verdict) -> Progress {
+        match verdict {
+            Verdict::Incomplete { .. } if self.chases >= MAX_CHASES => {
                 Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE))
             }
-            Next::Done(Verdict::Incomplete { next, ttl }) => {
+            Verdict::Incomplete { next, ttl } => {
                 self.limit(ttl);
                 self.chases += 1;
                 self.asking = Question::new(next, self.qtype);
@@ -393,7 +404,7 @@ impl Check {
                 self.chased = true;
                 self.ask()
             }
-            Next::Done(Verdict::Secure { ttl }) => {
+            Verdict::Secure { ttl } => {
                 self.limit(ttl);
                 Progress::Done(if self.chased {
                     Outcome::Insecure
@@ -402,13 +413,11 @@ impl Check {
                 })
             }
             // A referral is no answer; the validator gives it for `start_referral` only.
-            Next::Done(Verdict::Insecure { .. } | Verdict::Referral { .. }) => {
+            Verdict::Insecure { .. } | Verdict::Referral { .. } => {
                 Progress::Done(Outcome::Insecure)
             }
-            Next::Done(Verdict::Bogus { ede }) => Progress::Done(Outcome::Bogus(ede.code)),
-            Next::Done(Verdict::Indeterminate { ede }) => {
-                Progress::Done(Outcome::Indeterminate(ede.code))
-            }
+            Verdict::Bogus { ede } => Progress::Done(Outcome::Bogus(ede.code)),
+            Verdict::Indeterminate { ede } => Progress::Done(Outcome::Indeterminate(ede.code)),
         }
     }
 
@@ -531,6 +540,55 @@ mod tests {
         );
         let slot = Slot::new(source.address, source.proven);
         assert!(validating.shares.admit(slot, 0));
+    }
+
+    /// The name the `hop`th CNAME of a chain goes on at.
+    fn hop(hop: u8) -> dedens_proto::Name<'static> {
+        format!("hop{hop}.example.").parse().expect("a name")
+    }
+
+    /// RFC 1034 §3.6.2, D77: a CNAME chain is followed, [`MAX_CHASES`] names and no more, or a loop of them would never
+    /// end: the verdict that asks for one more is indeterminate. A chain followed to its end is insecure (RFC 6840
+    /// §5.8). The verdicts are given to [`Check::settle`]: a chain this long needs signatures no capture holds.
+    #[test]
+    fn a_cname_chain_is_chased_up_to_max_chases_names() {
+        let validating = Validating::new(
+            Validator::new(
+                dedens_dnssec::TrustAnchors::root(),
+                dedens_dnssec::Limits::default(),
+            ),
+            Arc::new(|| 0),
+        );
+        let question = Question::new(hop(0), RecordType::A);
+        let ttl = Ttl::MAX;
+        let chased = || {
+            let mut check = Check::new(
+                &validating,
+                &question,
+                Decoded::default(),
+                Admitted { share: None },
+            );
+            for chases in 1..=MAX_CHASES {
+                let next = hop(chases);
+                let progress = check.settle(Verdict::Incomplete {
+                    next: next.clone(),
+                    ttl,
+                });
+                assert!(matches!(progress, Progress::Ask), "name {chases}");
+                assert_eq!(check.asking(), &Question::new(next, RecordType::A));
+            }
+            check
+        };
+        let end = chased().settle(Verdict::Secure { ttl });
+        assert!(matches!(end, Progress::Done(Outcome::Insecure)));
+        let past = chased().settle(Verdict::Incomplete {
+            next: hop(MAX_CHASES + 1),
+            ttl,
+        });
+        assert!(matches!(
+            past,
+            Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE))
+        ));
     }
 
     /// D106: a verification is a unit, and so is each started 4096 SHA-1 blocks of NSEC3 hashing.
