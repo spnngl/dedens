@@ -17,6 +17,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio
   change to surface worker panics, once one is proposed upstream.
+- compio's cancel of a dropped operation (`compio-driver` `sys/driver/iour/mod.rs`, `cancel`) only warns when the
+  submission queue is full and drops the `AsyncCancel`: a multishot receive dropped by a listener's restart
+  (`supervise`, `apps/dedensd/src/serve/isolate.rs`) then stays armed beside its replacement and takes datagrams
+  nobody reads. Default: a compio change that retries the cancel after the next submit, proposed upstream.
+- A TCP reply's write deadline (D47) runs from the moment the queue was last empty (`write`,
+  `apps/dedensd/src/serve/tcp.rs`): a fast reader under sustained pipelined load never empties it, and is closed
+  `TCP_WRITE` (10 s) after its burst began. Default: start the deadline again after each completed write, so it
+  bounds a stalled write, not a busy connection.
 - Bare `spawn`s in `dedens-net` whose panics nothing logs or counts (D121): the upstream UDP pool `crates/dedens-net/src/udp.rs:95`,
   the read and write halves of a TCP exchange `crates/dedens-net/src/tcp.rs:332` and `:450`, `crates/dedens-net/src/http3.rs:223`.
   compio hides each; the client of a query then times out. Default: a `dedens-net` helper like `Origin::spawn` (a
