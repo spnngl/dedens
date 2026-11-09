@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
-use dedens_odoh::{MessageType, WireError, decrypt_response, encrypt_query, query_padding};
+use dedens_odoh::{WireError, decrypt_response, encrypt_query, query_padding};
 use http::Version;
 use http::uri::Authority;
 
@@ -240,7 +240,6 @@ async fn ask(
         return Err(OdohError::Proxy(head.status()));
     }
     let message = response(&head, &body)?;
-    debug_assert_eq!(message.message_type(), MessageType::Response);
     let plaintext = decrypt_response(&context, &message)?;
     Ok(Reply {
         wire: plaintext.into_dns_message(),
