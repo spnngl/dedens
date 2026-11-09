@@ -82,11 +82,9 @@ pub const MAX_CHASES: u8 = 8;
 
 /// The outcome of a validation: what the caller does with the response (RFC 4035 §4.3, RFC 4033 §5).
 ///
-/// What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is
-/// authenticated, and so is the denial of what the answer lacks, if any. What it leaves to the caller, who
-/// must not present it as authenticated: the additional section (RFC 4035 §3.2.3), records of other classes,
-/// and the CNAME a server synthesizes from a DNAME, which is covered by the DNAME that is verified (RFC 6672
-/// §5.3.3).
+/// What [`Verdict::Secure`] covers is [`covered()`](crate::covered) of the response, the one definition of it: the
+/// `RRsets` on the name path of the answer and the denial of what the answer lacks, if any. The caller must not
+/// present the rest as authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// What the response holds, as far as the above, is authenticated and complete for its question: the answer
