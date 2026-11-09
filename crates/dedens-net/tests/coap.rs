@@ -1497,6 +1497,86 @@ mod blockwise {
         assert_eq!(played.result.expect("a value").payload, TXT);
     }
 
+    /// The exchange of `libcoap_get_block2`, waiting for its first block, and its three blocks as separate responses
+    /// of `kind` (RFC 7252 §5.2.2, §5.2.3): libcoap's piggybacked ones, with the message IDs of the server from that of
+    /// its separate CON in `libcoap_get_async` on.
+    fn separate_blocks(kind: Type) -> (Next, Vec<Message>) {
+        let transfer = capture("libcoap_get_block2");
+        let (request, first_id) = request_of(&transfer);
+        let token = request.token;
+        let first = capture("libcoap_get_async")
+            .iter()
+            .map(crate::util::coap_capture::Datagram::message)
+            .find(|m| m.kind == Type::Confirmable && m.code.is_response())
+            .expect("the separate CON")
+            .id;
+        let blocks = delivered(&transfer, false)
+            .iter()
+            .zip(first..)
+            .map(|(datagram, id)| Message {
+                kind,
+                id,
+                token,
+                ..datagram.message()
+            })
+            .collect();
+        let step = Exchange::start(
+            request,
+            SERVER,
+            Params::default(),
+            first_id,
+            5,
+            Instant::now(),
+        );
+        (step.next, blocks)
+    }
+
+    /// Gives the exchange waiting in `next` the `blocks` in order, a step each, until it is over: what each step sent,
+    /// and the next of the last.
+    fn give(mut next: Next, blocks: &[&Message]) -> (Vec<Vec<Message>>, Next) {
+        let mut sent = Vec::new();
+        for block in blocks {
+            let Next::Wait(exchange) = next else {
+                break;
+            };
+            let wire = block.to_vec().expect("a value");
+            let step = exchange.receive(SERVER, &wire, Instant::now());
+            sent.push(parse_all(&step.send));
+            next = step.next;
+        }
+        (sent, next)
+    }
+
+    #[test]
+    fn a_repeated_separate_block_is_acked_and_ignored() {
+        // Our ACK of block 0 was lost; block 1 came, then the server sent block 0 again (RFC 7252 §4.2): it is ACKed
+        // again and not taken again (§4.5).
+        let (start, blocks) = separate_blocks(Type::Confirmable);
+        let (sent, next) = give(start, &[&blocks[0], &blocks[1], &blocks[0], &blocks[2]]);
+        assert_eq!(sent.len(), 4, "over before the last block: {next:?}");
+        assert_eq!(
+            sent[2],
+            [Message::empty(Type::Acknowledgement, blocks[0].id)]
+        );
+        let Next::Done(result) = next else {
+            panic!("the exchange is over");
+        };
+        assert_eq!(result.expect("a response").payload, TXT);
+    }
+
+    #[test]
+    fn a_duplicated_non_block_is_ignored() {
+        // The network delivered the NON of block 0 twice, the second after block 1 (RFC 7252 §4.5).
+        let (start, blocks) = separate_blocks(Type::NonConfirmable);
+        let (sent, next) = give(start, &[&blocks[0], &blocks[1], &blocks[0], &blocks[2]]);
+        assert_eq!(sent.len(), 4, "over before the last block: {next:?}");
+        assert_eq!(sent[2], []);
+        let Next::Done(result) = next else {
+            panic!("the exchange is over");
+        };
+        assert_eq!(result.expect("a response").payload, TXT);
+    }
+
     #[test]
     fn libcoap_fetch_in_1024_byte_blocks() {
         // libcoap's client asks for the next blocks without the query; we send it again (RFC 8132 §2), so the requests
