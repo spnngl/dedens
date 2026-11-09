@@ -25,8 +25,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `apps/dedensd/src/serve/tcp.rs`): a fast reader under sustained pipelined load never empties it, and is closed
   `TCP_WRITE` (10 s) after its burst began. Default: start the deadline again after each completed write, so it
   bounds a stalled write, not a busy connection.
-- Bare `spawn`s in `dedens-net` whose panics nothing logs or counts (D121): the upstream UDP pool `crates/dedens-net/src/udp.rs:95`,
-  the read and write halves of a TCP exchange `crates/dedens-net/src/tcp.rs:332` and `:450`, `crates/dedens-net/src/http3.rs:223`.
+- Bare `spawn`s in `dedens-net` whose panics nothing logs or counts (D121): the pools' tasks through `Io::spawn`
+  (D134; compio's in `crates/dedens-net/src/io.rs`), `receive` of `crates/dedens-net/src/udp.rs`, `run` and `read`
+  of `crates/dedens-net/src/tcp.rs`, and the HTTP/3 driver of `connection` in `crates/dedens-net/src/http3.rs`.
   compio hides each; the client of a query then times out. Default: a `dedens-net` helper like `Origin::spawn` (a
   counter by name), once a second user of it exists.
 - Export of `dedensd_task_panics_total` and `dedensd_listener_restarts_total` (D121): no exporter is installed

@@ -29,9 +29,9 @@ Planned: `dedens-resolver`.
 - Client: `Message::query` → `encode` → `dedens-net` → `Message::decode` → output, with any `Violation` shown.
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
   `apps/dedensd/src/odoh/`, D79, D94) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
-  `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23: `plugin.rs`, `cache.rs`, `forward.rs`); a
-  cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by `reply.rs` →
-  send (UDP: the socket's `Outbox`, D123).
+  `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23) of stages `plugin.rs`, `cache.rs` and
+  `forward.rs`; a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by
+  `reply.rs` → send (UDP: the socket's `Outbox`, D123).
 - Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
   `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)
   → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).
