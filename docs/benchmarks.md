@@ -1155,10 +1155,10 @@ benches wrap it in divan's `AllocProfiler`. The ranking by security is step 03's
 | `g` | reference: glibc's malloc |
 | `g-mi` | reference: mimalloc on glibc |
 
-- Session: `crates/dedens-bench/dnsperf/alloc-vps/` (`build.sh`, `inner.sh`, `session.sh`, run
-  from `~/alloc` beside a copy of the repository in `src/`), `crates/dedens-bench/dnsperf/alloc.sh`
-  (in the `dedens-abench` image: `rust:1` and `dnsperf` 2.14.0), tables from
-  `crates/dedens-bench/dnsperf/alloc-report.nu`. `session.sh <dir> startup rounds divan churn` was the first session
+- Session, files of the tag `alloc-experiment-2026-11-06` only (`alloc.sh` is on `alloc-security-2026-11-06` too),
+  not of `main`: `crates/dedens-bench/dnsperf/alloc-vps/` (`build.sh`, `inner.sh`, `session.sh`, run from `~/alloc`
+  beside a copy of the repository in `src/`), `crates/dedens-bench/dnsperf/alloc.sh` (in the `dedens-abench` image:
+  `rust:1` and `dnsperf` 2.14.0), tables from `crates/dedens-bench/dnsperf/alloc-report.nu`. `session.sh <dir> startup rounds divan churn` was the first session
   (08:59-10:25); the divan session (30 rounds) and the soak followed on the same build, one session at a time.
 - Rounds: 8 per cell, a cell being a mode (`udp`, `tcp`, `forward`, `forward-tcp`) and 1 or 3 serving threads. In a round
   every binary runs once per cell, in a shuffled order, 8 s each, `dnsperf -c 8 -T 4 -q 500` on its own cores
