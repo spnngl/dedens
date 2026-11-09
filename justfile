@@ -184,6 +184,33 @@ mutants-diff base="origin/main" *args:
     git diff "{{ base }}...HEAD" > target/mutants/branch.diff
     {{ just_executable() }} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
 
+# The exclusions of .cargo/mutants.toml that match no mutant or file (D168), each listed, failing if any. Mutants are
+# listed without the configuration, with no build. Perl matches the names: `--re` keeps every field deletion.
+mutants-stale:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    patterns="$(taplo get -f .cargo/mutants.toml exclude_re)"
+    globs="$(taplo get -f .cargo/mutants.toml exclude_globs)"
+    stale=0
+    cargo mutants --list --no-config | perl -e '
+        chomp(my @names = <STDIN>);
+        my $stale = 0;
+        for my $re (split /\n/, shift) {
+            next if grep { /$re/ } @names;
+            print "exclude_re matches no mutant: \x27$re\x27\n";
+            $stale = 1;
+        }
+        exit $stale;
+    ' "$patterns" || stale=1
+    while IFS= read -r glob; do
+        found="$(cargo mutants --list-files --no-config --file="$glob")"
+        if [[ -z "$found" ]]; then
+            echo "exclude_globs matches no file: '$glob'"
+            stale=1
+        fi
+    done <<< "$globs"
+    exit "$stale"
+
 # Loom's model of dedensd's reload wake-up and query flights (D135): lints the code the cfg adds, then tries every
 # interleaving up to four preemptions. Its own target dir: the cfg rebuilds the dependencies. Outside `just check`.
 loom:

@@ -70,6 +70,31 @@ jobs:
           name: mutants-diff
           path: target/mutants/branch.diff
 
+  # The exclusions of .cargo/mutants.toml that match no mutant or file (D168): a moved or renamed function leaves its
+  # pattern behind.
+  stale:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # renovate: datasource=crate depName=taplo-cli
+      TAPLO_VERSION: "0.10.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      # The stable of rust-toolchain.toml: listing reads `cargo metadata`.
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }},taplo@${{ env.TAPLO_VERSION }}
+      - run: just mutants-stale
+
   # A shard fails on a missed mutant or a timeout (exit 2 or 3), as a whole run would.
   shard:
     needs: plan
