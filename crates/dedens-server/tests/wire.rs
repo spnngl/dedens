@@ -413,6 +413,26 @@ fn a_reply_with_a_cookie_is_padded_after_it() {
     );
 }
 
+/// The OPT record opens the additional section of a forwarded reply (D9): padding must not land after the last
+/// record. The `cookie` capture holds isc.org's NS records with their glue as additional data.
+#[test]
+fn a_padded_reply_keeps_its_additional_records() {
+    let response = captured("cookie");
+    let mut query = query("cookie", 7);
+    query.edns = Some(Edns {
+        options: vec![EdnsOption::Padding(0)],
+        ..Edns::default()
+    });
+    let wire = reply(&forwarder(), &wire(&query), Transport::Tls, Some(&response));
+    let reread = decode(&wire);
+    let upstream = decode(&response);
+    assert_ne!(upstream.additional.len(), 0);
+    assert_eq!(reread.additional, upstream.additional);
+    assert_eq!(reread.answer, upstream.answer);
+    assert!(padding(&wire).is_some());
+    assert_eq!(wire.len() % 468, 0);
+}
+
 // --- RFC 9619 in the server core ---
 
 #[test]

@@ -100,7 +100,7 @@ pub(crate) fn look(
     });
     match client.append_opt(&edns, error, &mut out[..limit], hit.len) {
         Some(len) => Looked::Reply {
-            len: client.pad(out, len, client.options_len(error)),
+            len,
             refresh,
             mark: hit.mark,
             truncated: hit.truncated,
