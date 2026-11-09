@@ -1,7 +1,7 @@
 //! One seed gives one trace in every process (D133): nothing the cores draw per process (hash seeds, counters)
 //! shows in what the hosts do. The test runs a scenario with a fault, an attacker and the cache, here and in a
-//! second process, a new run of this test binary, and compares the digests of the traces. Each family of tests
-//! does the same in its own file, with its scenario.
+//! second process, a new run of this test binary, and compares the digests of the traces. A family that adds a
+//! per-process hash does the same in its own file, with its scenario.
 
 use std::time::Duration;
 

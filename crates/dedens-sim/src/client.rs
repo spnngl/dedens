@@ -85,6 +85,11 @@ impl Client {
     /// encoded, and the I/O error of the socket or the connection otherwise.
     ///
     /// [`Failure`]: dedens_net::exchange::Failure
+    ///
+    /// # Panics
+    ///
+    /// When a task of its pools panicked before the exchange ended: the pools run them detached, so the panic
+    /// fails the host here (D133).
     pub async fn exchange(
         &self,
         query: Message<'static>,
@@ -94,6 +99,8 @@ impl Client {
     ) -> Result<Response, ClientError> {
         let mut options = *options;
         options.transport = carrier.into();
-        self.inner.exchange(query, server, &options).await
+        let response = self.inner.exchange(query, server, &options).await;
+        self.io.resume_panic();
+        response
     }
 }
