@@ -24,7 +24,7 @@ use super::isolate::Origin;
 use super::now;
 use super::tcp::TCP_WRITE;
 use super::upstream::answer;
-use super::{Started, TCP_IDLE, Thread, start};
+use super::{Slot, Started, TCP_IDLE, Thread, start};
 #[cfg(feature = "odoh")]
 use crate::odoh;
 #[cfg(feature = "odoh")]
@@ -38,13 +38,15 @@ pub(super) const H3_UNI_STREAMS: u32 = 16;
 /// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`], and a new request
 /// must come within it too, as `quic::streams` says. Requests go through the pipeline as any query; the client is `peer`.
 /// Once the connection passed its byte budget (D119) it is sent `GOAWAY` at the next request, and ends when it is
-/// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`].
+/// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`]. Each request's task holds the connection's
+/// `slot`.
 pub(super) async fn requests(
     connection: Connection,
     path: &Arc<str>,
     origin: &Origin,
     thread: &Rc<Thread>,
     budget: &Rc<Budget>,
+    slot: &Rc<Slot>,
 ) {
     let peer = origin.peer;
     let mut requests = match compio::time::timeout(TCP_IDLE, Requests::new(connection)).await {
@@ -69,9 +71,11 @@ pub(super) async fn requests(
         match compio::time::timeout(wait, requests.accept()).await {
             Ok(Ok(Some(pending))) => {
                 let (path, thread, flight) = (Arc::clone(path), Rc::clone(thread), budget.fly());
+                let slot = Rc::clone(slot);
                 origin.clone().spawn(async move {
                     request(pending, &path, peer, &thread).await;
                     drop(flight);
+                    drop(slot);
                 });
                 if let Some(last) = &mut going_away {
                     *last = Instant::now();
