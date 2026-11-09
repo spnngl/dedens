@@ -288,7 +288,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (247 s), at most a given number of entries, the oldest dropped first, only for a message that is new; a duplicate
     gets the same reply, at most `MAX_RETRANSMIT` times (D105).
   - Fuzz: `parse_coap` reads arbitrary datagrams; `coap_doc` is stateful, an `Exchange` against a model of the
-    listener (`doc::query` and `response`, a `Dedup`, the Block1 and Block2 sizes, a body that changes between two
+    listener (`coap::dns::query` and `response`, a `Dedup`, the Block1 and Block2 sizes, a body that changes between two
     blocks, retransmission, duplicates, time, bytes of any kind for a reply) holding that a body is one of the
     server's, whole.
   - `docpath` is `SvcParam::DocPath(Vec<Box<[u8]>>)` (RFC 9953 §3.2, key 10): the wire is `alpn`'s with empty
@@ -305,7 +305,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D81 (completes D80; amended by D95, D105, D109) DoC, DNS over unprotected CoAP over UDP (RFC 9953), behind
   the `doc` feature of `dedens`, `dedensd` and `dedens-net` (D69): the client `Transport::Coap`
   (`dedens_net::doc`), the `dedens` options `@coap://HOST[:PORT][/PATH]` and `+coap` (port 5683, the root path
-  unless given), the `dedensd` listener `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::doc`: the
+  unless given), the `dedensd` listener `coap://ADDR[:PORT][/PATH]`. The sans-IO halves are D80's `coap::dns`: the
   client's `request`, the server's `query`, `response`, `error`.
   - Client: one confirmable FETCH per query on a UDP socket of its own, DNS ID 0 (§4.2.2), Content-Format and
     Accept 553, no Uri-Host or Uri-Port (the server is the one named). A response in blocks must carry an ETag
@@ -330,7 +330,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     TTLs less their least: an answer that changed between two blocks fails the client's transfer (RFC 7959 §2.4),
     its Max-Age, which moves with the clock, not part of it. libcoap's and aiocoap's
     clients send no body with the follow-ups, so a FETCH or POST with no body that asks for a Block2 past the first
-    (`doc::Query::Block`) is answered from the response sent in blocks, kept by (endpoint, Request-Tag, RFC 9175
+    (`coap::dns::Query::Block`) is answered from the response sent in blocks, kept by (endpoint, Request-Tag, RFC 9175
     §3.2; empty if none), 64 per socket (`server::Blocks`), from the first block and not moved by the follow-ups, for
     `EXCHANGE_LIFETIME` at most, and served a bounded number of times (D105): found by libcoap's `coap-client`
     getting 4.00 for the second block of a 2649-byte answer, as the RFCs do not say how a server finds the response
@@ -352,7 +352,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     discovery by SVCB `docpath` (§3.2, D95).
 - D95 (amends D81) DoC discovery by `rt=core.dns` in `/.well-known/core` (RFC 9953 §3.1, RFC 6690), the `dedensd`
   listener's answer and `dedens +doc-discover`, behind the `doc` feature:
-  - Server (`coap::doc::discovery`, before D81's `query`): a GET of `/.well-known/core` answers 2.05 in Content-Format
+  - Server (`coap::dns::discovery`, before D81's `query`): a GET of `/.well-known/core` answers 2.05 in Content-Format
     40 with one link, `<PATH>;rt=core.dns;ct=553`, `PATH` the listener's path (a socket has one: one link per DoC
     listener); the root path is `</>`, a path that starts with an empty segment is written after `/.` (else the
     link would read as an authority), and bytes a path cannot hold are percent-encoded. A `rt=` query filters (RFC 6690
@@ -420,9 +420,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Silent, with no 5.03 (a deviation from §4.2, in `coverage.md`), as D47 drops past its limits: answering under
     overload costs more than the request, and a 5.03 still costs a send.
   - E7: the first response is sent, then the buffer `send_to` gives back is kept in `Dedup`: no copy for it. A copy
-    of the DNS response goes to `Blocks` only when its block has more after it (`doc::more_blocks`, which reads the
-    request as `response` does: a malformed Block2 is no block); the follow-up path copies the kept response once, as
-    `response` needs a `Vec` to take the TTLs off.
+    of the DNS response goes to `Blocks` only when its block has more after it (`coap::dns::more_blocks`, which reads
+    the request as `response` does: a malformed Block2 is no block); the follow-up path copies the kept response once,
+    as `response` needs a `Vec` to take the TTLs off.
   - Tests: the trigger datagrams are built by hand from the audit's (zeros after a header, a bare FETCH), not captured:
     they hold no DNS data, and what they check is the server's count and bounds (AGENTS.md's real-data rule is for
     the DNS content, which the existing captures keep). Fuzz: `parse_coap` asserts the options cap, and `coap_doc` the
