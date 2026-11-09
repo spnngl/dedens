@@ -106,7 +106,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits
 - D106 [server](server.md) (amended by D117): validation cost counts what it costs: bounded debt, NSEC3 in SHA-1 blocks
-- D107 [server](server.md) (amended by D122, D147): io_uring from Linux 5.19, `poll` reported; runtimes never dropped; reloads wake threads
+- D107 [server](server.md) (amended by D122, D147, D174): io_uring with `COOP_TASKRUN`, `poll` reported; runtimes never dropped; reloads wake threads
 - D108 [server](server.md): bounds on the client's queues; evidence of a live server
 - D109 [transports](transports.md) (amended by D119): client QUIC, HTTP/3 and CoAP exchanges bounded by server and deadline
 - D110 [server](server.md) (amended by D120): the blocklist blocks any class; suffix walk linear in labels
@@ -163,3 +163,4 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D170 [performance and safety](performance-and-safety.md): `dedensd`'s benches include only its tests' server harness
 - D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here
 - D172 [simulation tests](simulation-tests.md): the CI scale of the simulation time budgets is 7, measured on a runner
+- D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of

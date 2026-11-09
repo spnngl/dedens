@@ -9,7 +9,7 @@ use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::buf::{IntoInner, IoBuf, Slice};
@@ -186,6 +186,30 @@ impl Receiving {
     }
 }
 
+/// How often a task of a UDP socket warns at most of a receive error that repeats (D174).
+const WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// When a task of a UDP socket last warned of a receive error that repeats. A lone error is logged at debug, as
+/// before; one that repeats leaves the socket deaf, as compio's refused receive before Linux 6.0 did (D174), so it is
+/// warned of, once a [`WARN_EVERY`] at most. Only a failed receive asks: a datagram costs nothing.
+#[derive(Default)]
+struct Warned(Option<Instant>);
+
+impl Warned {
+    /// Whether a receive that failed at `now`, `busy` if for a lack of free buffers, after its task was `before`, is
+    /// to be warned of: an error other than `Busy` following another, with no warning in the last [`WARN_EVERY`].
+    fn due(&mut self, before: Receiving, busy: bool, now: Instant) -> bool {
+        let repeats = !busy && before == Receiving::Failed;
+        let quiet = self
+            .0
+            .is_none_or(|last| now.saturating_duration_since(last) >= WARN_EVERY);
+        if repeats && quiet {
+            self.0 = Some(now);
+        }
+        repeats && quiet
+    }
+}
+
 /// Lets the thread's other tasks run, and the driver complete what it holds, before this one goes on: compio has no
 /// such yield.
 async fn yield_now() {
@@ -211,6 +235,7 @@ async fn udp_queries(
 ) {
     let mut out = outbox.buffer();
     let mut receiving = Receiving::Fine;
+    let mut warned = Warned::default();
     loop {
         // The lock is given back at the end of this statement, before any pause (D107).
         let next = datagrams.lock().await.next().await;
@@ -218,9 +243,14 @@ async fn udp_queries(
         let datagram = match next {
             Some(Ok(datagram)) => datagram,
             Some(Err(error)) => {
-                tracing::debug!(%error, "UDP receive");
+                let busy = error.kind() == io::ErrorKind::ResourceBusy;
+                if warned.due(receiving, busy, Instant::now()) {
+                    tracing::warn!(%error, %listener, "UDP receive fails again, retried every {ERROR_PAUSE:?}");
+                } else {
+                    tracing::debug!(%error, "UDP receive");
+                }
                 // Only this task pauses: the socket's other tasks go on receiving (D107).
-                match receiving.failed(error.kind() == io::ErrorKind::ResourceBusy) {
+                match receiving.failed(busy) {
                     Pause::None => {}
                     Pause::Yield => yield_now().await,
                     Pause::Sleep(pause) => compio::time::sleep(pause).await,
@@ -301,7 +331,7 @@ mod tests {
     use std::pin::pin;
     use std::rc::Rc;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use compio::BufResult;
     use compio::driver::op::RecvFromMultiResult;
@@ -316,7 +346,8 @@ mod tests {
     use socket2::{Domain, Socket, Type};
 
     use super::{
-        BUSY_PAUSE, BUSY_YIELDS, Outbox, Pause, Receiving, UDP_SENDS, send_replies, udp_queries,
+        BUSY_PAUSE, BUSY_YIELDS, Outbox, Pause, Receiving, UDP_SENDS, WARN_EVERY, Warned,
+        send_replies, udp_queries,
     };
     use crate::reload::Current;
     use crate::serve::tests::udp_listener;
@@ -418,6 +449,35 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(receiving.failed(true), Pause::Sleep(BUSY_PAUSE));
         }
+    }
+
+    /// D174: a receive error that repeats is warned of, once a [`WARN_EVERY`] at most; a lone error, or a lack of
+    /// free buffers, is not.
+    #[test]
+    fn a_receive_error_that_repeats_is_warned_about() {
+        let start = Instant::now();
+        let mut warned = Warned::default();
+        assert!(!warned.due(Receiving::Fine, false, start), "a lone error");
+        assert!(
+            !warned.due(Receiving::Busy(2), true, start),
+            "no free buffer"
+        );
+        assert!(
+            !warned.due(Receiving::Busy(2), false, start),
+            "after no free buffer"
+        );
+        assert!(warned.due(Receiving::Failed, false, start));
+        let soon = start + ERROR_PAUSE;
+        assert!(
+            !warned.due(Receiving::Failed, false, soon),
+            "warned already"
+        );
+        assert!(!warned.due(
+            Receiving::Failed,
+            false,
+            start + WARN_EVERY.saturating_sub(ERROR_PAUSE)
+        ));
+        assert!(warned.due(Receiving::Failed, false, start + WARN_EVERY));
     }
 
     /// D123: a socket holds [`UDP_SENDS`] replies for its sender, and the task queueing one more waits for room.

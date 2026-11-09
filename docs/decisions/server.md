@@ -123,7 +123,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
 - D51 (amended by D107, D123) The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,
-  Linux 5.19, the floor for `io_uring`: older kernels serve on `poll`, with a warning at start, D107): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
+  Linux 5.19; `dedensd` serves on `io_uring` from Linux 6.0, older kernels on `poll` with a warning at start, D174): when the thread enters the kernel, instead of interrupting it as a signal does. Forwarding
   (`just bench-dnsperf HEAD forward`): 135k → 158k queries/s; cache hits over UDP and TCP unchanged. Rejected:
   `SINGLE_ISSUER` with `DEFER_TASKRUN` (Linux 6.1), no better (160k); `SQPOLL` (cache hits over UDP 475k → 230k,
   forwarding 155k → 82k). Measured again with D123 (Linux 6.12, six vCPUs, one server core): no better, still
@@ -601,15 +601,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   read as either), `either`, `num-traits` and `smallvec`. Cost in `docs/benchmarks.md`: a verdict is 1.4-24 ns in a
   table of 10 000 networks, a denied query 42 ns with no allocation (161 ns and two allocations when built from a
   `Message`). Not here: blocking by answer address (`docs/TODECIDE.md`).
-- D107 (amends D51, D55, D64; amended by D122, D147) Runtime fixes of audit step 04.
+- D107 (amends D51, D55, D64; amended by D122, D147, D174) Runtime fixes of audit step 04.
   - QUIC datagrams (RFC 9221 §3): both the server (`endpoint`) and `Dialer` set `datagram_receive_buffer_size(None)`.
     quinn's default of 1.25 MB made both advertise `max_datagram_frame_size` and buffer DATAGRAM frames nothing
     reads (RFC 9250 uses streams alone). Now a peer sees `max_datagram_size()` as `None`, which the tests check
     (`tests/quic.rs` of `dedens-net` and `dedensd`). That quinn then closes the connection on a DATAGRAM frame
     (PROTOCOL_VIOLATION, as RFC 9221 §3 requires) is its behaviour, not tested here.
-  - Driver (amends D51): Linux 5.19 is the floor for `io_uring` (`COOP_TASKRUN` and `TASKRUN_FLAG`), with no retry
-    without those flags on EINVAL. compio falls back to `poll` when the ring cannot be made (before 5.19, a
-    seccomp filter, `kernel.io_uring_disabled`), with a `warn!` nobody sees, so the "serving" event has a `driver`
+  - Driver (amends D51): the ring is made with `COOP_TASKRUN` and `TASKRUN_FLAG` (Linux 5.19), with no retry
+    without those flags on EINVAL; Linux 6.0 is the floor for `io_uring` (D174). compio falls back to `poll` when
+    the ring cannot be made (a seccomp filter, `kernel.io_uring_disabled`), with a `warn!` nobody sees, so the "serving" event has a `driver`
     field (`io_uring`, `poll`, or `mixed` if the threads differ), and on Linux a thread on `poll` is a warning at
     start, with the count of threads on it. compio's own logging (its `enable_log` feature) stays off: it
     instruments the driver's hot path, unmeasured. `tests/listeners.rs` expects `io_uring` on Linux, unless
@@ -643,6 +643,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   compio release has the fix; then the patch goes. Rejected: reading one datagram at a time on `poll` in dedensd
   (a second receive path to keep). `serve/mod.rs` tests the fallback by building the runtime on `poll`
   (`a_udp_socket_answers_on_the_poll_driver`), which every Linux and macOS run of the gate does.
+- D174 (amends D107) Linux 6.0 is the floor for `io_uring`: before it, `dedensd` asks for `poll`. compio-driver
+  (D147's commit `8b82dbc`) receives UDP by multishot `recvmsg` from 6.0 only (`sys/op/managed/iour.rs`); before,
+  it pops a buffer from its pool by hand, which the `io_uring` pool refuses (`Unsupported`), so on 5.19 a UDP socket
+  received nothing, its tasks retrying at debug level forever. `serve::runtime` reads the release by `uname` (nix's
+  `feature` feature) and asks for `poll` below 6.0, or when the release does not read
+  (`a_kernel_before_6_0_serves_on_poll`); the start's warning says 6.0. A UDP receive error that repeats is a
+  warning, once a minute at most per task, so a deaf socket shows (`a_receive_error_that_repeats_is_warned_about`);
+  a lone one, or a lack of free buffers, stays at debug. Rejected: a second UDP receive path for 5.19 in `dedensd`;
+  fixing compio's fallback in the D147 patch (upstream's to fix, the patch kept to one fix).
 
 - D106 (amends D71, D74, D75, D77; amended by D117) Validation cost counts what it costs: the debt of the admission bucket stops at
   one burst and a query in debt asks no more, and NSEC3 hashing is counted in SHA-1 blocks, as the salt and the name
@@ -1129,8 +1138,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     gain forwarding (every reply allocates a task, as the queue allocates a `FuturesUnordered` one, and compio a
     cell for each send).
   - Rejected: `SINGLE_ISSUER` with `DEFER_TASKRUN`, with or without `COOP_TASKRUN` (D51 measured again): within
-    noise of `COOP_TASKRUN` in all four modes, no fewer enters; so no `EINVAL` fallback to write, and the floor stays 5.19
-    (D107). Measured again on the final code (2 tasks, 64 queued, five rounds): medians within 0.6% in every mode, and
+    noise of `COOP_TASKRUN` in all four modes, no fewer enters; so no `EINVAL` fallback to write, and the flags
+    stay unconditional (D107). Measured again on the final code (2 tasks, 64 queued, five rounds): medians within 0.6% in every mode, and
     `tcp` 0.0045 → 0.0083 enters a query with `DEFER_TASKRUN`, the other modes equal (`docs/benchmarks.md`).
   - Rejected: `SQPOLL` (D51 again): on the server's core the rates halve; on a core of its own it gains over one core
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
