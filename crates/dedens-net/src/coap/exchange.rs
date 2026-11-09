@@ -232,8 +232,10 @@ pub struct Exchange {
     /// Set when the request body goes out in blocks.
     upload: Option<Upload>,
     download: Option<Download>,
-    /// The ID of the last separate CON response, to ACK it again if repeated (RFC 7252 §4.5).
-    separate_id: Option<u16>,
+    /// The message IDs of the separate responses taken, CON and NON: a repeated CON is acknowledged again, a repeated NON
+    /// dropped, and neither taken again (RFC 7252 §4.5). Each response taken ends the exchange or moves it on by a
+    /// block, so there are as many as blocks.
+    taken: Vec<u16>,
 }
 
 impl Exchange {
@@ -278,7 +280,7 @@ impl Exchange {
             awaiting: Awaiting::Ack,
             upload,
             download: None,
-            separate_id: None,
+            taken: Vec::new(),
         };
         let message = if exchange.upload.is_some() {
             exchange.block1_message(0, exchange.params.block1_size)
@@ -359,17 +361,18 @@ impl Exchange {
                     };
                     return Step::done(Err(Failure::UnknownCriticalOption(number)), send);
                 }
-                let mut send = Vec::new();
-                if confirmable {
-                    send = reply(Type::Acknowledgement, message.id);
-                    if self.separate_id == Some(message.id) {
-                        return Step {
-                            send,
-                            next: Next::Wait(self),
-                        };
-                    }
-                    self.separate_id = Some(message.id);
+                let send = if confirmable {
+                    reply(Type::Acknowledgement, message.id)
+                } else {
+                    Vec::new()
+                };
+                if self.taken.contains(&message.id) {
+                    return Step {
+                        send,
+                        next: Next::Wait(self),
+                    };
                 }
+                self.taken.push(message.id);
                 self.accept(message, send, now)
             }
             _ => {
