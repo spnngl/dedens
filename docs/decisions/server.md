@@ -881,14 +881,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     D113 says).
   - Limits are in `docs/TODECIDE.md`. Tests: `a_client_over_its_share_cannot_shed_another_client`,
     `a_proven_client_is_not_shed_by_the_unproven_ones_of_its_network`, `an_exempt_source_has_no_share`
-    (`dedens-server/tests/dnssec.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
-    (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
+    (`crates/dedens-server/tests/dnssec.rs`, the first written first),
+    `a_query_the_allowance_refuses_keeps_its_unit_of_the_share` (`crates/dedens-server/src/validate.rs`), the unit
+    tests of `crates/dedens-server/src/budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
     `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
-    (`odoh/mod.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/odoh.rs`),
-    `a_client_share_is_set_per_stage_and_reload_keeps_the_keys` (`config/upstream.rs`), `an_odoh_target_has_limits` (`config/keys.rs`). No
+    (`apps/dedensd/src/odoh/mod.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened`
+    (`apps/dedensd/tests/odoh.rs`), `a_client_share_is_set_per_stage_and_reload_keeps_the_keys`
+    (`apps/dedensd/src/config/upstream.rs`), `an_odoh_target_has_limits` (`apps/dedensd/src/config/keys.rs`). No
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
-    `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
-    `decrypt_query_message` (`odoh.rs`).
+    `serve_warm`, `serve_shed` (`crates/dedens-bench/benches/dnssec.rs`), `budget_admit`, `budget_refuse`,
+    `budget_refuse_one_network`, `decrypt_query_message` (`crates/dedens-bench/benches/odoh.rs`).
 
 - D118 (amends D22, D54, D56, D57, D116; amended by D120) Blocklist targets, from the audit (S13, S15): a name is no longer reached by a CNAME to
   a blocked one, and a one-label entry no longer blocks a top-level domain unless asked.
