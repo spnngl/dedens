@@ -24,6 +24,9 @@ pub enum InsecureReason {
     UnsupportedDigest,
     /// The zone's NSEC3 records use more iterations than the limit (RFC 9276 §3.2).
     Nsec3Iterations,
+    /// The question is of type RRSIG: RRSIG records are not signed, so nothing of the answer is verified (RFC 4035
+    /// §2.2, D176).
+    RrsigQuery,
 }
 
 impl fmt::Display for InsecureReason {
@@ -36,6 +39,7 @@ impl fmt::Display for InsecureReason {
             Self::UnsupportedAlgorithm => "the zone is signed with an unsupported algorithm",
             Self::UnsupportedDigest => "the DS records are of an unsupported digest type",
             Self::Nsec3Iterations => "the NSEC3 records use too many iterations",
+            Self::RrsigQuery => "RRSIG records are not signed",
         })
     }
 }
@@ -48,7 +52,11 @@ impl InsecureReason {
             Self::UnsupportedAlgorithm => Some(InfoCode::UNSUPPORTED_DNSKEY_ALGORITHM),
             Self::UnsupportedDigest => Some(InfoCode::UNSUPPORTED_DS_DIGEST_TYPE),
             Self::Nsec3Iterations => Some(InfoCode::UNSUPPORTED_NSEC3_ITERATIONS),
-            Self::NoAnchor | Self::NegativeAnchor | Self::UnsignedDelegation | Self::OptOut => None,
+            Self::NoAnchor
+            | Self::NegativeAnchor
+            | Self::UnsignedDelegation
+            | Self::OptOut
+            | Self::RrsigQuery => None,
         }
     }
 }
