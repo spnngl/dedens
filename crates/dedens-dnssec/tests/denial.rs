@@ -14,7 +14,7 @@ mod nsec3 {
     use dedens_testkit::dnssec::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, signed_data};
     use dedens_testkit::zone;
 
-    use crate::util::denial::{nsec3_salted, nsec3_with, pick, prove, prove_wildcard};
+    use crate::util::denial::{nsec3_salted, nsec3_typed, nsec3_with, pick, prove, prove_wildcard};
     use crate::util::name;
 
     const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
@@ -347,6 +347,17 @@ mod nsec3 {
     fn closest_encloser_is_not_a_delegation() {
         assert_eq!(
             prove(APEX, "x.a.example.", RecordType::A, &nsec3s(&[A])),
+            Err(Unproven::EncloserBelowCut)
+        );
+    }
+
+    /// §8.3, RFC 6840 §4.1: below a DNAME there are no names of the zone either, so its owner is no closest encloser.
+    /// Derived: the bitmap of the real record of `a.example.` is rewritten to a DNAME's, no NS.
+    #[test]
+    fn closest_encloser_is_not_a_dname_owner() {
+        let dname = nsec3_typed(&nsec3s(&[A])[0], &[RecordType::DNAME, RecordType::RRSIG]);
+        assert_eq!(
+            prove(APEX, "x.a.example.", RecordType::A, &[dname]),
             Err(Unproven::EncloserBelowCut)
         );
     }
