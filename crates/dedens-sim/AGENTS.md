@@ -13,6 +13,8 @@ scenario. A run must replay from its seed; these rules keep it so.
   module, with a scenario that uses it.
 - Scenarios go through `seed::each`, never a literal seed alone.
 - A scenario that needs something the driver lacks adds it to `src/`, small, rather than a copy in `tests/`.
+- An upstream server or an event count two families use is in `tests/util.rs` (`answers`, `served`, `forwarded`); a
+  family's own variant is named for how it differs (`forwarded_to`, `tried_over_udp`), never a shared name.
 - A scenario that changes the cache's `min_ttl` or `stale_answer_ttl` sets the oracle's `Rules::floor` and
   `stale_ttl` to match.
 

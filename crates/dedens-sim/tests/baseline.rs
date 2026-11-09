@@ -26,7 +26,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 
-use crate::util::{SECOND, SEEDS};
+use crate::util::{SECOND, SEEDS, answers, served};
 
 /// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time, and
 /// the module keeps to its budget.
@@ -53,13 +53,6 @@ fn run(seed: Seed, carrier: Carrier, asks: usize) -> Vec<Event> {
         Ok(())
     });
     world.run().expect("the run passes its checks")
-}
-
-fn served(events: &[Event]) -> usize {
-    events
-        .iter()
-        .filter(|event| matches!(event.what, What::Served { .. }))
-        .count()
 }
 
 #[test]
@@ -154,7 +147,7 @@ fn an_upstream_that_refuses_ends_in_servfail() {
 #[test]
 fn an_upstream_that_is_out_of_reach_ends_in_servfail_or_a_failure() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(Duration::ZERO, Fault::Partition(LINK.0, LINK.1));
         });
         let ends = ends(&events);
@@ -208,10 +201,6 @@ fn ask_once(seed: Seed, answers: Answers, setup: impl FnOnce(&mut World)) -> Vec
     world.run().expect("the run passes its checks")
 }
 
-fn a() -> Answers {
-    Answers::new().captured("a")
-}
-
 /// Whether a client got the two records of the captured response.
 fn got_the_records(events: &[Event]) -> bool {
     events.iter().any(|event| {
@@ -255,7 +244,7 @@ fn most_sends(events: &[Event]) -> u16 {
 #[test]
 fn a_lossy_link_ends_in_the_records_or_a_failure_the_resolver_names() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(
                 Duration::ZERO,
                 Fault::Loss {
@@ -290,7 +279,7 @@ fn a_lossy_link_ends_in_the_records_or_a_failure_the_resolver_names() {
 #[test]
 fn slow_links_reorder_but_the_answer_is_the_same() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(
                 Duration::ZERO,
                 Fault::Latency {
@@ -308,7 +297,7 @@ fn slow_links_reorder_but_the_answer_is_the_same() {
 #[test]
 fn the_resolver_asks_again_when_a_partition_ends() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(Duration::ZERO, Fault::Partition(LINK.0, LINK.1));
             let end = world.pick(SECOND, 2 * SECOND);
             world.fault(end, Fault::Repair(LINK.0, LINK.1));
@@ -320,7 +309,7 @@ fn the_resolver_asks_again_when_a_partition_ends() {
 #[test]
 fn answers_that_do_not_come_back_are_asked_for_again() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(
                 Duration::ZERO,
                 Fault::PartitionOneWay {
@@ -346,7 +335,7 @@ fn answers_that_do_not_come_back_are_asked_for_again() {
 #[test]
 fn a_held_query_arrives_when_released() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             world.fault(Duration::ZERO, Fault::Hold(LINK.0, LINK.1));
             let release = world.pick(Duration::from_millis(200), SECOND);
             world.fault(release, Fault::Release(LINK.0, LINK.1));
@@ -358,7 +347,7 @@ fn a_held_query_arrives_when_released() {
 #[test]
 fn a_resolver_that_restarts_answers_the_second_try() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a(), |world| {
+        let events = ask_once(seed, answers(), |world| {
             // Before the stub's first query, which is 5 ms into the run.
             let crash = world.pick(Duration::ZERO, Duration::from_millis(4));
             let bounce = crash + world.pick(SECOND, 2 * SECOND);
@@ -402,7 +391,7 @@ fn forged_and_late_datagrams_from_the_server_do_not_change_the_answer() {
                 },
             ])
         });
-        let events = ask_once(seed, a().attacked_by(attacker), |_| {});
+        let events = ask_once(seed, answers().attacked_by(attacker), |_| {});
         let injected = events
             .iter()
             .filter(|event| matches!(event.what, What::Injected { .. }))
@@ -417,7 +406,7 @@ fn the_run_starts_at_its_epoch() {
     seed::each(SEEDS, |seed| {
         let epoch = Duration::from_secs(1_700_000_000);
         let mut world = Topology::new()
-            .upstream(a())
+            .upstream(answers())
             .epoch(UNIX_EPOCH + epoch)
             .build(seed);
         world.client(async move |_| {
@@ -605,7 +594,7 @@ fn the_cache_follows_the_clock() {
     seed::each(SEEDS, |seed| {
         let ttl = 5;
         let mut world = Topology::new()
-            .upstream(a())
+            .upstream(answers())
             .resolver(move |upstreams| {
                 let config = Config {
                     min_ttl: 1,
@@ -634,7 +623,7 @@ fn the_cache_follows_the_clock() {
 #[test]
 fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(a()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         for _ in 0..2 {
             world.client(async move |stub| {
                 stub.ask(question("example.com", RecordType::A), Carrier::Udp)
@@ -664,7 +653,7 @@ fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
 #[test]
 fn a_tcp_query_to_a_crashed_resolver_gives_up_connecting_at_the_idle_timeout() {
     seed::each(FEW, |seed| {
-        let mut world = Topology::new().upstream(a()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         world.fault(Duration::ZERO, Fault::Crash(Server::Resolver));
         world.client(async move |stub| {
             // The first step of the run is the crash.
@@ -687,7 +676,7 @@ fn a_tcp_query_to_a_crashed_resolver_gives_up_connecting_at_the_idle_timeout() {
 #[test]
 fn a_port_nobody_listens_on_refuses_the_connection() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(a()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         let resolver = world.resolver;
         world.client(async move |stub| {
             let query = Message::query(0, question("example.com", RecordType::A));
@@ -707,7 +696,7 @@ fn a_port_nobody_listens_on_refuses_the_connection() {
 fn a_cache_answers_stale_when_the_server_is_out_of_reach() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new()
-            .upstream(a())
+            .upstream(answers())
             .resolver(|upstreams| {
                 let config = Config {
                     min_ttl: 1,
@@ -755,7 +744,7 @@ fn a_cache_answers_stale_when_the_server_is_out_of_reach() {
 fn a_client_at_an_address_of_its_choice_asks_from_there() {
     seed::each(SEEDS, |seed| {
         let ip = std::net::IpAddr::from([10, 1, 2, 3]);
-        let mut world = Topology::new().upstream(a()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         world.client_at(ip, async move |stub| {
             stub.ask(question("example.com", RecordType::A), Carrier::Udp)
                 .await?;
@@ -774,7 +763,7 @@ fn a_client_at_an_address_of_its_choice_asks_from_there() {
 #[test]
 fn expect_wants_the_data_where_the_path_is_up() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(a()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         world.client(async move |stub| {
             let answer = stub
                 .expect(question("example.com", RecordType::A), Carrier::Udp)
@@ -807,7 +796,7 @@ fn a_server_that_refuses_the_connection_is_skipped_for_the_next() {
         // The resolver forwards a query that came over TCP over TCP, first to a port nobody listens on: the error is
         // the network's, not the query's, so the question goes on to the next server and is not abandoned (D46).
         let mut world = Topology::new()
-            .upstream(a())
+            .upstream(answers())
             .resolver(|upstreams| {
                 let nobody = SocketAddr::new(upstreams[0].ip(), 54);
                 pipeline_with(Config::default(), &[nobody, upstreams[0]])
@@ -837,7 +826,7 @@ fn an_attacker_that_silences_the_server_leaves_the_forgery_alone() {
             }]),
             None => Reaction::instead(Vec::new()),
         });
-        let events = ask_once(seed, a().attacked_by(attacker), |_| {});
+        let events = ask_once(seed, answers().attacked_by(attacker), |_| {});
         // The server did not answer, and the resolver did not take the forgery for its answer.
         assert_eq!(served(&events), 0, "{events:#?}");
         assert!(!got_the_records(&events), "{events:#?}");
@@ -847,7 +836,7 @@ fn an_attacker_that_silences_the_server_leaves_the_forgery_alone() {
 #[test]
 fn a_silent_server_ends_in_servfail_or_a_failure() {
     seed::each(FEW, |seed| {
-        let events = ask_once(seed, a().silent(), |_| {});
+        let events = ask_once(seed, answers().silent(), |_| {});
         assert_eq!(served(&events), 0, "{events:#?}");
         assert!(!got_the_records(&events), "{events:#?}");
     });
@@ -856,7 +845,11 @@ fn a_silent_server_ends_in_servfail_or_a_failure() {
 #[test]
 fn a_slow_server_still_answers() {
     seed::each(SEEDS, |seed| {
-        let events = ask_once(seed, a().faulty(|_, _| Verdict::Delay(SECOND / 2)), |_| {});
+        let events = ask_once(
+            seed,
+            answers().faulty(|_, _| Verdict::Delay(SECOND / 2)),
+            |_| {},
+        );
         assert!(got_the_records(&events), "{events:#?}");
     });
 }
@@ -864,7 +857,9 @@ fn a_slow_server_still_answers() {
 /// Asks `example.com A` over TCP to a server that behaves as `behaviour` over it, and says whether the client got
 /// its records.
 fn tcp_gets_the_records(seed: Seed, behaviour: Behaviour) -> bool {
-    let mut world = Topology::new().upstream(a().tcp(behaviour)).build(seed);
+    let mut world = Topology::new()
+        .upstream(answers().tcp(behaviour))
+        .build(seed);
     let got = Rc::new(Cell::new(false));
     let reported = Rc::clone(&got);
     world.client(async move |stub| {
@@ -893,7 +888,7 @@ fn a_server_that_closes_or_stays_silent_over_tcp_gives_no_records() {
 fn a_server_closes_a_connection_after_the_queries_it_was_told_to_answer() {
     seed::each(FEW, |seed| {
         let mut world = Topology::new()
-            .upstream(a().tcp(Behaviour::Close(2)))
+            .upstream(answers().tcp(Behaviour::Close(2)))
             .build(seed);
         let server = world.upstreams[0];
         world.client(async move |_| {

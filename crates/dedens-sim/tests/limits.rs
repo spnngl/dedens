@@ -51,7 +51,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::Answers;
 
-use crate::util::{SECOND, SEEDS};
+use crate::util::{SECOND, SEEDS, answers, forwarded};
 
 /// Fewer seeds for the scenarios that run through the stub's timeouts or validate.
 const FEW: &[u64] = &[0, 7];
@@ -84,11 +84,6 @@ fn network(prefix: [u8; 3]) -> Network {
     format!("{a}.{b}.{c}.0/24")
         .parse()
         .expect("a network of IPv4")
-}
-
-/// A server that holds `example.com A`.
-fn answers() -> Answers {
-    Answers::new().captured("a")
 }
 
 /// The secret of the resolver's cookies, and another a forger may hold.
@@ -316,14 +311,6 @@ fn add(world: &mut World, subnet: Subnet, cookies: bool) {
             Ok(())
         });
     }
-}
-
-/// The queries the resolver sent upstream.
-fn forwarded(events: &[Event]) -> usize {
-    events
-        .iter()
-        .filter(|event| matches!(event.what, What::Forwarded { .. }))
-        .count()
 }
 
 /// The error code of a reply.

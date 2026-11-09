@@ -39,7 +39,10 @@ use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 use turmoil::net::UdpSocket;
 
-use crate::util::{FORWARD_TIMEOUT, FORWARD_TRIES, SECOND, SEEDS, TIMEOUT, TRIES};
+use crate::util::{
+    FORWARD_TIMEOUT, FORWARD_TRIES, SECOND, SEEDS, TIMEOUT, TRIES, answers_and_txt, forwarded,
+    served, served_over,
+};
 
 /// Fewer seeds for the scenarios in which a query runs through all its timeouts: each costs the most wall time.
 const FEW: &[u64] = &[0, 7];
@@ -50,13 +53,6 @@ const ONE: &[u64] = &[0];
 /// The link between the one client and the resolver, and the one between the resolver and the upstream server.
 const STUB_LINK: (Node, Node) = (Node::Client(0), Node::Resolver);
 const UPSTREAM_LINK: (Node, Node) = (Node::Resolver, Node::Upstream(0));
-
-/// A server that holds `example.com A` and `google.com TXT` (truncated over UDP).
-fn answers() -> Answers {
-    Answers::new()
-        .captured("a")
-        .truncating("truncated", "txt_large")
-}
 
 /// `fault` on `link`, as each way.
 fn loss(link: (Node, Node), rate: f64) -> Fault {
@@ -99,24 +95,9 @@ impl Run {
         self.events.iter().filter(|event| what(&event.what)).count()
     }
 
-    /// Responses an upstream server sent.
-    fn served(&self) -> usize {
-        self.count(|what| matches!(what, What::Served { .. }))
-    }
-
-    /// Responses an upstream server sent over `transport`.
-    fn served_over(&self, over: Transport) -> usize {
-        self.count(|what| matches!(what, What::Served { transport, .. } if *transport == over))
-    }
-
     /// Replies the resolver sent: one for each query that reached it.
     fn replied(&self) -> usize {
         self.count(|what| matches!(what, What::Replied { .. }))
-    }
-
-    /// Times the resolver started asking an upstream server.
-    fn forwarded(&self) -> usize {
-        self.count(|what| matches!(what, What::Forwarded { .. }))
     }
 
     /// The transports of the queries the resolver sent, in order, with their count in their exchange.
@@ -197,7 +178,7 @@ fn ask_once(
 /// [`ask_once`] for `example.com A`, which has two records.
 fn ask_a(seed: Seed, after: Duration, setup: impl FnOnce(&mut World)) -> Run {
     let ask = question("example.com", RecordType::A);
-    ask_once(seed, answers(), ask, after, setup)
+    ask_once(seed, answers_and_txt(), ask, after, setup)
 }
 
 fn is_records(what: &What) -> bool {
@@ -268,9 +249,13 @@ fn a_lost_query_or_response_costs_one_try() {
                 }
                 assert_eq!(run.replied(), reached as usize, "{lost} {query:?}");
                 // The resolver asked the server once: its cache answered the tries that came again.
-                assert_eq!(run.served(), usize::from(reached > 0), "{lost} {query:?}");
                 assert_eq!(
-                    run.forwarded(),
+                    served(&run.events),
+                    usize::from(reached > 0),
+                    "{lost} {query:?}"
+                );
+                assert_eq!(
+                    forwarded(&run.events),
                     usize::from(reached > 0),
                     "{lost} {query:?}"
                 );
@@ -310,7 +295,7 @@ fn a_lossy_stub_link_ends_in_the_records_or_a_timeout_after_every_try() {
                 assert_took(&query, TIMEOUT * TRIES);
             }
             // However many tries came, the server was asked at most once: the cache kept its answer.
-            assert!(run.served() <= 1, "{rate} {query:?}");
+            assert!(served(&run.events) <= 1, "{rate} {query:?}");
         }
     });
 }
@@ -357,7 +342,7 @@ fn a_dead_upstream_link_ends_in_servfail_when_the_forward_stage_gives_up() {
         assert_eq!(query.sends, 2, "{query:?}");
         assert_took(&query, FORWARD_TIMEOUT * FORWARD_TRIES);
         assert_eq!(run.forward_tries(), FORWARD_TRIES, "{query:?}");
-        assert_eq!(run.served(), 0, "{query:?}");
+        assert_eq!(served(&run.events), 0, "{query:?}");
     });
 }
 
@@ -366,7 +351,7 @@ fn a_stub_that_waits_on_tcp_past_the_forward_stage_gets_servfail() {
     seed::each(FEW, |seed| {
         // The server takes the connection and never answers: the resolver asks over TCP as the stub did.
         let mut world = Topology::new()
-            .upstream(answers().tcp(Behaviour::Silent))
+            .upstream(answers_and_txt().tcp(Behaviour::Silent))
             .build(seed);
         world.client(async move |stub| {
             // The resolver's 6 s outlast the stub's try of 5 s: its second try answers.
@@ -442,7 +427,7 @@ fn a_response_later_than_the_forward_timeout_still_ends_the_forward_exchange() {
             assert_eq!(run.forward_tries(), forward_tries, "{one_way:?} {query:?}");
             // The stub never ran out of time, and the resolver's second try had not reached the server.
             assert_eq!(query.sends, 1, "{one_way:?} {query:?}");
-            assert_eq!(run.served(), 1, "{one_way:?} {query:?}");
+            assert_eq!(served(&run.events), 1, "{one_way:?} {query:?}");
             assert_took(&query, 2 * one_way);
         }
     });
@@ -476,7 +461,7 @@ fn a_late_response_to_the_first_try_does_not_send_a_changed_query_again() {
         // response, truncated, has the exchange ask again over TCP, which the server answers after a second. The
         // first response arrives during that, and nothing comes of it: one query over TCP, no more.
         let calls = std::cell::Cell::new(0);
-        let server = answers().faulty(move |_, _| {
+        let server = answers_and_txt().faulty(move |_, _| {
             calls.set(calls.get() + 1);
             match calls.get() {
                 1 => Verdict::Delay(SECOND * 7 / 2),
@@ -505,8 +490,8 @@ fn a_late_response_to_the_first_try_does_not_send_a_changed_query_again() {
             ],
             "{query:?}"
         );
-        assert_eq!(run.served_over(Transport::Tcp), 1, "{query:?}");
-        assert_eq!(run.served_over(Transport::Udp), 2, "{query:?}");
+        assert_eq!(served_over(&run.events, Transport::Tcp), 1, "{query:?}");
+        assert_eq!(served_over(&run.events, Transport::Udp), 2, "{query:?}");
         assert_eq!(query.sends, 1, "{query:?}");
     });
 }
@@ -517,7 +502,7 @@ fn a_truncated_response_whose_tcp_retry_is_lost_fails_after_the_tries_without_ha
         // The server is asked directly: TC over UDP, then the query over TCP, which it never answers. The fallback is
         // a send, not a try (D31): the TCP query is sent on each of the three timeouts.
         let mut world = Topology::new()
-            .upstream(answers().tcp(Behaviour::Silent))
+            .upstream(answers_and_txt().tcp(Behaviour::Silent))
             .build(seed);
         let server = world.upstreams[0];
         let resolver = world.resolver.ip();
@@ -541,7 +526,7 @@ fn a_truncated_response_whose_tcp_connection_closes_fails_at_once() {
     seed::each(FEW, |seed| {
         // A server that closes each connection as it is made: the client tries a second, then gives up (D27).
         let mut world = Topology::new()
-            .upstream(answers().tcp(Behaviour::Close(0)))
+            .upstream(answers_and_txt().tcp(Behaviour::Close(0)))
             .build(seed);
         let server = world.upstreams[0];
         let resolver = world.resolver.ip();
@@ -565,7 +550,7 @@ fn an_upstream_that_truncates_and_loses_the_tcp_retry_ends_in_servfail() {
     seed::each(FEW, |seed| {
         let run = ask_once(
             seed,
-            answers().tcp(Behaviour::Silent),
+            answers_and_txt().tcp(Behaviour::Silent),
             question("google.com", RecordType::TXT),
             Duration::ZERO,
             |_| {},
@@ -593,7 +578,7 @@ fn an_upstream_that_truncates_and_loses_the_tcp_retry_ends_in_servfail() {
 fn responses_in_another_order_end_the_exchange_of_their_own_query() {
     seed::each(SEEDS, |seed| {
         // Those of `example.com A` wait a second at the server: the TXT response, sent last, comes first.
-        let server = answers().faulty(|ask, _| {
+        let server = answers_and_txt().faulty(|ask, _| {
             if ask.qtype == RecordType::A {
                 Verdict::Delay(SECOND)
             } else {
@@ -671,7 +656,7 @@ fn responses_in_another_order_end_the_exchange_of_their_own_query() {
 #[test]
 fn several_tcp_connections_at_once_each_get_their_own_answer() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(answers()).build(seed);
+        let mut world = Topology::new().upstream(answers_and_txt()).build(seed);
         let asks = [
             ("example.com", RecordType::A, 2),
             ("google.com", RecordType::TXT, 0),
@@ -721,7 +706,7 @@ fn several_tcp_connections_at_once_each_get_their_own_answer() {
 #[test]
 fn an_answer_in_the_cache_serves_the_queries_a_lossy_network_repeats_without_the_server() {
     seed::each(ONE, |seed| {
-        let mut world = Topology::new().upstream(answers()).build(seed);
+        let mut world = Topology::new().upstream(answers_and_txt()).build(seed);
         // The links turn lossy after the first answer, which a sound network got.
         for link in [STUB_LINK, UPSTREAM_LINK] {
             world.fault(SECOND / 2, loss(link, 0.5));
@@ -749,8 +734,8 @@ fn an_answer_in_the_cache_serves_the_queries_a_lossy_network_repeats_without_the
             resolver,
         };
         // One question went to the server, once, and one response went into the cache.
-        assert_eq!(run.forwarded(), 1, "{:#?}", run.events);
-        assert_eq!(run.served(), 1, "{:#?}", run.events);
+        assert_eq!(forwarded(&run.events), 1, "{:#?}", run.events);
+        assert_eq!(served(&run.events), 1, "{:#?}", run.events);
         assert_eq!(
             run.count(|what| matches!(what, What::Stored { .. })),
             1,
@@ -774,7 +759,7 @@ const DELAYS_MS: [u64; 5] = [0, 200, 2_000, 4_000, 7_000];
 fn lossy(seed: Seed) -> Run {
     // The links are lossy and slow as the oracle's bounds and the duration of the run allow.
     let mut world = Topology::new()
-        .upstream(answers())
+        .upstream(answers_and_txt())
         .duration(15 * 60 * SECOND)
         .build(seed);
     for link in [
@@ -855,13 +840,16 @@ fn whatever_the_links_lose_and_delay_queries_end_well() {
         let sent = run.sent_by_the_resolver();
         let over = |transport| sent.iter().filter(|(_, sent)| *sent == transport).count();
         assert!(
-            run.served_over(Transport::Udp) <= over(Transport::Udp),
+            served_over(&run.events, Transport::Udp) <= over(Transport::Udp),
             "{events:#?}"
         );
         let received = run.count(
             |what| matches!(what, What::Received { transport } if *transport == Transport::Tcp),
         );
-        assert!(run.served_over(Transport::Tcp) <= received, "{events:#?}");
+        assert!(
+            served_over(&run.events, Transport::Tcp) <= received,
+            "{events:#?}"
+        );
     });
 }
 
