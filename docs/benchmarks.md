@@ -124,6 +124,15 @@ The median of the 10 runs' medians (`encode_64k` and `encode_truncated_dedens` i
 | server `miss` `a`/`mx`/`txt_large` | 760/1249/1581 | 760/1234/1571 | 0.0/-1.2/-0.7 | 6/8/5 |
 | server `plugin` | 56.3 | 55.8 | -0.9 | 7 |
 
+### The suffix search by `partition_point`
+
+The hand-written binary search of `Writer::put_name_found` for the longest suffix held, replaced by `partition_point`
+and one lookup of the suffix at its index: dropped. Measured as above, the base 9eb4376, 10 rounds, linked by
+Apple's `ld` (D166), beside another agent's build (load 12 to 23 on 10 cores): `encode_64k` `deep_fresh` 3302 to
+4136 µs (+25%, noise 15%, every round of the change slower than every round of the base); the other measures of the
+table above within their noise. `partition_point` always narrows to one suffix and then compares it, and the suffix
+at its index is looked up again: 9 lookups for a `deep_fresh` name of 110 labels, against 7.
+
 ## Unbound (D14)
 
 Unbound 1.26.2, `just bench-unbound` (`-O2`, median of 101 samples), next to `cargo bench -p dedens-bench` in

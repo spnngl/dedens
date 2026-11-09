@@ -407,7 +407,8 @@ impl<'a> Writer<'a> {
             .find_map(|(i, &suffix)| find(suffix).map(|target| (i, suffix.start(), target)));
         if found.is_none() {
             // The table holds every suffix of a name it holds (see below), so the suffixes held are the last
-            // ones: a binary search finds the first, and a name of a hundred labels costs a few lookups.
+            // ones: a binary search finds the first, and a name of a hundred labels costs a few lookups. By hand:
+            // `partition_point` makes two lookups more (docs/benchmarks.md).
             let (mut low, mut high) = (head, hashes.len());
             while low < high {
                 let mid = low + (high - low) / 2;
