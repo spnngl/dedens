@@ -49,7 +49,8 @@ Planned: `dedens-resolver`.
 
 ## Documents
 
-- [`docs/decisions.md`](docs/decisions.md): every design choice and its reason (`Dn`).
+- [`docs/decisions/`](docs/decisions/README.md): every design choice and its reason (`Dn`), a file per section and
+  an index.
 - [`docs/TODECIDE.md`](docs/TODECIDE.md): open questions with proposed defaults.
 - [`tests/interop/`](tests/interop/odoh.py): `dedensd` as an Oblivious DoH target for Cloudflare's `odoh-rs`
   (`just odoh-interop`, by hand, needs `uv` and the network); `just odoh-live` asks public targets (D79).

@@ -14,6 +14,6 @@ replays that nonce reproduces the response byte for byte (AES-GCM is determinist
 
 The vectors hold no ephemeral key to replay, so the client side reads the `obliviousResponse`s through a
 context made from the target's secrets (a unit test of `crates/dedens-odoh/src/client.rs`), and encrypts by round trips and the live
-exchange recorded in `docs/decisions.md` (D78).
+exchange recorded in `docs/decisions/transports.md` (D78).
 
 RFC 9180's own vectors (Appendix A.1.1) are in `crates/dedens-odoh/tests/hpke.rs`.

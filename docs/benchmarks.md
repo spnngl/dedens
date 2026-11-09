@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measurements behind the performance decisions (`decisions.md`). Apple M-series, divan medians of one run unless
+Measurements behind the performance decisions (`decisions/`). Apple M-series, divan medians of one run unless
 stated; `just bench` reruns them. `a`, `mx`, `txt_large` are the captured responses of 72, 161 and 1187 bytes.
 
 Medians swing up to 2x between runs (threads move between P and E cores): compare a change on instructions and

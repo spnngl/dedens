@@ -1,0 +1,164 @@
+# Decisions
+
+Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
+number, and gets its line below; a number is never reused. A replaced decision is marked superseded, and an amendment
+is named in both headers (`amends D2` in one, `amended by D5` in the other). A line below: the section file, a gist,
+and the header's `amended by`, `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the
+numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions:
+[`TODECIDE.md`](../TODECIDE.md).
+
+- D1 [scope](scope.md): crates per ARCHITECTURE.md, all on dedens-proto; CLI and server separate binaries
+- D2 [scope](scope.md) (amended by D60, D69): order: unencrypted core DNS, stub resolver and CLI first, then the rest
+- D3 [scope](scope.md): own wire format; hickory-dns and domain are reference code only
+- D4 [scope](scope.md): runtime: compio, io_uring on Linux, polling where it is blocked
+- D5 [scope](scope.md): dedens-proto is sans-IO
+- D6 [scope](scope.md): Linux and macOS; pinned stable and a dated nightly; MSRV 1.95
+- D7 [wire format](wire-format.md): `Name`: wire bytes, case kept, compared case-insensitively
+- D7a [wire format](wire-format.md) (amended by D139): decoding borrows; variable-length values stay checked wire bytes
+- D8 [wire format](wire-format.md): `Message` lifts EDNS out of the additional section
+- D9 [wire format](wire-format.md): decoder bounds compression pointers; unknown types opaque; fuzzed
+- D10 [wire format](wire-format.md) (amended by D112): encoder writes into a caller buffer without allocating; compresses names
+- D11 [wire format](wire-format.md): typed RDATA list; other types opaque, compressible names expanded
+- D12 [wire format](wire-format.md) (amended by D159): typed EDNS options and SVCB keys; others opaque
+- D13 [wire format](wire-format.md) (amended by D159, D162): topic modules; RDATA and conformance tests by RFC
+- D14 [performance and safety](performance-and-safety.md): speed bar: no slower than hickory-proto, baselines in the same benches
+- D15 [performance and safety](performance-and-safety.md): `unsafe` only on a measured hot path; crate roots forbid it
+- D16 [performance and safety](performance-and-safety.md): checks beyond the gate, each added with its trigger
+- D17 [CLI](cli.md) (superseded by D36): query files in JSON or YAML
+- D18 [CLI](cli.md): `dedens`: dig argv, query files, output for humans or scripts
+- D19 [wire format](wire-format.md): codes are newtypes with named constants, not enums
+- D20 [wire format](wire-format.md) (superseded by D28): `MessageView` reads a message in place for the hot path
+- D21 [wire format](wire-format.md): `Query` reads a query in place; `Edns::append` adds OPT to bytes
+- D22 [performance and safety](performance-and-safety.md) (amended by D114, D116, D118, D124): response cache `dedens-cache`: sharded, S3-FIFO, serve-stale, failure holds
+- D23 [server](server.md) (amended by D54): pipeline: each listener runs an ordered chain of stages from config
+- D24 [server](server.md) (narrowed by D44): configuration: merged directory of TOML, YAML or JSON; errors, not warnings
+- D25 [presentation format](presentation-format.md): zone text: own lexer, BIND TTL units, `\#` for every type
+- D26 [transports](transports.md) (amended by D133, D134): `dedens-net`: sans-IO client core, a thin compio layer moves bytes
+- D27 [transports](transports.md) (amended by D50, D53, D108, D114): client behaviour: UDP socket pool, random IDs, matching, fallbacks
+- D28 [wire format](wire-format.md): `Record` keeps RDATA as checked wire bytes with its type
+- D29 [presentation format](presentation-format.md): a quoted string ends on its line, as in BIND
+- D30 [observability](observability.md): metrics and tracing facades behind each library's Cargo features
+- D31 [transports](transports.md) (amended by D68, D114): sans-IO exchange takes the whole query, owns no randomness or secret
+- D32 [CLI](cli.md) (amended by D76, D169): CLI arguments: a pre-pass turns dig tokens into long flags
+- D33 [CLI](cli.md): exit codes of `dedens`
+- D34 [CLI](cli.md) (amended by D76): query file schema
+- D35 [CLI](cli.md) (superseded by D37): `--json` as JSON lines
+- D36 [CLI](cli.md): query files in `dedens-scenario`, YAML, reused by the server's tests
+- D37 [CLI](cli.md) (amended by D76): `--format human|short|json|yaml`, each response printed when ready
+- D38 [CLI](cli.md): several `@servers`: each query asked of each
+- D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
+- D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
+- D41 [server](server.md) (amended by D43, D46, D77, D111, D114): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
+- D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
+- D43 [server](server.md) (amended by D45, D46, D77, D114, D124): cache stage in the pipeline, time passed in by the caller
+- D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
+- D45 [server](server.md) (amended by D77, D115): upstream timeout and the client response timer (RFC 8767)
+- D46 [server](server.md) (amended by D121): review fixes to D41-D45: a query without RD gets fresh data only
+- D47 [server](server.md) (amended by D64, D90, D91, D113): `dedensd` limits per thread: upstream queries, TCP connections
+- D48 [server](server.md) (amended by D123): several tasks answer on each UDP socket of a thread
+- D49 [server](server.md): UDP queries land in per-thread buffer pools, multishot on Linux
+- D50 [server](server.md) (amended by D108): upstream UDP queries share a fixed socket pool per server
+- D51 [server](server.md) (amended by D107, D123): io_uring runs completion work cooperatively; older kernels use poll
+- D52 [server](server.md) (superseded by D63): TCP replies after upstream reuse kept 65535-byte buffers
+- D53 [server](server.md): upstream TCP writer sends queued queries in one write
+- D54 [server](server.md) (amended by D64, D110, D118, D120): plugins: a `Plugin` trait object as a stage
+- D55 [server](server.md) (amended by D64, D107, D122): `dedensd` reloads its configuration file on SIGHUP
+- D56 [server](server.md) (amended by D118, D120): blocklist contents: the line formats read
+- D57 [server](server.md) (amended by D64, D104, D115, D118, D120): `dedensd` downloads blocklists and allowlists with `ureq`
+- D58 [server](server.md) (amended by D110, D120): a blocklist holds a keyed 64-bit SipHash of each name
+- D59 [wire format](wire-format.md): fixed wire layouts are `zerocopy` big-endian structs
+- D60 [transports](transports.md): encrypted transports before DNSSEC; DoT is TLS over D27's TCP
+- D61 [transports](transports.md) (amended by D109, D119): DoQ through compio's QUIC, no QUIC of our own
+- D62 [transports](transports.md) (amended by D82, D83): DoH waits for compio's tokio I/O traits; no adapter of our own
+- D63 [server](server.md) (amended by D123): one 65535-byte reply buffer per thread, replies copied out
+- D64 [server](server.md) (amended by D104, D107, D121): review fixes to D44, D47, D54, D55 and D57
+- D65 [server](server.md) (amended by D84): each upstream of a forward stage has its own transport
+- D66 [server](server.md) (amended by D115, D122): `dedensd` answers over TLS and QUIC
+- D67 [CLI](cli.md): public resolvers in `docs/providers/providers.yaml`, measured
+- D68 [transports](transports.md): tries exhausted after cookie-dropped responses fail as `Forged`
+- D69 [scope](scope.md) (amended by D71, D74, D75, D76, D78, D79, D80): DNSSEC before the recursive resolver: a validating stub and forwarder
+- D70 [wire format](wire-format.md) (amended by D159): typed DNSSEC RDATA: DS, DNSKEY, RRSIG, NSEC, NSEC3 and kin
+- D71 [scope](scope.md) (amended by D73, D106): DNSSEC crypto on `ring`; which algorithms validate
+- D72 [scope](scope.md): trust anchors per zone, negative ones, the root's bundled
+- D73 [scope](scope.md): `rrsig` authenticates one RRset with one DNSKEY RRset
+- D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
+- D75 [scope](scope.md) (amended by D86, D106): sans-IO `Validator`, driven by the caller, within limits
+- D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
+- D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124): a forward stage validates with `dnssec: validate`
+- D78 [transports](transports.md) (amended by D79): ODoH crypto in `dedens-odoh`, sans-IO, the one required suite
+- D79 [transports](transports.md) (amended by D94, D115, D117): ODoH over HTTP/3: `dedens` asks through a proxy, `dedensd` is a target
+- D80 [transports](transports.md): CoAP is our own sans-IO codec, for DoC
+- D81 [transports](transports.md) (amended by D95, D105, D109): DoC client and server behind the `doc` feature
+- D82 [transports](transports.md): DoH over HTTP/3 first, on compio's `h3`
+- D83 [transports](transports.md) (amended by D79, D109, D119): the client asks DoH over HTTP/3
+- D84 [server](server.md) (amended by D94): `dedensd` serves DoH over HTTP/3 and forwards to DoH upstreams
+- D86 [scope](scope.md) (amended by D92): the key cache keeps what validations learn of zones
+- D87 [server](server.md) (amended by D88): published blocklists in `docs/blocklists/blocklists.yaml`
+- D88 [server](server.md): the blocklist file is parsed: durations, status
+- D89 [CLI](cli.md): loopback test servers count queries; no test frees a port
+- D90 [server](server.md) (superseded by D113 for UDP and DoC: kept for TCP, TLS, QUIC and HTTPS; amended by D91): per-client rate limits are the deployment's
+- D91 [server](server.md) (amended by D94, D113): client access lists: no open resolver
+- D92 [scope](scope.md): the key cache keeps no bogus zone
+- D93 [server](server.md) (amended by D124): an insecure answer is cached a day at most
+- D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
+- D95 [transports](transports.md): DoC discovery through `/.well-known/core`
+- D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
+- D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
+- D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits
+- D106 [server](server.md) (amended by D117): validation cost counts what it costs: bounded debt, NSEC3 in SHA-1 blocks
+- D107 [server](server.md) (amended by D122, D147): runtime fixes of audit step 04
+- D108 [server](server.md): bounds on the client's queues; evidence of a live server
+- D109 [transports](transports.md) (amended by D119): client QUIC, HTTP/3 and CoAP exchanges bounded by server and deadline
+- D110 [server](server.md) (amended by D120): the blocklist blocks any class; suffix walk linear in labels
+- D111 [server](server.md): `Pipeline::receive` checks each upstream response against its question
+- D112 [wire format](wire-format.md): encoder's name table keyed on a hash of the whole suffix
+- D113 [server](server.md) (amended by D136): response rate limits over UDP and DoC; Server Cookies exempt
+- D114 [server](server.md): checks on what answers carry: AD is ours alone
+- D115 [server](server.md) (amended by D120, D122): configuration bounded by what the server can bear
+- D116 [server](server.md) (amended by D118): the cache's memory, evictions and truncated hits
+- D117 [server](server.md): per-client budgets within the shared limits
+- D118 [server](server.md) (amended by D120): blocklist targets: CNAMEs to blocked names, one-label entries
+- D119 [server](server.md) (amended by D121): bounds on what a QUIC peer can make the server hold
+- D120 [server](server.md): lists parsed once, kept across reloads
+- D121 [server](server.md): a panic ends one task; a runtime panic ends the process
+- D122 [server](server.md): `dedensd` drops root once its sockets are bound
+- D123 [server](server.md): UDP replies through a queue and one sender per socket
+- D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
+- D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
+- D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164): simulation tests of the sans-IO cores on `turmoil`
+- D134 [simulation tests](simulation-tests.md): the client's compio layer behind an `Io` seam, for simulation
+- D135 [server](server.md): loom checks the reload wake-up and the query flights
+- D136 [server](server.md): Server Cookie hash compared in constant time with `subtle`
+- D137 [server](server.md): rejected: a read lock for the cache's hits
+- D138 [performance and safety](performance-and-safety.md): profiles are sampled, never instrumented
+- D139 [wire format](wire-format.md): typed `RData` is one table, `rdata_types!`
+- D140 [performance and safety](performance-and-safety.md) (amended by D161, D162, D163, D171): repository checks in the gate: decisions, coverage, `CLAUDE.md` links
+- D141 [performance and safety](performance-and-safety.md): scheduled checks: nightly fuzzing per target, daily advisories
+- D142 [performance and safety](performance-and-safety.md): the pull request's mutants run in shards
+- D143 [performance and safety](performance-and-safety.md) (amended by D161): unused dependencies fail the gate, by cargo-shear
+- D144 [performance and safety](performance-and-safety.md): the tests under cargo-careful and AddressSanitizer, outside the gate
+- D145 [performance and safety](performance-and-safety.md): Kani proves `dedens-proto`'s wire decoders on small inputs, weekly
+- D146 [performance and safety](performance-and-safety.md): CodeQL's Rust queries weekly, outside the gate
+- D147 [server](server.md): `poll` fallback answered UDP with nothing; compio-driver patched
+- D150 [scope](scope.md) (amended by D166): every build links with rustup's lld
+- D151 [scope](scope.md) (amended by D152): shipped Linux binaries are static PIE on musl
+- D152 [scope](scope.md) (amended by D154): musl binaries kept mallocng; the allocator rule fixed before measuring
+- D153 [scope](scope.md) (amended by D156, D158): a pushed `vX.Y.Z` tag publishes the release
+- D154 [scope](scope.md): musl binaries use mimalloc in secure mode
+- D155 [scope](scope.md): `deny.toml` ignores RUSTSEC-2026-0441, `pin-utils` through `loom`
+- D156 [scope](scope.md) (amended by D158): the release holds deb and rpm packages, by nfpm
+- D157 [scope](scope.md): `dedensd` exits with success at once on SIGTERM or SIGINT
+- D158 [scope](scope.md): each shipped binary carries its crates' licences, by cargo-about
+- D159 [wire format](wire-format.md): RDATA and EDNS option files named after their type, not RFC
+- D160 [scope](scope.md) (amended by D161): each public item at one path: private modules, root re-exports
+- D161 [performance and safety](performance-and-safety.md): shared test data in `testdata/`, read through `dedens-testkit`
+- D162 [performance and safety](performance-and-safety.md) (amended by D170): a package's integration tests are one binary, a module per topic
+- D163 [performance and safety](performance-and-safety.md): the repository checks are a package of their own, `dedens-repo`
+- D164 [simulation tests](simulation-tests.md) (amended by D165, D167): the simulation time budget is measured, outside the gate
+- D165 [simulation tests](simulation-tests.md): a simulation family over its 2 s budget splits in two
+- D166 [scope](scope.md): macOS targets link with Apple's `ld`
+- D167 [simulation tests](simulation-tests.md): `DEDENS_SIM_TIME_SCALE` scales the simulation time budgets
+- D168 [performance and safety](performance-and-safety.md): stale mutants exclusions fail, by `just mutants-stale`
+- D169 [CLI](cli.md): `NO_COLOR` turns colour off only when set to a value
+- D170 [simulation tests](simulation-tests.md): `dedensd`'s benches include only its tests' server harness
+- D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here

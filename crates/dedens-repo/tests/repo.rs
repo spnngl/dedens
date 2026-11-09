@@ -8,8 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The decisions, from the workspace root.
-const DECISIONS: &str = "docs/decisions.md";
+/// The decisions' folder, from the workspace root: a file per section, and the index (D171).
+const DECISIONS: &str = "docs/decisions/";
+/// The decisions' index, a line per decision.
+const INDEX: &str = "docs/decisions/README.md";
 /// The RFC coverage table, from the workspace root.
 const COVERAGE: &str = "docs/rfc/coverage.md";
 /// Folders whose files cite decisions; `AGENTS.md` files anywhere do too.
@@ -72,8 +74,24 @@ fn read(path: &str) -> Source {
     Source::new(path, &text)
 }
 
-/// The tracked files that may cite a decision, but the decisions themselves. A symlink (`CLAUDE.md`) is its
-/// target's copy.
+/// Whether a tracked path is a section file of the decisions: a file of `DECISIONS`, but the index.
+fn is_section(path: &str) -> bool {
+    path.starts_with(DECISIONS)
+        && Path::new(path).extension() == Some(OsStr::new("md"))
+        && path != INDEX
+}
+
+/// The section files of the decisions.
+fn sections(tracked: &[String]) -> Vec<Source> {
+    tracked
+        .iter()
+        .filter(|path| is_section(path))
+        .map(|path| read(path))
+        .collect()
+}
+
+/// The tracked files that may cite a decision, but the section files, which define them. A symlink (`CLAUDE.md`) is
+/// its target's copy.
 fn citing(tracked: &[String]) -> Vec<Source> {
     let wanted = |path: &str| {
         let file = Path::new(path);
@@ -87,7 +105,7 @@ fn citing(tracked: &[String]) -> Vec<Source> {
     };
     tracked
         .iter()
-        .filter(|path| path.as_str() != DECISIONS && wanted(path))
+        .filter(|path| !is_section(path) && wanted(path))
         .filter(|path| {
             fs::symlink_metadata(root().join(path)).is_ok_and(|meta| !meta.file_type().is_symlink())
         })
@@ -187,52 +205,70 @@ fn cited(text: &str) -> Vec<String> {
 
 // --- Decisions: defined once, cited ones exist ---
 
-/// A decision's entry in `docs/decisions.md`: a line starting `- D`, and the indented lines after it.
+/// A decision's entry in a section file: a line starting `- D`, and the indented lines after it.
 struct Definition {
     id: String,
+    /// The section file.
+    path: String,
     line: usize,
     /// The entry on one line, after the id.
     text: String,
 }
 
-fn definitions(decisions: &Source) -> Vec<Definition> {
+impl Definition {
+    /// A failure as `path:line: message`.
+    fn problem(&self, message: &str) -> String {
+        format!("{}:{}: {message}", self.path, self.line)
+    }
+
+    /// What the header says, `amends D2; amended by D5`: the parenthesis right after the id.
+    fn header(&self) -> Option<&str> {
+        let inner = self.text.strip_prefix(" (")?;
+        Some(inner.split_once(')')?.0)
+    }
+}
+
+/// The definitions of every section file, file by file, each in its order.
+fn definitions(sections: &[Source]) -> Vec<Definition> {
     let mut found: Vec<Definition> = Vec::new();
-    for (line, text) in decisions.lines() {
-        let start = text
-            .strip_prefix("- ")
-            .and_then(|_| id_at(text, 2))
-            .map(|id| (Id::name(id.number, id.letter), id.end));
-        match (start, found.last_mut()) {
-            (Some((id, end)), _) => found.push(Definition {
-                id,
-                line,
-                text: text[end..].to_owned(),
-            }),
-            (None, Some(open)) if text.starts_with(' ') => {
-                open.text.push(' ');
-                open.text.push_str(text.trim());
+    for section in sections {
+        let first = found.len();
+        for (line, text) in section.lines() {
+            let start = text.strip_prefix("- ").and_then(|_| id_at(text, 2));
+            match (start, found[first..].last_mut()) {
+                (Some(id), _) => found.push(Definition {
+                    id: Id::name(id.number, id.letter),
+                    path: section.path.clone(),
+                    line,
+                    text: text[id.end..].to_owned(),
+                }),
+                (None, Some(open)) if text.starts_with(' ') => {
+                    open.text.push(' ');
+                    open.text.push_str(text.trim());
+                }
+                (None, _) => {}
             }
-            (None, _) => {}
         }
     }
     found
 }
 
-/// A decision defined twice, a decision cited (in `decisions` or in `others`) and defined nowhere.
-fn undefined_or_duplicated(decisions: &Source, others: &[Source]) -> Vec<String> {
+/// A decision defined twice, a decision cited (in `sections` or in `others`) and defined nowhere.
+fn undefined_or_duplicated(sections: &[Source], others: &[Source]) -> Vec<String> {
     let mut problems = Vec::new();
-    let mut defined: BTreeMap<String, usize> = BTreeMap::new();
-    for definition in definitions(decisions) {
+    let mut defined: BTreeMap<String, String> = BTreeMap::new();
+    for definition in definitions(sections) {
         if let Some(first) = defined.get(&definition.id) {
-            problems.push(decisions.problem(
-                definition.line,
-                &format!("{} is defined twice, first on line {first}", definition.id),
-            ));
+            problems.push(definition.problem(&format!(
+                "{} is defined twice, first at {first}",
+                definition.id
+            )));
         } else {
-            defined.insert(definition.id, definition.line);
+            let at = format!("{}:{}", definition.path, definition.line);
+            defined.insert(definition.id, at);
         }
     }
-    for source in std::iter::once(decisions).chain(others) {
+    for source in sections.iter().chain(others) {
         for (line, text) in source.lines() {
             problems.extend(
                 cited(text)
@@ -300,12 +336,21 @@ impl Relation {
             Self::BuildsOn | Self::Completes => None,
         }
     }
+
+    /// Whether later decisions write it into the header of the one they change: the index repeats these.
+    fn is_status(self) -> bool {
+        matches!(
+            self,
+            Self::AmendedBy | Self::SupersededBy | Self::NarrowedBy
+        )
+    }
 }
 
 /// A decision's relations to others, from its header.
 struct Entry {
     id: String,
-    line: usize,
+    /// Where it is defined, `path:line`.
+    at: String,
     relations: BTreeSet<(Relation, String)>,
 }
 
@@ -314,16 +359,11 @@ struct Entry {
 fn relations(definition: &Definition) -> (Entry, Vec<String>) {
     let mut entry = Entry {
         id: definition.id.clone(),
-        line: definition.line,
+        at: format!("{}:{}", definition.path, definition.line),
         relations: BTreeSet::new(),
     };
     let mut unknown = Vec::new();
-    let Some(header) = definition
-        .text
-        .strip_prefix(" (")
-        .and_then(|inner| inner.split_once(')'))
-        .map(|(header, _)| header)
-    else {
+    let Some(header) = definition.header() else {
         return (entry, unknown);
     };
     for clause in header.split(';').map(str::trim) {
@@ -336,11 +376,11 @@ fn relations(definition: &Definition) -> (Entry, Vec<String>) {
                 let ids = cited(rest);
                 entry.relations.extend(ids.into_iter().map(|id| (relation, id)));
             }
-            None if !cited(clause).is_empty() => unknown.push(format!(
+            None if !cited(clause).is_empty() => unknown.push(definition.problem(&format!(
                 "the header clause {clause:?} of {} has no known relation (amends, amended by, supersedes, \
                  superseded by, narrows, narrowed by, builds on, completes)",
                 definition.id
-            )),
+            ))),
             None => {}
         }
     }
@@ -349,12 +389,12 @@ fn relations(definition: &Definition) -> (Entry, Vec<String>) {
 
 /// A decision that amends, supersedes or narrows another which does not say so back, and the reverse. A
 /// supersession limited to a scope (`superseded by D113 for UDP`) is one still: the two sides name each other.
-fn unpaired(decisions: &Source) -> Vec<String> {
+fn unpaired(sections: &[Source]) -> Vec<String> {
     let mut problems = Vec::new();
     let mut entries: Vec<Entry> = Vec::new();
-    for definition in definitions(decisions) {
+    for definition in definitions(sections) {
         let (entry, unknown) = relations(&definition);
-        problems.extend(unknown.iter().map(|m| decisions.problem(entry.line, m)));
+        problems.extend(unknown);
         if !entries.iter().any(|seen| seen.id == entry.id) {
             entries.push(entry);
         }
@@ -368,20 +408,96 @@ fn unpaired(decisions: &Source) -> Vec<String> {
                 continue;
             };
             if !other_entry.relations.contains(&(back, entry.id.clone())) {
-                problems.push(decisions.problem(
-                    entry.line,
-                    &format!(
-                        "{} {} {other}, but {other} (line {}) does not say \"{} {}\"",
-                        entry.id,
-                        relation.phrase(),
-                        other_entry.line,
-                        back.phrase(),
-                        entry.id
-                    ),
+                problems.push(format!(
+                    "{}: {} {} {other}, but {other} ({}) does not say \"{} {}\"",
+                    entry.at,
+                    entry.id,
+                    relation.phrase(),
+                    other_entry.at,
+                    back.phrase(),
+                    entry.id
                 ));
             }
         }
     }
+    problems
+}
+
+// --- Decisions: the index ---
+
+/// The clauses of a header the index repeats, `amended by D5; superseded by D7` (`Relation::is_status`), in the
+/// header's order; empty for none.
+fn status(definition: &Definition) -> String {
+    let clauses = definition.header().into_iter().flat_map(|header| {
+        header.split(';').map(str::trim).filter(|clause| {
+            Relation::ALL.into_iter().any(|relation| {
+                relation.is_status()
+                    && clause
+                        .strip_prefix(relation.phrase())
+                        .is_some_and(|rest| rest.starts_with(' '))
+            })
+        })
+    });
+    clauses.collect::<Vec<_>>().join("; ")
+}
+
+/// The index out of step with the sections. A line, `- D12 [section](file.md) (amended by D159): gist`, follows
+/// the one before in number order, names a decision and the section file defining it, and has in parentheses its
+/// header's status clauses (`status`), none when the header has none. A decision with no line fails too.
+fn index_differs(index: &Source, sections: &[Source]) -> Vec<String> {
+    let definitions = definitions(sections);
+    let mut problems = Vec::new();
+    let mut listed = BTreeSet::new();
+    let mut previous = None;
+    for (line, text) in index.lines() {
+        let Some(id) = text.strip_prefix("- ").and_then(|_| id_at(text, 2)) else {
+            continue;
+        };
+        let name = Id::name(id.number, id.letter);
+        let key = (id.number, id.letter);
+        if previous.is_some_and(|previous| previous >= key) {
+            problems.push(index.problem(line, &format!("{name} is out of number order")));
+        }
+        previous = Some(key);
+        let Some(definition) = definitions.iter().find(|definition| definition.id == name) else {
+            problems.push(index.problem(line, &format!("{name} is not defined in {DECISIONS}")));
+            continue;
+        };
+        listed.insert(name.clone());
+        let link = text[id.end..]
+            .strip_prefix(" [")
+            .and_then(|rest| rest.split_once("]("))
+            .and_then(|(_, rest)| rest.split_once(')'));
+        let Some((file, rest)) = link else {
+            problems.push(index.problem(line, &format!("{name} has no [section](file.md) link")));
+            continue;
+        };
+        if format!("{DECISIONS}{file}") != definition.path {
+            problems.push(index.problem(
+                line,
+                &format!("{name} links {file}, but {} defines it", definition.path),
+            ));
+        }
+        let said = rest
+            .strip_prefix(" (")
+            .and_then(|rest| rest.split_once(')'))
+            .map_or("", |(said, _)| said);
+        let status = status(definition);
+        if said != status {
+            problems.push(index.problem(
+                line,
+                &format!("{name} says ({said}), its header ({status})"),
+            ));
+        }
+    }
+    problems.extend(
+        definitions
+            .iter()
+            .filter(|definition| !listed.contains(&definition.id))
+            .map(|definition| {
+                definition.problem(&format!("{} has no line in {INDEX}", definition.id))
+            }),
+    );
     problems
 }
 
@@ -654,15 +770,21 @@ fn clippy_differs(workspace: &str, file: &Source) -> Vec<String> {
 
 #[test]
 fn decisions_cited_exist_and_are_defined_once() {
+    let tracked = tracked();
     report(&undefined_or_duplicated(
-        &read(DECISIONS),
-        &citing(&tracked()),
+        &sections(&tracked),
+        &citing(&tracked),
     ));
 }
 
 #[test]
 fn decisions_name_each_other() {
-    report(&unpaired(&read(DECISIONS)));
+    report(&unpaired(&sections(&tracked())));
+}
+
+#[test]
+fn the_index_lists_each_decision() {
+    report(&index_differs(&read(INDEX), &sections(&tracked())));
 }
 
 #[test]
@@ -766,44 +888,89 @@ fn braces_and_stars_expand() {
 
 #[test]
 fn undefined_and_duplicated_decisions_fail() {
-    let decisions = Source::new(
-        DECISIONS,
-        "- D1 One.\n- D1 Again.\n- D2 Cites D3-D4 and D1.\n  More: D5.\n",
-    );
+    let sections = [
+        Source::new(
+            "docs/decisions/a.md",
+            "# A\n\n- D1 One.\n- D2 Cites D3-D4 and D1.\n",
+        ),
+        Source::new(
+            "docs/decisions/b.md",
+            "  D6, not defined.\n- D1 Again.\n  More: D5.\n",
+        ),
+    ];
     let code = Source::new("crates/x/src/lib.rs", "//! D9 and D2\n");
     assert_eq!(
-        undefined_or_duplicated(&decisions, &[code]),
+        undefined_or_duplicated(&sections, &[code]),
         [
-            "docs/decisions.md:2: D1 is defined twice, first on line 1",
-            "docs/decisions.md:3: D3 is not defined in docs/decisions.md",
-            "docs/decisions.md:3: D4 is not defined in docs/decisions.md",
-            "docs/decisions.md:4: D5 is not defined in docs/decisions.md",
-            "crates/x/src/lib.rs:1: D9 is not defined in docs/decisions.md",
+            "docs/decisions/b.md:2: D1 is defined twice, first at docs/decisions/a.md:3",
+            "docs/decisions/a.md:4: D3 is not defined in docs/decisions/",
+            "docs/decisions/a.md:4: D4 is not defined in docs/decisions/",
+            "docs/decisions/b.md:1: D6 is not defined in docs/decisions/",
+            "docs/decisions/b.md:3: D5 is not defined in docs/decisions/",
+            "crates/x/src/lib.rs:1: D9 is not defined in docs/decisions/",
         ]
     );
 }
 
 #[test]
 fn unpaired_decisions_fail() {
-    let decisions = Source::new(
-        DECISIONS,
-        "- D1 (amends D2; builds on D3) One.\n\
-         - D2 Two.\n\
-         - D3 (amended by D4-D5) Three.\n\
-         - D4 (amends D3) Four.\n\
-         - D5 (supersedes D6 for UDP; amend D1)\n  Five.\n\
-         - D6 (superseded by D7) Six.\n\
-         - D7 Seven.\n",
+    let sections = [
+        Source::new(
+            "docs/decisions/a.md",
+            "- D1 (amends D2; builds on D3) One.\n\
+             - D2 Two.\n\
+             - D3 (amended by D4-D5) Three.\n\
+             - D4 (amends D3) Four.\n",
+        ),
+        Source::new(
+            "docs/decisions/b.md",
+            "- D5 (supersedes D6 for UDP; amend D1)\n  Five.\n\
+             - D6 (superseded by D7) Six.\n\
+             - D7 Seven.\n",
+        ),
+    ];
+    assert_eq!(
+        unpaired(&sections),
+        [
+            "docs/decisions/b.md:1: the header clause \"amend D1\" of D5 has no known relation (amends, amended by, \
+             supersedes, superseded by, narrows, narrowed by, builds on, completes)",
+            "docs/decisions/a.md:1: D1 amends D2, but D2 (docs/decisions/a.md:2) does not say \"amended by D1\"",
+            "docs/decisions/a.md:3: D3 amended by D5, but D5 (docs/decisions/b.md:1) does not say \"amends D3\"",
+            "docs/decisions/b.md:1: D5 supersedes D6, but D6 (docs/decisions/b.md:3) does not say \"superseded by D5\"",
+            "docs/decisions/b.md:3: D6 superseded by D7, but D7 (docs/decisions/b.md:4) does not say \"supersedes D6\"",
+        ]
+    );
+}
+
+#[test]
+fn an_index_out_of_step_fails() {
+    let sections = [
+        Source::new("docs/decisions/a.md", "- D1 One.\n- D2 (amends D1) Two.\n"),
+        Source::new(
+            "docs/decisions/b.md",
+            "- D3 (builds on D1; amended by D5;\n  superseded by D4) Three.\n- D4 (supersedes D3) Four.\n\
+             - D5 (amends D3) Five.\n- D6 Six.\n",
+        ),
+    ];
+    let index = Source::new(
+        INDEX,
+        "# Decisions\n\n\
+         - D1 [a](a.md): one\n\
+         - D3 [b](b.md) (amended by D5; superseded by D4): three\n\
+         - D2 [a](b.md): two\n\
+         - D4 [b](b.md) (amended by D9): four\n\
+         - D5 b: five\n\
+         - D9 [b](b.md): nine\n",
     );
     assert_eq!(
-        unpaired(&decisions),
+        index_differs(&index, &sections),
         [
-            "docs/decisions.md:5: the header clause \"amend D1\" of D5 has no known relation (amends, amended by, \
-             supersedes, superseded by, narrows, narrowed by, builds on, completes)",
-            "docs/decisions.md:1: D1 amends D2, but D2 (line 2) does not say \"amended by D1\"",
-            "docs/decisions.md:3: D3 amended by D5, but D5 (line 5) does not say \"amends D3\"",
-            "docs/decisions.md:5: D5 supersedes D6, but D6 (line 7) does not say \"superseded by D5\"",
-            "docs/decisions.md:7: D6 superseded by D7, but D7 (line 8) does not say \"supersedes D6\"",
+            "docs/decisions/README.md:5: D2 is out of number order",
+            "docs/decisions/README.md:5: D2 links b.md, but docs/decisions/a.md defines it",
+            "docs/decisions/README.md:6: D4 says (amended by D9), its header ()",
+            "docs/decisions/README.md:7: D5 has no [section](file.md) link",
+            "docs/decisions/README.md:8: D9 is not defined in docs/decisions/",
+            "docs/decisions/b.md:5: D6 has no line in docs/decisions/README.md",
         ]
     );
 }

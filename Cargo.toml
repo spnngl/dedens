@@ -156,7 +156,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   "cfg(dedens_loom)",
   "cfg(kani)",
 ] }
-# docs/decisions.md D15: each crate root forbids unsafe code; a crate with a measured hot path swaps its `forbid`
+# docs/decisions/performance-and-safety.md D15: each crate root forbids unsafe code; a crate with a measured hot path swaps its `forbid`
 # for this `deny` and allows it in that module only, with `// SAFETY:` comments and a Miri job.
 unsafe_code = "deny"
 
