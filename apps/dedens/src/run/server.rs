@@ -208,17 +208,26 @@ fn oblivious_proxy(
     )))
 }
 
-/// Without the `odoh` feature there is no Oblivious `DoH` to ask (D69).
 #[cfg(not(feature = "odoh"))]
-fn oblivious_proxy(
-    options: &Options,
-    _forced: Option<Transport>,
-    _given: &str,
-) -> anyhow::Result<Option<Box<Server>>> {
-    if options.odoh() {
-        bail!("+odoh-proxy: built without the odoh feature");
+use without_odoh::oblivious_proxy;
+
+/// A module of its own so that its mutants, never built by `just mutants` (all features), have a name of their own
+/// in `.cargo/mutants.toml`.
+#[cfg(not(feature = "odoh"))]
+mod without_odoh {
+    use super::{Options, Server, Transport, bail};
+
+    /// Without the `odoh` feature there is no Oblivious `DoH` to ask (D69).
+    pub(super) fn oblivious_proxy(
+        options: &Options,
+        _forced: Option<Transport>,
+        _given: &str,
+    ) -> anyhow::Result<Option<Box<Server>>> {
+        if options.odoh() {
+            bail!("+odoh-proxy: built without the odoh feature");
+        }
+        Ok(None)
     }
-    Ok(None)
 }
 
 #[cfg(test)]
