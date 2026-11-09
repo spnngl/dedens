@@ -18,8 +18,7 @@ scenario. A run must replay from its seed; these rules keep it so.
 - A scenario that changes the cache's `min_ttl` or `stale_answer_ttl` sets the oracle's `Rules::floor` and
   `stale_ttl` to match.
 
-Each family is a module `tests/<family>.rs` of the one binary (D162): scripted tests under the fixed seeds of
-`tests/util.rs`, under 2 s for the module in `just check` (this crate under 10 s), which `just sim-time` measures;
-one property test whose seed picks the faults, which `just sim` runs under many random seeds; one
+Each family is a module `tests/<family>.rs` of the one binary: scripted tests under the fixed seeds of
+`tests/util.rs`, within the time budget `just sim-time` measures (D162, D164); one property test whose seed picks the faults, which `just sim` runs under many random seeds; one
 `seed::in_two_processes` test. A failing seed becomes a fixed seed of the scripted tests, with a comment naming what
 it caught.
