@@ -1086,6 +1086,7 @@ dependencies = [
 name = "dedensd"
 version = "0.1.0"
 dependencies = [
+ "anstream",
  "anyhow",
  "clap",
  "clap_mangen",

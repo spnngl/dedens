@@ -113,12 +113,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let format = cli.output.format();
-    let color = match cli.output.color {
-        clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
-        clap::ColorChoice::Always => anstream::ColorChoice::Always,
-        clap::ColorChoice::Never => anstream::ColorChoice::Never,
-    };
-    let mut out = anstream::AutoStream::new(io::stdout().lock(), color);
+    let mut out = anstream::AutoStream::new(io::stdout().lock(), cli.output.color());
     let trust = cli.trust()?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
