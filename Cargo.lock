@@ -927,6 +927,7 @@ dependencies = [
  "hickory-proto",
  "http",
  "metrics-util",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -969,6 +970,7 @@ dependencies = [
  "http",
  "idna",
  "proptest",
+ "rand_core 0.10.1",
  "rustls-platform-verifier",
  "thiserror",
  "tracing",
@@ -982,6 +984,7 @@ dependencies = [
  "data-encoding",
  "dedens-testkit",
  "hpke",
+ "rand_core 0.10.1",
  "ring",
  "serde",
  "serde_json",

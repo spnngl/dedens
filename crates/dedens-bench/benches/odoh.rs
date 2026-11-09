@@ -8,7 +8,6 @@ use std::hint::black_box;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
     Configs, TargetKey, decrypt_query, decrypt_response, encrypt_query, encrypt_response,
     query_padding, response_padding,
@@ -18,6 +17,7 @@ use dedens_proto::edns::Edns;
 use dedens_server::{Budget, Budgets, MAX_BUDGET, Slot};
 use dedens_testkit::captured;
 use divan::Bencher;
+use rand_core::{TryCryptoRng, TryRng};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();

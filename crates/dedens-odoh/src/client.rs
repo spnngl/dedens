@@ -1,7 +1,7 @@
 //! The client side of RFC 9230 §7: encrypt a query, decrypt its response.
 
-use hpke::rand_core::CryptoRng;
 use hpke::{Deserializable as _, OpModeS, Serializable as _};
+use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
 use crate::config::ConfigContents;

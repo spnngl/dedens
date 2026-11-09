@@ -91,6 +91,8 @@ prefix-trie = "0.10.1"
 # D113: SipHash-2-4, the MAC of RFC 9018 server cookies.
 siphasher = "1.0.4"
 proptest = "1.12"
+# D78: the randomness ODoH's encryption takes, the traits of the version hpke implements them for.
+rand_core = "0.10.1"
 # D71: DNSSEC signature checks and digests; compio's TLS already builds it (the "ring" feature above).
 ring = "0.17.14"
 # D60: certificates made by the DNS over TLS tests, none checked in.

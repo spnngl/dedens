@@ -28,6 +28,8 @@ hickory-proto = { version = "0.26.3", default-features = false, features = [
 # The messages of `doh`; the same version as the workspace's (D82).
 http = "1.5.0"
 libfuzzer-sys = "0.4"
+# The randomness of `odoh`; the same version as the workspace's (D78).
+rand_core = "0.10.1"
 
 [[bin]]
 name = "decode_message"
