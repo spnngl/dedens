@@ -19,10 +19,8 @@ present; anything worth keeping goes to `docs/`.
 - Work from the RFC text in `docs/rfc/archive/rfcNNNN.txt` and cite RFC and section in the docs of each item
   implementing one. When an RFC section lands, update its row in `docs/rfc/coverage.md` in the same change (`repo.rs`
   checks the row's paths, and that each RFC a test file cites in its module docs has a row naming it).
-  A package's integration tests are one binary, `tests/tests.rs`, a module per topic citing its RFCs and sections in
-  its docs; a new test of an RFC section starts with it (`s4_1_4_...`) (D162). Its insta snapshots are in
-  `tests/snapshots/`, named `tests__<module>__<test>`; after a review, accept a change with
-  `INSTA_UPDATE=always cargo test -p <package>`.
+  Integration tests are laid out by D162. Insta snapshots are in `tests/snapshots/`, named
+  `tests__<module>__<test>`; after a review, accept a change with `INSTA_UPDATE=always cargo test -p <package>`.
 - Test data is real: captured responses and RFC example zones, never invented bytes. A parser of outside data
   gets a fuzz target. A performance claim gets a bench, recorded in `docs/benchmarks.md`.
 - `unsafe` belongs to a hot path a bench has measured: a `// SAFETY:` comment on each block, a Miri job for the
