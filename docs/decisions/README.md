@@ -1,8 +1,8 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 96-102, 126-132, 148 and 149 were never assigned). A
-replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
+number, and gets its line below; a number is never reused (85, 96-102, 126-132, 148, 149 and 173 were never
+assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
 (D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions: [`TODECIDE.md`](../TODECIDE.md).
@@ -164,6 +164,6 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here
 - D172 [simulation tests](simulation-tests.md): the CI scale of the simulation time budgets is 7, measured on a runner
 - D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of
-- D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
 - D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection
 - D176 [scope](scope.md): an answer of RRSIGs to an RRSIG question is insecure, served without AD; a denial is proven
+- D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
