@@ -1,12 +1,11 @@
 name: deep
 
-# The slow checks of each pull request, informational and outside the gate as `mutants.yml` is (D103): `loom` is loom's model of dedensd's
-# reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation scenarios under 100 random seeds,
-# a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it (`just sim`, D133); `sim-time`
-# times each family under its fixed seeds against D133's budgets, scaled by 2.5 for the runner, and fails over one
-# (`just sim-time`, D164, D167);
-# `careful` runs the tests on a checked standard library under AddressSanitizer, a job per package (`just careful
-# address`, D144).
+# The slow checks of each pull request, informational and outside the gate as `mutants.yml` is (D103): `loom` is
+# loom's model of dedensd's reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation
+# scenarios under 100 random seeds, a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it
+# (`just sim`, D133); `sim-time` times each family under its fixed seeds against D133's budgets, scaled by 2.5 for
+# the runner, and fails over one (`just sim-time`, D164, D167); `careful` runs the tests on a checked standard
+# library under AddressSanitizer, a job per package (`just careful address`, D144).
 on:
   pull_request:
 
@@ -56,7 +55,11 @@ jobs:
         with:
           persist-credentials: false
       - id: list
-        run: echo "list=$(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util | jq -Rnc '[inputs]')" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          list="$(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util | jq -Rnc '[inputs]')"
+          [[ "$list" != "[]" ]] || { echo "no family in crates/dedens-sim/tests/tests.rs" >&2; exit 1; }
+          echo "list=$list" >> "$GITHUB_OUTPUT"
   sim:
     needs: scenarios
     runs-on: ubuntu-26.04
