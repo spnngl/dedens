@@ -320,6 +320,8 @@ mod rrl {
         BadCookie,
         /// Replied REFUSED, as to a client the access lists deny.
         Refused,
+        /// Replied FORMERR, as to a query that cannot be read.
+        FormErr,
         /// Sent nothing.
         Dropped,
     }
@@ -365,6 +367,7 @@ mod rrl {
                         Fate::BadCookie
                     }
                     Rcode::REFUSED => Fate::Refused,
+                    Rcode::FORMERR => Fate::FormErr,
                     _ if reply.header.flags.contains(Flags::TC) => {
                         assert!(reply.answer.is_empty(), "a truncated reply has no answer");
                         assert_eq!(reply.header.id, 7, "it answers the query");
@@ -539,6 +542,22 @@ mod rrl {
                 Refused
             );
         }
+    }
+
+    /// A UDP query counts before it is read, so the FORMERR to one that cannot be read is limited too (D113).
+    #[test]
+    fn an_unreadable_query_over_udp_is_limited() {
+        use Fate::{Dropped, FormErr, Truncated};
+        let pipeline = limited(2);
+        let mut unreadable = wire(&query("a", 7));
+        unreadable.truncate(15);
+        let fates: Vec<_> = (0..6)
+            .map(|_| send(&pipeline, &unreadable, Transport::Udp, "198.51.100.7", 10))
+            .collect();
+        assert_eq!(
+            fates,
+            [FormErr, FormErr, FormErr, Dropped, Truncated, Dropped]
+        );
     }
 
     #[test]

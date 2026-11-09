@@ -257,14 +257,17 @@ impl Pipeline {
             };
         }
         let Ok(query) = Query::read(wire) else {
-            return match Header::peek(wire) {
-                Some(header) if !header.flags.contains(Flags::QR) => reply(
-                    &Client::unread(header, transport),
-                    Message::default(),
-                    Rcode::FORMERR,
-                    out,
-                ),
-                _ => Step::Drop,
+            let Some(header) =
+                Header::peek(wire).filter(|header| !header.flags.contains(Flags::QR))
+            else {
+                return Step::Drop;
+            };
+            // No cookie can be read: the FORMERR counts against the rate as any reply (D113).
+            let client = Client::unread(header, transport);
+            return match self.admit(transport, from, now, Standing::NoCookie) {
+                Admission::Drop => Step::Drop,
+                Admission::Slip => slip(&client, out),
+                Admission::Pass => reply(&client, Message::default(), Rcode::FORMERR, out),
             };
         };
         let header = query.header();
@@ -277,13 +280,7 @@ impl Pipeline {
         let standing = self.cookies.as_ref().map_or(Standing::NoCookie, |cookies| {
             cookies.verify(request.as_ref(), from)
         });
-        // A source that proved its address with a cookie is not spoofed (RFC 7873 §5.2.5).
-        let admission = match &self.rate_limit {
-            Some(limit) if transport == Transport::Udp && standing != Standing::Valid => {
-                limit.check(from, now, true)
-            }
-            _ => Admission::Pass,
-        };
+        let admission = self.admit(transport, from, now, standing);
         if admission == Admission::Drop {
             return Step::Drop;
         }
@@ -327,6 +324,18 @@ impl Pipeline {
             }
         };
         reply(&client, Message::default(), rcode, out)
+    }
+
+    /// What the rate limit does to a query from `from` over `transport` at `now`, with cookie `standing` (D113):
+    /// only UDP is limited, and a source that proved its address with a valid Server Cookie is not spoofed (RFC 7873
+    /// §5.2.5). Counts the query.
+    fn admit(&self, transport: Transport, from: IpAddr, now: u32, standing: Standing) -> Admission {
+        match &self.rate_limit {
+            Some(limit) if transport == Transport::Udp && standing != Standing::Valid => {
+                limit.check(from, now, true)
+            }
+            _ => Admission::Pass,
+        }
     }
 
     /// The first COOKIE option of `query` (RFC 7873 §5.2), when the pipeline has cookies. A query that breaks a rule
