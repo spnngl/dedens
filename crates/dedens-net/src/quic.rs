@@ -64,6 +64,9 @@ pub enum QuicError {
     /// What the stream held is not one message behind its length (RFC 9250 §4.3.3).
     #[error("the stream is not one message behind its length")]
     Framing,
+    /// A response with this Message ID, not 0 (RFC 9250 §4.2.1, §4.3.3).
+    #[error("a response with the message ID {0}, not 0")]
+    MessageId(u16),
     /// No response before the deadline.
     #[error("no response before the deadline")]
     TimedOut,
@@ -99,14 +102,14 @@ impl QuicPool {
     /// Sends `wire` to `addr`, whose certificate must hold `name`, and returns the response.
     ///
     /// A reused connection found closed once the query fails, as one the server dropped while idle (RFC 9250
-    /// §4.4), is replaced once and the query sent again (D27). A response not framed closes the connection with
-    /// `DOQ_PROTOCOL_ERROR` (RFC 9250 §4.3.3, D109): the query is not sent again, and the next one opens a new
-    /// connection.
+    /// §4.4), is replaced once and the query sent again (D27). A response not framed, or with an ID other than 0,
+    /// closes the connection with `DOQ_PROTOCOL_ERROR` (RFC 9250 §4.3.3, D109, D175): the query is not sent again,
+    /// and the next one opens a new connection.
     ///
     /// # Errors
     ///
-    /// [`QuicError`]: no TLS, socket or connection, a failed stream, a response not framed, or none before
-    /// `deadline`.
+    /// [`QuicError`]: no TLS, socket or connection, a failed stream, a response not framed or not of ID 0, or none
+    /// before `deadline`.
     pub async fn exchange(
         &self,
         addr: SocketAddr,
@@ -119,10 +122,10 @@ impl QuicPool {
         let asked = async {
             let (connection, reused) = self.connection(&server).await?;
             match ask(&connection, &framed).await {
-                // A framing error is the server's, and closes the connection here: not one found closed.
+                // A protocol error is the server's, and closes the connection here: not one found closed.
                 Err(error)
                     if reused
-                        && !matches!(error, QuicError::Framing)
+                        && !matches!(error, QuicError::Framing | QuicError::MessageId(_))
                         && connection.close_reason().is_some() =>
                 {
                     let (fresh, _) = self.connection(&server).await?;
@@ -178,6 +181,13 @@ async fn ask(connection: &Connection, framed: &[u8]) -> Result<Vec<u8>, QuicErro
         Err(error) => return Err(error),
     };
     stream.read = true;
+    // ID 0 (RFC 9250 §4.2.1): another breaks the protocol as well (§4.3.3, D175).
+    if let Some(&[high, low]) = response.get(..2)
+        && [high, low] != [0, 0]
+    {
+        connection.close(VarInt::from_u32(DOQ_PROTOCOL_ERROR), b"response ID not 0");
+        return Err(QuicError::MessageId(u16::from_be_bytes([high, low])));
+    }
     Ok(response)
 }
 

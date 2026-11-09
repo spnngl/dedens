@@ -61,7 +61,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     address, `[ADDRESS]:PORT` or with its zone, is taken as such before any name; a name for TLS is made only
     over TLS or QUIC.
   - Tests make their certificates with rcgen at run time, so no private key is checked in.
-- D61 (amended by D109, D119) DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
+- D61 (amended by D109, D119, D175) DoQ (RFC 9250) goes through compio's QUIC (`compio-quic`, quinn-proto underneath), no QUIC of our own.
   One connection per server and certificate name, opened on first use: queries meanwhile wait for it instead of
   opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
   (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
@@ -427,7 +427,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     they hold no DNS data, and what they check is the server's count and bounds (AGENTS.md's real-data rule is for
     the DNS content, which the existing captures keep). Fuzz: `parse_coap` asserts the options cap, and `coap_doc` the
     replays per message ID and `more_blocks` against the reply.
-- D109 (amends D61, D81, D83; amended by D119) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
+- D109 (amends D61, D81, D83; amended by D119, D175) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
   by the query's deadline (audit step 06):
   - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
     8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `http3.rs`), where h3 states none; a response with a larger header section
@@ -445,3 +445,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     transports: `DocError::TimedOut`, which the client turns into the exchange's timeout, `Failure::TimedOut` with
     one send (D81: the DNS tries are 1). A blackholed server holds a query for the timeout, not for 93 s or more.
     The discovery (D95) is not bounded: it has no query deadline, and the CLI asks it once.
+- D175 (amends D61, D109) A DoQ response whose Message ID is not 0 (RFC 9250 §4.2.1) is a protocol error, as D109's
+  framing error: the client closes the connection with `DOQ_PROTOCOL_ERROR` (2) and fails the try with
+  `QuicError::MessageId`, the query not sent again (§4.3.3 SHOULD). Passed on to the exchange, such a
+  response was dropped as not answering ID 0, and the next try went on the connection that broke the protocol. Not
+  checked: a response carrying edns-tcp-keepalive (§4.3.3, §5.5.2).
