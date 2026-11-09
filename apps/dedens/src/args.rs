@@ -402,14 +402,16 @@ fn flag<'c>(command: &'c clap::Command, text: &str) -> Option<&'c Arg> {
         .find(|a| a.get_short() == Some(letter))
 }
 
-/// The word of `-t`, `-c` or `-q` (`letter`) and its `value`.
+/// The word of `-t`, `-c` or `-q` (`letter`) and its `value`. A class that is also a type, as `ANY`, becomes its
+/// generic form, `CLASS255`, which [`lookups`] cannot take for a type.
 fn word(letter: char, value: String) -> Result<String, String> {
     let qtype = value.parse::<RecordType>().is_ok();
-    let qclass = value.parse::<Class>().is_ok();
-    match letter {
-        't' if !qtype => Err(format!("-t {value}: not a type")),
-        'c' if !qclass => Err(format!("-c {value}: not a class")),
-        'q' if qtype || qclass => Ok(value + "."),
+    let qclass = value.parse::<Class>();
+    match (letter, qclass) {
+        ('t', _) if !qtype => Err(format!("-t {value}: not a type")),
+        ('c', Err(_)) => Err(format!("-c {value}: not a class")),
+        ('c', Ok(class)) if qtype => Ok(format!("CLASS{}", class.0)),
+        ('q', qclass) if qtype || qclass.is_ok() => Ok(value + "."),
         _ => Ok(value),
     }
 }
@@ -521,6 +523,16 @@ mod tests {
                 names.iter().map(|(n, t)| (*n, t.to_vec())).collect();
             assert_eq!((got, got_class), (expected, class), "{words:?}");
         }
+    }
+
+    /// `-c ANY` asks class ANY, as dig does, though `ANY` alone is the type.
+    #[test]
+    fn dash_c_any_is_the_class() {
+        let words = rewrite(&["-c", "ANY", "example.com"]).expect("rewritten");
+        assert_eq!(
+            lookups(&words, false),
+            (vec![("example.com", vec![RecordType::A])], Class::ANY)
+        );
     }
 
     #[test]
