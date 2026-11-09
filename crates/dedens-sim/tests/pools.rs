@@ -23,10 +23,10 @@ use dedens_sim::seed::{self};
 use dedens_sim::stub::question;
 use dedens_sim::topology::Topology;
 use dedens_sim::trace::{self, Event, What};
-use dedens_sim::upstream::{Answers, Behaviour, Verdict};
+use dedens_sim::upstream::{Behaviour, Verdict};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 
-use crate::util::{SECOND, SEEDS};
+use crate::util::{SECOND, SEEDS, answers, served};
 
 /// Seeds for the scenarios with TLS: a handshake is the slowest thing the simulation does.
 const FEW: &[u64] = &[0, 7];
@@ -38,11 +38,6 @@ const MS: Duration = Duration::from_millis(1);
 
 /// The name the server's certificate holds.
 const NAME: &str = "dns.example";
-
-/// An upstream server holding `example.com A`.
-fn upstream() -> Answers {
-    Answers::new().captured("a")
-}
 
 fn ask() -> Message<'static> {
     Message::query(0, question("example.com", RecordType::A))
@@ -95,11 +90,11 @@ fn certificates(authority: u8) -> (CertificateDer<'static>, Arc<Presented>) {
 /// connections the server accepted.
 fn dot(seed: seed::Seed) -> (Vec<Event>, usize) {
     let (ca, presented) = certificates(0);
-    let answers = upstream();
-    let connections = answers.connections();
+    let dot = answers();
+    let connections = dot.connections();
     // The resolver host of every run needs an upstream to forward to; nothing asks it here.
-    let mut world = Topology::new().upstream(upstream()).build(seed);
-    let server = world.dot_server(answers, presented);
+    let mut world = Topology::new().upstream(answers()).build(seed);
+    let server = world.dot_server(dot, presented);
     world.client_direct(async move |client| {
         let client = client.trusting(Trust::Roots(vec![ca]));
         for _ in 0..3 {
@@ -124,11 +119,7 @@ fn dot_queries_share_one_connection() {
     seed::each(FEW, |seed| {
         let (events, connections) = dot(seed);
         assert_eq!(connections, 1, "{events:#?}");
-        let replies = events
-            .iter()
-            .filter(|event| matches!(event.what, What::Served { .. }))
-            .count();
-        assert_eq!(replies, 3, "{events:#?}");
+        assert_eq!(served(&events), 3, "{events:#?}");
     });
 }
 
@@ -155,8 +146,8 @@ fn dot_with_an_unknown_authority_is_refused() {
     seed::each(FEW, |seed| {
         let (_, presented) = certificates(0);
         let (other, _) = certificates(1);
-        let mut world = Topology::new().upstream(upstream()).build(seed);
-        let server = world.dot_server(upstream(), presented);
+        let mut world = Topology::new().upstream(answers()).build(seed);
+        let server = world.dot_server(answers(), presented);
         world.client_direct(async move |client| {
             let client = client.trusting(Trust::Roots(vec![other]));
             let got = client
@@ -179,7 +170,7 @@ fn dot_with_an_unknown_authority_is_refused() {
 fn a_tcp_connection_serves_queries_until_the_server_closes_it() {
     for limit in [1, 2, 4] {
         seed::each(SEEDS, |seed| {
-            let answers = upstream().tcp(Behaviour::Close(limit));
+            let answers = answers().tcp(Behaviour::Close(limit));
             let connections = answers.connections();
             let mut world = Topology::new().upstream(answers).build(seed);
             let server = world.upstreams[0];
@@ -202,7 +193,7 @@ fn a_tcp_connection_serves_queries_until_the_server_closes_it() {
 #[test]
 fn queries_asked_together_share_a_connection() {
     seed::each(SEEDS, |seed| {
-        let answers = upstream().faulty(|_, _| Verdict::Delay(20 * MS));
+        let answers = answers().faulty(|_, _| Verdict::Delay(20 * MS));
         let connections = answers.connections();
         let mut world = Topology::new().upstream(answers).build(seed);
         let server = world.upstreams[0];
@@ -232,7 +223,7 @@ fn queries_asked_together_share_a_connection() {
 #[test]
 fn a_dead_server_ends_a_pooled_connection_query_in_an_error() {
     seed::each(FEW, |seed| {
-        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         let server = world.upstreams[0];
         world.fault(2 * SECOND, Fault::Crash(Host::Upstream(0)));
         world.client_direct(async move |client| {
@@ -262,7 +253,7 @@ fn a_dead_server_ends_a_pooled_connection_query_in_an_error() {
 #[test]
 fn an_idle_connection_closes_after_the_idle_timeout() {
     seed::each(ONE, |seed| {
-        let answers = upstream();
+        let answers = answers();
         let connections = answers.connections();
         let counted = answers.connections();
         let mut world = Topology::new().upstream(answers).build(seed);
@@ -287,7 +278,7 @@ fn an_idle_connection_closes_after_the_idle_timeout() {
 #[test]
 fn a_stalled_connection_is_dropped_after_a_try() {
     seed::each(ONE, |seed| {
-        let answers = upstream().tcp(Behaviour::Silent);
+        let answers = answers().tcp(Behaviour::Silent);
         let connections = answers.connections();
         let mut world = Topology::new().upstream(answers).build(seed);
         let server = world.upstreams[0];
@@ -315,7 +306,7 @@ fn a_flood_of_datagrams_with_the_id_fills_the_inbox_of_the_query() {
             // all of them the same time: they arrive together, and the answer last. The pool's receiving task
             // drains them all into the inbox before the query's task runs again, as turmoil schedules them: a
             // change of tokio's scheduling could let the query take some first and make room.
-            let answers = upstream()
+            let answers = answers()
                 .faulty(|_, _| Verdict::Delay(Duration::ZERO))
                 .attacked_by(Attacker::new(move |seen| {
                     // The ID and nothing else a response has: no question, not decodable as an answer.
@@ -361,7 +352,7 @@ fn a_flood_of_datagrams_with_the_id_fills_the_inbox_of_the_query() {
 #[test]
 fn a_socket_error_costs_a_try() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         let server = world.upstreams[0];
         world.client_direct(async move |client| {
             client.glitches().fail_sends(1);
@@ -398,7 +389,7 @@ fn a_socket_error_costs_a_try() {
 #[test]
 fn a_dropped_client_closes_its_connections() {
     seed::each(ONE, |seed| {
-        let answers = upstream();
+        let answers = answers();
         let ended = answers.ended();
         let mut world = Topology::new().upstream(answers).build(seed);
         let server = world.upstreams[0];
@@ -421,7 +412,7 @@ fn a_dropped_client_closes_its_connections() {
 #[test]
 fn two_clients_are_two_hosts_drawing_their_own_ids() {
     seed::each(FEW, |seed| {
-        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let mut world = Topology::new().upstream(answers()).build(seed);
         let server = world.upstreams[0];
         for _ in 0..2 {
             world.client_direct(async move |client| {
@@ -451,9 +442,9 @@ fn two_clients_are_two_hosts_drawing_their_own_ids() {
 #[test]
 fn two_dot_servers_are_two_hosts() {
     seed::each(ONE, |seed| {
-        let mut world = Topology::new().upstream(upstream()).build(seed);
-        let one = world.dot_server(upstream(), certificates(0).1);
-        let other = world.dot_server(upstream(), certificates(0).1);
+        let mut world = Topology::new().upstream(answers()).build(seed);
+        let one = world.dot_server(answers(), certificates(0).1);
+        let other = world.dot_server(answers(), certificates(0).1);
         assert_ne!(one, other);
     });
 }

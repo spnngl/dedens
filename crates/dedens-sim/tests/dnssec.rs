@@ -36,7 +36,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-use crate::util::SEEDS;
+use crate::util::{SEEDS, served};
 /// For the scenarios that take a world for each case.
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
@@ -300,10 +300,7 @@ impl Run {
     /// `name` was open.
     fn served_for(&self, name: &str, nth: usize) -> usize {
         let (from, to) = self.exchanges(name)[nth];
-        self.0[from..to]
-            .iter()
-            .filter(|event| matches!(event.what, What::Served { .. }))
-            .count()
+        served(&self.0[from..to])
     }
 }
 

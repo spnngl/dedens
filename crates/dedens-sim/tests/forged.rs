@@ -44,7 +44,10 @@ use dedens_sim::topology::Topology;
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::Answers;
 
-use crate::util::{FORWARD_TIMEOUT, FORWARD_TRIES, SECOND, SEEDS, TIMEOUT, TRIES};
+use crate::util::{
+    FORWARD_TIMEOUT, FORWARD_TRIES, SECOND, SEEDS, TIMEOUT, TRIES, answers, forwarded, served,
+    served_over,
+};
 
 /// Fewer seeds for the scenarios in which a query runs through its timeouts: each costs the most wall time.
 const FEW: &[u64] = &[0, 7];
@@ -158,15 +161,6 @@ impl Run {
         self.events.iter().filter(|event| what(&event.what)).count()
     }
 
-    /// Responses the upstream server sent, over any transport.
-    fn served(&self) -> usize {
-        self.count(|what| matches!(what, What::Served { .. }))
-    }
-
-    fn served_over(&self, over: Transport) -> usize {
-        self.count(|what| matches!(what, What::Served { transport, .. } if *transport == over))
-    }
-
     /// Times the resolver's cache changed with an upstream response.
     fn stored(&self) -> usize {
         self.count(|what| matches!(what, What::Stored { .. }))
@@ -175,11 +169,6 @@ impl Run {
     /// Datagrams the attacker sent.
     fn injected(&self) -> usize {
         self.count(|what| matches!(what, What::Injected { .. }))
-    }
-
-    /// Times the resolver started asking the server.
-    fn forwarded(&self) -> usize {
-        self.count(|what| matches!(what, What::Forwarded { .. }))
     }
 
     /// Replies the resolver sent.
@@ -220,10 +209,9 @@ impl Run {
     }
 }
 
-/// A server that holds `example.com A`, `gmail.com MX` and `google.com TXT` (truncated over UDP).
-fn answers() -> Answers {
-    Answers::new()
-        .captured("a")
+/// A server that holds `example.com A`, `gmail.com MX` and `google.com TXT` (truncated over UDP), in that order.
+fn answers_mx_and_txt() -> Answers {
+    answers()
         .captured("mx")
         .truncating("truncated", "txt_large")
 }
@@ -295,15 +283,15 @@ fn flood(seed: Seed) -> Attacker {
 #[test]
 fn a_flood_of_forgeries_racing_the_real_answer_leaves_the_cache_with_the_real_one() {
     seed::each(SEEDS, |seed| {
-        let answers = answers().attacked_by(flood(seed));
+        let answers = answers_mx_and_txt().attacked_by(flood(seed));
         let run = two_clients(seed, answers, 2 * SECOND);
         let events = &run.events;
         // The flood went out once, for the one query to the server, and the server answered once.
         assert_eq!(run.injected(), FLOOD, "{events:#?}");
-        assert_eq!(run.served(), 1, "{events:#?}");
+        assert_eq!(served(&run.events), 1, "{events:#?}");
         // One answer was stored: the server's. The other client's query came from the cache.
         assert_eq!(run.stored(), 1, "{events:#?}");
-        assert_eq!(run.forwarded(), 1, "{events:#?}");
+        assert_eq!(forwarded(&run.events), 1, "{events:#?}");
         assert_eq!(run.replied(), 2, "{events:#?}");
         assert_eq!(run.answered(), 2, "{events:#?}");
         // The resolver took no forgery for a reason to ask again.
@@ -335,7 +323,7 @@ fn forgeries_in_the_servers_place_end_in_servfail_and_none_is_stored() {
             Reaction::instead(injections)
         });
         let mut world = Topology::new()
-            .upstream(answers().attacked_by(attacker))
+            .upstream(answers_mx_and_txt().attacked_by(attacker))
             .build(seed);
         let resolver = world.resolver.ip();
         world.client(async move |stub| {
@@ -366,7 +354,7 @@ fn forgeries_in_the_servers_place_end_in_servfail_and_none_is_stored() {
         });
         let events = world.run().expect("the run passes its checks");
         let run = Run { events, resolver };
-        assert_eq!(run.served(), 0, "{:#?}", run.events);
+        assert_eq!(served(&run.events), 0, "{:#?}", run.events);
         // The cache holds the failure (D43, RFC 9520 §3.2) and nothing of the forgeries: that one entry is all it
         // stored.
         assert_eq!(run.stored(), 1, "{:#?}", run.events);
@@ -408,7 +396,7 @@ fn copies() -> Attacker {
 fn a_duplicated_response_is_one_answer_stored_once() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new()
-            .upstream(answers().attacked_by(copies()))
+            .upstream(answers_mx_and_txt().attacked_by(copies()))
             .build(seed);
         let resolver = world.resolver.ip();
         world.client(async move |stub| {
@@ -432,13 +420,13 @@ fn a_duplicated_response_is_one_answer_stored_once() {
         assert_eq!(run.answered(), 3, "{events:#?}");
         assert_eq!(run.replied(), 3, "{events:#?}");
         // The server answered the A over UDP, and the TXT over UDP (TC) and TCP: the copies are the attacker's.
-        assert_eq!(run.served_over(Transport::Udp), 2, "{events:#?}");
-        assert_eq!(run.served_over(Transport::Tcp), 1, "{events:#?}");
+        assert_eq!(served_over(&run.events, Transport::Udp), 2, "{events:#?}");
+        assert_eq!(served_over(&run.events, Transport::Tcp), 1, "{events:#?}");
         assert_eq!(run.injected(), 2 * COPIES.len(), "{events:#?}");
         // Two answers stored, one for each question that went to the server; the copies added nothing, and none
         // counted as a response to a retry: each exchange sent once, the TCP one after the UDP query's TC.
         assert_eq!(run.stored(), 2, "{events:#?}");
-        assert_eq!(run.forwarded(), 2, "{events:#?}");
+        assert_eq!(forwarded(&run.events), 2, "{events:#?}");
         assert_eq!(
             run.sent_by_the_resolver(),
             [
@@ -482,7 +470,7 @@ fn without_the_cookie() -> Attacker {
 #[test]
 fn forged_responses_without_the_servers_cookie_end_an_exchange_as_forged() {
     seed::each(FEW, |seed| {
-        let answers = answers()
+        let answers = answers_mx_and_txt()
             .cookies(SERVER_COOKIE)
             .attacked_by(without_the_cookie());
         let mut world = Topology::new().upstream(answers).build(seed);
@@ -510,7 +498,7 @@ fn forged_responses_without_the_servers_cookie_end_an_exchange_as_forged() {
         let resolver = world.resolver.ip();
         let events = world.run().expect("the run passes its checks");
         let run = Run { events, resolver };
-        assert_eq!(run.served(), 1, "{:#?}", run.events);
+        assert_eq!(served(&run.events), 1, "{:#?}", run.events);
         assert_eq!(run.answered(), 1, "{:#?}", run.events);
         assert_eq!(
             run.injected(),
@@ -524,7 +512,7 @@ fn forged_responses_without_the_servers_cookie_end_an_exchange_as_forged() {
 #[test]
 fn a_resolver_that_hears_only_forgeries_after_the_servers_cookie_answers_servfail() {
     seed::each(FEW, |seed| {
-        let answers = answers()
+        let answers = answers_mx_and_txt()
             .cookies(SERVER_COOKIE)
             .attacked_by(without_the_cookie());
         let mut world = Topology::new().upstream(answers).build(seed);
@@ -551,7 +539,7 @@ fn a_resolver_that_hears_only_forgeries_after_the_servers_cookie_answers_servfai
         let events = world.run().expect("the run passes its checks");
         let run = Run { events, resolver };
         // Only the first answer came from the server: the cache stored it, and the failure it holds (RFC 9520 §3.2).
-        assert_eq!(run.served(), 1, "{:#?}", run.events);
+        assert_eq!(served(&run.events), 1, "{:#?}", run.events);
         assert_eq!(run.stored(), 2, "{:#?}", run.events);
         assert!(run.injected() >= 4, "{:#?}", run.events);
     });
@@ -617,7 +605,7 @@ const DELAYS_MS: [u64; 4] = [0, 50, 300, 2_000];
 /// draws, the server has a cookie or not as the seed says, and the link to the server loses and delays as it picks.
 fn attacked(seed: Seed) -> Run {
     let mut rng = Rng::new(seed, ATTACKER);
-    let mut answers = answers();
+    let mut answers = answers_mx_and_txt();
     if rng.below(2) == 0 {
         answers = answers.cookies(SERVER_COOKIE);
     }
@@ -679,7 +667,10 @@ fn whatever_the_attacker_forges_the_clients_get_the_servers_data() {
                 }
             )
         });
-        assert!(run.stored() <= run.served() + servfails, "{events:#?}");
+        assert!(
+            run.stored() <= served(&run.events) + servfails,
+            "{events:#?}"
+        );
         // The attacker did attack: this run is no check of nothing.
         assert!(run.injected() > 0, "{events:#?}");
     });

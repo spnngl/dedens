@@ -20,10 +20,9 @@ use dedens_sim::seed::{self, Seed};
 use dedens_sim::stub::{Answer, Outcome, question};
 use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{Event, What};
-use dedens_sim::upstream::Answers;
 use tokio::time::Instant;
 
-use crate::util::{SECOND, SEEDS};
+use crate::util::{SECOND, SEEDS, answers_and_txt, served_by};
 
 /// Fewer seeds for the scenarios in which a query runs through its timeouts: each costs the most wall time, and the
 /// module keeps to its budget.
@@ -35,20 +34,13 @@ const FORWARD_TIMEOUT: Duration = SECOND;
 const FORWARD_TRIES: u8 = 2;
 const PER_SERVER: Duration = Duration::from_secs(2);
 
-/// The upstream servers hold `example.com A` and `google.com TXT`.
-fn answers() -> Answers {
-    Answers::new()
-        .captured("a")
-        .truncating("truncated", "txt_large")
-}
-
 /// A world of two upstream servers, the resolver forwarding with the timeout and tries above to a cache of
 /// `config`.
 fn world(seed: Seed, config: &Config) -> World {
     let config = config.clone();
     Topology::new()
-        .upstream(answers())
-        .upstream(answers())
+        .upstream(answers_and_txt())
+        .upstream(answers_and_txt())
         .resolver(move |upstreams| {
             let forward = Forward::new(upstreams.iter().copied())
                 .expect("an upstream server to forward to")
@@ -81,7 +73,7 @@ fn answered(outcome: Outcome) -> Result<Answer, String> {
 }
 
 /// The upstream servers the resolver sent a UDP query to, in order, one for each server it tried.
-fn forwarded(events: &[Event]) -> Vec<SocketAddr> {
+fn tried_over_udp(events: &[Event]) -> Vec<SocketAddr> {
     events
         .iter()
         .filter_map(|event| match event.what {
@@ -106,7 +98,7 @@ fn sent_to(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize {
 }
 
 /// The queries for `name` the upstream server at `host` answered.
-fn served(events: &[Event], host: IpAddr, name: &str) -> usize {
+fn served_for(events: &[Event], host: IpAddr, name: &str) -> usize {
     let name = name.parse().expect("a name");
     events
         .iter()
@@ -114,14 +106,6 @@ fn served(events: &[Event], host: IpAddr, name: &str) -> usize {
             event.host == host
                 && matches!(&event.what, What::Served { question, .. } if question.name == name)
         })
-        .count()
-}
-
-/// The queries the upstream server at `host` answered.
-fn served_by(events: &[Event], host: IpAddr) -> usize {
-    events
-        .iter()
-        .filter(|event| event.host == host && matches!(event.what, What::Served { .. }))
         .count()
 }
 
@@ -164,7 +148,7 @@ fn the_second_upstream_answers_when_the_first_is_cut_off() {
         });
         let events = world.run().expect("the run passes its checks");
         // D41: the servers in the order given.
-        assert_eq!(forwarded(&events), upstreams, "{events:#?}");
+        assert_eq!(tried_over_udp(&events), upstreams, "{events:#?}");
         assert_eq!(
             sent_to(&events, resolver, upstreams[0]),
             usize::from(FORWARD_TRIES),
@@ -201,7 +185,7 @@ fn with_every_upstream_cut_off_the_query_ends_in_servfail_within_the_forward_tim
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
-        assert_eq!(forwarded(&events), upstreams, "{events:#?}");
+        assert_eq!(tried_over_udp(&events), upstreams, "{events:#?}");
         assert_eq!(served_by(&events, upstreams[0].ip()), 0, "{events:#?}");
         assert_eq!(served_by(&events, upstreams[1].ip()), 0, "{events:#?}");
     });
@@ -278,8 +262,8 @@ fn a_cut_of_the_queries_and_a_cut_of_the_responses_end_the_same_and_differ_in_th
         );
         // The client sees one thing: the second server's records, after the first one's timeouts.
         assert_eq!(ends(&queries_lost), ends(&responses_lost));
-        assert_eq!(forwarded(&queries_lost), upstreams);
-        assert_eq!(forwarded(&responses_lost), upstreams);
+        assert_eq!(tried_over_udp(&queries_lost), upstreams);
+        assert_eq!(tried_over_udp(&responses_lost), upstreams);
         for events in [&queries_lost, &responses_lost] {
             assert_eq!(
                 sent_to(events, resolver, upstreams[0]),
@@ -322,7 +306,7 @@ fn the_first_upstream_is_asked_again_when_its_link_is_repaired() {
         });
         let events = world.run().expect("the run passes its checks");
         assert_eq!(
-            forwarded(&events),
+            tried_over_udp(&events),
             [upstreams[0], upstreams[1], upstreams[0]],
             "{events:#?}"
         );
@@ -358,23 +342,23 @@ fn queries_held_on_the_upstream_link_do_not_answer_a_later_query() {
         });
         let events = world.run().expect("the run passes its checks");
         assert_eq!(
-            forwarded(&events),
+            tried_over_udp(&events),
             [upstreams[0], upstreams[1], upstreams[0]],
             "{events:#?}"
         );
         // The first server answered the first query's two held tries and the second question (over UDP, then TCP
         // for the truncated answer); the second server answered the first query once.
         assert_eq!(
-            served(&events, upstreams[0].ip(), "example.com"),
+            served_for(&events, upstreams[0].ip(), "example.com"),
             2,
             "{events:#?}"
         );
         assert!(
-            served(&events, upstreams[0].ip(), "google.com") >= 1,
+            served_for(&events, upstreams[0].ip(), "google.com") >= 1,
             "{events:#?}"
         );
         assert_eq!(
-            served(&events, upstreams[1].ip(), "example.com"),
+            served_for(&events, upstreams[1].ip(), "example.com"),
             1,
             "{events:#?}"
         );

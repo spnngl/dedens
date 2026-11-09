@@ -19,23 +19,16 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-use crate::util::{SECOND, SEEDS};
+use crate::util::{SECOND, SEEDS, answers_and_txt, served_by};
 
 /// Seeds for the scripts that run over both carriers or wait out the client's tries.
 const FEW: &[u64] = &[0, 7];
 
 const MS: Duration = Duration::from_millis(1);
 
-/// An upstream server holding `example.com A`, and `google.com TXT` (truncated over UDP, whole over TCP).
-fn upstream() -> Answers {
-    Answers::new()
-        .captured("a")
-        .truncating("truncated", "txt_large")
-}
-
-/// [`upstream`], answering each query after a second: a query it got is in flight for that long.
+/// [`answers_and_txt`], answering each query after a second: a query it got is in flight for that long.
 fn slow() -> Answers {
-    upstream().faulty(|_, _| Verdict::Delay(SECOND))
+    answers_and_txt().faulty(|_, _| Verdict::Delay(SECOND))
 }
 
 /// The queries of the scripts: one of each of the two captures.
@@ -81,12 +74,8 @@ fn count(events: &[Event], host: IpAddr, what: impl Fn(&What) -> bool) -> usize 
         .count()
 }
 
-fn served(events: &[Event], host: IpAddr) -> usize {
-    count(events, host, |what| matches!(what, What::Served { .. }))
-}
-
 /// How many times the resolver forwarded a query to `server`.
-fn forwarded(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize {
+fn forwarded_to(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize {
     count(
         events,
         resolver,
@@ -128,7 +117,7 @@ fn a_crashed_upstream_is_left_for_the_next() {
         seed::each(FEW, |seed| {
             let mut world = Topology::new()
                 .upstream(slow())
-                .upstream(upstream())
+                .upstream(answers_and_txt())
                 .build(seed);
             let at = world.pick(100 * MS, 900 * MS);
             world.fault(at, Fault::Crash(Server::Upstream(0)));
@@ -137,8 +126,8 @@ fn a_crashed_upstream_is_left_for_the_next() {
             clients_expecting_records(&mut world, carrier);
             let events = world.run().expect("the run passes its checks");
             // The answer it was holding never left the crashed host.
-            assert_eq!(served(&events, first.ip()), 0, "{events:#?}");
-            assert!(forwarded(&events, resolver, second) >= 2, "{events:#?}");
+            assert_eq!(served_by(&events, first.ip()), 0, "{events:#?}");
+            assert!(forwarded_to(&events, resolver, second) >= 2, "{events:#?}");
         });
     }
 }
@@ -163,7 +152,7 @@ fn a_bounced_upstream_answers_the_second_send_of_the_resolver() {
         });
         let events = world.run().expect("the run passes its checks");
         // The query of the crashed host is lost; the one after the bounce is answered.
-        assert_eq!(served(&events, upstream), 1, "{events:#?}");
+        assert_eq!(served_by(&events, upstream), 1, "{events:#?}");
         assert_eq!(
             count(&events, resolver, |what| matches!(
                 what,
@@ -211,7 +200,7 @@ fn a_bounced_upstream_gets_one_new_connection() {
         clients_expecting_records(&mut world, Carrier::Tcp);
         let events = world.run().expect("the run passes its checks");
         // One exchange each, and no second send.
-        assert_eq!(forwarded(&events, resolver, upstream), 2, "{events:#?}");
+        assert_eq!(forwarded_to(&events, resolver, upstream), 2, "{events:#?}");
         assert_eq!(
             count(&events, resolver, |what| matches!(
                 what,
@@ -220,7 +209,7 @@ fn a_bounced_upstream_gets_one_new_connection() {
             0,
             "{events:#?}"
         );
-        assert_eq!(served(&events, upstream.ip()), 2, "{events:#?}");
+        assert_eq!(served_by(&events, upstream.ip()), 2, "{events:#?}");
     });
 }
 
@@ -232,7 +221,7 @@ fn a_second_close_fails_the_exchange() {
         seed::each(SEEDS, |seed| {
             let mut topology = Topology::new().upstream(slow());
             if backup {
-                topology = topology.upstream(upstream());
+                topology = topology.upstream(answers_and_txt());
             }
             let mut world = topology.build(seed);
             steady(&mut world, Node::Resolver, Node::Upstream(0));
@@ -260,10 +249,18 @@ fn a_second_close_fails_the_exchange() {
                 Ok(())
             });
             let events = world.run().expect("the run passes its checks");
-            assert_eq!(forwarded(&events, resolver, upstreams[0]), 1, "{events:#?}");
-            assert_eq!(served(&events, upstreams[0].ip()), 0, "{events:#?}");
+            assert_eq!(
+                forwarded_to(&events, resolver, upstreams[0]),
+                1,
+                "{events:#?}"
+            );
+            assert_eq!(served_by(&events, upstreams[0].ip()), 0, "{events:#?}");
             if backup {
-                assert_eq!(forwarded(&events, resolver, upstreams[1]), 1, "{events:#?}");
+                assert_eq!(
+                    forwarded_to(&events, resolver, upstreams[1]),
+                    1,
+                    "{events:#?}"
+                );
             }
         });
     }
@@ -287,7 +284,7 @@ fn a_bounced_resolver_answers_the_clients_second_try() {
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
-        assert_eq!(served(&events, upstream), 2, "{events:#?}");
+        assert_eq!(served_by(&events, upstream), 2, "{events:#?}");
     });
 }
 
@@ -315,7 +312,7 @@ fn a_bounced_resolver_gets_one_new_connection() {
 #[test]
 fn a_bounced_resolver_fills_its_cache_again() {
     seed::each(SEEDS, |seed| {
-        let mut world = Topology::new().upstream(upstream()).build(seed);
+        let mut world = Topology::new().upstream(answers_and_txt()).build(seed);
         world.fault(3 * SECOND, Fault::Bounce(Server::Resolver));
         let (resolver, upstream) = (world.resolver.ip(), world.upstreams[0].ip());
         world.client(async move |stub| {
@@ -328,7 +325,7 @@ fn a_bounced_resolver_fills_its_cache_again() {
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
-        assert_eq!(served(&events, upstream), 2, "{events:#?}");
+        assert_eq!(served_by(&events, upstream), 2, "{events:#?}");
         let stored: Vec<_> = events
             .iter()
             .filter(|event| event.host == resolver)
@@ -399,14 +396,14 @@ fn got_records(what: &What) -> bool {
 fn whatever_the_seed_crashes_queries_end_well() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new()
-            .upstream(upstream().faulty(|_, rng| {
+            .upstream(answers_and_txt().faulty(|_, rng| {
                 if rng.below(2) == 0 {
                     Verdict::Delay(SECOND)
                 } else {
                     Verdict::Answer
                 }
             }))
-            .upstream(upstream())
+            .upstream(answers_and_txt())
             .duration(600 * SECOND)
             .build(seed);
         let resolver = world.resolver.ip();
@@ -501,7 +498,7 @@ fn whatever_the_seed_crashes_queries_end_well() {
 fn digest(seed: Seed) -> u64 {
     let mut world = Topology::new()
         .upstream(slow())
-        .upstream(upstream())
+        .upstream(answers_and_txt())
         .build(seed);
     let upstream = world.pick(100 * MS, 900 * MS);
     let resolver = world.pick(100 * MS, 900 * MS);
