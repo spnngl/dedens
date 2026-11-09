@@ -1,6 +1,7 @@
 //! The files of a run: query files and their expectations, the capture file, `--save-wire`.
 
 use dedens_testkit::captured;
+use dedens_testkit::certificates::NAME;
 use dedens_testkit::responder::Responder;
 use predicates::str::contains;
 
@@ -152,4 +153,24 @@ fn save_wire_names_each_server() {
             .join(format!("example.com_A@{}.bin", server.addr));
         assert!(path.exists(), "{}", path.display());
     }
+}
+
+/// A command-line server is reached over the transport of the query's options: with `tls: true` in the file, the
+/// certificate must hold the name after `#`, which only TLS takes.
+#[test]
+fn file_options_choose_the_transport_of_command_line_servers() {
+    let (server, ca) = Responder::tls(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let file = "options: {tls: true}\nqueries: [{name: example.com, type: A}]";
+    let ask = |name: &str| {
+        dedens()
+            .args(["-f", "-", &format!("@127.0.0.1:{port}#{name}"), &ca])
+            .write_stdin(file)
+            .assert()
+    };
+    ask(NAME).success().stdout(contains("over TLS"));
+    ask("other.example")
+        .code(10)
+        .stderr(contains("TLS handshake failed"));
 }
