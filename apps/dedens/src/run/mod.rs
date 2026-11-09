@@ -646,3 +646,47 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D177: each transport forced, and each path, names a server apart from the others at its address.
+    #[test]
+    fn a_label_names_the_transport_and_path() {
+        let at = |forced, doh: Option<&str>, docpath: &[&[u8]]| Endpoint {
+            server: Server {
+                doh: doh.map(|text| Template::parse(text).expect("a template")),
+                docpath: docpath.iter().map(|segment| Box::from(*segment)).collect(),
+                ..Server::from(SocketAddr::from(([192, 0, 2, 1], 53)))
+            },
+            forced,
+            proxy: None,
+        };
+        let cases = [
+            (at(None, None, &[]), "192.0.2.1"),
+            (at(Some(Transport::Tls), None, &[]), "192.0.2.1+tls"),
+            (at(Some(Transport::Quic), None, &[]), "192.0.2.1+quic"),
+            (at(Some(Transport::Odoh), None, &[]), "192.0.2.1+odoh"),
+            (
+                at(
+                    Some(Transport::Https),
+                    Some("https://a.example/dns-query"),
+                    &[],
+                ),
+                "192.0.2.1+https",
+            ),
+            (
+                at(Some(Transport::Https), Some("https://a.example/q/dns"), &[]),
+                "192.0.2.1+https_q_dns",
+            ),
+            (
+                at(Some(Transport::Coap), None, &[b"dns", b"q"]),
+                "192.0.2.1+coap_dns_q",
+            ),
+        ];
+        for (endpoint, label) in cases {
+            assert_eq!(endpoint.label(), label);
+        }
+    }
+}

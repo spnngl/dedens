@@ -73,8 +73,8 @@ exclude_re = [
   'config/sources\.rs:\d+:\d+: (delete ! in Downloads::written_dir|replace Downloads::written_dir -> .* with None)$',
   # target is given CNAME or DNAME sets only, and a CNAME's RDATA always decodes as RData::Cname, never opaque.
   'section\.rs:\d+:\d+: replace match guard set\.rtype\(\) == RecordType::DNAME with true in target$',
-  # Equal values: either is the lesser.
-  'config\.rs:\d+:\d+: replace < with <= in lesser$',
+  # Equal values: either is the lesser, or the greater.
+  'config\.rs:\d+:\d+: replace (< with <= in lesser|> with >= in greater)$',
   # A plugin's stage index is never the cache stage's: `<` and `<=` agree.
   'pipeline/finish\.rs:\d+:\d+: replace < with <= in Finish<._>::plain$',
   # Zeroing a dropped secret is memory hygiene: reading the bytes after the drop takes `unsafe`, no test's.
