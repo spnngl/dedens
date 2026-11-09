@@ -5,8 +5,9 @@
 //!   of `tls` (D66), replaced by a reload.
 //! - `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured bytes,
 //!   several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start that fails
-//!   on a taken address, SIGTERM and SIGINT ending it, `validate` reading a configuration file without binding, and
-//!   expired data answering a client kept waiting while resolution goes on (RFC 8767 §5).
+//!   on a taken address with its text events coloured as `NO_COLOR` and `CLICOLOR_FORCE` say (D169), SIGTERM and
+//!   SIGINT ending it, `validate` reading a configuration file without binding, and expired data answering a client
+//!   kept waiting while resolution goes on (RFC 8767 §5).
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -463,6 +464,30 @@ fn a_taken_address_fails_the_start() {
         stderr.contains(&format!("cannot bind UDP {addr}")),
         "{stderr}"
     );
+}
+
+/// D169: text events are coloured as anstream decides for stderr, which `NO_COLOR` and `CLICOLOR_FORCE` steer. The
+/// warning that no `access` is configured comes before the bind that fails.
+#[test]
+fn text_events_follow_the_colour_variables() {
+    let taken = UdpSocket::bind("0.0.0.0:0").expect("a UDP port");
+    let addr = taken.local_addr().expect("its address").to_string();
+    let config = config(&addr, "127.0.0.1", "");
+    let stderr = |variable: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_dedensd"))
+            .args(["--log-format", "text", "--config"])
+            .arg(&config)
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", "1")
+            .env(variable, "1")
+            .output()
+            .expect("dedensd runs");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(stderr.contains("no `access` configured"), "{stderr}");
+        stderr
+    };
+    assert!(stderr("CLICOLOR_FORCE").contains("\u{1b}["));
+    assert!(!stderr("NO_COLOR").contains("\u{1b}["));
 }
 
 #[test]

@@ -90,7 +90,7 @@ pub(crate) struct Output {
     yaml: bool,
     /// Colors: `NO_COLOR` turns them off for `auto`.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
-    pub(crate) color: clap::ColorChoice,
+    color: clap::ColorChoice,
 }
 
 impl Output {
@@ -101,6 +101,15 @@ impl Output {
             Self { json: true, .. } => Format::Json,
             Self { yaml: true, .. } => Format::Yaml,
             Self { format, .. } => format.unwrap_or(Format::Human),
+        }
+    }
+
+    /// The colours of `--color`, for anstream, which reads the environment's choice for `auto` (D169).
+    pub(crate) const fn color(&self) -> anstream::ColorChoice {
+        match self.color {
+            clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
+            clap::ColorChoice::Always => anstream::ColorChoice::Always,
+            clap::ColorChoice::Never => anstream::ColorChoice::Never,
         }
     }
 }

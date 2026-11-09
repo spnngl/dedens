@@ -33,9 +33,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   no Windows yet. `+search` tries the next candidate on NXDOMAIN. A class word applies to every query of the run.
   `-f FILE --only ID` runs some queries of a file.
 - D169 (amends D32; builds on D30) `NO_COLOR` turns colour off only when set to a value, as
-  [no-color.org](https://no-color.org/) says: set empty, it is as unset. `dedens`'s output follows it through
-  anstream; its `-v` events and `dedensd`'s text log decide by `colored` in each binary, which took any value, empty
-  included. Rejected: any value (against the convention, and against anstream on the same run's stdout).
+  [no-color.org](https://no-color.org/) says: set empty, it is as unset. anstream decides for every stream:
+  `dedens`'s output, its `-v` events (both after `--color`) and `dedensd`'s text log, so `CLICOLOR`,
+  `CLICOLOR_FORCE` and `TERM=dumb` steer them alike. Rejected: any value (against the convention); a hand-written
+  check for stderr (it took any value and drifted from anstream on the same run's stdout).
 - D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
   9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
   which leaves the other results.

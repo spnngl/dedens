@@ -109,7 +109,18 @@ fn colors_follow_the_choice_and_no_color() {
         .env("CLICOLOR_FORCE", "1")
         .env("NO_COLOR", "")
         .assert()
-        .stdout(escape);
+        .stdout(escape.clone());
+    // The events on stderr follow the same choice: `-vv`, as `-v` has none for a plain query.
+    dedens()
+        .args([&at, "example.com", "-vv"])
+        .env("CLICOLOR_FORCE", "1")
+        .assert()
+        .stderr(escape.clone());
+    dedens()
+        .args([&at, "example.com", "-vv", "--color=never"])
+        .env("CLICOLOR_FORCE", "1")
+        .assert()
+        .stderr(escape.not());
 }
 
 #[test]
