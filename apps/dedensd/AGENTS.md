@@ -3,7 +3,7 @@
 The server binary (D42, D44): sockets, files, signals and threads around `dedens_server::Pipeline`. RFC behaviour
 belongs in `crates/dedens-server` and its sans-IO tests.
 
-- State that `src/reload.rs` and `src/flights.rs` share between threads takes its types from `src/sync.rs`, so the
+- State that `src/reload.rs` and `src/flights.rs` share between threads takes its types from `src/sync/mod.rs`, so the
   loom tests beside them see it (`just loom`, D135).
 - A new listener applies `action: drop` (`Pipeline::drops`) before it takes a connection slot or does a handshake
   (D91).

@@ -166,7 +166,7 @@ pub(crate) struct Config {
     pub(crate) odoh: Option<crate::odoh::Section>,
     pub(crate) pipeline: Pipeline,
     /// Where the access lists come from (D91).
-    pub(crate) access: AccessSource,
+    access: AccessSource,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
     pub(crate) trust: Trust,

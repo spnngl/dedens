@@ -1,5 +1,5 @@
 //! What the server says of itself: its `tracing` events on stderr, as JSON or text (D30), and the start's
-//! "serving" event with the driver its threads run on, warning of `poll` on Linux (D107).
+//! "serving" event with the driver its threads run on, warning of `poll` on Linux (D107), and of CoAP (RFC 9953 §6).
 
 use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
@@ -52,6 +52,17 @@ pub(crate) fn announce(config: &str, listen: &[Listen], drivers: &[DriverType]) 
     tracing::info!(config, ?listen, threads, driver = driver.name, "serving");
     if let Some(warning) = driver.warning(cfg!(target_os = "linux")) {
         tracing::warn!(driver = driver.name, threads, "{warning}");
+    }
+}
+
+/// Warns of each CoAP address in `listen`: DNS there is unprotected (RFC 9953 §6).
+#[cfg(feature = "doc")]
+pub(crate) fn warn_coap(listen: &[Listen]) {
+    for listen in listen.iter().filter(|l| matches!(l, Listen::Coap(..))) {
+        tracing::warn!(
+            ?listen,
+            "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
+        );
     }
 }
 

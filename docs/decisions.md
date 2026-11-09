@@ -2295,7 +2295,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     second thread would serve no query. Each thread costs about 1 MiB of buffers, 64 KiB of scratch and a 4 MiB
     receive buffer per UDP socket, so fewer threads than cores serve a small host; 1024 stops a typo.
   - Tests: `a_key_readable_by_others_is_refused` (`tests/listeners.rs`: refused, kept on a reload, group warned),
-    `a_long_key_file_is_refused_and_an_exposed_one_too` (`odoh.rs`), `forward_patience_is_bounded`,
+    `a_long_key_file_is_refused_and_an_exposed_one_too` (`odoh/mod.rs`), `forward_patience_is_bounded`,
     `a_variable_cannot_inject_yaml`, `a_value_is_the_text_it_stands_for` (every text of up to three characters
     from an alphabet of YAML's syntax, in five templates: read back as that text or refused, which stands for a
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
@@ -2415,7 +2415,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     (`dedens-server/tests/dnssec.rs`, the first written first), `a_query_the_allowance_refuses_keeps_its_unit_of_the_share`
     (`validate.rs`), the unit tests of `budget.rs`, `a_flood_from_one_network_does_not_stop_the_others`,
     `many_networks_open_no_more_than_the_global_budget`, `an_exempt_source_pays_only_the_global_budget`
-    (`odoh.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/odoh.rs`),
+    (`odoh/mod.rs`), `d117_a_flood_of_posts_past_a_budget_is_503_before_it_is_opened` (`tests/odoh.rs`),
     `a_client_share_is_set_per_stage_and_reload_keeps_the_keys` (`config/upstream.rs`), `an_odoh_target_has_limits` (`config/keys.rs`). No
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
     `serve_warm`, `serve_shed` (`dnssec.rs`), `budget_admit`, `budget_refuse`, `budget_refuse_one_network`,
@@ -2668,7 +2668,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up (`Current`) and of the
   query flights (`Flights`), the two places where `dedensd`'s threads share state by a protocol of their own. D86's
   and D107's tests run real threads, which pass whenever the scheduler misses the bad order; loom runs each order.
-  - `src/sync.rs` names the types of those two: std's and `flume::bounded(1)` in the server (the same types
+  - `src/sync/mod.rs` names the types of those two: std's and `flume::bounded(1)` in the server (the same types
     re-exported, so no change of behaviour or cost), loom's under `--cfg dedens_loom`. The cfg is `dedens_loom`, not
     `loom`: `--cfg loom` also switches tokio, `event-listener` and `concurrent-queue` in the dependencies. `loom` is
     a dev-dependency under that cfg and `unexpected_cfgs` declares it; the tests that run sockets and a runtime
