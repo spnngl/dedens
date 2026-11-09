@@ -19,7 +19,7 @@ const MAX_COMPARES: usize = 4;
 
 /// How many suffixes a [`Writer`](super::Writer) remembers, 3/4 of the slots so probes stay short; a message with more
 /// distinct names compresses the later ones less.
-const TABLE_CAPACITY: usize = TABLE_SLOTS / 4 * 3;
+pub(super) const TABLE_CAPACITY: usize = TABLE_SLOTS / 4 * 3;
 
 /// A suffix of a name, as [`suffix_hashes`] lists it: where it starts in the wire-form name, at most 253, and
 /// the top 32 bits of its hash but for the 8 that hold the start.

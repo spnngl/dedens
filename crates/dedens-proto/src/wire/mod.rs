@@ -638,13 +638,18 @@ mod tests {
         let mut buf = [0; 4096];
         let mut w = Writer::new(&mut buf);
         w.put_bytes(&[0; HEADER_LEN]).unwrap();
-        for i in 0..256 {
+        for i in 0..name_table::TABLE_CAPACITY {
             let name: Name<'static> = format!("n{i}").parse().unwrap();
             w.put_name_compressed(&name).unwrap();
         }
         let owner: Name<'static> = "example".parse().unwrap();
+        let at = w.len();
         let previous = w.put_owner(&owner, None).unwrap();
-        assert!(previous.is_some());
+        assert_eq!(
+            previous,
+            u16::try_from(at).ok(),
+            "where the owner was written"
+        );
         let at = w.len();
         assert_eq!(w.put_owner(&owner, previous), Ok(previous));
         assert_eq!(w.len() - at, 2, "a pointer");
