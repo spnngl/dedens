@@ -103,7 +103,13 @@ fn colors_follow_the_choice_and_no_color() {
         .env("CLICOLOR_FORCE", "1")
         .env("NO_COLOR", "1")
         .assert()
-        .stdout(escape.not());
+        .stdout(escape.clone().not());
+    dedens()
+        .args([&at, "example.com"])
+        .env("CLICOLOR_FORCE", "1")
+        .env("NO_COLOR", "")
+        .assert()
+        .stdout(escape);
 }
 
 #[test]

@@ -1429,7 +1429,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   RFC 3152). The `resolv.conf` search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a
   debugging tool asks for the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and
   shown as such, with labels mixing scripts flagged (IDN homographs).
-- D32 (amended by D76) CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
+- D32 (amended by D76, D169) CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
   `+noopt` → `--opt=false` for an on/off flag only, `+opt=v` → `--opt=v`, `opt` any unique prefix as in dig;
   `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
   anything after `--` alone, then clap parses. One option set for both spellings (clap derived on
@@ -1444,6 +1444,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   our own parser (`nameserver`, `search`, `domain`, `ndots`), `DEDENS_RESOLV_CONF` overriding its path for tests;
   no Windows yet. `+search` tries the next candidate on NXDOMAIN. A class word applies to every query of the run.
   `-f FILE --only ID` runs some queries of a file.
+- D169 (amends D32; builds on D30) `NO_COLOR` turns colour off only when set to a value, as
+  [no-color.org](https://no-color.org/) says: set empty, it is as unset. `dedens`'s output follows it through
+  anstream; its `-v` events and `dedensd`'s text log decide by `colored` in each binary, which took any value, empty
+  included. Rejected: any value (against the convention, and against anstream on the same run's stdout).
 - D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
   9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
   which leaves the other results.
