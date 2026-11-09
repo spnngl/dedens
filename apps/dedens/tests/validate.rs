@@ -6,6 +6,7 @@ use dedens_proto::edns::EdnsFlags;
 use dedens_proto::{Class, Flags, Name, Record, RecordType};
 use dedens_testkit::dnssec;
 use dedens_testkit::responder::Responder;
+use predicates::prelude::*;
 use predicates::str::contains;
 
 use crate::util::{dedens, queries, redact};
@@ -286,6 +287,32 @@ fn a_dnssec_expectation_fails_the_run_with_exit_1() {
         let failed = out.contains("dnssec secure instead of bogus");
         assert_eq!(failed, code == 1, "{out}");
     }
+}
+
+/// The expectations of a secure response are checked against what is shown of it (D76): the records added to a
+/// real capture, an upstream's injection, are neither shown nor expected.
+#[test]
+fn record_expectations_see_what_validation_covers() {
+    let mut forged = dnssec::response("alg13_a");
+    let a = forged.answer[0].clone();
+    forged.answer.push(Record {
+        name: "other.example.".parse().expect("a name"),
+        ..a.clone()
+    });
+    forged.additional.push(a);
+    let wire = forged.to_vec().expect("the message fits");
+    let server = Responder::start_with(&SECURE[1..], &[wire]);
+    let queries = format!(
+        "server: {}\noptions: {{validate: true}}\nqueries:\n  - name: cloudflare.com\n    type: A\n    expect: {{dnssec: secure, authority: [], additional: []}}\n",
+        server.addr
+    );
+    dedens()
+        .env("DEDENS_NOW", dnssec::captured_at().to_string())
+        .args(["-f", "-"])
+        .write_stdin(queries)
+        .assert()
+        .code(0)
+        .stdout(contains("other.example").not());
 }
 
 #[test]
