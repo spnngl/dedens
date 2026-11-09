@@ -2,9 +2,9 @@
 //! the client a `dedens-net` `Client` on one thread. Run with `cargo bench -p dedensd --bench doh3`; numbers go to
 //! `docs/benchmarks.md`.
 
-#[path = "../tests/util.rs"]
-#[expect(dead_code, reason = "the bench uses part of the tests' helpers")]
-mod util;
+#[path = "../tests/util/server.rs"]
+#[expect(dead_code, reason = "the bench uses part of the tests' harness")]
+mod server;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -13,12 +13,12 @@ use dedens_net::client::Client;
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
-use dedens_proto::Transport;
-use dedens_testkit::captured;
+use dedens_proto::{Message, Transport};
 use dedens_testkit::certificates::{NAME, certificates, named};
 use dedens_testkit::responder::Responder;
+use dedens_testkit::{captured, message};
 use futures_util::future::join_all;
-use util::{Server, decode, query_for};
+use server::Server;
 
 /// How long each measure runs.
 const RUN: Duration = Duration::from_secs(3);
@@ -26,10 +26,15 @@ const RUN: Duration = Duration::from_secs(3);
 /// Queries in flight at once: one, then many sharing a connection.
 const IN_FLIGHT: [usize; 2] = [1, 32];
 
+/// The query of the bench: the question of the captured response `a`, under ID 0.
+fn query() -> Message<'static> {
+    Message::query(0, message(&captured("a")).questions.swap_remove(0))
+}
+
 /// Queries a second with `in_flight` loops asking until [`RUN`] is over.
 async fn rate(client: &Client, addr: SocketAddr, options: &Options, in_flight: usize) -> f64 {
     let end = Instant::now() + RUN;
-    let query = decode(&query_for(&captured("a"), 0));
+    let query = query();
     let asked = || async {
         let mut done = 0_u64;
         while Instant::now() < end {
@@ -53,13 +58,13 @@ async fn rate(client: &Client, addr: SocketAddr, options: &Options, in_flight: u
 fn main() {
     let certificates = certificates();
     let upstream = Responder::start(&["a"]);
-    let config = util::write_config("");
+    let config = server::write_config("");
     let (certificate, key) = (
         config.with_extension("crt.pem"),
         config.with_extension("key.pem"),
     );
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
-    util::write_key(&key, &certificates.key_pem);
+    server::write_key(&key, &certificates.key_pem);
     let server = Server::configured(|listen| {
         format!(
             "listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",
@@ -77,9 +82,8 @@ fn main() {
             options.transport = Transport::Https;
             options.method = method;
             // The connection opened and the cache warm.
-            let query = decode(&query_for(&captured("a"), 0));
             client
-                .exchange(query, named(server.addr, NAME), &options)
+                .exchange(query(), named(server.addr, NAME), &options)
                 .await
                 .expect("a response");
             for in_flight in IN_FLIGHT {

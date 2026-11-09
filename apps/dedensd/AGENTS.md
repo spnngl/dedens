@@ -8,6 +8,7 @@ belongs in `crates/dedens-server` and its sans-IO tests.
 - A new listener applies `action: drop` (`Pipeline::drops`) before it takes a connection slot or does a handshake
   (D91).
 - A test that writes a key file goes through `util::write_key` (0600): a key others can read is refused (D115).
+- The benches include `tests/util/server.rs` alone by `#[path]` (D170): it names nothing else of `util`.
 - `tests/listeners.rs` expects the `io_uring` driver on Linux; set `DEDENS_TEST_ALLOW_POLL` where seccomp refuses it.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in
   `docs/benchmarks.md`.
