@@ -132,7 +132,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D137 [server](server.md): rejected: a read lock for the cache's hits
 - D138 [performance and safety](performance-and-safety.md): profiles are sampled, never instrumented
 - D139 [wire format](wire-format.md): typed `RData` is one table, `rdata_types!`
-- D140 [performance and safety](performance-and-safety.md) (amended by D161, D162, D163, D171): repository checks in the gate: decisions, coverage, `CLAUDE.md` links
+- D140 [performance and safety](performance-and-safety.md) (amended by D161, D162, D163, D171): repository checks in the gate: decisions, coverage, `CLAUDE.md` links, clippy files, the image's Rust
 - D141 [performance and safety](performance-and-safety.md): scheduled checks: nightly fuzzing per target, daily advisories
 - D142 [performance and safety](performance-and-safety.md): the pull request's mutants run in shards
 - D143 [performance and safety](performance-and-safety.md) (amended by D161): unused dependencies fail the gate, by cargo-shear
