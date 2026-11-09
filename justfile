@@ -320,9 +320,22 @@ man:
 image:
     {{ container }} build -f Containerfile -t localhost/dedensd .
 
-# Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured responses, for five
+# The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
+# with the CoAP datagrams `fuzz-seeds` writes out.
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap"
+
+# The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap.
+[private]
+fuzz-seeds:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf fuzz/target/seeds/coap
+    mkdir -p fuzz/target/seeds/coap
+    perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
+
+# Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured data, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
-fuzz target="decode_message" seconds="300" fork="0":
+fuzz target="decode_message" seconds="300" fork="0": fuzz-seeds
     #!/usr/bin/env bash
     set -euo pipefail
     # The pinned nightly's own cargo and rustc first: cargo-fuzz needs `-Z` flags, and rustup proxies would pick
@@ -333,12 +346,12 @@ fuzz target="decode_message" seconds="300" fork="0":
     # where AddressSanitizer cannot link (D141).
     host="$(rustc -vV | sed -n 's/^host: //p')"
     cd fuzz
-    # The first corpus directory is the one libFuzzer writes to; the captured responses and zone files only seed it.
+    # The first corpus directory is the one libFuzzer writes to; the captured data only seeds it.
     mkdir -p "corpus/{{ target }}"
     # A target with a token dictionary in dicts/ gets it.
     dict=""
     if [[ -f "dicts/{{ target }}.dict" ]]; then dict="-dict=dicts/{{ target }}.dict"; fi
-    cargo fuzz run --target "$host" {{ target }} "corpus/{{ target }}" ../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh -- -max_total_time={{ seconds }} -fork={{ fork }} $dict
+    cargo fuzz run --target "$host" {{ target }} "corpus/{{ target }}" {{ fuzz_seeds }} -- -max_total_time={{ seconds }} -fork={{ fork }} $dict
 
 # Shrink a target's corpus to the inputs that add coverage (libFuzzer's `-merge=1`).
 fuzz-cmin target:
@@ -351,7 +364,7 @@ fuzz-cmin target:
     cargo fuzz cmin --target "$host" {{ target }} "corpus/{{ target }}"
 
 # Every fuzz target for `seconds` each, in turn (the scheduled CI job runs them in parallel, D141).
-fuzz-all seconds="60":
+fuzz-all seconds="60": fuzz-seeds
     #!/usr/bin/env bash
     set -euo pipefail
     rustc="$(rustup which --toolchain {{ nightly }} rustc)"
@@ -362,7 +375,7 @@ fuzz-all seconds="60":
         mkdir -p "corpus/$target"
         dict=""
         if [[ -f "dicts/$target.dict" ]]; then dict="-dict=dicts/$target.dict"; fi
-        cargo fuzz run --target "$host" "$target" "corpus/$target" ../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh -- -max_total_time={{ seconds }} $dict
+        cargo fuzz run --target "$host" "$target" "corpus/$target" {{ fuzz_seeds }} -- -max_total_time={{ seconds }} $dict
     done
 
 # Every simulation scenario under `runs` random seeds (D133), or those of one family, a module of
