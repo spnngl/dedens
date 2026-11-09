@@ -25,8 +25,8 @@ use dedens_net::odoh::{
 use dedens_net::quic::QuicError;
 use dedens_net::tls::Trust;
 use dedens_odoh::{
-    ConfigContents, Configs, MEDIA_TYPE, MessageType, TargetKey, decrypt_query, encrypt_query,
-    encrypt_response, query_padding, response_padding,
+    ConfigContents, Configs, ExchangeError, MEDIA_TYPE, MessageType, TargetKey, decrypt_query,
+    encrypt_query, encrypt_response, query_padding, response_padding,
 };
 use dedens_proto::{Message, Rcode, Transport};
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
@@ -799,6 +799,51 @@ async fn s4_3_a_wrong_content_type_fails() {
         .expect_err("no response");
     assert!(
         matches!(error, ClientError::Odoh(OdohError::ContentType(Some(_)))),
+        "{error:?}"
+    );
+}
+
+/// RFC 9230 §4.3, §6.1: a body of the media type holding a query, not a response, is an error, not a panic.
+#[compio::test]
+async fn s4_3_a_response_of_query_type_is_an_error() {
+    let certificates = certificates();
+    let target = Target::new(14);
+    let handler = Rc::clone(&target);
+    let addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| {
+            let mut reply = handler.handle(request, body);
+            if reply
+                .headers()
+                .get(CONTENT_TYPE)
+                .is_some_and(|value| value == MEDIA_TYPE)
+                && let Ok(response) = dedens_odoh::Message::parse(reply.body())
+            {
+                *reply.body_mut() = dedens_odoh::Message::new(
+                    MessageType::Query,
+                    response.key_id().to_vec(),
+                    response.encrypted_message().to_vec(),
+                )
+                .expect("the response's fields")
+                .encode();
+            }
+            reply
+        }),
+    )
+    .await;
+    let client = trusting(certificates);
+    let error = client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect_err("no response");
+    assert!(
+        matches!(
+            error,
+            ClientError::Odoh(OdohError::Exchange(ExchangeError::WrongType {
+                expected: MessageType::Response,
+                found: MessageType::Query,
+            }))
+        ),
         "{error:?}"
     );
 }
