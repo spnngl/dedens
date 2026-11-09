@@ -624,7 +624,7 @@ mod tests {
     }
 
     /// A thread whose pipeline answers `www.example` A at once, with no upstream.
-    fn answering() -> Rc<Thread> {
+    pub(super) fn answering() -> Rc<Thread> {
         let text = "listen: ['127.0.0.1:53']\npipeline: [hosts]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n";
         let config =
             crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
