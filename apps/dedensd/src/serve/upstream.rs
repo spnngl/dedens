@@ -181,7 +181,7 @@ fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
 #[cfg(test)]
 #[cfg(not(dedens_loom))]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::net::IpAddr;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -190,8 +190,11 @@ mod tests {
     use compio::net::UdpSocket;
     use compio::runtime::{Runtime, spawn};
     use dedens_net::tls::Trust;
-    use dedens_proto::{Message, Rcode, Transport};
+    use dedens_proto::{Message, Rcode, RecordType, Transport};
     use dedens_server::{Pipeline, Server, Step, Via};
+    use dedens_testkit::dnssec::capture;
+    use dedens_testkit::responder::Responder;
+    use futures_util::future::join;
 
     use super::{answer, target};
     use crate::lists::Store;
@@ -261,6 +264,64 @@ mod tests {
                 assert_eq!((reply.rcode(), asked.get()), (rcode, asked_next), "{first}");
             }
         });
+    }
+
+    /// D86: a flight whose lead fails on our side, here a QUIC server at an unspecified address, lets its follower
+    /// ask for itself, which fails the same way, the next server not asked; a lead that failed on the server's side
+    /// would hand the follower no response, which passes the question on to the next server. One thread: the QUIC
+    /// exchange awaits before it fails, so the second query finds the first's flight.
+    #[test]
+    fn a_flight_failing_on_our_side_lets_its_follower_ask() {
+        let responder = Responder::start(&["root_dnskey"]);
+        let response = capture("alg8_a");
+        let question = dedens_testkit::message(&response).questions.swap_remove(0);
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let text = format!(
+                "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['quic://0.0.0.0', '{}']\n    timeout_ms: 200\n    tries: 1\n    dnssec: validate\n",
+                responder.addr
+            );
+            let config = crate::config::read(
+                &text,
+                |_| None,
+                &Pipeline::default(),
+                &mut Store::default(),
+            )
+            .expect("read");
+            let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
+            let pipeline = thread.pipeline();
+            let mut out = vec![0; 65535];
+            let from = IpAddr::from([127, 0, 0, 1]);
+            // Two clients' queries, each at the validator's first question, the root's keys, of the QUIC server.
+            let [lead, follower] = [1, 2].map(|id| {
+                let query = Message::query(id, question.clone()).to_vec().expect("a query fits");
+                let Step::Upstream(upstream) =
+                    pipeline.query(&query, Transport::Udp, from, now(), &mut out)
+                else {
+                    panic!("asked upstream")
+                };
+                let Step::Upstream(probe) =
+                    pipeline.receive(upstream, Some(&response), now(), &mut out)
+                else {
+                    panic!("the validator asks")
+                };
+                probe
+            });
+            let replies = RefCell::new(Vec::new());
+            let deliver = async |reply| replies.borrow_mut().push(reply);
+            join(
+                answer(&thread, &pipeline, lead, Transport::Udp, deliver),
+                answer(&thread, &pipeline, follower, Transport::Udp, deliver),
+            )
+            .await;
+            let replies = replies.into_inner();
+            assert_eq!(replies.len(), 2);
+            for reply in replies {
+                let reply = Message::decode(&reply).expect("decodes").message;
+                assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+            }
+        });
+        assert_eq!(responder.asked(".", RecordType::DNSKEY), 0);
     }
 
     /// D65: a plain server is asked over UDP for a client over UDP and over TCP for one over a connection; another
