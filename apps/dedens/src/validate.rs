@@ -87,35 +87,22 @@ impl Judge {
         send: impl AsyncFn(Message<'static>) -> anyhow::Result<Vec<u8>>,
     ) -> DnssecReport {
         let now = self.now.unwrap_or_else(unix_seconds);
-        let mut question = question.clone();
-        let mut verdict = self.run(options, &question, response, now, &send).await;
-        for hop in 0.. {
-            let Verdict::Incomplete { next, .. } = verdict else {
-                break;
-            };
-            if hop == MAX_CHASES {
-                verdict = indeterminate(format!("the CNAME chain is longer than {MAX_CHASES}"));
-                break;
-            }
-            tracing::debug!(%next, "validation follows a CNAME");
-            question = Question {
-                name: next,
-                qtype: question.qtype,
-                qclass: question.qclass,
-            };
-            verdict = match send(options.query(question.clone())).await {
+        let verdict = self.run(options, question, response, now, &send).await;
+        let verdict = chase(question, verdict, async |question| {
+            match send(options.query(question.clone())).await {
                 Err(error) => indeterminate(format!("no answer for {}: {error:#}", question.name)),
                 Ok(wire) => match Message::decode(&wire) {
                     Err(error) => {
                         indeterminate(format!("unreadable answer for {}: {error}", question.name))
                     }
                     Ok(decoded) => {
-                        self.run(options, &question, &decoded.message, now, &send)
+                        self.run(options, question, &decoded.message, now, &send)
                             .await
                     }
                 },
-            };
-        }
+            }
+        })
+        .await;
         report(&verdict)
     }
 
@@ -152,6 +139,36 @@ impl Judge {
     }
 }
 
+/// Follows the CNAME chain `verdict` leaves unfinished, the name it goes on at asked for the type and class of
+/// `question` and its verdict that of `validate`, up to [`MAX_CHASES`] names: a verdict that asks for one more is
+/// indeterminate (D76).
+///
+/// Apart from [`Judge::judge`] so that a test can give it the verdicts of a chain longer than the limit, which only
+/// signatures make and no capture holds.
+async fn chase(
+    question: &Question<'static>,
+    mut verdict: Verdict,
+    validate: impl AsyncFn(&Question<'static>) -> Verdict,
+) -> Verdict {
+    let mut question = question.clone();
+    for hop in 0.. {
+        let Verdict::Incomplete { next, .. } = verdict else {
+            break;
+        };
+        if hop == MAX_CHASES {
+            return indeterminate(format!("the CNAME chain is longer than {MAX_CHASES}"));
+        }
+        tracing::debug!(%next, "validation follows a CNAME");
+        question = Question {
+            name: next,
+            qtype: question.qtype,
+            qclass: question.qclass,
+        };
+        verdict = validate(&question).await;
+    }
+    verdict
+}
+
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -183,4 +200,60 @@ fn report(verdict: &Verdict) -> DnssecReport {
         }
     };
     DnssecReport::new(status, ede.as_ref(), reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use dedens_proto::{RecordType, Ttl};
+
+    use super::*;
+
+    /// The name the `hop`th CNAME of a chain goes on at.
+    fn hop(hop: u8) -> Name<'static> {
+        format!("hop{hop}.example.").parse().expect("a name")
+    }
+
+    /// What `chase` makes of a chain that goes on for `names` names past the first, each validated incomplete but
+    /// the last, secure: the verdict, and the questions it asked.
+    fn chased(names: u8) -> (Verdict, Vec<Question<'static>>) {
+        let asked = RefCell::new(Vec::new());
+        let incomplete = |at| Verdict::Incomplete {
+            next: hop(at),
+            ttl: Ttl::MAX,
+        };
+        let validate = async |question: &Question<'static>| {
+            asked.borrow_mut().push(question.clone());
+            let at = u8::try_from(asked.borrow().len()).expect("a short chain");
+            if at < names {
+                incomplete(at + 1)
+            } else {
+                Verdict::Secure { ttl: Ttl::MAX }
+            }
+        };
+        let question = Question::new(hop(0), RecordType::AAAA);
+        let verdict = compio::runtime::Runtime::new()
+            .expect("a runtime")
+            .block_on(chase(&question, incomplete(1), validate));
+        (verdict, asked.into_inner())
+    }
+
+    /// RFC 1034 §3.6.2, D76: a CNAME chain is followed, [`MAX_CHASES`] names and no more, or a loop of them would
+    /// never end: the verdict that asks for one more is indeterminate. Each name is asked for the type first asked.
+    #[test]
+    fn a_cname_chain_is_chased_up_to_max_chases_names() {
+        let names: Vec<_> = (1..=MAX_CHASES)
+            .map(|at| Question::new(hop(at), RecordType::AAAA))
+            .collect();
+        let (verdict, asked) = chased(MAX_CHASES);
+        assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+        assert_eq!(asked, names);
+        let (verdict, asked) = chased(MAX_CHASES + 1);
+        let Verdict::Indeterminate { ede } = verdict else {
+            panic!("{verdict:?}");
+        };
+        assert_eq!(ede.code, InfoCode::DNSSEC_INDETERMINATE);
+        assert_eq!(asked, names);
+    }
 }
