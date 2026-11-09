@@ -93,9 +93,9 @@ impl Driver {
         }
     }
 
-    /// Why a Linux server on `poll` is a loss: compio falls back from `io_uring` without anyone seeing when the
-    /// ring cannot be made, before Linux 5.19 (`COOP_TASKRUN`, D51), under a seccomp filter, or with
-    /// `kernel.io_uring_disabled` set; 5.19 is the floor, with no retry without those flags (D107).
+    /// Why a Linux server on `poll` is a loss: `dedensd` asks for `poll` before Linux 6.0, where compio's UDP
+    /// receive fails on `io_uring` (D174), and compio falls back from `io_uring` without anyone seeing when the
+    /// ring cannot be made, under a seccomp filter or with `kernel.io_uring_disabled` set (D107).
     fn warning(&self, linux: bool) -> Option<String> {
         if !linux || self.polling == 0 {
             return None;
@@ -104,7 +104,7 @@ impl Driver {
             polling, threads, ..
         } = self;
         Some(format!(
-            "{polling} of {threads} threads serve on poll, not io_uring, which is slower: io_uring needs Linux 5.19 or later, and no seccomp filter or `kernel.io_uring_disabled` refusing it"
+            "{polling} of {threads} threads serve on poll, not io_uring, which is slower: io_uring needs Linux 6.0 or later, and no seccomp filter or `kernel.io_uring_disabled` refusing it"
         ))
     }
 }

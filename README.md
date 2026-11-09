@@ -10,8 +10,8 @@ released.
   expectations (`dedens --help`).
 - `dedensd`: a caching forwarder (serve-stale, prefetch) with hosts and blocklist stages, listening on UDP, TCP,
   TLS, QUIC and DoH over HTTP/3 (and `coap://` with the `doc` feature), asking upstreams over any of them but CoAP; one YAML file, reloaded on SIGHUP
-  (example and keys in `apps/dedensd/src/config/mod.rs`). On Linux it needs kernel 5.19 or later for `io_uring`; on an
-  older one, or where `io_uring` is refused, it serves on `poll`, slower, and warns at start (D107).
+  (example and keys in `apps/dedensd/src/config/mod.rs`). On Linux it needs kernel 6.0 or later for `io_uring`; on an
+  older one, or where `io_uring` is refused, it serves on `poll`, slower, and warns at start (D107, D174).
 
 ## Development
 

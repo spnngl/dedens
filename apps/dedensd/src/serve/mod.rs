@@ -238,13 +238,49 @@ impl Drop for Slot {
     }
 }
 
-/// The runtime of a serving thread, with [`UDP_BUFFERS`] buffers of [`UDP_BUFFER_LEN`] bytes for UDP queries.
+/// The runtime of a serving thread, with [`UDP_BUFFERS`] buffers of [`UDP_BUFFER_LEN`] bytes for UDP queries, on
+/// `poll` on Linux before 6.0 (D174).
 ///
 /// # Errors
 ///
 /// A runtime the OS refuses.
 pub(crate) fn runtime() -> io::Result<Runtime> {
-    runtime_on(None)
+    #[cfg(target_os = "linux")]
+    let driver = (!io_uring_serves(kernel_release())).then_some(DriverType::Poll);
+    #[cfg(not(target_os = "linux"))]
+    let driver = None;
+    runtime_on(driver)
+}
+
+/// The first Linux release `dedensd` serves on `io_uring` from (D174): compio receives UDP datagrams by multishot
+/// `recvmsg` from 6.0 only, and before it pops buffers from the ring by hand, which its `io_uring` pool refuses, so
+/// a UDP socket would receive nothing.
+#[cfg(any(target_os = "linux", test))]
+const IO_URING_FLOOR: (u32, u32) = (6, 0);
+
+/// Whether a Linux kernel of `release`, its major and minor numbers, serves on `io_uring`: from
+/// [`IO_URING_FLOOR`], and not when its release could not be read.
+#[cfg(any(target_os = "linux", test))]
+fn io_uring_serves(release: Option<(u32, u32)>) -> bool {
+    release.is_some_and(|release| release >= IO_URING_FLOOR)
+}
+
+/// The major and minor numbers of the running kernel, `None` when unread.
+#[cfg(target_os = "linux")]
+fn kernel_release() -> Option<(u32, u32)> {
+    let uname = nix::sys::utsname::uname().ok()?;
+    parse_release(uname.release().to_str()?)
+}
+
+/// The major and minor numbers of a kernel release such as `6.8.0-45-generic` or `6.1-rc3`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_release(release: &str) -> Option<(u32, u32)> {
+    // The digits a part starts with: `0-rc1` is 0.
+    let mut numbers = release.split('.').map(|part| {
+        let digits = part.split(|c: char| !c.is_ascii_digit()).next()?;
+        digits.parse::<u32>().ok()
+    });
+    Some((numbers.next()??, numbers.next()??))
 }
 
 /// [`runtime`] on `driver`, or on the one compio picks when `None`.
@@ -470,8 +506,8 @@ mod tests {
     use super::tcp::{TCP_PENDING, tcp};
     use super::udp::{Outbox, udp};
     use super::{
-        Slots, Started, Thread, UPSTREAM_QUERIES, first_end, follow, now, runtime, runtime_on,
-        socket, start, supervised_with,
+        Slots, Started, Thread, UPSTREAM_QUERIES, first_end, follow, io_uring_serves, now,
+        parse_release, runtime, runtime_on, socket, start, supervised_with,
     };
     use crate::lists::Store;
     use crate::reload::Current;
@@ -870,6 +906,25 @@ mod tests {
             assert_eq!(answers(server).await, 1);
             drop(supervisor);
         });
+    }
+
+    /// D174: before Linux 6.0 compio receives UDP by popping buffers its `io_uring` pool refuses, so the threads
+    /// serve on `poll` there, as on a kernel whose release does not read.
+    #[test]
+    fn a_kernel_before_6_0_serves_on_poll() {
+        assert!(!io_uring_serves(Some((5, 19))));
+        assert!(io_uring_serves(Some((6, 0))));
+        assert!(io_uring_serves(Some((10, 1))));
+        assert!(!io_uring_serves(None));
+        assert_eq!(parse_release("5.19.17"), Some((5, 19)));
+        assert_eq!(parse_release("6.8.0-45-generic"), Some((6, 8)));
+        assert_eq!(parse_release("6.1-rc3"), Some((6, 1)));
+        assert_eq!(
+            parse_release("5.15.153.1-microsoft-standard-WSL2"),
+            Some((5, 15))
+        );
+        assert_eq!(parse_release("6"), None);
+        assert_eq!(parse_release(""), None);
     }
 
     #[test]

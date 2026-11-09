@@ -411,7 +411,7 @@ fn a_silent_upstream_gets_servfail() {
 }
 
 /// D107: the start says which driver the threads run on, as compio falls back from `io_uring` to `poll` without
-/// anyone seeing (D51). Linux has `io_uring` from 5.19, the floor: `poll` there fails the test, unless
+/// anyone seeing (D51). Linux serves on `io_uring` from 6.0, the floor (D174): `poll` there fails the test, unless
 /// `DEDENS_TEST_ALLOW_POLL` is set, for a container whose seccomp filter refuses `io_uring`.
 #[test]
 fn the_start_logs_the_driver() {
