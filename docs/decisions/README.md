@@ -157,8 +157,9 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D164 [simulation tests](simulation-tests.md) (amended by D165, D167): the simulation time budget is measured, outside the gate
 - D165 [simulation tests](simulation-tests.md): a simulation family over its 2 s budget splits in two
 - D166 [scope](scope.md): macOS targets link with Apple's `ld`
-- D167 [simulation tests](simulation-tests.md): `DEDENS_SIM_TIME_SCALE` scales the simulation time budgets
+- D167 [simulation tests](simulation-tests.md) (amended by D172): `DEDENS_SIM_TIME_SCALE` scales the simulation time budgets
 - D168 [performance and safety](performance-and-safety.md): stale mutants exclusions fail, by `just mutants-stale`
 - D169 [CLI](cli.md): `NO_COLOR` turns colour off only when set to a value
 - D170 [performance and safety](performance-and-safety.md): `dedensd`'s benches include only its tests' server harness
 - D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here
+- D172 [simulation tests](simulation-tests.md): the CI scale of the simulation time budgets is 7, measured on a runner
