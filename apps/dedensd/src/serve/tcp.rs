@@ -264,12 +264,61 @@ mod tests {
     use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
     use dedens_server::Pipeline;
 
-    use super::{Replies, TCP_QUEUED, connection, write};
+    use super::{Replies, TCP_QUEUED, connection, tcp, write};
     use crate::lists::Store;
     use crate::reload::Current;
-    use crate::serve::Thread;
-    use crate::serve::isolate::Origin;
-    use crate::serve::tests::udp_listener;
+    use crate::serve::isolate::{Listener, Origin};
+    use crate::serve::tests::{answering, udp_listener};
+    use crate::serve::{Slots, Thread};
+
+    /// A query for `www.example` A, framed for TCP.
+    fn www_example() -> Vec<u8> {
+        let name = "www.example.".parse().expect("a name");
+        let query = Message::query(1, Question::new(name, RecordType::A))
+            .to_vec()
+            .expect("a query fits");
+        frame(&query).expect("framed")
+    }
+
+    /// Whether `client` gets a reply to `www.example` A within five seconds; `false` when the server closed it.
+    async fn answered(client: &mut TcpStream) -> bool {
+        let BufResult(sent, _) = client.write_all(www_example()).await;
+        let reply = compio::time::timeout(Duration::from_secs(5), read_message(client))
+            .await
+            .expect("a reply or a close within 5 s");
+        sent.is_ok() && reply.is_ok()
+    }
+
+    /// D47: past the thread's connection limit, the accept loop closes a new connection at once, and the ones it
+    /// holds are served still; a slot given back takes a new one.
+    #[test]
+    fn a_connection_past_the_limit_is_closed_at_once() {
+        let mut thread = answering();
+        Rc::get_mut(&mut thread).expect("alone").connections = Slots::new(1);
+        Runtime::new().expect("a runtime").block_on(async {
+            let tcp_listener = TcpListener::bind("127.0.0.1:0").await.expect("bound");
+            let addr = tcp_listener.local_addr().expect("its address");
+            let listener = Listener::new("tcp", Some(addr));
+            let accepting = spawn(tcp(Rc::new(tcp_listener), None, listener, thread));
+            let mut first = TcpStream::connect(addr).await.expect("connected");
+            assert!(answered(&mut first).await, "the first connection is served");
+            let mut second = TcpStream::connect(addr).await.expect("connected");
+            assert!(
+                !answered(&mut second).await,
+                "the second connection is served"
+            );
+            assert!(answered(&mut first).await, "the first connection is closed");
+            drop(first);
+            let start = std::time::Instant::now();
+            let mut third = false;
+            while !third && start.elapsed() < Duration::from_secs(5) {
+                let mut next = TcpStream::connect(addr).await.expect("connected");
+                third = answered(&mut next).await;
+            }
+            assert!(third, "the first connection's slot is not given back");
+            drop(accepting);
+        });
+    }
 
     /// A TCP query the thread has no room to ask upstream gets SERVFAIL, on a connection that stays open.
     #[test]
