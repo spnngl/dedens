@@ -810,6 +810,10 @@ fn an_rrsig_answer_is_insecure_not_bogus() {
         );
         assert_eq!(asked, Vec::<String>::new());
         assert_eq!(verdict.ede(), None);
+        assert_eq!(
+            InsecureReason::RrsigQuery.to_string(),
+            "RRSIG records are not signed"
+        );
     }
 }
 
