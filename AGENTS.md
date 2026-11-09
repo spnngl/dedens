@@ -33,5 +33,6 @@ present; anything worth keeping goes to `docs/`.
 - A change is done when `just check` (the gate) passes.
 - `just mutants-diff <base>` lists the changed code no test catches, as the pull request's `mutants` job does (D103,
   informational, outside the gate); a mutant no test can observe goes in `.cargo/mutants.toml` with its reason.
+  `just mutants-stale` names the patterns there that match no mutant any more (D168).
 - Commit per phase step with the `git-commit` skill; the human pushes. CI requires Conventional Commit subjects
   (`type(scope)!: description`; types feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert).

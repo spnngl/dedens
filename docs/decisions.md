@@ -1294,6 +1294,14 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   a `summary` job lists every shard's missed and timed-out mutants on the run's page (GitHub shows 10 of
   cargo-mutants' annotations per step). A shard with one fails (red), still outside the gate. Before: one job,
   every mutant in turn, 120 min at most, the outcomes in an artifact only.
+- D168 (builds on D103) Stale mutants exclusions fail: `just mutants-stale` lists every mutant without the
+  configuration (`--list --no-config`, no build) and names each `exclude_re` pattern matching none and each
+  `exclude_globs` glob matching no file (`--list-files --file`), failing if any; the pull request's `mutants`
+  workflow runs it in a `stale` job, as informational as the shards. A moved or renamed function leaves its pattern
+  behind, and nothing showed it but its mutants coming back. Perl matches the names, reading the patterns used as the
+  `regex` crate does: cargo-mutants 27.1.0's `--re` keeps every struct field deletion whatever the pattern, so a
+  stale one would still list mutants. Rejected: a test in `just check`, which would need
+  cargo-mutants installed for the gate.
 - D22 (amended by D114, D116, D118, D124) Response cache (`dedens-cache`, sans-IO, time passed in as seconds): one cache shared by compio's
   per-core threads, `Mutex` shards picked by keyed SipHash (no collision flooding). Own code, not
   `moka`/`quick_cache`: slab shards with S3-FIFO eviction under a byte budget (a scan of one-time names leaves
