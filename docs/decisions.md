@@ -2829,7 +2829,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
     come and answers each in a task of its own, as the pool pipelines (RFC 7766 §6.2.1.1); a TCP query to a
     host that does not answer ends in `TcpError::Connect(TimedOut)` at the pool's idle timeout (`docs/TODECIDE.md`);
     the IDs are drawn in another order, which changed some fixed seeds.
-- D164 (amends D133; builds on D103; amended by D165) D133's time budget is measured, outside the gate: `just
+- D164 (amends D133; builds on D103; amended by D165, D167) D133's time budget is measured, outside the gate: `just
   sim-time` times each family of `dedens-sim`'s `tests` binary run alone (the filter `<family>::`, its tests on the
   harness's threads), then the binary whole, in `just check`'s build under the fixed seeds, and fails when a family
   takes over 2 s or the binary over 10 s. The gate's build is `cargo test --workspace --all-features`, whose
@@ -2855,3 +2855,9 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   second family, `dnssec_limits` (`limits` is taken), and the verdicts and the cache stay in `dnssec`.
   Until then it stays one module. Rejected: a smaller scenario (D133 cuts seeds, never the scenario); a split ahead
   of the measure (two modules to keep for a family still within its budget).
+- D167 (amends D164; builds on D133) `just sim-time` multiplies both budgets by `DEDENS_SIM_TIME_SCALE`, a positive
+  decimal, 1 when unset; any other value fails the recipe before it builds. The budgets stay the Apple M5's (D164);
+  the `sim-time` job of `deep.yml` sets 2.5, so a family may take 5 s there and the binary 25 s. 2.5 is D133's
+  figure, GitHub's runners on a slow day against their usual pace (2026-11-03), not yet a runner's time of the
+  families against the M5's: the job's first runs check it, and a change of the scale changes this decision.
+  Rejected: a job that only reports the times, never red, so nobody reads it.

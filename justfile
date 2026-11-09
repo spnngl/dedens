@@ -342,11 +342,19 @@ sim runs="100" family="":
 
 # The wall time of each simulation family run alone, then of them all, as `just check` runs them (the workspace's
 # debug build with every feature, the fixed seeds): over D133's budgets, 2 s a family and 10 s the crate, it says
-# so and fails. Outside the gate, as the time is the machine's (D164).
+# so and fails. Outside the gate, as the time is the machine's (D164). `DEDENS_SIM_TIME_SCALE`, a positive decimal
+# (1 when unset), multiplies both budgets for a slower machine: 2.5 on GitHub's runners (D167).
 sim-time:
     #!/usr/bin/env bash
     set -euo pipefail
     unset DEDENS_SIM_SEED DEDENS_SIM_RUNS
+    scale="${DEDENS_SIM_TIME_SCALE-1}"
+    if ! [[ "$scale" =~ ^[0-9]*\.?[0-9]+$ ]] || ! awk -v s="$scale" 'BEGIN { exit !(s > 0) }'; then
+        echo "DEDENS_SIM_TIME_SCALE must be a positive decimal, not '$scale'" >&2
+        exit 2
+    fi
+    family_budget="$(awk -v s="$scale" 'BEGIN { print 2 * s }')"
+    crate_budget="$(awk -v s="$scale" 'BEGIN { print 10 * s }')"
     # The gate's build, so the artifacts of `just check` serve: features unify over the workspace.
     exe="$(cargo test --workspace --all-features --no-run --test tests --message-format=json \
         | jq -r 'select(.reason == "compiler-artifact" and .target.kind == ["test"]
@@ -372,9 +380,9 @@ sim-time:
         fi
     }
     for family in $(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util); do
-        measure "$family" 2 "$family::"
+        measure "$family" "$family_budget" "$family::"
     done
-    measure crate 10
+    measure crate "$crate_budget"
     exit "$over"
 
 # Replay the captured responses plus truncated and bit-flipped variants on stable (part of `just check`).
