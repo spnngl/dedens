@@ -1,11 +1,11 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused. A replaced decision is marked superseded, and an amendment
-is named in both headers (`amends D2` in one, `amended by D5` in the other). A line below: the section file, a gist,
-and the header's `amended by`, `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the
-numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions:
-[`TODECIDE.md`](../TODECIDE.md).
+number, and gets its line below; a number is never reused (85, 96-102, 126-132, 148 and 149 were never assigned). A
+replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
+`amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
+`superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
+(D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions: [`TODECIDE.md`](../TODECIDE.md).
 
 - D1 [scope](scope.md): crates per ARCHITECTURE.md, all on dedens-proto; CLI and server separate binaries
 - D2 [scope](scope.md) (amended by D60, D69): order: unencrypted core DNS, stub resolver and CLI first, then the rest
@@ -20,7 +20,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D10 [wire format](wire-format.md) (amended by D112): encoder writes into a caller buffer without allocating; compresses names
 - D11 [wire format](wire-format.md): typed RDATA list; other types opaque, compressible names expanded
 - D12 [wire format](wire-format.md) (amended by D159): typed EDNS options and SVCB keys; others opaque
-- D13 [wire format](wire-format.md) (amended by D159, D162): topic modules; RDATA and conformance tests by RFC
+- D13 [wire format](wire-format.md) (amended by D159, D162): topic modules (files by type: D159; tests by topic: D162)
 - D14 [performance and safety](performance-and-safety.md): speed bar: no slower than hickory-proto, baselines in the same benches
 - D15 [performance and safety](performance-and-safety.md): `unsafe` only on a measured hot path; crate roots forbid it
 - D16 [performance and safety](performance-and-safety.md): checks beyond the gate, each added with its trigger
@@ -53,7 +53,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D43 [server](server.md) (amended by D45, D46, D77, D114, D124): cache stage in the pipeline, time passed in by the caller
 - D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
 - D45 [server](server.md) (amended by D77, D115): upstream timeout and the client response timer (RFC 8767)
-- D46 [server](server.md) (amended by D121): review fixes to D41-D45: a query without RD gets fresh data only
+- D46 [server](server.md) (amended by D121): a query without RD gets fresh cached data or REFUSED, never goes upstream
 - D47 [server](server.md) (amended by D64, D90, D91, D113): `dedensd` limits per thread: upstream queries, TCP connections
 - D48 [server](server.md) (amended by D123): several tasks answer on each UDP socket of a thread
 - D49 [server](server.md): UDP queries land in per-thread buffer pools, multishot on Linux
@@ -71,7 +71,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D61 [transports](transports.md) (amended by D109, D119): DoQ through compio's QUIC, no QUIC of our own
 - D62 [transports](transports.md) (amended by D82, D83): DoH waits for compio's tokio I/O traits; no adapter of our own
 - D63 [server](server.md) (amended by D123): one 65535-byte reply buffer per thread, replies copied out
-- D64 [server](server.md) (amended by D104, D107, D121): review fixes to D44, D47, D54, D55 and D57
+- D64 [server](server.md) (amended by D104, D107, D121): TCP reply queues bounded in bytes; reloads rebuild from the text last loaded
 - D65 [server](server.md) (amended by D84): each upstream of a forward stage has its own transport
 - D66 [server](server.md) (amended by D115, D122): `dedensd` answers over TLS and QUIC
 - D67 [CLI](cli.md): public resolvers in `docs/providers/providers.yaml`, measured
@@ -106,7 +106,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits
 - D106 [server](server.md) (amended by D117): validation cost counts what it costs: bounded debt, NSEC3 in SHA-1 blocks
-- D107 [server](server.md) (amended by D122, D147): runtime fixes of audit step 04
+- D107 [server](server.md) (amended by D122, D147): io_uring from Linux 5.19, `poll` reported; runtimes never dropped; reloads wake threads
 - D108 [server](server.md): bounds on the client's queues; evidence of a live server
 - D109 [transports](transports.md) (amended by D119): client QUIC, HTTP/3 and CoAP exchanges bounded by server and deadline
 - D110 [server](server.md) (amended by D120): the blocklist blocks any class; suffix walk linear in labels
@@ -140,7 +140,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D145 [performance and safety](performance-and-safety.md): Kani proves `dedens-proto`'s wire decoders on small inputs, weekly
 - D146 [performance and safety](performance-and-safety.md): CodeQL's Rust queries weekly, outside the gate
 - D147 [server](server.md): `poll` fallback answered UDP with nothing; compio-driver patched
-- D150 [scope](scope.md) (amended by D166): every build links with rustup's lld
+- D150 [scope](scope.md) (amended by D166): Linux builds link with rustup's lld (macOS: D166)
 - D151 [scope](scope.md) (amended by D152): shipped Linux binaries are static PIE on musl
 - D152 [scope](scope.md) (amended by D154): musl binaries kept mallocng; the allocator rule fixed before measuring
 - D153 [scope](scope.md) (amended by D156, D158): a pushed `vX.Y.Z` tag publishes the release
