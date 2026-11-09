@@ -41,9 +41,9 @@ fn level(verbose: u8) -> tracing::Level {
     }
 }
 
-/// Whether text events are coloured: on a `terminal`, unless `NO_COLOR` is set, to any value.
+/// Whether text events are coloured: on a `terminal`, unless `NO_COLOR` is set to a value (D169).
 fn colored(terminal: bool, no_color: Option<&OsStr>) -> bool {
-    terminal && no_color.is_none()
+    terminal && no_color.is_none_or(OsStr::is_empty)
 }
 
 /// Logs that the server is serving `listen`, on the `drivers` of its threads, and warns of a driver that is a loss.
@@ -122,13 +122,16 @@ mod tests {
         );
     }
 
-    /// Text is coloured on a terminal only, and not even there once `NO_COLOR` is set.
+    /// Text is coloured on a terminal only, and not even there once `NO_COLOR` is set to a value; set empty, it is
+    /// as unset (no-color.org).
     #[test]
     fn text_is_coloured_on_a_terminal_without_no_color() {
         assert!(colored(true, None));
         assert!(!colored(false, None));
         assert!(!colored(true, Some(OsStr::new("1"))));
         assert!(!colored(false, Some(OsStr::new("1"))));
+        assert!(colored(true, Some(OsStr::new(""))));
+        assert!(!colored(false, Some(OsStr::new(""))));
     }
 
     /// D107: a Linux server on `poll` warns, a server on `io_uring` or elsewhere does not; the threads' drivers are
