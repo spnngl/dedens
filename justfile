@@ -185,14 +185,16 @@ mutants-diff base="origin/main" *args:
     {{ just_executable() }} mutants --in-diff "$(pwd)/target/mutants/branch.diff" "$@"
 
 # The exclusions of .cargo/mutants.toml that match no mutant or file (D168), each listed, failing if any. Mutants are
-# listed without the configuration, with no build. Perl matches the names: `--re` keeps every field deletion.
+# listed without the configuration, with no build. Perl matches the names: `--re` keeps every field deletion. The list
+# is taken first, so a failing cargo-mutants stops the recipe rather than leaving every pattern unmatched.
 mutants-stale:
     #!/usr/bin/env bash
     set -euo pipefail
     patterns="$(taplo get -f .cargo/mutants.toml exclude_re)"
     globs="$(taplo get -f .cargo/mutants.toml exclude_globs)"
+    names="$(cargo mutants --list --no-config)"
     stale=0
-    cargo mutants --list --no-config | perl -e '
+    printf '%s\n' "$names" | perl -e '
         chomp(my @names = <STDIN>);
         my $stale = 0;
         for my $re (split /\n/, shift) {
