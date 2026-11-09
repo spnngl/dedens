@@ -12,9 +12,8 @@ use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::net::UdpSocket;
-use dedens_proto::Message;
+use dedens_testkit::query;
 use dedens_testkit::responder::Responder;
-use dedens_testkit::{captured, message};
 use futures_util::future::join_all;
 use server::Server;
 
@@ -59,8 +58,7 @@ fn main() {
             upstream.addr
         )
     });
-    let question = message(&captured("a")).questions.swap_remove(0);
-    let query = Message::query(0, question).to_vec().expect("a query fits");
+    let query = query("a", 0).to_vec().expect("a query fits");
     let runtime = compio::runtime::Runtime::new().expect("a runtime");
     println!("| in flight | queries/s |\n|---|---|");
     runtime.block_on(async {

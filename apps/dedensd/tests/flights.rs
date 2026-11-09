@@ -4,11 +4,11 @@
 use std::thread;
 use std::time::Duration;
 
-use dedens_proto::{Rcode, RecordType};
-use dedens_testkit::dnssec::capture;
+use dedens_proto::{Message, Rcode, RecordType};
+use dedens_testkit::dnssec::response;
 use dedens_testkit::responder::Responder;
 
-use crate::util::{Server, ask_udp, query_for};
+use crate::util::{Server, ask_udp};
 
 /// Clients asking at once.
 const CLIENTS: u16 = 8;
@@ -30,7 +30,8 @@ fn concurrent_queries_send_the_root_keys_question_once() {
     // while it is in flight.
     let responder = Responder::delayed(&["alg8_a", "root_dnskey"], Duration::from_millis(150));
     let server = Server::configured(|listen| validating(listen, &responder.addr.to_string()));
-    let query = query_for(&capture("alg8_a"), 1);
+    let question = response("alg8_a").questions.swap_remove(0);
+    let query = Message::query(1, question).to_vec().expect("a query fits");
     let clients: Vec<_> = (0..CLIENTS)
         .map(|id| {
             let mut query = query.clone();

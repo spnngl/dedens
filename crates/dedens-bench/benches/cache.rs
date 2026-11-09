@@ -19,7 +19,7 @@ use dedens_bench::CASES;
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Query, Question, Record, RecordType, Ttl};
-use dedens_testkit::captured;
+use dedens_testkit::{captured, query};
 use divan::Bencher;
 
 #[global_allocator]
@@ -53,13 +53,6 @@ fn cache() -> Cache {
     Cache::new(Config::default()).expect("the default config is valid")
 }
 
-/// The query a captured response answers.
-fn query_for(response: &[u8]) -> Vec<u8> {
-    let message = Message::decode(response).expect("decodes").message;
-    let question = message.questions[0].clone();
-    Message::query(7, question).to_vec().expect("a query fits")
-}
-
 /// Stores `response` at time 0, the answer to `query`.
 fn insert_at_0(cache: &Cache, query: &[u8], response: &[u8]) -> bool {
     let query = Query::read(query).expect("a valid query");
@@ -79,7 +72,7 @@ fn hit_once(cache: &Cache, query: &[u8], out: &mut [u8]) -> usize {
 #[divan::bench(args = CASES)]
 fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
-    let query = query_for(&response);
+    let query = query(case, 7).to_vec().expect("a query fits");
     let cache = cache();
     if !insert_at_0(&cache, &query, &response) {
         // Not cacheable (TC, NXDOMAIN without SOA...): nothing to time.
@@ -94,7 +87,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench]
 fn hit_truncated(bencher: Bencher<'_, '_>) {
     let response = captured("txt_large");
-    let query = query_for(&response);
+    let query = query("txt_large", 7).to_vec().expect("a query fits");
     let cache = cache();
     assert!(insert_at_0(&cache, &query, &response), "cacheable");
     let mut out = out();
@@ -114,7 +107,7 @@ fn hit_truncated(bencher: Bencher<'_, '_>) {
 fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
     let decoded = Message::decode(&response).expect("decodes");
-    let query = query_for(&response);
+    let query = query(case, 7).to_vec().expect("a query fits");
     let query = Query::read(&query).expect("a valid query");
     let cache = cache();
     bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0, 0).is_ok());

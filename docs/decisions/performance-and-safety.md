@@ -106,10 +106,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   example zones), `odoh/`, `doh/` and `coap/` (with their capture scripts) and `plugins/` (published lists), moved byte
   for byte. Data one package reads stays in it. The test-only crate `dedens-testkit` (`publish = false`) names it:
   `path` gives a file of `testdata/`; an `include_bytes!` names the file itself; `captured`, `message` (a capture
-  decoded without a violation), `hex`, `dns` and `zone` replace the copies each crate's tests kept; `dnssec` holds the
-  DNSSEC captures (`capture`, `response` decoded) and by question (`Captures`), their `captured_at`, and the RFC
-  examples' keys and signatures with the data an RRSIG signs, which `benches/dnssec.rs` of `dedens-bench` reached by
-  `#[path]`. The feature `certificates` adds the TLS certificates the encrypted transports' tests make (D60), on
+  decoded without a violation), `query` (a capture's question under an ID), `hex`, `dns` and `zone` replace the
+  copies each crate's tests kept; `dnssec` holds the DNSSEC captures (`capture`, `response` decoded) and by question
+  (`Captures`), their `captured_at`, and the RFC examples' keys and signatures with the data an RRSIG signs, which
+  `benches/dnssec.rs` of `dedens-bench` reached by `#[path]`. The feature `certificates` adds the TLS certificates the encrypted transports' tests make (D60), on
   `dedens-net`, compio and rcgen, which `dedens` and `dedensd` included from `dedens-net`'s tests by `#[path]`; the
   default build depends on `dedens-proto` and data-encoding (the RFC examples' base64) alone. The feature `responder`
   adds the loopback server the tests of `dedens` and `dedensd` query, one for both where each kept its own: it serves

@@ -149,7 +149,7 @@ fn s8_a_client_is_answered_through_the_pipeline() {
     let client = Client::new().trusting(Trust::Roots(vec![ca.ca.clone()]));
     let mut options = Options::default();
     options.tries = NonZero::<u8>::MIN;
-    let query = decode(&query_for(&response, 0));
+    let query = dedens_testkit::query("a", 0);
     let reply = Runtime::new().expect("a runtime").block_on(async {
         let response = client
             .exchange_oblivious(query, named(server.addr, NAME), None, &options)
@@ -200,13 +200,8 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
     );
     let parsed = Configs::parse(&configs(other.addr, &ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
-    let (message, _) = encrypt_query(
-        &parsed.configs()[0],
-        &query_for(&captured("a"), 0),
-        0,
-        &mut entropy,
-    )
-    .expect("a query");
+    let (message, _) =
+        encrypt_query(&parsed.configs()[0], &query_for("a", 0), 0, &mut entropy).expect("a query");
     let post = || request(one.addr, http::Method::POST, "/dns-query", Some(MEDIA_TYPE));
     let got = send(one.addr, &ca, post(), &message.encode());
     assert_eq!(got.status, StatusCode::UNAUTHORIZED);
@@ -220,13 +215,8 @@ fn s4_3_a_wrong_key_is_401_and_garbage_400() {
 fn valid_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
     let parsed = Configs::parse(&configs(addr, ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
-    let (message, _) = encrypt_query(
-        &parsed.configs()[0],
-        &query_for(&captured("a"), 0),
-        0,
-        &mut entropy,
-    )
-    .expect("a query");
+    let (message, _) =
+        encrypt_query(&parsed.configs()[0], &query_for("a", 0), 0, &mut entropy).expect("a query");
     message.encode()
 }
 
@@ -323,7 +313,6 @@ fn a_server_without_odoh_is_no_target() {
 /// D79: a target still answers plain `DoH` at the same path.
 #[test]
 fn a_target_answers_plain_doh_too() {
-    let response = captured("a");
     let upstream = Responder::start(&["a"]);
     let ca = certificates();
     let server = serving(&ca, "odoh: {}\n", upstream.addr);
@@ -331,7 +320,7 @@ fn a_target_answers_plain_doh_too() {
     let mut options = Options::default();
     options.transport = Transport::Https;
     options.tries = NonZero::<u8>::MIN;
-    let query = decode(&query_for(&response, 0));
+    let query = dedens_testkit::query("a", 0);
     let reply = Runtime::new().expect("a runtime").block_on(async {
         let response = client
             .exchange(query, named(server.addr, NAME), &options)
@@ -390,13 +379,8 @@ fn proxy_status(got: &Got) -> &str {
 fn sealed_query(addr: SocketAddr, ca: &Certificates) -> Vec<u8> {
     let parsed = Configs::parse(&configs(addr, ca)).expect("configurations");
     let mut entropy = Entropy::new().expect("randomness");
-    let (message, _) = encrypt_query(
-        &parsed.configs()[0],
-        &query_for(&captured("a"), 0),
-        0,
-        &mut entropy,
-    )
-    .expect("a query");
+    let (message, _) =
+        encrypt_query(&parsed.configs()[0], &query_for("a", 0), 0, &mut entropy).expect("a query");
     message.encode()
 }
 
@@ -531,7 +515,7 @@ fn s4_a_client_is_answered_through_a_proxy() {
     let mut options = Options::default();
     options.tries = NonZero::<u8>::MIN;
     let ask = async |target: Peer, via: Option<Peer>| {
-        let query = decode(&query_for(&response, 0));
+        let query = dedens_testkit::query("a", 0);
         let response = client
             .exchange_oblivious(query, target, via, &options)
             .await

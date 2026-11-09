@@ -11,16 +11,15 @@ use dedens_proto::Message;
 
 mod server;
 
+/// A reply decoded as a capture is: without a broken rule.
+pub(crate) use dedens_testkit::message as decode;
 pub(crate) use server::{Server, config, write_config, write_key};
 
-/// A query, under `id`, for the question of `response`.
-pub(crate) fn query_for(response: &[u8], id: u16) -> Vec<u8> {
-    let question = Message::decode(response)
-        .expect("a captured response decodes")
-        .message
-        .questions
-        .swap_remove(0);
-    Message::query(id, question).to_vec().expect("a query fits")
+/// The query, under `id`, that the captured response `case` answers, as sent.
+pub(crate) fn query_for(case: &str, id: u16) -> Vec<u8> {
+    dedens_testkit::query(case, id)
+        .to_vec()
+        .expect("a query fits")
 }
 
 /// A loopback upstream that never answers.
@@ -64,13 +63,6 @@ pub(crate) fn ask_tcp(server: SocketAddr, query: &[u8]) -> Message<'static> {
         .expect("a timeout");
     stream.write_all(&framed(query)).expect("sent");
     decode(&read_framed(&mut stream).expect("a reply"))
-}
-
-/// `wire` decoded, without a broken rule.
-pub(crate) fn decode(wire: &[u8]) -> Message<'static> {
-    let decoded = Message::decode(wire).expect("a reply decodes");
-    assert_eq!(decoded.violations, []);
-    decoded.message.into_owned()
 }
 
 /// `wire` behind its two-byte length (RFC 1035 §4.2.2).

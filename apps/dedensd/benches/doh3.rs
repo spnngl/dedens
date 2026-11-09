@@ -13,10 +13,10 @@ use dedens_net::client::Client;
 use dedens_net::doh::Method;
 use dedens_net::exchange::Options;
 use dedens_net::tls::Trust;
-use dedens_proto::{Message, Transport};
+use dedens_proto::Transport;
 use dedens_testkit::certificates::{NAME, certificates, named};
+use dedens_testkit::query;
 use dedens_testkit::responder::Responder;
-use dedens_testkit::{captured, message};
 use futures_util::future::join_all;
 use server::Server;
 
@@ -26,15 +26,10 @@ const RUN: Duration = Duration::from_secs(3);
 /// Queries in flight at once: one, then many sharing a connection.
 const IN_FLIGHT: [usize; 2] = [1, 32];
 
-/// The query of the bench: the question of the captured response `a`, under ID 0.
-fn query() -> Message<'static> {
-    Message::query(0, message(&captured("a")).questions.swap_remove(0))
-}
-
 /// Queries a second with `in_flight` loops asking until [`RUN`] is over.
 async fn rate(client: &Client, addr: SocketAddr, options: &Options, in_flight: usize) -> f64 {
     let end = Instant::now() + RUN;
-    let query = query();
+    let query = query("a", 0);
     let asked = || async {
         let mut done = 0_u64;
         while Instant::now() < end {
@@ -83,7 +78,7 @@ fn main() {
             options.method = method;
             // The connection opened and the cache warm.
             client
-                .exchange(query(), named(server.addr, NAME), &options)
+                .exchange(query("a", 0), named(server.addr, NAME), &options)
                 .await
                 .expect("a response");
             for in_flight in IN_FLIGHT {

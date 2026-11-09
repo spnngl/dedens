@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use dedens_net::coap::block::{Block, BlockSize};
 use dedens_net::coap::{Code, Message, OptionNumber, Options, Token, Type};
 use dedens_proto::{Message as ProtoMessage, Question, RecordType};
-use dedens_testkit::captured;
 use dedens_testkit::responder::Responder;
 
 use crate::util::{Server, decode, query_for, write_config};
@@ -83,7 +82,7 @@ fn ttls(wire: &[u8]) -> Vec<u32> {
 fn s4_3_a_fetch_is_answered_2_05_with_the_least_ttl_as_max_age() {
     let upstream = Responder::slow("a", 300, Duration::ZERO);
     let server = serving(upstream.addr);
-    let request = fetch(0x1234, &query_for(&captured("a"), 0));
+    let request = fetch(0x1234, &query_for("a", 0));
     let response = ask(server.addr, &request);
     assert_eq!(response.kind, Type::Acknowledgement);
     assert_eq!((response.id, response.token), (request.id, request.token));
@@ -100,7 +99,7 @@ fn s4_3_a_fetch_is_answered_2_05_with_the_least_ttl_as_max_age() {
 fn s4_2_1_a_post_is_a_query_too() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let mut request = fetch(1, &query_for(&captured("a"), 0));
+    let mut request = fetch(1, &query_for("a", 0));
     request.code = Code::POST;
     assert_eq!(ask(server.addr, &request).code, Code::CONTENT);
 }
@@ -110,7 +109,7 @@ fn s4_2_1_a_post_is_a_query_too() {
 fn s4_3_a_non_request_gets_a_non_response() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let mut request = fetch(0x0101, &query_for(&captured("a"), 0));
+    let mut request = fetch(0x0101, &query_for("a", 0));
     request.kind = Type::NonConfirmable;
     let response = ask(server.addr, &request);
     assert_eq!(response.kind, Type::NonConfirmable);
@@ -123,7 +122,7 @@ fn s4_3_a_non_request_gets_a_non_response() {
 fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let query = query_for(&captured("a"), 0);
+    let query = query_for("a", 0);
     let cases: Vec<Case> = vec![
         (
             "another path",
@@ -228,7 +227,7 @@ fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
 fn s5_10_the_authority_and_an_empty_if_match_are_accepted() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let mut request = fetch(5, &query_for(&captured("a"), 0));
+    let mut request = fetch(5, &query_for("a", 0));
     request
         .options
         .insert(OptionNumber::URI_HOST, b"dns.example");
@@ -244,7 +243,7 @@ fn s5_10_the_authority_and_an_empty_if_match_are_accepted() {
 fn s4_5_a_retransmitted_request_is_not_asked_again() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let request = fetch(0x4242, &query_for(&captured("a"), 0));
+    let request = fetch(0x4242, &query_for("a", 0));
     let datagram = request.to_vec().expect("it writes");
     let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
     socket
@@ -267,7 +266,7 @@ fn s4_5_a_retransmitted_request_is_not_asked_again() {
 fn s4_8_a_request_sent_again_and_again_is_answered_again_at_most_max_retransmit_times() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let datagram = fetch(0x4242, &query_for(&captured("a"), 0))
+    let datagram = fetch(0x4242, &query_for("a", 0))
         .to_vec()
         .expect("it writes");
     let socket = client();
@@ -363,7 +362,7 @@ fn d105_requests_waiting_for_the_upstream_are_bounded() {
         )
     });
     let socket = client();
-    let answered = fetch(0xfffe, &query_for(&captured("a"), 0));
+    let answered = fetch(0xfffe, &query_for("a", 0));
     let reply = send_from(&socket, server.addr, &answered).expect("a response");
     assert_eq!(reply.code, Code::CONTENT);
     for id in 0..600u16 {
@@ -396,7 +395,7 @@ fn d105_requests_waiting_for_the_upstream_are_bounded() {
 fn s4_5_a_non_request_sent_again_is_ignored() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    let mut request = fetch(0x0101, &query_for(&captured("a"), 0));
+    let mut request = fetch(0x0101, &query_for("a", 0));
     request.kind = Type::NonConfirmable;
     let datagram = request.to_vec().expect("it writes");
     let socket = client();
@@ -442,7 +441,7 @@ fn s4_2_a_message_format_error_is_rejected_with_a_reset() {
         let len = socket.recv(&mut buf).ok()?;
         Some(Message::parse(&buf[..len]).expect("a CoAP message"))
     };
-    let request = fetch(0x0bad, &query_for(&captured("a"), 0));
+    let request = fetch(0x0bad, &query_for("a", 0));
     let reset = ask_raw(&broken(&request, &|first| *first = (*first & 0xF0) | 9));
     assert_eq!(reset, Some(Message::empty(Type::Reset, 0x0bad)));
     let mut non = request.clone();
@@ -458,7 +457,7 @@ fn s4_2_a_message_format_error_is_rejected_with_a_reset() {
 fn s4_3_a_large_response_goes_in_blocks() {
     let upstream = Responder::start(&["txt_large"]);
     let server = serving(upstream.addr);
-    let query = query_for(&captured("txt_large"), 0);
+    let query = query_for("txt_large", 0);
     let blocks = |size| {
         let mut body = Vec::new();
         let mut num = 0;
@@ -503,7 +502,7 @@ fn s4_3_a_large_response_goes_in_blocks() {
 fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
     let upstream = Responder::start(&["txt_large"]);
     let server = serving(upstream.addr);
-    let query = query_for(&captured("txt_large"), 0);
+    let query = query_for("txt_large", 0);
     let socket = client();
     let ask = |request: &Message| send_from(&socket, server.addr, request).expect("a response");
     let tagged = |id, tag: &[u8], block: Option<Block>| {
@@ -547,7 +546,7 @@ fn s4_3_the_next_blocks_are_asked_for_without_the_query() {
 fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
     let upstream = Responder::start(&["txt_large"]);
     let server = serving(upstream.addr);
-    let query = query_for(&captured("txt_large"), 0);
+    let query = query_for("txt_large", 0);
     // From a client of its own, the first block, then block 1 of `size` again and again: the replies to those, and
     // the length of the last.
     let readings = |size| {
@@ -591,7 +590,7 @@ fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
 fn s4_3_2_a_ttl_is_the_max_age_less_what_was_taken() {
     let upstream = Responder::slow("a", 120, Duration::ZERO);
     let server = serving(upstream.addr);
-    let response = ask(server.addr, &fetch(5, &query_for(&captured("a"), 0)));
+    let response = ask(server.addr, &fetch(5, &query_for("a", 0)));
     let mut wire = response.payload.clone();
     assert_eq!(ttls(&wire), vec![0; ttls(&wire).len()]);
     dedens_net::coap::dns::add_max_age(&mut wire, response.options.max_age()).expect("DNS");

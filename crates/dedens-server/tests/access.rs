@@ -11,9 +11,9 @@ mod networks {
     use dedens_proto::edns::{EdnsOption, InfoCode};
     use dedens_proto::{Flags, Rcode, Transport};
     use dedens_server::{Access, Denial, Network, NetworkError, Pipeline, Step};
-    use dedens_testkit::captured;
+    use dedens_testkit::{captured, query};
 
-    use crate::util::{decode, forwarder, query_for, wire};
+    use crate::util::{decode, forwarder, wire};
 
     fn nets<const N: usize>(texts: [&str; N]) -> [Network; N] {
         texts.map(|text| text.parse().expect("a network"))
@@ -31,7 +31,7 @@ mod networks {
     /// Whether the pipeline answers a query of the `a` capture from `from`: it goes upstream, or is replied to by a
     /// stage, unlike a denied client's.
     fn permitted(pipeline: &Pipeline, from: &str) -> bool {
-        let query = wire(&query_for(&captured("a")));
+        let query = wire(&query("a", 7));
         let mut out = vec![0; 65535];
         match pipeline.query(&query, Transport::Udp, addr(from), 0, &mut out) {
             Step::Upstream(_) => true,
@@ -44,7 +44,7 @@ mod networks {
     #[test]
     fn a_denied_client_gets_refused_with_prohibited() {
         let pipeline = serving(Access::new(nets(["10.0.0.0/8"]), [], Denial::Refuse));
-        let query = query_for(&captured("a"));
+        let query = query("a", 7);
         let mut out = vec![0; 65535];
         let Step::Reply(len) = pipeline.query(
             &wire(&query),
@@ -73,7 +73,7 @@ mod networks {
         let pipeline = serving(Access::new(nets(["10.0.0.0/8"]), [], Denial::Drop));
         assert!(!permitted(&pipeline, "192.0.2.1"));
         let mut out = vec![0; 65535];
-        let query = wire(&query_for(&captured("a")));
+        let query = wire(&query("a", 7));
         let step = pipeline.query(&query, Transport::Tcp, addr("192.0.2.1"), 0, &mut out);
         assert!(matches!(step, Step::Drop), "{step:?}");
         assert!(permitted(&pipeline, "10.1.2.3"));
@@ -88,7 +88,7 @@ mod networks {
         let response = captured("a");
         let step = pipeline.query(&response, Transport::Udp, from, 0, &mut out);
         assert!(matches!(step, Step::Drop), "{step:?}");
-        let query = wire(&query_for(&captured("a")));
+        let query = wire(&query("a", 7));
         // Fewer bytes than a header cannot be answered either.
         let step = pipeline.query(&query[..11], Transport::Udp, from, 0, &mut out);
         assert!(matches!(step, Step::Drop), "{step:?}");
@@ -137,7 +137,7 @@ mod networks {
     #[test]
     fn a_pipeline_without_access_answers_everyone() {
         let pipeline = Pipeline::default();
-        let query = wire(&query_for(&captured("a")));
+        let query = wire(&query("a", 7));
         let mut out = vec![0; 65535];
         let step = pipeline.query(&query, Transport::Udp, addr("192.0.2.1"), 0, &mut out);
         let Step::Reply(len) = step else {
@@ -305,9 +305,9 @@ mod rrl {
         Access, Admission, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit,
         RateLimitConfig, RateLimitError, Secret, Secrets, Step,
     };
-    use dedens_testkit::captured;
+    use dedens_testkit::{captured, query};
 
-    use crate::util::{decode, forwarder, query_for, wire};
+    use crate::util::{decode, forwarder, wire};
 
     /// What the pipeline did with a query.
     #[derive(Debug, PartialEq, Eq)]
@@ -350,10 +350,6 @@ mod rrl {
         forwarder().with_rate_limit(RateLimit::new(config(slip)).expect("a valid limit"))
     }
 
-    fn query() -> Vec<u8> {
-        wire(&query_for(&captured("a")))
-    }
-
     fn send(pipeline: &Pipeline, wire: &[u8], transport: Transport, from: &str, now: u32) -> Fate {
         let from: IpAddr = from.parse().expect("an address");
         let mut out = vec![0; 65535];
@@ -384,7 +380,7 @@ mod rrl {
     }
 
     fn udp(pipeline: &Pipeline, from: &str, now: u32) -> Fate {
-        send(pipeline, &query(), Transport::Udp, from, now)
+        send(pipeline, &wire(&query("a", 7)), Transport::Udp, from, now)
     }
 
     /// The trigger of S1: a source over its rate gets TC=1 or nothing; of the queries over it, one in two (the slip)
@@ -472,7 +468,13 @@ mod rrl {
             Transport::Https,
         ] {
             for _ in 0..10 {
-                let fate = send(&pipeline, &query(), transport, "198.51.100.7", 10);
+                let fate = send(
+                    &pipeline,
+                    &wire(&query("a", 7)),
+                    transport,
+                    "198.51.100.7",
+                    10,
+                );
                 assert_eq!(fate, Passed, "{transport:?}");
             }
         }
@@ -532,7 +534,10 @@ mod rrl {
             [Refused, Refused, Refused, Dropped, Dropped, Dropped]
         );
         for _ in 0..10 {
-            assert_eq!(send(&pipeline, &query(), Transport::Tcp, from, 10), Refused);
+            assert_eq!(
+                send(&pipeline, &wire(&query("a", 7)), Transport::Tcp, from, 10),
+                Refused
+            );
         }
     }
 
@@ -565,7 +570,7 @@ mod rrl {
     }
 
     fn cookie_query(cookie: &Cookie) -> Vec<u8> {
-        let mut query = query_for(&captured("a"));
+        let mut query = query("a", 7);
         query.edns = Some(Edns {
             options: vec![EdnsOption::Cookie(*cookie)],
             ..Edns::default()
@@ -708,9 +713,9 @@ mod cookies {
     use dedens_proto::edns::{Cookie, Edns, EdnsOption};
     use dedens_proto::{Message, Rcode, Transport};
     use dedens_server::{Clock, Cookies, Secret, Secrets, Standing};
-    use dedens_testkit::{captured, hex};
+    use dedens_testkit::{captured, hex, query};
 
-    use crate::util::{caching, decode, forwarder, query_for, reply, run, wire};
+    use crate::util::{caching, decode, forwarder, reply, run, wire};
 
     const CLIENT: [u8; 8] = [0x24, 0x64, 0xc4, 0xab, 0xcf, 0x10, 0xc9, 0x57];
     const NOW: u64 = 1_559_731_985;
@@ -754,7 +759,7 @@ mod cookies {
     #[test]
     fn a_client_cookie_is_answered_with_a_server_cookie() {
         let pipeline = forwarder().with_cookies(cookies());
-        let query = query_for(&captured("a"));
+        let query = query("a", 7);
         let sent = with_cookie(query, &client_only());
         for transport in [Transport::Udp, Transport::Tcp, Transport::Https] {
             let answer = reply(&pipeline, &sent, transport, Some(&captured("a")));
@@ -773,7 +778,7 @@ mod cookies {
     /// §5.2.1: a query without a cookie is answered without one; so is any query to a pipeline without cookies.
     #[test]
     fn no_cookie_asked_none_given() {
-        let query = wire(&query_for(&captured("a")));
+        let query = wire(&query("a", 7));
         let pipeline = forwarder().with_cookies(cookies());
         assert_eq!(
             cookie_of(&reply(
@@ -784,7 +789,7 @@ mod cookies {
             )),
             None
         );
-        let sent = with_cookie(query_for(&captured("a")), &client_only());
+        let sent = with_cookie(dedens_testkit::query("a", 7), &client_only());
         let bare = forwarder();
         assert_eq!(
             cookie_of(&reply(&bare, &sent, Transport::Udp, Some(&captured("a")))),
@@ -797,7 +802,7 @@ mod cookies {
     fn a_valid_server_cookie_is_answered_and_renewed_from_the_cache_too() {
         let pipeline = caching().with_cookies(cookies());
         let issued = cookies().issue(CLIENT, LOOPBACK);
-        let sent = with_cookie(query_for(&captured("a")), &issued);
+        let sent = with_cookie(query("a", 7), &issued);
         let first = run(&pipeline, &sent, Transport::Udp, &[Some(&captured("a"))]);
         assert_eq!(first.asked.len(), 1);
         let cached = run(&pipeline, &sent, Transport::Udp, &[]);
@@ -820,7 +825,7 @@ mod cookies {
         let pipeline = forwarder().with_cookies(cookies());
         let stale =
             Cookie::new(CLIENT, Some(&hex("010000005cf79f11ffffffffffffffff"))).expect("a cookie");
-        let sent = with_cookie(query_for(&captured("a")), &stale);
+        let sent = with_cookie(query("a", 7), &stale);
         let answer = reply(&pipeline, &sent, Transport::Udp, Some(&captured("a")));
         assert_eq!(decode(&answer).rcode(), Rcode::NOERROR);
         assert!(!decode(&answer).answer.is_empty(), "the real answer");
@@ -836,7 +841,7 @@ mod cookies {
     #[test]
     fn a_query_breaking_a_rule_is_formerr_without_a_cookie() {
         let pipeline = forwarder().with_cookies(cookies());
-        let mut query = query_for(&captured("a"));
+        let mut query = query("a", 7);
         query.questions.push(query.questions[0].clone());
         let answer = reply(
             &pipeline,
@@ -852,7 +857,7 @@ mod cookies {
     #[test]
     fn the_cookie_is_not_forwarded() {
         let pipeline = forwarder().with_cookies(cookies());
-        let sent = with_cookie(query_for(&captured("a")), &client_only());
+        let sent = with_cookie(query("a", 7), &client_only());
         let ran = run(&pipeline, &sent, Transport::Udp, &[Some(&captured("a"))]);
         let request = ran.requests.first().expect("a request");
         let options = request.edns.as_ref().map(|edns| edns.options.clone());
@@ -901,7 +906,7 @@ mod cookies {
     /// A query with an empty OPT record followed by COOKIE options of `lengths` bytes of data each.
     fn with_cookie_options(lengths: &[usize]) -> Vec<u8> {
         let mut sent = wire(&{
-            let mut query = query_for(&captured("a"));
+            let mut query = query("a", 7);
             query.edns = Some(Edns::default());
             query
         });

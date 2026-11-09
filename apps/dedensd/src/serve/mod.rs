@@ -482,10 +482,10 @@ mod tests {
 
     /// A query for `example.com` A, ID 7, and the response captured from 1.1.1.1 (`dedens-proto`'s `a.bin`).
     pub(super) fn example_com_a() -> (Vec<u8>, Vec<u8>) {
-        let response = dedens_testkit::captured("a");
-        let question = dedens_testkit::message(&response).questions.swap_remove(0);
-        let query = Message::query(7, question).to_vec().expect("a query fits");
-        (query, response)
+        let query = dedens_testkit::query("a", 7)
+            .to_vec()
+            .expect("a query fits");
+        (query, dedens_testkit::captured("a"))
     }
 
     #[test]

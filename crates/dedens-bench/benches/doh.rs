@@ -9,9 +9,7 @@ use dedens_bench::CASES;
 use dedens_net::doh::{
     MEDIA_TYPE, Method, Template, request, response, server_request, server_response,
 };
-use dedens_proto::Message;
-use dedens_proto::edns::Edns;
-use dedens_testkit::captured;
+use dedens_testkit::{captured, query};
 use divan::Bencher;
 use http::header::{AGE, CONTENT_TYPE};
 
@@ -26,24 +24,15 @@ fn template() -> Template {
     Template::parse("https://dnsserver.example.net/dns-query{?dns}").expect("a template")
 }
 
-/// A query for the captured response `case`, ID 0 with EDNS, as a `DoH` client sends it.
-fn query_for(case: &str) -> Vec<u8> {
-    let response = captured(case);
-    let message = Message::decode(&response).expect("decodes").message;
-    let mut query = Message::query(0, message.questions[0].clone().into_owned());
-    query.edns = Some(Edns::default());
-    query.to_vec().expect("a query fits")
-}
-
 #[divan::bench(args = CASES)]
 fn request_get(bencher: Bencher<'_, '_>, case: &str) {
-    let (template, query) = (template(), query_for(case));
+    let (template, query) = (template(), query(case, 0).to_vec().expect("a query fits"));
     bencher.bench_local(|| request(&template, black_box(&query), Method::Get).expect("a request"));
 }
 
 #[divan::bench(args = CASES)]
 fn request_post(bencher: Bencher<'_, '_>, case: &str) {
-    let (template, query) = (template(), query_for(case));
+    let (template, query) = (template(), query(case, 0).to_vec().expect("a query fits"));
     bencher.bench_local(|| request(&template, black_box(&query), Method::Post).expect("a request"));
 }
 
@@ -78,9 +67,13 @@ fn response_aged(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = CASES)]
 fn server_request_get(bencher: Bencher<'_, '_>, case: &str) {
-    let get = request(&template(), &query_for(case), Method::Get)
-        .expect("a request")
-        .map(|_| ());
+    let get = request(
+        &template(),
+        &query(case, 0).to_vec().expect("a query fits"),
+        Method::Get,
+    )
+    .expect("a request")
+    .map(|_| ());
     bencher.bench_local(|| server_request(black_box(&get), &[]).expect("a query"));
 }
 
