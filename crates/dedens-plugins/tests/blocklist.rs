@@ -1,7 +1,8 @@
 //! The blocklist plugin (D54, D56) on published lists, in `testdata/plugins/`: the heads of `StevenBlack/hosts`
 //! (`stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists` (`hagezi-light.txt`), of its Multi
 //! PRO in the wildcard format (`hagezi-pro-wildcard.txt`) and of its referral allowlist
-//! (`hagezi-referral-allow.txt`), each with a few lines of further down. Blocked answers carry the Extended DNS Error
+//! (`hagezi-referral-allow.txt`), each with a few lines of further down, and the `/etc/hosts` of Fedora's `setup`
+//! package (`fedora.hosts`, `src.fedoraproject.org/rpms/setup`, rawhide). Blocked answers carry the Extended DNS Error
 //! Blocked (RFC 8914 §4.16). Texts that are no lists: the head of the Multi LIGHT in Adblock syntax
 //! (`hagezi-light.adblock`) and nginx's 404 page, as `dl-cdn.alpinelinux.org` serves it (`nginx-404.html`).
 
@@ -25,6 +26,7 @@ const WILDCARD: &str = include_str!("../../../testdata/plugins/hagezi-pro-wildca
 const REFERRAL: &str = include_str!("../../../testdata/plugins/hagezi-referral-allow.txt");
 const ADBLOCK: &str = include_str!("../../../testdata/plugins/hagezi-light.adblock");
 const NGINX_404: &str = include_str!("../../../testdata/plugins/nginx-404.html");
+const FEDORA: &str = include_str!("../../../testdata/plugins/fedora.hosts");
 
 fn lists(text: &str) -> Lists {
     let mut lists = Lists::new();
@@ -116,6 +118,14 @@ fn the_entries_of_the_host_are_not_blocked() {
     }
     let other = pipeline("192.168.1.1 router.example\n", Action::Nxdomain);
     assert!(!blocked(&other, "router.example."));
+}
+
+/// Names whose first label starts with `localhost`, any case, are the host's own: Fedora's `localhost4.localdomain4`
+/// and `localhost6.localdomain6` read as no entry.
+#[test]
+fn names_starting_with_localhost_are_the_hosts() {
+    assert_eq!(lists(FEDORA).names(List::Block), 0);
+    assert_eq!(lists("0.0.0.0 LocalHost4.example\n").names(List::Block), 0);
 }
 
 #[test]

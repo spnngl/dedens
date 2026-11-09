@@ -733,7 +733,8 @@ fn read_line<'t>(
             || name
                 .labels()
                 .next()
-                .is_some_and(|label| label.eq_ignore_ascii_case(b"localhost"));
+                .and_then(|label| label.get(..b"localhost".len()))
+                .is_some_and(|start| start.eq_ignore_ascii_case(b"localhost"));
         if !local {
             add(&name);
         }
