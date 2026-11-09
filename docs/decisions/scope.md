@@ -491,7 +491,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   question). The
   upstream's AD bit is never read: the human report names it `AD set by the server` once a verdict is shown, apart
   from the verdict. Only `Secure` is shown as validated, and then only what it covers (D75): the report of a
-  secure response is `covered` of it, as dedensd serves it; `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
+  secure response is `covered` of it, as dedensd serves it, and the expectations (D34) are checked against it; `--save-wire` keeps the response as received. `Incomplete { next }` is chased: `next` is
   asked of the same server and validated on its own, at most 8 times (`MAX_CHASES`), then indeterminate; the verdict is that of
   the last answer, never an AD of the first. `Referral` cannot come of `start`; a `Referral` or `Incomplete`
   that reaches the report is indeterminate. `--trust-anchor FILE` (DS or DNSKEY records in zone text,

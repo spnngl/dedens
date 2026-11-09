@@ -292,21 +292,16 @@ async fn repeat(
             Err(_) => {}
         }
     }
-    if let Ok((report, wire)) = &mut last {
-        if times > 1 {
-            report.latency = Latency::of(times, &mut rtts);
-        }
-        if let Some(expect) = &job.expect {
-            report.failures = expect.check(&Message::decode(wire)?.message);
-            report
-                .failures
-                .extend(expect.check_dnssec(report.dnssec.as_ref().map(|dnssec| dnssec.status)));
-        }
+    if let Ok((report, _)) = &mut last
+        && times > 1
+    {
+        report.latency = Latency::of(times, &mut rtts);
     }
     last
 }
 
-/// Asks `job` of `endpoint`, trying its names in turn while the response is NXDOMAIN; `id` names the report.
+/// Asks `job` of `endpoint`, trying its names in turn while the response is NXDOMAIN; `id` names the report, which
+/// holds what the response breaks of the job's expectations.
 async fn ask(
     client: &Client,
     job: &Job,
@@ -346,30 +341,37 @@ async fn ask(
         let response = exchange(client, endpoint, query, &options).await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
-            let Some(judge) = &job.judge else {
-                let report = Report::exchanged(id, address, &response, &decoded);
-                return Ok((with_path(report), response.wire));
+            let dnssec = match &job.judge {
+                // The verdict is on the response; its questions go to the same server, the same way.
+                Some(judge) => {
+                    let send =
+                        async |query| Ok(exchange(client, endpoint, query, &options).await?.wire);
+                    Some(
+                        judge
+                            .judge(&job.options, &question, &decoded.message, send)
+                            .await,
+                    )
+                }
+                None => None,
             };
-            // The verdict is on the response; its questions go to the same server, the same way.
-            let send = async |query| Ok(exchange(client, endpoint, query, &options).await?.wire);
-            let dnssec = judge
-                .judge(&job.options, &question, &decoded.message, send)
-                .await;
-            // Only a secure verdict is shown as covering the response, and then only what it covers (D76).
-            let report = if dnssec.status == DnssecStatus::Secure {
-                let mut shown = decoded.clone();
-                shown.message = covered(&decoded.message);
-                Report::exchanged(id, address, &response, &shown)
-            } else {
-                Report::exchanged(id, address, &response, &decoded)
+            let status = dnssec.as_ref().map(|dnssec| dnssec.status);
+            // Only a secure verdict is shown as covering the response, and then only what it covers (D76): the
+            // expectations see what is shown.
+            let mut shown = decoded;
+            if status == Some(DnssecStatus::Secure) {
+                shown.message = covered(&shown.message);
+            }
+            let failures = job.expect.as_ref().map_or_else(Vec::new, |expect| {
+                let mut failures = expect.check(&shown.message);
+                failures.extend(expect.check_dnssec(status));
+                failures
+            });
+            let report = Report {
+                dnssec,
+                failures,
+                ..Report::exchanged(id, address, &response, &shown)
             };
-            return Ok((
-                with_path(Report {
-                    dnssec: Some(dnssec),
-                    ..report
-                }),
-                response.wire,
-            ));
+            return Ok((with_path(report), response.wire));
         }
     }
     Err(anyhow!("no name to ask"))
