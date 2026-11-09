@@ -731,7 +731,7 @@ mod tests {
                 let reply = Message::decode(&reply).expect("decodes").message;
                 assert_eq!((reply.header.id, reply.rcode()), (1000, Rcode::NOERROR));
                 // The panics are those of the 65 queries, counted as the tasks end.
-                let wanted = TCP_PENDING as u64 + 1;
+                let wanted = u64::try_from(TCP_PENDING + 1).expect("65 fits");
                 let waiting = async {
                     while panics_counted(&recorder, &total) < wanted {
                         compio::time::sleep(Duration::from_millis(5)).await;
@@ -743,7 +743,10 @@ mod tests {
                 assert_eq!(answers(udp_addr).await, 0);
             });
         });
-        assert_eq!(total.get(), TCP_PENDING as u64 + 1);
+        assert_eq!(
+            total.get(),
+            u64::try_from(TCP_PENDING + 1).expect("65 fits")
+        );
     }
 
     /// Pauses of 1 ms, as a test cannot wait for 10 ms doubling.
