@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use dedens_dnssec::{Cost, MAX_CHASES, Next, Validation, Validator, Verdict, covered};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Decoded, Flags, Message, Question, RecordType, Ttl};
+use dedens_proto::{Class, Decoded, Flags, Message, Question, RecordType, Ttl};
 
 use crate::budget::{Budget, Budgets, MAX_BUDGET, Slot};
 use crate::metrics::Metrics;
@@ -286,8 +286,9 @@ pub(crate) struct Check {
     chasing: bool,
     /// Whether a chain was chased: the answer is then not wholly authentic.
     chased: bool,
-    /// The client's question type: a chased name is asked for it.
+    /// The client's question type and class: a chased name is asked for them.
     qtype: RecordType,
+    qclass: Class,
     /// The least TTL the verdicts allow the records.
     cap: Option<Ttl>,
     sent: u16,
@@ -316,6 +317,7 @@ impl Check {
             chasing: false,
             chased: false,
             qtype: question.qtype,
+            qclass: question.qclass,
             cap: None,
             sent: 0,
             chases: 0,
@@ -399,7 +401,11 @@ impl Check {
             Verdict::Incomplete { next, ttl } => {
                 self.limit(ttl);
                 self.chases += 1;
-                self.asking = Question::new(next, self.qtype);
+                self.asking = Question {
+                    name: next,
+                    qtype: self.qtype,
+                    qclass: self.qclass,
+                };
                 self.chasing = true;
                 self.chased = true;
                 self.ask()
@@ -576,6 +582,9 @@ mod tests {
                 });
                 assert!(matches!(progress, Progress::Ask), "name {chases}");
                 assert_eq!(check.asking(), &Question::new(next, RecordType::A));
+                // The chased name's response (none) given back as the pipeline does: `chasing` reset and the
+                // name's validation started, whose verdict the next `settle` stands for.
+                check.answer(&validating, None);
             }
             check
         };
