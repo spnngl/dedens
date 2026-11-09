@@ -137,11 +137,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   Rejected: a test that every type of the fuzzing seed reads typed from its text and from the wire (+32 lines, built
   and run against the removed arm): it fails on a missing arm only for a type whose seed line exists, where the table
   needs no line to be right.
-- D159 (amends D12, D13, D70) An RDATA or EDNS option file is named after its type (`rdata/srv.rs`, `edns/cookie.rs`),
-  not its RFC; the RFC and section go on each public item's doc, where `cargo doc` and a reader of the item see
+- D159 (amends D12, D13, D70; amended by D162) An RDATA or EDNS option file is named after its type
+  (`rdata/srv.rs`, `edns/cookie.rs`), not its RFC; the RFC and section go on each public item's doc, where `cargo doc` and a reader of the item see
   them. Why: a file name held one RFC, while SVCB, the DNSSEC types and the options each span several, and 13
   public items cited none. A codec of a few lines with no type of its own is inlined where it is used: A, AAAA
   and the one-name types (NS, CNAME, PTR) as modules in `rdata/mod.rs` beside the `rdata_types!` table (D139),
-  NSID, keepalive and padding as arms of `EdnsOption`'s decode and encode. Tests stay one file per RFC,
-  `tests/rfcNNNN.rs`. Behaviour is unchanged. Rejected: keeping the RFC prefix (`rfc2782_srv.rs`): it sorts the
+  NSID, keepalive and padding as arms of `EdnsOption`'s decode and encode. Tests were then one file per RFC,
+  `tests/rfcNNNN.rs`; topic modules since D162. Behaviour is unchanged. Rejected: keeping the RFC prefix (`rfc2782_srv.rs`): it sorts the
   files by RFC number, which no reader looks for.

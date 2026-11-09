@@ -149,7 +149,7 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D156 [scope](scope.md) (amended by D158): the release holds deb and rpm packages, by nfpm
 - D157 [scope](scope.md): `dedensd` exits with success at once on SIGTERM or SIGINT
 - D158 [scope](scope.md): each shipped binary carries its crates' licences, by cargo-about
-- D159 [wire format](wire-format.md): RDATA and EDNS option files named after their type, not RFC
+- D159 [wire format](wire-format.md) (amended by D162): RDATA and EDNS option files named after their type, not RFC
 - D160 [scope](scope.md) (amended by D161): each public item at one path: private modules, root re-exports
 - D161 [performance and safety](performance-and-safety.md): shared test data in `testdata/`, read through `dedens-testkit`
 - D162 [performance and safety](performance-and-safety.md) (amended by D170): a package's integration tests are one binary, a module per topic
