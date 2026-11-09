@@ -595,13 +595,15 @@ async fn a_connect_error_goes_to_every_query_waiting() {
 
 /// RFC 7766 §6.2.1: once all 65536 IDs of a connection wait for a response, the next query goes on a new one.
 ///
-/// The deadlines and the idle time are far, so a loaded machine filling the connection never has them expire before
-/// the new connection opens.
+/// The deadlines and the idle time are an hour away: filling the connection takes over a minute under `just careful`,
+/// whose standard library walks every pending timer of compio at each wake-up (a `debug_assert` of
+/// `BTreeMap::split_off`), one per query here. Should one still expire, the connection closes and the test fails.
 #[compio::test]
 async fn a_query_finding_every_id_taken_opens_a_connection() {
-    let far = || Instant::now() + Duration::from_secs(60);
+    const FAR: Duration = Duration::from_secs(3600);
+    let far = || Instant::now() + FAR;
     let (listener, server) = listen().await;
-    let pool = Rc::new(TcpPool::new(Duration::from_secs(60)));
+    let pool = Rc::new(TcpPool::new(FAR));
     let ask = |n| {
         let pool = Rc::clone(&pool);
         compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(n), far()).await })
@@ -624,6 +626,12 @@ async fn a_query_finding_every_id_taken_opens_a_connection() {
             waiting.push(ask(u16::try_from(n).expect("an ID")));
         }
         while read.get() < waiting.len() {
+            assert!(
+                !reading.is_finished(),
+                "the connection closed after {} of {} queries",
+                read.get(),
+                waiting.len()
+            );
             compio::time::sleep(Duration::from_millis(1)).await;
         }
     }
