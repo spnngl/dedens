@@ -113,6 +113,26 @@ pub(crate) fn nsec3_salted(record: &Record<'static>, salt: &[u8]) -> Record<'sta
     )
 }
 
+/// `record`, an NSEC3, with the types of `types` in its bitmap.
+pub(crate) fn nsec3_typed(record: &Record<'static>, types: &[RecordType]) -> Record<'static> {
+    let n = nsec3(record);
+    let n = Nsec3::new(
+        n.hash_algorithm,
+        n.flags,
+        n.iterations,
+        n.salt(),
+        n.next_hashed_owner(),
+        TypeBitmap::from_types(types.iter().copied()),
+    )
+    .expect("valid");
+    Record::new(
+        record.name.clone(),
+        record.class,
+        record.ttl,
+        &RData::Nsec3(n),
+    )
+}
+
 /// The NSEC3 RDATA of `record`.
 pub(crate) fn nsec3(record: &Record<'static>) -> Nsec3<'static> {
     match record.data() {
