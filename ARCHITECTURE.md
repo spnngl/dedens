@@ -26,25 +26,15 @@ Planned: `dedens-resolver`.
 
 ## Data flow
 
-- Client: `Message::query` → `encode` into a buffer → `dedens-net` → `Message::decode` (borrows the input) →
-  output, with any `Violation` shown.
-- Server hot path: client address → access lists (D91, REFUSED or nothing for a denied one) → bytes →
-  `Query::read` → Server Cookie check and, over UDP and DoC without a valid one, the rate limit of the client network
-  (D113, TC=1 or nothing when over it) (in place, no allocation) → `Cache::lookup` → hit: copy the stored bytes, cut
-  to the client's buffer (D116), patch ID, flags, question case and TTLs, append our OPT record (`Edns::append`), pad
-  over TLS and QUIC (RFC 8467) → send (UDP: queued to the socket's `Outbox`, one sender a socket, D123). Miss: the D23
-  stage pipeline (plugins, cache, forward; a plugin may review the responses of later stages, D118; ANY over UDP and
-  DoC gets an empty TC reply, D114), then `Cache::insert`.
-- `dedensd` listens on UDP, TCP, TLS, QUIC (D66), DoH over HTTP/3 (D84) and CoAP (DoC, D81), as an Oblivious DoH target (D79) and proxy (D94) with `odoh`, and asks each upstream over its own transport (D65).
-- Server-side reading of responses: `Message::decode` (records keep RDATA as bytes, D28) → `forward::usable` →
-  `Cache::insert`, whose `Response::build` (before the shard lock) encodes it once with its TTL offsets
-  (`ttl_offsets`) and cut points, and floors and caps its TTL (`min_ttl`, `max_ttl`; D116, D124); the reply
-  is then served from the entry as a hit (D43). A forward stage with `dnssec: validate` puts `dedens-dnssec`'s
-  `Validation` between `forward::usable` and `Cache::insert_checked`: each question it asks is one more upstream
-  `Step`, the verdict is kept with the entry and sets AD (D77, `crates/dedens-server/src/validate.rs`). A query's cost
-  to the validator is capped and drawn from one shared allowance and the client network's share of it (SERVFAIL with
-  EDE 14 beyond either, D117); `dedensd` shares the validator's questions in flight across threads
-  (`apps/dedensd/src/flights.rs`, D77, D86).
+- Client: `Message::query` → `encode` → `dedens-net` → `Message::decode` → output, with any `Violation` shown.
+- Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
+  `apps/dedensd/src/odoh/`, D79, D94) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
+  `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23: `plugin.rs`, `cache.rs`, `forward.rs`); a
+  cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by `reply.rs` →
+  send (UDP: the socket's `Outbox`, D123).
+- Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
+  `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)
+  → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents
