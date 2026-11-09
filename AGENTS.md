@@ -4,10 +4,9 @@ DNS library, the dig-like CLI `dedens` and the server `dedensd`. Write the ASCII
 allowed. [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the crates and documents; the `//!` docs say what each module
 holds; a folder's `AGENTS.md` holds what its code cannot say: invariants, traps, where a change must also go.
 
-Read `docs/decisions.md` before any task. Record a new or changed decision there in the same change as the code,
-under a new number; mark a replaced one superseded, and name an amendment in both headers
-(`crates/dedens-repo/tests/repo.rs` checks the numbers and the pairs, D140). Open questions go to
-`docs/TODECIDE.md`.
+Read the decisions' index, `docs/decisions/README.md`, before any task, then the section files the task touches.
+Record a new or changed decision in the same change as the code, in its section file and the index, by the index's
+rules (`crates/dedens-repo/tests/repo.rs` checks them, D140, D171). Open questions go to `docs/TODECIDE.md`.
 
 `PLAN.md` and `plan/` are local and git-ignored: phase order and each phase's "Done when". Read `PLAN.md` when
 present; anything worth keeping goes to `docs/`.

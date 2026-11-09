@@ -1,7 +1,7 @@
 # To decide
 
 Open questions, each with its proposed default. Once answered, record the outcome in
-[`decisions.md`](decisions.md) under a new number and delete it here.
+[`decisions/`](decisions/README.md) under a new number and delete it here.
 
 ## Server forwarder
 

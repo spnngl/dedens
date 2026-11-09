@@ -1,8 +1,8 @@
 # dedens-cache
 
 The response cache of `dedensd`. Its design and the RFC rules it follows are in
-[`docs/decisions.md`](../../docs/decisions.md) (D22, D116 for memory, evictions and truncated hits, and D43 for the
-server's cache stage), its API, key, insert rules, hit patching, time states, settings and S3-FIFO eviction in the
+[`docs/decisions/`](../../docs/decisions/README.md) (D22, D116 for memory, evictions and truncated hits, and D43
+for the server's cache stage), its API, key, insert rules, hit patching, time states, settings and S3-FIFO eviction in the
 crate's rustdoc, measured speed in [`docs/benchmarks.md`](../../docs/benchmarks.md). This file holds only what those
 do not: the memory an entry costs and the complexity of each operation.
 
