@@ -1029,7 +1029,7 @@ The `memmove` stands out: nearly a fifth of the front server's samples copying b
 unwinding stops at a libc leaf without CFI). Whether it is a reply buffer of D52 or D63, or the response copied out of the
 upstream socket, is not known; the report keeps no `perf.data` to ask.
 
-## Linker (D150)
+## Linker (D150, D166)
 
 lld, Rust's own (`.cargo/config.toml`), against the platform's linker, for `dedensd`. Paired rounds, the two
 variants alternated in one session; `L` is lld (Linux: rustc's default; macOS: `.cargo/lld-cc`), `B` the platform's linker.

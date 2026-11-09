@@ -31,7 +31,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
 - D6 Linux and macOS. Stable pinned in `rust-toolchain.toml` and bumped by Renovate, so new lints arrive as a
   PR, not a red CI; MSRV 1.95. One nightly pinned by date in the justfile, bumped by hand with RAPx, for
   rustfmt, `-Z` flags and RAPx only: an unpinned nightly reformats code on its own.
-- D150 (builds on D6) Every build links with lld, Rust's own, from rustup's toolchain: nothing to install. It relinks
+- D150 (builds on D6; amended by D166) Every build links with lld, Rust's own, from rustup's toolchain: nothing to install. It relinks
   the debug `dedensd` on Linux 3.6 times faster than GNU ld (2 s against 7 s); on macOS Apple's `ld` is 0.2 s faster;
   the release build is codegen's and does not move ([`benchmarks.md`](benchmarks.md)). The mechanism differs by target,
   for no stable flag selects lld on all of them: `x86_64-unknown-linux-gnu` has no entry, rustc (1.90) links it with its
@@ -49,6 +49,18 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   [`TODECIDE.md`](TODECIDE.md)). Rejected: `-fuse-ld=lld` in `rustflags` or `-C link-arg` (RUSTFLAGS replaces it; needs
   a system `ld.lld`), `-C linker-features=+lld` and `-C link-self-contained=+linker` (nightly), `-C linker=rust-lld`
   (macOS records SDK 11.0 for the one in use), a `[host]` table (unstable), mold (an install, no macOS).
+- D166 (amends D150) The macOS targets link with Apple's `ld`, rustc's default through `cc`: `.cargo/config.toml`
+  drops its `aarch64-apple-darwin` entry and has no `x86_64-apple-darwin` one, as before. The Linux targets keep lld
+  (D150, D151). Why: Apple's SDK `.tbd` format runs ahead of the lld rustup's toolchain ships. The `libSystem.tbd` of
+  macOS 27's SDKs names the target `arm64e.x1-macos`, which the `rust-lld` of stable 1.99.1 (LLVM 23.1.1) does not
+  know, so every link failed on a Mac whose default SDK is a 27 one: `rust-lld: error: could not load TAPI file at
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd: malformed file`. Apple's `ld` reads its
+  own SDK, and lld bought nothing there: Apple's `ld` relinks the debug `dedensd` 0.2 s faster, the release build does
+  not move ([`benchmarks.md`](benchmarks.md)). D150's loud failure where `rust-lld` is missing is Linux's alone; a
+  macOS binary records Apple's `ld` (Mach-O `LC_BUILD_VERSION` tool 3). Rejected: requiring a newer lld (no stable
+  carries LLVM 23.1.4, the pinned nightly's, which reads the 27 SDK; the next SDK can move ahead again), `SDKROOT` of
+  a 26 SDK (D150's workaround: a setting in each shell, on an SDK Apple stops shipping), `lld-cc` falling back to `ld`
+  when `rust-lld` fails (two linkers, the switch silent).
 - D151 (builds on D6, D150; amended by D152) The Linux binaries we ship are static PIE on `x86_64-unknown-linux-musl` and
   `aarch64-unknown-linux-musl`: one file, no libc to match, none of glibc's NSS and `dlopen` surface. glibc stays for
   development and for the tools that need it (sanitizers, fuzzing, Kani, loom, mutants): `just check` is unchanged.

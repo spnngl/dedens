@@ -19,9 +19,8 @@ released.
   the gate.
 - `just toolchains`: the pinned stable (`rust-toolchain.toml`) and the pinned nightly's rustfmt and rust-src
   (`justfile`).
-- Builds link with lld (`.cargo/config.toml`, D150): rustup's toolchain carries it, nothing to install. Homebrew's
-  `rust` does not: put rustup's `cargo` ahead of it in `PATH`. macOS 27's SDK is beyond the lld of stable 1.99:
-  build with `SDKROOT` set to a 26 SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`).
+- Linux builds link with lld (`.cargo/config.toml`, D150): rustup's toolchain carries it, nothing to install.
+  Homebrew's `rust` does not: put rustup's `cargo` ahead of it in `PATH`. macOS builds link with Apple's `ld` (D166).
 - `just musl <target>`: the suite on the static musl targets we ship (D151), in a `rust:alpine` container of your
   architecture (docker, or `DEDENS_CONTAINER=podman`); `just musl <target> build --release` builds them.
 - `just release`: the release binaries of your architecture and their licence notices in `dist/`, built twice and
