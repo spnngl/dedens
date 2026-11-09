@@ -386,6 +386,7 @@ sim-time:
     exe="$(cargo test --workspace --all-features --no-run --test tests --message-format=json \
         | jq -r 'select(.reason == "compiler-artifact" and .target.kind == ["test"]
             and (.manifest_path | endswith("/crates/dedens-sim/Cargo.toml"))) | .executable')"
+    [[ -n "$exe" ]] || { echo "no dedens-sim tests binary" >&2; exit 1; }
     # The first run of a new binary pays macOS's check of it, 0.5 s and more, which no family should.
     "$exe" --list > /dev/null
     log="$(mktemp)"
