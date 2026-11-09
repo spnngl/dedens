@@ -70,6 +70,50 @@ fn template(host: &str, port: u16, path: &str) -> Result<Template, TemplateError
     ))
 }
 
+/// `text` without its scheme, and the transport the scheme forces: `tls://`, `quic://`, `https://` or `coap://`.
+fn scheme(text: &str) -> (&str, Option<Transport>) {
+    [
+        ("tls://", Transport::Tls),
+        ("quic://", Transport::Quic),
+        ("https://", Transport::Https),
+        ("coap://", Transport::Coap),
+    ]
+    .into_iter()
+    .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
+    .unwrap_or((text, None))
+}
+
+/// Refuses the server `given` with `options` that exclude the transport of its scheme, on the command line as in
+/// a query file.
+///
+/// # Errors
+///
+/// For `tls://`, `quic://` or `https://` with `noedns`, as their queries are padded with EDNS (RFC 8467 §4.1),
+/// unless through an Oblivious `DoH` proxy, which pads inside its encryption (D79); for `https://` with TCP, TLS or
+/// QUIC, as HTTPS is HTTP/3, over QUIC; for CoAP, `coap://` or the option, with another scheme or transport, as it
+/// is over UDP, unprotected.
+pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result<()> {
+    let (_, forced) = scheme(given);
+    let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
+    if coap
+        && (forced.is_some_and(|transport| transport != Transport::Coap)
+            || options.tcp == Some(true)
+            || options.encrypted()
+            || options.https()
+            || options.odoh())
+    {
+        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC, HTTPS or Oblivious DoH");
+    }
+    let padded = forced.is_some_and(|transport| transport != Transport::Coap);
+    if padded && options.edns == Some(false) && !options.odoh() {
+        bail!("server {given}: TLS, QUIC and HTTPS need EDNS, which noedns turns off");
+    }
+    if forced == Some(Transport::Https) && (options.tcp == Some(true) || options.encrypted()) {
+        bail!("server {given}: HTTPS goes with no TCP, TLS or QUIC: it is HTTP/3, over QUIC");
+    }
+    Ok(())
+}
+
 /// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
 /// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
 /// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), `coap://` and a path after it for
@@ -92,15 +136,8 @@ pub(super) fn server(
             })?,
     };
     let given = text;
-    let (text, forced) = [
-        ("tls://", Transport::Tls),
-        ("quic://", Transport::Quic),
-        ("https://", Transport::Https),
-        ("coap://", Transport::Coap),
-    ]
-    .into_iter()
-    .find_map(|(scheme, transport)| Some((text.strip_prefix(scheme)?, Some(transport))))
-    .unwrap_or((text, None));
+    refuse_conflicts(given, options)?;
+    let (text, forced) = scheme(text);
     let (text, name) = match text.rsplit_once('#') {
         Some((text, name)) => (text, Some(name)),
         None => (text, None),
@@ -110,15 +147,6 @@ pub(super) fn server(
     let proxy = oblivious_proxy(options, forced, given)?;
     let forced = proxy.as_ref().map_or(forced, |_| Some(Transport::Odoh));
     let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
-    // CoAP is over UDP and unprotected: no other transport under it.
-    if coap
-        && (forced.is_some_and(|transport| transport != Transport::Coap)
-            || options.tcp == Some(true)
-            || options.encrypted()
-            || options.https())
-    {
-        bail!("server {given}: CoAP goes with no TCP, TLS, QUIC, HTTPS or Oblivious DoH");
-    }
     let (text, url_path) = match text.split_once('/') {
         Some((host, path)) if https || forced == Some(Transport::Coap) => {
             (host, Some(format!("/{path}")))

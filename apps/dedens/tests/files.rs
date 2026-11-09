@@ -174,3 +174,25 @@ fn file_options_choose_the_transport_of_command_line_servers() {
         .code(10)
         .stderr(contains("TLS handshake failed"));
 }
+
+/// A query file's server is refused what the command line refuses: no `noedns` over TLS, QUIC or HTTPS, which pad
+/// their queries with EDNS (RFC 8467 §4.1), and HTTPS over nothing but QUIC.
+#[test]
+fn a_file_server_is_refused_the_transports_its_scheme_excludes() {
+    for (server, options) in [
+        ("tls://192.0.2.1", "{edns: false}"),
+        ("quic://192.0.2.1", "{edns: false}"),
+        ("https://192.0.2.1", "{edns: false}"),
+        ("https://192.0.2.1", "{tcp: true}"),
+    ] {
+        let file = format!(
+            "server: {server}\noptions: {options}\nqueries: [{{name: example.com, type: A}}]"
+        );
+        dedens()
+            .args(["-f", "-", "+tries=1", "+time=100ms"])
+            .write_stdin(file)
+            .assert()
+            .code(10)
+            .stderr(contains(format!("server {server}")));
+    }
+}
