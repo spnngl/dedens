@@ -7,7 +7,7 @@ use dedens_proto::edns::EdnsView;
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::{
     DecodeErrorKind, DecodedRecord, EncodeError, Flags, Message, Name, Query, Question, Record,
-    RecordType, Ttl, ZoneEntry, ZoneReader, ttl_offsets,
+    RecordType, Section, Ttl, Violation, ZoneEntry, ZoneReader, ttl_offsets,
 };
 use dedens_scenario::QueryFile;
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
@@ -208,12 +208,27 @@ pub fn parse_name(data: &[u8]) {
 }
 
 /// A zone file: every record it yields is written as text and read back to the same record, names byte for
-/// byte, and its generic form (RFC 3597 §5) reads back to it too.
+/// byte, and its generic form (RFC 3597 §5) reads back to it too. The text read as one record, as `FromStr` does,
+/// is written and read back to the same record.
 ///
 /// # Panics
 ///
 /// On a disagreement, or a bug in the reader or writer.
 pub fn parse_zone(data: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(record) = text.parse::<Record<'_>>()
+    {
+        let shown = record.to_string();
+        let again: Record<'_> = shown
+            .parse()
+            .unwrap_or_else(|e| panic!("`{shown}` from `{text}` reads back: {e}"));
+        // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
+        assert_eq!(
+            format!("{again:?}"),
+            format!("{record:?}"),
+            "`{shown}` from `{text}`"
+        );
+    }
     // A default TTL, so that files without one, like the example of RFC 1035 §5.3, still yield records.
     for entry in ZoneReader::new(data, Some(Name::root())).with_ttl(Ttl::ZERO) {
         let Ok(ZoneEntry::Record(DecodedRecord {
@@ -299,8 +314,9 @@ pub fn read_query(data: &[u8]) {
 ///
 /// Whatever decodes reads the same once owned, has a TTL offset per record, and must encode (unless pointers
 /// expanded it past 65535 bytes) and decode again to the same message, names byte for byte; `Debug` reads every
-/// RDATA as its type (D28). Without violations, the encoding is conforming, and truncating it at any size keeps a
-/// conforming prefix of it.
+/// RDATA as its type (D28). Each record a zone can hold is written as text and read back to itself, RDATA its type
+/// refuses for the same reason. Without violations, the encoding is conforming, and truncating it at any size keeps
+/// a conforming prefix of it.
 ///
 /// # Panics
 ///
@@ -340,12 +356,57 @@ pub fn decode_message(data: &[u8]) {
     };
     let again = Message::decode(&wire).expect("what the encoder wrote decodes");
     assert_eq!(format!("{:?}", again.message), shown, "round trip");
+    for (section, records) in [Section::Answer, Section::Authority, Section::Additional]
+        .into_iter()
+        .zip(records)
+    {
+        for (index, record) in records.iter().enumerate() {
+            let invalid = decoded
+                .violations
+                .iter()
+                .find_map(|violation| match violation {
+                    Violation::InvalidRdata {
+                        section: s,
+                        index: i,
+                        error,
+                    } if (*s, *i) == (section, index) => Some(error.kind),
+                    _ => None,
+                });
+            reads_back_from_text(record, invalid);
+        }
+    }
     if !decoded.violations.is_empty() {
         return;
     }
     assert_eq!(again.violations, [], "what the encoder wrote is conforming");
     let size = usize::from(data.first().copied().unwrap_or_default()) * wire.len() / 255;
     truncate(&decoded.message, size);
+}
+
+/// A record off the wire, its RDATA refused by its type for `invalid`, written as text and read back by a zone
+/// reader: the same record, names byte for byte, and the same reason. Types and classes no zone holds, a query or
+/// meta one, OPT among them, are skipped (RFC 6895 §3.1, §3.2), as the text reader refuses them.
+fn reads_back_from_text(record: &Record<'_>, invalid: Option<DecodeErrorKind>) {
+    let (rtype, class) = (u16::from(record.rtype()), u16::from(record.class));
+    if record.rtype() == RecordType::OPT
+        || matches!(rtype, 0 | 128..=255 | 65535)
+        || matches!(class, 0 | 128..=255 | 0xE000..=0xFEFF | 65535)
+    {
+        return;
+    }
+    let text = record.to_string();
+    match ZoneReader::new(text.as_bytes(), None).next() {
+        Some(Ok(ZoneEntry::Record(read))) => {
+            // `Debug` shows names as written, so this also catches a change of case, which `==` ignores.
+            assert_eq!(
+                format!("{:?}", read.record),
+                format!("{record:?}"),
+                "`{text}`"
+            );
+            assert_eq!(read.invalid_rdata.map(|e| e.kind), invalid, "`{text}`");
+        }
+        other => panic!("`{text}` reads back: {other:?}"),
+    }
 }
 
 /// Encodes `message` into `size` bytes, dropping records: what is written must be a conforming prefix.
