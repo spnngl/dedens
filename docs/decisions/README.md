@@ -68,7 +68,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D58 [server](server.md) (amended by D110, D120): a blocklist holds a keyed 64-bit SipHash of each name
 - D59 [wire format](wire-format.md): fixed wire layouts are `zerocopy` big-endian structs
 - D60 [transports](transports.md): encrypted transports before DNSSEC; DoT is TLS over D27's TCP
-- D61 [transports](transports.md) (amended by D109, D119): DoQ through compio's QUIC, no QUIC of our own
+- D61 [transports](transports.md) (amended by D109, D119, D175): DoQ through compio's QUIC, no QUIC of our own
 - D62 [transports](transports.md) (amended by D82, D83): DoH waits for compio's tokio I/O traits; no adapter of our own
 - D63 [server](server.md) (amended by D123): one 65535-byte reply buffer per thread, replies copied out
 - D64 [server](server.md) (amended by D104, D107, D121): TCP reply queues bounded in bytes; reloads rebuild from the text last loaded
@@ -108,7 +108,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D106 [server](server.md) (amended by D117): validation cost counts what it costs: bounded debt, NSEC3 in SHA-1 blocks
 - D107 [server](server.md) (amended by D122, D147, D174): io_uring with `COOP_TASKRUN`, `poll` reported; runtimes never dropped; reloads wake threads
 - D108 [server](server.md): bounds on the client's queues; evidence of a live server
-- D109 [transports](transports.md) (amended by D119): client QUIC, HTTP/3 and CoAP exchanges bounded by server and deadline
+- D109 [transports](transports.md) (amended by D119, D175): client QUIC, HTTP/3 and CoAP exchanges bounded by server and deadline
 - D110 [server](server.md) (amended by D120): the blocklist blocks any class; suffix walk linear in labels
 - D111 [server](server.md): `Pipeline::receive` checks each upstream response against its question
 - D112 [wire format](wire-format.md): encoder's name table keyed on a hash of the whole suffix
@@ -165,3 +165,4 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D172 [simulation tests](simulation-tests.md): the CI scale of the simulation time budgets is 7, measured on a runner
 - D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
+- D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection

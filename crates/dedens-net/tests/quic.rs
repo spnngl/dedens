@@ -23,6 +23,9 @@ use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use crate::util::loopback::answer;
 use crate::util::{query, sent, start, t0};
 
+/// The ID of the responses of [`Serve::NonZeroId`], where RFC 9250 §4.2.1 asks for 0.
+const NONZERO_ID: u16 = 0x1234;
+
 /// How the server answers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Serve {
@@ -30,6 +33,8 @@ enum Serve {
     Framed,
     /// Each response without its length.
     Unframed,
+    /// Each response behind its length, with the ID [`NONZERO_ID`].
+    NonZeroId,
     /// Framed, but the connection closed at its stream of this number, that query unanswered.
     ClosingAt(u32),
     /// Framed, but from the second stream of a connection on, without the length.
@@ -107,6 +112,11 @@ async fn quic_server(certificates: &Certificates, serve: Serve) -> (SocketAddr, 
                     let response = answer(&bytes[2..], Vec::new());
                     let response = match serve {
                         Serve::Unframed => response,
+                        Serve::NonZeroId => {
+                            let mut response = response;
+                            response[..2].copy_from_slice(&NONZERO_ID.to_be_bytes());
+                            frame(&response).expect("framed")
+                        }
                         Serve::UnframedAfterFirst if streams > 1 => response,
                         Serve::Endless => vec![0; 70_000],
                         Serve::Largest => {
@@ -237,6 +247,34 @@ async fn s4_3_3_a_framing_error_closes_the_connection_with_doq_protocol_error() 
     );
     assert_eq!(seen.connections.get(), 2);
     // Neither query was asked again.
+    assert_eq!(seen.streams.borrow().len(), 2);
+}
+
+/// RFC 9250 §4.2.1, §4.3.3: a response whose ID is not 0 is a protocol error: the client closes the connection with
+/// `DOQ_PROTOCOL_ERROR`, 2, does not ask again and opens another connection for the next query (D175).
+#[compio::test]
+async fn s4_3_3_a_response_with_a_nonzero_id_closes_the_connection() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::NonZeroId).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    for _ in 0..2 {
+        let error = client.exchange(query(), named(addr, NAME), &quic()).await;
+        assert!(
+            matches!(
+                error,
+                Err(ClientError::Quic(QuicError::MessageId(NONZERO_ID)))
+            ),
+            "{error:?}"
+        );
+    }
+    for _ in 0..50 {
+        if seen.closed.borrow().len() == 2 {
+            break;
+        }
+        compio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*seen.closed.borrow(), [2, 2]);
+    assert_eq!(seen.connections.get(), 2);
     assert_eq!(seen.streams.borrow().len(), 2);
 }
 
