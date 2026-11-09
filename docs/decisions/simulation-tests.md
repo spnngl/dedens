@@ -134,9 +134,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   second family, `dnssec_limits` (`limits` is taken), and the verdicts and the cache stay in `dnssec`.
   Until then it stays one module. Rejected: a smaller scenario (D133 cuts seeds, never the scenario); a split ahead
   of the measure (two modules to keep for a family still within its budget).
-- D167 (amends D164; builds on D133) `just sim-time` multiplies both budgets by `DEDENS_SIM_TIME_SCALE`, a positive
-  decimal, 1 when unset; any other value fails the recipe before it builds. The budgets stay the Apple M5's (D164);
-  the `sim-time` job of `deep.yml` sets 2.5, so a family may take 5 s there and the binary 25 s. 2.5 is D133's
-  figure, GitHub's runners on a slow day against their usual pace (2026-11-03), not yet a runner's time of the
-  families against the M5's: the job's first runs check it, and a change of the scale changes this decision.
-  Rejected: a job that only reports the times, never red, so nobody reads it.
+- D167 (amends D164; builds on D133; amended by D172) `just sim-time` multiplies both budgets by
+  `DEDENS_SIM_TIME_SCALE`, a positive decimal, 1 when unset; any other value fails the recipe before it builds. The
+  budgets stay the Apple M5's (D164); the `sim-time` job of `deep.yml` sets 2.5, so a family may take 5 s there and
+  the binary 25 s. 2.5 is D133's figure, GitHub's runners on a slow day against their usual pace (2026-11-03), not
+  yet a runner's time of the families against the M5's: the job's first runs check it, and a change of the scale
+  changes this decision. Rejected: a job that only reports the times, never red, so nobody reads it.
+- D172 (amends D167) The `sim-time` job of `deep.yml` sets `DEDENS_SIM_TIME_SCALE` to 7, measured: the job's first run
+  (ubuntu-26.04, 2026-11-09) took 3.8 to 6.2 times the M5's time per family and 6.8 times for the binary (48.8 s
+  against 7.2 s; dnssec 10.9 s against 2.0 s), so at 2.5 five families of nine and the binary failed. At 7 a family
+  may take 14 s and the binary 70 s, about 30% over that run's slowest. Rejected: a larger scale, which hides more of
+  a slowdown.

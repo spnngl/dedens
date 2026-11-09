@@ -3,8 +3,8 @@ name: deep
 # The slow checks of each pull request, informational and outside the gate as `mutants.yml` is (D103): `loom` is
 # loom's model of dedensd's reload wake-up and query flights (`just loom`, D135); `sim` runs the simulation
 # scenarios under 100 random seeds, a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it
-# (`just sim`, D133); `sim-time` times each family under its fixed seeds against D133's budgets, scaled by 2.5 for
-# the runner, and fails over one (`just sim-time`, D164, D167); `careful` runs the tests on a checked standard
+# (`just sim`, D133); `sim-time` times each family under its fixed seeds against D133's budgets, scaled by 7 for
+# the runner, and fails over one (`just sim-time`, D164, D172); `careful` runs the tests on a checked standard
 # library under AddressSanitizer, a job per package (`just careful address`, D144).
 on:
   pull_request:
@@ -103,8 +103,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: just sim-time
         env:
-          # GitHub's runners are about 2.5 times slower than the machine of D133's budgets (D167).
-          DEDENS_SIM_TIME_SCALE: "2.5"
+          # GitHub's runners took up to 6.8 times the time of the machine of D133's budgets (D172).
+          DEDENS_SIM_TIME_SCALE: "7"
   # One careful job per package: the workspace's tests under AddressSanitizer outlast any one job.
   packages:
     runs-on: ubuntu-26.04
