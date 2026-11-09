@@ -187,8 +187,7 @@ pub(super) fn server(
 }
 
 /// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
-/// without the option, an error for a target that is not an `https://` server.
-#[cfg(feature = "odoh")]
+/// without the option, an error for a target that is not an `https://` server, or without the `odoh` feature (D69).
 fn oblivious_proxy(
     options: &Options,
     forced: Option<Transport>,
@@ -197,6 +196,9 @@ fn oblivious_proxy(
     let Some(uri) = options.odoh_proxy.as_deref() else {
         return Ok(None);
     };
+    if !cfg!(feature = "odoh") {
+        bail!("+odoh-proxy: built without the odoh feature");
+    }
     if forced != Some(Transport::Https) {
         bail!("server {given}: +odoh-proxy needs an https:// target server");
     }
@@ -206,28 +208,6 @@ fn oblivious_proxy(
     Ok(Some(Box::new(
         server(Some(uri), None, None, &Options::default())?.server,
     )))
-}
-
-#[cfg(not(feature = "odoh"))]
-use without_odoh::oblivious_proxy;
-
-/// A module of its own so that its mutants, never built by `just mutants` (all features), have a name of their own
-/// in `.cargo/mutants.toml`.
-#[cfg(not(feature = "odoh"))]
-mod without_odoh {
-    use super::{Options, Server, Transport, bail};
-
-    /// Without the `odoh` feature there is no Oblivious `DoH` to ask (D69).
-    pub(super) fn oblivious_proxy(
-        options: &Options,
-        _forced: Option<Transport>,
-        _given: &str,
-    ) -> anyhow::Result<Option<Box<Server>>> {
-        if options.odoh() {
-            bail!("+odoh-proxy: built without the odoh feature");
-        }
-        Ok(None)
-    }
 }
 
 #[cfg(test)]
