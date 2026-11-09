@@ -4,6 +4,7 @@
 //! - RFC 9619: one question per message (§4), and the violations of D9.
 //! - D21: a query read in place agrees with `Message::decode`; `Edns::append` adds an OPT record to a message.
 //! - RFC 2181 §9 (truncation) and RFC 6891 §7 (the OPT record survives it), in `Message::encode_truncated`.
+//! - RFC 1034 §4.3.2 step 3b: `Message::referral` tells a captured referral from an answer, NXDOMAIN and NODATA.
 //! - Responses captured from public servers by `just capture` (`testdata/proto/capture.yaml`): they decode without
 //!   a violation and re-encode to an equal message.
 

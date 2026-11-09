@@ -540,8 +540,8 @@ mod ttl {
 }
 
 mod iterations {
-    //! RFC 9276 §3.2: NSEC3 records above the iteration limit prove nothing and the response is insecure, with EDE 27;
-    //! the hashing they ask for is counted by the `Budget`.
+    //! RFC 9276 §3.2: NSEC3 records above the iteration limit prove nothing and the response is insecure, with EDE 27
+    //! (in the registry of RFC 8914 §5.2); the hashing they ask for is counted by the `Budget`.
 
     use dedens_dnssec::crypto::{Budget, BudgetExhausted, Nsec3Blocks, Verifications};
     use dedens_dnssec::denial::{self, MaxIterations, Unproven};
@@ -711,7 +711,7 @@ mod iterations {
 mod compact {
     //! RFC 9824 (compact denial of existence): an NSEC or NSEC3 with NXNAME in its bitmap, under NOERROR, proves a
     //! name error; one with the types of the name proves no data. The Cloudflare captures of `testdata/dnssec/` are the
-    //! responses.
+    //! responses. A query for NXNAME itself is refused with EDE 30 (in the registry of RFC 8914 §5.2).
 
     use dedens_dnssec::crypto::Budget;
     use dedens_dnssec::denial::{self, Fact, MaxIterations, Unproven};

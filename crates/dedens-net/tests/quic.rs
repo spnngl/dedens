@@ -1,5 +1,5 @@
 //! DNS over QUIC (RFC 9250) and the strict privacy profile (RFC 8310 §6.6), against a loopback QUIC server with
-//! certificates made for the test.
+//! certificates made for the test. RFC 7830 §3: a query over QUIC carries the Padding option.
 
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;

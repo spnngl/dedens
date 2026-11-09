@@ -1,6 +1,8 @@
 //! The validator against the captured responses (`testdata/dnssec/README.md`): a scripted caller answers each question
 //! it asks from the captures, at the time of the capture, and the verdict is the one the README gives (RFC 4035 §4.3),
-//! but for what an opt-out proof covers, which is insecure (RFC 5155 §9.2, D75).
+//! but for what an opt-out proof covers, which is insecure (RFC 5155 §9.2, D75). The verdicts are RFC 4033 §5's
+//! states, from a chain of trust down from an anchor: secure, insecure, bogus and indeterminate, as D75 reads them;
+//! the zones' keys and proofs are kept for their TTL (D86).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
