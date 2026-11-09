@@ -356,6 +356,9 @@ pub(crate) fn seconds(raw: &[u8]) -> Option<u32> {
     if let Some(plain) = number(raw) {
         return Some(plain);
     }
+    if raw.is_empty() {
+        return None;
+    }
     let mut total: u32 = 0;
     let mut value: Option<u32> = None;
     for &b in raw {
@@ -493,6 +496,11 @@ mod tests {
         assert_eq!(seconds(b"h"), None);
         assert_eq!(seconds(b"4294967296"), None);
         assert_eq!(seconds(b"7102w"), None);
+    }
+
+    #[test]
+    fn seconds_refuses_empty() {
+        assert_eq!(seconds(b""), None);
     }
 
     #[test]
