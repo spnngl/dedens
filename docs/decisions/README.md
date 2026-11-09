@@ -160,5 +160,5 @@ numbers, the pairs and the lines (D140, D171). Measurements: [`benchmarks.md`](.
 - D167 [simulation tests](simulation-tests.md): `DEDENS_SIM_TIME_SCALE` scales the simulation time budgets
 - D168 [performance and safety](performance-and-safety.md): stale mutants exclusions fail, by `just mutants-stale`
 - D169 [CLI](cli.md): `NO_COLOR` turns colour off only when set to a value
-- D170 [simulation tests](simulation-tests.md): `dedensd`'s benches include only its tests' server harness
+- D170 [performance and safety](performance-and-safety.md): `dedensd`'s benches include only its tests' server harness
 - D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here
