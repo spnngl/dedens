@@ -14,10 +14,13 @@ const DECISIONS: &str = "docs/decisions/";
 const INDEX: &str = "docs/decisions/README.md";
 /// The RFC coverage table, from the workspace root.
 const COVERAGE: &str = "docs/rfc/coverage.md";
-/// Folders whose files cite decisions; `AGENTS.md` files anywhere do too.
-const CITING_FOLDERS: [&str; 5] = ["crates/", "apps/", "fuzz/", "docs/", "testdata/"];
-/// Extensions of the text files that cite decisions; RFC archives and captured data are not read.
-const CITING_EXTENSIONS: [&str; 9] = ["rs", "md", "toml", "yaml", "sh", "go", "c", "py", "nu"];
+/// Extensions of the text files that cite decisions, anywhere in the tree; a file with none (`justfile`,
+/// `Containerfile`) does too. RFC archives (`.txt`) and captured data are not read.
+const CITING_EXTENSIONS: [&str; 10] = [
+    "rs", "md", "toml", "yaml", "yml", "sh", "go", "c", "py", "nu",
+];
+/// The folder whose files all cite decisions, whatever their extension: man pages, systemd units, package scripts.
+const CITING_FOLDER: &str = "deploy/";
 /// Where a path of a coverage cell starts.
 const PATH_ROOTS: [&str; 6] = ["crates/", "apps/", "fuzz/", "tests/", "docs/", "testdata/"];
 
@@ -94,14 +97,12 @@ fn sections(tracked: &[String]) -> Vec<Source> {
 /// its target's copy.
 fn citing(tracked: &[String]) -> Vec<Source> {
     let wanted = |path: &str| {
-        let file = Path::new(path);
-        let text = file
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| CITING_EXTENSIONS.contains(&extension));
-        let in_folder = CITING_FOLDERS.iter().any(|folder| path.starts_with(folder));
-        file.file_name() == Some(OsStr::new("AGENTS.md"))
-            || (text && in_folder && !path.starts_with("docs/rfc/archive/"))
+        path.starts_with(CITING_FOLDER)
+            || Path::new(path).extension().is_none_or(|extension| {
+                extension
+                    .to_str()
+                    .is_some_and(|extension| CITING_EXTENSIONS.contains(&extension))
+            })
     };
     tracked
         .iter()

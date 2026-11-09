@@ -70,16 +70,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
-- D140 (builds on D16; amended by D161, D162, D163, D171) Repository checks in the gate, `crates/dedens-repo/tests/repo.rs`
-  (D163), over the tracked files (`git ls-files`: a tree walk would need a skip list for `plan/`, `target/` and the
-  rest of `.gitignore`). A decision cited in the text files of `crates/`, `apps/`, `fuzz/`, `testdata/` and `docs/` (not RFC
-  archives or captured data) and in the `AGENTS.md` files is defined here, once, a range such as `D64-D66` expanded. A
+- D140 (builds on D16; amended by D161, D162, D163, D171) Repository checks in the gate,
+  `crates/dedens-repo/tests/repo.rs` (D163), over the tracked files (`git ls-files`: a tree walk would need a skip
+  list for `plan/`, `target/` and the rest of `.gitignore`). A decision cited in a tracked text file, anywhere (an
+  extension of `CITING_EXTENSIONS`, or none: `justfile`, `Containerfile`; every file of `deploy/`; not RFC archives
+  or captured data), is defined in a section file of `docs/decisions/`, once, a range such as `D64-D66` expanded. A
   header's `amends`, `supersedes` or `narrows` is matched by the other's `amended by`, `superseded by` or `narrowed by`,
   and the reverse; a supersession of a scope (`superseded by D113 for UDP`) is one still, since the two sides name each
   other; `builds on` and `completes` are one-sided, and a clause naming decisions in another form fails. Every path in a
   Code or Tests cell of `docs/rfc/coverage.md` exists (braces and a `*` in the last component allowed), every
   RFC a test file cites in its module docs has a row naming the file (D162), every `AGENTS.md` has its `CLAUDE.md`
-  symlink. Each check runs once on a small broken input in the same file. No `syn`: nothing here parses Rust, string
+  symlink, a crate's `clippy.toml` starts with the root one (D134: clippy reads the nearest alone), and the
+  `Containerfile` builds from the Rust `rust-toolchain.toml` pins (D153). Each check runs once on a small broken input in the same file. No `syn`: nothing here parses Rust, string
   matching does it, with no new dependency. Not checked: that a row's status is true.
 - D138 (builds on D14, D16) Profiles are sampled, never instrumented. `just profile <bench> [filter]` runs a bench
   target under samply (launching needs no `samply setup`), the bench profile's line tables giving the names; `DEDENS_PERF=1
