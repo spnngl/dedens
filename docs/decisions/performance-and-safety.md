@@ -124,9 +124,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (`cargo test -p dedens-proto`), not in the workspace's. `testdata/` is one of the folders D140 reads for decisions and
   one a coverage path may start at. Rejected: data kept in its first reader with the others reaching in (the paths it
   replaced).
-- D162 (amends D13, D133, D140; amended by D170) A package's integration tests are one binary, `tests/tests.rs` (`autotests = false`
-  and one `[[test]]`, as ripgrep), with a module per topic, not a file per RFC: 129 test binaries each linked their
-  crate's dependencies (21 linked compio, rustls and quinn in `dedens-net` alone), and the link dominated an
+- D162 (amends D13, D133, D140, D159; amended by D170) A package's integration tests are one binary,
+  `tests/tests.rs` (`autotests = false` and one `[[test]]`, as ripgrep), with a module per topic, not a file per
+  RFC: 129 test binaries each linked their crate's dependencies (21 linked compio, rustls and quinn in `dedens-net` alone), and the link dominated an
   incremental test build: 14 binaries take it from 16-17 s to 5-6 s after a change to `dedens-proto`, and `target/`
   from 5.7 to 3.7 GB (`docs/benchmarks.md`). A topic module cites in its docs the RFCs and sections it tests, and
   each test of an RFC section keeps the section in its name (`s4_1_4_...`); a topic gathering several RFCs gives each
