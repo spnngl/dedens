@@ -26,11 +26,16 @@ pub(super) fn resolv_conf() -> anyhow::Result<ResolvConf> {
     Ok(ResolvConf::parse(&text))
 }
 
-/// The servers of the command line, in order, each once.
-pub(super) fn servers(cli: &Cli, conf: Option<&ResolvConf>) -> anyhow::Result<Vec<Endpoint>> {
+/// The servers of the command line, in order, each once, reached as `options` say: the command line's, or those a
+/// query file merges with them.
+pub(super) fn servers(
+    cli: &Cli,
+    conf: Option<&ResolvConf>,
+    options: &Options,
+) -> anyhow::Result<Vec<Endpoint>> {
     let mut servers = Vec::new();
     for named in cli.servers() {
-        let address = server(Some(named), conf, cli.port, &cli.options)?;
+        let address = server(Some(named), conf, cli.port, options)?;
         if !servers.contains(&address) {
             servers.push(address);
         }

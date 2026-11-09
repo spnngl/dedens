@@ -491,7 +491,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     let conf = (cli.search || (cli.servers().is_empty() && !cli.trace))
         .then(resolv_conf)
         .transpose()?;
-    let route = match servers(cli, conf.as_ref())? {
+    let route = match servers(cli, conf.as_ref(), &cli.options)? {
         _ if cli.trace => Route::Trace(roots()?),
         servers if servers.is_empty() => {
             Route::Servers(vec![server(None, conf.as_ref(), cli.port, &cli.options)?])
@@ -553,7 +553,6 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
     let conf = (cli.servers().is_empty() && missing)
         .then(resolv_conf)
         .transpose()?;
-    let servers = servers(cli, conf.as_ref())?;
     file.queries
         .into_iter()
         .filter(|q| cli.only.is_empty() || cli.only.contains(&q.id()))
@@ -575,11 +574,11 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
             }
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
-                route: Route::Servers(match &servers {
+                route: Route::Servers(match servers(cli, conf.as_ref(), &options)? {
                     servers if servers.is_empty() => {
                         vec![server(named, conf.as_ref(), cli.port, &options)?]
                     }
-                    servers => servers.clone(),
+                    servers => servers,
                 }),
                 id,
                 names: vec![query.name],
