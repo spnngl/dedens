@@ -10,13 +10,11 @@ use dedens_server::{
     Access, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit, RateLimitConfig,
     Secret, Secrets, Validating,
 };
-use dedens_testkit::captured;
 use dedens_testkit::dnssec::Captures;
+use dedens_testkit::query;
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
-use crate::util::{
-    captured_at, client_query, forwarder, query_for, run_captured, validating_under, wire,
-};
+use crate::util::{captured_at, client_query, forwarder, run_captured, validating_under, wire};
 
 /// The counter `dedensd_access_denied_total{action}` counts the queries a denied client sent, by action.
 #[test]
@@ -24,7 +22,7 @@ fn denied_queries_are_counted_by_action() {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     let allowed: Network = "10.0.0.0/8".parse().expect("a network");
-    let query = wire(&query_for(&captured("a")));
+    let query = wire(&query("a", 7));
     let mut out = vec![0; 65535];
     for (denial, denied, permitted, expected) in [
         (Denial::Refuse, 2, 1, "refuse"),
@@ -101,7 +99,7 @@ fn limited_queries_are_counted_by_action() {
     let pipeline = metrics::with_local_recorder(&recorder, || {
         forwarder().with_rate_limit(RateLimit::new(config).expect("a limit"))
     });
-    let query = wire(&query_for(&captured("a")));
+    let query = wire(&query("a", 7));
     let mut out = vec![0; 65535];
     let from: IpAddr = "198.51.100.7".parse().expect("an address");
     // 2 within the burst, then 3 over: drop, slip, drop.
@@ -131,7 +129,7 @@ fn cookies_are_counted_by_outcome() {
     let from: IpAddr = "198.51.100.7".parse().expect("an address");
     let valid = issuer.issue([1; 8], from);
     let ask = |cookie: Option<Cookie>| {
-        let mut query = query_for(&captured("a"));
+        let mut query = query("a", 7);
         query.edns = Some(Edns {
             options: cookie.map(EdnsOption::Cookie).into_iter().collect(),
             ..Edns::default()

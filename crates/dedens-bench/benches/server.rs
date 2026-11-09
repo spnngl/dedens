@@ -14,7 +14,7 @@ use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Message, Query, Question, Record, RecordType, Transport, Ttl};
 use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step};
-use dedens_testkit::captured;
+use dedens_testkit::{captured, query};
 use divan::Bencher;
 
 #[global_allocator]
@@ -22,14 +22,6 @@ static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
 fn main() {
     divan::main();
-}
-
-/// A query for the captured response `response`, with EDNS as most clients send it.
-fn query_for(response: &[u8]) -> Vec<u8> {
-    let message = Message::decode(response).expect("decodes").message;
-    let mut query = Message::query(7, message.questions[0].clone());
-    query.edns = Some(Edns::default());
-    query.to_vec().expect("a query fits")
 }
 
 /// A caching forwarder, its cache empty.
@@ -65,7 +57,7 @@ fn caching(query: &[u8], response: &[u8]) -> Pipeline {
 #[divan::bench(args = CASES)]
 fn miss(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
-    let query = query_for(&response);
+    let query = query(case, 7).to_vec().expect("a query fits");
     let mut out = vec![0; 1232];
     bencher
         .with_inputs(forwarding)
@@ -89,7 +81,7 @@ fn miss(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench(args = CASES)]
 fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
-    let query = query_for(&response);
+    let query = query(case, 7).to_vec().expect("a query fits");
     let pipeline = caching(&query, &response);
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
@@ -109,7 +101,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench(args = CASES)]
 fn hit_guarded(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
-    let query = query_for(&response);
+    let query = query(case, 7).to_vec().expect("a query fits");
     let pipeline = caching(&query, &response);
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
@@ -131,12 +123,7 @@ fn hit_guarded(bencher: Bencher<'_, '_>, case: &str) {
 /// stage only differs from the plain one when the cache misses.
 fn dnssec_hit(bencher: Bencher<'_, '_>, case: &str, checked: Checked) {
     let response = captured(case);
-    let question = Message::decode(&response)
-        .expect("decodes")
-        .message
-        .questions[0]
-        .clone();
-    let mut query = Message::query(7, question);
+    let mut query = query(case, 7);
     query.edns = Some(Edns {
         flags: EdnsFlags::DO,
         ..Edns::default()

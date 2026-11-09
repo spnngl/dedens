@@ -503,12 +503,11 @@ mod clarifications {
 
     use dedens_proto::edns::{Edns, EdnsFlags};
     use dedens_proto::{Flags, RecordType, Transport};
-    use dedens_testkit::captured;
     use dedens_testkit::dnssec::Captures;
+    use dedens_testkit::{captured, query};
 
     use crate::util::{
-        caching, client_query, decode, forwarder, query_for, run, run_captured, validating, wire,
-        with_flags,
+        caching, client_query, decode, forwarder, run, run_captured, validating, wire, with_flags,
     };
 
     /// No validator (D114): the AD bit of an upstream response is never passed on, whatever the client asked, and
@@ -524,7 +523,7 @@ mod clarifications {
             (Flags::NONE, true),
             (Flags::AD, true),
         ] {
-            let mut query = query_for(&response);
+            let mut query = query("a", 7);
             query.header.flags = Flags::RD | ad;
             query.edns = Some(Edns {
                 flags: if dnssec {
@@ -560,7 +559,7 @@ mod clarifications {
     fn cd_goes_upstream_and_back() {
         let response = captured("a");
         for cd in [Flags::CD, Flags::NONE] {
-            let mut query = query_for(&response);
+            let mut query = query("a", 7);
             query.header.flags = Flags::RD | cd;
             let done = run(
                 &forwarder(),

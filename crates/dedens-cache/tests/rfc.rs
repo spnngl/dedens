@@ -350,7 +350,7 @@ mod negative {
         for case in ["a", "cname_chain"] {
             let cache = min_cache(60);
             let wire = captured(case);
-            let q = query_of(&wire);
+            let q = query_of(case);
             insert(&cache, &q, &wire, T0).unwrap();
             let (_, served) = lookup(&cache, &q, T0, NEVER);
             assert_eq!(ttls(&served.unwrap()), [60, 60], "{case}");
@@ -365,7 +365,7 @@ mod negative {
     fn a_minimum_of_zero_keeps_the_ttl_of_the_zone() {
         let cache = min_cache(0);
         let wire = captured("a");
-        let q = query_of(&wire);
+        let q = query_of("a");
         insert(&cache, &q, &wire, T0).unwrap();
         let (_, served) = lookup(&cache, &q, T0, NEVER);
         assert_eq!(ttls(&served.unwrap()), [29, 29]);
@@ -377,7 +377,7 @@ mod negative {
     fn a_ttl_above_the_minimum_is_kept() {
         let cache = min_cache(60);
         let wire = captured("ns");
-        let q = query_of(&wire);
+        let q = query_of("ns");
         insert(&cache, &q, &wire, T0).unwrap();
         let (_, served) = lookup(&cache, &q, T0, NEVER);
         assert_eq!(ttls(&served.unwrap()), [81_811, 81_811]);
@@ -389,7 +389,7 @@ mod negative {
     fn the_minimum_does_not_raise_ttl_zero() {
         let cache = min_cache(60);
         let wire = captured("a");
-        let q = query_of(&wire);
+        let q = query_of("a");
         let zero = retimed(&wire, 0, |m| &mut m.answer);
         assert_eq!(insert(&cache, &q, &zero, T0), Err(NotCached::ZeroTtl));
 
@@ -401,7 +401,7 @@ mod negative {
         );
 
         let nodata = captured("nodata");
-        let q = query_of(&nodata);
+        let q = query_of("nodata");
         let zero = retimed(&nodata, 0, |m| &mut m.authority);
         assert_eq!(insert(&cache, &q, &zero, T0), Err(NotCached::ZeroTtl));
         assert!(cache.is_empty());
@@ -417,13 +417,13 @@ mod negative {
         })
         .unwrap();
         let nodata = captured("nodata");
-        let q = query_of(&nodata);
+        let q = query_of("nodata");
         insert(&cache, &q, &nodata, T0).unwrap();
         let (_, served) = lookup(&cache, &q, T0, NEVER);
         assert_eq!(ttls(&served.unwrap()), [7_200]);
 
         let nxdomain = captured("nxdomain_soa");
-        let q = query_of(&nxdomain);
+        let q = query_of("nxdomain_soa");
         insert(&cache, &q, &nxdomain, T0).unwrap();
         let (_, served) = lookup(&cache, &q, T0, NEVER);
         let served = served.unwrap();
@@ -675,7 +675,7 @@ mod stale {
     fn stale_data_starts_where_the_raised_lifetime_ends() {
         let cache = min_cache(60);
         let wire = captured("a");
-        let q = query_of(&wire);
+        let q = query_of("a");
         insert(&cache, &q, &wire, T0).expect("a cacheable answer");
         let (found, served) = lookup(&cache, &q, T0 + 59, StalePolicy::Always);
         assert_eq!(freshness(found), Some(Freshness::Fresh { prefetch: true }));

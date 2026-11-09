@@ -135,15 +135,11 @@ pub(crate) fn min_cache(min_ttl: u32) -> Cache {
     .expect("a valid config")
 }
 
-/// The query a captured response answers: its question, RD set, EDNS without DO.
-pub(crate) fn query_of(response: &[u8]) -> Vec<u8> {
-    let question = Message::decode(response)
-        .expect("a captured response decodes")
-        .message
-        .questions
-        .swap_remove(0)
-        .into_owned();
-    Message::query(1, question).to_vec().expect("a query fits")
+/// The query, ID 1, the captured response `case` answers: its question, RD set, EDNS without DO.
+pub(crate) fn query_of(case: &str) -> Vec<u8> {
+    dedens_testkit::query(case, 1)
+        .to_vec()
+        .expect("a query fits")
 }
 
 /// `response` with TTL `ttl` on the records of the section `pick` gives, `pick` leaving the others as captured.

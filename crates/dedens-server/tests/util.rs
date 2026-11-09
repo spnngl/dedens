@@ -54,17 +54,6 @@ pub(crate) fn with_rcode(mut response: Vec<u8>, rcode: Rcode) -> Vec<u8> {
     response
 }
 
-/// The query `response` answers: its question, RD set, EDNS with the default payload, ID 7.
-pub(crate) fn query_for(response: &[u8]) -> Message<'static> {
-    let question = Message::decode(response)
-        .expect("a captured response decodes")
-        .message
-        .questions
-        .swap_remove(0)
-        .into_owned();
-    Message::query(7, question)
-}
-
 pub(crate) fn wire(message: &Message<'_>) -> Vec<u8> {
     message.to_vec().expect("the message fits")
 }

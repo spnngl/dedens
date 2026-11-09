@@ -48,6 +48,19 @@ pub fn message(wire: &[u8]) -> Message<'static> {
     decoded.message.into_owned()
 }
 
+/// The query, under `id`, that the response `case` of [`captured`] answers: its question, as
+/// [`Message::query`] asks it (RD, EDNS with the default payload).
+///
+/// # Panics
+///
+/// As [`captured`] and [`message`] do, or when the response has no question.
+#[must_use]
+#[track_caller]
+pub fn query(case: &str, id: u16) -> Message<'static> {
+    let question = message(&captured(case)).questions.swap_remove(0);
+    Message::query(id, question)
+}
+
 /// The bytes `text` writes in hexadecimal, as the RFCs print them: either case, split over lines and spaces.
 ///
 /// # Panics

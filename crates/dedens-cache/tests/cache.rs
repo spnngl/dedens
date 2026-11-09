@@ -220,7 +220,7 @@ fn racing_hits_ask_one_prefetch_per_response() {
 fn prefetch_counts_from_the_raised_lifetime() {
     let cache = min_cache(60);
     let wire = captured("a");
-    let q = query_of(&wire);
+    let q = query_of("a");
     insert(&cache, &q, &wire, T0).unwrap();
     let freshness = |now| match lookup(&cache, &q, now, NEVER).0 {
         Lookup::Hit(hit) => hit.freshness,

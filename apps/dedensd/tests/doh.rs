@@ -98,7 +98,7 @@ mod queries {
     fn query_request(addr: SocketAddr, path: &str, method: Method) -> http::Request<Vec<u8>> {
         let template =
             Template::parse(&format!("https://{NAME}:{}{path}", addr.port())).expect("a template");
-        request(&template, &query_for(&captured("a"), 0), method).expect("a request")
+        request(&template, &query_for("a", 0), method).expect("a request")
     }
 
     /// A request that is no query: `method` at `path` with an optional content type.
@@ -142,7 +142,7 @@ mod queries {
             options.transport = Transport::Https;
             options.method = method;
             options.tries = NonZero::<u8>::MIN;
-            let query = decode(&query_for(&response, 0));
+            let query = dedens_testkit::query("a", 0);
             let reply = Runtime::new().expect("a runtime").block_on(async {
                 let response = client
                     .exchange(query, named(server.addr, NAME), &options)
@@ -303,7 +303,6 @@ mod h3_frames {
     use dedens_net::http3::H3_EXCESSIVE_LOAD;
     use dedens_net::tls::Trust;
     use dedens_proto::{Rcode, Transport};
-    use dedens_testkit::captured;
     use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
     use dedens_testkit::responder::Responder;
     use futures_util::future::join_all;
@@ -500,14 +499,13 @@ mod h3_frames {
     /// end.
     #[test]
     fn s5_2_a_connection_past_its_budget_is_closed_once_its_last_request_is_answered() {
-        let response = captured("a");
         let upstream = Responder::slow("a", 300, Duration::from_millis(500));
         let ca = certificates();
         let server = serving(&ca, &upstream);
         Runtime::new().expect("a runtime").block_on(async {
             let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
             past_budget(&connection, &mut requests, server.addr).await;
-            let (status, body) = post(&mut requests, server.addr, &query_for(&response, 0))
+            let (status, body) = post(&mut requests, server.addr, &query_for("a", 0))
                 .await
                 .expect("the last request answered");
             assert_eq!(status, http::StatusCode::OK);
@@ -522,11 +520,10 @@ mod h3_frames {
     /// it may retry, not cut by the end of the connection: the server waits for those a moment after its last request.
     #[test]
     fn s5_2_a_request_that_crosses_goaway_is_refused() {
-        let response = captured("a");
         let upstream = Responder::start(&["a"]);
         let ca = certificates();
         let server = serving(&ca, &upstream);
-        let query = query_for(&response, 0);
+        let query = query_for("a", 0);
         Runtime::new().expect("a runtime").block_on(async {
             let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
             past_budget(&connection, &mut requests, server.addr).await;
@@ -553,7 +550,7 @@ mod h3_frames {
         let server = serving(&ca, &upstream);
         Runtime::new().expect("a runtime").block_on(async {
             let (connection, mut driver, mut requests) = h3_connected(server.addr, &ca, None).await;
-            post(&mut requests, server.addr, &query_for(&captured("a"), 0))
+            post(&mut requests, server.addr, &query_for("a", 0))
                 .await
                 .expect("an answer");
             driver.shutdown(0).await.expect("GOAWAY sent");
@@ -673,7 +670,6 @@ mod h3_frames {
     fn s5_2_a_busy_connection_is_rotated_not_closed() {
         const QUERIES: usize = 60_000;
         const BATCH: usize = 100;
-        let response = captured("a");
         let upstream = Responder::start(&["a"]);
         let ca = certificates();
         let server = serving(&ca, &upstream);
@@ -681,7 +677,7 @@ mod h3_frames {
         let mut options = Options::default();
         options.transport = Transport::Https;
         options.tries = NonZero::<u8>::MIN;
-        let query = decode(&query_for(&response, 0));
+        let query = dedens_testkit::query("a", 0);
         Runtime::new().expect("a runtime").block_on(async {
             for _ in 0..QUERIES / BATCH {
                 let answers =

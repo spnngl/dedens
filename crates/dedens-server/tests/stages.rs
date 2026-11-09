@@ -10,14 +10,14 @@ mod forward {
     use dedens_proto::edns::{ClientSubnet, Cookie, Edns, EdnsOption};
     use dedens_proto::{Flags, Message, Transport};
     use dedens_server::{Forward, Pipeline, Server, Stage, Step, Via};
-    use dedens_testkit::{captured, dns};
+    use dedens_testkit::{captured, dns, query};
 
-    use crate::util::{decode, forwarder, query_for, run, wire};
+    use crate::util::{decode, forwarder, run, wire};
 
     #[test]
     fn upstream_gets_the_question_and_our_edns_without_the_clients_options() {
         let response = captured("a");
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         query.edns = Some(Edns {
             udp_payload: 4096,
             options: vec![
@@ -49,7 +49,7 @@ mod forward {
     #[test]
     fn the_reply_has_the_question_in_the_clients_case() {
         let response = captured("a");
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         let upper = query.questions[0].name.to_string().to_ascii_uppercase();
         query.questions[0].name = dns(&upper);
         let done = run(
@@ -86,7 +86,7 @@ mod forward {
             Forward::new([tls.clone(), quic.clone()]).expect("servers"),
         )]);
         let mut out = vec![0; 65535];
-        let query = query_for(&captured("a"));
+        let query = query("a", 7);
         let Step::Upstream(first) = pipeline.query(
             &wire(&query),
             Transport::Udp,
@@ -133,9 +133,9 @@ mod cache {
     use dedens_proto::edns::{Edns, EdnsOption, ExtendedError, InfoCode};
     use dedens_proto::{Flags, Message, Rcode, Transport};
     use dedens_server::{Forward, Pipeline, Stage, Step, Upstream};
-    use dedens_testkit::captured;
+    use dedens_testkit::{captured, query};
 
-    use crate::util::{caching, decode, query_for, run_at, servers, wire, with_flags};
+    use crate::util::{caching, decode, run_at, servers, wire, with_flags};
 
     /// The reply at `now` to `query`, upstream answering `responses` in turn, and the servers asked.
     fn ask(
@@ -172,7 +172,7 @@ mod cache {
     fn a_second_query_is_answered_from_the_cache() {
         let response = captured("a");
         let pipeline = caching();
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         let (first, asked) = ask(&pipeline, &query, 0, &[Some(&response)]);
         assert_eq!(asked, 1);
         query.header.id = 8;
@@ -194,7 +194,7 @@ mod cache {
     fn a_fresh_hit_that_just_fits_is_whole() {
         let response = captured("txt_large");
         let pipeline = caching();
-        let mut query = query_for(&response);
+        let mut query = query("txt_large", 7);
         let _ = ask(&pipeline, &query, 0, &[Some(&response)]);
         let whole = run_at(&pipeline, &wire(&query), Transport::Udp, 0, &[])
             .reply
@@ -219,7 +219,7 @@ mod cache {
     fn a_query_without_edns_gets_no_opt_record_from_the_cache() {
         let response = captured("a");
         let pipeline = caching();
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         query.edns = None;
         let _ = ask(&pipeline, &query, 0, &[Some(&response)]);
         let (reply, asked) = ask(&pipeline, &query, 0, &[]);
@@ -230,7 +230,7 @@ mod cache {
     #[test]
     fn failures_are_held() {
         let pipeline = caching();
-        let query = query_for(&captured("a"));
+        let query = query("a", 7);
         let (reply, asked) = ask(&pipeline, &query, 0, &[None, None]);
         assert_eq!((reply.rcode(), asked), (Rcode::SERVFAIL, 2));
         // The first hold lasts 5 seconds (RFC 9520 §3.2, at least 1).
@@ -247,7 +247,7 @@ mod cache {
     fn a_hit_carries_the_flags_of_its_query() {
         let response = with_flags(captured("a"), Flags::QR | Flags::RD | Flags::RA | Flags::AD);
         let pipeline = caching();
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         query.header.flags = Flags::RD | Flags::AD;
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         assert_eq!(first.header.flags, Flags::QR | Flags::RD | Flags::RA);
@@ -261,7 +261,7 @@ mod cache {
     #[test]
     fn a_held_failure_answers_recursive_queries_only() {
         let pipeline = caching();
-        let mut query = query_for(&captured("a"));
+        let mut query = query("a", 7);
         let _ = ask(&pipeline, &query, 0, &[None, None]);
         query.header.flags = Flags::default();
         let (reply, asked) = ask(&pipeline, &query, 1, &[]);
@@ -272,7 +272,7 @@ mod cache {
     fn expired_data_answers_while_upstream_fails() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let expired = ttls(&first).into_iter().min().expect("an answer") + 1;
         let (reply, asked) = ask(&pipeline, &query, expired, &[None, None]);
@@ -290,7 +290,7 @@ mod cache {
     fn an_expired_nxdomain_is_a_stale_nxdomain_answer() {
         let response = captured("nxdomain_soa");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("nxdomain_soa", 7);
         let _ = ask(&pipeline, &query, 0, &[Some(&response)]);
         // Past the longest negative TTL (RFC 2308 §5: 3 hours by default).
         let (reply, _) = ask(&pipeline, &query, 3 * 3600 + 1, &[None, None]);
@@ -302,7 +302,7 @@ mod cache {
     fn expired_data_does_not_answer_when_upstream_does() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let expired = ttls(&first).into_iter().min().expect("an answer") + 1;
         let (reply, asked) = ask(&pipeline, &query, expired, &[Some(&response)]);
@@ -314,7 +314,7 @@ mod cache {
     fn entries_near_their_end_are_refreshed_once() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let ttl = ttls(&first).into_iter().min().expect("an answer");
         assert!(ttl >= 20, "a TTL of {ttl} leaves no time to refresh");
@@ -345,7 +345,7 @@ mod cache {
     /// A cached `a` response and the time it has expired by.
     fn expired_a(pipeline: &Pipeline) -> (Vec<u8>, Message<'static>, u32) {
         let response = captured("a");
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(pipeline, &query, 0, &[Some(&response)]);
         let expired = ttls(&first).into_iter().min().expect("an answer") + 1;
         (response, first, expired)
@@ -355,7 +355,7 @@ mod cache {
     fn expired_data_answers_once_the_client_timer_runs_out_and_resolution_goes_on() {
         let pipeline = caching();
         let (response, first, expired) = expired_a(&pipeline);
-        let query = query_for(&response);
+        let query = query("a", 7);
         let mut upstream = upstream_of(&pipeline, &query, expired);
         // RFC 8767 §5 suggests 1.8 seconds.
         assert_eq!(upstream.stale_after(), Some(Duration::from_millis(1800)));
@@ -382,8 +382,8 @@ mod cache {
     #[test]
     fn a_failure_after_a_stale_answer_is_held_without_another_reply() {
         let pipeline = caching();
-        let (response, _, expired) = expired_a(&pipeline);
-        let query = query_for(&response);
+        let (_, _, expired) = expired_a(&pipeline);
+        let query = query("a", 7);
         let mut upstream = upstream_of(&pipeline, &query, expired);
         let mut out = vec![0; 65535];
         assert!(pipeline.stale(&mut upstream, expired, &mut out).is_some());
@@ -402,7 +402,7 @@ mod cache {
     fn a_failure_of_ours_is_servfail_without_a_hold() {
         let pipeline = caching();
         let response = captured("a");
-        let query = query_for(&response);
+        let query = query("a", 7);
         let upstream = upstream_of(&pipeline, &query, 0);
         let mut out = vec![0; 65535];
         let Step::Reply(len) = pipeline.abandon(&upstream, &mut out) else {
@@ -417,7 +417,7 @@ mod cache {
     fn without_expired_data_the_client_waits_for_resolution() {
         let pipeline = caching();
         let response = captured("a");
-        let mut upstream = upstream_of(&pipeline, &query_for(&response), 0);
+        let mut upstream = upstream_of(&pipeline, &query("a", 7), 0);
         // No timer to wait for: nothing could answer when it ran out.
         assert_eq!(upstream.stale_after(), None);
         let mut out = vec![0; 65535];
@@ -428,7 +428,7 @@ mod cache {
 
     #[test]
     fn the_timer_is_the_cache_stages_and_the_patience_the_forward_stages() {
-        let query = query_for(&captured("a"));
+        let query = query("a", 7);
         let forward = Forward::new(servers()).expect("servers");
         let alone = Pipeline::new(vec![Stage::Forward(forward.clone())]);
         let upstream = upstream_of(&alone, &query, 0);
@@ -1022,9 +1022,9 @@ mod recursion_desired {
     use dedens_proto::edns::{Edns, EdnsOption, ExtendedError, InfoCode};
     use dedens_proto::{Flags, Message, Rcode, Transport};
     use dedens_server::Pipeline;
-    use dedens_testkit::captured;
+    use dedens_testkit::{captured, query};
 
-    use crate::util::{caching, decode, forwarder, query_for, run_at, wire};
+    use crate::util::{caching, decode, forwarder, run_at, wire};
 
     /// `query` without RD.
     fn norec(mut query: Message<'static>) -> Message<'static> {
@@ -1059,7 +1059,7 @@ mod recursion_desired {
     #[test]
     fn a_miss_is_refused_without_asking_upstream() {
         let response = captured("a");
-        let query = norec(query_for(&response));
+        let query = norec(query("a", 7));
         for pipeline in [forwarder(), caching()] {
             let (reply, asked) = ask(&pipeline, &query, 0, &[Some(&response)]);
             assert_eq!((reply.rcode(), asked), (Rcode::REFUSED, 0));
@@ -1072,7 +1072,7 @@ mod recursion_desired {
     fn fresh_cached_data_answers() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let (reply, asked) = ask(&pipeline, &norec(query), 1, &[]);
         assert_eq!((reply.rcode(), asked), (Rcode::NOERROR, 0));
@@ -1084,7 +1084,7 @@ mod recursion_desired {
     fn expired_data_does_not_answer_and_nothing_is_held() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let expired = first
             .answer
@@ -1108,7 +1108,7 @@ mod recursion_desired {
     fn a_refresh_asks_for_recursion() {
         let response = captured("a");
         let pipeline = caching();
-        let query = query_for(&response);
+        let query = query("a", 7);
         let (first, _) = ask(&pipeline, &query, 0, &[Some(&response)]);
         let ttl = first
             .answer
@@ -1148,10 +1148,10 @@ mod upstream {
     use dedens_proto::{Class, Flags, Message, Opcode, Rcode, RecordType, Transport};
     use dedens_server::Step;
     use dedens_testkit::dnssec::{Captures, capture};
-    use dedens_testkit::{captured, dns};
+    use dedens_testkit::{captured, dns, query};
 
     use crate::util::{
-        caching_with, client_query, decode, forwarder, query_for, run, servers, validating, wire,
+        caching_with, client_query, decode, forwarder, run, servers, validating, wire,
     };
 
     /// The capture `case` with `alter` applied.
@@ -1169,7 +1169,7 @@ mod upstream {
         let good = captured("a");
         let done = run(
             &forwarder(),
-            &wire(&query_for(&good)),
+            &wire(&query("a", 7)),
             Transport::Udp,
             &[Some(bad), Some(&good)],
         );
@@ -1226,14 +1226,13 @@ mod upstream {
     /// being kept, and a server that lowercases it is no other server.
     #[test]
     fn the_question_matches_in_any_case() {
-        let good = captured("a");
         let upper = altered("a", |message| {
             let name = message.questions[0].name.to_string().to_ascii_uppercase();
             message.questions[0].name = dns(&name);
         });
         let done = run(
             &forwarder(),
-            &wire(&query_for(&good)),
+            &wire(&query("a", 7)),
             Transport::Udp,
             &[Some(&upper), None],
         );
@@ -1247,13 +1246,12 @@ mod upstream {
     /// §9.1 with RFC 1035 §7.3: after the last server, the failure is SERVFAIL, whatever the response was.
     #[test]
     fn a_mismatch_from_every_server_is_servfail() {
-        let good = captured("a");
         let bad = altered("a", |message| {
             message.questions[0].name = dns("other.example.");
         });
         let done = run(
             &forwarder(),
-            &wire(&query_for(&good)),
+            &wire(&query("a", 7)),
             Transport::Udp,
             &[Some(&bad), Some(&bad)],
         );
@@ -1276,7 +1274,7 @@ mod upstream {
             min_ttl: 0,
             ..Config::default()
         });
-        let query = wire(&query_for(&good));
+        let query = wire(&query("a", 7));
         let first = run(
             &pipeline,
             &query,

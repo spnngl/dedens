@@ -19,11 +19,9 @@ use std::sync::Arc;
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption, InfoCode};
 use dedens_proto::{Class, Flags, Message, Opcode, Question, Rcode, RecordType, Transport};
 use dedens_server::{Clock, Cookies, Pipeline, Secret, Secrets, Step};
-use dedens_testkit::{captured, dns};
+use dedens_testkit::{captured, dns, query};
 
-use crate::util::{
-    caching, decode, forwarder, query_for, reply, run, servers, wire, with_flags, with_rcode,
-};
+use crate::util::{caching, decode, forwarder, reply, run, servers, wire, with_flags, with_rcode};
 
 // --- RFC 1035 in the server core ---
 
@@ -32,7 +30,7 @@ fn a_forwarded_answer_comes_back_under_the_clients_id() {
     let response = captured("a");
     let done = run(
         &forwarder(),
-        &wire(&query_for(&response)),
+        &wire(&query("a", 7)),
         Transport::Udp,
         &[Some(&response)],
     );
@@ -50,7 +48,7 @@ fn a_forwarded_answer_comes_back_under_the_clients_id() {
 fn replies_set_qr_and_ra_copy_rd_and_clear_aa() {
     let response = with_flags(captured("a"), Flags::AA);
     for rd in [Flags::RD, Flags::NONE] {
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         query.header.flags = rd;
         let wire = reply(&forwarder(), &wire(&query), Transport::Udp, Some(&response));
         assert_eq!(decode(&wire).header.flags, Flags::QR | Flags::RA | rd);
@@ -59,7 +57,7 @@ fn replies_set_qr_and_ra_copy_rd_and_clear_aa() {
 
 #[test]
 fn an_unreadable_query_gets_formerr_with_its_header_alone() {
-    let mut query = query_for(&captured("a"));
+    let mut query = query("a", 7);
     query.header.opcode = Opcode::NOTIFY;
     let mut bytes = wire(&query);
     bytes.truncate(15);
@@ -90,7 +88,7 @@ fn opcodes_other_than_query_get_notimp() {
         Opcode::NOTIFY,
         Opcode::UPDATE,
     ] {
-        let mut query = query_for(&captured("a"));
+        let mut query = query("a", 7);
         query.header.opcode = opcode;
         let wire = reply(&forwarder(), &wire(&query), Transport::Udp, None);
         let reply = decode(&wire);
@@ -104,7 +102,7 @@ fn opcodes_other_than_query_get_notimp() {
 
 #[test]
 fn a_query_without_question_gets_formerr() {
-    let mut query = query_for(&captured("a"));
+    let mut query = query("a", 7);
     query.questions.clear();
     let wire = reply(&forwarder(), &wire(&query), Transport::Udp, None);
     assert_eq!(decode(&wire).rcode(), Rcode::FORMERR);
@@ -112,7 +110,7 @@ fn a_query_without_question_gets_formerr() {
 
 #[test]
 fn without_stages_every_query_is_refused() {
-    let query = query_for(&captured("a"));
+    let query = query("a", 7);
     let wire = reply(&Pipeline::default(), &wire(&query), Transport::Udp, None);
     let reply = decode(&wire);
     assert_eq!(reply.rcode(), Rcode::REFUSED);
@@ -123,7 +121,7 @@ fn without_stages_every_query_is_refused() {
 fn udp_replies_without_edns_fit_512_bytes_and_tcp_ones_come_whole() {
     let response = captured("txt_large");
     let upstream = Message::decode(&response).expect("decodes").message;
-    let mut query = query_for(&response);
+    let mut query = query("txt_large", 7);
     query.edns = None;
     let udp = reply(&forwarder(), &wire(&query), Transport::Udp, Some(&response));
     assert!(udp.len() <= 512, "{} bytes", udp.len());
@@ -147,7 +145,7 @@ fn servers_that_fail_refuse_or_do_not_answer_are_passed_over_in_order() {
         Some(answer[..30].to_vec()),
     ];
     for failure in &failures {
-        let query = wire(&query_for(&answer));
+        let query = wire(&query("a", 7));
         let done = run(
             &forwarder(),
             &query,
@@ -167,7 +165,7 @@ fn a_name_error_is_an_answer_not_a_failure() {
     let response = captured("nxdomain_soa");
     let done = run(
         &forwarder(),
-        &wire(&query_for(&response)),
+        &wire(&query("nxdomain_soa", 7)),
         Transport::Udp,
         &[Some(&response)],
     );
@@ -178,8 +176,7 @@ fn a_name_error_is_an_answer_not_a_failure() {
 
 #[test]
 fn servfail_follows_the_last_failing_server() {
-    let answer = captured("a");
-    let query = query_for(&answer);
+    let query = query("a", 7);
     let done = run(&forwarder(), &wire(&query), Transport::Udp, &[]);
     assert_eq!(done.asked, servers());
     let wire = done.reply.expect("a reply");
@@ -194,7 +191,7 @@ fn servfail_follows_the_last_failing_server() {
 #[test]
 fn replies_have_our_opt_record_when_the_query_had_one() {
     let response = captured("a");
-    let mut query = query_for(&response);
+    let mut query = query("a", 7);
     query.edns = Some(Edns {
         udp_payload: 4096,
         ..Edns::default()
@@ -210,7 +207,7 @@ fn replies_have_our_opt_record_when_the_query_had_one() {
 fn udp_replies_fit_the_clients_payload_and_512_bytes_at_least() {
     let response = captured("txt_large");
     for (payload, limit) in [(600, 600), (100, 512), (0, 512), (4096, 1232)] {
-        let mut query = query_for(&response);
+        let mut query = query("txt_large", 7);
         query.edns = Some(Edns {
             udp_payload: payload,
             ..Edns::default()
@@ -228,7 +225,7 @@ fn udp_replies_fit_the_clients_payload_and_512_bytes_at_least() {
 
 #[test]
 fn an_edns_version_above_0_gets_badvers_with_version_0() {
-    let mut query = query_for(&captured("a"));
+    let mut query = query("a", 7);
     query.edns = Some(Edns {
         version: 1,
         ..Edns::default()
@@ -243,7 +240,7 @@ fn an_edns_version_above_0_gets_badvers_with_version_0() {
 
 #[test]
 fn several_opt_records_get_formerr() {
-    let query = wire(&query_for(&captured("a")));
+    let query = wire(&query("a", 7));
     // The OPT record without options is the last 11 bytes; a second one after it, counted in ARCOUNT.
     let mut twice = query.clone();
     twice.extend_from_slice(&query[query.len() - 11..]);
@@ -256,7 +253,7 @@ fn several_opt_records_get_formerr() {
 fn the_do_bit_goes_upstream_and_back() {
     let response = captured("a");
     for flags in [EdnsFlags::DO, EdnsFlags::default()] {
-        let mut query = query_for(&response);
+        let mut query = query("a", 7);
         query.edns = Some(Edns {
             flags,
             ..Edns::default()
@@ -277,8 +274,8 @@ fn the_do_bit_goes_upstream_and_back() {
 // --- RFC 7830 in the server core ---
 
 /// The query of the `a` capture, with EDNS and, when `padded`, an empty Padding option.
-fn query(padded: bool) -> Message<'static> {
-    let mut query = query_for(&captured("a"));
+fn a_query(padded: bool) -> Message<'static> {
+    let mut query = query("a", 7);
     query.edns = Some(Edns {
         options: if padded {
             vec![EdnsOption::Padding(0)]
@@ -305,7 +302,7 @@ fn padded_queries_over_tls_and_quic_get_padded_replies() {
     for transport in [Transport::Tls, Transport::Quic] {
         let wire = reply(
             &forwarder(),
-            &wire(&query(true)),
+            &wire(&a_query(true)),
             transport,
             Some(&response),
         );
@@ -327,7 +324,7 @@ fn other_replies_are_not_padded() {
     ] {
         let wire = reply(
             &forwarder(),
-            &wire(&query(padded)),
+            &wire(&a_query(padded)),
             transport,
             Some(&response),
         );
@@ -337,7 +334,7 @@ fn other_replies_are_not_padded() {
 
 #[test]
 fn failures_are_padded() {
-    let wire = reply(&forwarder(), &wire(&query(true)), Transport::Tls, None);
+    let wire = reply(&forwarder(), &wire(&a_query(true)), Transport::Tls, None);
     assert_eq!(
         (decode(&wire).rcode(), wire.len() % 468),
         (Rcode::SERVFAIL, 0)
@@ -349,7 +346,7 @@ fn failures_are_padded() {
 fn cache_hits_are_padded_with_zeros() {
     let pipeline = caching();
     let response = captured("a");
-    let query = wire(&query(true));
+    let query = wire(&a_query(true));
     assert!(
         run(&pipeline, &query, Transport::Tls, &[Some(&response)])
             .reply
@@ -375,7 +372,7 @@ fn cache_hits_are_padded_with_zeros() {
 fn stale_answers_are_padded_after_their_extended_error() {
     let pipeline = caching();
     let response = captured("a");
-    let query = wire(&query(true));
+    let query = wire(&a_query(true));
     assert!(
         run(&pipeline, &query, Transport::Tls, &[Some(&response)])
             .reply
@@ -400,7 +397,7 @@ fn a_reply_with_a_cookie_is_padded_after_it() {
         .parse()
         .expect("a secret");
     let pipeline = forwarder().with_cookies(Cookies::new(Secrets::new(secret, vec![]), clock));
-    let mut query = query(true);
+    let mut query = a_query(true);
     let client = Cookie::new([1; 8], None).expect("a cookie");
     let edns = query.edns.as_mut().expect("EDNS");
     edns.options.insert(0, EdnsOption::Cookie(client));
@@ -420,7 +417,7 @@ fn a_reply_with_a_cookie_is_padded_after_it() {
 
 #[test]
 fn two_questions_get_formerr_without_asking_upstream() {
-    let mut query = query_for(&captured("a"));
+    let mut query = query("a", 7);
     query.questions.push(query.questions[0].clone());
     let done = run(&forwarder(), &wire(&query), Transport::Udp, &[]);
     assert_eq!(done.asked, []);
@@ -435,7 +432,7 @@ fn two_questions_get_formerr_without_asking_upstream() {
 /// The real ANY response, and its query with the EDNS and DO bit given.
 fn any(edns: Option<bool>) -> (Vec<u8>, Vec<u8>) {
     let response = captured("any_rfc8482");
-    let mut query = query_for(&response);
+    let mut query = query("any_rfc8482", 7);
     assert_eq!(query.questions[0].qtype, RecordType::ANY);
     query.edns = edns.map(|dnssec| Edns {
         flags: if dnssec {
@@ -554,7 +551,7 @@ fn any_in_another_class_is_truncated_too() {
 #[test]
 fn another_type_over_udp_is_forwarded() {
     let response = captured("a");
-    let query = wire(&query_for(&response));
+    let query = wire(&query("a", 7));
     let done = run(&forwarder(), &query, Transport::Udp, &[Some(&response)]);
     assert_eq!(done.asked.len(), 1);
     let reply = done.reply.expect("a reply");

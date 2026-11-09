@@ -81,7 +81,7 @@ fn ask(
     transport: Transport,
     ca: &Certificates,
 ) -> Result<Message<'static>, ClientError> {
-    let query = decode(&query_for(&captured("a"), 0));
+    let query = dedens_testkit::query("a", 0);
     let mut options = Options::default();
     options.transport = transport;
     options.tries = NonZero::<u8>::MIN;
@@ -313,7 +313,7 @@ fn a_quic_query_with_a_message_id_is_a_protocol_error() {
     Runtime::new().expect("a runtime").block_on(async {
         let connection = pinging(server.addr, &ca, 1 << 20).await;
         let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
-        let query = framed(&query_for(&captured("a"), 1));
+        let query = framed(&query_for("a", 1));
         send.write_all(query).await.0.expect("the query sent");
         send.finish().expect("finished");
         let closed = compio::time::timeout(Duration::from_secs(10), connection.closed())
@@ -337,7 +337,7 @@ fn a_quic_reply_the_client_does_not_read_is_given_up() {
     Runtime::new().expect("a runtime").block_on(async {
         let connection = pinging(server.addr, &ca, 0).await;
         let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
-        let query = framed(&query_for(&captured("a"), 0));
+        let query = framed(&query_for("a", 0));
         send.write_all(query).await.0.expect("the query sent");
         send.finish().expect("finished");
         let read = compio::time::timeout(Duration::from_secs(30), read_message(&mut recv)).await;
@@ -354,10 +354,10 @@ fn queries_over_udp_and_tcp_are_forwarded() {
     let upstream = decode(&response);
     // No minimum TTL: the records come back as captured.
     let server = Server::start(Responder::start(&["a"]).addr, "    min_ttl: 0\n");
-    let reply = ask_udp(server.addr, &query_for(&response, 1));
+    let reply = ask_udp(server.addr, &query_for("a", 1));
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::NOERROR));
     assert_eq!(reply.answer, upstream.answer);
-    let reply = ask_tcp(server.addr, &query_for(&response, 2));
+    let reply = ask_tcp(server.addr, &query_for("a", 2));
     assert_eq!((reply.header.id, reply.rcode()), (2, Rcode::NOERROR));
     assert_eq!(reply.answer, upstream.answer);
 }
@@ -366,7 +366,6 @@ fn queries_over_udp_and_tcp_are_forwarded() {
 /// `SO_REUSEPORT` spreads queries.
 #[test]
 fn threads_set_the_serving_threads() {
-    let response = captured("a");
     let upstream = Responder::start(&["a"]);
     let threads: u64 = if cfg!(target_os = "linux") { 3 } else { 1 };
     let server = Server::configured(|listen| {
@@ -376,19 +375,18 @@ fn threads_set_the_serving_threads() {
         )
     });
     assert_eq!(server.serving["fields"]["threads"], threads);
-    let reply = ask_udp(server.addr, &query_for(&response, 1));
+    let reply = ask_udp(server.addr, &query_for("a", 1));
     assert_eq!(reply.rcode(), Rcode::NOERROR);
 }
 
 #[test]
 fn a_tcp_connection_answers_several_queries() {
-    let response = captured("a");
     let server = Server::start(Responder::start(&["a"]).addr, "");
     // The opcode is bits 1 to 4 of the third byte (RFC 1035 §4.1.1).
-    let mut notify = query_for(&response, 3);
+    let mut notify = query_for("a", 3);
     notify[2] = notify[2] & 0x87 | Opcode::NOTIFY.0 << 3;
     let mut stream = TcpStream::connect(server.addr).expect("connected");
-    for query in [query_for(&response, 1), query_for(&response, 2), notify] {
+    for query in [query_for("a", 1), query_for("a", 2), notify] {
         stream.write_all(&framed(&query)).expect("sent");
     }
     let mut replies: Vec<_> = (0..3)
@@ -408,7 +406,7 @@ fn a_tcp_connection_answers_several_queries() {
 fn a_silent_upstream_gets_servfail() {
     let (_socket, upstream) = silent();
     let server = Server::start(upstream, "");
-    let reply = ask_udp(server.addr, &query_for(&captured("a"), 1));
+    let reply = ask_udp(server.addr, &query_for("a", 1));
     assert_eq!((reply.header.id, reply.rcode()), (1, Rcode::SERVFAIL));
 }
 
@@ -532,20 +530,19 @@ fn errors(reply: &Message<'_>) -> Vec<InfoCode> {
 
 #[test]
 fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
-    let response = captured("a");
     let upstream = Responder::slow("a", 3, Duration::from_millis(500));
     // No minimum TTL, which would keep the 3 seconds of the answer fresh for a minute.
     let server = Server::start(
         upstream.addr,
         "    min_ttl: 0\n    stale_answer_after_ms: 200\n",
     );
-    let first = ask_udp(server.addr, &query_for(&response, 1));
+    let first = ask_udp(server.addr, &query_for("a", 1));
     assert_eq!(errors(&first), []);
     // Past the TTL, upstream answers 500 ms late, within the 1 s timeout: expired data answers once the 200 ms
     // timer runs out.
     thread::sleep(Duration::from_millis(3200));
     let asked = Instant::now();
-    let stale = ask_udp(server.addr, &query_for(&response, 2));
+    let stale = ask_udp(server.addr, &query_for("a", 2));
     assert!(
         (Duration::from_millis(200)..Duration::from_millis(450)).contains(&asked.elapsed()),
         "{:?}",
@@ -556,7 +553,7 @@ fn a_client_kept_waiting_gets_expired_data_and_the_next_one_fresh_data() {
     assert!(stale.answer.iter().all(|record| record.ttl.get() == 30));
     // Resolution went on and refreshed the entry.
     thread::sleep(Duration::from_millis(800));
-    let fresh = ask_udp(server.addr, &query_for(&response, 3));
+    let fresh = ask_udp(server.addr, &query_for("a", 3));
     assert_eq!((upstream.queries().len(), errors(&fresh)), (2, vec![]));
     assert!(fresh.answer.iter().all(|record| record.ttl.get() <= 3));
 }
@@ -593,13 +590,13 @@ mod upstreams {
             ("quic", Transport::Quic, Responder::quic(&["a"])),
         ] {
             let server = forwarding(&format!("{scheme}://{}#{NAME}", responder.addr), ca.path());
-            let reply = ask_udp(server.addr, &query_for(&response, 1));
+            let reply = ask_udp(server.addr, &query_for("a", 1));
             assert_eq!(
                 (reply.rcode(), &reply.answer),
                 (Rcode::NOERROR, &upstream.answer),
                 "{scheme}"
             );
-            let reply = ask_tcp(server.addr, &query_for(&response, 2));
+            let reply = ask_tcp(server.addr, &query_for("a", 2));
             assert_eq!(
                 (reply.rcode(), &reply.answer),
                 (Rcode::NOERROR, &upstream.answer),
@@ -627,7 +624,7 @@ mod upstreams {
                 ca.path(),
             );
             for (id, ask) in [(1, ask_udp as fn(_, &_) -> _), (2, ask_tcp)] {
-                let reply = ask(server.addr, &query_for(&response, id));
+                let reply = ask(server.addr, &query_for("a", id));
                 assert_eq!(
                     (reply.rcode(), &reply.answer),
                     (Rcode::NOERROR, &upstream.answer),
@@ -646,16 +643,15 @@ mod upstreams {
     /// RFC 8310 §8.1: without a name given, the certificate must hold the address, which the responder's does.
     #[test]
     fn a_certificate_is_checked_against_the_name_given_else_the_address() {
-        let response = captured("a");
         let (responder, ca) = Responder::tls(&["a"]);
         let server = forwarding(&format!("tls://{}", responder.addr), ca.path());
-        let reply = ask_udp(server.addr, &query_for(&response, 1));
+        let reply = ask_udp(server.addr, &query_for("a", 1));
         assert_eq!(reply.rcode(), Rcode::NOERROR);
         let server = forwarding(
             &format!("tls://{}#other.example", responder.addr),
             ca.path(),
         );
-        let reply = ask_udp(server.addr, &query_for(&response, 2));
+        let reply = ask_udp(server.addr, &query_for("a", 2));
         assert_eq!(reply.rcode(), Rcode::SERVFAIL);
     }
 }
@@ -675,7 +671,6 @@ mod tcp_frames {
     use std::time::{Duration, Instant};
 
     use dedens_proto::Rcode;
-    use dedens_testkit::captured;
     use dedens_testkit::responder::Responder;
 
     use crate::util::{Server, ask_tcp, ask_udp, decode, framed, query_for, read_framed};
@@ -706,7 +701,7 @@ mod tcp_frames {
             let upstream = Responder::start(&["a"]);
             let fixture = Self {
                 server: Server::start(upstream.addr, ""),
-                query: query_for(&captured("a"), 1),
+                query: query_for("a", 1),
                 _upstream: upstream,
             };
             fixture.assert_served();

@@ -12,10 +12,8 @@ use dedens_odoh::{
     Configs, TargetKey, decrypt_query, decrypt_response, encrypt_query, encrypt_response,
     query_padding, response_padding,
 };
-use dedens_proto::Message;
-use dedens_proto::edns::Edns;
 use dedens_server::{Budget, Budgets, MAX_BUDGET, Slot};
-use dedens_testkit::captured;
+use dedens_testkit::{captured, query};
 use divan::Bencher;
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -46,15 +44,6 @@ impl TryRng for Fixed {
 }
 
 impl TryCryptoRng for Fixed {}
-
-/// The query for the captured response `a`, ID 0 with EDNS, as a client sends it.
-fn query() -> Vec<u8> {
-    let response = captured("a");
-    let message = Message::decode(&response).expect("decodes").message;
-    let mut query = Message::query(0, message.questions[0].clone().into_owned());
-    query.edns = Some(Edns::default());
-    query.to_vec().expect("a query fits")
-}
 
 fn key() -> TargetKey {
     TargetKey::derive(&[7; 32])
@@ -89,7 +78,7 @@ fn target_key_derive() -> TargetKey {
 
 #[divan::bench]
 fn encrypt_query_message(bencher: Bencher<'_, '_>) {
-    let (key, query) = (key(), query());
+    let (key, query) = (key(), query("a", 0).to_vec().expect("a query fits"));
     let config = client_key(&key);
     bencher.bench_local(|| {
         encrypt_query(
@@ -104,14 +93,18 @@ fn encrypt_query_message(bencher: Bencher<'_, '_>) {
 
 #[divan::bench]
 fn decrypt_query_message(bencher: Bencher<'_, '_>) {
-    let (key, query) = (key(), query());
+    let (key, query) = (key(), query("a", 0).to_vec().expect("a query fits"));
     let (message, _) = sealed_query(&key, &query);
     bencher.bench_local(|| decrypt_query(&key, black_box(&message)).expect("decrypts"));
 }
 
 #[divan::bench(args = ["a", "mx", "txt_large"])]
 fn encrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
-    let (key, query, response) = (key(), query(), captured(case));
+    let (key, query, response) = (
+        key(),
+        query("a", 0).to_vec().expect("a query fits"),
+        captured(case),
+    );
     let (message, _) = sealed_query(&key, &query);
     bencher
         .with_inputs(|| decrypt_query(&key, &message).expect("decrypts").1)
@@ -128,7 +121,11 @@ fn encrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
 
 #[divan::bench(args = ["a", "mx", "txt_large"])]
 fn decrypt_response_message(bencher: Bencher<'_, '_>, case: &str) {
-    let (key, query, response) = (key(), query(), captured(case));
+    let (key, query, response) = (
+        key(),
+        query("a", 0).to_vec().expect("a query fits"),
+        captured(case),
+    );
     let (message, client) = sealed_query(&key, &query);
     let (_, context) = decrypt_query(&key, &message).expect("decrypts");
     let sealed = encrypt_response(
