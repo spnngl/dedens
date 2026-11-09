@@ -45,7 +45,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D35 [CLI](cli.md) (superseded by D37): `--json` as JSON lines
 - D36 [CLI](cli.md): query files in `dedens-scenario`, YAML, reused by the server's tests
 - D37 [CLI](cli.md) (amended by D76): `--format human|short|json|yaml`, each response printed when ready
-- D38 [CLI](cli.md): several `@servers`: each query asked of each
+- D38 [CLI](cli.md) (amended by D177): several `@servers`: each query asked of each
 - D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
 - D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
 - D41 [server](server.md) (amended by D43, D46, D77, D111, D114): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
@@ -164,3 +164,4 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D171 [performance and safety](performance-and-safety.md): decisions split into one file per section, indexed here
 - D172 [simulation tests](simulation-tests.md): the CI scale of the simulation time budgets is 7, measured on a runner
 - D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of
+- D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused

@@ -3,7 +3,6 @@
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::net::SocketAddr;
 
 use anstyle::{AnsiColor, Style};
 use dedens_proto::{Message, Name};
@@ -338,16 +337,14 @@ impl Answers {
     }
 }
 
-/// Prints which servers answered alike, when not all did: `servers disagree: 1.1.1.1, 8.8.8.8 vs 9.9.9.9`.
-pub(crate) fn disagreement(
-    out: &mut impl Write,
-    answers: &[(SocketAddr, Answers)],
-) -> io::Result<()> {
-    let mut alike: Vec<(&Answers, Vec<String>)> = Vec::new();
-    for (address, answer) in answers {
+/// Prints which servers answered alike, when not all did, each by the label of its id (D38, D177):
+/// `servers disagree: 1.1.1.1, 8.8.8.8 vs 9.9.9.9`.
+pub(crate) fn disagreement(out: &mut impl Write, answers: &[(String, Answers)]) -> io::Result<()> {
+    let mut alike: Vec<(&Answers, Vec<&str>)> = Vec::new();
+    for (server, answer) in answers {
         match alike.iter_mut().find(|(other, _)| *other == answer) {
-            Some((_, servers)) => servers.push(server_text(*address)),
-            None => alike.push((answer, vec![server_text(*address)])),
+            Some((_, servers)) => servers.push(server),
+            None => alike.push((answer, vec![server])),
         }
     }
     if alike.len() < 2 {
@@ -417,6 +414,29 @@ fn meaning(rcode: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two servers at one address, apart by their path, are named apart.
+    #[test]
+    fn disagreeing_servers_are_named_by_their_ids() {
+        let answers = |rcode: &str| Answers {
+            rcode: rcode.to_owned(),
+            records: Vec::new(),
+        };
+        let mut out = Vec::new();
+        disagreement(
+            &mut out,
+            &[
+                ("192.0.2.1:443+https_a".to_owned(), answers("NOERROR")),
+                ("192.0.2.1:443+https_b".to_owned(), answers("SERVFAIL")),
+            ],
+        )
+        .expect("written");
+        let out = String::from_utf8(out).expect("UTF-8");
+        assert!(
+            out.ends_with(": 192.0.2.1:443+https_a vs 192.0.2.1:443+https_b\n"),
+            "{out}"
+        );
+    }
 
     #[test]
     fn durations_name_each_unit_not_zero() {

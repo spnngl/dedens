@@ -64,12 +64,21 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   in words, EDE text with control characters escaped); protocol violations (D9) go in `violations`, broken
   expectations in `failures`. Serialized only, until the server's tests need to read it back. Replaces D35,
   whose objects held every field however empty.
-- D38 Several `@servers`: each query is asked of each, the blocks of one query together in argument order,
+- D38 (amended by D177) Several `@servers`: each query is asked of each, the blocks of one query together in argument order,
   each id then `name_type@server` (port left out when 53, `+tls` or `+quic` after it for a `tls://` or
   `quic://` server) so `--save-wire` keeps them apart. A query file's
   queries go to the command line's servers when given. The human format ends a query's blocks with
   `servers disagree: a, b vs c` when the rcodes or answer records, TTL and order aside, differ; JSON and YAML
   leave the comparison to their reader. A server that does not answer is left out of it.
+- D177 (amends D38) Each report of a run has its own id, its `--save-wire` file and its name in `servers disagree`.
+  A server's part of the id is its address, the transport its scheme forces (`+tls`, `+quic`, `+https`, `+odoh`,
+  `+coap`), then the path of a `DoH` template other than `/dns-query` or of a CoAP URI, each `/` a `_`:
+  `example.com_A@127.0.0.1:8443+https_a` for `https://127.0.0.1:8443/a`. Two queries with one id, as `dedens
+  example.com example.com` makes, are refused before any is asked: `two queries with id example.com_A`, exit 10,
+  as D34 refuses them in a file. Rejected: asking the duplicate once, since the command line then says something
+  other than what runs; numbering the files, since the id names the query. `servers disagree` names each server
+  by that part of its id: two paths at one address told apart. Tests: `apps/dedens/tests/files.rs`
+  (`save_wire_never_overwrites_a_response`), unit tests of `output.rs`.
 - D39 `--repeat N` (`+repeat=N`): each query is asked of each server N times in a row, not concurrently, so
   the round trips are the server's and not our queue's. The last response is printed, with a `latency` object
   when N > 1: `sent`, `errors` (left out when 0) and `min_us`/`p50_us`/`p90_us`/`p99_us`/`max_us`, nearest

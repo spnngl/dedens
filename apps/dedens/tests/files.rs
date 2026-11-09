@@ -196,3 +196,36 @@ fn a_file_server_is_refused_the_transports_its_scheme_excludes() {
             .stderr(contains(format!("server {server}")));
     }
 }
+
+/// `--save-wire` never writes two responses to one file: two lookups with one id are refused before any query
+/// (D177), and two `DoH` servers at one address, apart by their path, have their own ids.
+#[test]
+fn save_wire_never_overwrites_a_response() {
+    let server = Responder::start(&["a"]);
+    dedens()
+        .args([&server.at(), "example.com", "example.com"])
+        .assert()
+        .code(10)
+        .stderr(contains("two queries with id example.com_A"));
+    assert_eq!(server.queries().len(), 0);
+    let (https, ca) = Responder::https(&["a"]);
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = https.addr.port();
+    let dir = tempfile::tempdir().expect("a directory");
+    dedens()
+        .args([
+            &format!("@https://127.0.0.1:{port}/a#{NAME}"),
+            &format!("@https://127.0.0.1:{port}/b#{NAME}"),
+            &ca,
+            "example.com",
+            "+short",
+            "--save-wire",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success();
+    for path in ["a", "b"] {
+        let file = format!("example.com_A@127.0.0.1:{port}+https_{path}.bin");
+        assert!(dir.path().join(&file).is_file(), "{file}");
+    }
+}
