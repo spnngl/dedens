@@ -82,7 +82,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D72 [scope](scope.md): trust anchors per zone, negative ones, the root's bundled
 - D73 [scope](scope.md): `rrsig` authenticates one RRset with one DNSKEY RRset
 - D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
-- D75 [scope](scope.md) (amended by D86, D106): sans-IO `Validator`, driven by the caller, within limits
+- D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
 - D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124): a forward stage validates with `dnssec: validate`
 - D78 [transports](transports.md) (amended by D79): ODoH crypto in `dedens-odoh`, sans-IO, the one required suite
@@ -166,3 +166,4 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
 - D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection
+- D176 [scope](scope.md): a question of type RRSIG is insecure, its answer served without AD

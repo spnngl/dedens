@@ -784,6 +784,31 @@ fn nxname_is_not_a_type_to_ask_for() {
     );
 }
 
+#[test]
+fn an_rrsig_answer_is_insecure_not_bogus() {
+    // RRSIG records are not signed (RFC 4035 §2.2): an answer of them has nothing to verify, and no denial of a
+    // type the name has. The answer of cloudflare.com RRSIG is the RRSIG record of its A capture.
+    let mut response = response("alg13_a");
+    let question = Question::new(name("cloudflare.com"), RecordType::RRSIG);
+    response.questions = vec![question];
+    response
+        .answer
+        .retain(|record| record.rtype() == RecordType::RRSIG);
+    assert!(matches!(response.answer.as_slice(), [_, ..]));
+    let script = Script::new();
+    let (verdict, asked) = Script::drive(&Script::validator(), &response, captured_at(), |ask| {
+        script.answer(ask)
+    });
+    assert_eq!(
+        verdict,
+        Verdict::Insecure {
+            reason: InsecureReason::RrsigQuery
+        }
+    );
+    assert_eq!(asked, Vec::<String>::new());
+    assert_eq!(verdict.ede(), None);
+}
+
 // What a forger can do to a response, from the real ones.
 
 /// `response` with every RRSIG changed by `change`.

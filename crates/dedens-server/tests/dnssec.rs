@@ -75,6 +75,25 @@ mod validation {
         assert!(some(&reply.answer));
     }
 
+    /// §2.2, D176: RRSIG records are not signed, so an answer of them is served without AD, not SERVFAIL. Upstream's
+    /// answer of `cloudflare.com.` RRSIG is the RRSIG record of its A capture.
+    #[test]
+    fn an_rrsig_answer_is_served_without_ad() {
+        let mut message = decode(&capture("alg13_a")).into_owned();
+        message.questions[0].qtype = RecordType::RRSIG;
+        message
+            .answer
+            .retain(|record| record.rtype() == RecordType::RRSIG);
+        let captures = Captures::new().with(crate::util::wire(&message));
+        let query = client_query("cloudflare.com.", RecordType::RRSIG, Flags::AD, true);
+        let done = run_captured(&validating(), &query, 0, &captures);
+        let reply = decode(&done.reply.expect("a reply")).into_owned();
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+        assert!(!reply.header.flags.contains(Flags::AD));
+        assert_eq!(reply.answer, message.answer);
+        assert_eq!(error(&reply), None);
+    }
+
     /// §3.2.3: an answer of an unsigned zone is insecure: no AD.
     #[test]
     fn an_insecure_answer_has_no_ad() {

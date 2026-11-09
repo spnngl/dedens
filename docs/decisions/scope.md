@@ -328,7 +328,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
   target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
   name as the apex.
-- D75 (amends D69; amended by D86, D106) The validator is `dedens_dnssec::Validator`, sans-IO:
+- D75 (amends D69; amended by D86, D106, D176) The validator is `dedens_dnssec::Validator`, sans-IO:
   `Validator::new(TrustAnchors, Limits)` (shared, `Clone`, `Send + Sync`) and `start(question, response, now) ->
   Validation` for the final answer to a question, `start_referral` for a referral. The caller drives a `Validation`:
   `step()` is `Next::Ask(question)`, to send with RD, DO and CD set (RFC 6840 §5.9) and give back with
@@ -635,3 +635,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   2 questions and 1 check each, a failure an answerer can force is the validation it lied to and no other, and
   the DNSKEY answers that prove nothing or that `start` was given are never kept (D86, as before). `validate_*`
   and `serve_*` do not move (`benchmarks.md`, run before and after).
+- D176 (amends D75) A question of type RRSIG is `Insecure { reason: RrsigQuery }` whatever the response holds,
+  once its rcode is NOERROR or NXDOMAIN and it is no referral: RRSIG records are not signed (RFC 4035 §2.2), and
+  the validator parts them from the sets they sign, so the answer had no set of the type asked and no denial of
+  it, and a signed name came out bogus (SERVFAIL, `NSEC_MISSING`). Insecure, not `Indeterminate`: the data is
+  served, without AD (`dedensd`) and not shown as validated (`dedens +validate`), and no extended error is
+  attached. Rejected: verifying each RRSIG by the set it covers, which the response does not hold. Not checked: a
+  name error or no data of an RRSIG question, which a forger can then give without a proof.
