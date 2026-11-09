@@ -56,7 +56,7 @@ mod srv {
 }
 
 mod aaaa {
-    //! RFC 3596: AAAA records (§2), `ip6.arpa` reverse names (§2.5).
+    //! RFC 3596: AAAA records (§2), `ip6.arpa` reverse names (§2.5), not `ip6.int` (RFC 3152 §2).
 
     use std::net::{IpAddr, Ipv6Addr};
 

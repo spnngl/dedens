@@ -1,8 +1,8 @@
 //! DNS over TCP: the connection, its queries and its framing.
 //!
 //! - TCP pool on the loopback address (RFC 1035 §4.2.2, RFC 7766 §6.2, RFC 7828 §3.2).
-//! - RFC 7766 §5 and RFC 1035 §4.2.1: a truncated response over UDP sends the query again over TCP; §10: without
-//!   delay.
+//! - RFC 7766 §5, RFC 1035 §4.2.1 and RFC 1123 §6.1.3.2: a truncated response over UDP sends the query again over
+//!   TCP; RFC 7766 §10: without delay.
 
 use std::cell::Cell;
 use std::rc::Rc;

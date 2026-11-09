@@ -2,7 +2,8 @@
 
 mod key_tags {
     //! RFC 4034: key tags (Appendix B), the SHA-1 DS digest (§5.1.4, §5.4), canonical owner names (§6.2), and the
-    //! RSASHA1 (5, 7) signatures of RFC 4035 Appendix A, the signed zone `example.`, whose keys are 1024 bits.
+    //! RSASHA1 (5, 7) signatures of RFC 4035 Appendix A, the signed zone `example.`, whose keys are 1024 bits. RFC 9905
+    //! §2: a validator still validates RSASHA1 (D71).
 
     use dedens_dnssec::crypto::{
         Budget, VerifyError, ds_digest, key_tag, supported, supported_digest, verify,
@@ -557,6 +558,8 @@ mod verification {
     //!
     //! RFC 4035 §5.2, §5.4: the denials of existence of Appendix B, from the NSEC records of the example zone of
     //! Appendix A, `testdata/zones/rfc4035_appendix_a.zone` (D74).
+    //!
+    //! RFC 5011 §7: a key with the REVOKE bit set verifies nothing (D73).
 
     use dedens_dnssec::crypto::Budget;
     use dedens_dnssec::denial::{Fact, Proof, Unproven};
@@ -1713,7 +1716,8 @@ mod captured {
     //! The signatures and DS records of the captured responses (`testdata/dnssec/README.md`) through
     //! `dedens_dnssec::rrsig`: every signed `RRset` verifies at `captured_at` with the keys of its signer, fails after
     //! its expiration and before its inception, and fails with one byte of its RDATA changed; every zone's DNSKEY
-    //! `RRset` is vouched for by its DS records, or not, as the README says.
+    //! `RRset` is vouched for by its DS records, or not, as the README says. The `RRsets` are grouped from each section
+    //! by owner, class and type (RFC 2181 §5), so a wrong grouping fails their signatures.
 
     use dedens_dnssec::crypto::{self, Budget};
     use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};

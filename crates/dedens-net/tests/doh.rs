@@ -1,5 +1,10 @@
 //! DNS over HTTPS (RFC 8484): the examples of §4.1.1 and §4.2.2 byte for byte, the status codes of a server, the
 //! freshness of §5.1, and responses captured from public servers (`testdata/doh/capture.nu`).
+//!
+//! - RFC 6570: the URI Template's `{?dns}` and `{&dns}` expanded (§3.2.8, §3.2.9), any other expression refused.
+//! - RFC 7830 §3: a query over HTTPS carries the Padding option.
+//! - RFC 9110: `Date` read in its IMF-fixdate form (§5.6.7) for a response's age; a server's 405, 413 and 415
+//!   (§15.5.6, §15.5.14, §15.5.16).
 
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;

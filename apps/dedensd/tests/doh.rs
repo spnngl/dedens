@@ -2,7 +2,8 @@
 
 mod queries {
     //! Serving DNS over HTTPS (RFC 8484) over HTTP/3 (RFC 9114), on addresses behind `https://` with the certificate of
-    //! `tls` (D84): the answers, their `cache-control`, the statuses of requests that are no query, the path.
+    //! `tls` (D84): the answers, their `cache-control`, the statuses of requests that are no query, the path. The
+    //! statuses are RFC 9110's: 404 (§15.5.5), 405 (§15.5.6), 413 (§15.5.14), 415 (§15.5.16).
 
     use std::net::SocketAddr;
     use std::num::NonZero;

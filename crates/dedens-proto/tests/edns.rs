@@ -1,6 +1,7 @@
 //! EDNS(0) and its options.
 //!
 //! - RFC 6891: EDNS(0) (§6).
+//! - RFC 3225 §3: the DO bit is the top bit of the OPT record's flags.
 
 use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::{

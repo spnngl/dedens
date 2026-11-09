@@ -1,5 +1,5 @@
 //! DNSSEC validation (RFC 4035 §5, D76) against the captures of `testdata/dnssec`: the verdict in every format, the
-//! chain asked of the same server, trust anchor files and negative trust anchors.
+//! chain asked of the same server, with CD set (RFC 6840 §5.9), trust anchor files and negative trust anchors.
 
 use assert_cmd::Command;
 use dedens_proto::edns::EdnsFlags;

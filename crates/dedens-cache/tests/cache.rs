@@ -1,4 +1,6 @@
 //! Serving hits, keys, prefetch, truncation and the byte budget.
+//!
+//! - RFC 3225 §3: DO is part of a key, so a response kept for a query with DO never answers one without it.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Barrier;

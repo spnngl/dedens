@@ -1,5 +1,6 @@
 //! The options of a query and how the arguments read: the query flags, the usage errors, search domains and
-//! resolv.conf, ports and addresses, Unicode names asked as A-labels (RFC 5891 §5, D18), reverse lookups.
+//! resolv.conf, ports and addresses, Unicode names asked as A-labels (RFC 5891 §5, D18) after the mapping of
+//! RFC 5895 §2 (`Bücher` lowercased first), reverse lookups.
 
 use std::time::Duration;
 
