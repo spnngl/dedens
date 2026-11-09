@@ -151,13 +151,10 @@ async fn chase(
     validate: impl AsyncFn(&Question<'static>) -> Verdict,
 ) -> Verdict {
     let mut question = question.clone();
-    for hop in 0.. {
+    for _ in 0..MAX_CHASES {
         let Verdict::Incomplete { next, .. } = verdict else {
-            break;
+            return verdict;
         };
-        if hop == MAX_CHASES {
-            return indeterminate(format!("the CNAME chain is longer than {MAX_CHASES}"));
-        }
         tracing::debug!(%next, "validation follows a CNAME");
         question = Question {
             name: next,
@@ -166,7 +163,12 @@ async fn chase(
         };
         verdict = validate(&question).await;
     }
-    verdict
+    match verdict {
+        Verdict::Incomplete { .. } => {
+            indeterminate(format!("the CNAME chain is longer than {MAX_CHASES}"))
+        }
+        verdict => verdict,
+    }
 }
 
 fn unix_seconds() -> u64 {
