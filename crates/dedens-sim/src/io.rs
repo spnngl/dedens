@@ -5,10 +5,12 @@
 //! replays. turmoil's sockets speak tokio's traits and borrowed buffers; the adapters here speak compio's owned
 //! ones, copying through a scratch buffer, which a test can afford.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::panic::resume_unwind;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -19,7 +21,7 @@ use compio::io::{AsyncRead, AsyncWrite};
 use dedens_net::exchange::Exchange;
 use dedens_net::io::{Io, Stream, TimedOut, Udp};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::task::JoinHandle;
+use tokio::task::AbortHandle;
 use turmoil::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use turmoil::net::{TcpStream, UdpSocket};
 
@@ -53,13 +55,15 @@ impl Glitches {
     }
 }
 
-/// A host's runtime, as [`Io`]: its seeded randomness, its trace, and the errors a test injects.
+/// A host's runtime, as [`Io`]: its seeded randomness, its trace, the errors a test injects, and the first panic of
+/// a task it spawned.
 #[derive(Debug, Clone)]
 pub struct Sim {
     rng: Rc<RefCell<Rng>>,
     host: IpAddr,
     trace: Trace,
     glitches: Rc<Glitches>,
+    panic: Rc<RefCell<Option<Box<dyn Any + Send>>>>,
 }
 
 impl Sim {
@@ -71,6 +75,7 @@ impl Sim {
             host,
             trace,
             glitches: Rc::default(),
+            panic: Rc::default(),
         }
     }
 
@@ -78,6 +83,18 @@ impl Sim {
     #[must_use]
     pub fn glitches(&self) -> &Glitches {
         &self.glitches
+    }
+
+    /// Resumes the first panic of a task it spawned, if one panicked: its tasks run detached, as the pools spawn
+    /// them, so the host that uses it looks here (D133).
+    ///
+    /// # Panics
+    ///
+    /// With the payload of that task's panic.
+    pub fn resume_panic(&self) {
+        if let Some(payload) = self.panic.take() {
+            resume_unwind(payload);
+        }
     }
 }
 
@@ -91,7 +108,18 @@ impl Io for Sim {
     }
 
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> SimTask {
-        SimTask(tokio::task::spawn_local(task))
+        let task = tokio::task::spawn_local(task);
+        let abort = task.abort_handle();
+        let panic = Rc::clone(&self.panic);
+        // A watcher keeps the payload, which tokio would drop; an aborted task ends it with nothing.
+        drop(tokio::task::spawn_local(async move {
+            if let Err(error) = task.await
+                && error.is_panic()
+            {
+                panic.borrow_mut().get_or_insert(error.into_panic());
+            }
+        }));
+        SimTask(abort)
     }
 
     async fn timeout_at<F: Future>(
@@ -144,7 +172,7 @@ impl Io for Sim {
 
 /// A spawned task, aborted when dropped, as compio's handles cancel.
 #[derive(Debug)]
-pub struct SimTask(JoinHandle<()>);
+pub struct SimTask(AbortHandle);
 
 impl Drop for SimTask {
     fn drop(&mut self) {
@@ -284,5 +312,29 @@ impl AsyncWrite for SimWrite {
 
     async fn shutdown(&mut self) -> io::Result<()> {
         self.0.shutdown().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::seed::Seed;
+
+    #[test]
+    fn a_panic_in_a_spawned_task_fails_the_run() {
+        let mut sim = turmoil::Builder::new().build();
+        sim.client("client", async {
+            let rng = Rc::new(RefCell::new(Rng::new(Seed(1), 1)));
+            let io = Sim::new(rng, IpAddr::V4(Ipv4Addr::LOCALHOST), Trace::new());
+            let _task = io.spawn(async { panic!("a pool's task") });
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            io.resume_panic();
+            Ok(())
+        });
+        let failure = sim.run().expect_err("the task's panic fails the run");
+        assert!(failure.to_string().contains("panic"), "{failure}");
     }
 }

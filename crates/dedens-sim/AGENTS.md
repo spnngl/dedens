@@ -4,7 +4,8 @@ Simulation tests (D133), test-only: `src/lib.rs` says what the driver is, each m
 scenario. A run must replay from its seed; these rules keep it so.
 
 - Every `select!` is `biased`: tokio draws the order of its branches from a generator that is not seeded.
-- Every task is spawned into a `JoinSet` (`Port::spawn`): a panic in a task fails the run.
+- A panic in any task fails the run: a server host spawns into a `JoinSet` (`Port::spawn`); a task of the
+  client's pools, spawned by `Sim::spawn`, fails the `Client::exchange` that follows.
 - No `HashMap` and no clock in the driver: `BTreeMap`, and `tokio::time` only.
 - TLS in a scenario uses fixed certificates (`certificates` of `tests/pools.rs`), never `dedens_testkit::certificates`,
   whose keys are new on every run.
@@ -19,6 +20,6 @@ scenario. A run must replay from its seed; these rules keep it so.
   `stale_ttl` to match.
 
 Each family is a module `tests/<family>.rs` of the one binary: scripted tests under the fixed seeds of
-`tests/util.rs`, within the time budget `just sim-time` measures (D162, D164); one property test whose seed picks the faults, which `just sim` runs under many random seeds; one
-`seed::in_two_processes` test. A failing seed becomes a fixed seed of the scripted tests, with a comment naming what
-it caught.
+`tests/util.rs`, within the time budget `just sim-time` measures (D162, D164); one property test whose seed picks
+the faults, which `just sim` runs under many random seeds. A failing seed becomes a fixed seed of the scripted
+tests, with a comment naming what it caught.
