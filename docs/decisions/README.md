@@ -148,7 +148,7 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D155 [scope](scope.md): `deny.toml` ignores RUSTSEC-2026-0441, `pin-utils` through `loom`
 - D156 [scope](scope.md) (amended by D158): the release holds deb and rpm packages, by nfpm
 - D157 [scope](scope.md): `dedensd` exits with success at once on SIGTERM or SIGINT
-- D158 [scope](scope.md): each shipped binary carries its crates' licences, by cargo-about
+- D158 [scope](scope.md): each shipped binary carries its crates' licences, by cargo-about; the packages, man pages
 - D159 [wire format](wire-format.md) (amended by D162): RDATA and EDNS option files named after their type, not RFC
 - D160 [scope](scope.md) (amended by D161): each public item at one path: private modules, root re-exports
 - D161 [performance and safety](performance-and-safety.md): shared test data in `testdata/`, read through `dedens-testkit`

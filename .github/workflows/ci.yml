@@ -1,5 +1,7 @@
 name: ci
 
+# The gate (`just check` on Linux and macOS), the musl suite, the dependency checks and coverage: on each pull
+# request, each push to main, and as `release.yml`'s gate (D153).
 on:
   push:
     branches:

@@ -373,7 +373,7 @@ sim runs="100" family="":
 # The wall time of each simulation family run alone, then of them all, as `just check` runs them (the workspace's
 # debug build with every feature, the fixed seeds): over D133's budgets, 2 s a family and 10 s the crate, it says
 # so and fails. Outside the gate, as the time is the machine's (D164). `DEDENS_SIM_TIME_SCALE`, a positive decimal
-# (1 when unset), multiplies both budgets for a slower machine: 2.5 on GitHub's runners (D167).
+# (1 when unset), multiplies both budgets for a slower machine (D167; GitHub's runners' scale: D172).
 sim-time:
     #!/usr/bin/env bash
     set -euo pipefail

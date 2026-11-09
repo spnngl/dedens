@@ -44,7 +44,7 @@ pub enum Transport {
     Coap,
 }
 
-/// A running server; its threads live as long as the test.
+/// A running server; its threads run until the test process exits.
 pub struct Responder {
     /// Its address, the same port for UDP and TCP.
     pub addr: SocketAddr,
@@ -149,7 +149,8 @@ impl Responder {
         })
     }
 
-    /// As [`Responder::start`], each query answered `delay` late.
+    /// As [`Responder::start`], each query answered `delay` late. One thread answers UDP, in turn: of `n` UDP queries
+    /// sent at once, the last is answered `n` × `delay` late.
     ///
     /// # Panics
     ///
