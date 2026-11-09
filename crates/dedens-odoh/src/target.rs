@@ -1,7 +1,7 @@
 //! The target side of RFC 9230 §8: hold a key, decrypt queries, encrypt responses.
 
-use hpke::rand_core::CryptoRng;
 use hpke::{Deserializable as _, Kem as _, OpModeR, Serializable as _};
+use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
 use crate::config::{ConfigContents, PUBLIC_KEY_LEN};

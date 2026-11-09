@@ -6,8 +6,9 @@
 //! - [`encrypt_query`], [`decrypt_response`]: the client (§7).
 //! - [`TargetKey`], [`decrypt_query`], [`encrypt_response`]: the target (§8).
 //!
-//! HTTP, proxies and key storage belong to the caller. Randomness comes in as an argument, so the exchange
-//! is reproducible under test. The one cipher suite is the one RFC 9230 §9 requires ([`suite`]).
+//! HTTP, proxies and key storage belong to the caller. Randomness comes in as an argument, a `rand_core`
+//! `CryptoRng`, so the exchange is reproducible under test. The one cipher suite is the one RFC 9230 §9 requires
+//! ([`suite`]).
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
@@ -24,7 +25,6 @@ mod wire;
 pub use client::{QueryContext, decrypt_response, encrypt_query};
 pub use config::{ConfigContents, Configs, KEY_ID_LEN, PUBLIC_KEY_LEN, VERSION};
 pub use error::{ExchangeError, WireError};
-pub use hpke::rand_core;
 pub use message::{
     Message, MessagePlaintext, MessageType, QUERY_BLOCK, RESPONSE_BLOCK, query_padding,
     response_padding,

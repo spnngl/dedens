@@ -24,7 +24,6 @@ use dedens_net::odoh::{
 };
 use dedens_net::quic::QuicError;
 use dedens_net::tls::Trust;
-use dedens_odoh::rand_core::TryRng;
 use dedens_odoh::{
     ConfigContents, Configs, MEDIA_TYPE, MessageType, TargetKey, decrypt_query, encrypt_query,
     encrypt_response, query_padding, response_padding,
@@ -34,6 +33,7 @@ use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
+use rand_core::TryRng;
 
 use crate::util::loopback::answer;
 use crate::util::query;

@@ -11,6 +11,7 @@ autotests = false
 
 [dependencies]
 hpke.workspace = true
+rand_core.workspace = true
 ring.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true

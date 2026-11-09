@@ -21,12 +21,12 @@ pub mod proxy;
 use core::convert::Infallible;
 use std::time::{Duration, SystemTime};
 
-use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{ExchangeError, MEDIA_TYPE, Message, WireError};
 use dedens_proto::MAX_MESSAGE_LEN;
 use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
+use rand_core::{TryCryptoRng, TryRng};
 use zeroize::Zeroizing;
 
 #[cfg(doc)]

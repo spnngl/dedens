@@ -4,11 +4,11 @@
 use std::sync::LazyLock;
 
 use dedens_net::doh::Template;
-use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
 use dedens_odoh::{
     Configs, MessagePlaintext, MessageType, QueryContext, TargetKey, decrypt_query,
     decrypt_response, encrypt_query,
 };
+use rand_core::{TryCryptoRng, TryRng};
 
 /// `ObliviousDoHConfigs` read from arbitrary bytes (RFC 9230 §5): the configs written back read as the same
 /// configs, and every key ID is the length RFC 9230 §6.1 gives.

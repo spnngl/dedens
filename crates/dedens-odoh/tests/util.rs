@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 
-use dedens_odoh::rand_core::{TryCryptoRng, TryRng};
+use rand_core::{TryCryptoRng, TryRng};
 
 /// "Randomness" that replays given bytes, so the ephemeral key and the response nonce are known.
 ///

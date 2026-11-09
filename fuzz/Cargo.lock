@@ -604,6 +604,7 @@ dependencies = [
  "hickory-proto",
  "http",
  "libfuzzer-sys",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -618,6 +619,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "idna",
+ "rand_core 0.10.1",
  "rustls-platform-verifier",
  "thiserror",
  "zeroize",
@@ -628,6 +630,7 @@ name = "dedens-odoh"
 version = "0.1.0"
 dependencies = [
  "hpke",
+ "rand_core 0.10.1",
  "ring",
  "thiserror",
  "zeroize",

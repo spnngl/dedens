@@ -18,6 +18,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 idna = { workspace = true, optional = true }
+rand_core = { workspace = true, optional = true }
 rustls-platform-verifier.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
@@ -25,7 +26,7 @@ zeroize = { workspace = true, optional = true }
 
 [features]
 # D69: experimental transports, off by default: Oblivious DoH (RFC 9230) and DNS over CoAP (DoC).
-odoh = ["dep:dedens-odoh", "dep:idna", "dep:zeroize"]
+odoh = ["dep:dedens-odoh", "dep:idna", "dep:rand_core", "dep:zeroize"]
 doc = []
 # D30: debug events on dropped messages, retries and fallbacks, trace events per message; none without it.
 tracing = ["dep:tracing"]
@@ -35,6 +36,7 @@ compio = { workspace = true, features = ["macros"] }
 dedens-odoh.workspace = true
 dedens-testkit = { workspace = true, features = ["certificates"] }
 proptest.workspace = true
+rand_core.workspace = true
 
 [[test]]
 name = "tests"
