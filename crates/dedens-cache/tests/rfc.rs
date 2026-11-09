@@ -244,7 +244,7 @@ mod truncation {
 mod negative {
     //! RFC 2308 negative caching, and the TTL rules of RFC 1035 §3.2.1 and RFC 2181 §8.
 
-    use dedens_cache::{Cache, Config, Lookup, NotCached, StalePolicy};
+    use dedens_cache::{Cache, Config, ConfigError, Lookup, NotCached, StalePolicy};
     use dedens_proto::rdata::RData;
     use dedens_proto::{Flags, Message, Rcode, RecordType, Ttl};
     use dedens_testkit::captured;
@@ -445,6 +445,45 @@ mod negative {
         insert(&cache, &q, &r, T0).unwrap();
         let (_, served) = lookup(&cache, &q, T0, NEVER);
         assert_eq!(ttls(&served.unwrap()), [2 * 86_400]);
+    }
+
+    /// RFC 2181 §8: a TTL with its top bit set reads as 0, so a setting that a served TTL may take is at most
+    /// 2^31 - 1; the minimum and the insecure cap are within `max_ttl`.
+    #[test]
+    fn ttl_settings_above_2_pow_31_minus_1_are_refused() {
+        let most = Ttl::MAX.get();
+        let over = most + 1;
+        let base = Config::default;
+        for config in [
+            Config {
+                max_ttl: over,
+                ..base()
+            },
+            Config {
+                max_negative_ttl: over,
+                ..base()
+            },
+            Config {
+                stale_answer_ttl: over,
+                ..base()
+            },
+            Config {
+                bogus_ttl: over,
+                ..base()
+            },
+        ] {
+            assert_eq!(config.validate(), Err(ConfigError::Ttl(over)), "{config:?}");
+        }
+        let largest = Config {
+            min_ttl: most,
+            max_ttl: most,
+            max_negative_ttl: most,
+            stale_answer_ttl: most,
+            bogus_ttl: most,
+            max_insecure_ttl: Some(most),
+            ..base()
+        };
+        assert_eq!(largest.validate(), Ok(()));
     }
 
     /// RFC 1035 §3.2.1: TTL 0 means use for this transaction only.

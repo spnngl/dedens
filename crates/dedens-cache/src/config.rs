@@ -1,5 +1,6 @@
 //! Limits and timers, with the defaults the RFCs recommend.
 
+use dedens_proto::Ttl;
 use thiserror::Error;
 
 use crate::key::MAX_KEY_LEN;
@@ -20,7 +21,8 @@ pub(crate) const DEFAULT_ENTRY_BYTES: usize = 8 << 10;
 pub(crate) const MAX_SHARDS: usize = 1 << 16;
 
 /// Cache settings; [`Config::default`] follows the RFCs' recommendations. With the `serde` feature, read with
-/// these field names, each defaulting to its value in [`Config::default`].
+/// these field names, each defaulting to its value in [`Config::default`]. A TTL setting is at most 2^31 - 1, as a
+/// TTL is (RFC 2181 §8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
@@ -123,6 +125,9 @@ pub enum ConfigError {
         "failure holds must lie within 1..=300 seconds, the first and the stale recheck not above the longest"
     )]
     FailureHold,
+    /// A TTL setting above 2^31 - 1, which a receiver reads as 0 (RFC 2181 §8); the largest is given.
+    #[error("a TTL setting must be at most 2147483647 seconds (RFC 2181 §8), not {0}")]
+    Ttl(u32),
     /// A stale answer with TTL 0 is refused by RFC 8767 §4.
     #[error("the stale answer TTL must be above 0")]
     StaleAnswerTtl,
@@ -203,6 +208,14 @@ impl Config {
         {
             return Err(ConfigError::FailureHold);
         }
+        // `min_ttl` and the insecure cap are checked within `max_ttl` below.
+        let largest = greater(
+            greater(self.max_ttl, self.max_negative_ttl),
+            greater(self.stale_answer_ttl, self.bogus_ttl),
+        );
+        if largest > Ttl::MAX.get() {
+            return Err(ConfigError::Ttl(largest));
+        }
         if self.stale_answer_ttl == 0 {
             return Err(ConfigError::StaleAnswerTtl);
         }
@@ -231,4 +244,9 @@ impl Config {
 /// The lesser of `a` and `b`: `Ord::min` is not `const`.
 const fn lesser(a: u32, b: u32) -> u32 {
     if a < b { a } else { b }
+}
+
+/// The greater of `a` and `b`: `Ord::max` is not `const`.
+const fn greater(a: u32, b: u32) -> u32 {
+    if a > b { a } else { b }
 }
