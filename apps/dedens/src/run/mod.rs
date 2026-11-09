@@ -4,7 +4,7 @@
 mod server;
 
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -18,12 +18,13 @@ use dedens_dnssec::covered;
 use dedens_net::client::{Client, ClientError, Server};
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
+use dedens_net::doh::{DEFAULT_PATH, Template};
 use dedens_net::exchange::{self, Failure, Response};
 use dedens_net::http3::Http3Error;
 use dedens_net::quic::QuicError;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
-use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report};
+use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report, server_text};
 
 pub(crate) use self::server::refuse_conflicts;
 use self::server::{resolv_conf, server, servers};
@@ -71,19 +72,50 @@ struct Endpoint {
 }
 
 impl Endpoint {
-    /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, `+tls`, `+quic` or
-    /// `+https` or `+coap` after it when forced, so `tls://`, `quic://`, `https://` and `coap://` to one address stay apart.
-    fn id(&self, id: &Id) -> Id {
-        let id = id.at(self.server.addr);
+    /// This server among several, as its reports name it: `1.1.1.1`, then `+tls`, `+quic`, `+https`, `+odoh` or
+    /// `+coap` when forced, then the path of its `DoH` template other than `/dns-query`, or of its CoAP URI, each
+    /// `/`, `\` or NUL a `_`: `tls://`, `quic://`, `https://` and `coap://` to one address, and two paths, stay apart.
+    fn label(&self) -> String {
         let over = match self.forced {
-            Some(Transport::Tls) => "tls",
-            Some(Transport::Quic) => "quic",
-            Some(Transport::Https) => "https",
-            Some(Transport::Odoh) => "odoh",
-            Some(Transport::Coap) => "coap",
-            _ => return id,
+            Some(Transport::Tls) => "+tls",
+            Some(Transport::Quic) => "+quic",
+            Some(Transport::Https) => "+https",
+            Some(Transport::Odoh) => "+odoh",
+            Some(Transport::Coap) => "+coap",
+            _ => "",
         };
-        Id::try_from(format!("{id}+{over}")).expect("an id with letters after it stays an id")
+        let doh = self
+            .server
+            .doh
+            .as_ref()
+            .map(Template::path)
+            .filter(|path| *path != DEFAULT_PATH)
+            .unwrap_or_default();
+        let mut path = doh.to_owned();
+        for segment in &self.server.docpath {
+            path.push('/');
+            path.push_str(&String::from_utf8_lossy(segment));
+        }
+        let path = path.replace(['/', '\\', '\0'], "_");
+        format!("{}{over}{path}", server_text(self.server.addr))
+    }
+
+    /// The id of query `id` asked of this server, one of several: `example.com_A@1.1.1.1`, the [`label`](Self::label)
+    /// after `@`.
+    fn id(&self, id: &Id) -> Id {
+        Id::try_from(format!("{id}@{}", self.label()))
+            .expect("an id, `@` and a label without `/`, `\\` or NUL stay an id")
+    }
+}
+
+impl Job {
+    /// The id of the reports of this job from `endpoint`: [`Endpoint::id`] when it goes to several servers, else
+    /// its own.
+    fn id_at(&self, endpoint: Option<&Endpoint>) -> Id {
+        match endpoint {
+            Some(endpoint) if self.route.several() => endpoint.id(&self.id),
+            _ => self.id.clone(),
+        }
     }
 }
 
@@ -109,6 +141,19 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
     {
         bail!("{}: zone transfers are not supported yet", job.id);
+    }
+    // Each report its own id: its `--save-wire` file and its name among the servers (D177).
+    let mut ids = HashSet::new();
+    for job in &jobs {
+        let id = match &job.route {
+            Route::Servers(servers) => servers.iter().map(|e| job.id_at(Some(e))).collect(),
+            Route::Trace(_) => vec![job.id.clone()],
+        }
+        .into_iter()
+        .find(|id| !ids.insert(id.clone()));
+        if let Some(id) = id {
+            bail!("two queries with id {id}");
+        }
     }
     if let Some(dir) = &cli.save_wire {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -137,10 +182,11 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         loop {
             let room = IN_FLIGHT - running.len();
             running.extend(tasks.by_ref().take(room).map(|(group, job, target)| {
-                let id = match &target {
-                    Target::Server(endpoint) if job.route.several() => endpoint.id(&job.id),
-                    _ => job.id.clone(),
+                let endpoint = match &target {
+                    Target::Server(endpoint) => Some(endpoint),
+                    Target::Trace(_) => None,
                 };
+                let (id, label) = (job.id_at(endpoint), endpoint.map(Endpoint::label));
                 let task = query(
                     Rc::clone(&client),
                     Rc::clone(&job),
@@ -148,7 +194,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     id.clone(),
                     cli.repeat,
                 );
-                (group, job, id, compio::runtime::spawn(task))
+                (group, job, id, label, compio::runtime::spawn(task))
             }));
             let next = running.pop_front();
             if next.as_ref().map(|(group, ..)| *group) != group_now {
@@ -156,17 +202,23 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 answers.clear();
                 group_now = next.as_ref().map(|(group, ..)| *group);
             }
-            let Some((_, job, id, handle)) = next else {
+            let Some((_, job, id, label, handle)) = next else {
                 break;
             };
             let trail = handle
                 .await
                 .unwrap_or_else(|e| (Vec::new(), Some(io::Error::from(e).into())));
-            if job.route.several() && format == Format::Human {
-                answers.extend(trail.0.iter().filter_map(|(report, _)| {
-                    let server = report.exchange.as_ref()?.server;
-                    Some((server, output::Answers::of(report)))
-                }));
+            if job.route.several()
+                && format == Format::Human
+                && let Some(label) = label
+            {
+                answers.extend(
+                    trail
+                        .0
+                        .iter()
+                        .filter(|(report, _)| report.exchange.is_some())
+                        .map(|(report, _)| (label.clone(), output::Answers::of(report))),
+                );
             }
             let printing = Printing {
                 format,
