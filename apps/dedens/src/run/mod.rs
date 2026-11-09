@@ -25,6 +25,7 @@ use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report};
 
+pub(crate) use self::server::refuse_conflicts;
 use self::server::{resolv_conf, server, servers};
 use crate::args::{self, Cli};
 use crate::idn;

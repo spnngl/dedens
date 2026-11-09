@@ -15,6 +15,7 @@ use dedens_proto::{Class, RecordType};
 use dedens_scenario::{Id, Options};
 
 use crate::output::Format;
+use crate::run::refuse_conflicts;
 
 /// A dig-like DNS client.
 ///
@@ -141,49 +142,17 @@ impl Cli {
                     .to_owned(),
             );
         }
-        // Over TLS, QUIC and HTTPS a query is padded with EDNS (RFC 8467 §4.1).
-        let scheme = |server: &String| {
-            ["tls://", "quic://", "https://"]
-                .iter()
-                .any(|s| server.starts_with(s))
-        };
-        // Oblivious DoH pads inside its encryption (D79).
-        if cli.options.edns == Some(false) && !cli.options.odoh() && cli.server.iter().any(scheme) {
-            usage(
-                ErrorKind::ArgumentConflict,
-                "tls://, quic:// and https:// need EDNS, which noedns turns off".to_owned(),
-            );
-        }
-        // HTTPS is HTTP/3, over QUIC: no other transport under it.
-        let https = |server: &String| server.starts_with("https://");
-        if cli.server.iter().any(https)
-            && (cli.options.tcp == Some(true) || cli.options.encrypted())
-        {
-            usage(
-                ErrorKind::ArgumentConflict,
-                "https:// goes with no +tcp, +tls or +quic".to_owned(),
-            );
+        for server in &cli.server {
+            if let Err(error) = refuse_conflicts(server, &cli.options) {
+                usage(ErrorKind::ArgumentConflict, error.to_string());
+            }
         }
         // The target of Oblivious DoH is a server of the command line; a query file names its own.
+        let https = |server: &String| server.starts_with("https://");
         if cli.options.odoh() && cli.file.is_none() && !cli.server.iter().any(https) {
             usage(
                 ErrorKind::ArgumentConflict,
                 "+odoh-proxy needs an https:// target @server".to_owned(),
-            );
-        }
-        // CoAP is over UDP: no other transport under it.
-        let coap = |server: &String| server.starts_with("coap://");
-        if (cli.server.iter().any(coap)
-            && (cli.options.tcp == Some(true)
-                || cli.options.encrypted()
-                || cli.options.https()
-                || cli.options.odoh()))
-            || (cli.options.coap == Some(true) && cli.server.iter().any(scheme))
-        {
-            usage(
-                ErrorKind::ArgumentConflict,
-                "coap:// and +coap go with no +tcp, +tls, +quic, +https, +odoh-proxy, tls://, quic:// or https://"
-                    .to_owned(),
             );
         }
         if !cli.discovers_where_it_can() {
