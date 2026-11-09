@@ -87,6 +87,26 @@ fn address(record: &Record<'_>) -> Option<IpAddr> {
     }
 }
 
+/// The addresses of `answer` that `name` owns, or the targets of the CNAME chain from it (RFC 1034 §3.6.2): an
+/// answer may hold other records, not addresses of `name`.
+fn owned_addresses(answer: &[Record<'_>], name: &Name<'_>) -> Vec<IpAddr> {
+    let mut owners = vec![name.clone().into_owned()];
+    while let Some(target) = owners.last().and_then(|owner| {
+        answer.iter().find_map(|r| match r.data() {
+            RData::Cname(target) if r.name == *owner => Some(target.into_owned()),
+            _ => None,
+        })
+    }) && !owners.contains(&target)
+    {
+        owners.push(target);
+    }
+    answer
+        .iter()
+        .filter(|r| owners.contains(&r.name))
+        .filter_map(address)
+        .collect()
+}
+
 /// Where a response leads.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
@@ -252,13 +272,10 @@ impl Tracer<'_> {
                         continue;
                     }
                 };
-                let addresses = in_turn(
-                    Message::decode(&wire)?
-                        .message
-                        .answer
-                        .iter()
-                        .filter_map(address),
-                );
+                let addresses = in_turn(owned_addresses(
+                    &Message::decode(&wire)?.message.answer,
+                    name,
+                ));
                 if !addresses.is_empty() {
                     return Ok(addresses);
                 }
@@ -292,6 +309,20 @@ mod tests {
         assert_eq!(
             roots[0],
             "198.41.0.4:53".parse().expect("a.root-servers.net")
+        );
+    }
+
+    /// `www.github.com` owns the addresses of `github.com`, its CNAME target; `github.com` owns them too, and no
+    /// other name does.
+    #[test]
+    fn a_name_owns_the_addresses_of_its_cname_chain() {
+        let answer = message(&captured("cname_chain")).answer;
+        let ends = owned_addresses(&answer, &name("github.com."));
+        assert_ne!(ends, Vec::<IpAddr>::new());
+        assert_eq!(owned_addresses(&answer, &name("www.github.com.")), ends);
+        assert_eq!(
+            owned_addresses(&answer, &name("example.com.")),
+            Vec::<IpAddr>::new()
         );
     }
 

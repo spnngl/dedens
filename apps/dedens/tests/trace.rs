@@ -2,6 +2,7 @@
 
 use dedens_proto::Flags;
 use dedens_testkit::responder::Responder;
+use dedens_testkit::{captured, message};
 use predicates::prelude::*;
 use predicates::str::contains;
 
@@ -77,4 +78,20 @@ fn trace_fails_on_a_response_that_leads_nowhere() {
         .stdout
         .clone();
     assert_eq!(String::from_utf8_lossy(&out).matches("NOERROR").count(), 1);
+}
+
+/// A name server looked up for want of glue takes only the addresses its name owns, or the end of its CNAME chain:
+/// an answer to `hera.ns.cloudflare.com A` holding `example.com`'s addresses (the capture `a`, its question changed)
+/// gives none, after a referral to `example.com` without its glue.
+#[test]
+fn a_name_server_lookup_takes_only_its_own_addresses() {
+    let mut referral = message(&captured("referral_com"));
+    referral.additional.clear();
+    let mut lookup = message(&captured("a"));
+    lookup.questions[0].name = "hera.ns.cloudflare.com.".parse().expect("a name");
+    let wires = [referral, lookup].map(|forged| forged.to_vec().expect("the message fits"));
+    let root = Responder::start_with(&[], &wires);
+    trace(&[&root], &["example.com", "+tries=1", "+time=100ms"])
+        .failure()
+        .stderr(contains("no address for the name servers of example.com"));
 }
