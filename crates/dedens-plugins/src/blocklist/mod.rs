@@ -156,11 +156,9 @@ impl Reviewer for Blocklist {
         let mut from = 0;
         for _ in 0..=MAX_HOPS {
             let mut next = None;
-            // From where the last hop was found, round to it: the range is taken before the hop moves `from`.
-            for at in (from..records.len()).chain(0..from) {
-                let Some(record) = records.get(at) else {
-                    break;
-                };
+            // From where the last hop was found, round to it: the order is taken before the hop moves `from`.
+            let indexed = records.iter().enumerate();
+            for (at, record) in indexed.clone().skip(from).chain(indexed.take(from)) {
                 let target = match record.rtype() {
                     RecordType::CNAME if next.is_none() && record.name == current => {
                         match record.data() {
