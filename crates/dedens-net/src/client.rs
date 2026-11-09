@@ -246,8 +246,8 @@ pub struct Client<N: Io = Compio> {
     random: RefCell<Random>,
 }
 
-/// Random bytes from [`Io::random`], drawn [`RANDOM_BATCH`] at a time and each used once: one system call per 64
-/// exchanges instead of one each.
+/// Random bytes from [`Io::random`], drawn [`RANDOM_BATCH`] at a time and each used once: one system call per
+/// [`RANDOM_BATCH`] bytes taken instead of one per draw.
 #[derive(Debug)]
 struct Random {
     bytes: [u8; RANDOM_BATCH],
