@@ -182,9 +182,12 @@ fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
 #[cfg(not(dedens_loom))]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::future::poll_fn;
     use std::net::IpAddr;
+    use std::pin::{Pin, pin};
     use std::rc::Rc;
     use std::sync::Arc;
+    use std::task::Poll;
 
     use compio::BufResult;
     use compio::net::UdpSocket;
@@ -197,6 +200,7 @@ mod tests {
     use futures_util::future::join;
 
     use super::{answer, target};
+    use crate::flights::Key;
     use crate::lists::Store;
     use crate::reload::Current;
     use crate::serve::tests::example_com_a;
@@ -307,14 +311,27 @@ mod tests {
                 };
                 probe
             });
+            let key = Key {
+                server: lead.server().clone(),
+                udp: true,
+                question: lead.probe().expect("the validator's question").clone(),
+            };
             let replies = RefCell::new(Vec::new());
             let deliver = async |reply| replies.borrow_mut().push(reply);
-            join(
-                answer(&thread, &pipeline, lead, Transport::Udp, deliver),
-                answer(&thread, &pipeline, follower, Transport::Udp, deliver),
-            )
-            .await;
-            let replies = replies.into_inner();
+            let mut lead = pin!(answer(&thread, &pipeline, lead, Transport::Udp, deliver));
+            let mut follower = pin!(answer(&thread, &pipeline, follower, Transport::Udp, deliver));
+            // The lead polled once is in its exchange, its flight open: the follower, polled next before anything
+            // else runs, follows it.
+            assert!(poll_once(lead.as_mut()).await.is_pending());
+            assert!(
+                poll_once(pin!(thread.current.flights().enter(&key)))
+                    .await
+                    .is_pending(),
+                "the lead's flight is open"
+            );
+            assert!(poll_once(follower.as_mut()).await.is_pending());
+            join(lead, follower).await;
+            let replies = replies.take();
             assert_eq!(replies.len(), 2);
             for reply in replies {
                 let reply = Message::decode(&reply).expect("decodes").message;
@@ -322,6 +339,11 @@ mod tests {
             }
         });
         assert_eq!(responder.asked(".", RecordType::DNSKEY), 0);
+    }
+
+    /// What `future` gives when polled once, with the task's waker.
+    async fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
+        poll_fn(|context| Poll::Ready(future.as_mut().poll(context))).await
     }
 
     /// D65: a plain server is asked over UDP for a client over UDP and over TCP for one over a connection; another
