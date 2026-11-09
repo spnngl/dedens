@@ -1362,7 +1362,7 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   (`cargo test -p dedens-proto`), not in the workspace's. `testdata/` is one of the folders D140 reads for decisions and
   one a coverage path may start at. Rejected: data kept in its first reader with the others reaching in (the paths it
   replaced).
-- D162 (amends D13, D133, D140) A package's integration tests are one binary, `tests/tests.rs` (`autotests = false`
+- D162 (amends D13, D133, D140; amended by D170) A package's integration tests are one binary, `tests/tests.rs` (`autotests = false`
   and one `[[test]]`, as ripgrep), with a module per topic, not a file per RFC: 129 test binaries each linked their
   crate's dependencies (21 linked compio, rustls and quinn in `dedens-net` alone), and the link dominated an
   incremental test build: 14 binaries take it from 16-17 s to 5-6 s after a change to `dedens-proto`, and `target/`
@@ -2865,3 +2865,10 @@ marked superseded. Measurements: [`benchmarks.md`](benchmarks.md). Open question
   figure, GitHub's runners on a slow day against their usual pace (2026-11-03), not yet a runner's time of the
   families against the M5's: the job's first runs check it, and a change of the scale changes this decision.
   Rejected: a job that only reports the times, never red, so nobody reads it.
+- D170 (amends D162; builds on D161) `dedensd`'s benches include by `#[path]` its tests' harness alone,
+  `tests/util/server.rs`: the running `dedensd` and its configuration files, a private module of `util` whose items
+  `util` re-exports, so the tests name one path. The harness stays out of `dedens-testkit`: it spawns
+  `CARGO_BIN_EXE_dedensd`, which Cargo sets for this package's tests and benches alone, and no other package starts
+  `dedensd`. The query a bench sends is built from `dedens_testkit::message`. Rejected: the harness in the kit, the
+  binary's path a parameter of each start (one package's helper in the kit of several, D161); a library target in
+  `dedensd` for its benches (a public surface for test code); the benches including all of `util`.

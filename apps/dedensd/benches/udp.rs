@@ -3,19 +3,20 @@
 //! The server runs one thread (a one-core budget as in `just bench-dnsperf`), so what the run measures is the cost of
 //! the path of a datagram in `dedensd`, panic isolation included (D121).
 
-#[path = "../tests/util.rs"]
-#[expect(dead_code, reason = "the bench uses part of the tests' helpers")]
-mod util;
+#[path = "../tests/util/server.rs"]
+#[expect(dead_code, reason = "the bench uses part of the tests' harness")]
+mod server;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::net::UdpSocket;
-use dedens_testkit::captured;
+use dedens_proto::Message;
 use dedens_testkit::responder::Responder;
+use dedens_testkit::{captured, message};
 use futures_util::future::join_all;
-use util::{Server, query_for};
+use server::Server;
 
 /// How long each measure runs.
 const RUN: Duration = Duration::from_secs(3);
@@ -58,7 +59,8 @@ fn main() {
             upstream.addr
         )
     });
-    let query = query_for(&captured("a"), 0);
+    let question = message(&captured("a")).questions.swap_remove(0);
+    let query = Message::query(0, question).to_vec().expect("a query fits");
     let runtime = compio::runtime::Runtime::new().expect("a runtime");
     println!("| in flight | queries/s |\n|---|---|");
     runtime.block_on(async {
