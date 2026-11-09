@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
     )
     .context("cannot handle SIGHUP")?;
     #[cfg(feature = "doc")]
-    warn_coap(&listen);
+    log::warn_coap(&listen);
     let threads = sockets.len();
     let (ended, end) = stop_on_signal().context("cannot handle SIGTERM")?;
     let (listening, listened) = mpsc::channel();
@@ -216,20 +216,6 @@ fn stop_on_signal() -> io::Result<Ending> {
 
 /// The two ends of [`stop_on_signal`]'s channel.
 type Ending = (mpsc::Sender<io::Result<()>>, mpsc::Receiver<io::Result<()>>);
-
-/// Warns of each CoAP address in `listen`: DNS there is unprotected (RFC 9953 §6).
-#[cfg(feature = "doc")]
-fn warn_coap(listen: &[config::Listen]) {
-    for listen in listen
-        .iter()
-        .filter(|l| matches!(l, config::Listen::Coap(..)))
-    {
-        tracing::warn!(
-            ?listen,
-            "CoAP is unprotected, NOT RECOMMENDED (RFC 9953 §6)"
-        );
-    }
-}
 
 /// The text of the configuration file `file`.
 ///

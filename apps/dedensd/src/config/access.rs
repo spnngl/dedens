@@ -30,7 +30,7 @@ impl AccessFile {
 
 /// Where the access lists of a configuration come from (D91).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AccessSource {
+pub(super) enum AccessSource {
     /// `access` is left out: only the local networks are answered.
     Unset,
     /// `access` allows some networks.

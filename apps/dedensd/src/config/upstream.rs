@@ -25,7 +25,7 @@ use super::{MAX_TIMEOUT_MS, MAX_TRIES, unix_seconds};
 /// certificate must hold, else its address.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
-pub(crate) struct Server(pub(crate) dedens_server::Server);
+pub(super) struct Server(dedens_server::Server);
 
 /// The port of DNS over TLS (RFC 7858 §3.1) and over QUIC (RFC 9250 §4.1.1).
 pub(super) const ENCRYPTED_PORT: u16 = 853;
