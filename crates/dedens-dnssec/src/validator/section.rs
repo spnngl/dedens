@@ -64,6 +64,11 @@ impl Section {
             .unwrap_or_default()
     }
 
+    /// Whether the section has an RRSIG record owned by `owner`, whatever type it covers.
+    pub(super) fn has_signatures_at(&self, owner: &Name<'_>) -> bool {
+        self.sigs.keys().any(|(name, _)| name == owner)
+    }
+
     /// Whether the section has a record of proof for or against a name's existence: NSEC, NSEC3 or SOA.
     pub(super) fn has_denial(&self) -> bool {
         self.sets.iter().any(|set| is_denial(set.rtype()))

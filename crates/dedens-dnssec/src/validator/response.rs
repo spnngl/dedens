@@ -189,14 +189,21 @@ impl Validation {
         if let Mode::Referral(child) = self.mode.clone() {
             return self.referral(&child);
         }
-        // RRSIG records are not signed (RFC 4035 §2.2), so neither an answer of them nor a denial of the type is
-        // verified: the answer is served without AD (D176).
-        if question.qtype == RecordType::RRSIG {
+        let parsed = Arc::clone(&self.parsed);
+        // RRSIG records are not signed (RFC 4035 §2.2): an answer of them, at a name of the chain, has nothing to
+        // verify and is served without AD. Any other response is a denial, proven as for any type (D176).
+        if question.qtype == RecordType::RRSIG
+            && response.rcode() == Rcode::NOERROR
+            && parsed
+                .chain
+                .names
+                .iter()
+                .any(|name| parsed.answer.has_signatures_at(name))
+        {
             return Ok(Verdict::Insecure {
                 reason: InsecureReason::RrsigQuery,
             });
         }
-        let parsed = Arc::clone(&self.parsed);
         self.answer_verdict(&question, response.rcode(), &parsed)
     }
 

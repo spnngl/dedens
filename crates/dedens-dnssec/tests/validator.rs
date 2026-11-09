@@ -787,26 +787,64 @@ fn nxname_is_not_a_type_to_ask_for() {
 #[test]
 fn an_rrsig_answer_is_insecure_not_bogus() {
     // RRSIG records are not signed (RFC 4035 §2.2): an answer of them has nothing to verify, and no denial of a
-    // type the name has. The answer of cloudflare.com RRSIG is the RRSIG record of its A capture.
-    let mut response = response("alg13_a");
-    let question = Question::new(name("cloudflare.com"), RecordType::RRSIG);
-    response.questions = vec![question];
-    response
-        .answer
-        .retain(|record| record.rtype() == RecordType::RRSIG);
-    assert!(matches!(response.answer.as_slice(), [_, ..]));
+    // type the name has. The answer of cloudflare.com RRSIG is the RRSIG record of its A capture, whatever the case
+    // of the name asked.
     let script = Script::new();
-    let (verdict, asked) = Script::drive(&Script::validator(), &response, captured_at(), |ask| {
-        script.answer(ask)
-    });
-    assert_eq!(
-        verdict,
-        Verdict::Insecure {
-            reason: InsecureReason::RrsigQuery
-        }
-    );
-    assert_eq!(asked, Vec::<String>::new());
-    assert_eq!(verdict.ede(), None);
+    for asked_name in ["cloudflare.com", "CloudFlare.COM"] {
+        let mut response = response("alg13_a");
+        response.questions = vec![Question::new(name(asked_name), RecordType::RRSIG)];
+        response
+            .answer
+            .retain(|record| record.rtype() == RecordType::RRSIG);
+        assert!(matches!(response.answer.as_slice(), [_, ..]));
+        let (verdict, asked) =
+            Script::drive(&Script::validator(), &response, captured_at(), |ask| {
+                script.answer(ask)
+            });
+        assert_eq!(
+            verdict,
+            Verdict::Insecure {
+                reason: InsecureReason::RrsigQuery
+            },
+            "{asked_name}"
+        );
+        assert_eq!(asked, Vec::<String>::new());
+        assert_eq!(verdict.ede(), None);
+    }
+}
+
+/// D176: a name error proves the name has no records at all, RRSIG included: re-asked as RRSIG, it is proven as
+/// for the type it was captured for.
+#[test]
+fn a_name_error_of_an_rrsig_question_is_proven_as_any_other() {
+    let script = Script::new();
+    for id in ["nxdomain_nsec", "nxdomain_nsec3"] {
+        let original = script.verdict(id);
+        assert!(secure(&original), "{id}: {original:?}");
+        let mut response = response(id);
+        response.questions[0].qtype = RecordType::RRSIG;
+        let verdict = script.run(&Script::validator(), &response, captured_at());
+        assert_eq!(verdict, original, "{id}");
+    }
+}
+
+/// D176: only RRSIG records at a name of the chain make an RRSIG question insecure. Without them the response is a
+/// denial to prove: none at all, or a no data whose NSEC bitmap has RRSIG, as a signed name's always has, is bogus.
+#[test]
+fn an_rrsig_question_without_rrsigs_is_a_denial_to_prove() {
+    let script = Script::new();
+    let mut empty = response("alg13_a");
+    empty.questions[0].qtype = RecordType::RRSIG;
+    empty.answer.clear();
+    let mut no_data = response("nodata_nsec");
+    no_data.questions[0].qtype = RecordType::RRSIG;
+    for (case, response) in [("empty", empty), ("no data", no_data)] {
+        let verdict = script.run(&Script::validator(), &response, captured_at());
+        assert!(
+            matches!(verdict, Verdict::Bogus { .. }),
+            "{case}: {verdict:?}"
+        );
+    }
 }
 
 // What a forger can do to a response, from the real ones.

@@ -635,10 +635,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   2 questions and 1 check each, a failure an answerer can force is the validation it lied to and no other, and
   the DNSKEY answers that prove nothing or that `start` was given are never kept (D86, as before). `validate_*`
   and `serve_*` do not move (`benchmarks.md`, run before and after).
-- D176 (amends D75) A question of type RRSIG is `Insecure { reason: RrsigQuery }` whatever the response holds,
-  once its rcode is NOERROR or NXDOMAIN and it is no referral: RRSIG records are not signed (RFC 4035 §2.2), and
-  the validator parts them from the sets they sign, so the answer had no set of the type asked and no denial of
-  it, and a signed name came out bogus (SERVFAIL, `NSEC_MISSING`). Insecure, not `Indeterminate`: the data is
-  served, without AD (`dedensd`) and not shown as validated (`dedens +validate`), and no extended error is
-  attached. Rejected: verifying each RRSIG by the set it covers, which the response does not hold. Not checked: a
-  name error or no data of an RRSIG question, which a forger can then give without a proof.
+- D176 (amends D75) A NOERROR response to a question of type RRSIG whose answer section holds an RRSIG record
+  owned by a name of its chain (the name asked, or a CNAME or DNAME target from it; names compared without case)
+  is `Insecure { reason: RrsigQuery }`: RRSIG records are not signed (RFC 4035 §2.2), and the validator parts
+  them from the sets they sign, so the answer had no set of the type asked and no denial of it, and a signed name
+  came out bogus (SERVFAIL, `NSEC_MISSING`). Insecure, not `Indeterminate`: the data is served, without AD
+  (`dedensd`) and not shown as validated (`dedens +validate`), and no extended error is attached. Any other
+  response to it, a name error or one without such RRSIG records, is judged as for any type, so its denial is
+  proven: a name error's proof holds for every type, and a no data of RRSIG at a signed name fails, its bitmap
+  having RRSIG. Rejected: verifying each RRSIG by the set it covers, which the response does not hold; insecure
+  whatever the response holds, which took a forged name error or empty answer without a proof.

@@ -24,8 +24,9 @@ pub enum InsecureReason {
     UnsupportedDigest,
     /// The zone's NSEC3 records use more iterations than the limit (RFC 9276 §3.2).
     Nsec3Iterations,
-    /// The question is of type RRSIG: RRSIG records are not signed, so nothing of the answer is verified (RFC 4035
-    /// §2.2, D176).
+    /// The question is of type RRSIG and the answer holds RRSIG records at a name of its chain: RRSIG records are
+    /// not signed, so nothing of the answer is verified (RFC 4035 §2.2, D176). A name error or an answer without
+    /// them is proven as for any type.
     RrsigQuery,
 }
 

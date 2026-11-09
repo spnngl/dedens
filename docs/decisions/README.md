@@ -166,4 +166,4 @@ replaced decision is marked superseded, and an amendment is named in both header
 - D174 [server](server.md): io_uring from Linux 6.0, `poll` before; a UDP receive error that repeats is warned of
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
 - D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection
-- D176 [scope](scope.md): a question of type RRSIG is insecure, its answer served without AD
+- D176 [scope](scope.md): an answer of RRSIGs to an RRSIG question is insecure, served without AD; a denial is proven
