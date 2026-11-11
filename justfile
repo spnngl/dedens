@@ -505,10 +505,41 @@ kani-install:
     cargo install --locked kani-verifier@{{ kani_version }}
     cargo kani setup
 
-# Kani's proofs of dedens-proto's wire decoders for every small input (D145), outside the gate: all by default, one
-# with `just kani --harness name_decoding`. Its own target dir, target/kani.
-kani *args:
-    cargo kani -p dedens-proto {{ args }}
+# Kani's proofs of `package` for every small input (D145), outside the gate: all of them by default, one with
+# `just kani dedens-proto --harness name_decoding`. Its own target dir, target/kani.
+kani package *args:
+    cargo kani -p {{ package }} {{ args }}
+
+# The Kani proofs that take under a minute each (D145), as `package:proof`: on each pull request in `deep.yml`,
+# informational. A name that matches no proof fails the recipe.
+kani-fast:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fast=(
+        dedens-cache:the_cut_is_the_highest_whole_one
+        dedens-dnssec:each_name_is_covered_by_one_link_or_owns_one
+        dedens-net:a_nibble_reads_back_what_was_written
+        dedens-odoh:a_parsed_message_encodes_back
+        dedens-odoh:a_parsed_plaintext_encodes_back
+        dedens-proto:a_decoded_subnet_encodes_back
+        dedens-proto:edns_appending
+        dedens-proto:header_peeking
+        dedens-proto:header_round_trip
+        dedens-proto:zero_bytes_marks_the_zero_bytes
+    )
+    for package in $(printf '%s\n' "${fast[@]}" | cut -d: -f1 | sort -u); do
+        args=()
+        for entry in "${fast[@]}"; do
+            [[ "${entry%%:*}" == "$package" ]] || continue
+            proof="${entry#*:}"
+            if ! grep -rq "fn $proof()" "crates/$package/src"; then
+                echo "kani-fast: no proof $proof in crates/$package/src" >&2
+                exit 1
+            fi
+            args+=(--harness "$proof")
+        done
+        cargo kani -p "$package" "${args[@]}"
+    done
 
 # Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
 rfc-archive:

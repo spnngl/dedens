@@ -739,3 +739,30 @@ fn write_nibble(value: u32) -> Result<(u8, Extension), WriteError> {
         },
     ))
 }
+
+/// Kani proof of the option header's nibbles (D145), for every value.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Every delta or length that fits in a nibble and 2 extension bytes is written (RFC 7252 §3.1) and read back,
+    /// whatever follows it; a longer one is an error.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn a_nibble_reads_back_what_was_written() {
+        let value: u32 = kani::any();
+        let Ok((nibble, extension)) = write_nibble(value) else {
+            assert!(value > 65535 + 269);
+            return;
+        };
+        let mut bytes = [0; 3];
+        let len = extension.len;
+        bytes[..len].copy_from_slice(extension.as_slice());
+        bytes[len] = kani::any();
+        let Ok((read, rest)) = read_nibble(nibble, &bytes[..=len]) else {
+            panic!("a written nibble reads");
+        };
+        assert_eq!(read, value);
+        assert_eq!(rest, &bytes[len..=len]);
+    }
+}

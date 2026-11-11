@@ -174,7 +174,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the real tests. Leak checks are off: a leak is no memory error. The sanitizer is Linux-only: cargo-careful's
   sanitized builds fail to link on macOS, where `just careful` runs without one: from cold, about 7 min for the
   1799 tests, all passing (2026-11-03). Its own target dir: the checked standard library rebuilds every crate.
-- D145 (builds on D16) Kani proves dedens-proto's wire decoders for every small input, weekly and manual, outside
+- D145 (builds on D16; amended by D179) Kani proves dedens-proto's wire decoders for every small input, weekly and manual, outside
   the gate (`kani.yml`, `just kani`); the proofs are `crates/dedens-proto/src/proofs.rs`, under `cfg(kani)`, so
   they reach the crate's own decoders. `name_decoding`: a name read at any position past the header of any
   message of up to 12 more bytes, compressed or not, never panics, stops (Kani checks every loop's bound) and
@@ -202,3 +202,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   --no-run`, so the Privileges step's and `just sim-time`'s `cargo test` builds (D164) reuse its artifacts. The musl
   suite (`rust:alpine` has no nextest), careful, loom and sim-time keep `cargo test`. Rejected: `cargo test`
   alone (an abort ends its binary's other tests; slower).
+- D179 (amends D145; builds on D103) Kani proves code outside dedens-proto's decoders too, beside it: a
+  `#[cfg(kani)] mod proofs` in the module whose private items it reaches, `crates/dedens-proto/src/proofs.rs` for its
+  public API. Each proof, its bound and its time (Apple M5, 2026-11-11): `zero_bytes` of the name table against its
+  spec for every `u64` (0.1 s); `Edns::append`, the cache-hit path, into any buffer of 25 bytes: it fits exactly when
+  RFC 6891 §6.1.2 allows, adds 1 to ARCOUNT and writes the record, else changes nothing (9 s); a client subnet of up to
+  8 bytes decodes and encodes back (RFC 7871 §6, 3 s); NSEC type bit maps of up to 6 bytes, `contains` agreeing with
+  `types` (RFC 4034 §4.1.2, 4.6 min); `covers` on chains of up to 4 `u8` owners, each other value covered by exactly
+  one link (RFC 4034 §4.1.1, 1 s), which holds for any total order, while `canonical_cmp` being one stays unproven;
+  the cache's `whole_cut` against its spec on 3 bytes of bits (6 s); a CoAP option nibble for every `u32` (RFC 7252
+  §3.1, 0.3 s); ODoH's message and plaintext of up to 8 bytes parse and encode back (RFC 9230 §6.1, 9 s and 15 s).
+  Dropped, over 10 min: the name table's `add`, `find` and `truncate` (3 names in one home group, the comparison
+  with the message stubbed: no end in 15 min, 19 million variables, as every slot of 256 is symbolic), and a parsed
+  CoAP message writing back its bytes (no end in 10 min at 8 bytes: each option a `Vec`), left to the fuzzer. `just
+  kani <package>` runs a package's proofs; `kani.yml` a job per package holding a `#[kani::proof]`. `just kani-fast`
+  runs those of under a minute, listed in it, on each pull request in `deep.yml`, informational (68 s warm, against
+  12 min for dedens-proto's 7 alone); a name matching no proof fails it. A slice compared at a symbolic length needs `#[kani::unwind]`: without it CBMC unrolls
+  `memcmp` without end. cargo-mutants skips every `proofs::` function, built only under `cfg(kani)`.

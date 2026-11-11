@@ -128,3 +128,27 @@ fn padded<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
     out.get_mut(..bytes.len())?.copy_from_slice(bytes);
     Some(out)
 }
+
+/// Kani proof of the option's wire form (D145), for every input of up to 8 bytes: an IPv4 subnet whole, an IPv6 one
+/// to its fourth byte.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any option data of up to 8 bytes decodes without panicking, and a subnet it decodes encodes back to the same
+    /// bytes: the address bits past the source prefix are zero (RFC 7871 §6), so none is lost or added.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn a_decoded_subnet_encodes_back() {
+        let bytes: [u8; 8] = kani::any();
+        let len = kani::any_where(|&len: &usize| len <= bytes.len());
+        let input = &bytes[..len];
+        let Ok(subnet) = ClientSubnet::decode(&mut Reader::new(input)) else {
+            return;
+        };
+        let mut buf = [0; 8];
+        let mut w = Writer::uncompressed(&mut buf);
+        assert!(subnet.encode(&mut w).is_ok());
+        assert_eq!(w.written(), input);
+    }
+}

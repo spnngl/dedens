@@ -1,7 +1,7 @@
 name: kani
 
-# Kani's proofs of dedens-proto's wire decoders (`just kani`, D145): weekly and manual, outside the gate. A failure
-# prints the input that breaks the proof.
+# Kani's proofs (`just kani <package>`, D145): weekly and manual, outside the gate, a job per package that has proofs.
+# A failure prints the input that breaks the proof. The fast ones also run on each pull request (`deep.yml`).
 on:
   schedule:
     - cron: "0 6 * * 1"
@@ -17,11 +17,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The packages whose sources hold a `#[kani::proof]`.
+  packages:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - id: list
+        run: |
+          set -euo pipefail
+          list="$(grep -rl '#\[kani::proof\]' crates/*/src apps/*/src | cut -d/ -f2 | sort -u | jq -Rnc '[inputs]')"
+          [[ "$list" != "[]" ]] || { echo "no Kani proof under crates/ or apps/" >&2; exit 1; }
+          echo "list=$list" >> "$GITHUB_OUTPUT"
   kani:
+    needs: packages
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.packages.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -29,10 +52,12 @@ jobs:
       # Caches ~/.cargo/bin, so `kani-install` skips the build until the pin changes.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: kani-${{ hashFiles('justfile') }}
+          key: kani-${{ hashFiles('justfile') }}-${{ matrix.package }}
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           # renovate: datasource=github-releases depName=casey/just
           just-version: "1.59.0"
       - run: just kani-install
-      - run: just kani
+      - run: just kani "$PACKAGE"
+        env:
+          PACKAGE: ${{ matrix.package }}

@@ -137,7 +137,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D142 [performance and safety](performance-and-safety.md): the pull request's mutants run in shards
 - D143 [performance and safety](performance-and-safety.md) (amended by D161): unused dependencies fail the gate, by cargo-shear
 - D144 [performance and safety](performance-and-safety.md): the tests under cargo-careful and AddressSanitizer, outside the gate
-- D145 [performance and safety](performance-and-safety.md): Kani proves `dedens-proto`'s wire decoders on small inputs, weekly
+- D145 [performance and safety](performance-and-safety.md) (amended by D179): Kani proves `dedens-proto`'s wire decoders on small inputs, weekly
 - D146 [performance and safety](performance-and-safety.md): CodeQL's Rust queries weekly, outside the gate
 - D147 [server](server.md): `poll` fallback answered UDP with nothing; compio-driver patched
 - D150 [scope](scope.md) (amended by D166): Linux builds link with rustup's lld (macOS: D166)
@@ -168,3 +168,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D176 [scope](scope.md): an answer of RRSIGs to an RRSIG question is insecure, served without AD; a denial is proven
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
 - D178 [performance and safety](performance-and-safety.md): the gate runs the tests under cargo-nextest, doctests by `cargo test --doc`
+- D179 [performance and safety](performance-and-safety.md): Kani proofs beside the code in five packages; the fast ones on each pull request

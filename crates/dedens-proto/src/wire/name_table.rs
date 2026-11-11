@@ -275,6 +275,23 @@ fn name_matches(written: &[u8], mut offset: usize, mut suffix: &[u8]) -> bool {
     }
 }
 
+/// Kani proof of [`zero_bytes`] (D145), for every word.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// [`zero_bytes`] marks exactly the bytes of the word that are 0.
+    #[kani::proof]
+    fn zero_bytes_marks_the_zero_bytes() {
+        let word: u64 = kani::any();
+        let marks = zero_bytes(word);
+        for byte in 0..8 {
+            let zero = word >> (8 * byte) & 0xFF == 0;
+            assert_eq!(marks >> (8 * byte) & 0xFF, if zero { 0x80 } else { 0 });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

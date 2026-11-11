@@ -33,8 +33,8 @@ released.
 - Optional, for `just hack`, `just msrv` and `just deny`: `cargo install cargo-hack cargo-deny`.
 - Optional, for `just cov`: `cargo install cargo-llvm-cov`; for `just fuzz` and `just fuzz-all`:
   `cargo install cargo-fuzz`; for `just careful`: `cargo install cargo-careful`.
-- Optional, for `just rapx` (static analysis): Z3 (`brew install z3`), then `just rapx-install`; for `just kani`
-  (proofs): `just kani-install`.
+- Optional, for `just rapx` (static analysis): Z3 (`brew install z3`), then `just rapx-install`; for `just kani <package>`
+  and `just kani-fast` (proofs): `just kani-install`.
 
 Crates, data flow and documents: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
