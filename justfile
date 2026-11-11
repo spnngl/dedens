@@ -36,7 +36,8 @@ check: (rustfmt "--check")
     cargo shear --locked --deny-warnings fuzz
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
-    cargo test --workspace --all-features
+    cargo nextest run --workspace --all-features
+    cargo test --workspace --all-features --doc
     cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
     cargo test --manifest-path fuzz/Cargo.toml --lib
 

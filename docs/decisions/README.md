@@ -167,3 +167,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection
 - D176 [scope](scope.md): an answer of RRSIGs to an RRSIG question is insecure, served without AD; a denial is proven
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path in it; duplicates refused
+- D178 [performance and safety](performance-and-safety.md): the gate runs the tests under cargo-nextest, doctests by `cargo test --doc`

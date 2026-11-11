@@ -39,6 +39,8 @@ jobs:
       TYPOS_VERSION: "1.51.1"
       # renovate: datasource=crate depName=cargo-shear
       CARGO_SHEAR_VERSION: "1.14.0"
+      # renovate: datasource=crate depName=cargo-nextest
+      CARGO_NEXTEST_VERSION: "0.9.150"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -57,8 +59,11 @@ jobs:
             fuzz -> target
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }},cargo-shear@${{ env.CARGO_SHEAR_VERSION }}
+          tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }},cargo-shear@${{ env.CARGO_SHEAR_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
       - run: just check
+        env:
+          # `.config/nextest.toml`: every failure, not the first alone.
+          NEXTEST_PROFILE: ci
       # Root and a Linux kernel: dedensd drops to `nobody` after binding :53, and nothing else proves it (D122). `sudo -E`
       # keeps HOME, so rustup finds its toolchains; the PATH is passed through `env`, which `sudo` would reset. The
       # gate's packages and features reuse its build: `-p dedensd` alone would rebuild, as root, in the cached target.

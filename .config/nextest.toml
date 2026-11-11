@@ -1,0 +1,9 @@
+# cargo-nextest, the gate's test runner (`just check`, D178). No retries: a flaky test is a bug to fix.
+
+[profile.default]
+# A test still running after 2 min is killed: a hang fails its test, not the 45 min job.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# CI (`NEXTEST_PROFILE=ci`): every failure of the run, not the first alone.
+[profile.ci]
+fail-fast = false

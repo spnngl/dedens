@@ -190,3 +190,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   data flow across functions, which clippy's lints do not follow. Alerts go to the repository's Security tab, not
   to pull requests: the queries change with each release of the action, and a new one must not block unrelated
   work.
+- D178 (builds on D103) The gate runs the tests under cargo-nextest: `just check` runs `cargo nextest run
+  --workspace --all-features`, then `cargo test --workspace --all-features --doc`, as nextest runs no doctest. A
+  process per test: warm, the workspace's 1920 tests took 33.8 s and the doctests 5.8 s, against 48.6 s for
+  `cargo test` (Apple M5, 2026-11-11); a test that aborts its process ends no other test. `.config/nextest.toml`
+  kills a test still running after 2 min (the slowest took 17.7 s), where a hang held the job to its 45 min; the
+  `ci` profile (`NEXTEST_PROFILE=ci` in `ci.yml`) reports every failure, not the first. No retries: a test that
+  passes on a second try still failed once. `dedensd`'s test servers start one at a time under a file lock in the
+  temporary directory, not a mutex, which held within one process only. Under cargo-mutants (D103) the same kill
+  ends a mutant's hung test at 2 min, a failure, before the run's 240 s timeout. nextest builds through `cargo test
+  --no-run`, so the Privileges step's and `just sim-time`'s `cargo test` builds (D164) reuse its artifacts. The musl
+  suite (`rust:alpine` has no nextest), careful, loom and sim-time keep `cargo test`. Rejected: `cargo test`
+  alone (an abort ends its binary's other tests; slower).
