@@ -218,6 +218,36 @@ const fn block_padding(len: usize, block: usize) -> usize {
     (block - len % block) % block
 }
 
+/// Kani proofs of the framing (D145), for every input of up to 8 bytes.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any bytes up to 8 parse as a message without panicking, and a message they hold encodes back to them
+    /// (RFC 9230 §6.1).
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn a_parsed_message_encodes_back() {
+        let bytes: [u8; 8] = kani::any();
+        let len = kani::any_where(|&len: &usize| len <= bytes.len());
+        if let Ok(message) = Message::parse(&bytes[..len]) {
+            assert_eq!(message.encode(), &bytes[..len]);
+        }
+    }
+
+    /// Any bytes up to 8 parse as a plaintext without panicking, and a plaintext they hold encodes back to them:
+    /// its padding is zeros (RFC 9230 §6.1).
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn a_parsed_plaintext_encodes_back() {
+        let bytes: [u8; 8] = kani::any();
+        let len = kani::any_where(|&len: &usize| len <= bytes.len());
+        if let Ok(plaintext) = MessagePlaintext::parse(&bytes[..len]) {
+            assert_eq!(plaintext.encode(), &bytes[..len]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

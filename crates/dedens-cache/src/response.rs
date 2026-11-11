@@ -480,3 +480,23 @@ fn patch(out: &mut [u8], query: &Query<'_>, checked: Checked) {
         }
     }
 }
+
+/// Kani proof of [`whole_cut`] (D145), on every bit set of up to 3 bytes.
+#[cfg(kani)]
+mod proofs {
+    use super::whole_cut;
+
+    /// [`whole_cut`] returns the highest count at most `most` whose bit is set, 0 when none is, for every set of
+    /// bits of up to 3 bytes and every `most` they cover.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn the_cut_is_the_highest_whole_one() {
+        let bytes: [u8; 3] = kani::any();
+        let len = kani::any_where(|&len: &usize| (1..=3).contains(&len));
+        let cuts = &bytes[..len];
+        let most = kani::any_where(|&most: &usize| most < len * 8);
+        let set = |count: usize| cuts[count / 8] >> (count % 8) & 1 == 1;
+        let highest = (0..=most).rev().find(|&count| set(count)).unwrap_or(0);
+        assert_eq!(whole_cut(cuts, most), highest);
+    }
+}

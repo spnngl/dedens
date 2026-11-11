@@ -5,7 +5,8 @@ name: deep
 # scenarios under 100 random seeds, a job per family, and a failure prints the `DEDENS_SIM_SEED=<n>` that replays it
 # (`just sim`, D133); `sim-time` times each family under its fixed seeds against D133's budgets, scaled by 7 for
 # the runner, and fails over one (`just sim-time`, D164, D172); `careful` runs the tests on a checked standard
-# library under AddressSanitizer, a job per package (`just careful address`, D144).
+# library under AddressSanitizer, a job per package (`just careful address`, D144); `kani` runs the Kani proofs of
+# under a minute each (`just kani-fast`, D145), the rest weekly in `kani.yml`.
 on:
   pull_request:
 
@@ -41,6 +42,25 @@ jobs:
         with:
           workspaces: . -> target/loom
       - run: just loom
+  kani:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Caches ~/.cargo/bin, so `kani-install` skips the build until the pin changes.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: kani-${{ hashFiles('justfile') }}
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      - run: just kani-install
+      - run: just kani-fast
   # One sim job per family, a module of crates/dedens-sim/tests/tests.rs: all of them in one job outlast 30 minutes on a
   # slow runner.
   scenarios:

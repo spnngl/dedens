@@ -9,6 +9,9 @@ test_tool = "nextest"
 exclude_re = [
   # `Debug` output is for logs and failing tests: no test reads it.
   '<impl (fmt::)?Debug for ',
+  # Kani's proofs, in a `proofs` module beside the code they reach, built only under `cfg(kani)` and checked by
+  # `just kani` (D145).
+  '\bproofs::',
   # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
@@ -115,12 +118,11 @@ exclude_re = [
   'privileges/unix\.rs:\d+:\d+: replace groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
-# Unix, where the mutants shards do not run; Kani's harnesses, built only under `cfg(kani)` and checked by `just kani`
-# (D145). The test kit, test code as `tests/` is, which cargo-mutants never mutates: its mutants would only show which
-# helpers the kit's own tests skip, the packages whose tests use it not being run for them (D161).
+# Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
+# mutates: its mutants would only show which helpers the kit's own tests skip, the packages whose tests use it not
+# being run for them (D161).
 exclude_globs = [
   "crates/dedens-testkit/**",
   "apps/dedensd/src/sync/loom_slot.rs",
   "apps/dedensd/src/privileges/not_unix.rs",
-  "crates/dedens-proto/src/proofs.rs",
 ]

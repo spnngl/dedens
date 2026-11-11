@@ -87,6 +87,28 @@ pub(super) fn wildcard(ancestor: &Name<'_>) -> Result<Name<'static>, NameError> 
     Name::from_labels(core::iter::once(&b"*"[..]).chain(ancestor.labels()))
 }
 
+/// Kani proof of [`covers`] (D145), on chains of up to 4 bytes: any total order behaves the same.
+#[cfg(kani)]
+mod proofs {
+    use super::covers;
+
+    /// In a chain of 1 to 4 distinct owners in order, each linked to the next and the last to the first, a value
+    /// that owns no link is covered by exactly one link, and an owner by none (RFC 4034 §4.1.1, RFC 5155 §1.2).
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn each_name_is_covered_by_one_link_or_owns_one() {
+        let owners: [u8; 4] = kani::any();
+        let len = kani::any_where(|&len: &usize| (1..=4).contains(&len));
+        let chain = &owners[..len];
+        kani::assume(chain.windows(2).all(|w| w[0] < w[1]));
+        let name: u8 = kani::any();
+        let covering = (0..len)
+            .filter(|&i| covers(&chain[i], &chain[(i + 1) % len], &name))
+            .count();
+        assert_eq!(covering, usize::from(!chain.contains(&name)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
