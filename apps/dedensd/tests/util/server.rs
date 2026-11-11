@@ -96,11 +96,12 @@ impl Server {
     /// Starts `dedensd` on a free port, configured by `text` of the address to listen on, and waits until it logs
     /// that it serves: its sockets are bound then. A connection accepted earlier could be another server's, on a
     /// port both were handed (with `SO_REUSEPORT` on Linux, both even bind it). So servers start one at a time,
-    /// and one that cannot bind, its port taken meanwhile by another socket, exits and is started again on another
-    /// port.
+    /// under a file lock: nextest runs each test in a process of its own. One that cannot bind, its port taken
+    /// meanwhile by another socket, exits and is started again on another port.
     pub(crate) fn configured(text: impl Fn(&str) -> String) -> Self {
-        static STARTING: Mutex<()> = Mutex::new(());
-        let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
+        let one = std::fs::File::create(std::env::temp_dir().join("dedensd-tests-starting.lock"))
+            .expect("the lock file");
+        one.lock().expect("the lock taken");
         let mut tries = 0;
         loop {
             let addr = free_port();
