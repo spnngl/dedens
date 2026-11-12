@@ -36,7 +36,8 @@ pub(super) const H3_UNI_STREAMS: u32 = 16;
 
 /// Answers the requests of one HTTP/3 connection (RFC 9114 §4), each alone on a stream the client opened, as
 /// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`], and a new request
-/// must come within it too, as `quic::streams` says. Requests go through the pipeline as any query; the client is `peer`.
+/// must come within it too, as `quic::streams` says, unless one is still being answered: closing would lose its
+/// response (RFC 9114 §5.1). Requests go through the pipeline as any query; the client is `peer`.
 /// Once the connection passed its byte budget (D119) it is sent `GOAWAY` at the next request, and ends when it is
 /// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`]. Each request's task holds the connection's
 /// `slot`.
@@ -84,7 +85,9 @@ pub(super) async fn requests(
             Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
             Ok(Ok(None)) if going_away.is_none() => return,
             Err(_) if going_away.is_none() => {
-                return tracing::debug!(%peer, "HTTP/3 connection idle");
+                if budget.quiet() {
+                    return tracing::debug!(%peer, "HTTP/3 connection idle");
+                }
             }
             // After `GOAWAY`, h3 ends `accept` once the client did too: a request it sent before it heard of
             // `GOAWAY` may still come, to be refused, and dropping `requests` closes the connection.

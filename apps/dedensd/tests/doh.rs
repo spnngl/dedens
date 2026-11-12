@@ -320,11 +320,16 @@ mod h3_frames {
 
     /// `dedensd` answering `DoH` over HTTP/3, forwarding to `upstream`.
     fn serving(certificates: &Certificates, upstream: &Responder) -> Server {
-        serving_with(certificates, upstream, "")
+        serving_with(certificates, upstream, "", 2000)
     }
 
-    /// As [`serving`], with the lines `extra` in the configuration.
-    fn serving_with(certificates: &Certificates, upstream: &Responder, extra: &str) -> Server {
+    /// As [`serving`], with the lines `extra` in the configuration, `upstream` given `timeout_ms` to answer.
+    fn serving_with(
+        certificates: &Certificates,
+        upstream: &Responder,
+        extra: &str,
+        timeout_ms: u32,
+    ) -> Server {
         let config = write_config("");
         let (certificate, key) = (
             config.with_extension("crt.pem"),
@@ -335,7 +340,7 @@ mod h3_frames {
         let upstream = upstream.addr;
         Server::configured(|listen| {
             format!(
-                "{extra}listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
+                "{extra}listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: {timeout_ms}\n    tries: 1\n",
                 certificate.display(),
                 key.display()
             )
@@ -559,6 +564,28 @@ mod h3_frames {
         });
     }
 
+    /// §5.1: a connection waiting for a response is not idle: an upstream that answers past the idle time still has
+    /// its answer sent.
+    #[test]
+    fn s5_1_a_connection_waiting_for_a_response_is_not_idle() {
+        let upstream = Responder::slow("a", 300, Duration::from_secs(11));
+        let ca = certificates();
+        let server = serving_with(&ca, &upstream, "", 15_000);
+        Runtime::new().expect("a runtime").block_on(async {
+            let keep_alive = Some(Duration::from_secs(1));
+            let (_connection, _driver, mut requests) =
+                h3_connected(server.addr, &ca, keep_alive).await;
+            // The upstream answers its first query at once, the next 11 s late.
+            for _ in 0..2 {
+                let (status, body) = post(&mut requests, server.addr, &query_for("a", 0))
+                    .await
+                    .expect("an answer");
+                assert_eq!(status, http::StatusCode::OK);
+                assert_eq!(decode(&body).rcode(), Rcode::NOERROR);
+            }
+        });
+    }
+
     /// §5.1: the server closes a connection without a request for 10 s, though its client keeps it alive with pings.
     #[test]
     fn s5_1_an_idle_connection_is_closed() {
@@ -620,7 +647,7 @@ mod h3_frames {
     fn s10_5_the_next_connection_is_checked_too() {
         let upstream = Responder::start(&["a"]);
         let ca = certificates();
-        let server = serving_with(&ca, &upstream, "threads: 1\n");
+        let server = serving_with(&ca, &upstream, "threads: 1\n", 2000);
         Runtime::new().expect("a runtime").block_on(async {
             let (first, _control) = connected(server.addr, &ca).await;
             first.close(0_u32.into(), b"");
