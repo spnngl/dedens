@@ -22,10 +22,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   cannot read (the header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than
   QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the
   client's ID, opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with
-  AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one. Over UDP it fits the
-  client's payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes whole. The forward
-  stage asks its servers in order, the next on no response, one undecodable or breaking a rule, TC, or SERVFAIL,
-  REFUSED, NOTIMP, FORMERR (RFC 1035 §7.3); after the last, SERVFAIL. Upstream gets the client's question, RD set,
+  AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one (RFC 6891 §6.1.1, §7),
+  so a FORMERR to OPT records breaking a rule has ours too: several (§6.1.1), one outside the additional section or
+  not owned by the root (§6.1.2), one with an invalid option (§7); with no OPT read, DO is clear and the payload
+  512. An option overrunning its OPT record fails `Query::read`: the header-alone FORMERR has no OPT, short of §7.
+  Over UDP it fits the client's payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes
+  whole. The forward stage asks its servers in order, the next on no response, one undecodable or breaking a rule,
+  or TC. An upstream response is usable only with RCODE NOERROR, NXDOMAIN or YXDOMAIN (RFC 6672 §2.2). Any other
+  RCODE — SERVFAIL, REFUSED, NOTIMP, FORMERR, the update codes, and the extended codes from the upstream's own OPT
+  (BADVERS, BADCOOKIE, …) — sends the query to the next server (RFC 1035 §7.3). None of them speaks about the
+  client's query. After the last, SERVFAIL. Upstream gets the client's question, RD set,
   AD and CD copied, our EDNS with DO and none of the client's options: the client subnet never leaves (privacy),
   cookies are per hop (D27). Rejected: an async stage trait over a mock upstream (sans-IO tests are exact, as D26).
 - D42 (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122) `dedensd` I/O around D41: one compio thread per core on Linux, each with its

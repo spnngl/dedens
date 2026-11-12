@@ -8,6 +8,7 @@ use dedens_proto::edns::{
 };
 use dedens_proto::{
     Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
+    Violation,
 };
 
 use crate::plugin::Answer;
@@ -33,19 +34,46 @@ const COOKIE_CLIENT_LEN: usize = 8;
 pub(crate) struct Client<'q> {
     pub(crate) header: Header,
     pub(crate) question: Option<Question<'q>>,
-    pub(crate) edns: Option<EdnsView<'q>>,
+    opt: Opt<'q>,
     pub(crate) transport: Transport,
     /// The cookie our reply carries: the client's, with the Server Cookie we made for it (D113).
     pub(crate) cookie: Option<Cookie>,
 }
 
+/// The OPT record of a query, as its reply needs it: the reply has ours when the query had one, and only then (RFC
+/// 6891 §6.1.1, §7).
+#[derive(Debug, Clone)]
+enum Opt<'q> {
+    /// None.
+    Absent,
+    /// Only OPT records the reader left opaque, outside the additional section or not owned by the root (RFC 6891
+    /// §6.1.1, §6.1.2): the query is answered FORMERR, with our OPT record all the same, since the error is in
+    /// EDNS (§7). Nothing of the client's is read: no DO, the least UDP payload.
+    Unread,
+    /// The first OPT record of the additional section owned by the root.
+    Read(EdnsView<'q>),
+}
+
 impl<'q> Client<'q> {
     /// The client of `query`.
     pub(crate) fn of(query: &Query<'q>, transport: Transport) -> Self {
+        let opt = match query.edns() {
+            Some(edns) => Opt::Read(edns.clone()),
+            None if query.violations().iter().any(|violation| {
+                matches!(
+                    violation,
+                    Violation::OptOutsideAdditional | Violation::OptOwnerNotRoot
+                )
+            }) =>
+            {
+                Opt::Unread
+            }
+            None => Opt::Absent,
+        };
         Self {
             header: query.header(),
             question: query.question().cloned(),
-            edns: query.edns().cloned(),
+            opt,
             transport,
             cookie: None,
         }
@@ -57,13 +85,13 @@ impl<'q> Client<'q> {
         self
     }
 
-    /// The client of a query read no further than its header: the reply has no question and no OPT record
-    /// (RFC 6891 §7).
+    /// The client of a query read no further than its header: the reply has no question and no OPT record, as
+    /// none was read.
     pub(crate) const fn unread(header: Header, transport: Transport) -> Self {
         Self {
             header,
             question: None,
-            edns: None,
+            opt: Opt::Absent,
             transport,
             cookie: None,
         }
@@ -74,9 +102,9 @@ impl<'q> Client<'q> {
     ///
     /// The reply has the client's ID, opcode and question, in its case (RFC 4343 §4); QR and RA set, RD and CD
     /// copied (RFC 1035 §4.1.1, RFC 4035 §3.2.2), AD kept only when the query had AD or DO (RFC 6840 §5.8), AA
-    /// cleared: the server is not the authority. It has an OPT record, ours, when the query had one (RFC 6891 §7),
-    /// with DO copied (RFC 3225 §3), the extended `error` if any (RFC 8914) and the client's [`Client::padding`];
-    /// otherwise an extended `rcode` becomes SERVFAIL.
+    /// cleared: the server is not the authority. It has an OPT record, ours, when the query had one, read or not
+    /// (RFC 6891 §6.1.1, §7), with DO copied (RFC 3225 §3), the extended `error` if any (RFC 8914) and the
+    /// client's [`Client::padding`]; otherwise an extended `rcode` becomes SERVFAIL.
     ///
     /// The OPT record opens the additional section (D9), so its Padding option is sized from a first encoding
     /// and the message encoded again with it.
@@ -93,7 +121,7 @@ impl<'q> Client<'q> {
         };
         message.questions.clear();
         message.questions.extend(self.question.clone());
-        message.edns = self.edns.as_ref().map(|_| {
+        message.edns = self.has_opt().then(|| {
             let mut edns = self.our_edns();
             edns.options.extend(self.cookie.map(EdnsOption::Cookie));
             edns.options.extend(error.map(|code| {
@@ -136,7 +164,7 @@ impl<'q> Client<'q> {
     /// 2181 §9).
     pub(crate) fn answer(&self, wire: &[u8], answer: &Answer<'_>, out: &mut [u8]) -> Option<usize> {
         let question = self.question.as_ref()?;
-        let mut edns = self.edns.as_ref().map(|_| self.our_edns());
+        let mut edns = self.has_opt().then(|| self.our_edns());
         let mut rcode = u16::from(answer.rcode);
         match &mut edns {
             Some(edns) => edns.ext_rcode = u8::try_from(rcode >> 4).ok()?,
@@ -231,7 +259,7 @@ impl<'q> Client<'q> {
         let padded = matches!(
             self.transport,
             Transport::Tls | Transport::Quic | Transport::Https
-        ) && self.edns.as_ref().is_some_and(|edns| {
+        ) && self.edns().is_some_and(|edns| {
             edns.options()
                 .any(|option| option.code() == OptionCode::PADDING)
         });
@@ -252,10 +280,22 @@ impl<'q> Client<'q> {
         }
     }
 
+    /// Whether the query had an OPT record, read or not: the reply has ours then, and only then (RFC 6891 §7).
+    pub(crate) const fn has_opt(&self) -> bool {
+        !matches!(self.opt, Opt::Absent)
+    }
+
+    /// The EDNS settings of the client, when its OPT record was read.
+    const fn edns(&self) -> Option<&EdnsView<'q>> {
+        match &self.opt {
+            Opt::Read(edns) => Some(edns),
+            Opt::Absent | Opt::Unread => None,
+        }
+    }
+
     /// Whether the client asked for DNSSEC records (RFC 3225 §3).
     pub(crate) fn dnssec(&self) -> bool {
-        self.edns
-            .as_ref()
+        self.edns()
             .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO))
     }
 
@@ -280,7 +320,7 @@ impl<'q> Client<'q> {
             | Transport::Https
             | Transport::Odoh
             | Transport::Coap => MAX_MESSAGE_LEN,
-            Transport::Udp => usize::from(self.edns.as_ref().map_or(MIN_UDP_PAYLOAD, |edns| {
+            Transport::Udp => usize::from(self.edns().map_or(MIN_UDP_PAYLOAD, |edns| {
                 edns.udp_payload.clamp(MIN_UDP_PAYLOAD, DEFAULT_UDP_PAYLOAD)
             })),
         }
