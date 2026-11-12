@@ -256,6 +256,7 @@ mod negative {
 
     const NEVER: StalePolicy = StalePolicy::Never;
 
+    /// RFC 2181 §5.2: the records of an `RRset` whose TTLs differ live as long as the least of them.
     #[test]
     fn positive_answer_lives_as_long_as_its_shortest_ttl() {
         let cache = small_cache();
