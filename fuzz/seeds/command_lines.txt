@@ -1,0 +1,34 @@
+# Command lines of `dedens`, its name left out, a space between two arguments: the seeds of `parse_command_line`
+# (D181), as the docs and `apps/dedens/tests/` write them. `just fuzz` and the smoke test give it each line with a NUL
+# byte between two arguments, as the kernel passes them.
+--help
+@https://dns.google/dns-query cloudflare.com TXT +dnssec --save-wire dir
+@https://dns.google/dns-query . DNSKEY +dnssec
+@https://127.0.0.1:443/dns-query +odoh-proxy=https://127.0.0.1:8443 example.com A
++doc-discover @coap://127.0.0.1:5683
+-x 192.0.2.1
++validate example.com
+--insecure example.com +validate cloudflare.com
+--format yaml example.com
+-f -
+@127.0.0.1:5353 dnssec-failed.org nonexistent.invalid gmail.com MX +nocookie
+@127.0.0.1:5353 gmail.com MX +short
+@127.0.0.1:5353 example.com +nsid --json
+@127.0.0.1:5353 example.com cloudflare.com AAAA A --json +tries=1 +time=200ms
+@127.0.0.1:5353 example.com nonexistent.invalid --format=yaml
++trace example.com
+@tls://127.0.0.1:853#dns.example example.com +tls-insecure
+@quic://127.0.0.1:853#dns.example example.com
+@https://127.0.0.1:443/dns-query#dns.example example.com +https-post
+@127.0.0.1 +https=/dns example.com
+@coap://127.0.0.1:5683/dns/query example.com +time=300ms
+-t MX -cCH -q example.com -q MX
+-p 5353 -x 192.0.2.1
++norec +nocd +bufsize=512 +noedns example.com
++trust-anchor=a.zone +insecure=example.com +validate example.com
+--only a -f queries.yaml
++repeat=3 +tcp @127.0.0.1 example.com
++cookie=0102030405060708 +dnssec +cd +noad example.com
+--color=always -vv @[::1]:5353 example.com
++search www
+-- +x @y

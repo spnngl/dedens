@@ -10,9 +10,11 @@ cargo-fuzz = true
 
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
 # function of `src/`, which `cargo test --lib` also drives on stable with the captured responses in
-# `testdata/proto/`, `testdata/dnssec/` and `testdata/odoh/` as seeds (`just fuzz-smoke`).
+# `testdata/proto/`, `testdata/dnssec/` and `testdata/odoh/` as seeds (`just fuzz-smoke`), with those of `seeds/`.
 
 [dependencies]
+# The parsers of the two binaries, through their libraries (D181), with every transport they read.
+dedens = { path = "../apps/dedens", features = ["odoh", "doc"] }
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-dnssec = { path = "../crates/dedens-dnssec" }
 dedens-net = { path = "../crates/dedens-net", features = ["odoh"] }
@@ -21,6 +23,7 @@ dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 dedens-server = { path = "../crates/dedens-server" }
+dedensd = { path = "../apps/dedensd", features = ["odoh", "doc"] }
 # The second implementation of `differential_hickory`; the same version as the workspace's (D14).
 hickory-proto = { version = "0.26.3", default-features = false, features = [
   "std",
@@ -209,6 +212,20 @@ bench = false
 [[bin]]
 name = "parse_trust_anchors"
 path = "fuzz_targets/parse_trust_anchors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_command_line"
+path = "fuzz_targets/parse_command_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_config"
+path = "fuzz_targets/read_config.rs"
 test = false
 doc = false
 bench = false

@@ -326,17 +326,23 @@ image:
     {{ container }} build -f Containerfile -t localhost/dedensd .
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
-# with the CoAP datagrams `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap"
+# with the seeds `fuzz-seeds` writes out.
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/configs"
 
-# The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap.
+# The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
+# lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; dedensd's
+# configurations, the image's, the packages' and the example of its config module, in fuzz/target/seeds/configs (D181).
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap
-    mkdir -p fuzz/target/seeds/coap
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/configs
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/configs
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
+    perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
+    cp deploy/dedensd.yaml fuzz/target/seeds/configs/dedensd.yaml
+    cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
+    perl -ne 'last unless s{^//! ?}{}; print if /^```yaml$/ ... /^```$/ and !/^```/' apps/dedensd/src/config/mod.rs > fuzz/target/seeds/configs/example.yaml
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured data, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4
