@@ -17,8 +17,9 @@ use dedens_sim::upstream::Answers;
 
 const SEEDS: &[u64] = &[0, 7, 2026];
 
-/// The digest of the trace of a run that asks twice (the cache answers the second), with a partition at a time the
-/// seed picks and an attacker that repeats each answer on the server's host.
+/// The digest of the trace of a run that asks twice (the cache answers the second, once the partition is
+/// repaired), with a partition at a time the seed picks and an attacker that repeats each answer on the server's
+/// host.
 fn digest(seed: Seed) -> u64 {
     let attacker = Attacker::new(|seen| {
         Reaction::beside(
@@ -40,10 +41,12 @@ fn digest(seed: Seed) -> u64 {
         Fault::Repair(Node::Resolver, Node::Upstream(0)),
     );
     world.client(async move |stub| {
-        for _ in 0..2 {
-            stub.ask(question("example.com", RecordType::A), Carrier::Udp)
-                .await?;
-        }
+        let begun = tokio::time::Instant::now();
+        stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+            .await?;
+        tokio::time::sleep_until(begun + at + Duration::from_secs(1)).await;
+        stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+            .await?;
         Ok(())
     });
     trace::digest(&world.run().expect("the run passes its checks"))

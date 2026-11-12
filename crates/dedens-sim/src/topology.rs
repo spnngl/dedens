@@ -307,8 +307,8 @@ impl World {
     ///
     /// # Errors
     ///
-    /// A client that failed, a host that failed or panicked in any of its tasks, or a run that lasts past its
-    /// duration.
+    /// A client that failed, a host that failed or panicked in any of its tasks, a run that lasts past its
+    /// duration, or one that ends before the time of a fault: that fault would not have been tested.
     pub fn run(mut self) -> turmoil::Result<Vec<Event>> {
         self.faults.sort_by_key(|(at, _)| *at);
         let mut faults = self.faults.into_iter().peekable();
@@ -320,7 +320,12 @@ impl World {
                 self.trace.record_at(now, network, What::Fault(fault));
             }
             if self.sim.step()? {
-                return Ok(self.trace.events());
+                return match faults.next() {
+                    None => Ok(self.trace.events()),
+                    Some((at, fault)) => {
+                        Err(format!("the run ended at {now:?}, before {fault:?} at {at:?}").into())
+                    }
+                };
             }
         }
     }
