@@ -86,8 +86,9 @@ impl Upstream {
         let mut queries = self.queries.lock().unwrap_or_else(PoisonError::into_inner);
         queries.push((transport, query.to_vec()));
         let count = queries.len();
+        let udp = queries.iter().filter(|(t, _)| *t == Transport::Udp).count();
         drop(queries);
-        if self.flaky && transport == Transport::Udp && count.is_multiple_of(2) {
+        if self.flaky && transport == Transport::Udp && udp.is_multiple_of(2) {
             return None;
         }
         if count > self.undelayed {
@@ -652,6 +653,38 @@ fn question(wire: &[u8]) -> Option<((String, [u8; 2]), usize)> {
         name.push('.');
         at += len;
     }
-    let qtype = wire.get(at..at + 2)?.try_into().ok()?;
-    Some(((name, qtype), at + 4))
+    // QTYPE and QCLASS (RFC 1035 §4.1.2): a question cut short of its class is none.
+    let [high, low, _, _] = *wire.get(at..at + 4)? else {
+        return None;
+    };
+    Some(((name, [high, low]), at + 4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_question_cut_short_of_its_class_is_none() {
+        let wire = read("a");
+        let (_, end) = question(&wire).expect("a question");
+        assert!(question(&wire[..end]).is_some());
+        assert_eq!(question(&wire[..end - 1]), None);
+        // A server thread answering it would have panicked on the copy of the question.
+        let upstream = Upstream::new(canned_with(&["a"], &[]));
+        assert_eq!(upstream.answer(&wire[..end - 2], Transport::Udp), None);
+    }
+
+    #[test]
+    fn flaky_drops_every_second_udp_query_whatever_comes_over_tcp() {
+        let upstream = Upstream {
+            flaky: true,
+            ..Upstream::new(canned_with(&["a"], &[]))
+        };
+        let query = read("a");
+        assert!(upstream.reply(&query, Transport::Udp).is_some());
+        assert!(upstream.reply(&query, Transport::Tcp).is_some());
+        assert!(upstream.reply(&query, Transport::Udp).is_none());
+        assert!(upstream.reply(&query, Transport::Udp).is_some());
+    }
 }
