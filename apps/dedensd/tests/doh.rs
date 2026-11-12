@@ -504,7 +504,7 @@ mod h3_frames {
     /// end.
     #[test]
     fn s5_2_a_connection_past_its_budget_is_closed_once_its_last_request_is_answered() {
-        let upstream = Responder::slow("a", 300, Duration::from_millis(500));
+        let upstream = Responder::delayed(&["a"], Duration::from_millis(500));
         let ca = certificates();
         let server = serving(&ca, &upstream);
         Runtime::new().expect("a runtime").block_on(async {
