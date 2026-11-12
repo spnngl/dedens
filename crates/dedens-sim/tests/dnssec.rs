@@ -1028,8 +1028,9 @@ fn weathered(weather: Rc<Cell<Weather>>) -> Answers {
 /// The run of the property: two clients, each over a transport the seed picks, ask three names the seed picks (all
 /// different: a second ask of a name that failed meets the failure hold, a SERVFAIL with no extended error), while
 /// the DS and DNSKEY responses are lost and late as the seed says. Each answer is the verdict of the table, or a
-/// SERVFAIL with an extended error: a lost response is an unanswered question, indeterminate, never a verdict other
-/// than the zone's, no insecure signed zone, no bogus one that validates.
+/// SERVFAIL saying there is none (DNSSEC Indeterminate or No Reachable Authority): a lost response is an unanswered
+/// question, never a verdict other than the zone's, no insecure signed zone, no bogus one that validates, no secure
+/// one called bogus.
 fn weather_run(seed: Seed) -> Vec<Event> {
     let weather = Rc::new(Cell::new(Weather::default()));
     let mut world = world(
@@ -1059,7 +1060,10 @@ fn weather_run(seed: Seed) -> Vec<Event> {
                     Seen::Servfail(None) => {
                         return Err(format!("{name}: SERVFAIL without an extended error").into());
                     }
-                    Seen::Servfail(Some(_)) => {}
+                    // A lost or late response leaves the question unanswered: no verdict.
+                    Seen::Servfail(Some(
+                        InfoCode::DNSSEC_INDETERMINATE | InfoCode::NO_REACHABLE_AUTHORITY,
+                    )) => {}
                     verdict if zone.expect.seen() == verdict => {}
                     verdict => {
                         return Err(format!("{name}: {verdict:?}, not {:?}", zone.expect).into());
@@ -1072,8 +1076,8 @@ fn weather_run(seed: Seed) -> Vec<Event> {
     world.run().expect("the run passes its checks")
 }
 
-/// Whatever the weather on the validator's questions, each answer is its zone's verdict or a SERVFAIL with an
-/// extended error, over UDP and TCP, with the oracle's checks of every response (AD only where the zone is secure,
+/// Whatever the weather on the validator's questions, each answer is its zone's verdict or a SERVFAIL of no verdict,
+/// over UDP and TCP, with the oracle's checks of every response (AD only where the zone is secure,
 /// the records the server's).
 #[test]
 fn whatever_the_validators_questions_suffer_the_verdict_stands_or_servfails() {
