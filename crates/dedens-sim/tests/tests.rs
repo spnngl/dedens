@@ -11,4 +11,5 @@ mod loss;
 mod partition;
 mod pools;
 mod replay;
+mod serving;
 mod util;

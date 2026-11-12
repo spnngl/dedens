@@ -10,6 +10,10 @@
 //! stage's timeout and tries for each, the client response timer and the stale reply it sends (D45), a failure of the query itself that abandons the question (D46), and the
 //! connections `action: drop` refuses (D91).
 //!
+//! [`Resolver::serve_dedensd`] runs `dedensd`'s own serving loop instead, behind the `Io` seam (D182): what is left
+//! out below is then in, save the threads, and the trace has none of the resolver's `Replied`, `Forwarded` and
+//! `Stored`, which only this driver records.
+//!
 //! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
 //! are answered one after the other, in order), the shared flights of D86, the cap on connections and on
 //! upstream queries, the few reading tasks of `dedensd` (here one task answers each datagram, so none is ever
@@ -34,7 +38,8 @@ use turmoil::net::TcpStream;
 
 use crate::client::{Carrier, Client};
 use crate::framing;
-use crate::port::{Arrival, Port};
+use crate::io::{Sim, SimListener};
+use crate::port::{Arrival, PORT, Port};
 use crate::seed::Rng;
 use crate::trace::{Trace, What};
 
@@ -135,6 +140,23 @@ struct Shared {
 }
 
 impl Resolver {
+    /// The software of the resolver host as `dedensd` serves a plain listener: its loop of UDP and TCP on port 53,
+    /// on [`Sim`], until the host crashes (D182).
+    ///
+    /// # Errors
+    ///
+    /// A socket that fails to bind.
+    pub async fn serve_dedensd(&self, host: IpAddr) -> turmoil::Result {
+        let io = Sim::new(Rc::clone(&self.rng), host, self.trace.clone());
+        let port = SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, PORT));
+        let udp = dedens_net::io::Io::udp_bind(&io, port).await?;
+        let tcp = SimListener::bind(port).await?;
+        let pipeline = (self.build)(&self.upstreams);
+        let trust = self.trust.clone().unwrap_or_default();
+        dedensd::simulated(io, udp, tcp, pipeline, trust).await;
+        Ok(())
+    }
+
     /// The software of the resolver host: serves port 53 until the host crashes.
     ///
     /// # Errors

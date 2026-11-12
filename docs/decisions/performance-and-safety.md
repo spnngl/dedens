@@ -264,7 +264,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a git dependency without a licence), Aeneas with Charon (proofs written by hand in Lean, broken by each change of
   the Rust, and no one to own them; Charon alone checks nothing), MIRAI (unmaintained since 2025-03; its
   nightly-2025-01-10 cannot build edition 2024), Kani on whole messages (D179).
-- D181 (builds on D141, D154, D170) The parsers of outside data in the two binaries are fuzzed through a library
+- D181 (builds on D141, D154, D170; amended by D182) The parsers of outside data in the two binaries are fuzzed through a library
   target of each app: `src/lib.rs` holds the crate `src/main.rs` held, and `src/main.rs` keeps the allocator of a
   musl build (D154) and calls the library's `main`. Each library makes public `main` and one entry per parser,
   nothing else: `dedens::parse_args` reads a command line as `dedens` does (`Cli::try_parse_dig`, the usage error

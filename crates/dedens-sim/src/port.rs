@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use turmoil::net::{TcpListener, TcpStream, UdpSocket};
 
 /// The DNS port.
-const PORT: u16 = 53;
+pub(crate) const PORT: u16 = 53;
 
 /// What arrived on the port.
 #[derive(Debug)]

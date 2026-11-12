@@ -565,6 +565,21 @@ run alternately, four rounds each. Apple M5, macOS, `poll` driver, a laptop in u
   explains it. A difference under 10% is not shown; io_uring on Linux was not measured (no Linux host), where `just
   bench-dnsperf` is the check to run.
 
+### Behind the seam (D182)
+
+The same bench, the executables of the tree before D182 (440e39dd) and after (`Thread<Compio>`: `udp`, `tcp`,
+`answer` and `supervise` generic over `Io`), run alternately, eight rounds each, the order of the pair swapped after
+four. Apple M5, macOS, `poll` driver, load average 14-16 from other builds: single rounds range over 3.7x.
+
+| in flight | before: median (fastest) | after: median (fastest) |
+|---|---|---|
+| 1 | 20756 (29771) | 16193 (22340) |
+| 32 | 65050 (91618) | 60122 (72739) |
+
+- No conclusion either way: the rounds of both overlap from end to end, and the code on a datagram's path is the same
+  calls through one `#[inline]` forwarder each. `just bench-dnsperf <base> forward` and `forward-tcp` on the Linux
+  VPS (`io_uring`) are the check to run, before and after.
+
 ## dedensd under dnsperf (D48-D53)
 
 `just bench-dnsperf [base] [mode]`: Docker on an Apple M-series host (Linux arm64 VM, io_uring), `dedensd` on

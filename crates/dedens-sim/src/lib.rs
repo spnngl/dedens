@@ -5,7 +5,8 @@
 //!
 //! The driver mirrors `dedensd`'s glue, `apps/dedensd/src/serve/`, and runs `dedens-net`'s own client on the
 //! simulated network (D134): the [`client`] on [`io::Sim`], the [`resolver`] host, the [`upstream`] and [`dot`]
-//! hosts; [`topology`] builds a run, [`stub`] checks its queries, and [`trace`] records it.
+//! hosts; [`topology`] builds a run, [`stub`] checks its queries, and [`trace`] records it. In place of the
+//! driver, the resolver host may run `dedensd`'s own serving loop of UDP and TCP (D182, `Topology::dedensd`).
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]

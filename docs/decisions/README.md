@@ -125,8 +125,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D123 [server](server.md): UDP replies through a queue and one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
-- D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164): simulation tests of the sans-IO cores on `turmoil`
-- D134 [simulation tests](simulation-tests.md): the client's compio layer behind an `Io` seam, for simulation
+- D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`
+- D134 [simulation tests](simulation-tests.md) (amended by D182): the client's compio layer behind an `Io` seam, for simulation
 - D135 [server](server.md): loom checks the reload wake-up and the query flights
 - D136 [server](server.md): Server Cookie hash compared in constant time with `subtle`
 - D137 [server](server.md): rejected: a read lock for the cache's hits
@@ -170,4 +170,5 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D178 [performance and safety](performance-and-safety.md): the gate runs the tests under cargo-nextest, doctests by `cargo test --doc`
 - D179 [performance and safety](performance-and-safety.md): Kani proofs beside the code in four packages; the fast ones on each pull request
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
-- D181 [performance and safety](performance-and-safety.md): the binaries' parsers fuzzed through a library target of each app
+- D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
+- D182 [simulation tests](simulation-tests.md): `dedensd`'s UDP and TCP serving loop behind the `Io` seam, run on turmoil

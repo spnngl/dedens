@@ -47,6 +47,15 @@ enum Speaks {
     Tls,
 }
 
+/// What the resolver host runs.
+#[derive(Debug, Clone, Copy)]
+enum Software {
+    /// [`Resolver::serve`], the driver mirroring `dedensd`'s glue (D133).
+    Driver,
+    /// [`Resolver::serve_dedensd`], `dedensd`'s own serving loop (D182).
+    Dedensd,
+}
+
 /// Which hosts a run has; [`Topology::build`] makes them.
 pub struct Topology {
     upstreams: Vec<(Answers, Speaks)>,
@@ -54,6 +63,7 @@ pub struct Topology {
     duration: Duration,
     repair_rate: Option<f64>,
     pipeline: Build,
+    software: Software,
 }
 
 impl fmt::Debug for Topology {
@@ -63,6 +73,7 @@ impl fmt::Debug for Topology {
             .field("epoch", &self.epoch)
             .field("duration", &self.duration)
             .field("repair_rate", &self.repair_rate)
+            .field("software", &self.software)
             .finish_non_exhaustive()
     }
 }
@@ -75,6 +86,7 @@ impl Default for Topology {
             duration: DURATION,
             repair_rate: None,
             pipeline: Rc::new(resolver::pipeline),
+            software: Software::Driver,
         }
     }
 }
@@ -132,6 +144,15 @@ impl Topology {
     #[must_use]
     pub fn resolver(mut self, build: impl Fn(&[Server]) -> Pipeline + 'static) -> Self {
         self.pipeline = Rc::new(build);
+        self
+    }
+
+    /// Runs `dedensd`'s serving loop of UDP and TCP on the resolver host ([`Resolver::serve_dedensd`]) in place of
+    /// the driver ([`Resolver::serve`]): its tasks, queues, timers and caps, on the simulated network (D182). The
+    /// trace then has none of the resolver's `Replied`, `Forwarded` and `Stored`.
+    #[must_use]
+    pub const fn dedensd(mut self) -> Self {
+        self.software = Software::Dedensd;
         self
     }
 
@@ -198,9 +219,15 @@ impl Topology {
             trace: trace.clone(),
             build: self.pipeline,
         };
+        let software = self.software;
         sim.host("resolver", move || {
             let resolver = resolver.clone();
-            async move { resolver.serve(host).await }
+            async move {
+                match software {
+                    Software::Driver => resolver.serve(host).await,
+                    Software::Dedensd => resolver.serve_dedensd(host).await,
+                }
+            }
         });
         World {
             sim,
