@@ -5,7 +5,7 @@
 use std::cell::Cell;
 use std::io;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use compio::BufResult;
 use compio::io::BufReader;
@@ -32,8 +32,9 @@ pub(super) const TCP_PENDING: usize = 64;
 /// Bytes of replies a TCP connection may queue for its writer: past them, reading waits.
 const TCP_QUEUED: usize = 128 << 10;
 
-/// How long the replies queued on a TCP connection may take to be written, from when the first is queued until
-/// none is left: a client that reads slower than it asks loses its connection (RFC 7766 §10).
+/// How long one write of the replies queued on a TCP connection may take: a client that stops reading loses its
+/// connection (RFC 7766 §10). Per write, not until the queue empties: a client that keeps asking keeps the queue from
+/// emptying while it reads all it is sent, and one that reads slower than it asks is held back by [`TCP_QUEUED`].
 pub(super) const TCP_WRITE: Duration = Duration::from_secs(10);
 
 /// Serves the TCP listener `tcp_listener`, over TLS with `acceptor` if any, as the listener `scheme`. A restarted
@@ -209,9 +210,8 @@ impl Replies {
 }
 
 /// Writes the replies of `queue`, counting down the bytes `queued` and telling `room` once they are
-/// [`TCP_QUEUED`] or fewer. Ends when every sender is dropped, or a write fails, or the queue is not empty
-/// [`TCP_WRITE`] after its first reply. The replies queued meanwhile go out together, up to a message's size: one
-/// write for many.
+/// [`TCP_QUEUED`] or fewer. Ends when every sender is dropped, or a write fails or lasts [`TCP_WRITE`]. The replies
+/// queued meanwhile go out together, up to a message's size: one write for many.
 async fn write(
     mut writer: impl Outbound,
     queue: flume::Receiver<Vec<u8>>,
@@ -220,8 +220,6 @@ async fn write(
 ) {
     let mut batch = Vec::new();
     while let Ok(first) = queue.recv_async().await {
-        // The queue was empty: it must be again in time.
-        let deadline = Instant::now() + TCP_WRITE;
         let mut next = Some(first);
         while let Some(framed) = next {
             batch.clear();
@@ -231,7 +229,7 @@ async fn write(
             {
                 batch.extend_from_slice(&framed);
             }
-            match compio::time::timeout_at(deadline, writer.write_all(batch)).await {
+            match compio::time::timeout(TCP_WRITE, writer.write_all(batch)).await {
                 Ok(BufResult(Ok(()), written)) => batch = written,
                 _ => return,
             }
@@ -264,7 +262,7 @@ mod tests {
     use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
     use dedens_server::Pipeline;
 
-    use super::{Replies, TCP_QUEUED, connection, tcp, write};
+    use super::{Replies, TCP_QUEUED, TCP_WRITE, connection, tcp, write};
     use crate::lists::Store;
     use crate::reload::Current;
     use crate::serve::isolate::{Listener, Origin};
@@ -461,6 +459,53 @@ mod tests {
             drop(replies);
             writing.await.expect("the writer ends");
             assert_eq!(*batches.borrow(), [5 * 13107, 13107]);
+        });
+    }
+
+    /// A writer whose every write takes `pause`, recording each batch's length.
+    struct Slow {
+        pause: Duration,
+        batches: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl dedens_net::tcp::Outbound for Slow {
+        async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>> {
+            compio::time::sleep(self.pause).await;
+            self.batches.borrow_mut().push(batch.len());
+            BufResult(Ok(()), batch)
+        }
+
+        async fn close(&mut self) {}
+    }
+
+    /// D47: a client that asks without a pause, and reads all it is sent, keeps the queue from emptying past
+    /// `TCP_WRITE`; its connection stays, each write being on time.
+    #[test]
+    fn a_queue_that_never_empties_is_written_while_each_write_is_on_time() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let (sender, queue) = flume::unbounded();
+            let replies = Replies {
+                sender,
+                queued: Rc::default(),
+            };
+            let (room, _wait_room) = flume::bounded(1);
+            let batches = Rc::default();
+            let writer = Slow {
+                pause: Duration::from_millis(300),
+                batches: Rc::clone(&batches),
+            };
+            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let start = std::time::Instant::now();
+            let mut pushed = 0;
+            while start.elapsed() < TCP_WRITE + Duration::from_secs(1) {
+                assert!(replies.push(&[0; 100]), "the writer gave up");
+                pushed += 102;
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+            drop(replies);
+            writing.await.expect("the writer ends");
+            assert_eq!(batches.borrow().iter().sum::<usize>(), pushed);
         });
     }
 
