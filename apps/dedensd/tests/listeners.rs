@@ -327,6 +327,45 @@ fn a_quic_query_with_a_message_id_is_a_protocol_error() {
     });
 }
 
+/// RFC 9250 §4.3.2, §4.3.3: a query the server does not answer, here a response the pipeline drops, has its stream
+/// reset with `DOQ_INTERNAL_ERROR`, 1, not finished empty, which the client would take for a protocol error; the
+/// connection stays open for the next query.
+#[test]
+fn a_quic_query_left_unanswered_has_its_stream_reset() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (server, ..) = listening(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
+        let mut response = query_for("a", 0);
+        // QR: a response, which the pipeline drops (RFC 1035 §4.1.1).
+        response[2] |= 0x80;
+        send.write_all(framed(&response))
+            .await
+            .0
+            .expect("the response sent");
+        send.finish().expect("finished");
+        let reset = compio::time::timeout(Duration::from_secs(10), recv.received_reset()).await;
+        assert_eq!(
+            reset.expect("reset within 10 s").expect("a reset"),
+            Some(VarInt::from_u32(1))
+        );
+        let (mut send, mut recv) = connection.open_bi_wait().await.expect("another stream");
+        send.write_all(framed(&query_for("a", 0)))
+            .await
+            .0
+            .expect("the query sent");
+        send.finish().expect("finished");
+        let reply = compio::time::timeout(Duration::from_secs(10), read_message(&mut recv)).await;
+        assert_eq!(
+            decode(&reply.expect("within 10 s").expect("a reply")).rcode(),
+            Rcode::NOERROR
+        );
+        connection.close(VarInt::from_u32(0), b"");
+    });
+}
+
 /// D47: a reply that its client has no credit to receive is given up after the write time, as on TCP: the stream
 /// is reset and the connection closes.
 #[test]

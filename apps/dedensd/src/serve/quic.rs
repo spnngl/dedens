@@ -83,6 +83,9 @@ pub(super) enum Service {
     Https(Arc<str>),
 }
 
+/// `DOQ_INTERNAL_ERROR`: a stream left with no reply (RFC 9250 §4.3.2).
+const DOQ_INTERNAL_ERROR: u32 = 0x1;
+
 /// `DOQ_EXCESSIVE_LOAD`: a stream given up because its client does not read the reply (RFC 9250 §4.3.2).
 const DOQ_EXCESSIVE_LOAD: u32 = 0x4;
 
@@ -136,9 +139,9 @@ async fn quic(endpoint: Endpoint, service: Rc<Service>, listener: Listener, thre
 }
 
 /// Answers the queries of one QUIC connection (RFC 9250 §4.2), each alone on a stream the client opened, as soon
-/// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned, and a query breaking
-/// the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3). Each stream's task holds the connection's
-/// `slot`.
+/// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned ([`Reply`]), and a query
+/// breaking the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3). Each stream's task holds the
+/// connection's `slot`.
 async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>, slot: &Rc<Slot>) {
     while let Ok(Ok((send, mut recv))) =
         compio::time::timeout(TCP_IDLE, connection.accept_bi()).await
@@ -147,9 +150,10 @@ async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>, 
         let from = origin.peer.ip();
         origin.clone().spawn(async move {
             let _slot = slot;
+            let reply = Reply(Some(send));
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
             match read {
-                Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, send, from, &thread).await,
+                Ok(Ok(query)) if !breaks_doq(&query) => stream(&query, reply, from, &thread).await,
                 Ok(Ok(_) | Err(QuicError::Framing)) => {
                     connection.close(VarInt::from_u32(DOQ_PROTOCOL_ERROR), b"");
                 }
@@ -171,30 +175,42 @@ fn breaks_doq(query: &[u8]) -> bool {
     })
 }
 
-/// Answers `query` on its stream `send`, then finishes it: one reply, the first made.
-async fn stream(query: &[u8], send: SendStream, from: IpAddr, thread: &Thread) {
+/// The stream a query's reply goes out on, until it is written. A stream dropped with none, a query the pipeline
+/// drops, one not read whole, one the client reset or a task that panicked, is reset with `DOQ_INTERNAL_ERROR`
+/// (RFC 9250 §4.3.1, §4.3.2), not finished: a FIN with no response is a protocol error to the client (§4.3.3).
+struct Reply(Option<SendStream>);
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        if let Some(mut stream) = self.0.take() {
+            let _ = stream.reset(VarInt::from_u32(DOQ_INTERNAL_ERROR));
+        }
+    }
+}
+
+/// Answers `query` on its stream `reply`, then finishes it: one reply, the first made.
+async fn stream(query: &[u8], mut reply: Reply, from: IpAddr, thread: &Thread) {
     let pipeline = thread.pipeline();
     let mut first = None;
     let started = start(thread, &pipeline, query, Transport::Quic, from, |wire| {
         first = frame(wire);
         true
     });
-    let mut send = Some(send);
     if let Some(framed) = first {
-        respond(&mut send, framed).await;
+        respond(&mut reply, framed).await;
     }
     if let Some(Started::Upstream(upstream, slot)) = started {
-        let deliver = async |framed| respond(&mut send, framed).await;
+        let deliver = async |framed| respond(&mut reply, framed).await;
         answer(thread, &pipeline, upstream, Transport::Quic, deliver).await;
         drop(slot);
     }
 }
 
-/// Writes `framed` on `send` and finishes it, unless it was answered already; a write lasting [`TCP_WRITE`] is given
+/// Writes `framed` on `reply` and finishes it, unless it was answered already; a write lasting [`TCP_WRITE`] is given
 /// up and the stream reset with `DOQ_EXCESSIVE_LOAD` (RFC 9250 §4.3.2), as a TCP client reading too slowly loses
 /// its connection (D47).
-async fn respond(send: &mut Option<SendStream>, framed: Vec<u8>) {
-    let Some(mut stream) = send.take() else {
+async fn respond(reply: &mut Reply, framed: Vec<u8>) {
+    let Some(mut stream) = reply.0.take() else {
         return;
     };
     match compio::time::timeout(TCP_WRITE, stream.write_all(framed)).await {
