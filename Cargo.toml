@@ -89,6 +89,8 @@ nix = { version = "0.31.3", default-features = false, features = [
   "process",
   "user",
 ] }
+# D182: `Compio::timeout_at`'s future, polled in place; futures-util depends on it already.
+pin-project-lite = "0.2.17"
 predicates = "3.1.4"
 # D91: the longest-prefix tree of the client access lists.
 prefix-trie = "0.10.1"

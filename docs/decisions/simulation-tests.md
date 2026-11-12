@@ -156,7 +156,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - `crates/dedens-net/src/io.rs`: `Io` gains `Listener` (a bound TCP listener's `accept`) and `detach` (a task
     nobody waits for: a query's, a connection's); `Udp` gains `recv_multi` (a stream of `Datagram`s, data and peer:
     compio's multishot receive) and `send_to`; a `Stream`'s write half is `Outbound`. Only what the loop calls;
-    `Compio` forwards each to compio, `#[inline]`.
+    `Compio` forwards each to compio, `#[inline]`, but for `timeout_at`: a `Deadline` future polls the future and
+    compio's `sleep_until` in place. Forwarded, compio's `timeout_at` (two nested `async fn` over the future, two
+    clock reads) behind our own `async fn` cost TCP 14% (`memmove` of the futures: 10% of the server's time, 2.5%
+    before). Rejected: forwarding, measured.
   - `dedensd`: `Thread<N: Io = Compio>` holds the `io`, a `Client<N>` and the start of the cache clock; `udp`,
     `tcp`, `connection`, `answer`, `supervise` and `Origin` take `N`. `serve` and the QUIC, HTTP/3 and CoAP
     listeners name `Thread` and get `Compio`: one instance, no `dyn`. A connection's writer is an `Io::Task`; the
@@ -183,4 +186,5 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Run but reached by no scenario yet: the caps (`TCP_CONNECTIONS`, `UPSTREAM_QUERIES`, `TCP_PENDING`,
     `TCP_QUEUED`), the idle close (`TCP_IDLE`), the write timeout (`TCP_WRITE`), a listener restart (D121). Not
     simulated: the buffer pool and its `ResourceBusy` (D107), as `SimUdp` has none.
-  - Cost in `docs/benchmarks.md`; the Linux check is `just bench-dnsperf <base> forward` and `forward-tcp`.
+  - Cost in `docs/benchmarks.md` (dnsperf on Linux, `io_uring`): TCP 8% faster, forwarding 25-35%, UDP within its
+    noise.

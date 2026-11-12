@@ -17,6 +17,7 @@ flume.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
+pin-project-lite.workspace = true
 idna = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
 rustls-platform-verifier.workspace = true
