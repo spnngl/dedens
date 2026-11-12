@@ -9,9 +9,11 @@ test_tool = "nextest"
 exclude_re = [
   # `Debug` output is for logs and failing tests: no test reads it.
   '<impl (fmt::)?Debug for ',
-  # Kani's proofs, in a `proofs` module beside the code they reach, built only under `cfg(kani)` and checked by
-  # `just kani` (D145).
-  '\bproofs::',
+  # Kani's proofs, in a `proofs` module beside the code they reach or dedens-proto's `src/proofs.rs`, built only
+  # under `cfg(kani)` and checked by `just kani` (D145, D179).
+  '\bproofs(::|\.rs:)',
+  # A pointer's offset: its high byte shifted holds no bit of the low byte, so `|` and `^` are the same.
+  'name\.rs:\d+:\d+: replace \| with \^ in (scan|unpack)$',
   # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.

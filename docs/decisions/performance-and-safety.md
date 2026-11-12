@@ -217,7 +217,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   runs those of under a minute, listed in it, on each pull request in `deep.yml`, informational (68 s warm, against
   12 min for dedens-proto's 7 alone); a name matching no proof fails it. A slice compared at a symbolic length
   needs `#[kani::unwind]`: without it CBMC unrolls `memcmp` without end. `--harness` picks each proof whose path
-  holds the name; `--exact` with the path picks one. cargo-mutants skips every `proofs::` function, built only
+  holds the name; `--exact` with the path picks one. cargo-mutants skips every `proofs::` function and `src/proofs.rs`, built only
   under `cfg(kani)`. Tried with `-Z stubbing` (unstable) and dropped, the whole message left to the fuzzer:
   walking a message, `Name::decode` standing in by what `name_decoding` proves, ran out of memory at 11 bytes past
   the header, its 1.3 million steps the same at 2 bytes, as CBMC unrolls each section's loop and its `zerocopy`
