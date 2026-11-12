@@ -193,22 +193,54 @@ pub(crate) fn read(
     store: &mut Store,
 ) -> anyhow::Result<Config> {
     store.begin();
-    let config = build(text, env, previous, store)?;
+    let config = build(parse(text, env)?, previous, store)?;
     store.end();
     Ok(config)
 }
 
-/// [`read`], the lists it reads taken from `store`, and put there.
-fn build(
+/// [`read`] of `text`, built only when it names no file to read: the entry of `fuzz/` (D181), which must not open
+/// the paths an input names, as a TLS key or a list.
+///
+/// # Errors
+///
+/// As [`read`].
+pub(crate) fn read_without_files(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
-    previous: &Pipeline,
-    store: &mut Store,
-) -> anyhow::Result<Config> {
+) -> anyhow::Result<()> {
+    let file = parse(text, env)?;
+    if !file.names_files() {
+        build(file, &Pipeline::default(), &mut Store::default())?;
+    }
+    Ok(())
+}
+
+/// `text` with its variables taken from `env`, read into the model.
+///
+/// # Errors
+///
+/// A variable without a value or that is not plain nor alone as a value; YAML that does not fit the model.
+fn parse(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<File> {
     let text = interpolate(text, env)?;
     // No snippet of the YAML in an error: it could echo the `urls` (D104). The line and column stay.
-    let file: File =
-        serde_saphyr::from_str_with_options(&text, serde_saphyr::options! { with_snippet: false })?;
+    Ok(serde_saphyr::from_str_with_options(
+        &text,
+        serde_saphyr::options! { with_snippet: false },
+    )?)
+}
+
+impl File {
+    /// Whether building it reads a file it names: the TLS certificate and key, the upstream authorities, a stage's
+    /// file, trust anchors or saved downloads.
+    fn names_files(&self) -> bool {
+        self.tls.is_some()
+            || self.upstream_ca.is_some()
+            || self.stages.values().any(StageFile::names_files)
+    }
+}
+
+/// [`read`] of `file`, the lists it reads taken from `store`, and put there.
+fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<Config> {
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     let threads = serving_threads(
         file.threads,

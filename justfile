@@ -225,8 +225,8 @@ loom:
     #!/usr/bin/env bash
     set -euo pipefail
     export RUSTFLAGS="--cfg dedens_loom" CARGO_TARGET_DIR=target/loom
-    cargo clippy -p dedensd --bin dedensd --profile test -- -D warnings
-    cargo test -p dedensd --profile loom --bin dedensd loom_tests::
+    cargo clippy -p dedensd --lib --profile test -- -D warnings
+    cargo test -p dedensd --profile loom --lib loom_tests::
 
 # The workspace's tests on a standard library built with its debug assertions and UB checks (cargo-careful, pinned
 # nightly, D144), under a sanitizer when given: just careful address (Linux: cargo-careful's sanitized builds fail to
@@ -318,7 +318,7 @@ packages:
 
 # The man pages in deploy/packages/man/, written again from the command lines (D158).
 man:
-    DEDENS_WRITE_MAN=1 cargo test -p dedens -p dedensd --bins the_man_page
+    DEDENS_WRITE_MAN=1 cargo test -p dedens -p dedensd --lib the_man_page
 
 # The dedensd image, `localhost/dedensd`, for this machine's architecture (D153): just image && docker run --rm -p 5353:53/udp
 # localhost/dedensd

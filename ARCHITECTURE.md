@@ -16,10 +16,10 @@
 | `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the RFC examples' keys, the test certificates and the loopback responder of the binaries' tests | files, sockets (`responder`) |
 | `crates/dedens-sim` | Simulation tests (D133, D134): the sans-IO server core and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network | simulated |
 | `crates/dedens-repo` | The repository checks of the gate (D140, D163), its tests alone: decisions, RFC coverage, `CLAUDE.md` links, crates' `clippy.toml`, pinned Rust | files (`git ls-files`) |
-| `apps/dedens` | The dig-like CLI | via `dedens-net`, files |
-| `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122) | sockets, files, HTTP (lists) |
+| `apps/dedens` | The dig-like CLI; a library its binary and `fuzz/` call (D181) | via `dedens-net`, files |
+| `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122); a library its binary and `fuzz/` call (D181) | sockets, files, HTTP (lists) |
 | `deploy/` | What a release ships beside the binaries (D153, D156, D158): the image's `dedensd.yaml`, the deb and rpm packages' files (systemd unit, sysusers, maintainer scripts, man pages that `just man` writes and each binary's tests compare with its command line), the licence report's `about.toml` | none |
-| `fuzz/` | libFuzzer targets of the parsers of outside data, own workspace | none |
+| `fuzz/` | libFuzzer targets of the parsers of outside data, the binaries' included (D181), own workspace | none |
 | `testdata/` | Real data the tests, benches, fuzz targets and simulations share: captures, RFC example zones, lists (D161) | read as files |
 
 Planned: `dedens-resolver`.

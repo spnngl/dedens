@@ -261,3 +261,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a git dependency without a licence), Aeneas with Charon (proofs written by hand in Lean, broken by each change of
   the Rust, and no one to own them; Charon alone checks nothing), MIRAI (unmaintained since 2025-03; its
   nightly-2025-01-10 cannot build edition 2024), Kani on whole messages (D179).
+- D181 (builds on D141, D154, D170) The parsers of outside data in the two binaries are fuzzed through a library
+  target of each app: `src/lib.rs` holds the crate `src/main.rs` held, and `src/main.rs` keeps the allocator of a
+  musl build (D154) and calls the library's `main`. Each library makes public `main` and one entry per parser,
+  nothing else: `dedens::parse_args` reads a command line as `dedens` does (`Cli::try_parse_dig`, the usage error
+  returned, not exited with); `dedensd::read_config` reads a configuration and builds it as the start does, unless
+  it names a file to read (the TLS certificate and key, `upstream_ca`, a stage's `file` or `trust_anchors`, the saved
+  copies of `urls`), as a fuzz input must not open the paths it names (`/dev/zero` or a FIFO hangs the run, a real
+  file differs between machines). `fuzz/` drives them as `parse_command_line`, arguments between NUL bytes as the
+  kernel passes them, and `read_config`, seeded by the command lines of the docs and the CLI's tests
+  (`fuzz/seeds/command_lines.txt`) and by `dedensd`'s configurations (the image's, the packages', the example of its
+  config module). The unit tests move into the library target: `just loom` and `just man` name `--lib`. D170's
+  benches keep including their harness: the library exposes no test helper. Rejected: `#[path]` includes from
+  `fuzz/` (each parser reaches much of its crate through `crate::` paths, and a moved module breaks the fuzz build
+  only); the parsers moved into a library crate (the configuration reaches the lists, the downloads, the privileges
+  and ODoH: a crate of half a binary); a library of the parser modules alone (the same reach, each item it holds
+  made `pub` for the binary); a `fuzz` feature gating the two entries (a feature `just hack` builds in every
+  combination, for two functions).
