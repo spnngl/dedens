@@ -432,6 +432,84 @@ fn s9_thousands_of_additional_records() {
     assert_eq!(decoded.additional, []);
 }
 
+/// `truncated` is a prefix of `message`, cut as D10 says: TC only for lost answer or authority records, and only
+/// whole `RRsets` in the additional section.
+fn assert_cut_from(message: &Message<'_>, truncated: &Message<'_>, tc: bool) {
+    assert_eq!(truncated.questions, message.questions);
+    assert_eq!(truncated.edns, message.edns);
+    assert!(message.answer.starts_with(&truncated.answer));
+    assert!(message.authority.starts_with(&truncated.authority));
+    assert!(message.additional.starts_with(&truncated.additional));
+    let lost = |of: &Message<'_>| of.answer.len() + of.authority.len();
+    assert_eq!(tc, lost(truncated) < lost(message));
+    let rrset = |of: &[Record<'_>], r: &Record<'_>| {
+        of.iter()
+            .filter(|o| o.name == r.name && o.rtype() == r.rtype() && o.class == r.class)
+            .count()
+    };
+    for r in &truncated.additional {
+        assert_eq!(
+            rrset(&truncated.additional, r),
+            rrset(&message.additional, r)
+        );
+    }
+}
+
+/// Each captured response cut at every size that holds its header, question and OPT record.
+#[test]
+fn s9_every_capture_truncates_at_every_size() {
+    for entry in fs::read_dir(dir()).expect("testdata directory") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "bin") {
+            continue;
+        }
+        let message = message(&fs::read(&path).expect("captured file"));
+        let mut essentials = message.clone();
+        essentials.answer.clear();
+        essentials.authority.clear();
+        essentials.additional.clear();
+        let essentials = essentials.to_vec().expect("encodes").len();
+        let full = message.to_vec().expect("encodes").len();
+        for size in essentials..=full {
+            let (decoded, tc) = truncated(&message, size);
+            assert_cut_from(&message, &decoded, tc);
+        }
+        assert_eq!(truncated(&message, full).0, message, "{}", path.display());
+    }
+}
+
+/// The records of every DNSSEC capture as additional data of a captured referral: past the 192 names of the
+/// compression table (D112), a cut section written again is no longer and keeps whole `RRsets`.
+#[test]
+fn s9_additional_data_past_a_full_name_table_truncates_to_whole_rrsets() {
+    let mut message = message(&captured("referral_root"));
+    for id in dedens_testkit::dnssec::names() {
+        let response = dedens_testkit::dnssec::response(&id);
+        message
+            .additional
+            .extend([response.answer, response.authority, response.additional].concat());
+    }
+    for zone in ["rfc4035_appendix_a.zone", "rfc5155_appendix_a.zone"] {
+        message.additional.extend(dedens_testkit::zone(zone));
+    }
+    // The table holds the suffixes of the owner names, among other names.
+    let mut suffixes: Vec<String> = message
+        .additional
+        .iter()
+        .flat_map(|r| {
+            let labels: Vec<_> = r.name.labels().collect();
+            (0..labels.len()).map(move |i| format!("{:?}", &labels[i..]))
+        })
+        .collect();
+    suffixes.sort();
+    suffixes.dedup();
+    assert!(suffixes.len() > 192, "{} owner suffixes", suffixes.len());
+    for size in (512..=65535).step_by(509) {
+        let (decoded, tc) = truncated(&message, size);
+        assert_cut_from(&message, &decoded, tc);
+    }
+}
+
 #[test]
 fn s9_a_message_that_fits_is_whole() {
     let message = response(3, 0);
