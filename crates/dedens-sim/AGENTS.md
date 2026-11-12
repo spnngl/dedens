@@ -7,7 +7,7 @@ scenario. A run must replay from its seed; these rules keep it so.
 - A panic in any task fails the run: a server host spawns into a `JoinSet` (`Port::spawn`); a task of the
   client's pools, spawned by `Sim::spawn`, fails the `Client::exchange` that follows.
 - No `HashMap` and no clock in the driver: `BTreeMap`, and `tokio::time` only.
-- TLS in a scenario uses fixed certificates (`certificates` of `tests/pools.rs`), never `dedens_testkit::certificates`,
+- TLS in a scenario uses fixed certificates (`dot::certificates`), never `dedens_testkit::certificates`,
   whose keys are new on every run.
 - Stages that hash with a per-process seed (rate limits, budgets, the blocklist) and the validator's hash maps are
   D133's determinism list: a family that adds one calls `seed::in_two_processes(module_path!(), ..)` from its own

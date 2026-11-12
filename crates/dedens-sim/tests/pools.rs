@@ -7,24 +7,23 @@
 
 use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
-use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+use compio::rustls::pki_types::{CertificateDer, ServerName};
 use dedens_net::client::{ClientError, Server};
 use dedens_net::exchange::{Failure, Options};
 use dedens_net::tcp::TcpError;
-use dedens_net::tls::{Presented, Trust};
+use dedens_net::tls::Trust;
 use dedens_proto::{Message, Rcode, RecordType, Transport};
 use dedens_sim::attacker::{Attacker, Injection, Reaction};
 use dedens_sim::client::Carrier;
+use dedens_sim::dot::{NAME, certificates};
 use dedens_sim::fault::{Fault, Node, Server as Host};
 use dedens_sim::seed::{self};
 use dedens_sim::stub::question;
 use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
-use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 
 use crate::util::{SECOND, SEEDS, answers, served};
 
@@ -35,9 +34,6 @@ const FEW: &[u64] = &[0, 7];
 const ONE: &[u64] = &[0];
 
 const MS: Duration = Duration::from_millis(1);
-
-/// The name the server's certificate holds.
-const NAME: &str = "dns.example";
 
 fn ask() -> Message<'static> {
     Message::query(0, question("example.com", RecordType::A))
@@ -51,39 +47,6 @@ fn named(addr: SocketAddr) -> Server {
         doh: None,
         docpath: Vec::new(),
     }
-}
-
-/// The Ed25519 key of the 32 bytes `seed`, in PKCS #8 (RFC 8410 §7): the same on every run.
-fn key(seed: u8) -> KeyPair {
-    /// The PKCS #8 encoding of an Ed25519 private key up to its 32 bytes.
-    const PREFIX: [u8; 16] = [
-        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
-        0x20,
-    ];
-    let mut der = PREFIX.to_vec();
-    der.extend_from_slice(&[seed; 32]);
-    KeyPair::from_pkcs8_der_and_sign_algo(&PrivatePkcs8KeyDer::from(der), &rcgen::PKCS_ED25519)
-        .expect("an Ed25519 key")
-}
-
-/// The certificate authority `authority`, and the server certificate it signed: the authority to trust and what the
-/// server presents. The same bytes on every run (fixed keys, Ed25519's signatures, rcgen's fixed validity and its
-/// serial numbers from the keys), so that a run over TLS replays from its seed.
-fn certificates(authority: u8) -> (CertificateDer<'static>, Arc<Presented>) {
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    let ca = CertifiedIssuer::self_signed(params, key(authority)).expect("a CA");
-    let key = key(authority.wrapping_add(128));
-    let server = CertificateParams::new(vec![NAME.to_owned()])
-        .expect("server parameters")
-        .signed_by(&key, &ca)
-        .expect("a server certificate");
-    let presented = Presented::new(
-        vec![server.der().clone()],
-        PrivateKeyDer::Pkcs8(key.serialize_der().into()),
-    )
-    .expect("a certificate rustls signs with");
-    (ca.der().clone(), Arc::new(presented))
 }
 
 /// Three queries over DNS over TLS (RFC 7858) from one client, one after the other: the run's trace and the

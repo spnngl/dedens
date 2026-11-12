@@ -17,6 +17,7 @@ dedens-proto.workspace = true
 dedens-server.workspace = true
 dedens-testkit.workspace = true
 getrandom.workspace = true
+rcgen.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = [
   "io-util",
@@ -30,7 +31,6 @@ turmoil.workspace = true
 [dev-dependencies]
 dedens-dnssec.workspace = true
 divan.workspace = true
-rcgen.workspace = true
 
 [[test]]
 name = "tests"
