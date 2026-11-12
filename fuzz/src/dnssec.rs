@@ -1,5 +1,5 @@
-//! Targets of dedens-dnssec: the cryptography, `RRset` signatures, denial of existence and the validation of a
-//! response, its questions answered from the captured chains.
+//! Targets of dedens-dnssec: the cryptography, `RRset` signatures, denial of existence, trust anchor text and the
+//! validation of a response, its questions answered from the captured chains.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
@@ -230,6 +230,47 @@ pub fn denial(data: &[u8]) {
                 "{proof:?}: no record has the TTL"
             );
         }
+    }
+}
+
+/// Trust anchor text, a user's file (`dedens +trust-anchor`, `dedensd`'s `trust_anchors`): `TrustAnchors::read` answers
+/// on any text, and what it reads anchors each owner it holds with at least one record, which a negative anchor
+/// at that owner then overrides (RFC 7646 §1.1).
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on anchors that break one of those rules.
+pub fn parse_trust_anchors(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(mut anchors) = TrustAnchors::read(text) else {
+        return;
+    };
+    let mut owners: Vec<Name<'static>> = Vec::new();
+    for entry in ZoneReader::new(data, None).with_ttl(Ttl::ZERO) {
+        if let Ok(ZoneEntry::Record(decoded)) = entry
+            && !owners.contains(&decoded.record.name)
+        {
+            owners.push(decoded.record.name);
+        }
+    }
+    assert!(
+        !owners.is_empty(),
+        "anchors read from text without a record"
+    );
+    for owner in owners {
+        let (zone, anchor) = anchors
+            .closest(&owner)
+            .unwrap_or_else(|| panic!("{owner}: read but not anchored"));
+        assert_eq!(zone, &owner, "{owner}: anchored elsewhere");
+        assert!(
+            !anchor.ds().is_empty() || !anchor.dnskeys().is_empty(),
+            "{owner}: an anchor without a record"
+        );
+        assert!(!anchors.negative(&owner), "{owner}: negative unasked");
+        anchors.add_negative(owner.clone());
+        assert!(anchors.negative(&owner), "{owner}: negative ignored");
     }
 }
 

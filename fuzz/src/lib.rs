@@ -21,7 +21,7 @@ mod server;
 mod smoke;
 
 pub use coap::{coap_doc, parse_coap, parse_link_format};
-pub use dnssec::{denial, dnssec_crypto, rrsig_verify, validate};
+pub use dnssec::{denial, dnssec_crypto, parse_trust_anchors, rrsig_verify, validate};
 pub use net::{parse_doh_template, parse_resolv_conf, read_doh_response, server_request};
 pub use odoh::{odoh_decrypt, parse_odoh_configs, parse_odoh_message, read_odoh_http};
 pub use plugins::parse_lists;
@@ -57,6 +57,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
     ("validate", validate),
+    ("parse_trust_anchors", parse_trust_anchors),
     ("parse_coap", parse_coap),
     ("coap_doc", coap_doc),
     ("parse_link_format", parse_link_format),
