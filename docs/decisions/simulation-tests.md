@@ -171,12 +171,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `serve/udp.rs`, `tcp.rs`, `upstream.rs` and `isolate.rs`. `serve/mod.rs` converts the sockets and starts the
     runtime, ungated. `Listener::panicked` reads the system clock, for the log's rate only, under an `expect`.
   - `dedens-sim`: `Sim` implements the new methods (`SimListener`; `SimDatagram`, a datagram copied out of turmoil's,
-    up to 65535 bytes where compio's pool cuts at 4096). `Topology::dedensd` runs `Resolver::serve_dedensd` on the
-    resolver host. `tests/serving.rs` runs the baseline, partition, loss and crash scenarios that concern the server
-    against the loop, and TCP queries pipelined on one connection, answered out of order (RFC 7766 §6.2.1.1) where
-    the driver answers in turn. The loop records none of the driver's `Replied`, `Forwarded` and `Stored`.
-    `World::run` fails on a panic the loop caught or a listener restart, read from D121's counters by a local
-    `metrics` recorder (turmoil runs every host on the test's thread); `Sim::detach` watches nothing.
+    through one scratch buffer per socket and cut at 3952 bytes, as compio's pool cuts it on `io_uring`, D49).
+    `Topology::dedensd` runs `Resolver::serve_dedensd` on the resolver host. `tests/serving.rs` runs the baseline,
+    partition, loss and crash scenarios that concern the server against the loop, and TCP queries pipelined on one
+    connection, answered out of order (RFC 7766 §6.2.1.1) where the driver answers in turn. The loop records none of
+    the driver's `Replied`, `Forwarded` and `Stored`. `World::run` fails on a panic the loop caught or a listener
+    restart, read from D121's counters by a local `metrics` recorder (turmoil runs every host on the test's thread);
+    `Sim::detach` watches nothing.
   - Left out: QUIC (DoQ, DoH/3, ODoH: `compio-quic`'s endpoint and clock), DoC, the TLS listener (generic, with no
     scenario), reload, several threads, D86's flights (validator questions only; no scenario validates here).
   - Cost in `docs/benchmarks.md`; the Linux check is `just bench-dnsperf <base> forward` and `forward-tcp`.
