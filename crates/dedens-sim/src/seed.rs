@@ -1,5 +1,6 @@
 //! Seeds: every random choice of a run follows from one, so a failing run replays.
 
+use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 /// The variable that replays one seed: `DEDENS_SIM_SEED=7 cargo test -p dedens-sim`.
@@ -19,8 +20,8 @@ pub enum SeedError {
     /// [`SEED_VAR`] is not a number.
     #[error("{SEED_VAR} is not a 64-bit number: {0:?}")]
     Seed(String),
-    /// [`RUNS_VAR`] is not a number.
-    #[error("{RUNS_VAR} is not a number: {0:?}")]
+    /// [`RUNS_VAR`] is not a positive number: no run would pass without checking anything.
+    #[error("{RUNS_VAR} is not a positive number: {0:?}")]
     Runs(String),
 }
 
@@ -30,7 +31,7 @@ impl Seed {
     ///
     /// # Errors
     ///
-    /// [`SeedError`] when a variable is set but is not a number.
+    /// [`SeedError`] when a variable is set but is not a number, or [`RUNS_VAR`] is 0.
     pub fn chosen(fixed: &[u64]) -> Result<Vec<Self>, SeedError> {
         Self::choose(
             fixed,
@@ -54,11 +55,11 @@ impl Seed {
             return Ok(vec![Self(seed)]);
         }
         if let Some(runs) = runs {
-            let runs: usize = runs
+            let runs: NonZeroUsize = runs
                 .trim()
                 .parse()
                 .map_err(|_| SeedError::Runs(runs.to_owned()))?;
-            return Ok((0..runs).map(|_| Self(draw())).collect());
+            return Ok((0..runs.get()).map(|_| Self(draw())).collect());
         }
         Ok(fixed.iter().copied().map(Self).collect())
     }
@@ -73,13 +74,13 @@ fn random() -> u64 {
 ///
 /// # Panics
 ///
-/// When a variable is no number, and as `scenario` does.
+/// On a [`SeedError`], and as `scenario` does.
 #[expect(
     clippy::print_stderr,
     reason = "the seed of a failure is for whoever replays it; cargo test shows it with the failure"
 )]
 pub fn each(fixed: &[u64], scenario: impl Fn(Seed)) {
-    for seed in Seed::chosen(fixed).expect("the variables hold numbers") {
+    for seed in Seed::chosen(fixed).expect("the seed variables are valid") {
         if let Err(failure) = catch_unwind(AssertUnwindSafe(|| scenario(seed))) {
             eprintln!("{SEED_VAR}={}", seed.0);
             resume_unwind(failure);
@@ -214,6 +215,15 @@ mod tests {
         assert_eq!(
             Seed::choose(&[], None, Some("-1"), || 0),
             Err(SeedError::Runs("-1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn zero_runs_is_an_error() {
+        // No seed would run the scenario not once, and pass.
+        assert_eq!(
+            Seed::choose(&[1], None, Some("0"), || 0),
+            Err(SeedError::Runs("0".to_owned()))
         );
     }
 
