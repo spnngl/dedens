@@ -1072,6 +1072,8 @@ dependencies = [
  "divan",
  "futures-util",
  "getrandom 0.4.3",
+ "metrics",
+ "metrics-util",
  "rcgen",
  "thiserror",
  "tokio",

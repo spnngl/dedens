@@ -6,7 +6,7 @@ scenario. A run must replay from its seed; these rules keep it so.
 - Every `select!` is `biased`: tokio draws the order of its branches from a generator that is not seeded.
 - A panic in any task fails the run: a server host spawns into a `JoinSet` (`Port::spawn`); a task of the
   client's pools, spawned by `Sim::spawn`, fails the `Client::exchange` that follows. Under `Topology::dedensd`
-  the loop catches its tasks' panics as in production (D121): a scenario sees one only by what the clients got.
+  the loop catches its tasks' panics as in production (D121) and counts them, and `World::run` fails on a count.
 - `dedensd`'s loop records none of the driver's `Replied`, `Forwarded` and `Stored` (D182): a scenario on it
   counts the clients' events, the resolver's `Sent` and the upstream servers' `Served`.
 - No `HashMap` and no clock in the driver: `BTreeMap`, and `tokio::time` only.

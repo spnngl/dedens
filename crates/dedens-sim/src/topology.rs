@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_net::tls::{Presented, Trust};
 use dedens_server::{Pipeline, Server, Via};
+use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 use turmoil::Sim;
 
 use crate::client::Client;
@@ -33,6 +34,12 @@ const DURATION: Duration = Duration::from_secs(120);
 /// before its clients. turmoil starts hosts in no fixed order, and a datagram or a connection to a port not bound yet
 /// is lost or refused.
 const START: Duration = Duration::from_millis(5);
+
+/// The counters of the panics `dedensd`'s loop catches and of the restarts they cause (D121).
+const CAUGHT: [&str; 2] = [
+    "dedensd_task_panics_total",
+    "dedensd_listener_restarts_total",
+];
 
 /// The start of a run by default, 2026-01-01T00:00:00Z: the same in every run, so that the clocks of the hosts
 /// (`turmoil::since_epoch`) do not depend on when the test runs.
@@ -381,9 +388,32 @@ impl World {
     ///
     /// # Errors
     ///
-    /// A client that failed, a host that failed or panicked in any of its tasks, a run that lasts past its
-    /// duration, or one that ends before the time of a fault: that fault would not have been tested.
-    pub fn run(mut self) -> turmoil::Result<Vec<Event>> {
+    /// A client that failed, a host that failed or panicked in any of its tasks (a panic `dedensd`'s loop catches
+    /// as in production, read from its counters), a run that lasts past its duration, or one that ends before the
+    /// time of a fault: that fault would not have been tested.
+    pub fn run(self) -> turmoil::Result<Vec<Event>> {
+        // turmoil runs every host on this thread: a local recorder sees the counts of all.
+        let recorder = DebuggingRecorder::new();
+        let events = metrics::with_local_recorder(&recorder, || self.play())?;
+        let caught: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, .., value)| {
+                CAUGHT.contains(&key.key().name()) && !matches!(value, DebugValue::Counter(0))
+            })
+            .map(|(key, ..)| key.into_parts().1)
+            .collect();
+        if caught.is_empty() {
+            Ok(events)
+        } else {
+            Err(format!("dedensd caught panics: {caught:?}").into())
+        }
+    }
+
+    /// [`World::run`], but for the counters.
+    fn play(mut self) -> turmoil::Result<Vec<Event>> {
         self.faults.sort_by_key(|(at, _)| *at);
         let mut faults = self.faults.into_iter().peekable();
         loop {
@@ -448,6 +478,17 @@ mod tests {
         world.client(async |_| Ok(()));
         assert_eq!(world.clients, 2);
         world.run().expect("the clients end");
+    }
+
+    #[test]
+    fn a_panic_dedensd_caught_fails_the_run() {
+        let mut world = Topology::new().upstream(Answers::new()).build(Seed(1));
+        world.client(async |_| {
+            metrics::counter!(CAUGHT[0], "listener" => "udp://").increment(1);
+            Ok(())
+        });
+        let failure = world.run().expect_err("the counted panic fails the run");
+        assert!(failure.to_string().contains(CAUGHT[0]), "{failure}");
     }
 
     #[test]

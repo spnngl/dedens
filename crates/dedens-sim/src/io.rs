@@ -130,8 +130,10 @@ impl Io for Sim {
         SimTask(abort)
     }
 
+    /// Unwatched: only `dedensd`'s `Origin` detaches, which catches and counts its tasks' panics (D121), and
+    /// `World::run` reads the counts.
     fn detach(&self, task: impl Future<Output = ()> + 'static) {
-        self.watch(tokio::task::spawn_local(task));
+        drop(tokio::task::spawn_local(task));
     }
 
     async fn timeout_at<F: Future>(
