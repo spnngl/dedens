@@ -148,7 +148,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D155 (builds on D14, D135, D141) `deny.toml` ignores RUSTSEC-2026-0441, `pin-utils` unmaintained (repository archived
   2026-10-01, no successor release): its one path is `loom` 0.7.2, the latest, which `compio-executor` takes under
   `cfg(loom)` and `dedensd` under `cfg(dedens_loom)` (`just loom`, D135), so no shipped build compiles it. Drop the
-  entry when `loom` stops depending on `pin-utils`; cargo-deny warns once the advisory no longer matches. Rejected:
+  entry when `loom` stops depending on `pin-utils`; cargo-deny warns once the advisory no longer matches: done with
+  `loom` 0.7.3 (2026-11-12), which no longer depends on it. Rejected:
   `[graph] targets` limited to the shipped targets (it would drop `loom` from the graph, and with it the licence and
   ban checks of every test-only crate).
 - D156 (amends D153; builds on D122, D151; amended by D158) The release also holds a deb and an rpm of `dedens` and of `dedensd` per
