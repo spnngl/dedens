@@ -1,5 +1,6 @@
 //! The simulated side of the seam (D134): [`Sim`] is `dedens_net::io::Io` on turmoil's sockets and tokio's clock, so
-//! the real `UdpPool`, `TcpPool` and `Client` run on the simulated network of a host.
+//! the real `UdpPool`, `TcpPool` and `Client` run on the simulated network of a host, and `dedensd`'s serving loop of
+//! UDP and TCP on [`SimUdp`] and [`SimListener`] (D182).
 //!
 //! Time is tokio's, which turmoil pauses and advances, and the randomness is the host's seeded stream: a run
 //! replays. turmoil's sockets speak tokio's traits and borrowed buffers; the adapters here speak compio's owned
@@ -8,23 +9,24 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::future::Future;
-use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::panic::resume_unwind;
 use std::rc::Rc;
 use std::time::Instant;
+use std::{fmt, io};
 
 use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
 use compio::io::util::Splittable;
 use compio::io::{AsyncRead, AsyncWrite};
 use dedens_net::exchange::Exchange;
-use dedens_net::io::{Io, Stream, TimedOut, Udp};
+use dedens_net::io::{Datagram, Io, Listener, Stream, TimedOut, Udp};
 use dedens_net::tcp::Outbound;
+use dedens_proto::MAX_MESSAGE_LEN;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::AbortHandle;
 use turmoil::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use turmoil::net::{TcpStream, UdpSocket};
+use turmoil::net::{TcpListener, TcpStream, UdpSocket};
 
 use crate::seed::Rng;
 use crate::trace::{Trace, What};
@@ -97,11 +99,24 @@ impl Sim {
             resume_unwind(payload);
         }
     }
+
+    /// Keeps the payload of `task`'s panic, which tokio would drop; an aborted task leaves nothing.
+    fn watch(&self, task: tokio::task::JoinHandle<()>) {
+        let panic = Rc::clone(&self.panic);
+        drop(tokio::task::spawn_local(async move {
+            if let Err(error) = task.await
+                && error.is_panic()
+            {
+                panic.borrow_mut().get_or_insert(error.into_panic());
+            }
+        }));
+    }
 }
 
 impl Io for Sim {
     type Udp = SimUdp;
     type Stream = SimStream;
+    type Listener = SimListener;
     type Task = SimTask;
 
     fn now(&self) -> Instant {
@@ -111,16 +126,12 @@ impl Io for Sim {
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> SimTask {
         let task = tokio::task::spawn_local(task);
         let abort = task.abort_handle();
-        let panic = Rc::clone(&self.panic);
-        // A watcher keeps the payload, which tokio would drop; an aborted task ends it with nothing.
-        drop(tokio::task::spawn_local(async move {
-            if let Err(error) = task.await
-                && error.is_panic()
-            {
-                panic.borrow_mut().get_or_insert(error.into_panic());
-            }
-        }));
+        self.watch(task);
         SimTask(abort)
+    }
+
+    fn detach(&self, task: impl Future<Output = ()> + 'static) {
+        self.watch(tokio::task::spawn_local(task));
     }
 
     async fn timeout_at<F: Future>(
@@ -222,6 +233,86 @@ impl Udp for SimUdp {
         };
         let sent = self.socket.send_to(buffer.as_init(), peer).await;
         BufResult(sent, buffer)
+    }
+
+    type Datagram = SimDatagram;
+
+    fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<SimDatagram>> {
+        futures_util::stream::unfold(self, |socket| async move {
+            Some((socket.recv_datagram().await, socket))
+        })
+    }
+
+    async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
+        if Glitches::take(&self.glitches.sends) {
+            return BufResult(Err(io::ErrorKind::NetworkUnreachable.into()), buffer);
+        }
+        let sent = self.socket.send_to(buffer.as_init(), peer).await;
+        BufResult(sent, buffer)
+    }
+}
+
+impl SimUdp {
+    /// The next datagram from any peer, of a message's largest size at most: compio's pool cuts one at about 3.9
+    /// KiB, which no scenario sends.
+    async fn recv_datagram(&self) -> io::Result<SimDatagram> {
+        let mut scratch = vec![0; MAX_MESSAGE_LEN];
+        let received = self.socket.recv_from(&mut scratch).await;
+        if Glitches::take(&self.glitches.receives) {
+            return Err(io::ErrorKind::ConnectionRefused.into());
+        }
+        let (len, peer) = received?;
+        scratch.truncate(len);
+        Ok(SimDatagram {
+            data: scratch,
+            peer,
+        })
+    }
+}
+
+/// A datagram [`SimUdp`] received, copied out of turmoil's.
+#[derive(Debug)]
+pub struct SimDatagram {
+    data: Vec<u8>,
+    peer: SocketAddr,
+}
+
+impl Datagram for SimDatagram {
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    fn peer(&self) -> Option<SocketAddr> {
+        Some(self.peer)
+    }
+}
+
+/// A turmoil TCP listener as the seam's.
+pub struct SimListener(TcpListener);
+
+impl fmt::Debug for SimListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SimListener").finish_non_exhaustive()
+    }
+}
+
+impl SimListener {
+    /// A listener bound to `addr`, as `dedensd` binds before its threads start.
+    ///
+    /// # Errors
+    ///
+    /// The address is taken.
+    pub async fn bind(addr: SocketAddr) -> io::Result<Self> {
+        Ok(Self(TcpListener::bind(addr).await?))
+    }
+}
+
+impl Listener for SimListener {
+    type Stream = SimStream;
+
+    async fn accept(&self) -> io::Result<(SimStream, SocketAddr)> {
+        let (stream, peer) = self.0.accept().await?;
+        Ok((SimStream::new(stream)?, peer))
     }
 }
 

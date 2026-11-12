@@ -1,5 +1,6 @@
 //! The seam between the pools and the runtime (D134): the clock, tasks, timers, randomness and sockets the UDP and
-//! TCP pools use, behind one trait.
+//! TCP pools use, behind one trait. `dedensd`'s serving loop of UDP and TCP takes its listening sockets, bound
+//! before, through it too (D182).
 //!
 //! [`Compio`] is production: each method forwards to compio, and the pools, generic over [`Io`], compile to the
 //! calls they made before. A test supplies another [`Io`], such as `dedens-sim`'s on a simulated network, and runs
@@ -19,12 +20,14 @@ use std::time::Instant;
 
 use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
+use compio::driver::op::RecvFromMultiResult;
 use compio::io::util::Splittable;
 use compio::io::{AsyncRead, AsyncWrite};
-use compio::net::{TcpStream, UdpSocket};
+use compio::net::{TcpListener, TcpStream, UdpSocket};
 use compio::runtime::JoinHandle;
 
 use crate::exchange::Exchange;
+use crate::tcp::Outbound;
 
 /// A [`Io::timeout_at`] whose deadline passed before its future finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,8 @@ pub trait Io: Clone + Debug + 'static {
     type Udp: Udp;
     /// A TCP connection.
     type Stream: Stream;
+    /// A TCP listener, made by its runtime's owner, as `dedensd` binds before its threads start (D42, D182).
+    type Listener: Listener<Stream = Self::Stream>;
     /// A spawned task: dropping it cancels the task.
     type Task: Debug + 'static;
 
@@ -48,6 +53,9 @@ pub trait Io: Clone + Debug + 'static {
 
     /// Runs `task` on this thread's runtime until it ends or the returned handle drops.
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task;
+
+    /// Runs `task` on this thread's runtime until it ends: no handle cancels it.
+    fn detach(&self, task: impl Future<Output = ()> + 'static);
 
     /// The output of `future`, or [`TimedOut`] once `deadline` passes first. The one timer: a pause is a timeout
     /// on a future that never ends.
@@ -112,11 +120,52 @@ pub trait Udp: Debug + 'static {
 
     /// Sends `buffer` as one datagram to the connected peer.
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B>;
+
+    /// A datagram of [`Udp::recv_multi`].
+    type Datagram: Datagram;
+
+    /// The datagrams of every peer, as they come: compio's receives them by one multishot receive on `io_uring`,
+    /// into the buffers of the runtime's pool (D49). An empty datagram ends the stream for a moment: the next poll
+    /// receives again.
+    fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<Self::Datagram>>;
+
+    /// Sends `buffer` as one datagram to `peer`.
+    async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B>;
 }
 
-/// A TCP connection: split into a reading and a writing half, as compio's is.
+/// A datagram received by [`Udp::recv_multi`]: its buffer goes back to the pool when it drops.
+pub trait Datagram {
+    /// Its bytes.
+    fn data(&self) -> &[u8];
+
+    /// Its sender, if the socket says.
+    fn peer(&self) -> Option<SocketAddr>;
+}
+
+/// A TCP listener.
+#[expect(
+    async_fn_in_trait,
+    reason = "tasks stay on their thread, as compio's do: no caller needs the futures to be `Send`"
+)]
+pub trait Listener: Debug + 'static {
+    /// The connections it accepts.
+    type Stream: Stream;
+
+    /// The next connection, and its peer.
+    ///
+    /// # Errors
+    ///
+    /// The OS refuses one, as out of file descriptors.
+    async fn accept(&self) -> io::Result<(Self::Stream, SocketAddr)>;
+}
+
+/// A TCP connection: split into a reading and a writing half, as compio's is; the writing half is an [`Outbound`],
+/// for the server's writer of replies.
 pub trait Stream:
-    Splittable<ReadHalf: AsyncRead + Unpin + 'static, WriteHalf: AsyncWrite + Unpin + 'static> + 'static
+    Splittable<
+        ReadHalf: AsyncRead + Unpin + 'static,
+        WriteHalf: AsyncWrite + Outbound + Unpin + 'static,
+    > + 'static
 {
     /// Its local address.
     ///
@@ -140,6 +189,7 @@ pub struct Compio;
 impl Io for Compio {
     type Udp = UdpSocket;
     type Stream = TcpStream;
+    type Listener = TcpListener;
     type Task = JoinHandle<()>;
 
     #[inline]
@@ -150,6 +200,11 @@ impl Io for Compio {
     #[inline]
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
         compio::runtime::spawn(task)
+    }
+
+    #[inline]
+    fn detach(&self, task: impl Future<Output = ()> + 'static) {
+        compio::runtime::spawn(task).detach();
     }
 
     #[inline]
@@ -198,6 +253,39 @@ impl Udp for UdpSocket {
     #[inline]
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
         Self::send(self, buffer).await
+    }
+
+    type Datagram = RecvFromMultiResult;
+
+    #[inline]
+    fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<RecvFromMultiResult>> {
+        Self::recv_from_multi(self)
+    }
+
+    #[inline]
+    async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
+        Self::send_to(self, buffer, peer).await
+    }
+}
+
+impl Datagram for RecvFromMultiResult {
+    #[inline]
+    fn data(&self) -> &[u8] {
+        Self::data(self)
+    }
+
+    #[inline]
+    fn peer(&self) -> Option<SocketAddr> {
+        self.addr().and_then(|addr| addr.as_socket())
+    }
+}
+
+impl Listener for TcpListener {
+    type Stream = TcpStream;
+
+    #[inline]
+    async fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
+        Self::accept(self).await
     }
 }
 

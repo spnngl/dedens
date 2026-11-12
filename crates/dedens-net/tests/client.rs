@@ -336,11 +336,22 @@ impl Udp for FailingSocket {
             BufResult(Err(self.kind.into()), buffer)
         }
     }
+
+    type Datagram = <compio::net::UdpSocket as Udp>::Datagram;
+
+    fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<Self::Datagram>> {
+        Udp::recv_multi(&self.socket)
+    }
+
+    async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
+        Udp::send_to(&self.socket, buffer, peer).await
+    }
 }
 
 impl Io for FailingOnce {
     type Udp = FailingSocket;
     type Stream = compio::net::TcpStream;
+    type Listener = compio::net::TcpListener;
     type Task = compio::runtime::JoinHandle<()>;
 
     fn now(&self) -> Instant {
@@ -349,6 +360,10 @@ impl Io for FailingOnce {
 
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
         Compio.spawn(task)
+    }
+
+    fn detach(&self, task: impl Future<Output = ()> + 'static) {
+        Compio.detach(task);
     }
 
     async fn timeout_at<F: Future>(

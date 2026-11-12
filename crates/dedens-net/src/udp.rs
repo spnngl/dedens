@@ -356,6 +356,20 @@ mod tests {
         fn send<B: IoBuf>(&self, buffer: B) -> impl Future<Output = BufResult<usize, B>> {
             ready(BufResult(Err(io::ErrorKind::Unsupported.into()), buffer))
         }
+
+        type Datagram = <compio::net::UdpSocket as Udp>::Datagram;
+
+        fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<Self::Datagram>> {
+            futures_util::stream::pending()
+        }
+
+        fn send_to<B: IoBuf>(
+            &self,
+            buffer: B,
+            _: SocketAddr,
+        ) -> impl Future<Output = BufResult<usize, B>> {
+            ready(BufResult(Err(io::ErrorKind::Unsupported.into()), buffer))
+        }
     }
 
     /// Compio with [`Refusing`] sockets.
@@ -365,6 +379,7 @@ mod tests {
     impl Io for Refused {
         type Udp = Refusing;
         type Stream = TcpStream;
+        type Listener = compio::net::TcpListener;
         type Task = JoinHandle<()>;
 
         fn now(&self) -> Instant {
@@ -373,6 +388,10 @@ mod tests {
 
         fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
             Compio.spawn(task)
+        }
+
+        fn detach(&self, task: impl Future<Output = ()> + 'static) {
+            Compio.detach(task);
         }
 
         async fn timeout_at<F: Future>(

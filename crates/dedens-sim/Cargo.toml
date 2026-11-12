@@ -16,6 +16,7 @@ dedens-net.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
 dedens-testkit.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 rcgen.workspace = true
 thiserror.workspace = true
