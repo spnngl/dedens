@@ -347,8 +347,8 @@ fn a_flood_of_datagrams_with_the_id_fills_the_inbox_of_the_query() {
     }
 }
 
-/// An error of the socket on receiving costs a try: the client sends again. One on sending ends the exchange, as the
-/// failure is local (D46), and leaves the pool working.
+/// An error of the socket on receiving costs a try: the client sends again. One on sending, the network
+/// unreachable, ends the exchange: sending again does no better (D50). It leaves the pool working.
 #[test]
 fn a_socket_error_costs_a_try() {
     seed::each(SEEDS, |seed| {
