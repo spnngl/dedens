@@ -330,7 +330,8 @@ impl Answers {
         query: &Message<'static>,
         transport: Transport,
     ) -> Option<Vec<u8>> {
-        let tcp = transport == Transport::Tcp;
+        // Only UDP cuts a message; every other transport carries it whole.
+        let tcp = transport != Transport::Udp;
         let dnssec = query
             .edns
             .as_ref()
@@ -637,8 +638,12 @@ mod tests {
                 "{payload:?}"
             );
         }
-        // Room enough, or TCP: the capture, with the ID of the query.
-        for (payload, transport) in [(4096, Transport::Udp), (512, Transport::Tcp)] {
+        // Room enough, or a stream (RFC 7766 §8, RFC 7858 §3.3): the capture, with the ID of the query.
+        for (payload, transport) in [
+            (4096, Transport::Udp),
+            (512, Transport::Tcp),
+            (512, Transport::Tls),
+        ] {
             let (reply, _) = answers
                 .reply(&query(txt(), Some(payload), None), transport)
                 .expect("a reply");

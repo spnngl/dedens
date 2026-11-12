@@ -252,12 +252,14 @@ impl Stub {
         match result {
             Ok(response) => {
                 let message = check(&self.expected, rules, &question, &response.wire)?;
-                // Nothing is cut over TCP (RFC 1035 §4.2.2): a client that got TC there has nowhere to go.
-                if response.transport == Transport::Tcp && message.header.flags.contains(Flags::TC)
+                // Nothing is cut over TCP or TLS (RFC 1035 §4.2.2, RFC 7858 §3.3): a client that got TC there
+                // has nowhere to go.
+                if matches!(response.transport, Transport::Tcp | Transport::Tls)
+                    && message.header.flags.contains(Flags::TC)
                 {
                     return Err(CheckError::Unexpected {
                         question: Box::new(question),
-                        why: "TC over TCP".into(),
+                        why: format!("TC over {:?}", response.transport),
                         got: Box::new(message),
                     });
                 }
