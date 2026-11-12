@@ -286,14 +286,21 @@ impl Run {
             _ => None,
         });
         let ends = events().filter_map(|(place, event)| match &event.what {
-            What::Answered { question, .. } | What::Failed { question, .. }
+            What::Answered { question, .. }
+            | What::Failed { question, .. }
+            | What::Errored { question, .. }
                 if question.name == name =>
             {
                 Some(place)
             }
             _ => None,
         });
-        starts.zip(ends).collect()
+        let exchanges: Vec<_> = starts.zip(ends).collect();
+        assert!(
+            exchanges.iter().all(|(start, end)| start < end),
+            "{exchanges:?}"
+        );
+        exchanges
     }
 
     /// Responses the upstream server sent, the client's questions included, while a client's `nth` query for
