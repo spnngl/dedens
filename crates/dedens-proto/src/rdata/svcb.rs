@@ -234,7 +234,7 @@ impl SvcParams<'_> {
     /// # Errors
     ///
     /// [`SvcParamsError`] when a key repeats, a value that needs elements has none, `mandatory` lists itself or a
-    /// missing key, `no-default-alpn` comes without `alpn`, an unknown parameter uses key 0 to 7 or 65535, a
+    /// missing key, `no-default-alpn` comes without `alpn`, an unknown parameter uses key 0 to 7, 10 or 65535, a
     /// value is too long for the wire, or the list would not fit an RDATA even with the root as target.
     pub fn new(mut params: Vec<SvcParam>) -> Result<SvcParams<'static>, SvcParamsError> {
         params.sort_by_key(SvcParam::key);
