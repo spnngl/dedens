@@ -338,6 +338,25 @@ fn coap_doc_discover_that_fails_is_an_error() {
     }
 }
 
+/// D109: a server that never answers the discovery holds it for the query's timeout, not for the 93 s of CoAP's
+/// retransmissions; it is no reply.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_doc_discover_ends_at_the_timeout_of_the_query() {
+    // Open and never read: the requests go nowhere, and nothing comes back.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").expect("a socket");
+    let port = silent.local_addr().expect("an address").port();
+    let started = Instant::now();
+    dedens()
+        .args([&format!("@coap://127.0.0.1:{port}"), "+doc-discover"])
+        .args(["example.com", "+time=300ms"])
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .code(9)
+        .stderr(contains("+doc-discover"));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
 /// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a server
 /// over another transport, or a CoAP one with a path of its own, is not asked for its resource.
 #[cfg(feature = "doc")]

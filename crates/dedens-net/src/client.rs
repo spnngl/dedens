@@ -416,19 +416,21 @@ impl<N: Io> Client<N> {
     /// them; none when it lists no such resource (RFC 9953 §3.1, RFC 6690, D95).
     ///
     /// The server is not authenticated: what it lists is no more trusted than it is (RFC 9953 §3), so the caller
-    /// asks only where the user said to.
+    /// asks only where the user said to. The discovery ends `timeout` after it starts, as an exchange does (D109):
+    /// the CoAP retransmissions alone would wait 93 s.
     ///
     /// # Errors
     ///
-    /// [`ClientError`]: no randomness, a socket failure, no response, a CoAP error code or a response that is not in
-    /// the link format, or links all of which name resources outside the server; [`ClientError::NotBuilt`] without
-    /// the `doc` feature.
+    /// [`ClientError`]: no randomness, a socket failure, no response before `timeout` (`DocError::TimedOut`), a CoAP
+    /// error code or a response that is not in the link format, or links all of which name resources outside the
+    /// server; [`ClientError::NotBuilt`] without the `doc` feature.
     pub async fn discover_doc(
         &self,
         server: SocketAddr,
+        timeout: Duration,
     ) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
         let random = self.draw::<14>()?;
-        discover(server, random).await
+        discover(server, random, after(self.io.now(), timeout)).await
     }
 
     /// [`Client::exchange`] with the proxy of an Oblivious `DoH` exchange, if any.
@@ -759,6 +761,7 @@ async fn coap(
 async fn discover(
     _server: SocketAddr,
     _random: [u8; 14],
+    _deadline: Instant,
 ) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
     Err(ClientError::NotBuilt("CoAP"))
 }

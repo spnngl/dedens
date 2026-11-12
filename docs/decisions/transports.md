@@ -350,7 +350,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     format, 4.06 for another accept, 4.05 for GET. A lost ACK (a duplicate) is checked by the test only.
   - Not done: GET with `?dns=`, which the RFC does not define; a `coap://` upstream of the `forward` stage; the
     discovery by SVCB `docpath` (§3.2, D95).
-- D95 (amends D81) DoC discovery by `rt=core.dns` in `/.well-known/core` (RFC 9953 §3.1, RFC 6690), the `dedensd`
+- D95 (amends D81; amended by D109) DoC discovery by `rt=core.dns` in `/.well-known/core` (RFC 9953 §3.1, RFC 6690), the `dedensd`
   listener's answer and `dedens +doc-discover`, behind the `doc` feature:
   - Server (`coap::dns::discovery`, before D81's `query`): a GET of `/.well-known/core` answers 2.05 in Content-Format
     40 with one link, `<PATH>;rt=core.dns;ct=553`, `PATH` the listener's path (a socket has one: one link per DoC
@@ -362,7 +362,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     is not the listing and goes on to the forwarding refusal of D81. A listener path of `/.well-known/core`, or with a
     segment `.` or `..` (a Uri-Path is never one, RFC 7252 §5.10.1: no request could reach it), is refused at
     configuration.
-  - Client: `Client::discover_doc(server)` sends a GET with Accept 40 and `rt=core.dns` and returns the paths of the
+  - Client: `Client::discover_doc(server, timeout)` sends a GET with Accept 40 and `rt=core.dns` and returns the paths of the
     links to take, in the order listed. `coap::link::parse` reads RFC 6690 §2 (whitespace tolerated around `;`, `,`
     and `=`, as the RFC's own examples need): `rt`, `if`, `sz` and `ct` once, a repeated `rel` takes the first,
     `ct` a u16 or a list of them, other attributes checked and dropped; a syntax error is `DocError::Links`, a payload
@@ -427,7 +427,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     they hold no DNS data, and what they check is the server's count and bounds (AGENTS.md's real-data rule is for
     the DNS content, which the existing captures keep). Fuzz: `parse_coap` asserts the options cap, and `coap_doc` the
     replays per message ID and `more_blocks` against the reply.
-- D109 (amends D61, D81, D83; amended by D119, D175) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
+- D109 (amends D61, D81, D83, D95; amended by D119, D175) The client's QUIC, HTTP/3 and CoAP exchanges are bounded by what the server sends and
   by the query's deadline (audit step 06):
   - DoH over HTTP/3 (RFC 9114 §4.2.2, §7.2.4.1): the client's SETTINGS carry `SETTINGS_MAX_FIELD_SECTION_SIZE` of
     8 KiB (`MAX_RESPONSE_FIELD_SECTION`, `http3.rs`), where h3 states none; a response with a larger header section
@@ -444,7 +444,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     response after an empty ACK (93 s) and the blocks, ends at the DNS exchange's deadline, as over the other
     transports: `DocError::TimedOut`, which the client turns into the exchange's timeout, `Failure::TimedOut` with
     one send (D81: the DNS tries are 1). A blackholed server holds a query for the timeout, not for 93 s or more.
-    The discovery (D95) is not bounded: it has no query deadline, and the CLI asks it once.
+    The discovery (D95) is bounded the same way: `Client::discover_doc` takes a timeout and ends at its deadline
+    with `DocError::TimedOut`; `dedens` gives it the query's `+time`, so a silent server holds `+doc-discover` for
+    the timeout, then the query for another, and the CLI exits 9 (D33's no reply).
 - D175 (amends D61, D109) A DoQ response whose Message ID is not 0 (RFC 9250 §4.2.1) is a protocol error, as D109's
   framing error: the client closes the connection with `DOQ_PROTOCOL_ERROR` (2) and fails the try with
   `QuicError::MessageId`, the query not sent again (§4.3.3 SHOULD). Passed on to the exchange, such a

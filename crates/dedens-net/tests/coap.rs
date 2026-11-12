@@ -2483,6 +2483,35 @@ mod client {
 
     const LINK_FORMAT: Option<u16> = Some(Options::LINK_FORMAT);
 
+    /// The timeout of a discovery that is answered at once.
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// RFC 9953 §3.1, RFC 7252 §4.8: a discovery ends at the timeout it is given, as an exchange does (D109), though
+    /// CoAP alone retransmits for 93 s; the error says the time is up.
+    #[compio::test]
+    async fn s3_1_the_discovery_ends_at_its_timeout() {
+        let timeout = Duration::from_millis(300);
+        // It answers FETCH only: the GET of a discovery gets nothing back.
+        let (addr, _) = coap_server(Serve::Silent).await;
+        let started = Instant::now();
+        // Far past the timeout, so that a discovery that is not bounded fails here, not by hanging the suite.
+        let asked = compio::time::timeout(
+            Duration::from_secs(5),
+            Client::new().discover_doc(addr, timeout),
+        )
+        .await;
+        let error = asked.expect("an answer before 5 s");
+        assert!(
+            matches!(&error, Err(ClientError::Doc(DocError::TimedOut))),
+            "{error:?}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= timeout && elapsed < timeout + Duration::from_millis(500),
+            "{elapsed:?}"
+        );
+    }
+
     /// The paths of the resources `payload` lists, as text.
     async fn discovered(
         code: Code,
@@ -2490,16 +2519,19 @@ mod client {
         payload: &'static str,
     ) -> Result<Vec<String>, ClientError> {
         let (addr, _) = links_server(code, format, payload).await;
-        Client::new().discover_doc(addr).await.map(|paths| {
-            paths
-                .iter()
-                .map(|path| {
-                    path.iter().fold(String::new(), |text, segment| {
-                        text + "/" + &String::from_utf8_lossy(segment)
+        Client::new()
+            .discover_doc(addr, TIMEOUT)
+            .await
+            .map(|paths| {
+                paths
+                    .iter()
+                    .map(|path| {
+                        path.iter().fold(String::new(), |text, segment| {
+                            text + "/" + &String::from_utf8_lossy(segment)
+                        })
                     })
-                })
-                .collect()
-        })
+                    .collect()
+            })
     }
 
     /// RFC 9953 §3.1, RFC 6690 §4.1: discovery is a GET of `/.well-known/core` filtered on `rt=core.dns`, asking for the link
@@ -2512,7 +2544,10 @@ mod client {
             "</dns/query>;rt=core.dns;ct=553",
         )
         .await;
-        let paths = Client::new().discover_doc(addr).await.expect("a list");
+        let paths = Client::new()
+            .discover_doc(addr, TIMEOUT)
+            .await
+            .expect("a list");
         assert_eq!(
             paths,
             [path_segments("/dns/query")],

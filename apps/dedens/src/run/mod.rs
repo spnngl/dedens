@@ -365,7 +365,7 @@ async fn ask(
         options.transport = transport;
     }
     let address = endpoint.server.addr;
-    let (found, doc_path) = discovered(client, job, endpoint, options.transport).await?;
+    let (found, doc_path) = discovered(client, job, endpoint, &options).await?;
     let endpoint = &*found;
     let with_path = |mut report: Report| {
         if let Some(exchange) = &mut report.exchange {
@@ -430,23 +430,23 @@ async fn ask(
 }
 
 /// `endpoint`, and with `+doc-discover` the path of its `DoC` resource, the first its `/.well-known/core` lists
-/// with the resource type `core.dns` (RFC 9953 §3.1, D95), as a URI path. The server is the one named: never
-/// found, so what it lists is as trusted as it is (§3).
+/// with the resource type `core.dns` (RFC 9953 §3.1, D95), as a URI path, asked within the query's timeout (D109).
+/// The server is the one named: never found, so what it lists is as trusted as it is (§3).
 async fn discovered<'a>(
     client: &Client,
     job: &Job,
     endpoint: &'a Endpoint,
-    transport: Transport,
+    options: &exchange::Options,
 ) -> anyhow::Result<(Cow<'a, Endpoint>, Option<String>)> {
     if job.options.doc_discover != Some(true) {
         return Ok((Cow::Borrowed(endpoint), None));
     }
     let address = endpoint.server.addr;
-    if transport != Transport::Coap || !endpoint.server.docpath.is_empty() {
+    if options.transport != Transport::Coap || !endpoint.server.docpath.is_empty() {
         bail!("server {address}: +doc-discover needs a CoAP server with no path");
     }
     let paths = client
-        .discover_doc(address)
+        .discover_doc(address, options.timeout)
         .await
         .with_context(|| format!("server {address}: +doc-discover"))?;
     let Some(path) = paths.into_iter().next() else {
@@ -533,10 +533,11 @@ fn no_reply(error: &anyhow::Error) -> bool {
         // Oblivious DoH is DoH through a proxy: the proxy's or the target's silence is no reply too (D79).
         #[cfg(feature = "odoh")]
         Some(ClientError::Odoh(dedens_net::odoh::OdohError::Https(e))) => https_quiet(e),
+        // The deadline of a discovery (D109); an exchange's is `Failure::TimedOut` above.
         #[cfg(feature = "doc")]
-        Some(ClientError::Doc(DocError::Exchange(
-            dedens_net::coap::exchange::Failure::TimedOut,
-        ))) => true,
+        Some(ClientError::Doc(
+            DocError::TimedOut | DocError::Exchange(dedens_net::coap::exchange::Failure::TimedOut),
+        )) => true,
         #[cfg(feature = "doc")]
         Some(ClientError::Doc(DocError::Udp(e))) => refused(e),
         Some(
