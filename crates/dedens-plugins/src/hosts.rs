@@ -34,6 +34,7 @@ struct Entry {
 #[derive(Debug)]
 struct Pending {
     name: Name<'static>,
+    /// The last line that added an address, or the name's first: the one a name with too many records is blamed on.
     line: usize,
     a: Vec<RData<'static>>,
     aaaa: Vec<RData<'static>>,
@@ -86,6 +87,7 @@ impl Hosts {
                 };
                 if !list.contains(&data) {
                     list.push(data);
+                    at.line = line;
                 }
             }
         }
@@ -105,11 +107,7 @@ fn pending_of<'p>(
     buf: &mut [u8; MAX_NAME_LEN],
 ) -> &'p mut Pending {
     match pending.entry(text::key(name, buf).as_bytes().into()) {
-        Slot::Occupied(slot) => {
-            let at = slot.into_mut();
-            at.line = line;
-            at
-        }
+        Slot::Occupied(slot) => slot.into_mut(),
         Slot::Vacant(slot) => slot.insert(Pending {
             name: name.clone(),
             line,
