@@ -7,7 +7,7 @@
 //! or its stale answer TTL when the answer is stale. A negative answer keeps the SOA the server sent. SERVFAIL
 //! without an answer is the defined failure, unless the scenario says the path is live; it and the response codes
 //! a scenario accepts carry no answer, no AD, and no authority or additional record the server did not send.
-//! DNSSEC records the stub did not ask for (no DO) are not expected.
+//! DNSSEC records the stub did not ask for (no DO) are not expected, and must not come (RFC 4035 §3.2.1).
 
 use dedens_cache::Config;
 use dedens_proto::edns::{EdnsOption, InfoCode};
@@ -260,6 +260,18 @@ pub fn judge(
     if rules.accept.contains(&Rcode::NOERROR) {
         return Err("NOERROR is the data's: no scenario accepts it whatever the data".into());
     }
+    if !rules.dnssec
+        && let Some(record) = message
+            .answer
+            .iter()
+            .chain(&message.authority)
+            .chain(&message.additional)
+            .find(|record| withheld(record, question))
+    {
+        return Err(format!(
+            "a DNSSEC record to a query without DO (RFC 4035 §3.2.1): {record:?}"
+        ));
+    }
     let rcode = message.rcode();
     if rcode == Rcode::SERVFAIL && message.answer.is_empty() {
         if rules.live {
@@ -472,8 +484,9 @@ mod tests {
         // With DO the signatures come, and are missed when they do not.
         assert_eq!(judge(&held, &dnssec, &question, &signed), Ok(()));
         assert!(judge(&held, &dnssec, &question, &bare).is_err());
-        // Without it they are not expected.
+        // Without it they are not expected, and must not come (RFC 4035 §3.2.1).
         assert_eq!(judge(&held, &plain, &question, &bare), Ok(()));
+        assert!(judge(&held, &plain, &question, &signed).is_err());
     }
 
     #[test]
