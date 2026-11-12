@@ -217,5 +217,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   CoAP message writing back its bytes (no end in 10 min at 8 bytes: each option a `Vec`), left to the fuzzer. `just
   kani <package>` runs a package's proofs; `kani.yml` a job per package holding a `#[kani::proof]`. `just kani-fast`
   runs those of under a minute, listed in it, on each pull request in `deep.yml`, informational (68 s warm, against
-  12 min for dedens-proto's 7 alone); a name matching no proof fails it. A slice compared at a symbolic length needs `#[kani::unwind]`: without it CBMC unrolls
-  `memcmp` without end. cargo-mutants skips every `proofs::` function, built only under `cfg(kani)`.
+  12 min for dedens-proto's 7 alone); a name matching no proof fails it. A slice compared at a symbolic length
+  needs `#[kani::unwind]`: without it CBMC unrolls `memcmp` without end. `--harness` picks each proof whose path
+  holds the name; `--exact` with the path picks one. cargo-mutants skips every `proofs::` function, built only
+  under `cfg(kani)`. Tried with `-Z stubbing` (unstable) and dropped, the whole message left to the fuzzer:
+  walking a message, `Name::decode` standing in by what `name_decoding` proves, ran out of memory at 11 bytes past
+  the header, its 1.3 million steps the same at 2 bytes, as CBMC unrolls each section's loop and its `zerocopy`
+  reads whatever the bytes; adding `Message::decode`'s budgets and vectors, RDATA and options standing in too, did
+  not end in 50 min; two names of up to 2 one-byte labels compressed and read back did not end in 50 min, every
+  hash colliding.
