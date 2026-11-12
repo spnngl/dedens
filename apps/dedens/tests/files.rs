@@ -58,7 +58,7 @@ queries:
     dedens()
         .args(["-f", file, "--only", "nope"])
         .assert()
-        .code(10)
+        .code(2)
         .stderr(contains("no query with id nope"));
     let json = format!(
         r#"{{"queries": [{{"name": "example.com", "type": "A", "server": "{}"}}]}}"#,
@@ -176,7 +176,7 @@ fn file_options_choose_the_transport_of_command_line_servers() {
 }
 
 /// A query file's server is refused what the command line refuses: no `noedns` over TLS, QUIC or HTTPS, which pad
-/// their queries with EDNS (RFC 8467 §4.1), and HTTPS over nothing but QUIC.
+/// their queries with EDNS (RFC 8467 §4.1), and HTTPS over nothing but QUIC: a usage error (D33).
 #[test]
 fn a_file_server_is_refused_the_transports_its_scheme_excludes() {
     for (server, options) in [
@@ -192,9 +192,80 @@ fn a_file_server_is_refused_the_transports_its_scheme_excludes() {
             .args(["-f", "-", "+tries=1", "+time=100ms"])
             .write_stdin(file)
             .assert()
-            .code(10)
+            .code(2)
             .stderr(contains(format!("server {server}")));
     }
+}
+
+/// D33: a query file is the user's input: a file that cannot be read or parsed, and a query of it with a bad server,
+/// bad options, a `dnssec` expectation without validation, a trust anchor file that cannot be read or a zone
+/// transfer, is a usage error found before any query, the file's good queries not asked either.
+#[test]
+fn a_query_file_s_mistakes_are_usage_errors_before_any_query() {
+    let server = Responder::start(&["a"]);
+    let good = "{name: example.com, type: A}";
+    for (query, error) in [
+        (
+            "{name: example.net, type: A, server: '127.0.0.1:x'}",
+            "not a port",
+        ),
+        (
+            "{name: example.net, type: A, server: '127.0.0.1:53:53'}",
+            "not an address or a host name",
+        ),
+        (
+            "{name: example.net, type: A, server: 'tls://127.0.0.1#not a name'}",
+            "not a name for TLS",
+        ),
+        (
+            "{name: example.net, type: A, options: {edns: false, nsid: true}}",
+            "need EDNS",
+        ),
+        (
+            "{name: example.net, type: A, expect: {dnssec: secure}}",
+            "needs the validate option",
+        ),
+        (
+            "{name: example.net, type: A, options: {trust_anchor: /nonexistent/anchors}}",
+            "cannot read /nonexistent/anchors",
+        ),
+        ("{name: example.com, type: AXFR}", "zone transfers"),
+    ] {
+        let file = format!("server: {}\nqueries: [{good}, {query}]", server.addr);
+        dedens()
+            .args(["-f", "-"])
+            .write_stdin(file)
+            .assert()
+            .code(2)
+            .stderr(contains(error));
+    }
+    dedens()
+        .args(["-f", "-"])
+        .write_stdin("queries: 3")
+        .assert()
+        .code(2);
+    dedens()
+        .args(["-f", "/nonexistent/queries.yaml"])
+        .assert()
+        .code(2)
+        .stderr(contains("cannot read /nonexistent/queries.yaml"));
+    assert_eq!(server.queries().len(), 0);
+}
+
+/// D33: a `--save-wire` directory that cannot be made is a usage error, found before any query.
+#[test]
+fn a_save_wire_directory_that_cannot_be_made_is_a_usage_error() {
+    let server = Responder::start(&["a"]);
+    let file = tempfile::NamedTempFile::new().expect("a file");
+    // Under a file: no directory can be made there.
+    let dir = file.path().join("wire");
+    dedens()
+        .args([&server.at(), "example.com", "--save-wire"])
+        .arg(&dir)
+        .assert()
+        .code(2)
+        .stderr(contains("cannot create"));
+    assert_eq!(server.queries().len(), 0);
 }
 
 /// `--save-wire` never writes two responses to one file: two lookups with one id are refused before any query
@@ -205,7 +276,7 @@ fn save_wire_never_overwrites_a_response() {
     dedens()
         .args([&server.at(), "example.com", "example.com"])
         .assert()
-        .code(10)
+        .code(2)
         .stderr(contains("two queries with id example.com_A"));
     assert_eq!(server.queries().len(), 0);
     let (https, ca) = Responder::https(&["a"]);
