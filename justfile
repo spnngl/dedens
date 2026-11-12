@@ -384,9 +384,10 @@ fuzz-all seconds="60": fuzz-seeds
     done
 
 # Every simulation scenario under `runs` random seeds (D133), or those of one family, a module of
-# crates/dedens-sim/tests: just sim 100 dnssec. A failure prints its `DEDENS_SIM_SEED=<n>`.
+# crates/dedens-sim/tests: just sim 100 dnssec (an unknown family fails, not runs nothing). A failure prints its
+# `DEDENS_SIM_SEED=<n>`.
 sim runs="100" family="":
-    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else { family + "::" } }}
+    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else if path_exists("crates/dedens-sim/tests/" + family + ".rs") == "true" { family + "::" } else { error("no simulation family `" + family + "` in crates/dedens-sim/tests") } }}
 
 # The wall time of each simulation family run alone, then of them all, as `just check` runs them (the workspace's
 # debug build with every feature, the fixed seeds): over D133's budgets, 2 s a family and 10 s the crate, it says
