@@ -359,7 +359,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   forwards to DoH upstreams. A `listen` address `https://ADDR[:PORT][/PATH]` (port 443, path `/dns-query`; a path
   with a query, a fragment or a template expression is refused) takes UDP, as `quic://` does: the certificate of
   `tls` (D66) is required with it, ALPN `h3`, TLS 1.3 alone, no 0-RTT, the connection counted against the thread's
-  TCP ones, idle time and write time D47's (no new request within the idle time, none being answered, ends it, pings or not), 64 request streams and 16 unidirectional ones (control and QPACK, D83) at once, the
+  TCP ones, idle time and write time D47's (no new request within the idle time, none being answered, ends it, pings or not; the idle time counts from the later of the last request taken and the last reply sent, decided by the owner: counted from the request alone, a reply 5 s late left the connection 5 s of idle time, and one that came as the idle time ran out a whole idle time more), 64 request streams and 16 unidirectional ones (control and QPACK, D83) at once, the
   connection set up and each request read within that idle time. A request goes through D82's `server_request`,
   then the pipeline as any query (over `Transport::Https`: padding as D60 says); a request for another path is 404
   whatever its method, a query the pipeline drops is 400 (RFC 8484 §4.2.1: the status says the request is bad,

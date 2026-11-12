@@ -45,6 +45,8 @@ pub(super) struct Budget {
     passed: Cell<Option<Instant>>,
     /// Requests being answered, each holding a [`Flight`].
     flights: Cell<usize>,
+    /// When the last [`Flight`] ended, or the connection was registered.
+    landed: Cell<Instant>,
 }
 
 impl Budget {
@@ -56,6 +58,12 @@ impl Budget {
     /// Whether no request is being answered.
     pub(super) fn quiet(&self) -> bool {
         self.flights.get() == 0
+    }
+
+    /// When the last request being answered ended, its reply sent or given up, or else when the connection was
+    /// registered: an HTTP/3 connection's idle time counts from it too (D84).
+    pub(super) fn landed(&self) -> Instant {
+        self.landed.get()
     }
 
     /// A request taken: held until it is answered, it keeps the budget checked.
@@ -96,6 +104,7 @@ pub(super) struct Flight(Rc<Budget>);
 impl Drop for Flight {
     fn drop(&mut self) {
         self.0.flights.set(self.0.flights.get() - 1);
+        self.0.landed.set(Instant::now());
     }
 }
 
@@ -117,6 +126,7 @@ impl Connections {
             peer: origin.peer,
             passed: Cell::new(None),
             flights: Cell::new(0),
+            landed: Cell::new(Instant::now()),
         });
         self.list.borrow_mut().push(Rc::downgrade(&budget));
         if !self.sweeping.replace(true) {
