@@ -134,6 +134,27 @@ fn unknown_fields_and_bad_values_are_errors() {
 }
 
 #[test]
+fn names_are_read_as_written_not_as_yaml_numbers_or_booleans() {
+    // Norway's TLD, labels of digits; YAML would read them as `false`, 7, 16 and 1.5.
+    for name in ["no", "007", "0x10", "1.5", "1e3", "off"] {
+        let file = QueryFile::parse(&format!("queries:\n  - name: {name}\n    type: A\n"))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(file.queries[0].name.to_string(), format!("{name}."));
+    }
+    let file = QueryFile::parse(
+        "queries:\n  - name: example.com\n    type: A\n    options:\n      insecure: [no, 007]\n",
+    )
+    .expect("valid");
+    let insecure = file.queries[0].options.insecure.clone().expect("insecure");
+    let insecure: Vec<String> = insecure.iter().map(ToString::to_string).collect();
+    assert_eq!(insecure, ["no.", "007."]);
+    // Options that are booleans or numbers in YAML still read.
+    let file = QueryFile::parse("options: {time: 3, cookie: true}\nqueries: []\n").expect("valid");
+    assert_eq!(file.options.time, Some(Timeout(Duration::from_secs(3))));
+    assert_eq!(file.options.cookie, Some(CookieOption::On));
+}
+
+#[test]
 fn a_record_expected_twice_must_come_twice() {
     let file = QueryFile::parse(
         "queries:
