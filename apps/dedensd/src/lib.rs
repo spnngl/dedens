@@ -1,5 +1,6 @@
 //! `dedensd`: a DNS server, a caching forwarder for now (D41-D44), a library the binary and `fuzz/` reach (D181):
-//! [`main`] runs the server, [`read_config`] only reads a configuration.
+//! [`main`] runs the server, [`read_config`] only reads a configuration; `simulated`, hidden, runs the serving loop
+//! of UDP and TCP on `dedens-sim`'s turmoil (D182).
 //!
 //! Listens on each address of its configuration file over UDP and TCP, and runs each query through the stages it
 //! lists. On Linux, `threads` threads, one per core by default, each with its own sockets on the same addresses
@@ -191,6 +192,20 @@ pub fn main() -> anyhow::Result<()> {
 /// A configuration [`main`] refuses.
 pub fn read_config(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<()> {
     config::read_without_files(text, env)
+}
+
+/// Answers over UDP on `udp` and TCP on `tcp`, both bound before, with `pipeline`, on the runtime `io`, upstream
+/// servers over TLS checked against `trust`: [`main`]'s serving loop of a plain listener, supervised, for the
+/// simulation tests (D182). Not an API: what it takes follows the loop. Never ends.
+#[doc(hidden)]
+pub async fn simulated<N: dedens_net::io::Io>(
+    io: N,
+    udp: N::Udp,
+    tcp: N::Listener,
+    pipeline: Pipeline,
+    trust: dedens_net::tls::Trust,
+) {
+    serve::simulated(io, udp, tcp, pipeline, trust).await;
 }
 
 /// Ends the server on SIGTERM or SIGINT (D157), as `docker stop`, systemd and Ctrl-C ask: at once, since nothing is

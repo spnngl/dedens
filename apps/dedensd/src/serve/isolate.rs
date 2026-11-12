@@ -4,6 +4,10 @@
 //! The runtime already catches a panic in any task, but a detached task then ends in silence. [`Origin::spawn`] logs
 //! and counts it; [`supervise`] restarts the loop of a listener, with a pause that doubles. A panic of the runtime
 //! itself ends its thread, and the process with it (D121): only `main` sees that.
+//!
+//! Tasks and pauses go through the thread's [`Io`] (D182).
+
+#![deny(clippy::disallowed_methods)]
 
 use std::any::Any;
 use std::cell::Cell;
@@ -15,8 +19,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use std::{fmt, io, thread};
 
-use compio::runtime::JoinHandle;
+use dedens_net::io::Io;
 use futures_util::FutureExt;
+
+use super::pause;
 
 /// Counts the panics of tasks, by listener.
 const PANICS: &str = "dedensd_task_panics_total";
@@ -192,7 +198,12 @@ impl Listener {
     fn panicked(&self, peer: Option<SocketAddr>, payload: &(dyn Any + Send)) {
         self.count_panic();
         let at = AT.take();
-        if let Some(suppressed) = self.admit(Instant::now()) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the log's rate only: what a client sees does not depend on it"
+        )]
+        let now = Instant::now();
+        if let Some(suppressed) = self.admit(now) {
             tracing::error!(
                 listener = %self,
                 peer = peer.map(|peer| peer.to_string()),
@@ -250,26 +261,25 @@ impl Origin {
         }
     }
 
-    /// Runs `task` alone on the thread's runtime, not waited for: if it panics, that is logged and counted, and
-    /// nothing else ends. Dropping the task on the way gives back what it held, as slots.
-    pub(super) fn spawn(self, task: impl Future<Output = ()> + 'static) {
-        self.run(task).detach();
+    /// Runs `task` alone on the thread's runtime, `io`'s, not waited for: if it panics, that is logged and counted,
+    /// and nothing else ends. Dropping the task on the way gives back what it held, as slots.
+    pub(super) fn spawn<N: Io>(self, io: &N, task: impl Future<Output = ()> + 'static) {
+        io.detach(self.run(task));
     }
 
     /// As [`Origin::spawn`], but dropping the handle ends the task.
-    pub(super) fn spawn_joinable(
+    pub(super) fn spawn_joinable<N: Io>(
         &self,
+        io: &N,
         task: impl Future<Output = ()> + 'static,
-    ) -> JoinHandle<()> {
-        self.clone().run(task)
+    ) -> N::Task {
+        io.spawn(self.clone().run(task))
     }
 
-    fn run(self, task: impl Future<Output = ()> + 'static) -> JoinHandle<()> {
-        compio::runtime::spawn(async move {
-            if let Err(payload) = caught(task).await {
-                self.listener.panicked(Some(self.peer), &*payload);
-            }
-        })
+    async fn run(self, task: impl Future<Output = ()> + 'static) {
+        if let Err(payload) = caught(task).await {
+            self.listener.panicked(Some(self.peer), &*payload);
+        }
     }
 }
 
@@ -322,32 +332,38 @@ impl Backoff {
 /// Runs the loop `start` makes, and again each time it ends or panics, after a pause of `backoff`; never ends. A
 /// restart is logged and counted. What a loop holds that outlives it, its socket, is `start`'s to keep: a panic
 /// leaves it as it was.
-pub(super) async fn supervise<F: Future<Output = ()>>(
+pub(super) async fn supervise<N: Io, F: Future<Output = ()>>(
+    io: &N,
     listener: &Listener,
     backoff: Backoff,
     mut start: impl FnMut() -> F,
 ) {
     let mut last = None;
     loop {
-        let began = Instant::now();
+        let began = io.now();
         match caught(start()).await {
             Ok(()) => tracing::error!(%listener, "listener ended"),
             Err(payload) => listener.panicked(None, &*payload),
         }
-        let pause = backoff.pause(last, began.elapsed());
-        last = Some(pause);
-        tracing::warn!(%listener, ?pause, "listener restarts");
+        let pause_for = backoff.pause(last, io.now().saturating_duration_since(began));
+        last = Some(pause_for);
+        tracing::warn!(%listener, pause = ?pause_for, "listener restarts");
         metrics::counter!(RESTARTS, "listener" => listener.0.name.to_string()).increment(1);
-        compio::time::sleep(pause).await;
+        pause(io, pause_for).await;
     }
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tests run on compio's runtime and clock"
+)]
 pub(super) mod tests {
     use std::cell::Cell;
     use std::panic::panic_any;
     use std::pin::pin;
 
+    use dedens_net::io::Compio;
     use futures_util::future::select;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
@@ -511,12 +527,12 @@ pub(super) mod tests {
                 .block_on(async {
                     let origin = Origin::new(&listener(), PEER);
                     origin
-                        .spawn_joinable(async { panic_any("a bug") })
+                        .spawn_joinable(&Compio, async { panic_any("a bug") })
                         .await
                         .expect("the panic is caught");
                     let flag = Rc::clone(&ran);
                     origin
-                        .spawn_joinable(async move { flag.set(true) })
+                        .spawn_joinable(&Compio, async move { flag.set(true) })
                         .await
                         .expect("the next task runs");
                 });
@@ -567,7 +583,7 @@ pub(super) mod tests {
                     let (serving, wait) = flume::bounded(1);
                     let turns = Rc::clone(&started);
                     let name = listener();
-                    let supervising = supervise(&name, MS, || {
+                    let supervising = supervise(&Compio, &name, MS, || {
                         turns.set(turns.get() + 1);
                         let turn = turns.get();
                         let serving = serving.clone();

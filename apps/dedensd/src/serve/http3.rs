@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use compio::quic::Connection;
 use dedens_net::doh::Method;
 use dedens_net::http3::{Http3Error, Incoming, Pending, Requests};
+use dedens_net::io::Compio;
 #[cfg(feature = "odoh")]
 use dedens_net::odoh::proxy::{Destination, ProxyError, Route, failure, rejection, route};
 #[cfg(feature = "odoh")]
@@ -20,8 +21,6 @@ use http::StatusCode;
 
 use super::h3_budget::Budget;
 use super::isolate::Origin;
-#[cfg(feature = "odoh")]
-use super::now;
 use super::tcp::TCP_WRITE;
 use super::upstream::answer;
 use super::{Slot, Started, TCP_IDLE, Thread, start};
@@ -76,7 +75,7 @@ pub(super) async fn requests(
             Ok(Ok(Some(pending))) => {
                 let (path, thread, flight) = (Arc::clone(path), Rc::clone(thread), budget.fly());
                 let slot = Rc::clone(slot);
-                origin.clone().spawn(async move {
+                origin.clone().spawn(&Compio, async move {
                     request(pending, &path, peer, &thread).await;
                     drop(flight);
                     drop(slot);
@@ -214,7 +213,7 @@ async fn oblivious(
                 .pipeline()
                 .rate_limit()
                 .is_some_and(|limit| limit.exempts(peer.ip()));
-            match target.open(peer.ip(), now(), exempt, body) {
+            match target.open(peer.ip(), thread.now(), exempt, body) {
                 Ok((query, context)) => (Transport::Odoh, Some(context), query),
                 Err(status) => return reject(incoming, status, peer).await,
             }

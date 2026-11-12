@@ -1,6 +1,8 @@
 //! TCP and TLS: the accept loop, a task per connection reading its pipelined queries (RFC 7766 §6.2.1), and the
 //! writer of their replies, bounded in connections, queries in flight, bytes queued and time to write (RFC 7766 §10,
-//! D47).
+//! D47). The listener, its connections and the clock are the thread's [`Io`]'s (D182).
+
+#![deny(clippy::disallowed_methods)]
 
 use std::cell::Cell;
 use std::io;
@@ -9,16 +11,18 @@ use std::time::Duration;
 
 use compio::BufResult;
 use compio::io::BufReader;
+use compio::io::util::Splittable as _;
 use compio::net::TcpListener;
 use compio::runtime::JoinHandle;
 use compio::tls::TlsAcceptor;
+use dedens_net::io::{Io, Listener as _, Stream as _};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
 use socket2::Socket;
 
 use super::isolate::{Listener, Origin};
 use super::upstream::answer;
-use super::{ERROR_PAUSE, Started, TCP_IDLE, Thread, local, start, supervised};
+use super::{ERROR_PAUSE, Started, TCP_IDLE, Thread, local, pause, start, supervised};
 
 /// Connections waiting to be accepted, per TCP listener.
 pub(super) const TCP_BACKLOG: i32 = 1024;
@@ -46,6 +50,10 @@ pub(super) fn tcp_task(
     acceptor: Option<TlsAcceptor>,
 ) -> io::Result<JoinHandle<()>> {
     let name = Listener::new(scheme, local(&tcp_listener));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "compio takes the listener bound before (D42, D182)"
+    )]
     let tcp_listener = Rc::new(TcpListener::from_std(tcp_listener.into())?);
     Ok(supervised(name, thread, move |name, thread| {
         let (tcp_listener, acceptor) = (Rc::clone(&tcp_listener), acceptor.clone());
@@ -55,11 +63,11 @@ pub(super) fn tcp_task(
 
 /// Accepts the connections of one TCP listener, up to [`TCP_CONNECTIONS`] at once, over TLS with `acceptor`
 /// (RFC 7858): the handshake must end within [`TCP_IDLE`].
-pub(super) async fn tcp(
-    tcp_listener: Rc<TcpListener>,
+pub(super) async fn tcp<N: Io>(
+    tcp_listener: Rc<N::Listener>,
     acceptor: Option<TlsAcceptor>,
     listener: Listener,
-    thread: Rc<Thread>,
+    thread: Rc<Thread<N>>,
 ) {
     loop {
         match tcp_listener.accept().await {
@@ -75,11 +83,11 @@ pub(super) async fn tcp(
                 };
                 let (acceptor, thread) = (acceptor.clone(), Rc::clone(&thread));
                 let origin = Origin::new(&listener, peer);
-                origin.clone().spawn(async move {
+                origin.clone().spawn(&thread.io.clone(), async move {
                     // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
                     let _ = stream.set_nodelay(true);
                     let Some(acceptor) = acceptor else {
-                        let (reader, writer) = stream.into_split();
+                        let (reader, writer) = stream.split();
                         connection(
                             BufReader::new(reader),
                             writer,
@@ -91,7 +99,12 @@ pub(super) async fn tcp(
                         drop(slot);
                         return;
                     };
-                    match compio::time::timeout(TCP_IDLE, acceptor.accept(stream)).await {
+                    let deadline = thread.io.now() + TCP_IDLE;
+                    match thread
+                        .io
+                        .timeout_at(deadline, acceptor.accept(stream))
+                        .await
+                    {
                         Ok(Ok(secured)) => {
                             let (reader, writer) = Polled::halves(secured);
                             connection(reader, writer, Transport::Tls, &origin, &thread).await;
@@ -104,7 +117,7 @@ pub(super) async fn tcp(
             }
             Err(error) => {
                 tracing::warn!(%error, "TCP accept");
-                compio::time::sleep(ERROR_PAUSE).await;
+                pause(&thread.io, ERROR_PAUSE).await;
             }
         }
     }
@@ -115,12 +128,12 @@ pub(super) async fn tcp(
 /// (§6.2.1.1). Reading waits while [`TCP_PENDING`] queries are in flight or more than [`TCP_QUEUED`] bytes of
 /// replies wait to be written, and stops after [`TCP_IDLE`] without a query, at the first error, or once the
 /// writer gave up; the connection closes once the replies still waiting are written (§6.2.3).
-async fn connection(
+async fn connection<N: Io>(
     mut reader: impl Inbound,
     writer: impl Outbound + 'static,
     transport: Transport,
     origin: &Origin,
-    thread: &Rc<Thread>,
+    thread: &Rc<Thread<N>>,
 ) {
     let (sender, queue) = flume::unbounded::<Vec<u8>>();
     let replies = Replies {
@@ -129,7 +142,16 @@ async fn connection(
     };
     // The writer tells the reader there is room again; a stale message only makes it check once more.
     let (room, wait_room) = flume::bounded::<()>(1);
-    let writing = origin.spawn_joinable(write(writer, queue, Rc::clone(&replies.queued), room));
+    let writing = origin.spawn_joinable(
+        &thread.io,
+        write(
+            thread.io.clone(),
+            writer,
+            queue,
+            Rc::clone(&replies.queued),
+            room,
+        ),
+    );
     // A semaphore: a query in flight holds a place in the channel, given back when it is answered.
     let (pending, done) = flume::bounded::<()>(TCP_PENDING);
     'read: loop {
@@ -138,7 +160,8 @@ async fn connection(
                 break 'read;
             }
         }
-        let Ok(Ok(query)) = compio::time::timeout(TCP_IDLE, reader.message()).await else {
+        let deadline = thread.io.now() + TCP_IDLE;
+        let Ok(Ok(query)) = thread.io.timeout_at(deadline, reader.message()).await else {
             break;
         };
         let pipeline = thread.pipeline();
@@ -154,7 +177,7 @@ async fn connection(
             break;
         }
         let (replies, place, thread) = (replies.clone(), Place(done.clone()), Rc::clone(thread));
-        origin.clone().spawn(async move {
+        origin.clone().spawn(&thread.io.clone(), async move {
             let deliver = async |framed| {
                 replies.queue(framed);
             };
@@ -164,7 +187,10 @@ async fn connection(
         });
     }
     drop(replies);
-    let _ = writing.await;
+    // The writer ends once every reply is written, and drops `room` as it ends, panicking or not: waiting for that
+    // is waiting for it, which `Io` tasks do not offer.
+    while wait_room.recv_async().await.is_ok() {}
+    drop(writing);
 }
 
 /// A place of a connection's in-flight queries, given back when dropped: a query that panics gives it back too, else
@@ -213,6 +239,7 @@ impl Replies {
 /// [`TCP_QUEUED`] or fewer. Ends when every sender is dropped, or a write fails or lasts [`TCP_WRITE`]. The replies
 /// queued meanwhile go out together, up to a message's size: one write for many.
 async fn write(
+    io: impl Io,
     mut writer: impl Outbound,
     queue: flume::Receiver<Vec<u8>>,
     queued: Rc<Cell<usize>>,
@@ -229,7 +256,10 @@ async fn write(
             {
                 batch.extend_from_slice(&framed);
             }
-            match compio::time::timeout(TCP_WRITE, writer.write_all(batch)).await {
+            match io
+                .timeout_at(io.now() + TCP_WRITE, writer.write_all(batch))
+                .await
+            {
                 Ok(BufResult(Ok(()), written)) => batch = written,
                 _ => return,
             }
@@ -246,6 +276,10 @@ async fn write(
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
 #[cfg(test)]
 #[cfg(not(dedens_loom))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tests run on compio's runtime, clock and sockets"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::net::SocketAddr;
@@ -257,6 +291,7 @@ mod tests {
     use compio::io::{AsyncWriteExt, BufReader};
     use compio::net::{TcpListener, TcpStream};
     use compio::runtime::{Runtime, spawn};
+    use dedens_net::io::Compio;
     use dedens_net::tcp::{frame, read_message};
     use dedens_net::tls::Trust;
     use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
@@ -399,7 +434,13 @@ mod tests {
                 gate,
                 batches: Rc::clone(&batches),
             };
-            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let writing = spawn(write(
+                Compio,
+                writer,
+                queue,
+                Rc::clone(&replies.queued),
+                room,
+            ));
             let reply = vec![0; 1000];
             for _ in 0..200 {
                 assert!(replies.push(&reply));
@@ -448,7 +489,13 @@ mod tests {
                 gate,
                 batches: Rc::clone(&batches),
             };
-            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let writing = spawn(write(
+                Compio,
+                writer,
+                queue,
+                Rc::clone(&replies.queued),
+                room,
+            ));
             let reply = vec![0; 13105];
             for _ in 0..6 {
                 assert!(replies.push(&reply));
@@ -495,7 +542,13 @@ mod tests {
                 pause: Duration::from_millis(300),
                 batches: Rc::clone(&batches),
             };
-            let writing = spawn(write(writer, queue, Rc::clone(&replies.queued), room));
+            let writing = spawn(write(
+                Compio,
+                writer,
+                queue,
+                Rc::clone(&replies.queued),
+                room,
+            ));
             let start = std::time::Instant::now();
             let mut pushed = 0;
             while start.elapsed() < TCP_WRITE + Duration::from_secs(1) {

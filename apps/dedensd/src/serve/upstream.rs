@@ -1,26 +1,28 @@
 //! A query asked upstream (D42): each server in turn over its transport (D65, D84), a question in flight shared
 //! with the queries asking it (D86), expired data once the client response timer runs out (RFC 8767 §5).
 
+#![deny(clippy::disallowed_methods)]
+
 use std::pin::pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{ClientError, Server};
 use dedens_net::exchange::{Options, Response};
+use dedens_net::io::Io;
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Transport};
 use dedens_server::{Pipeline, Step, Upstream, Via};
 
-use super::{Thread, now};
+use super::Thread;
 use crate::flights::{Entered, Flights, Key, Lead};
 
 /// Asks the upstream servers for `upstream`, from `pipeline`, in turn, each over its transport ([`target`]), with
 /// the forward stage's timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
 /// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
 /// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch.
-pub(super) async fn answer(
-    thread: &Thread,
+pub(super) async fn answer<N: Io>(
+    thread: &Thread<N>,
     pipeline: &Pipeline,
     mut upstream: Box<Upstream>,
     transport: Transport,
@@ -30,7 +32,7 @@ pub(super) async fn answer(
     (options.timeout, options.tries) = upstream.patience();
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;
-    let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
+    let mut stale_at = upstream.stale_after().map(|after| thread.io.now() + after);
     loop {
         // A copy: the stale reply below takes `upstream`.
         let server = upstream.server().clone();
@@ -46,13 +48,13 @@ pub(super) async fn answer(
             let mut exchange = pin!(fetch(thread, key, upstream.request(), target, &options));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
-                if let Ok(fetched) = compio::time::timeout_at(at, exchange.as_mut()).await {
+                if let Ok(fetched) = thread.io.timeout_at(at, exchange.as_mut()).await {
                     break 'ask fetched;
                 }
                 stale_at = None;
                 let stale = {
                     let mut out = thread.scratch.borrow_mut();
-                    let len = pipeline.stale(&mut upstream, now(), &mut out);
+                    let len = pipeline.stale(&mut upstream, thread.now(), &mut out);
                     len.and_then(|len| copy_out(&out[..len], transport))
                 };
                 if let Some(reply) = stale {
@@ -65,7 +67,7 @@ pub(super) async fn answer(
             let mut out = thread.scratch.borrow_mut();
             let step = match &fetched {
                 Fetched::Own(Ok(response), _) => {
-                    pipeline.receive(upstream, Some(&response.wire), now(), &mut out)
+                    pipeline.receive(upstream, Some(&response.wire), thread.now(), &mut out)
                 }
                 Fetched::Own(Err(error), _) if error.is_local() => {
                     tracing::warn!(%error, %server, "upstream query not sent");
@@ -73,10 +75,10 @@ pub(super) async fn answer(
                 }
                 Fetched::Own(Err(error), _) => {
                     tracing::debug!(%error, %server, "upstream");
-                    pipeline.receive(upstream, None, now(), &mut out)
+                    pipeline.receive(upstream, None, thread.now(), &mut out)
                 }
                 Fetched::Shared(wire) => {
-                    pipeline.receive(upstream, wire.as_deref(), now(), &mut out)
+                    pipeline.receive(upstream, wire.as_deref(), thread.now(), &mut out)
                 }
             };
             match step {
@@ -120,8 +122,8 @@ enum Fetched<'a> {
 }
 
 /// Sends `request` to `target`, unless a query of the same `key` is in flight: then waits for its response.
-async fn fetch<'a>(
-    thread: &'a Thread,
+async fn fetch<'a, N: Io>(
+    thread: &'a Thread<N>,
     key: Option<Key>,
     request: Message<'static>,
     target: Server,
@@ -180,6 +182,10 @@ fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
 #[cfg(test)]
 #[cfg(not(dedens_loom))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tests run on compio's runtime and sockets"
+)]
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::future::poll_fn;
@@ -203,8 +209,8 @@ mod tests {
     use crate::flights::Key;
     use crate::lists::Store;
     use crate::reload::Current;
+    use crate::serve::Thread;
     use crate::serve::tests::example_com_a;
-    use crate::serve::{Thread, now};
 
     /// D42: a server that fails on our side, here a QUIC one at an unspecified address, which QUIC will not dial,
     /// gives the query up with SERVFAIL, the next server not asked; a server that does not answer passes the query
@@ -252,7 +258,7 @@ mod tests {
                 let mut out = vec![0; 65535];
                 let from = IpAddr::from([127, 0, 0, 1]);
                 let Step::Upstream(upstream) =
-                    pipeline.query(&query, Transport::Udp, from, now(), &mut out)
+                    pipeline.query(&query, Transport::Udp, from, thread.now(), &mut out)
                 else {
                     panic!("asked upstream")
                 };
@@ -300,12 +306,12 @@ mod tests {
             let [lead, follower] = [1, 2].map(|id| {
                 let query = Message::query(id, question.clone()).to_vec().expect("a query fits");
                 let Step::Upstream(upstream) =
-                    pipeline.query(&query, Transport::Udp, from, now(), &mut out)
+                    pipeline.query(&query, Transport::Udp, from, thread.now(), &mut out)
                 else {
                     panic!("asked upstream")
                 };
                 let Step::Upstream(probe) =
-                    pipeline.receive(upstream, Some(&response), now(), &mut out)
+                    pipeline.receive(upstream, Some(&response), thread.now(), &mut out)
                 else {
                     panic!("the validator asks")
                 };

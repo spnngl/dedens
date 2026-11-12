@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use compio::quic::{Connection, VarInt};
 use dedens_net::http3::H3_EXCESSIVE_LOAD;
+use dedens_net::io::Compio;
 use dedens_net::quic::RECEIVE_WINDOW;
 
 use super::TCP_IDLE;
@@ -130,7 +131,9 @@ impl Connections {
         });
         self.list.borrow_mut().push(Rc::downgrade(&budget));
         if !self.sweeping.replace(true) {
-            origin.clone().spawn(sweep(Rc::clone(self), origin.clone()));
+            origin
+                .clone()
+                .spawn(&Compio, sweep(Rc::clone(self), origin.clone()));
         }
         budget
     }

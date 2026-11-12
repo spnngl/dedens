@@ -14,6 +14,7 @@ use compio::quic::{
     VarInt,
 };
 use compio::runtime::JoinHandle;
+use dedens_net::io::Compio;
 use dedens_net::quic::{
     DOQ_PROTOCOL_ERROR, QuicError, RECEIVE_WINDOW, STREAM_RECEIVE_WINDOW,
     read_message as read_stream,
@@ -122,7 +123,7 @@ async fn quic(endpoint: Endpoint, service: Rc<Service>, listener: Listener, thre
         let origin = Origin::new(&listener, peer);
         // The task of each stream holds it too: the connection counts until the last one ends.
         let slot = Rc::new(slot);
-        origin.clone().spawn(async move {
+        origin.clone().spawn(&Compio, async move {
             match connecting.await {
                 Ok(connection) => match &*service {
                     Service::Quic => streams(&connection, &origin, &thread, &slot).await,
@@ -148,7 +149,7 @@ async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>, 
     {
         let (connection, thread, slot) = (connection.clone(), Rc::clone(thread), Rc::clone(slot));
         let from = origin.peer.ip();
-        origin.clone().spawn(async move {
+        origin.clone().spawn(&Compio, async move {
             let _slot = slot;
             let reply = Reply(Some(send));
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;

@@ -1,0 +1,36 @@
+# The workspace's clippy.toml (the root `clippy.toml`), repeated: a crate's file replaces it, so a change there is
+# made here too (`crates/dedens-repo/tests/repo.rs` checks it).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+
+# D182: `serve/udp.rs`, `serve/tcp.rs`, `serve/upstream.rs` and `serve/isolate.rs` deny `clippy::disallowed_methods`
+# (the lint is off elsewhere, see the workspace's Cargo.toml): the clock, tasks, timers and sockets of the serving
+# loop go through the thread's `dedens_net::io::Io`, so the simulation's stands in. `serve/mod.rs` converts the
+# sockets bound before; QUIC, HTTP/3 and `CoAP` stay on compio.
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "use `Io::now`" },
+  { path = "std::time::SystemTime::now", reason = "use `Io::now`: a simulation runs its own clock" },
+  { path = "compio::runtime::spawn", reason = "use `Io::spawn` or `Io::detach`, through `Origin`" },
+  { path = "compio::runtime::spawn_at", reason = "use `Io::spawn` or `Io::detach`, through `Origin`" },
+  { path = "compio::runtime::spawn_blocking", reason = "no blocking task in the serving loop" },
+  { path = "compio::runtime::Runtime::spawn", reason = "use `Io::spawn` or `Io::detach`, through `Origin`" },
+  { path = "compio::time::sleep", reason = "use `serve::pause`" },
+  { path = "compio::time::sleep_until", reason = "use `serve::pause`" },
+  { path = "compio::time::interval", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::interval_at", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::timeout", reason = "use `Io::timeout_at`" },
+  { path = "compio::time::timeout_at", reason = "use `Io::timeout_at`" },
+  { path = "compio::net::UdpSocket::bind", reason = "the sockets are bound before the threads start (D42)" },
+  { path = "compio::net::UdpSocket::from_std", reason = "the loop takes an `Io::Udp`, made by `serve`" },
+  { path = "compio::net::UdpSocket::recv_from", reason = "use `Udp::recv_multi`" },
+  { path = "compio::net::UdpSocket::recv_from_multi", reason = "use `Udp::recv_multi`" },
+  { path = "compio::net::UdpSocket::send_to", reason = "use `Udp::send_to`" },
+  { path = "compio::net::TcpListener::bind", reason = "the sockets are bound before the threads start (D42)" },
+  { path = "compio::net::TcpListener::from_std", reason = "the loop takes an `Io::Listener`, made by `serve`" },
+  { path = "compio::net::TcpListener::accept", reason = "use `Listener::accept`" },
+  { path = "compio::net::TcpStream::connect", reason = "use `Io::tcp_connect`" },
+  { path = "compio::net::TcpStream::into_split", reason = "use `Splittable::split`, which `Io::Stream` offers" },
+]
