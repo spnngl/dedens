@@ -323,7 +323,8 @@ struct Scanned {
 ///
 /// Verus proves it (D180), for any input: it ends, never panics nor overflows, and a name it returns ends past
 /// `start`, within `end`, is 1 to 255 bytes long uncompressed, and is `msg[start..next]` when not compressed. So
-/// [`Name::decode_with`]'s fallbacks never run.
+/// [`Name::decode_with`]'s fallbacks never run. The name is the one the spec function `uncompressed` reads at
+/// `start`, so [`unpack`] copies it out.
 #[cfg_attr(verus_only, verus_spec(scanned =>
     requires
         start <= end <= msg.len(),
@@ -332,6 +333,8 @@ struct Scanned {
     ensures
         scanned matches Ok(s) ==> start < s.next <= end && 1 <= s.len <= MAX_NAME_LEN
             && (!s.compressed ==> s.next == start + s.len),
+        scanned matches Ok(s) ==> (uncompressed(msg@, start as int, start as int) matches Some(w)
+            && w.len() == s.len && (!s.compressed ==> w == msg@.subrange(start as int, s.next as int))),
 ))]
 fn scan(msg: &[u8], start: usize, end: usize, pointers: bool) -> Result<Scanned, DecodeError> {
     let mut limit = end;
@@ -352,8 +355,14 @@ fn scan(msg: &[u8], start: usize, end: usize, pointers: bool) -> Result<Scanned,
             resume is None ==> limit == end && bound == start && pos == start + len,
         invariant_except_break
             len < MAX_NAME_LEN,
+            // The name read so far, followed by the rest from `pos`, is the whole name.
+            uncompressed(msg@, pos as int, bound as int) matches Some(rest) ==> (
+                uncompressed(msg@, start as int, start as int) matches Some(w) && w.len() == len + rest.len()
+                    && (resume is None ==> w == msg@.subrange(start as int, pos as int) + rest)),
         ensures
             1 <= len,
+            uncompressed(msg@, start as int, start as int) matches Some(w) && w.len() == len
+                && (resume is None ==> w == msg@.subrange(start as int, pos as int)),
         decreases bound, limit - pos,
     ))]
     loop {
@@ -371,6 +380,8 @@ fn scan(msg: &[u8], start: usize, end: usize, pointers: bool) -> Result<Scanned,
                     let kind = DecodeErrorKind::NameTooLong;
                     return Err(DecodeError { offset: pos, kind });
                 }
+                #[cfg(verus_only)]
+                proof! { if resume is None { joined(msg@, start as int, pos as int, after as int); } }
                 len += after - pos;
                 pos = after;
                 if first == 0 {
@@ -388,6 +399,8 @@ fn scan(msg: &[u8], start: usize, end: usize, pointers: bool) -> Result<Scanned,
                     Some(&b) if pos + 1 < limit => b,
                     _ => return Err(past(resume, pos)),
                 };
+                #[cfg(verus_only)]
+                proof! { offset_is_pointer(first, second); }
                 let target = usize::from(first & 0x3F) << 8 | usize::from(second);
                 // Backward pointers rule out loops, the hop count rules out long chains of them: a name has at
                 // most 127 labels, each worth at most one pointer. Offsets count from the start of the message,
@@ -440,6 +453,82 @@ fn past(resume: Option<usize>, offset: usize) -> DecodeError {
     DecodeError { offset, kind }
 }
 
+#[cfg(verus_only)]
+verus! {
+
+/// The name at `pos` in `msg` uncompressed, as RFC 1035 §4.1.4 reads it: labels, each a length byte whose two
+/// high bits are 0 and that many bytes, up to the root label (a zero length) or up to a pointer (two high bits 1)
+/// to the rest of the name, at the offset of its other 14 bits. The RFC's pointers go to a prior occurrence; here,
+/// as decoding requires (D9), below `bound`: the name's start, then the previous pointer's target. `None` for
+/// any other bytes. Lengths over 255 bytes (RFC 1035 §2.3.4) are left to the callers.
+spec fn uncompressed(msg: Seq<u8>, pos: int, bound: int) -> Option<Seq<u8>>
+    decreases bound, msg.len() - pos,
+{
+    if pos < 0 || pos >= msg.len() {
+        None
+    } else if msg[pos] & 0xC0 == 0x00 && msg[pos] == 0 {
+        Some(seq![0u8])
+    } else if msg[pos] & 0xC0 == 0x00 {
+        let after = pos + 1 + msg[pos] as int;
+        if after > msg.len() {
+            None
+        } else {
+            match uncompressed(msg, after, bound) {
+                Some(rest) => Some(msg.subrange(pos, after) + rest),
+                None => None,
+            }
+        }
+    } else if msg[pos] & 0xC0 == 0xC0 && pos + 1 < msg.len() {
+        let target = offset(msg[pos], msg[pos + 1]);
+        if 0 <= target < bound {
+            uncompressed(msg, target, target)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// The labels from `start` to `pos`, then those from `pos` to `after`, are those from `start` to `after`, whatever
+/// name follows.
+proof fn joined(msg: Seq<u8>, start: int, pos: int, after: int)
+    requires
+        0 <= start <= pos <= after <= msg.len(),
+    ensures
+        forall|rest: Seq<u8>| #[trigger] (msg.subrange(start, after) + rest)
+            == msg.subrange(start, pos) + (msg.subrange(pos, after) + rest),
+{
+    assert forall|rest: Seq<u8>| #[trigger] (msg.subrange(start, after) + rest)
+        == msg.subrange(start, pos) + (msg.subrange(pos, after) + rest) by {
+        assert(msg.subrange(start, after) + rest =~= msg.subrange(start, pos) + (msg.subrange(pos, after) + rest));
+    }
+}
+
+/// The runs [`unpack`] has copied: `single`, or `buf` up to `len`.
+spec fn runs(single: Option<&[u8]>, buf: Seq<u8>, len: usize) -> Seq<u8> {
+    match single {
+        Some(run) => run@,
+        None => buf.subrange(0, len as int),
+    }
+}
+
+/// The offset a pointer of bytes `first`, `second` holds: the 14 bits after its two high bits.
+spec fn offset(first: u8, second: u8) -> int {
+    (first & 0x3F) as int * 256 + second as int
+}
+
+/// The bit operations of the code compute [`offset`].
+proof fn offset_is_pointer(first: u8, second: u8)
+    ensures
+        ((first & 0x3F) as usize) << 8 | (second as usize) == offset(first, second),
+{
+    assert(((first & 0x3F) as usize) << 8 | (second as usize)
+        == ((first & 0x3F) as usize) * 256 + (second as usize)) by (bit_vector);
+}
+
+} // verus!
+
 /// Where the first label of the name at `start` in `msg` lies, past the pointers it starts with; decoding
 /// checked that each points before the previous one.
 fn first_label(msg: &[u8], start: u16) -> usize {
@@ -458,20 +547,64 @@ fn first_label(msg: &[u8], start: u16) -> usize {
 
 /// The uncompressed wire form of the name with compression pointers at `start` in `msg`, decoded and checked
 /// before; see [`Name::to_wire`].
+///
+/// Verus proves it (D180): for a name [`scan`] accepted, it returns the name RFC 1035 §4.1.4 reads there
+/// (`uncompressed`), and never panics nor overflows.
+#[cfg_attr(verus_only, verus_spec(wire =>
+    requires
+        msg.len() <= isize::MAX,
+        uncompressed(msg@, start as int, start as int) matches Some(w) && w.len() <= MAX_NAME_LEN,
+    ensures
+        uncompressed(msg@, start as int, start as int) == Some(wire@),
+))]
 fn unpack<'s>(msg: &'s [u8], start: usize, buf: &'s mut [u8; MAX_NAME_LEN]) -> &'s [u8] {
     // The runs of labels between pointers, the last one ending in the root label. A single non-empty run,
     // as for a name that is only a pointer, is returned in place; several are copied into `buf`.
     let mut single: Option<&[u8]> = None;
     let mut len = 0;
-    let (mut run, mut pos) = (start, start);
+    let mut run = start;
+    let mut pos = start;
+    // The runs copied so far (`single`, or `buf` up to `len`), the labels of this run up to `pos`, then the rest
+    // of the name from `pos` are the whole name.
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            msg.len() <= isize::MAX,
+            run <= pos <= msg.len(),
+            single is Some ==> len == 0,
+            len <= MAX_NAME_LEN,
+            uncompressed(msg@, start as int, start as int) matches Some(w) && w.len() <= MAX_NAME_LEN,
+        invariant_except_break
+            uncompressed(msg@, pos as int, run as int) matches Some(rest)
+                && uncompressed(msg@, start as int, start as int).unwrap()
+                    == runs(single, buf@, len) + msg@.subrange(run as int, pos as int) + rest,
+        ensures
+            uncompressed(msg@, start as int, start as int).unwrap() == runs(single, buf@, len),
+            runs(single, buf@, len).len() >= 1,
+        decreases run, msg.len() - pos,
+    ))]
     while let Some(&first) = msg.get(pos) {
         let pointer = first & 0xC0 == 0xC0;
         if first != 0 && !pointer {
+            #[cfg(verus_only)]
+            proof! {
+                let after = pos + 1 + first as int;
+                let rest = uncompressed(msg@, after, run as int).unwrap();
+                let done = runs(single, buf@, len);
+                assert(done + msg@.subrange(run as int, pos as int) + (msg@.subrange(pos as int, after) + rest)
+                    =~= done + msg@.subrange(run as int, after) + rest);
+            }
             pos += 1 + usize::from(first);
             continue;
         }
         let end = if pointer { pos } else { pos + 1 };
         let labels = msg.get(run..end).unwrap_or_default();
+        #[cfg(verus_only)]
+        proof_decl! {
+            let ghost done = runs(single, buf@, len);
+            let ghost whole = uncompressed(msg@, pos as int, run as int).unwrap();
+            let ghost rest = if pointer { whole } else { Seq::empty() };
+            assert(done + msg@.subrange(run as int, pos as int) + whole =~= done + labels@ + rest);
+        }
         if !labels.is_empty() {
             if len == 0 && single.is_none() {
                 single = Some(labels);
@@ -482,24 +615,44 @@ fn unpack<'s>(msg: &'s [u8], start: usize, buf: &'s mut [u8; MAX_NAME_LEN]) -> &
                 len = append(buf, len, labels);
             }
         }
+        #[cfg(verus_only)]
+        proof! { assert(runs(single, buf@, len) =~= done + labels@); }
         if !pointer {
             break;
         }
         // Decoding checked that each pointer points before the previous one.
         let low = msg.get(pos + 1).copied().unwrap_or_default();
+        #[cfg(verus_only)]
+        proof! { offset_is_pointer(first, low); }
         let target = usize::from(first & 0x3F) << 8 | usize::from(low);
-        if target >= run.min(pos) {
+        if target >= run {
             break;
         }
-        (run, pos) = (target, target);
+        run = target;
+        pos = target;
+        #[cfg(verus_only)]
+        proof! {
+            let done = runs(single, buf@, len);
+            assert(done + rest =~= done + msg@.subrange(run as int, pos as int) + rest);
+        }
     }
     match single {
         Some(wire) => wire,
-        None => buf.get(..len).filter(|w| !w.is_empty()).unwrap_or(&[0]),
+        None => match buf.get(..len) {
+            Some(wire) if !wire.is_empty() => wire,
+            _ => &[0],
+        },
     }
 }
 
 /// Copies `part` into `buf` at `len`, returning the new length; a name never overflows `buf`.
+#[cfg_attr(verus_only, verus_spec(end =>
+    requires
+        len + part.len() <= MAX_NAME_LEN,
+    ensures
+        end == len + part.len(),
+        final(buf)@.subrange(0, end as int) == old(buf)@.subrange(0, len as int) + part@,
+))]
 fn append(buf: &mut [u8; MAX_NAME_LEN], len: usize, part: &[u8]) -> usize {
     let end = len + part.len();
     if let Some(dst) = buf.get_mut(len..end) {
