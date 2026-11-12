@@ -350,6 +350,9 @@ mod networks {
                 )
             });
             assert_eq!(send(&client(), server.addr, &fetch(1, &[1], None)), None);
+            // Nor the RST a ping gets (RFC 7252 §4.3).
+            let ping = Coap::empty(Type::Confirmable, 2);
+            assert_eq!(send(&client(), server.addr, &ping), None);
             let server = Server::configured(|listen| {
                 config(
                     listen,
@@ -359,6 +362,8 @@ mod networks {
             });
             let answer = send(&client(), server.addr, &fetch(1, &[1], None)).expect("a response");
             assert_eq!(answer.code, Code::CONTENT);
+            let reset = send(&client(), server.addr, &ping).expect("a reset");
+            assert_eq!((reset.kind, reset.id), (Type::Reset, 2));
         }
 
         #[test]
