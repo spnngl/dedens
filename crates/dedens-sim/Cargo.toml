@@ -19,6 +19,8 @@ dedens-testkit.workspace = true
 dedensd.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
+metrics.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
 rcgen.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = [

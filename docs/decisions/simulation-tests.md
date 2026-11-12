@@ -175,6 +175,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     resolver host. `tests/serving.rs` runs the baseline, partition, loss and crash scenarios that concern the server
     against the loop, and TCP queries pipelined on one connection, answered out of order (RFC 7766 §6.2.1.1) where
     the driver answers in turn. The loop records none of the driver's `Replied`, `Forwarded` and `Stored`.
+    `World::run` fails on a panic the loop caught or a listener restart, read from D121's counters by a local
+    `metrics` recorder (turmoil runs every host on the test's thread); `Sim::detach` watches nothing.
   - Left out: QUIC (DoQ, DoH/3, ODoH: `compio-quic`'s endpoint and clock), DoC, the TLS listener (generic, with no
     scenario), reload, several threads, D86's flights (validator questions only; no scenario validates here).
   - Cost in `docs/benchmarks.md`; the Linux check is `just bench-dnsperf <base> forward` and `forward-tcp`.
