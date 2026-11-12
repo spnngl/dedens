@@ -255,7 +255,7 @@ impl Answers {
         self.faulty(|_, _| Verdict::Drop)
     }
 
-    /// The number of TCP connections the server accepted so far, to read after the run: how a pool reuses its
+    /// The number of TCP and TLS connections the server accepted so far, to read after the run: how a pool reuses its
     /// connections (D27). Clones of these answers share it.
     #[must_use]
     pub fn connections(&self) -> Rc<Cell<usize>> {
@@ -267,7 +267,12 @@ impl Answers {
         self.connections.set(self.connections.get() + 1);
     }
 
-    /// The number of TCP connections that ended so far, closed by the client or by the server, as
+    /// Notes a connection that ended.
+    pub(crate) fn closed(&self) {
+        self.ended.set(self.ended.get() + 1);
+    }
+
+    /// The number of TCP and TLS connections that ended so far, closed by the client or by the server, as
     /// [`Answers::connections`]: when a pool lets its connections go.
     #[must_use]
     pub fn ended(&self) -> Rc<Cell<usize>> {
@@ -559,7 +564,7 @@ async fn connection(
             std::panic::resume_unwind(error.into_panic());
         }
     }
-    answers.ended.set(answers.ended.get() + 1);
+    answers.closed();
 }
 
 #[cfg(test)]
