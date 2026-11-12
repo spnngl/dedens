@@ -89,6 +89,17 @@ fn odoh_config_gives_the_configurations() {
         .code(2);
 }
 
+/// D33, D79: a proxy that never answers is no reply, as a `DoH` server that never answers is: exit 9.
+#[test]
+fn a_silent_proxy_exits_9() {
+    dedens()
+        .args(["@https://127.0.0.1:1", "+odoh-proxy=https://127.0.0.1:1"])
+        .args(["+tries=1", "+time=100ms", "example.com"])
+        .assert()
+        .code(9)
+        .stderr(contains("example.com_A:"));
+}
+
 /// D79: a proxy that is no `https://` URI is refused.
 #[test]
 fn a_proxy_must_be_an_https_uri() {
