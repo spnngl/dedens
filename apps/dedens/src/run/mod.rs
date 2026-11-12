@@ -512,21 +512,27 @@ fn no_reply(error: &anyhow::Error) -> bool {
             io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
         )
     };
+    let quiet = |e: &QuicError| {
+        matches!(
+            e,
+            QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut)
+        )
+    };
+    let https_quiet = |e: &Http3Error| match e {
+        Http3Error::TimedOut | Http3Error::Connection(H3Error::Timeout) => true,
+        Http3Error::Quic(e) => quiet(e),
+        _ => false,
+    };
     match error.downcast_ref() {
         Some(
             ClientError::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. })
-            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed)
-            | ClientError::Quic(
-                QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
-            )
-            | ClientError::Https(
-                Http3Error::TimedOut
-                | Http3Error::Connection(H3Error::Timeout)
-                | Http3Error::Quic(
-                    QuicError::TimedOut | QuicError::Connection(ConnectionError::TimedOut),
-                ),
-            ),
+            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed),
         ) => true,
+        Some(ClientError::Quic(e)) => quiet(e),
+        Some(ClientError::Https(e)) => https_quiet(e),
+        // Oblivious DoH is DoH through a proxy: the proxy's or the target's silence is no reply too (D79).
+        #[cfg(feature = "odoh")]
+        Some(ClientError::Odoh(dedens_net::odoh::OdohError::Https(e))) => https_quiet(e),
         #[cfg(feature = "doc")]
         Some(ClientError::Doc(DocError::Exchange(
             dedens_net::coap::exchange::Failure::TimedOut,
