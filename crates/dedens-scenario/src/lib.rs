@@ -29,27 +29,14 @@ pub use report::{
     Latency, OptionReport, QuestionReport, RecordReport, Report, Transport,
 };
 
-/// A YAML scalar, which a field reads as text with its [`FromStr`](std::str::FromStr).
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Scalar {
-    Bool(bool),
-    Number(u64),
-    Text(String),
-}
-
 /// Reads a field from its text with [`FromStr`](std::str::FromStr), for types of other crates and scalars that
-/// YAML reads as booleans or numbers.
+/// YAML reads as booleans or numbers: the scalar as written, so that `no` and `007` stay names, not `false` and 7.
 fn parsed<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: std::str::FromStr<Err: std::fmt::Display>,
 {
-    let text = match <Scalar as serde::Deserialize>::deserialize(deserializer)? {
-        Scalar::Bool(b) => b.to_string(),
-        Scalar::Number(n) => n.to_string(),
-        Scalar::Text(text) => text,
-    };
+    let text = <String as serde::Deserialize>::deserialize(deserializer)?;
     text.parse().map_err(serde::de::Error::custom)
 }
 
