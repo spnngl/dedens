@@ -5,19 +5,25 @@ use core::hash::{Hash, Hasher};
 use core::net::IpAddr;
 use core::str::FromStr;
 
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::HEADER_LEN;
 use crate::text::{self, TextError, TextErrorKind};
 use crate::wire::{Reader, Writer};
 
 /// Longest name in wire form, length bytes and root label included (RFC 1035 §2.3.4).
+#[cfg_attr(verus_only, verus_verify)]
 pub const MAX_NAME_LEN: usize = 255;
 /// Longest label (RFC 1035 §2.3.4).
 pub const MAX_LABEL_LEN: usize = 63;
 /// Most labels in a name, the root not counted: each takes 2 bytes at least, and the root 1, of [`MAX_NAME_LEN`]
 /// (RFC 1035 §2.3.4).
+#[cfg_attr(verus_only, verus_verify)]
 pub const MAX_LABELS: usize = MAX_NAME_LEN / 2;
 /// Most compression pointers followed in one name: one per label of the longest name.
+#[cfg_attr(verus_only, verus_verify)]
 const MAX_POINTERS: usize = MAX_LABELS;
 
 /// A label that cannot be part of a [`Name`].
@@ -269,83 +275,24 @@ impl<'a> Name<'a> {
     fn decode_with(r: &mut Reader<'a>, pointers: bool) -> Result<Self, DecodeError> {
         let msg = r.message();
         let start = r.position();
-        let mut limit = r.end();
-        let mut bound = start;
-        let mut pos = start;
-        // Where the reader resumes, set at the first pointer.
-        let mut resume = None;
-        let mut len = 0;
-        let mut hops = 0;
-        let at = |offset, kind| DecodeError { offset, kind };
-        // Past `limit`: the end of the input, or, after a pointer, of the prior name it points to.
-        let past = |resume: Option<usize>, pos| {
-            let kind = if resume.is_some() {
-                DecodeErrorKind::BadPointer
-            } else {
-                DecodeErrorKind::UnexpectedEnd
-            };
-            at(pos, kind)
-        };
-        loop {
-            let first = match msg.get(pos) {
-                Some(&b) if pos < limit => b,
-                _ => return Err(past(resume, pos)),
-            };
-            match first & 0xC0 {
-                0x00 => {
-                    let end = pos + 1 + usize::from(first);
-                    if end > limit {
-                        return Err(past(resume, pos));
-                    }
-                    if first != 0 && len + usize::from(first) + 2 > MAX_NAME_LEN {
-                        return Err(at(pos, DecodeErrorKind::NameTooLong));
-                    }
-                    len += end - pos;
-                    pos = end;
-                    if first == 0 {
-                        break;
-                    }
-                }
-                0xC0 if !pointers => {
-                    let kind = DecodeErrorKind::Invalid(
-                        "compression pointer in a name that must not be compressed",
-                    );
-                    return Err(at(pos, kind));
-                }
-                0xC0 => {
-                    let second = match msg.get(pos + 1) {
-                        Some(&b) if pos + 1 < limit => b,
-                        _ => return Err(past(resume, pos)),
-                    };
-                    let target = usize::from(u16::from_be_bytes([first & 0x3F, second]));
-                    // Backward pointers rule out loops, the hop count rules out long chains of them: a name
-                    // has at most 127 labels, each worth at most one pointer. Offsets count from the start of
-                    // the message, so a name is never in its 12-byte header.
-                    hops += 1;
-                    if target < HEADER_LEN || target >= bound || hops > MAX_POINTERS {
-                        return Err(at(pos, DecodeErrorKind::BadPointer));
-                    }
-                    resume.get_or_insert(pos + 2);
-                    // The name pointed to was written before this one, so it ends where this one starts: it
-                    // cannot run into the bytes that point to it.
-                    limit = bound;
-                    bound = target;
-                    pos = target;
-                }
-                _ => return Err(at(pos, DecodeErrorKind::ReservedLabelType)),
-            }
-        }
-        let repr = if let Some(resume) = resume {
-            r.set_position(resume);
-            let len = u8::try_from(len).map_err(|_| at(start, DecodeErrorKind::NameTooLong))?;
+        let Scanned {
+            next,
+            len,
+            compressed,
+        } = scan(msg, start, r.end(), pointers)?;
+        r.set_position(next);
+        let repr = if compressed {
+            let len = u8::try_from(len).map_err(|_| DecodeError {
+                offset: start,
+                kind: DecodeErrorKind::NameTooLong,
+            })?;
             match u16::try_from(start) {
                 Ok(start) => Repr::Packed { msg, start, len },
                 // Only past the 65535 bytes of a DNS message, in a larger buffer: copied out.
                 Err(_) => Repr::Owned(Box::from(unpack(msg, start, &mut [0; MAX_NAME_LEN]))),
             }
         } else {
-            r.set_position(pos);
-            Repr::Slice(msg.get(start..pos).unwrap_or_default())
+            Repr::Slice(msg.get(start..next).unwrap_or_default())
         };
         Ok(Self(repr))
     }
@@ -358,6 +305,139 @@ impl<'a> Name<'a> {
     pub(crate) fn encode(&self, w: &mut Writer<'_>) -> Result<(), EncodeError> {
         w.put_bytes(self.to_wire(&mut [0; MAX_NAME_LEN]))
     }
+}
+
+/// A name read by [`scan`].
+#[cfg_attr(verus_only, verus_verify)]
+struct Scanned {
+    /// Where the reader resumes: after the name's first pointer, or after its root label when it has none.
+    next: usize,
+    /// The name's length uncompressed, its root label included.
+    len: usize,
+    /// Whether the name has a compression pointer.
+    compressed: bool,
+}
+
+/// Reads the name at `start` in `msg`, whose input ends at `end`, as [`Name::decode`] tells, compression pointers
+/// refused unless `pointers`.
+///
+/// Verus proves it (D180), for any input: it ends, never panics nor overflows, and a name it returns ends past
+/// `start`, within `end`, is 1 to 255 bytes long uncompressed, and is `msg[start..next]` when not compressed. So
+/// [`Name::decode_with`]'s fallbacks never run.
+#[cfg_attr(verus_only, verus_spec(scanned =>
+    requires
+        start <= end <= msg.len(),
+        // True of any slice; Verus does not know it.
+        msg.len() <= isize::MAX,
+    ensures
+        scanned matches Ok(s) ==> start < s.next <= end && 1 <= s.len <= MAX_NAME_LEN
+            && (!s.compressed ==> s.next == start + s.len),
+))]
+fn scan(msg: &[u8], start: usize, end: usize, pointers: bool) -> Result<Scanned, DecodeError> {
+    let mut limit = end;
+    let mut bound = start;
+    let mut pos = start;
+    // Where the reader resumes, set at the first pointer.
+    let mut resume = None;
+    let mut len = 0;
+    let mut hops = 0;
+    // Each label moves `pos` on towards `limit`; each pointer moves `bound` back.
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            end <= msg.len() <= isize::MAX,
+            bound <= pos <= limit <= end,
+            len <= MAX_NAME_LEN,
+            hops <= MAX_POINTERS,
+            resume matches Some(next) ==> limit <= start && start + 2 <= next <= end,
+            resume is None ==> limit == end && bound == start && pos == start + len,
+        invariant_except_break
+            len < MAX_NAME_LEN,
+        ensures
+            1 <= len,
+        decreases bound, limit - pos,
+    ))]
+    loop {
+        let first = match msg.get(pos) {
+            Some(&b) if pos < limit => b,
+            _ => return Err(past(resume, pos)),
+        };
+        match first & 0xC0 {
+            0x00 => {
+                let after = pos + 1 + usize::from(first);
+                if after > limit {
+                    return Err(past(resume, pos));
+                }
+                if first != 0 && len + usize::from(first) + 2 > MAX_NAME_LEN {
+                    let kind = DecodeErrorKind::NameTooLong;
+                    return Err(DecodeError { offset: pos, kind });
+                }
+                len += after - pos;
+                pos = after;
+                if first == 0 {
+                    break;
+                }
+            }
+            0xC0 if !pointers => {
+                let kind = DecodeErrorKind::Invalid(
+                    "compression pointer in a name that must not be compressed",
+                );
+                return Err(DecodeError { offset: pos, kind });
+            }
+            0xC0 => {
+                let second = match msg.get(pos + 1) {
+                    Some(&b) if pos + 1 < limit => b,
+                    _ => return Err(past(resume, pos)),
+                };
+                let target = usize::from(first & 0x3F) << 8 | usize::from(second);
+                // Backward pointers rule out loops, the hop count rules out long chains of them: a name has at
+                // most 127 labels, each worth at most one pointer. Offsets count from the start of the message,
+                // so a name is never in its 12-byte header.
+                hops += 1;
+                if target < HEADER_LEN || target >= bound || hops > MAX_POINTERS {
+                    return Err(DecodeError {
+                        offset: pos,
+                        kind: DecodeErrorKind::BadPointer,
+                    });
+                }
+                resume.get_or_insert(pos + 2);
+                // The name pointed to was written before this one, so it ends where this one starts: it cannot
+                // run into the bytes that point to it.
+                limit = bound;
+                bound = target;
+                pos = target;
+            }
+            _ => {
+                return Err(DecodeError {
+                    offset: pos,
+                    kind: DecodeErrorKind::ReservedLabelType,
+                });
+            }
+        }
+    }
+    Ok(match resume {
+        Some(next) => Scanned {
+            next,
+            len,
+            compressed: true,
+        },
+        None => Scanned {
+            next: pos,
+            len,
+            compressed: false,
+        },
+    })
+}
+
+/// A name read past its limit at `offset`: the end of the input, or, after a pointer (`resume` set), the end of
+/// the prior name it points to.
+#[cfg_attr(verus_only, verus_verify)]
+fn past(resume: Option<usize>, offset: usize) -> DecodeError {
+    let kind = if resume.is_some() {
+        DecodeErrorKind::BadPointer
+    } else {
+        DecodeErrorKind::UnexpectedEnd
+    };
+    DecodeError { offset, kind }
 }
 
 /// Where the first label of the name at `start` in `msg` lies, past the pointers it starts with; decoding

@@ -13,6 +13,10 @@ autotests = false
 thiserror.workspace = true
 zerocopy.workspace = true
 
+# D180: only when `just verus` verifies the crate.
+[target.'cfg(verus_keep_ghost)'.dependencies]
+vstd.workspace = true
+
 [dev-dependencies]
 dedens-testkit.workspace = true
 insta.workspace = true
@@ -24,3 +28,7 @@ path = "tests/tests.rs"
 
 [lints]
 workspace = true
+
+# D180: `cargo verus` verifies this crate.
+[package.metadata.verus]
+verify = true

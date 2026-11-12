@@ -11,6 +11,10 @@ and decodes byte slices; sockets, timers and compio live in `dedens-net` and the
 - `src/proofs.rs` holds Kani's proofs of the public API, a `#[cfg(kani)] mod proofs` those of a module's private
   items (`wire/name_table.rs`, `edns/subnet.rs`) (D145, D179); a change to a proven function runs
   `just kani dedens-proto`, and a new proof of under a minute joins `just kani-fast`.
+- Verus proves `scan` in `src/name.rs` (D180): its `#[cfg_attr(verus_only, verus_spec(..))]` specifications
+  and loop invariants are checked by `just verus` only, so a change to it, or to an item it uses (`DecodeError`,
+  `MAX_NAME_LEN`, `HEADER_LEN`), runs `just verus`. An item Verus reads is marked
+  `#[cfg_attr(verus_only, verus_verify)]`; one with derives it cannot read, `verus_verify(external_derive)`.
 - The encoder's name table (`src/wire/name_table.rs`, D10, D112) compares a bounded number of names for each
   lookup, so that encoding a name costs O(L log L) in its length L, whatever the upstream's names. A change to how
   names are hashed or searched keeps `encode_64k` of `collisions`, `chains` and `flips` within 2x of `spread`.

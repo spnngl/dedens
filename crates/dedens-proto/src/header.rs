@@ -3,6 +3,8 @@
 use core::fmt;
 use core::ops::{BitAnd, BitOr};
 
+#[cfg(verus_only)]
+use vstd::prelude::*;
 use zerocopy::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -11,6 +13,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::wire::{Reader, Writer};
 
 /// Length of the header on the wire (RFC 1035 §4.1.1).
+#[cfg_attr(verus_only, verus_verify)]
 pub const HEADER_LEN: usize = 12;
 
 /// Adds `contains`, `with`, `without` and `bits` to a set of one-bit flags kept as their bits in a `u16`.

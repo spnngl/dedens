@@ -226,3 +226,24 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   reads whatever the bytes; adding `Message::decode`'s budgets and vectors, RDATA and options standing in too, did
   not end in 50 min; two names of up to 2 one-byte labels compressed and read back did not end in 50 min, every
   hash colliding.
+- D180 (builds on D16) Verus proves the scan of a name for every input, where Kani stops at 12 bytes (D145):
+  `scan` in `crates/dedens-proto/src/name.rs`, the loop of `Name::decode` (RFC 1035 §4.1.4) taken out of
+  `decode_with`, ends (each label moves the position towards its limit, each pointer moves the bound back), never
+  panics nor overflows, and a name it returns ends past its start and within the input, is 1 to 255 bytes long
+  uncompressed, and is the bytes from its start to where the reader resumes when it has no pointer: the fallbacks of
+  `decode_with` never run. `just verus` checks it in 20 s from cold (Apple M5, 2026-11-12), outside the gate, and
+  `deep.yml`'s `verus` job on each pull request, informational. The specifications are
+  `#[cfg_attr(verus_only, verus_spec(..))]` on the Rust as it is: a build without Verus has neither them nor vstd, a
+  dependency under `cfg(verus_keep_ghost)`, which `just verus` sets in `RUSTFLAGS` (cargo picks the dependencies
+  from there, not from Verus's driver); the verifying build alone enables `proc_macro_hygiene` (attributes on
+  loops). `msg.len() <= isize::MAX`, true of any slice, is assumed, as Verus does not know it. Message decoding as
+  fast after the change (`decode_dedens` 118.9 ns against 118.7 ns for an A answer). The release is pinned in the
+  justfile, its own rustc installed beside ours, so the stable pin does not wait for Verus; Renovate bumps it
+  (`loose` versioning: `0.<date>.<commit>`) and leaves vstd alone, as its crates.io versions include those of
+  Verus's rolling releases: vstd moves by hand to the version `cargo verus toolchain list` gives, and `just verus`
+  (`--check-toolchain`) fails on any other. Rejected: Creusot (its creusot-std is LGPL, which `deny.toml` refuses;
+  opam and Why3 to install; a specification for each call outside the crate), Flux (a prototype without releases,
+  a git dependency without a licence), Aeneas with Charon (proofs written by hand in Lean, broken by each change of
+  the Rust, and no one to own them; Charon alone checks nothing), MIRAI (unmaintained since 2025-03; its
+  nightly-2025-01-10 cannot build edition 2024), Kani on whole messages (D179). Not proven: `unpack` equal to RFC
+  1035 §4.1.4's decompression.

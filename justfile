@@ -12,6 +12,10 @@ rapx_rev := "8d9d0a2f0389f48891b9e8bd3321a70a932e2e90"
 kani_version := "0.68.0"
 # renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
 unbound_version := "1.26.2"
+# Verus's release (D180), its own rustc and Z3 in it (`just verus-install`). vstd in Cargo.toml moves with it, by
+# hand, to the version `cargo verus toolchain list` gives: `just verus` fails on any other.
+# renovate: datasource=github-releases depName=verus-lang/verus extractVersion=^release/(?<version>\d+\.\d+\.\d+\.\d+\.[0-9a-f]+)$
+verus_version := "0.2026.11.02.8bf68ee"
 # The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
 # `DEDENS_ROUNDS=5` sets its rounds.
 container := env("DEDENS_CONTAINER", "docker")
@@ -504,6 +508,37 @@ rapx *args="check -f -m":
 kani-install:
     cargo install --locked kani-verifier@{{ kani_version }}
     cargo kani setup
+
+# Unzip the pinned Verus release into target/verus-<version> and install the rustc it is built on.
+verus-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64) platform=arm64-macos ;;
+        Darwin-x86_64) platform=x86-macos ;;
+        Linux-aarch64) platform=arm64-linux ;;
+        Linux-x86_64) platform=x86-linux ;;
+        *) echo "verus-install: no Verus release for $(uname -sm)" >&2; exit 1 ;;
+    esac
+    dir=target/verus-{{ verus_version }}
+    zip="$(mktemp)"
+    trap 'rm -f "$zip"' EXIT
+    curl -fsSL -o "$zip" "https://github.com/verus-lang/verus/releases/download/release/{{ verus_version }}/verus-{{ verus_version }}-$platform.zip"
+    rm -rf "$dir" && mkdir -p "$dir"
+    unzip -q "$zip" -d "$dir"
+    mv "$dir/verus-$platform"/* "$dir" && rmdir "$dir/verus-$platform"
+    toolchain="$(sed -n 's/.*"toolchain": "\([^ "]*\).*/\1/p' "$dir/version.json")"
+    rustup toolchain install --profile minimal "$toolchain"
+
+# Verus's proofs of dedens-proto (D180), outside the gate; its own target dir, target/verus. `--cfg
+# verus_keep_ghost` brings in vstd, which no other build has.
+verus *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$PWD/target/verus-{{ verus_version }}"
+    [[ -x "$dir/cargo-verus" ]] || just verus-install
+    export PATH="$dir:$PATH" RUSTFLAGS="--cfg verus_keep_ghost"
+    cargo verus verify -p dedens-proto --target-dir target/verus --check-toolchain {{ args }}
 
 # Kani's proofs of `package` for every small input (D145), outside the gate: all of them by default, one with
 # `just kani dedens-proto --harness name_decoding`. Its own target dir, target/kani.

@@ -142,6 +142,9 @@ ureq = { version = "3.5.0", default-features = false, features = [
   "platform-verifier",
   "rustls",
 ] }
+# D180: Verus's specifications and proofs in dedens-proto, built only by `just verus` (`cfg(verus_keep_ghost)`);
+# its pre-release version is the one of the Verus release pinned in the justfile.
+vstd = "=0.0.0-2026-11-01-0251"
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
 # D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.
@@ -153,10 +156,12 @@ missing_docs = "warn"
 unreachable_pub = "warn"
 unnameable_types = "warn"
 # D135: dedensd's own cfg for loom: `--cfg loom` also switches tokio, event-listener and concurrent-queue to loom's
-# types. D145: Kani's `cfg(kani)`, for dedens-proto's proofs.
+# types. D145: Kani's `cfg(kani)`, for dedens-proto's proofs. D180: Verus's two, set when it verifies dedens-proto.
 unexpected_cfgs = { level = "warn", check-cfg = [
   "cfg(dedens_loom)",
   "cfg(kani)",
+  "cfg(verus_keep_ghost)",
+  "cfg(verus_only)",
 ] }
 # docs/decisions/performance-and-safety.md D15: each crate root forbids unsafe code; a crate with a measured hot path swaps its `forbid`
 # for this `deny` and allows it in that module only, with `// SAFETY:` comments and a Miri job.

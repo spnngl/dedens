@@ -28,4 +28,16 @@
             "datasourceTemplate": "docker",
         },
     ],
+    "packageRules": [
+        {
+            "description": "D180: Verus's releases, `0.<date>.<commit>`, by date.",
+            "matchPackageNames": ["verus-lang/verus"],
+            "versioning": "loose",
+        },
+        {
+            "description": "D180: vstd moves with the Verus release in the justfile, by hand; its crates.io versions include the rolling releases'.",
+            "matchPackageNames": ["vstd"],
+            "enabled": false,
+        },
+    ],
 }

@@ -35,6 +35,10 @@
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
+// D180: Verus's specifications on loops are attributes on expressions.
+#![cfg_attr(verus_only, feature(proc_macro_hygiene))]
+// D180: zerocopy's derives, outside what Verus proves.
+#![cfg_attr(verus_only, verifier::allow(unknown_automatic_derive))]
 
 pub mod edns;
 pub mod rdata;
