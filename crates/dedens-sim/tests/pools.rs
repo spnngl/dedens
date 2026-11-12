@@ -21,9 +21,9 @@ use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server as Host};
 use dedens_sim::seed::{self};
 use dedens_sim::stub::question;
-use dedens_sim::topology::Topology;
+use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
-use dedens_sim::upstream::{Behaviour, Verdict};
+use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 
 use crate::util::{SECOND, SEEDS, answers, served};
@@ -120,6 +120,113 @@ fn dot_queries_share_one_connection() {
         let (events, connections) = dot(seed);
         assert_eq!(connections, 1, "{events:#?}");
         assert_eq!(served(&events), 3, "{events:#?}");
+    });
+}
+
+/// A world with a DNS-over-TLS server answering from `dot`: the world, the authority to trust and the server.
+fn dot_world(seed: seed::Seed, dot: Answers) -> (World, CertificateDer<'static>, SocketAddr) {
+    let (ca, presented) = certificates(0);
+    // The resolver host of every run needs an upstream to forward to; nothing asks it here.
+    let mut world = Topology::new().upstream(answers()).build(seed);
+    let server = world.dot_server(dot, presented);
+    (world, ca, server)
+}
+
+/// A DNS-over-TLS server closes a connection after `limit` queries as one over TCP does
+/// (`a_tcp_connection_serves_queries_until_the_server_closes_it`): `ceil(queries / limit)` connections.
+#[test]
+fn a_tls_connection_serves_queries_until_the_server_closes_it() {
+    for limit in [1, 2] {
+        seed::each(FEW, |seed| {
+            let dot = answers().tcp(Behaviour::Close(limit));
+            let connections = dot.connections();
+            let (mut world, ca, server) = dot_world(seed, dot);
+            world.client_direct(async move |client| {
+                let client = client.trusting(Trust::Roots(vec![ca]));
+                for _ in 0..4 {
+                    let response = client
+                        .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                        .await?;
+                    assert_eq!(response.transport, Transport::Tls);
+                }
+                Ok(())
+            });
+            world.run().expect("the run passes its checks");
+            assert_eq!(connections.get(), 4_usize.div_ceil(limit), "limit {limit}");
+        });
+    }
+}
+
+/// A DNS-over-TLS server delays its responses as `faulty` says, and serves the queries of a connection pipelined
+/// (RFC 7858 §3.3), as one over TCP does: four asked together on one connection all come within one delay.
+#[test]
+fn a_tls_server_delays_its_responses_without_holding_the_others() {
+    const DELAY: Duration = Duration::from_millis(300);
+    seed::each(FEW, |seed| {
+        let dot = answers().faulty(|_, _| Verdict::Delay(DELAY));
+        let connections = dot.connections();
+        let (mut world, ca, server) = dot_world(seed, dot);
+        world.client_direct(async move |client| {
+            let client = client.trusting(Trust::Roots(vec![ca]));
+            // The handshake first, so that the four below take the delay alone.
+            client
+                .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                .await?;
+            let start = tokio::time::Instant::now();
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..4 {
+                let client = client.clone();
+                tasks.spawn_local(async move {
+                    client
+                        .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                        .await
+                });
+            }
+            while let Some(done) = tasks.join_next().await {
+                done??;
+            }
+            let took = start.elapsed();
+            assert!((DELAY..2 * DELAY).contains(&took), "{took:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+        assert_eq!(connections.get(), 1);
+    });
+}
+
+/// A DNS-over-TLS server that drops each response (`silent`) stalls a connection as one over TCP does
+/// (`a_stalled_connection_is_dropped_after_a_try`): each try times out on a connection of its own.
+#[test]
+fn a_silent_tls_server_stalls_each_connection() {
+    stalls(&answers().silent());
+}
+
+/// As [`a_silent_tls_server_stalls_each_connection`], a server that reads the queries and never answers
+/// ([`Behaviour::Silent`]).
+#[test]
+fn a_tls_server_that_never_answers_stalls_each_connection() {
+    stalls(&answers().tcp(Behaviour::Silent));
+}
+
+/// Asks the DNS-over-TLS server answering from `dot`, which never answers: each try times out on a connection of its
+/// own, the one before dropped as stalled (D108).
+fn stalls(dot: &Answers) {
+    seed::each(ONE, |seed| {
+        let dot = dot.clone();
+        let connections = dot.connections();
+        let (mut world, ca, server) = dot_world(seed, dot);
+        world.client_direct(async move |client| {
+            let client = client.trusting(Trust::Roots(vec![ca]));
+            let got = client
+                .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                .await;
+            let Err(ClientError::Exchange(Failure::TimedOut { sends: 3 })) = got else {
+                return Err(format!("{got:?}").into());
+            };
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert_eq!(connections.get(), 3, "{events:#?}");
     });
 }
 

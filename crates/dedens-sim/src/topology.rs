@@ -253,14 +253,16 @@ impl World {
     /// certificate `presented`, and returns its address.
     pub fn dot_server(&mut self, answers: Answers, presented: Arc<Presented>) -> SocketAddr {
         let name = format!("dot-{}", self.dots);
-        self.dots += 1;
         let host = self.sim.lookup(name.as_str());
+        let rng = Rc::new(RefCell::new(Rng::new(self.seed, dot_stream(self.dots))));
+        self.dots += 1;
         let (answers, trace) = (Rc::new(answers), self.trace.clone());
         self.sim.host(name, move || {
             dot::serve(
                 Rc::clone(&answers),
                 host,
                 Arc::clone(&presented),
+                Rc::clone(&rng),
                 trace.clone(),
             )
         });
@@ -331,13 +333,21 @@ impl World {
     }
 }
 
-/// The streams of the seed: 0 is the resolver's, 1 and up the clients', [`PICKS`] the picks of the scenario, and
-/// those below it the upstream servers'.
+/// The streams of the seed: 0 is the resolver's, 1 and up the clients', [`DOTS`] and up the DNS-over-TLS servers',
+/// [`PICKS`] the picks of the scenario, and those below it the upstream servers'.
 const PICKS: u64 = u64::MAX;
+
+/// The stream of the first DNS-over-TLS server: halfway, far from the clients' and the upstream servers'.
+const DOTS: u64 = 1 << 63;
 
 /// The stream of the upstream server `n`.
 fn upstream_stream(n: usize) -> u64 {
     PICKS - 1 - n as u64
+}
+
+/// The stream of the DNS-over-TLS server `n`.
+fn dot_stream(n: usize) -> u64 {
+    DOTS + n as u64
 }
 
 #[cfg(test)]
@@ -346,7 +356,11 @@ mod tests {
 
     #[test]
     fn no_two_hosts_share_a_stream() {
-        let streams: Vec<u64> = (0..4).map(upstream_stream).chain([PICKS]).collect();
+        let streams: Vec<u64> = (0..4)
+            .map(upstream_stream)
+            .chain((0..4).map(dot_stream))
+            .chain([PICKS])
+            .collect();
         let mut distinct = streams.clone();
         distinct.sort_unstable();
         distinct.dedup();

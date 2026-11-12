@@ -20,6 +20,7 @@ use compio::io::util::Splittable;
 use compio::io::{AsyncRead, AsyncWrite};
 use dedens_net::exchange::Exchange;
 use dedens_net::io::{Io, Stream, TimedOut, Udp};
+use dedens_net::tcp::Outbound;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::AbortHandle;
 use turmoil::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -312,6 +313,17 @@ impl AsyncWrite for SimWrite {
 
     async fn shutdown(&mut self) -> io::Result<()> {
         self.0.shutdown().await
+    }
+}
+
+/// The writing side of a simulated server's TCP connection (`upstream::queries`).
+impl Outbound for SimWrite {
+    async fn write_all(&mut self, batch: Vec<u8>) -> BufResult<(), Vec<u8>> {
+        compio::io::AsyncWriteExt::write_all(self, batch).await
+    }
+
+    async fn close(&mut self) {
+        let _ = AsyncWrite::shutdown(self).await;
     }
 }
 
