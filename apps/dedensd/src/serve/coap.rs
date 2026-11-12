@@ -168,6 +168,10 @@ pub(super) async fn serve(coap: Rc<Coap>, listener: Listener, thread: Rc<Thread>
             }
         };
         failing = false;
+        // `action: drop` (D91): no message sent, no task nor exchange state taken for the client.
+        if thread.pipeline().drops(peer.ip()) {
+            continue;
+        }
         if len > MAX_REQUEST {
             tracing::debug!(len, %peer, "CoAP request too large");
             coap.refuse_large(&buf[..MAX_REQUEST], peer).await;
@@ -231,8 +235,8 @@ pub(super) async fn serve(coap: Rc<Coap>, listener: Listener, thread: Rc<Thread>
     }
 }
 
-/// Answers one request: nothing to a client the access lists drop (D91), else the list of the `DoC` resource if it
-/// asks for `/.well-known/core` ([`discovery`], D95), else the error [`query`] finds in it, else the pipeline's
+/// Answers one request of a client the access lists do not drop ([`serve`] has seen to it, D91): the list of the
+/// `DoC` resource if it asks for `/.well-known/core` ([`discovery`], D95), else the error [`query`] finds in it, else the pipeline's
 /// reply, or 4.00 when the pipeline drops it, a body that is not a DNS message (RFC 9953 §4.3.1). A request for a
 /// later block is answered from the response kept for it, unless the lists now deny the client (a reload), or 4.00.
 /// A discovery or a DNS query from a network over its rate is answered with nothing (D113: the answer is bigger than
@@ -248,9 +252,6 @@ async fn handle(
     _slot: Slot,
 ) {
     let pipeline = thread.pipeline();
-    if pipeline.drops(peer.ip()) {
-        return;
-    }
     let limited = || pipeline.limits(peer.ip(), super::now());
     if let Some(reply) = discovery(&request, coap.next_id(), &coap.path) {
         if limited() {
