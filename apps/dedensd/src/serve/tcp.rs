@@ -187,8 +187,9 @@ async fn connection<N: Io>(
         });
     }
     drop(replies);
-    // The writer ends once every reply is written, and drops `room` as it ends, panicking or not: waiting for that
-    // is waiting for it, which `Io` tasks do not offer.
+    // The writer ends once every reply is written, and drops `room` as it ends, panicking or not. `room` is never
+    // cloned, its one sender is the writer's: the channel closing is the writer's end, which `Io` tasks offer no
+    // other way to wait for. A clone kept elsewhere would hang here, the connection open.
     while wait_room.recv_async().await.is_ok() {}
     drop(writing);
 }

@@ -22,7 +22,6 @@ use dedens_net::coap::dns::{
 };
 use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, Type};
-use dedens_net::io::Compio;
 use dedens_proto::Transport;
 
 use super::isolate::{Listener, Origin};
@@ -227,7 +226,7 @@ pub(super) async fn serve(coap: Rc<Coap>, listener: Listener, thread: Rc<Thread>
         };
         dedup.borrow_mut().note(peer, message.id, now);
         Origin::new(&listener, peer).spawn(
-            &Compio,
+            &thread.io,
             handle(Rc::clone(&coap), Rc::clone(&thread), message, peer, slot),
         );
     }
