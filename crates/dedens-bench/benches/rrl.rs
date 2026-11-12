@@ -180,10 +180,10 @@ fn exhausted(bencher: Bencher<'_, '_>, slip: u8, cookie: Option<Cookie>) {
     let pipeline = pipeline(Some(limit(rate, slip)), cookies);
     let query = query(cookie);
     let mut out = vec![0; 1232];
-    // The bucket's one query.
-    let _ = pipeline.query(&query, Transport::Udp, source(), 0, &mut out);
+    // `pipeline` took the bucket's one query, storing the response: every query here is over the rate.
     bencher.bench_local(|| {
         let step = pipeline.query(black_box(&query), Transport::Udp, source(), 0, &mut out);
-        assert!(matches!(step, Step::Drop | Step::Reply(_)));
+        // Slip 0 drops every query over the rate; slip 2 answers every second one, truncated or BADCOOKIE.
+        assert!(matches!(step, Step::Drop) || (slip != 0 && matches!(step, Step::Reply(_))));
     });
 }
