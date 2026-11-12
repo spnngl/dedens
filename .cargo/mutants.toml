@@ -21,8 +21,11 @@ exclude_re = [
   # Equal `Instant`s, an idle timeout equal to the current one: neither happens in a test.
   'replace < with <= in State::stalled',
   'tcp\.rs:\d+:\d+: replace < with <= in read$',
-  # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same.
-  'replace <impl Outbound for (TcpStream|Half<W>)>::close with \(\)',
+  # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same: dedens-sim's write
+  # half too, which turmoil closes when dropped, right after its close.
+  'replace <impl Outbound for (TcpStream|Half<W>|SimWrite)>::close with \(\)',
+  # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
+  'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
   # again, so the test hangs, the mutant seen only as a timeout (12 min a run).
   'udp\.rs:\d+:\d+: replace UdpQuery(<N>)?::recv -> io::Result<Option<Vec<u8>>> with Ok\(Some\(vec!\[[01]?\]\)\)$',

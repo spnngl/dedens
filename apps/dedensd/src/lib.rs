@@ -306,4 +306,42 @@ mod tests {
             "{path} is stale: `just man` writes it again"
         );
     }
+
+    /// D181: the entry of `fuzz/` builds a configuration that names no file, its mistakes found, and only reads one
+    /// that names a file: none of these is opened. Each text has no pipeline, a mistake the build finds.
+    #[test]
+    fn read_config_builds_only_a_configuration_naming_no_file() {
+        let unbuilt = |rest: &str| format!("listen: ['127.0.0.1:53']\npipeline: []\n{rest}");
+        let stage = |stage: &str| unbuilt(&format!("stages:\n  s:\n{stage}"));
+        let naming = [
+            unbuilt(
+                "tls:\n  certificate: /nonexistent/cert.pem\n  key: /nonexistent/key.pem\nstages: {}\n",
+            ),
+            unbuilt("upstream_ca: /nonexistent/ca.pem\nstages: {}\n"),
+            stage(
+                "    type: forward\n    servers: ['192.0.2.1']\n    trust_anchors: /nonexistent/anchors\n",
+            ),
+            stage("    type: hosts\n    file: /nonexistent/hosts\n"),
+            stage("    type: blocklist\n    file: /nonexistent/list\n"),
+            stage("    type: blocklist\n    urls: ['https://lists.example/list.txt']\n"),
+            stage("    type: blocklist\n    allow:\n      file: /nonexistent/allow\n"),
+            stage(
+                "    type: blocklist\n    allow:\n      urls: ['https://lists.example/allow.txt']\n",
+            ),
+        ];
+        for text in naming {
+            assert!(super::read_config(&text, |_| None).is_ok(), "{text}");
+        }
+        let built = [
+            unbuilt("stages: {}\n"),
+            stage("    type: cache\n"),
+            stage("    type: forward\n    servers: ['192.0.2.1']\n"),
+            stage("    type: hosts\n"),
+            stage("    type: blocklist\n    allow:\n      entries: ['example.org']\n"),
+        ];
+        for text in built {
+            let error = super::read_config(&text, |_| None).expect_err(&text);
+            assert_eq!(format!("{error:#}"), "`pipeline` has no stage", "{text}");
+        }
+    }
 }

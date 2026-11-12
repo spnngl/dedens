@@ -690,6 +690,22 @@ mod negative {
         insert(&cache, &q, &r, T0).unwrap();
     }
 
+    /// RFC 1035 §3.2.3: a question for ANY, `*`, is answered by a record of any type at its name: a positive answer,
+    /// cached without an SOA.
+    #[test]
+    fn a_record_of_any_type_answers_a_question_for_any() {
+        let cache = small_cache();
+        let q = query(1, "www.example", RecordType::ANY);
+        let r = response(
+            "www.example",
+            RecordType::ANY,
+            Rcode::NOERROR,
+            vec![a("www.example", 600, 1)],
+            vec![],
+        );
+        insert(&cache, &q, &r, T0).unwrap();
+    }
+
     /// RFC 6672 §3.2 step 3C, RFC 1034 §3.6.2: below a DNAME's owner a question for DNAME, as for any type but
     /// CNAME, restarts at the target of the CNAME the DNAME makes, so its answer ends there. With the names of RFC
     /// 6672 §6.1, `www.frobozz-division.acme.example.com` owns no DNAME: NODATA, denied by the target's zone, not by

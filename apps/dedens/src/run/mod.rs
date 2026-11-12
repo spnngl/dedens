@@ -749,4 +749,32 @@ mod tests {
             assert_eq!(endpoint.label(), label);
         }
     }
+
+    /// D33, D79: a timeout of QUIC, of HTTP/3 or of the HTTP/3 of Oblivious `DoH` is the server's silence, exit 9;
+    /// another of their errors is not.
+    #[test]
+    fn a_timeout_of_every_transport_is_no_reply() {
+        let quiet = [
+            ClientError::Quic(QuicError::TimedOut),
+            ClientError::Quic(QuicError::Connection(ConnectionError::TimedOut)),
+            ClientError::Https(Http3Error::TimedOut),
+            ClientError::Https(Http3Error::Connection(H3Error::Timeout)),
+            ClientError::Https(Http3Error::Quic(QuicError::TimedOut)),
+            #[cfg(feature = "odoh")]
+            ClientError::Odoh(dedens_net::odoh::OdohError::Https(Http3Error::TimedOut)),
+        ];
+        for error in quiet {
+            let error = anyhow::Error::from(error);
+            assert!(no_reply(&error), "{error:?}");
+        }
+        let loud = [
+            ClientError::Quic(QuicError::Framing),
+            ClientError::Https(Http3Error::TooLong),
+            ClientError::Https(Http3Error::Quic(QuicError::Framing)),
+        ];
+        for error in loud {
+            let error = anyhow::Error::from(error);
+            assert!(!no_reply(&error), "{error:?}");
+        }
+    }
 }
