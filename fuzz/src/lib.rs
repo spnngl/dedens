@@ -10,7 +10,9 @@
     reason = "a fuzz target, and the smoke test replaying it, report a bug by panicking"
 )]
 
+mod cli;
 mod coap;
+mod daemon;
 mod dnssec;
 mod net;
 mod odoh;
@@ -20,7 +22,9 @@ mod server;
 #[cfg(test)]
 mod smoke;
 
+pub use cli::parse_command_line;
 pub use coap::{coap_doc, parse_coap, parse_link_format};
+pub use daemon::read_config;
 pub use dnssec::{denial, dnssec_crypto, parse_trust_anchors, rrsig_verify, validate};
 pub use net::{parse_doh_template, parse_resolv_conf, read_doh_response, server_request};
 pub use odoh::{odoh_decrypt, parse_odoh_configs, parse_odoh_message, read_odoh_http};
@@ -61,4 +65,6 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_coap", parse_coap),
     ("coap_doc", coap_doc),
     ("parse_link_format", parse_link_format),
+    ("parse_command_line", parse_command_line),
+    ("read_config", read_config),
 ];

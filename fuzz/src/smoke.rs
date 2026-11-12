@@ -1,7 +1,7 @@
 //! Stable-toolchain stand-in for a short fuzz run: replays every captured response in `testdata/proto/`,
-//! `testdata/dnssec/` and `testdata/odoh/`, the zone files of `testdata/zones/` and the root's anchors, plus truncated and
-//! bit-flipped variants through each target. Any panic fails the test and the offending input is written under
-//! `target/fuzz-smoke-crash/` (turn it into a test).
+//! `testdata/dnssec/` and `testdata/odoh/`, the zone files of `testdata/zones/`, the root's anchors, the command lines
+//! of `seeds/` and `dedensd`'s configurations, plus truncated and bit-flipped variants through each target. Any panic
+//! fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it into a test).
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -36,6 +36,8 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         }
     }
     seeds.extend(coap_seeds());
+    seeds.extend(command_lines());
+    seeds.extend(configs());
     // Trust anchors: the root's DS records as IANA publishes them (RFC 9718 §2.2).
     seeds.push((
         "root.ds".into(),
@@ -74,6 +76,47 @@ fn coap_seeds() -> Vec<(String, Vec<u8>)> {
         }
     }
     seeds
+}
+
+/// The command lines of `seeds/command_lines.txt`, NUL between two arguments, as `just fuzz` writes them.
+fn command_lines() -> Vec<(String, Vec<u8>)> {
+    include_str!("../seeds/command_lines.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            (
+                format!("dedens {line}"),
+                line.replace(' ', "\0").into_bytes(),
+            )
+        })
+        .collect()
+}
+
+/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', and the example of
+/// `apps/dedensd/src/config/mod.rs`.
+fn configs() -> Vec<(String, Vec<u8>)> {
+    let mut example = include_str!("../../apps/dedensd/src/config/mod.rs")
+        .lines()
+        .map_while(|line| line.strip_prefix("//!"))
+        .map(|line| line.strip_prefix(' ').unwrap_or(line))
+        .skip_while(|&line| line != "```yaml")
+        .skip(1)
+        .take_while(|&line| line != "```")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!example.is_empty(), "the example configuration");
+    example.push('\n');
+    vec![
+        (
+            "dedensd.yaml".into(),
+            include_bytes!("../../deploy/dedensd.yaml").to_vec(),
+        ),
+        (
+            "dedensd.conf.yaml".into(),
+            include_bytes!("../../deploy/packages/dedensd.conf.yaml").to_vec(),
+        ),
+        ("example.yaml".into(), example.into_bytes()),
+    ]
 }
 
 /// Deterministic xorshift64: reproducible variants without a `rand` dependency.
