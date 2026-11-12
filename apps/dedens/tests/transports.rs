@@ -322,17 +322,20 @@ fn coap_doc_discover_queries_the_path_the_server_lists() {
     assert_eq!(server.queries().len(), 3);
 }
 
-/// D95: a discovery that fails is an error naming `+doc-discover`, not a query to the root.
+/// D95: a discovery that fails is an error naming `+doc-discover`, not a query to the root. A server written with
+/// the root path, `/` (RFC 7252 §6.4), has no path either: it is asked.
 #[cfg(feature = "doc")]
 #[test]
 fn coap_doc_discover_that_fails_is_an_error() {
     // A closed port: no answer to the discovery.
-    dedens()
-        .args(["@coap://127.0.0.1:1", "+doc-discover", "example.com"])
-        .args(["+tries=1", "+time=100ms"])
-        .assert()
-        .code(9)
-        .stderr(contains("+doc-discover"));
+    for server in ["@coap://127.0.0.1:1", "@coap://127.0.0.1:1/"] {
+        dedens()
+            .args([server, "+doc-discover", "example.com"])
+            .args(["+tries=1", "+time=100ms"])
+            .assert()
+            .code(9)
+            .stderr(contains("+doc-discover"));
+    }
 }
 
 /// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a server
