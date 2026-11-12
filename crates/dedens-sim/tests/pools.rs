@@ -161,21 +161,22 @@ fn a_tls_server_delays_its_responses_without_holding_the_others() {
 /// (`a_stalled_connection_is_dropped_after_a_try`): each try times out on a connection of its own.
 #[test]
 fn a_silent_tls_server_stalls_each_connection() {
-    stalls(&answers().silent());
+    stalls(|| answers().silent());
 }
 
 /// As [`a_silent_tls_server_stalls_each_connection`], a server that reads the queries and never answers
 /// ([`Behaviour::Silent`]).
 #[test]
 fn a_tls_server_that_never_answers_stalls_each_connection() {
-    stalls(&answers().tcp(Behaviour::Silent));
+    stalls(|| answers().tcp(Behaviour::Silent));
 }
 
-/// Asks the DNS-over-TLS server answering from `dot`, which never answers: each try times out on a connection of its
-/// own, the one before dropped as stalled (D108).
-fn stalls(dot: &Answers) {
+/// Asks the DNS-over-TLS server answering from `dot()`, which never answers: each try times out on a connection of its
+/// own, the one before dropped as stalled (D108). Each seed builds its answers: clones would share their count of
+/// connections over the seeds of `DEDENS_SIM_RUNS`.
+fn stalls(dot: fn() -> Answers) {
     seed::each(ONE, |seed| {
-        let dot = dot.clone();
+        let dot = dot();
         let connections = dot.connections();
         let (mut world, ca, server) = dot_world(seed, dot);
         world.client_direct(async move |client| {
