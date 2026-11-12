@@ -123,6 +123,23 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
 }
 
+impl StageFile {
+    /// Whether building it reads a file: its `file`, its `trust_anchors`, the saved copies of its `urls`, or of those
+    /// of its `allow`.
+    pub(super) fn names_files(&self) -> bool {
+        match self {
+            Self::Cache(_) => false,
+            Self::Forward { trust_anchors, .. } => trust_anchors.is_some(),
+            Self::Hosts { file, .. } => file.is_some(),
+            Self::Blocklist {
+                file, urls, allow, ..
+            } => {
+                file.is_some() || !urls.is_empty() || allow.file.is_some() || !allow.urls.is_empty()
+            }
+        }
+    }
+}
+
 impl Sources {
     pub(super) fn new(entries: Vec<String>, file: Option<PathBuf>, urls: Vec<Url>) -> Self {
         Self {

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, bail};
 use clap::builder::NonEmptyStringValueParser;
 use clap::error::ErrorKind;
-use clap::{Arg, Args, CommandFactory, Parser};
+use clap::{Arg, Args, CommandFactory, FromArgMatches, Parser};
 use compio::rustls::pki_types::CertificateDer;
 use compio::rustls::pki_types::pem::PemObject;
 use dedens_net::tls::Trust;
@@ -118,12 +118,23 @@ impl Output {
 impl Cli {
     /// Parses the command line, dig's tokens included; exits with code 2 on a usage error.
     pub(crate) fn parse_dig(args: impl IntoIterator<Item = OsString>) -> Self {
-        let usage = |kind, message: String| Self::command().error(kind, message).exit();
+        Self::try_parse_dig(args).unwrap_or_else(|error| error.exit())
+    }
+
+    /// [`Self::parse_dig`], returning the usage error instead of exiting with it.
+    pub(crate) fn try_parse_dig(
+        args: impl IntoIterator<Item = OsString>,
+    ) -> Result<Self, clap::Error> {
+        let usage = |kind, message: String| Err(Self::command().error(kind, message));
         let mut command = Self::command();
         command.build();
-        let args =
-            long_flags(&command, args).unwrap_or_else(|e| usage(ErrorKind::UnknownArgument, e));
-        let cli = Self::parse_from(args);
+        let args = match long_flags(&command, args) {
+            Ok(args) => args,
+            Err(error) => return usage(ErrorKind::UnknownArgument, error),
+        };
+        // Parsed by the command `long_flags` read: built once, not again by `try_parse_from`.
+        let mut matches = command.try_get_matches_from_mut(args)?;
+        let cli = Self::from_arg_matches_mut(&mut matches).map_err(|e| e.format(&mut command))?;
         // Checked here, on the values: clap would refuse `+notrace` or `+nojson` with them, given as `--trace=false`.
         if cli.trace
             && (!cli.server.is_empty()
@@ -136,7 +147,7 @@ impl Cli {
                 || cli.options.coap == Some(true)
                 || cli.options.validating())
         {
-            usage(
+            return usage(
                 ErrorKind::ArgumentConflict,
                 "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap or +validate"
                     .to_owned(),
@@ -144,19 +155,19 @@ impl Cli {
         }
         for server in &cli.server {
             if let Err(error) = refuse_conflicts(server, &cli.options) {
-                usage(ErrorKind::ArgumentConflict, error.to_string());
+                return usage(ErrorKind::ArgumentConflict, error.to_string());
             }
         }
         // The target of Oblivious DoH is a server of the command line; a query file names its own.
         let https = |server: &String| server.starts_with("https://");
         if cli.options.odoh() && cli.file.is_none() && !cli.server.iter().any(https) {
-            usage(
+            return usage(
                 ErrorKind::ArgumentConflict,
                 "+odoh-proxy needs an https:// target @server".to_owned(),
             );
         }
         if !cli.discovers_where_it_can() {
-            usage(
+            return usage(
                 ErrorKind::ArgumentConflict,
                 "+doc-discover needs a CoAP server (+coap or coap://) with no path".to_owned(),
             );
@@ -173,15 +184,15 @@ impl Cli {
         .count()
             > 1
         {
-            usage(
+            return usage(
                 ErrorKind::ArgumentConflict,
                 "one of --format, --short, --json and --yaml at most".to_owned(),
             );
         }
         if let Err(error) = cli.options.check() {
-            usage(ErrorKind::ArgumentConflict, error.to_string());
+            return usage(ErrorKind::ArgumentConflict, error.to_string());
         }
-        cli
+        Ok(cli)
     }
 
     /// Whether `+doc-discover`, if given, has a CoAP server to ask with no path of its own: the resource is found at

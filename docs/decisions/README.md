@@ -170,3 +170,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D178 [performance and safety](performance-and-safety.md): the gate runs the tests under cargo-nextest, doctests by `cargo test --doc`
 - D179 [performance and safety](performance-and-safety.md): Kani proofs beside the code in four packages; the fast ones on each pull request
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
+- D181 [performance and safety](performance-and-safety.md): the binaries' parsers fuzzed through a library target of each app

@@ -12,3 +12,5 @@ belongs in `crates/dedens-server` and its sans-IO tests.
 - `tests/listeners.rs` expects the `io_uring` driver on Linux 6.0 or later (D174); set `DEDENS_TEST_ALLOW_POLL` where seccomp refuses it.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in
   `docs/benchmarks.md`.
+- `src/lib.rs` is the crate, `src/main.rs` only calls `dedensd::main` (D181). A configuration setting naming a file
+  to read goes in `names_files` (`src/config/`), or `fuzz/`'s `read_config` opens the paths its inputs name.
