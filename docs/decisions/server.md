@@ -420,7 +420,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and is no longer limited. A slip is never larger than its query plus the 16 bytes of the Server Cookie (a test
     asserts it): at most 1.4 times a 40-byte query, 0.7 averaged over slip 2, where a hit gives up to 30 times.
   - Table. A fixed array of `table_size` (default 65536, 512 KiB) `AtomicU64` buckets, indexed by a keyed hash of the
-    network (random `RandomState` key, as D22 and D58: an attacker cannot aim at a bucket). Memory never grows, whatever
+    network (SipHash-1-3 under a key random to the process, as D22 and D58: an attacker cannot aim at a bucket; a
+    simulation passes a fixed one, `with_key`, D133). Memory never grows, whatever
     sources are spoofed (BIND bounds its table, `max-table-size` 20000; Knot's is fixed, `table-size`). Networks sharing a
     slot share a bucket, so a flood from many networks can limit an innocent one at about `table_size` times the rate in
     all. Rejected: a map with eviction (the flood chooses what stays), a lock per bucket (a CAS loop on one word needs

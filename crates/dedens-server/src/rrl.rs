@@ -8,12 +8,11 @@
 //! share a bucket, which only makes the limit tighter for both.
 
 use std::fmt;
-use std::hash::{BuildHasher as _, RandomState};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::access::{Access, Denial, Network};
-use crate::budget::{Net, network};
+use crate::budget::{Keyed, Net, network};
 use crate::metrics::Limited;
 
 /// The most a bucket holds: its debt is 24 bits.
@@ -139,7 +138,7 @@ pub struct RateLimit {
     /// What it was made with, for a reload to tell whether to keep it.
     config: RateLimitConfig,
     exempt: Access,
-    hasher: RandomState,
+    hasher: Keyed,
     /// `len() - 1`, `len()` being a power of two.
     mask: u64,
     /// Each bucket: the second it was last used (low 32 bits), what it owes (next 24), the limited queries since
@@ -164,11 +163,24 @@ impl RateLimit {
     /// # Errors
     ///
     /// [`RateLimitError`] when `config` is out of its bounds.
+    pub fn new(config: RateLimitConfig) -> Result<Self, RateLimitError> {
+        Self::keyed(config, Keyed::random())
+    }
+
+    /// A limit under `config`, with the hash key `key`: a simulation's, whose runs replay in any process (D133). A
+    /// server takes [`RateLimit::new`]'s random key, so that an attacker cannot aim at a bucket.
     ///
+    /// # Errors
+    ///
+    /// [`RateLimitError`] when `config` is out of its bounds.
+    pub fn with_key(config: RateLimitConfig, key: &[u8; 16]) -> Result<Self, RateLimitError> {
+        Self::keyed(config, Keyed::new(key))
+    }
+
     /// # Panics
     ///
     /// Never: the table is at most 2^24 buckets, which fit a `u64`.
-    pub fn new(config: RateLimitConfig) -> Result<Self, RateLimitError> {
+    fn keyed(config: RateLimitConfig, hasher: Keyed) -> Result<Self, RateLimitError> {
         for (family, rate, max) in [("IPv4", config.ipv4, 32), ("IPv6", config.ipv6, 128)] {
             if !(1..=max).contains(&rate.prefix) {
                 return Err(RateLimitError::Prefix {
@@ -198,7 +210,7 @@ impl RateLimit {
         Ok(Self {
             exempt: Access::new(config.exempt.iter().copied(), [], Denial::Drop),
             config,
-            hasher: RandomState::new(),
+            hasher,
             mask: u64::try_from(len - 1).expect("the table has at most 2^24 buckets"),
             buckets: (0..len).map(|_| AtomicU64::new(0)).collect(),
             counted: Limited::new(),
@@ -225,7 +237,7 @@ impl RateLimit {
     ///
     /// # Panics
     ///
-    /// Never: the index is masked below the table length, which is a `usize`.
+    /// Never: the index is masked below the table length.
     #[must_use]
     pub fn check(&self, from: IpAddr, now: u32, can_truncate: bool) -> Admission {
         if self.exempt.permits(from) {
@@ -236,8 +248,7 @@ impl RateLimit {
             Net::V4(_) => self.config.ipv4,
             Net::V6(_) => self.config.ipv6,
         };
-        let index = usize::try_from(self.hasher.hash_one(key) & self.mask)
-            .expect("the mask is below the table length, a usize");
+        let index = self.hasher.index(key, self.mask);
         let bucket = self
             .buckets
             .get(index)

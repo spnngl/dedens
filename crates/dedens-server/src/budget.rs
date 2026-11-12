@@ -23,9 +23,11 @@
 //! ```
 
 use std::fmt;
-use std::hash::{BuildHasher as _, RandomState};
+use std::hash::{BuildHasher as _, Hash, Hasher as _, RandomState};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use siphasher::sip::SipHasher13;
 
 /// The IPv4 prefix length of a client network: a /24, as D113's.
 const IPV4_PREFIX: u8 = 24;
@@ -88,6 +90,39 @@ pub(crate) fn network(from: IpAddr, ipv4: u8, ipv6: u8) -> Net {
     }
 }
 
+/// The keyed hash that picks a network's bucket in a table: SipHash-1-3, as std's `RandomState`.
+#[derive(Clone, Copy)]
+pub(crate) struct Keyed(SipHasher13);
+
+impl Keyed {
+    /// Under a key random to this process, which an attacker cannot aim at (D22): two hashes of a `RandomState`,
+    /// unpredictable without its random key.
+    pub(crate) fn random() -> Self {
+        let state = RandomState::new();
+        Self(SipHasher13::new_with_keys(
+            state.hash_one(0_u8),
+            state.hash_one(1_u8),
+        ))
+    }
+
+    /// Under `key`.
+    pub(crate) fn new(key: &[u8; 16]) -> Self {
+        Self(SipHasher13::new_with_key(key))
+    }
+
+    /// The bucket of `value` in a table of `mask + 1` buckets.
+    ///
+    /// # Panics
+    ///
+    /// Never: the index is masked below the table length, which is a `usize`.
+    pub(crate) fn index(self, value: impl Hash, mask: u64) -> usize {
+        let mut hasher = self.0;
+        value.hash(&mut hasher);
+        usize::try_from(hasher.finish() & mask)
+            .expect("the mask is below the table length, a usize")
+    }
+}
+
 /// A client network's bucket: which one it is, by the network and whether its address is proven, for the charges
 /// that follow an admission.
 ///
@@ -120,7 +155,7 @@ impl Slot {
 /// Token buckets of work by client network, in a table of fixed size.
 pub struct Budgets {
     config: Budget,
-    hasher: RandomState,
+    hasher: Keyed,
     /// `len() - 1`, `len()` being a power of two.
     mask: u64,
     /// Each bucket: the second it was last used (low 32 bits), what it owes (high 32): the burst less the units
@@ -143,11 +178,24 @@ impl Budgets {
     /// # Errors
     ///
     /// [`BudgetError`] when `config` is out of its bounds.
+    pub fn new(config: Budget) -> Result<Self, BudgetError> {
+        Self::keyed(config, Keyed::random())
+    }
+
+    /// The buckets of `config`, with the hash key `key`: a simulation's, whose runs replay in any process (D133).
+    /// A server takes [`Budgets::new`]'s random key, so that an attacker cannot aim at a bucket.
     ///
+    /// # Errors
+    ///
+    /// [`BudgetError`] when `config` is out of its bounds.
+    pub fn with_key(config: Budget, key: &[u8; 16]) -> Result<Self, BudgetError> {
+        Self::keyed(config, Keyed::new(key))
+    }
+
     /// # Panics
     ///
     /// Never: the table is at most 2^24 buckets, which fit a `u64`.
-    pub fn new(config: Budget) -> Result<Self, BudgetError> {
+    fn keyed(config: Budget, hasher: Keyed) -> Result<Self, BudgetError> {
         if config.burst > MAX_BUDGET {
             return Err(BudgetError::Burst(config.burst));
         }
@@ -157,7 +205,7 @@ impl Budgets {
         let len = config.table.next_power_of_two();
         Ok(Self {
             config,
-            hasher: RandomState::new(),
+            hasher,
             mask: u64::try_from(len - 1).expect("the table has at most 2^24 buckets"),
             words: (0..len).map(|_| AtomicU64::new(0)).collect(),
         })
@@ -174,8 +222,7 @@ impl Budgets {
         let index = if self.mask == 0 {
             0
         } else {
-            usize::try_from(self.hasher.hash_one(slot) & self.mask)
-                .expect("the mask is below the table length, a usize")
+            self.hasher.index(slot, self.mask)
         };
         self.words
             .get(index)

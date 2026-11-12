@@ -36,7 +36,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-use crate::util::{SEEDS, served};
+use crate::util::{SEEDS, TABLE_KEY, served};
 /// For the scenarios that take a world for each case.
 const FEW: &[u64] = &[0, 7];
 /// For the scenarios whose point is not the seed.
@@ -803,7 +803,7 @@ fn spending(allowance: Allowance, share: Budget) -> Validating {
         ..Limits::default()
     })
     .allowing(allowance)
-    .sharing(Budgets::new(share).expect("a share in bounds"))
+    .sharing(Budgets::with_key(share, &TABLE_KEY).expect("a share in bounds"))
 }
 
 /// Asks cold names until one is shed, which is SERVFAIL with Not Ready (D106, D117): how many were answered first.
@@ -1093,8 +1093,8 @@ fn whatever_the_validators_questions_suffer_the_verdict_stands_or_servfails() {
     });
 }
 
-/// One seed gives one trace in two processes, with the validator's maps and the budgets of the allowance and the
-/// shares, whose hashers are seeded by the process (D133).
+/// One seed gives one trace in two processes, with the validator's maps, whose hashers are seeded by the process, and
+/// the budgets of the allowance and the shares (D133).
 #[test]
 fn a_validating_run_replays_in_two_processes() {
     let runs = Cell::new(0);

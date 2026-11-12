@@ -9,9 +9,11 @@ scenario. A run must replay from its seed; these rules keep it so.
 - No `HashMap` and no clock in the driver: `BTreeMap`, and `tokio::time` only.
 - TLS in a scenario uses fixed certificates (`dot::certificates`), never `dedens_testkit::certificates`,
   whose keys are new on every run.
-- Stages that hash with a per-process seed (rate limits, budgets, the blocklist) and the validator's hash maps are
-  D133's determinism list: a family that adds one calls `seed::in_two_processes(module_path!(), ..)` from its own
-  module, with a scenario that uses it.
+- Rate limits and budgets in a scenario take `TABLE_KEY` of `tests/util.rs` (`with_key`), never `new`, whose key is
+  new in each process: under it, two networks share a slot in every run or in none.
+- Stages that hash with a per-process seed (the blocklist, the default shares of `Validating`) and the validator's
+  hash maps are D133's determinism list: a family that adds one calls `seed::in_two_processes(module_path!(), ..)`
+  from its own module, with a scenario that uses it.
 - Scenarios go through `seed::each`, never a literal seed alone. `Answers` is built inside the seed's closure:
   clones share their counts (`connections`, `ended`), which would add up over the seeds of `DEDENS_SIM_RUNS`.
 - A run that ends before the time of a fault fails (`World::run`): a client whose work may end first waits for
