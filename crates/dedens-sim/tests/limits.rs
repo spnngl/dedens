@@ -30,7 +30,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -40,7 +40,7 @@ use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
 use dedens_server::{
     Access, Budget, Budgets, Cookies, Denial, Network, Pipeline, Rate, RateLimit, RateLimitConfig,
-    Secret, Secrets, Validating,
+    Secret, Secrets, Server, Validating,
 };
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node};
@@ -121,7 +121,7 @@ impl Limits {
         self
     }
 
-    fn pipeline(&self, upstreams: &[SocketAddr]) -> Pipeline {
+    fn pipeline(&self, upstreams: &[Server]) -> Pipeline {
         let rate = Rate {
             prefix: 24,
             per_second: 1,

@@ -4,6 +4,7 @@
 mod baseline;
 mod crash;
 mod dnssec;
+mod dot;
 mod forged;
 mod limits;
 mod loss;

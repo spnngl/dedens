@@ -28,13 +28,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Left out, as the server's compio layer's concern: D86's shared flights, the cap on connections and on upstream
     queries, `dedensd`'s few reading tasks (here a task answers each datagram), compio's timers (tokio's, which
     turmoil advances, stand in) and threads (one thread runs every host). The client's socket pools (D50), D108's
-    inboxes, connection reuse and idle timeouts run on turmoil since D134. The driver forwards over plain DNS only: a pipeline whose forward targets are TLS, QUIC or HTTPS panics.
+    inboxes, connection reuse and idle timeouts run on turmoil since D134. The driver forwards over plain DNS and over
+    TLS, mapping each target as `dedensd`'s `target` does (D65); a pipeline whose forward targets are QUIC or HTTPS
+    panics.
     A panic of a host after the last client finished is not seen, and a task that spins without waiting hangs the
     run: there is no guard.
   - What goes wrong is injected by the scenario: `Fault`s of the network and of hosts at a time it picks from the
     seed; for an upstream server, `Answers::faulty` (each response sent, dropped or delayed, from the host's seeded
-    stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`, the same over TCP and over TLS (`World::dot_server`,
-    its own seeded stream, the queries of a connection pipelined); an attacker on a server's socket that sends
+    stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`, the same over TCP and over TLS (`World::dot_server`
+    for a client, `Topology::dot_upstream` for the resolver, its own seeded stream, the queries of a connection
+    pipelined, the fixed certificates of `dot::certificates`); an attacker on a server's socket that sends
     what the scenario gives it and may silence the server (`Reaction`). Turmoil's loss is a link going down and
     coming back, not a per-packet rate; its latency range is what reorders. A validating stage runs on the run's
     clock (`resolver::wall_clock`) from a start date `Topology::epoch` sets, so the captures of `dedens-dnssec`

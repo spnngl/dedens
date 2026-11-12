@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dedens_net::tls::Presented;
-use dedens_server::Pipeline;
+use dedens_net::tls::{Presented, Trust};
+use dedens_server::{Pipeline, Server, Via};
 use turmoil::Sim;
 
 use crate::client::Client;
@@ -38,9 +38,18 @@ const START: Duration = Duration::from_millis(5);
 /// (`turmoil::since_epoch`) do not depend on when the test runs.
 const EPOCH: Duration = Duration::from_hours(490_896);
 
+/// What an upstream server speaks.
+#[derive(Debug, Clone, Copy)]
+enum Speaks {
+    /// Plain DNS, on port 53.
+    Dns,
+    /// DNS over TLS, on [`dot::PORT`], with the certificate of [`dot::certificates`] for [`dot::NAME`].
+    Tls,
+}
+
 /// Which hosts a run has; [`Topology::build`] makes them.
 pub struct Topology {
-    upstreams: Vec<Answers>,
+    upstreams: Vec<(Answers, Speaks)>,
     epoch: SystemTime,
     duration: Duration,
     repair_rate: Option<f64>,
@@ -80,7 +89,15 @@ impl Topology {
     /// Adds an upstream server answering from `answers`; the resolver asks them in the order added.
     #[must_use]
     pub fn upstream(mut self, answers: Answers) -> Self {
-        self.upstreams.push(answers);
+        self.upstreams.push((answers, Speaks::Dns));
+        self
+    }
+
+    /// Adds an upstream server answering from `answers` over DNS over TLS only (RFC 7858), as [`World::dot_server`]
+    /// does; the resolver forwards to it over TLS, trusting its certificate authority.
+    #[must_use]
+    pub fn dot_upstream(mut self, answers: Answers) -> Self {
+        self.upstreams.push((answers, Speaks::Tls));
         self
     }
 
@@ -108,13 +125,12 @@ impl Topology {
     }
 
     /// Makes `build` the resolver's pipeline instead of [`resolver::pipeline`] (a cache and a forwarding stage):
-    /// the stages, limits and access rules a scenario tests. It gets the addresses of the upstream servers and
-    /// runs each time the resolver starts, a bounce included, so a restart begins with an empty cache.
+    /// the stages, limits and access rules a scenario tests. It gets the upstream servers and runs each time the resolver starts, a bounce included, so a restart begins with an empty cache.
     ///
     /// The cache must keep `shards: 1` ([`resolver::pipeline_with`] forces it): its shards are picked by a hash that
     /// differs from one process to the next, which a trace that must replay cannot have.
     #[must_use]
-    pub fn resolver(mut self, build: impl Fn(&[SocketAddr]) -> Pipeline + 'static) -> Self {
+    pub fn resolver(mut self, build: impl Fn(&[Server]) -> Pipeline + 'static) -> Self {
         self.pipeline = Rc::new(build);
         self
     }
@@ -134,21 +150,50 @@ impl Topology {
         }
         let mut sim = builder.build();
         let trace = Trace::new();
-        let expected: Rc<[Expected]> = self.upstreams.iter().flat_map(Answers::expected).collect();
-        let mut addrs = Vec::new();
-        for (n, answers) in self.upstreams.into_iter().enumerate() {
+        let expected: Rc<[Expected]> = self
+            .upstreams
+            .iter()
+            .flat_map(|(answers, _)| answers.expected())
+            .collect();
+        // Made by the first server over TLS only: a run with none stays as it was before them.
+        let mut certificates = None;
+        let mut servers = Vec::new();
+        for (n, (answers, speaks)) in self.upstreams.into_iter().enumerate() {
             let name = format!("upstream-{n}");
             let host = sim.lookup(name.as_str());
-            addrs.push(SocketAddr::new(host, PORT));
             let rng = Rc::new(RefCell::new(Rng::new(seed, upstream_stream(n))));
             let (answers, trace) = (Rc::new(answers), trace.clone());
-            sim.host(name, move || {
-                upstream::serve(Rc::clone(&answers), host, Rc::clone(&rng), trace.clone())
-            });
+            match speaks {
+                Speaks::Dns => {
+                    sim.host(name, move || {
+                        upstream::serve(Rc::clone(&answers), host, Rc::clone(&rng), trace.clone())
+                    });
+                    servers.push(Server::from(SocketAddr::new(host, PORT)));
+                }
+                Speaks::Tls => {
+                    let (_, presented) = certificates.get_or_insert_with(|| dot::certificates(0));
+                    let presented = Arc::clone(presented);
+                    sim.host(name, move || {
+                        dot::serve(
+                            Rc::clone(&answers),
+                            host,
+                            Arc::clone(&presented),
+                            Rc::clone(&rng),
+                            trace.clone(),
+                        )
+                    });
+                    servers.push(Server {
+                        addr: SocketAddr::new(host, dot::PORT),
+                        via: Via::Tls(Some(dot::NAME.into())),
+                    });
+                }
+            }
         }
         let host = sim.lookup("resolver");
+        let addrs = servers.iter().map(|server| server.addr).collect();
         let resolver = Resolver {
-            upstreams: addrs.clone(),
+            upstreams: servers,
+            trust: certificates.map(|(ca, _)| Trust::Roots(vec![ca])),
             rng: Rc::new(RefCell::new(Rng::new(seed, 0))),
             trace: trace.clone(),
             build: self.pipeline,

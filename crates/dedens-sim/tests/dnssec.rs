@@ -165,7 +165,7 @@ fn world_keeping_bogus(seed: Seed, bogus_ttl: u32) -> World {
         .upstream(captures())
         .epoch(UNIX_EPOCH + captured_at())
         .resolver(move |upstreams| {
-            let forward = Forward::new(upstreams.iter().copied())
+            let forward = Forward::new(upstreams.iter().cloned())
                 .expect("an upstream server to forward to")
                 .validating(validating.clone());
             let config = Config {
