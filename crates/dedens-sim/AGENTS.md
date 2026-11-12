@@ -12,7 +12,8 @@ scenario. A run must replay from its seed; these rules keep it so.
 - Stages that hash with a per-process seed (rate limits, budgets, the blocklist) and the validator's hash maps are
   D133's determinism list: a family that adds one calls `seed::in_two_processes(module_path!(), ..)` from its own
   module, with a scenario that uses it.
-- Scenarios go through `seed::each`, never a literal seed alone.
+- Scenarios go through `seed::each`, never a literal seed alone. `Answers` is built inside the seed's closure:
+  clones share their counts (`connections`, `ended`), which would add up over the seeds of `DEDENS_SIM_RUNS`.
 - A run that ends before the time of a fault fails (`World::run`): a client whose work may end first waits for
   the last fault (`sleep_until(begun + at)`, `begun` taken when its body starts).
 - A scenario that needs something the driver lacks adds it to `src/`, small, rather than a copy in `tests/`.
