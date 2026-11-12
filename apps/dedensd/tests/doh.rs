@@ -291,9 +291,9 @@ mod h3_frames {
 
     use compio::bytes::{Buf, Bytes};
     use compio::io::AsyncWriteExt;
-    use compio::quic::h3::client::SendRequest;
+    use compio::quic::h3::client::{RequestStream, SendRequest};
     use compio::quic::h3::error::{Code, StreamError};
-    use compio::quic::h3::{self, OpenStreams};
+    use compio::quic::h3::{self, BidiStream, OpenStreams};
     use compio::quic::{
         ClientBuilder, Connection, ConnectionError, Endpoint, SendStream, TransportConfig,
     };
@@ -462,17 +462,29 @@ mod h3_frames {
         (connection, driver, requests)
     }
 
+    /// A POST to the `DoH` path of `addr`, its head alone.
+    fn post_head(addr: std::net::SocketAddr) -> http::Request<()> {
+        http::Request::post(format!("https://{NAME}:{}/dns-query", addr.port()))
+            .header("content-type", "application/dns-message")
+            .body(())
+            .expect("a request")
+    }
+
     /// POSTs `body` to the `DoH` path of `addr` and reads the response: its status and body.
     async fn post(
         requests: &mut SendRequest<OpenStreams, Bytes>,
         addr: std::net::SocketAddr,
         body: &[u8],
     ) -> Result<(http::StatusCode, Vec<u8>), StreamError> {
-        let request = http::Request::post(format!("https://{NAME}:{}/dns-query", addr.port()))
-            .header("content-type", "application/dns-message")
-            .body(())
-            .expect("a request");
-        let mut stream = requests.send_request(request).await?;
+        let stream = requests.send_request(post_head(addr)).await?;
+        post_body(stream, body).await
+    }
+
+    /// Sends `body` on `stream`, a request whose head is sent, and reads the response: its status and body.
+    async fn post_body(
+        mut stream: RequestStream<BidiStream<Bytes>, Bytes>,
+        body: &[u8],
+    ) -> Result<(http::StatusCode, Vec<u8>), StreamError> {
         stream.send_data(Bytes::copy_from_slice(body)).await?;
         stream.finish().await?;
         let status = stream.recv_response().await?.status();
@@ -485,18 +497,35 @@ mod h3_frames {
 
     /// Sends the server bodies of no DNS message, each answered before the next, until the connection passed its budget
     /// (4 MiB of UDP payload, which the server counts as the client does on loopback) and not a connection window more
-    /// (256 KiB, where it is closed), then waits for the server to see it (it checks every 20 ms). It stops at the body
-    /// that passes: one more could be the request the server sends `GOAWAY` after.
+    /// (256 KiB, where it is closed), then waits for the server to see it (it checks every 20 ms), so that it sends
+    /// `GOAWAY` after the next request it takes.
+    ///
+    /// The body that passes the budget is that of a request the server took first, before the bodies under it. Were
+    /// it the last request taken, the server could count its bytes before it takes it, and send `GOAWAY` after it
+    /// rather than after the next one; taken first, the server waits for the next request when it counts them.
     async fn past_budget(
+        server: &mut Server,
         connection: &Connection,
         requests: &mut SendRequest<OpenStreams, Bytes>,
-        addr: std::net::SocketAddr,
     ) {
-        let junk = vec![0; 60_000];
-        while connection.stats().udp_tx.bytes < 4 << 20 {
+        const BUDGET: u64 = 4 << 20;
+        const JUNK: u16 = 30_000;
+        let addr = server.addr;
+        let passing = requests
+            .send_request(post_head(addr))
+            .await
+            .expect("a stream");
+        let junk = vec![0; usize::from(JUNK)];
+        // A body and what it adds to the bytes sent (its frames, its packets' headers, acknowledgements) stay under
+        // the budget: twice the body.
+        while connection.stats().udp_tx.bytes + 2 * u64::from(JUNK) < BUDGET {
             post(requests, addr, &junk).await.expect("a response");
         }
-        compio::time::sleep(Duration::from_millis(200)).await;
+        // Under 2 * JUNK + 1 000 bytes: a body a DNS message's size could be, read whole.
+        let past = BUDGET - connection.stats().udp_tx.bytes + 1_000;
+        let past = vec![0; usize::try_from(past).expect("a length")];
+        post_body(passing, &past).await.expect("a response");
+        server.event("HTTP/3 connection over its byte budget: GOAWAY");
     }
 
     /// §5.2: the request that comes once the connection passed its budget is answered even when slow, and the server
@@ -506,10 +535,10 @@ mod h3_frames {
     fn s5_2_a_connection_past_its_budget_is_closed_once_its_last_request_is_answered() {
         let upstream = Responder::delayed(&["a"], Duration::from_millis(500));
         let ca = certificates();
-        let server = serving(&ca, &upstream);
+        let mut server = serving(&ca, &upstream);
         Runtime::new().expect("a runtime").block_on(async {
             let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
-            past_budget(&connection, &mut requests, server.addr).await;
+            past_budget(&mut server, &connection, &mut requests).await;
             let (status, body) = post(&mut requests, server.addr, &query_for("a", 0))
                 .await
                 .expect("the last request answered");
@@ -527,11 +556,11 @@ mod h3_frames {
     fn s5_2_a_request_that_crosses_goaway_is_refused() {
         let upstream = Responder::start(&["a"]);
         let ca = certificates();
-        let server = serving(&ca, &upstream);
+        let mut server = serving(&ca, &upstream);
         let query = query_for("a", 0);
         Runtime::new().expect("a runtime").block_on(async {
             let (connection, _driver, mut requests) = h3_connected(server.addr, &ca, None).await;
-            past_budget(&connection, &mut requests, server.addr).await;
+            past_budget(&mut server, &connection, &mut requests).await;
             post(&mut requests, server.addr, &query)
                 .await
                 .expect("the last request answered");
@@ -694,22 +723,20 @@ mod h3_frames {
     fn s10_5_a_connection_that_does_not_end_after_goaway_is_closed() {
         let upstream = Responder::start(&["a"]);
         let ca = certificates();
-        let server = serving(&ca, &upstream);
+        let mut server = serving(&ca, &upstream);
         Runtime::new().expect("a runtime").block_on(async {
             // Pinged, so as not to end for being idle meanwhile.
             let keep_alive = Some(Duration::from_secs(1));
             let (connection, _driver, mut requests) =
                 h3_connected(server.addr, &ca, keep_alive).await;
-            past_budget(&connection, &mut requests, server.addr).await;
+            past_budget(&mut server, &connection, &mut requests).await;
             // Well after the server saw the budget passed: its request read gives up 10 s after the request came, the
             // connection is closed 10 s after the budget.
             compio::time::sleep(Duration::from_secs(1)).await;
-            let request =
-                http::Request::post(format!("https://{NAME}:{}/dns-query", server.addr.port()))
-                    .header("content-type", "application/dns-message")
-                    .body(())
-                    .expect("a request");
-            let _stream = requests.send_request(request).await.expect("a stream");
+            let _stream = requests
+                .send_request(post_head(server.addr))
+                .await
+                .expect("a stream");
             let code = closed(&connection, Duration::from_secs(15)).await;
             assert_eq!(code, Some(Ok(H3_EXCESSIVE_LOAD)));
         });
