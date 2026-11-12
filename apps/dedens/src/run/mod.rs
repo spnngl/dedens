@@ -126,7 +126,17 @@ impl Route {
     }
 }
 
-/// Runs `cli`; an error is one of the run as a whole, before any query or while printing.
+/// A usage error the run finds, before any query, in what clap cannot read: a file an option names. Exit 2 (D33).
+#[derive(Debug)]
+pub(crate) struct Usage(String);
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Runs `cli`; an error is one of the run as a whole, before any query or while printing, a [`Usage`] one among them.
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     let mut jobs = match &cli.file {
         Some(path) => file_jobs(cli, path)?,
@@ -164,6 +174,8 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new().trusting(trust));
+        #[cfg(feature = "odoh")]
+        pin_odoh_configs(&client, &jobs)?;
         // One task per job and server, the servers of a job one after the other: a group.
         let mut tasks = jobs.into_iter().enumerate().flat_map(|(group, job)| {
             let job = Rc::new(job);
@@ -226,7 +238,7 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             };
             code = code.max(show(cli, printing, &mut out, &id, trail, &mut printed)?);
         }
-        io::Result::Ok(code)
+        anyhow::Ok(code)
     })?;
     Ok(ExitCode::from(code))
 }
@@ -373,16 +385,6 @@ async fn ask(
         }
         report
     };
-    #[cfg(feature = "odoh")]
-    if endpoint.proxy.is_some()
-        && let Some(file) = &job.options.odoh_config
-    {
-        let configs = std::fs::read(file)
-            .with_context(|| format!("+odoh-config {file}: cannot read the file"))?;
-        client
-            .pin_odoh_configs(endpoint.server.clone(), &configs)
-            .with_context(|| format!("+odoh-config {file}: not key configurations"))?;
-    }
     for (index, name) in job.names.iter().enumerate() {
         let question = Question {
             name: name.clone(),
@@ -465,6 +467,33 @@ async fn discovered<'a>(
             text
         }),
     ))
+}
+
+/// Pins the key configurations of each `+odoh-config` file for the targets its queries reach through a proxy (D79),
+/// each file read once, before any query: one that cannot be read or holds no `ObliviousDoHConfigs` (RFC 9230 §6)
+/// is a [`Usage`] error. A target given two files keeps the later one's.
+#[cfg(feature = "odoh")]
+fn pin_odoh_configs(client: &Client, jobs: &[Job]) -> anyhow::Result<()> {
+    let mut read = std::collections::HashMap::new();
+    for job in jobs {
+        let (Some(file), Route::Servers(endpoints)) = (&job.options.odoh_config, &job.route) else {
+            continue;
+        };
+        let configs = match read.entry(file) {
+            std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+            std::collections::hash_map::Entry::Vacant(new) => new
+                .insert(std::fs::read(file).with_context(|| {
+                    Usage(format!("+odoh-config {file}: cannot read the file"))
+                })?),
+        };
+        for endpoint in endpoints.iter().filter(|endpoint| endpoint.proxy.is_some()) {
+            // The target is an `https://` server, so it has the template pinning needs: only the bytes can fail.
+            client
+                .pin_odoh_configs(endpoint.server.clone(), configs)
+                .with_context(|| Usage(format!("+odoh-config {file}: not key configurations")))?;
+        }
+    }
+    Ok(())
 }
 
 /// Tells on stderr what the Oblivious `DoH` exchanges since the last call have to tell (D79).

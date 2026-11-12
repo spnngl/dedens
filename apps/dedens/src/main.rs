@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     diagnostics(&cli);
     run::run(&cli).unwrap_or_else(|error| {
         eprintln!("dedens: {error:#}");
-        ExitCode::from(10)
+        ExitCode::from(if error.is::<run::Usage>() { 2 } else { 10 })
     })
 }
 
