@@ -338,6 +338,44 @@ fn coap_doc_discover_that_fails_is_an_error() {
     }
 }
 
+/// D95, D33: a server that answers the discovery with no `DoC` resource it may be asked for has answered: an empty
+/// list, links of another type and a link to another server exit 10, not 9.
+#[cfg(feature = "doc")]
+#[test]
+fn coap_doc_discover_finding_no_resource_exits_10() {
+    use dedens_net::coap::{Code, Message, Options};
+
+    for (links, said) in [
+        (&b""[..], "no resource of type core.dns"),
+        (b"</dns/query>;rt=other", "no resource of type core.dns"),
+        (
+            b"<coap://192.0.2.1/dns/query>;rt=core.dns",
+            "not the server that sent the links",
+        ),
+    ] {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        let port = socket.local_addr().expect("an address").port();
+        std::thread::spawn(move || {
+            let mut buf = [0; 1500];
+            while let Ok((len, from)) = socket.recv_from(&mut buf) {
+                let request = Message::parse(&buf[..len]).expect("a CoAP request");
+                let mut reply = Message::piggybacked(&request, Code::CONTENT);
+                reply.options.set_content_format(Options::LINK_FORMAT);
+                reply.payload = links.to_vec();
+                socket
+                    .send_to(&reply.to_vec().expect("it writes"), from)
+                    .expect("sent");
+            }
+        });
+        dedens()
+            .args([&format!("@coap://127.0.0.1:{port}"), "+doc-discover"])
+            .args(["example.com", "+tries=1", "+time=2s"])
+            .assert()
+            .code(10)
+            .stderr(contains(said));
+    }
+}
+
 /// D109: a server that never answers the discovery holds it for the query's timeout, not for the 93 s of CoAP's
 /// retransmissions; it is no reply.
 #[cfg(feature = "doc")]

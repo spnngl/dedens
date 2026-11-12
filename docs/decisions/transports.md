@@ -380,8 +380,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     query, the server is asked and the first path is the Uri-Path of the FETCH; the report says `(discovered /PATH)`,
     JSON `doc_path`. Never automatic: §6 allows discovery only from a trusted source, and `dedens` does not tell
     one from another, so the user asks for it for the server they name. It is a usage error with a path in the URI
-    (the path is found, not given), with a non-CoAP server or with none (exit 2); a failed discovery, an empty list or
-    no resource of that type is an error of the exchange (exit 9).
+    (the path is found, not given), with a non-CoAP server or with none (exit 2); a discovery that gets no reply
+    exits 9, and an empty list, no resource of that type or refused links exit 10: the server answered (D33).
   - Cut: discovery by SVCB `docpath` (§3.2). The request is built from the ALPN, `coap` for CoAP over TLS (RFC 8323) or `co`
     for CoAP over DTLS (RFC 9952), and the unprotected CoAP of D81 has none: neither is built, so the key stays
     parsed and unused. See `docs/TODECIDE.md`.
