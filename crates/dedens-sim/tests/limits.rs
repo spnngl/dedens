@@ -21,9 +21,8 @@
 //! queries meet its bucket together: the stub's first try, then each retry five seconds after. The model of the
 //! property is that bucket, wave by wave. The rate is one query a second, so each retry finds a bucket whole.
 //!
-//! The buckets of the limit and the shares are slots of a table hashed with a key that changes with each process
-//! (D133): the tables here have a million slots for at most four networks, so that two networks share one with a
-//! chance of a few in a million, and the replay test runs the scenario in two processes.
+//! The buckets of the limit and the shares are slots of a table hashed with a fixed key, so that a run replays in
+//! any process (D133); a test checks that the networks here each have a slot of their own.
 //!
 //! The last tests: the property, where the seed picks the networks, their clients and the limits, and the replay of
 //! a run in two processes.
@@ -39,8 +38,8 @@ use dedens_net::exchange::Failure;
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
 use dedens_server::{
-    Access, Budget, Budgets, Cookies, Denial, Network, Pipeline, Rate, RateLimit, RateLimitConfig,
-    Secret, Secrets, Server, Validating,
+    Access, Admission, Budget, Budgets, Cookies, Denial, Network, Pipeline, Rate, RateLimit,
+    RateLimitConfig, Secret, Secrets, Server, Slot, Validating,
 };
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node};
@@ -51,7 +50,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::Answers;
 
-use crate::util::{SECOND, SEEDS, answers, forwarded};
+use crate::util::{SECOND, SEEDS, TABLE_KEY, answers, forwarded};
 
 /// Fewer seeds for the scenarios that run through the stub's timeouts or validate.
 const FEW: &[u64] = &[0, 7];
@@ -66,7 +65,8 @@ const ONE: &[u64] = &[0];
 const STUB_TIMEOUT: Duration = Duration::from_secs(5);
 const STUB_TRIES: u16 = 3;
 
-/// Buckets of the rate limit and the shares: a million, so that the networks of a run do not share one.
+/// Buckets of the rate limit and the shares, hashed with [`TABLE_KEY`]: a million, so that the networks of a run do
+/// not share one, which [`each_network_has_a_bucket_of_its_own`] checks.
 const TABLE: usize = 1 << 20;
 
 /// Four /24 networks of documentation and shared addresses, none in the 192.168.0.0/16 the other hosts take.
@@ -127,12 +127,15 @@ impl Limits {
             per_second: 1,
             burst: self.burst,
         };
-        let limit = RateLimit::new(RateLimitConfig {
-            ipv4: rate,
-            slip: self.slip,
-            table: TABLE,
-            ..RateLimitConfig::default()
-        })
+        let limit = RateLimit::with_key(
+            RateLimitConfig {
+                ipv4: rate,
+                slip: self.slip,
+                table: TABLE,
+                ..RateLimitConfig::default()
+            },
+            &TABLE_KEY,
+        )
         .expect("a limit in bounds");
         let mut pipeline = pipeline(upstreams).with_rate_limit(limit);
         if self.cookies {
@@ -584,11 +587,14 @@ fn validating_world(seed: Seed, share: u32) -> World {
                 ..ValidatorLimits::default()
             };
             let validator = Validator::new(TrustAnchors::root(), limits);
-            let shares = Budgets::new(Budget {
-                per_second: SHARE_REFILL,
-                burst: share,
-                table: TABLE,
-            })
+            let shares = Budgets::with_key(
+                Budget {
+                    per_second: SHARE_REFILL,
+                    burst: share,
+                    table: TABLE,
+                },
+                &TABLE_KEY,
+            )
             .expect("a share in bounds");
             let validating = Validating::new(validator, wall_clock()).sharing(shares);
             pipeline_validating(upstreams, validating)
@@ -945,6 +951,40 @@ fn whatever_the_seed_picks_each_network_ends_as_the_limits_say() {
             assert_eq!(forwarded(&events), 0, "{events:#?}");
         }
     });
+}
+
+/// Under [`TABLE_KEY`], no two of [`NETS`] share a bucket of the rate limit or of the shares, proven or not: else the
+/// model of a run, a bucket per network, is wrong for every seed.
+#[test]
+fn each_network_has_a_bucket_of_its_own() {
+    let rate = Rate {
+        prefix: 24,
+        per_second: 1,
+        burst: 1,
+    };
+    let limit = RateLimit::with_key(
+        RateLimitConfig {
+            ipv4: rate,
+            slip: 0,
+            table: TABLE,
+            ..RateLimitConfig::default()
+        },
+        &TABLE_KEY,
+    )
+    .expect("a limit in bounds");
+    let share = Budget {
+        per_second: 1,
+        burst: 1,
+        table: TABLE,
+    };
+    let shares = Budgets::with_key(share, &TABLE_KEY).expect("a share in bounds");
+    for prefix in NETS {
+        let from = host(prefix, 1);
+        assert_eq!(limit.check(from, 0, true), Admission::Pass, "{from}");
+        for proven in [false, true] {
+            assert!(shares.admit(Slot::new(from, proven), 0), "{from} {proven}");
+        }
+    }
 }
 
 /// One seed gives one trace in two processes (D133), with every limit at once: a rate and a slip, cookies, an access

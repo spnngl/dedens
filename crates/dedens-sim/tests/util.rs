@@ -11,6 +11,9 @@ use dedens_sim::upstream::Answers;
 /// The seeds of `just check`; `DEDENS_SIM_SEED` and `DEDENS_SIM_RUNS` replace them.
 pub(crate) const SEEDS: &[u64] = &[0, 1, 7, 42, 2026];
 
+/// The hash key of the rate limits' and the budgets' tables: fixed, so that a run replays in any process (D133).
+pub(crate) const TABLE_KEY: [u8; 16] = *b"dedens-sim table";
+
 /// A second of simulated time.
 pub(crate) const SECOND: Duration = Duration::from_secs(1);
 

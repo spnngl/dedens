@@ -62,9 +62,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
       cannot be pinned from outside; the two-process test is the check.
     - The cache's `RandomState` (the shard of a key, so which entries a full cache evicts): pinned by `shards: 1`,
       which `resolver::pipeline_with` forces and a pipeline built by hand must keep.
-    - The `RandomState` slots of rate limits and budgets (`rrl.rs`, `budget.rs`), the blocklist's keys and
-      `dedens-dnssec`'s `HashMap`s and `HashSet`s: not in the default pipeline; a family that adds them sizes the
-      tables so that its clients do not share a slot, and runs `seed::in_two_processes` over its scenario.
+    - The slots of rate limits and budgets (`rrl.rs`, `budget.rs`): a scenario keys them with a fixed key
+      (`with_key`), as a per-process key let two networks share a slot in one run out of a million (a CI run of
+      `limits` at seed 7). The blocklist's keys, the default shares of `Validating` and `dedens-dnssec`'s `HashMap`s
+      and `HashSet`s: not in the default pipeline; a family that adds them sizes the tables so that its clients do
+      not share a slot, and runs `seed::in_two_processes` over its scenario.
       Lookup-only maps of `dedens-proto` and `-cache` are never iterated.
     - `seed::in_two_processes` runs a scenario here and in a second process of the test binary and compares the
       digests of the traces (`tests/replay.rs`).
