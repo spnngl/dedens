@@ -13,6 +13,9 @@ allow-dbg-in-tests = true
 disallowed-methods = [
   { path = "std::time::Instant::now", reason = "use `Io::now`" },
   { path = "std::time::SystemTime::now", reason = "use `Io::now`: a simulation runs its own clock" },
+  { path = "std::time::Instant::elapsed", reason = "use `Io::now`: `elapsed` reads the system clock" },
+  { path = "std::time::SystemTime::elapsed", reason = "use `Io::now`: a simulation runs its own clock" },
+  { path = "std::thread::sleep", reason = "use `serve::pause`: a sleep blocks the thread's runtime" },
   { path = "compio::runtime::spawn", reason = "use `Io::spawn` or `Io::detach`, through `Origin`" },
   { path = "compio::runtime::spawn_at", reason = "use `Io::spawn` or `Io::detach`, through `Origin`" },
   { path = "compio::runtime::spawn_blocking", reason = "no blocking task in the serving loop" },
