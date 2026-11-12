@@ -35,6 +35,9 @@ Nanoseconds, `a`/`mx`/`txt_large`.
   `Query::read` 41.7-44.7 -> 37.1-39.8, `encode` 56-58/330-344/183-187 -> 52-53/349-359/177-181 (`mx` moves
   5% between runs of one binary), `to_vec` 88-94/88-90/105-109 -> 84-86/83-87/101-105, server `hit`
   87-88/88-92/105-111 -> 83-87/82-86/97-101.
+- Checking an OPT record's option framing before reading it (D9), so a broken one is a violation, not an error:
+  `query_dedens` (a query with a client cookie) 42.1-42.4 -> 40.2-42.1, `query_decode_dedens` 61-67 -> 57-65,
+  fastest of 100 samples, base and new alternated in one session: no change past the noise.
 - Tried and dropped: `get_unchecked` in `Reader` (no faster), labels from a re-sliced window (2% fewer
   instructions, same cycles), `#[inline]` hints (no change); `to_vec` going from 512 bytes straight to 65535
   instead of growing 4 times: zeroing and freeing 64 KiB made `txt_large` 496 → 869-1745 ns.

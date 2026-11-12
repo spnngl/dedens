@@ -353,15 +353,15 @@ fn an_invalid_option_gets_formerr_with_our_opt_record() {
     assert_eq!(reply.edns, Some(Edns::default()));
 }
 
-/// An option overrunning its OPT record fails the whole read: the FORMERR has the header alone, no OPT record, short
-/// of RFC 6891 §7 (D41).
+/// RFC 6891 §6.1.2, §7: an option overrunning its OPT record, a COOKIE of 8 bytes in an RDATA of 4, leaves the record
+/// unread: FORMERR with our OPT record, the client's DO not copied (D41).
 #[test]
-fn an_option_overrunning_its_opt_record_gets_the_header_alone() {
-    let bytes = with_opt(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 4, 0, 10, 0, 8]);
+fn an_option_overrunning_its_opt_record_gets_formerr_with_our_opt_record() {
+    let bytes = with_opt(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0x80, 0, 0, 4, 0, 10, 0, 8]);
     let wire = reply(&forwarder(), &bytes, Transport::Udp, None);
     let reply = decode(&wire);
-    assert_eq!((reply.rcode(), reply.questions.len()), (Rcode::FORMERR, 0));
-    assert_eq!(reply.edns, None);
+    assert_eq!((reply.rcode(), reply.questions.len()), (Rcode::FORMERR, 1));
+    assert_eq!(reply.edns, Some(Edns::default()));
 }
 
 #[test]

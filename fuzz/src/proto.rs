@@ -1,8 +1,6 @@
 //! Targets of dedens-proto, and of the dedens-scenario query files built on it: messages and queries off the
 //! wire, read by hickory-proto too; names, zone files and query files from text.
 
-use core::ops::RangeInclusive;
-
 use dedens_proto::edns::EdnsView;
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::{
@@ -38,8 +36,6 @@ pub fn differential_hickory(data: &[u8]) {
         // dedens refuses a pointer into the header and one to labels running into the bytes that point to them
         // (RFC 1035 §4.1.4: a pointer goes to a prior name); hickory-proto checks neither.
         (Err(error), Ok(_)) if error.kind == DecodeErrorKind::BadPointer => return,
-        // hickory-proto drops EDNS options whose framing is broken; dedens refuses the message (D9).
-        (Err(error), Ok(_)) if opt_rdata(data).is_some_and(|r| r.contains(&error.offset)) => return,
         (ours, theirs) => panic!("dedens {ours:?}\nhickory {theirs:?}"),
     };
     // hickory-proto keeps names of those types compressed, pointing into the message it read: dedens expands
@@ -95,37 +91,6 @@ fn non_utf8_alpn(record: &Record<'_>) -> bool {
     svcb.params().iter().any(|param| {
         matches!(param, SvcParam::Alpn(ids) if ids.iter().any(|id| str::from_utf8(id).is_err()))
     })
-}
-
-/// Where the RDATA of the OPT record lies in `data`, a message hickory-proto read.
-fn opt_rdata(data: &[u8]) -> Option<RangeInclusive<usize>> {
-    let u16_at = |at: usize| {
-        Some(usize::from(u16::from_be_bytes([
-            *data.get(at)?,
-            *data.get(at + 1)?,
-        ])))
-    };
-    let skip_name = |mut at: usize| loop {
-        match *data.get(at)? {
-            0 => return Some(at + 1),
-            len if len >= 0xC0 => return Some(at + 2),
-            len => at += 1 + usize::from(len),
-        }
-    };
-    let mut at = 12;
-    for _ in 0..u16_at(4)? {
-        at = skip_name(at)? + 4;
-    }
-    for _ in 0..u16_at(6)? + u16_at(8)? + u16_at(10)? {
-        let fixed = skip_name(at)?;
-        let start = fixed + 10;
-        let end = start + u16_at(fixed + 8)?;
-        if u16_at(fixed)? == usize::from(RecordType::OPT.0) {
-            return Some(start..=end);
-        }
-        at = end;
-    }
-    None
 }
 
 /// `ours` without what hickory-proto does not keep and dedens keeps, to write a message as it was read.

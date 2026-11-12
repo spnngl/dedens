@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::codes::{Opcode, Rcode, RecordType};
-use crate::edns::{Edns, EdnsOption, OptionCode};
+use crate::edns::{self, Edns, EdnsOption, OptionCode};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
 use crate::header::{Counts, Flags, HEADER_LEN, Header};
 use crate::name::Name;
@@ -75,6 +75,11 @@ pub enum Violation {
     /// An OPT record whose owner is not the root (RFC 6891 §6.1.2); it stays as an opaque record.
     #[error("OPT record owner is not the root")]
     OptOwnerNotRoot,
+    /// The OPT record of the additional section whose options do not fill its RDATA: an option's code, length or
+    /// data runs past it (RFC 6891 §6.1.2). It stays as an opaque record, its options unread, and is the message's
+    /// one OPT record all the same: another is [`Violation::MultipleOpt`].
+    #[error("EDNS option running past its OPT record")]
+    OptOptionOverrun,
     /// Bytes after the last record.
     #[error("{len} bytes after the last record")]
     TrailingBytes {
@@ -267,7 +272,7 @@ impl<'a> Message<'a> {
     /// # Errors
     ///
     /// [`DecodeError`] when the structure is broken: a section cut short, a bad name or pointer, a RDLENGTH that
-    /// overruns the message, broken EDNS option framing, or invalid RDATA of a type with compressible names; and
+    /// overruns the message, or invalid RDATA of a type with compressible names; and
     /// [`DecodeErrorKind::Invalid`] for a message longer than 65535 bytes. Anything else that is wrong is a
     /// [`Violation`] in the result (D9).
     pub fn decode(msg: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
@@ -538,8 +543,8 @@ pub fn ttl_offsets(msg: &[u8], mut each: impl FnMut(u16)) -> Result<(), DecodeEr
 }
 
 /// Reads the structure of `msg`, handing each entry to `sink` in wire order, and pushes the violations it finds:
-/// several questions, a misplaced or extra OPT record, trailing bytes (D9). `sink` reads what it needs of each
-/// entry and pushes the violations of RDATA and options.
+/// several questions, a misplaced or extra OPT record or one whose options overrun it, trailing bytes (D9). `sink`
+/// reads what it needs of each entry and pushes the violations of RDATA and options.
 pub(crate) fn walk<'a>(
     msg: &'a [u8],
     violations: &mut Vec<Violation>,
@@ -574,15 +579,16 @@ pub(crate) fn walk<'a>(
                     Some(Violation::OptOutsideAdditional)
                 } else if !raw.name.is_root() {
                     Some(Violation::OptOwnerNotRoot)
-                } else if opt_seen {
+                } else if core::mem::replace(&mut opt_seen, true) {
                     Some(Violation::MultipleOpt)
+                } else if !edns::framed(raw.rdata) {
+                    Some(Violation::OptOptionOverrun)
                 } else {
                     None
                 };
                 if let Some(violation) = reject {
                     violations.push(violation);
                 } else {
-                    opt_seen = true;
                     sink(Entry::Opt(raw), violations)?;
                     continue;
                 }
@@ -643,7 +649,7 @@ fn decode_into<'a>(msg: &'a [u8], out: &mut Decoded<'a>) -> Result<(), DecodeErr
                             error: o.error,
                         });
                     },
-                )?);
+                ));
             }
             Entry::Record(section, raw) => {
                 let records = match section {

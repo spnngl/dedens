@@ -5,8 +5,9 @@
 
 use dedens_proto::edns::{EdnsFlags, EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::{
-    DecodeErrorKind, EncodeError, Message, Name, Opcode, Question, Rcode, RecordType, Violation,
+    EncodeError, Message, Name, Opcode, Query, Question, Rcode, RecordType, Violation,
 };
+use dedens_testkit::captured;
 use proptest::prelude::*;
 
 use crate::util::{decode_options, opt_message, option_wire};
@@ -179,14 +180,46 @@ fn s6_1_2_an_unknown_option_has_no_typed_form() {
     assert!(UnknownOption::new(OptionCode(0xFF01), &vec![0; 65536]).is_err());
 }
 
+/// The captured response `cookie`, its OPT record, last, cut to an RDATA of `rdlength` bytes: its COOKIE option
+/// runs past it.
+fn cookie_opt_cut_to(rdlength: u16) -> Vec<u8> {
+    let mut wire = captured("cookie");
+    let at = wire.len() - 30;
+    assert_eq!(wire[at..at + 4], [0, 28, 0, 10], "RDLENGTH, then COOKIE");
+    wire[at..at + 2].copy_from_slice(&rdlength.to_be_bytes());
+    wire.truncate(at + 2 + usize::from(rdlength));
+    wire
+}
+
 #[test]
-fn s6_1_2_options_that_overrun_the_rdata_are_an_error() {
-    let mut options = option_wire(0xFF01, b"data");
-    options.pop();
-    let err = Message::decode(&opt_message(&options)).unwrap_err();
-    assert_eq!(err.kind, DecodeErrorKind::RdataLength);
-    let err = Message::decode(&opt_message(&[0xFF])).unwrap_err();
-    assert_eq!(err.kind, DecodeErrorKind::RdataLength);
+fn s6_1_2_options_that_overrun_the_rdata_leave_it_unread() {
+    // The cookie's data cut by a byte, and the option's header cut after its code.
+    for rdlength in [27, 2] {
+        let wire = cookie_opt_cut_to(rdlength);
+        let decoded = Message::decode(&wire).expect("decodes");
+        assert_eq!(decoded.violations, [Violation::OptOptionOverrun]);
+        assert_eq!(decoded.message.edns, None);
+        let opt = decoded.message.additional.last().expect("kept opaque");
+        assert_eq!(opt.rtype(), RecordType::OPT);
+        let query = Query::read(&wire).expect("reads");
+        assert_eq!(query.violations(), [Violation::OptOptionOverrun]);
+        assert!(query.edns().is_none());
+    }
+}
+
+#[test]
+fn s6_1_1_an_opt_record_after_an_overrun_one_is_another() {
+    let mut wire = cookie_opt_cut_to(27);
+    wire[11] += 1;
+    let ours = Message::query(1, question()).to_vec().unwrap();
+    wire.extend_from_slice(&ours[ours.len() - 11..]);
+    let overrun_then_multiple = [Violation::OptOptionOverrun, Violation::MultipleOpt];
+    let decoded = Message::decode(&wire).expect("decodes");
+    assert_eq!(decoded.violations, overrun_then_multiple);
+    assert_eq!(decoded.message.edns, None);
+    let query = Query::read(&wire).expect("reads");
+    assert_eq!(query.violations(), overrun_then_multiple);
+    assert!(query.edns().is_none());
 }
 
 proptest! {
