@@ -23,9 +23,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the
   client's ID, opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with
   AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one (RFC 6891 §6.1.1, §7),
-  so a FORMERR to OPT records breaking a rule has ours too: several (§6.1.1), one outside the additional section or
-  not owned by the root (§6.1.2), one with an invalid option (§7); with no OPT read, DO is clear and the payload
-  512. An option overrunning its OPT record fails `Query::read`: the header-alone FORMERR has no OPT, short of §7.
+  so a FORMERR to OPT records breaking a rule has ours too: several (§6.1.1), one outside the additional section,
+  not owned by the root or with an option running past it (§6.1.2), one with an invalid option (§7); with no OPT
+  read, DO is clear and the payload 512.
   Over UDP it fits the client's payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes
   whole. The forward stage asks its servers in order, the next on no response, one undecodable or breaking a rule,
   or TC. An upstream response is usable only with RCODE NOERROR, NXDOMAIN or YXDOMAIN (RFC 6672 §2.2). Any other

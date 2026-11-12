@@ -46,9 +46,9 @@ pub(crate) struct Client<'q> {
 enum Opt<'q> {
     /// None.
     Absent,
-    /// Only OPT records the reader left opaque, outside the additional section or not owned by the root (RFC 6891
-    /// §6.1.1, §6.1.2): the query is answered FORMERR, with our OPT record all the same, since the error is in
-    /// EDNS (§7). Nothing of the client's is read: no DO, the least UDP payload.
+    /// Only OPT records the reader left opaque, outside the additional section, not owned by the root or with
+    /// options overrunning it (RFC 6891 §6.1.1, §6.1.2): the query is answered FORMERR, with our OPT record all the
+    /// same, since the error is in EDNS (§7). Nothing of the client's is read: no DO, the least UDP payload.
     Unread,
     /// The first OPT record of the additional section owned by the root.
     Read(EdnsView<'q>),
@@ -62,7 +62,9 @@ impl<'q> Client<'q> {
             None if query.violations().iter().any(|violation| {
                 matches!(
                     violation,
-                    Violation::OptOutsideAdditional | Violation::OptOwnerNotRoot
+                    Violation::OptOutsideAdditional
+                        | Violation::OptOwnerNotRoot
+                        | Violation::OptOptionOverrun
                 )
             }) =>
             {

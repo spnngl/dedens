@@ -16,9 +16,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D9 Decoder: a compression pointer points strictly before the current label (no loops), past the header, to
   labels ending before the bytes that point to them (a prior name, RFC 1035 §4.1.4), at most 127 per name
   (no long chains); unknown types are opaque (RFC 3597); every input decodes or errors (fuzzed). Broken structure
-  is an error. A readable message breaking a rule (several OPT, OPT outside additional or not at the root,
-  QDCOUNT > 1 per RFC 9619, trailing bytes) decodes with violations: the CLI shows them, the server answers
-  FORMERR. Well-delimited but invalid RDATA or EDNS option is kept opaque with a violation, so typed values
+  is an error. A readable message breaking a rule (several OPT; OPT outside additional, not at the root or with an
+  option running past its RDATA, RFC 6891 §6.1.2; QDCOUNT > 1 per RFC 9619; trailing bytes) decodes with
+  violations: the CLI shows them, the server answers FORMERR. Well-delimited but invalid RDATA or EDNS option is
+  kept opaque with a violation, as is an OPT record whose options overrun it, its options unread, so typed values
   always hold their invariants; except in types whose names may be compressed (RFC 3597 §4), where it is an
   error, since their pointers mean nothing outside the message.
 - D10 (amended by D112) Encoder: into a caller buffer with a size limit, no allocation (fits io_uring registered

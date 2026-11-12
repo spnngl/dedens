@@ -4,7 +4,8 @@
 //! option (D12) with a type of its own has a file named after it; NSID, keepalive and padding are arms of
 //! [`EdnsOption`]'s decode and encode (D159). Every other option, and an option whose content is invalid, stays
 //! [`EdnsOption::Unknown`]; a message decoded with an invalid one records a
-//! [`Violation::InvalidOption`](crate::Violation::InvalidOption) (D9).
+//! [`Violation::InvalidOption`](crate::Violation::InvalidOption) (D9). An OPT record whose options overrun it is
+//! not read: it stays an opaque record, with a [`Violation::OptOptionOverrun`](crate::Violation::OptOptionOverrun).
 
 mod cookie;
 mod ede;
@@ -296,24 +297,20 @@ impl<'a> Edns<'a> {
         }
     }
 
-    /// Builds the value from an OPT record's CLASS, TTL and RDATA, its options in `options`, an empty vector
-    /// whose allocation is reused; an option with invalid content is kept unknown and handed to `invalid`.
-    ///
-    /// # Errors
-    ///
-    /// [`DecodeError`] when the option framing is broken: an option cut short or running past the RDATA.
+    /// Builds the value from an OPT record's CLASS, TTL and RDATA, [`framed`], its options in `options`, an empty
+    /// vector whose allocation is reused; an option with invalid content is kept unknown and handed to `invalid`.
     pub(crate) fn from_opt(
         class: u16,
         ttl: u32,
         rdata: Reader<'a>,
         mut options: Vec<EdnsOption<'a>>,
         mut invalid: impl FnMut(InvalidOption),
-    ) -> Result<Self, DecodeError> {
+    ) -> Self {
         read_options(rdata, |option, error| {
             options.push(option);
             error.into_iter().for_each(&mut invalid);
-        })?;
-        Ok(EdnsView::new(class, ttl, rdata).with_options(options))
+        });
+        EdnsView::new(class, ttl, rdata).with_options(options)
     }
 
     /// The length of the OPT record on the wire, which truncation keeps room for (RFC 6891 §7).
@@ -385,29 +382,38 @@ impl<'a> Edns<'a> {
     }
 }
 
-/// Reads the options of an OPT record's RDATA, handing each to `each` with, when its content is invalid for its
-/// code, why it is kept as [`EdnsOption::Unknown`].
-///
-/// # Errors
-///
-/// [`DecodeError`] when the option framing is broken: an option cut short or running past the RDATA.
+/// Whether the options fill an OPT record's RDATA exactly, each a code, a length and that many bytes (RFC 6891
+/// §6.1.2): the check of an OPT record before it is read as EDNS (D9).
+pub(crate) fn framed(mut rdata: Reader<'_>) -> bool {
+    while !rdata.is_empty() {
+        let option = rdata
+            .array::<OPTION_HEADER_LEN>()
+            .and_then(|[_, _, hi, lo]| rdata.bytes(usize::from(u16::from_be_bytes([hi, lo]))));
+        if option.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reads the options of an OPT record's RDATA, [`framed`], handing each to `each` with, when its content is invalid
+/// for its code, why it is kept as [`EdnsOption::Unknown`].
 pub(crate) fn read_options<'a>(
     rdata: Reader<'a>,
     mut each: impl FnMut(EdnsOption<'a>, Option<InvalidOption>),
-) -> Result<(), DecodeError> {
+) {
     let mut options = Options {
         rdata,
         cookie: false,
     };
-    while let Some((option, invalid)) = options.read()? {
+    while let Some((option, invalid)) = options.read() {
         each(option, invalid);
     }
-    Ok(())
 }
 
-/// The options of an OPT record that was checked when its message was read, in wire order; an option whose
-/// content is invalid for its code comes as [`EdnsOption::Unknown`] (D9). Only the first COOKIE option is read: the
-/// others are ignored, valid or not (RFC 7873 §5.2).
+/// The options of an OPT record that was checked to hold whole options when its message was read, in wire order;
+/// an option whose content is invalid for its code comes as [`EdnsOption::Unknown`] (D9). Only the first COOKIE
+/// option is read: the others are ignored, valid or not (RFC 7873 §5.2).
 #[derive(Debug, Clone)]
 pub struct Options<'a> {
     rdata: Reader<'a>,
@@ -416,27 +422,25 @@ pub struct Options<'a> {
 }
 
 impl<'a> Options<'a> {
-    /// The next option and, when its content is invalid for its code, why it is kept unknown.
-    fn read(&mut self) -> Result<Option<(EdnsOption<'a>, Option<InvalidOption>)>, DecodeError> {
+    /// The next option and, when its content is invalid for its code, why it is kept unknown; none at the end of
+    /// the RDATA, which [`framed`] checked the options fill.
+    fn read(&mut self) -> Option<(EdnsOption<'a>, Option<InvalidOption>)> {
         loop {
             let rdata = &mut self.rdata;
-            if rdata.is_empty() {
-                return Ok(None);
-            }
-            let code = OptionCode(rdata.u16().map_err(rdlength)?);
-            let len = usize::from(rdata.u16().map_err(rdlength)?);
-            let mut data = rdata.sub(len).map_err(rdlength)?;
+            let code = OptionCode(rdata.u16().ok()?);
+            let len = usize::from(rdata.u16().ok()?);
+            let mut data = rdata.sub(len).ok()?;
             if code == OptionCode::COOKIE && mem::replace(&mut self.cookie, true) {
                 continue;
             }
             let mut raw = data;
-            return Ok(Some(match EdnsOption::decode_typed(code, &mut data) {
+            return Some(match EdnsOption::decode_typed(code, &mut data) {
                 Ok(option) => (option, None),
                 Err(error) => (
                     EdnsOption::Unknown(UnknownOption::borrowed(code, raw.rest())),
                     Some(InvalidOption { code, error }),
                 ),
-            }));
+            });
         }
     }
 }
@@ -445,10 +449,7 @@ impl<'a> Iterator for Options<'a> {
     type Item = EdnsOption<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let read = self
-            .read()
-            .expect("the options were checked when the message was read");
-        read.map(|(option, _)| option)
+        self.read().map(|(option, _)| option)
     }
 }
 
@@ -468,7 +469,7 @@ pub struct EdnsView<'a> {
 }
 
 impl<'a> EdnsView<'a> {
-    /// The fields of an OPT record whose RDATA was checked with [`read_options`].
+    /// The fields of an OPT record whose RDATA was checked with [`framed`].
     pub(crate) const fn new(class: u16, ttl: u32, rdata: Reader<'a>) -> Self {
         let [ext_rcode, version, flags_hi, flags_lo] = ttl.to_be_bytes();
         Self {
@@ -505,10 +506,4 @@ impl<'a> EdnsView<'a> {
             options,
         }
     }
-}
-
-/// An OPT record whose options run past its RDATA is a RDATA length error.
-fn rdlength(mut e: DecodeError) -> DecodeError {
-    e.kind = DecodeErrorKind::RdataLength;
-    e
 }

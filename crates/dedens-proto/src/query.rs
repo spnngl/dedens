@@ -56,7 +56,7 @@ impl<'a> Query<'a> {
                             code: o.code,
                             error: o.error,
                         }));
-                    })?;
+                    });
                     edns = Some(EdnsView::new(raw.class.0, raw.ttl, raw.rdata));
                 }
                 Entry::Record(section, raw) => {
