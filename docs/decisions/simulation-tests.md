@@ -33,7 +33,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     run: there is no guard.
   - What goes wrong is injected by the scenario: `Fault`s of the network and of hosts at a time it picks from the
     seed; for an upstream server, `Answers::faulty` (each response sent, dropped or delayed, from the host's seeded
-    stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`; an attacker on a server's socket that sends
+    stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`, the same over TCP and over TLS (`World::dot_server`,
+    its own seeded stream, the queries of a connection pipelined); an attacker on a server's socket that sends
     what the scenario gives it and may silence the server (`Reaction`). Turmoil's loss is a link going down and
     coming back, not a per-packet rate; its latency range is what reorders. A validating stage runs on the run's
     clock (`resolver::wall_clock`) from a start date `Topology::epoch` sets, so the captures of `dedens-dnssec`

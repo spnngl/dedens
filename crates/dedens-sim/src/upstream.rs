@@ -1,4 +1,5 @@
-//! An upstream server: answers from responses captured from real servers, with the query's ID, over UDP and TCP.
+//! An upstream server: answers from responses captured from real servers, with the query's ID, over UDP and TCP
+//! (and TLS, through [`crate::dot`]).
 //!
 //! What it answers: the capture for a question it holds, cut to the UDP payload size the query announces (512
 //! bytes without EDNS, RFC 6891 §6.2.3) with TC set when it is longer; REFUSED for another question; nothing to a
@@ -6,8 +7,8 @@
 //! server sends it (RFC 4035 §3.2.1). It sends an EDNS cookie when told to ([`Answers::cookies`]).
 //!
 //! What goes wrong is the scenario's: [`Answers::faulty`] decides, for each response and from the host's seeded
-//! stream, whether it is sent, dropped or delayed ([`Verdict`]); [`Answers::silent`] sends none over UDP;
-//! [`Answers::tcp`] makes the server answer, ignore or close ([`Behaviour`]); [`Answers::attacked_by`] puts an
+//! stream, whether it is sent, dropped or delayed ([`Verdict`]); [`Answers::silent`] sends none;
+//! [`Answers::tcp`] makes the server answer, ignore or close a connection ([`Behaviour`]), TCP or TLS; [`Answers::attacked_by`] puts an
 //! attacker on its socket.
 //!
 //! Left out: the zone data of a real server; a scenario that needs it adds a pipeline with a local-data stage here.
@@ -19,6 +20,9 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
+use compio::io::BufReader;
+use compio::io::util::Splittable as _;
+use dedens_net::tcp::{Inbound, Outbound};
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Question, Rcode, Transport};
 pub(crate) use dedens_testkit::captured;
@@ -26,7 +30,7 @@ use tokio::task::JoinSet;
 use turmoil::net::{TcpStream, UdpSocket};
 
 use crate::attacker::{Attacker, Injection, Seen};
-use crate::framing;
+use crate::io::SimStream;
 use crate::oracle::{Expected, withheld};
 use crate::port::{Arrival, Port};
 use crate::seed::Rng;
@@ -49,7 +53,7 @@ pub enum Verdict {
     Delay(Duration),
 }
 
-/// What a server does over TCP.
+/// What a server does over TCP and TLS.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Behaviour {
     /// Answers each query.
@@ -249,7 +253,7 @@ impl Answers {
         self
     }
 
-    /// A server that never answers: [`Verdict::Drop`] for each response, over UDP and TCP.
+    /// A server that never answers: [`Verdict::Drop`] for each response, over UDP, TCP and TLS.
     #[must_use]
     pub fn silent(self) -> Self {
         self.faulty(|_, _| Verdict::Drop)
@@ -279,7 +283,7 @@ impl Answers {
         Rc::clone(&self.ended)
     }
 
-    /// Has the server behave as `behaviour` over TCP: it accepts connections whatever it does with them.
+    /// Has the server behave as `behaviour` over TCP and TLS: it accepts connections whatever it does with them.
     #[must_use]
     pub const fn tcp(mut self, behaviour: Behaviour) -> Self {
         self.tcp = behaviour;
@@ -503,9 +507,7 @@ async fn inject(
     socket.send_to(&injection.wire, to).await.ok();
 }
 
-/// Serves the queries of a connection as [`Answers::tcp`] says, until it closes: each query is read as it comes, and
-/// a delayed response does not hold the ones behind it (RFC 7766 §6.2.1.1, as a pipelining server does), so a
-/// pooled connection does not stall on one slow answer. The delayed responses go out before the connection closes.
+/// Serves the queries of a TCP connection (see [`queries`]), then counts it ended.
 async fn connection(
     answers: Rc<Answers>,
     stream: TcpStream,
@@ -513,7 +515,28 @@ async fn connection(
     rng: Rc<RefCell<Rng>>,
     trace: Trace,
 ) {
-    let (mut reader, writer) = stream.into_split();
+    // A stream closed as it was accepted has nothing to serve.
+    if let Ok(stream) = SimStream::new(stream) {
+        let (reader, writer) = stream.split();
+        let reader = BufReader::new(reader);
+        queries(&answers, Transport::Tcp, reader, writer, host, &rng, &trace).await;
+    }
+    answers.closed();
+}
+
+/// Serves the queries of a connection over `transport`, TCP or TLS, as [`Answers::tcp`] and [`Answers::faulty`] say,
+/// until it closes: each query is read as it comes, and a delayed response does not hold the ones behind it (RFC
+/// 7766 §6.2.1.1, RFC 7858 §3.3, as a pipelining server does), so a pooled connection does not stall on one slow
+/// answer. The delayed responses go out before this side closes, over TLS after a `close_notify`.
+pub(crate) async fn queries<W: Outbound + 'static>(
+    answers: &Answers,
+    transport: Transport,
+    mut reader: impl Inbound,
+    writer: W,
+    host: IpAddr,
+    rng: &RefCell<Rng>,
+    trace: &Trace,
+) {
     let writer = Rc::new(tokio::sync::Mutex::new(writer));
     let mut delayed = JoinSet::new();
     let mut served = 0;
@@ -521,27 +544,25 @@ async fn connection(
         if matches!(answers.tcp, Behaviour::Close(limit) if served >= limit) {
             break;
         }
-        let Ok(query) = framing::read(&mut reader).await else {
+        let Ok(query) = reader.message().await else {
             break;
         };
-        trace.record(
-            host,
-            What::Received {
-                transport: Transport::Tcp,
-            },
-        );
+        trace.record(host, What::Received { transport });
         if answers.tcp == Behaviour::Silent {
             continue;
         }
-        let Some((reply, question)) = answers.reply(&query, Transport::Tcp) else {
+        let Some((reply, question)) = answers.reply(&query, transport) else {
             continue;
         };
         served += 1;
-        let delay = match answers.verdict(&question, &rng) {
+        let delay = match answers.verdict(&question, rng) {
             Verdict::Drop => continue,
             Verdict::Answer => Duration::ZERO,
             Verdict::Delay(delay) => delay,
         };
+        let len = u16::try_from(reply.len()).expect("a reply fits the buffer of OUT bytes");
+        let mut framed = len.to_be_bytes().to_vec();
+        framed.extend_from_slice(&reply);
         let (writer, trace) = (Rc::clone(&writer), trace.clone());
         delayed.spawn_local(async move {
             tokio::time::sleep(delay).await;
@@ -549,11 +570,11 @@ async fn connection(
                 host,
                 What::Served {
                     question,
-                    transport: Transport::Tcp,
+                    transport,
                 },
             );
             // A closed connection loses the response, as a server's does.
-            framing::write(&mut *writer.lock().await, &reply).await.ok();
+            let _ = writer.lock().await.write_all(framed).await;
         });
     }
     // A response task that panicked panics the connection's, which fails the run (`Port::next`).
@@ -564,7 +585,7 @@ async fn connection(
             std::panic::resume_unwind(error.into_panic());
         }
     }
-    answers.closed();
+    writer.lock().await.close().await;
 }
 
 #[cfg(test)]
