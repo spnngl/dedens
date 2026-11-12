@@ -14,6 +14,10 @@ dedens-proto.workspace = true
 ring.workspace = true
 thiserror.workspace = true
 
+# D180: only when `just verus` verifies the crate.
+[target.'cfg(verus_keep_ghost)'.dependencies]
+vstd.workspace = true
+
 [dev-dependencies]
 data-encoding.workspace = true
 dedens-testkit.workspace = true
@@ -25,3 +29,7 @@ path = "tests/tests.rs"
 
 [lints]
 workspace = true
+
+# D180: `cargo verus` verifies this crate.
+[package.metadata.verus]
+verify = true
