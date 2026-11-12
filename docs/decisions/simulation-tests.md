@@ -2,7 +2,7 @@
 
 Decisions; the rules and the index are in [`README.md`](README.md).
 
-- D133 (amends D26; amended by D134, D162, D164) Simulation tests: the sans-IO cores run as hosts of a simulated network,
+- D133 (amends D26; amended by D134, D162, D164, D182) Simulation tests: the sans-IO cores run as hosts of a simulated network,
   `turmoil` 0.7.2, so lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`,
   `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
   (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve/`,
@@ -77,7 +77,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     dnssec`, 30 minutes each), informational, outside the gate as `mutants` (D103); the workflow's `loom` job is
     D135's. One job for them all took 19 minutes, and past 30 when GitHub's runners ran 2.5 times slower
     (2026-11-03).
-- D134 (amends D26, D133) The client side of the compio layer behind a seam, `dedens_net::io::Io`, so that a
+- D134 (amends D26, D133; amended by D182) The client side of the compio layer behind a seam, `dedens_net::io::Io`, so that a
   simulation can run the real `UdpPool` (D50, D108), `TcpPool` (D27, D53) and `Client` on its own network and clock.
   - `crates/dedens-net/src/io.rs`: `Io` (`now`; `timeout_at`, the one timer, a pause being a timeout on a future
     that never ends; `spawn`; `random`; `udp_bind`; `tcp_connect`; and `sending`, a hook with no body for a trace)
@@ -151,3 +151,30 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   against 7.2 s; dnssec 10.9 s against 2.0 s), so at 2.5 five families of nine and the binary failed. At 7 a family
   may take 14 s and the binary 70 s, about 30% over that run's slowest. Rejected: a larger scale, which hides more of
   a slowdown.
+- D182 (amends D133, D134, D181) `dedensd`'s serving loop of UDP and TCP goes behind D134's seam, so that a simulation
+  runs it on its network and clock: its tasks, queues, timers and caps, which the driver of D133 leaves out.
+  - `crates/dedens-net/src/io.rs`: `Io` gains `Listener` (a bound TCP listener's `accept`) and `detach` (a task
+    nobody waits for: a query's, a connection's); `Udp` gains `recv_multi` (a stream of `Datagram`s, data and peer:
+    compio's multishot receive) and `send_to`; a `Stream`'s write half is `Outbound`. Only what the loop calls;
+    `Compio` forwards each to compio, `#[inline]`.
+  - `dedensd`: `Thread<N: Io = Compio>` holds the `io`, a `Client<N>` and the start of the cache clock; `udp`,
+    `tcp`, `connection`, `answer`, `supervise` and `Origin` take `N`. `serve` and the QUIC, HTTP/3 and CoAP
+    listeners name `Thread` and get `Compio`: one instance, no `dyn`. A connection's writer is an `Io::Task`; the
+    reader waits for its end by its `room` channel closing, `Io` offering no join.
+  - Sockets: bound before the threads start (D42), socket2's, which `serve` hands compio (`from_std`); the loop takes
+    an `N::Udp` and an `N::Listener` already made, so the simulation binds turmoil's itself. Rejected: an `Io` method
+    adopting a bound socket, which turmoil has no counterpart for.
+  - Entry: `dedensd::simulated`, `#[doc(hidden)]`, the one entry beside D181's: a plain listener's UDP and TCP loops,
+    each supervised (D121), on one thread; no reload (`follow`), no `first_end`. Rejected: a copy of the loop in
+    `dedens-sim`, which the driver of D133 is, kept for the families that count its events.
+  - Gate: `apps/dedensd/clippy.toml` (the clock, compio's spawns, timers, binds and socket calls) is denied in
+    `serve/udp.rs`, `tcp.rs`, `upstream.rs` and `isolate.rs`. `serve/mod.rs` converts the sockets and starts the
+    runtime, ungated. `Listener::panicked` reads the system clock, for the log's rate only, under an `expect`.
+  - `dedens-sim`: `Sim` implements the new methods (`SimListener`; `SimDatagram`, a datagram copied out of turmoil's,
+    up to 65535 bytes where compio's pool cuts at 4096). `Topology::dedensd` runs `Resolver::serve_dedensd` on the
+    resolver host. `tests/serving.rs` runs the baseline, partition, loss and crash scenarios that concern the server
+    against the loop, and TCP queries pipelined on one connection, answered out of order (RFC 7766 §6.2.1.1) where
+    the driver answers in turn. The loop records none of the driver's `Replied`, `Forwarded` and `Stored`.
+  - Left out: QUIC (DoQ, DoH/3, ODoH: `compio-quic`'s endpoint and clock), DoC, the TLS listener (generic, with no
+    scenario), reload, several threads, D86's flights (validator questions only; no scenario validates here).
+  - Cost in `docs/benchmarks.md`; the Linux check is `just bench-dnsperf <base> forward` and `forward-tcp`.

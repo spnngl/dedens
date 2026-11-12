@@ -44,6 +44,8 @@ dedens-proto = { path = "crates/dedens-proto" }
 dedens-scenario = { path = "crates/dedens-scenario" }
 dedens-server = { path = "crates/dedens-server" }
 dedens-testkit = { path = "crates/dedens-testkit" }
+# D182: `dedens-sim` runs the serving loop of the library.
+dedensd = { path = "apps/dedensd" }
 divan = "0.1.21"
 domain = { version = "0.12.3", default-features = false, features = ["std"] }
 # D104: dedensd's tests compress a list to serve it with `Content-Encoding: gzip`, which its downloads do not decode.
