@@ -1,5 +1,8 @@
 //! What happened in a run, in order: the events the hosts record, which a scenario asserts on and which two runs
 //! of one seed must repeat.
+//!
+//! An event holds decoded content, never the length of an encoded message: the encoder's name table is seeded per
+//! process (D112), so one message may encode a few bytes longer in another process (D133).
 
 use std::cell::RefCell;
 use std::net::{IpAddr, SocketAddr};
@@ -43,8 +46,6 @@ pub enum What {
         answers: usize,
         /// The transport the response came over: TCP after a truncated one over UDP.
         transport: Transport,
-        /// Bytes of the response.
-        len: usize,
     },
     /// A client's query ended without a response: every try went unanswered.
     Failed {
@@ -82,8 +83,6 @@ pub enum What {
     Replied {
         /// The transport it goes over.
         transport: Transport,
-        /// Bytes of the reply.
-        len: usize,
         /// Whether it is the expired data of the client response timer (D45).
         stale: bool,
     },
@@ -100,8 +99,6 @@ pub enum What {
         question: Question<'static>,
         /// The transport it came over.
         transport: Transport,
-        /// Bytes of the answer.
-        len: usize,
     },
     /// An upstream server read a query off a TCP or TLS connection, whether it answers it or not.
     Received {
@@ -174,7 +171,6 @@ mod tests {
                 rcode,
                 answers: 2,
                 transport: Transport::Udp,
-                len: 90,
             },
         }]
     }

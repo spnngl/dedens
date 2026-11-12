@@ -271,7 +271,6 @@ impl Stub {
                         rcode: message.rcode(),
                         answers: message.answer.len(),
                         transport: response.transport,
-                        len: response.wire.len(),
                     },
                 );
                 Ok(Outcome::Answered(Answer {

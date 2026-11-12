@@ -432,7 +432,6 @@ pub async fn serve(
                 let sent = Sent {
                     question,
                     transport: Transport::Udp,
-                    len: reply.len(),
                 };
                 match answers.verdict(&sent.question, &rng) {
                     Verdict::Drop => {}
@@ -459,7 +458,6 @@ pub async fn serve(
 struct Sent {
     question: Question<'static>,
     transport: Transport,
-    len: usize,
 }
 
 /// Sends `reply` to `to` from `socket`, and records it.
@@ -476,7 +474,6 @@ async fn send(
         What::Served {
             question: sent.question,
             transport: sent.transport,
-            len: sent.len,
         },
     );
     socket.send_to(reply, to).await.ok();
@@ -548,7 +545,6 @@ async fn connection(
                 What::Served {
                     question,
                     transport: Transport::Tcp,
-                    len: reply.len(),
                 },
             );
             // A closed connection loses the response, as a server's does.
