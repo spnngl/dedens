@@ -344,9 +344,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   connection is a TCP one (D47's limits, its handshake within the idle time), its halves polled as the client's
   (D60). Over QUIC each query is alone on a stream the client opens, read to its end: a stream that is not one
   query behind its length, a Message ID other than 0, or an edns-tcp-keepalive option closes the connection with
-  `DOQ_PROTOCOL_ERROR` (§4.3.3); a connection holds 64 streams at once and counts as a TCP one against the
-  thread's connections; each thread's QUIC socket takes `SO_REUSEPORT`, so a client changing address may land
-  on another thread and lose its connection. Replies to padded queries are padded (D60).
+  `DOQ_PROTOCOL_ERROR` (§4.3.3); a stream left with no reply (a query the pipeline drops, one not read whole, one
+  the client reset) is reset with `DOQ_INTERNAL_ERROR`, never finished empty (§4.3.1, §4.3.2); a connection
+  holds 64 streams at once and counts as a TCP one against the thread's connections; each thread's QUIC socket
+  takes `SO_REUSEPORT`, so a client changing address may land on another thread and lose its connection. Replies to padded queries are padded (D60).
 - D84 (amends D42, D44, D65; completes D82, D83; amended by D94) `dedensd` serves DNS over HTTPS on HTTP/3 (RFC 8484, RFC 9114) and
   forwards to DoH upstreams. A `listen` address `https://ADDR[:PORT][/PATH]` (port 443, path `/dns-query`; a path
   with a query, a fragment or a template expression is refused) takes UDP, as `quic://` does: the certificate of
