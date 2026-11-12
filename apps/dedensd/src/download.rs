@@ -468,11 +468,11 @@ mod tests {
         let addr = serve(move |_| ok("", body.as_bytes()));
         let dir = tempfile::tempdir().unwrap();
         let mut client = Fetcher::new();
-        client.max_len = u64::try_from(text.len()).unwrap();
+        client.max_len = u64::try_from(text.len() - 1).unwrap();
         let urls = [url(addr, "list")];
         let fetched = client.fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.failed && !fetched.changed, "{fetched:?}");
-        // The limit is exclusive: ureq refuses a body of `max_len` bytes.
+        // The limit is inclusive since ureq 3.5.2: a body of `max_len` bytes is saved.
         client.max_len += 1;
         let fetched = client.fetch(&urls, dir.path(), &mut Store::default());
         assert!(fetched.changed && !fetched.failed, "{fetched:?}");
