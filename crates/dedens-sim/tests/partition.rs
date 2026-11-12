@@ -42,7 +42,7 @@ fn world(seed: Seed, config: &Config) -> World {
         .upstream(answers_and_txt())
         .upstream(answers_and_txt())
         .resolver(move |upstreams| {
-            let forward = Forward::new(upstreams.iter().copied())
+            let forward = Forward::new(upstreams.iter().cloned())
                 .expect("an upstream server to forward to")
                 .with_timeout(FORWARD_TIMEOUT)
                 .with_tries(NonZeroU8::new(FORWARD_TRIES).expect("tries are not zero"));

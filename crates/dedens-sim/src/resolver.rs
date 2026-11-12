@@ -6,8 +6,8 @@
 //! must keep `shards: 1` ([`pipeline_with`] forces it): the shard of a key follows from a hash that is random for each
 //! process, so with more the entry a full cache evicts could change from one process to another (D133).
 //!
-//! Mirrored: the forward stage's timeout and tries for each upstream query, the client response timer and the
-//! stale reply it sends (D45), a failure of the query itself that abandons the question (D46), and the
+//! Mirrored: the transport of each upstream query (plain DNS over the client's, DNS over TLS; D65), the forward
+//! stage's timeout and tries for each, the client response timer and the stale reply it sends (D45), a failure of the query itself that abandons the question (D46), and the
 //! connections `action: drop` refuses (D91).
 //!
 //! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
@@ -22,10 +22,13 @@ use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use compio::rustls::pki_types::ServerName;
 use dedens_cache::{Cache, Config};
+use dedens_net::client::Server as Target;
 use dedens_net::exchange::Options;
+use dedens_net::tls::Trust;
 use dedens_proto::Transport;
-use dedens_server::{Clock, Forward, Pipeline, Stage, Step, Upstream, Validating, Via};
+use dedens_server::{Clock, Forward, Pipeline, Server, Stage, Step, Upstream, Validating, Via};
 use tokio::time::{Instant, timeout_at};
 use turmoil::net::TcpStream;
 
@@ -39,7 +42,7 @@ use crate::trace::{Trace, What};
 const OUT: usize = 65535;
 
 /// Makes the pipeline of a start of the resolver from its upstream servers.
-pub type Build = Rc<dyn Fn(&[SocketAddr]) -> Pipeline>;
+pub type Build = Rc<dyn Fn(&[Server]) -> Pipeline>;
 
 /// The default pipeline: a cache of the default configuration and a forwarder to `upstreams`.
 ///
@@ -47,7 +50,7 @@ pub type Build = Rc<dyn Fn(&[SocketAddr]) -> Pipeline>;
 ///
 /// With no upstream server.
 #[must_use]
-pub fn pipeline(upstreams: &[SocketAddr]) -> Pipeline {
+pub fn pipeline(upstreams: &[Server]) -> Pipeline {
     pipeline_with(Config::default(), upstreams)
 }
 
@@ -57,9 +60,9 @@ pub fn pipeline(upstreams: &[SocketAddr]) -> Pipeline {
 ///
 /// With no upstream server, or a configuration the cache refuses.
 #[must_use]
-pub fn pipeline_with(config: Config, upstreams: &[SocketAddr]) -> Pipeline {
+pub fn pipeline_with(config: Config, upstreams: &[Server]) -> Pipeline {
     let forward =
-        Forward::new(upstreams.iter().copied()).expect("an upstream server to forward to");
+        Forward::new(upstreams.iter().cloned()).expect("an upstream server to forward to");
     pipeline_forwarding(config, forward)
 }
 
@@ -83,8 +86,8 @@ pub fn pipeline_forwarding(mut config: Config, forward: Forward) -> Pipeline {
 ///
 /// With no upstream server.
 #[must_use]
-pub fn pipeline_validating(upstreams: &[SocketAddr], validating: Validating) -> Pipeline {
-    let forward = Forward::new(upstreams.iter().copied())
+pub fn pipeline_validating(upstreams: &[Server], validating: Validating) -> Pipeline {
+    let forward = Forward::new(upstreams.iter().cloned())
         .expect("an upstream server to forward to")
         .validating(validating);
     pipeline_forwarding(Config::default(), forward)
@@ -101,7 +104,9 @@ pub fn wall_clock() -> Clock {
 #[derive(Clone)]
 pub struct Resolver {
     /// The upstream servers, asked in turn.
-    pub upstreams: Vec<SocketAddr>,
+    pub upstreams: Vec<Server>,
+    /// The certificate authorities its TLS connections trust, with a DNS-over-TLS upstream server.
+    pub trust: Option<Trust>,
     /// Its IDs, shared between its starts.
     pub rng: Rc<RefCell<Rng>>,
     /// The events of the run.
@@ -136,9 +141,13 @@ impl Resolver {
     ///
     /// A socket that fails, or a task that panics.
     pub async fn serve(&self, host: IpAddr) -> turmoil::Result {
+        let client = Client::new(Rc::clone(&self.rng), host, self.trace.clone());
         let shared = Rc::new(Shared {
             pipeline: (self.build)(&self.upstreams),
-            client: Client::new(Rc::clone(&self.rng), host, self.trace.clone()),
+            client: match &self.trust {
+                Some(trust) => client.trusting(trust.clone()),
+                None => client,
+            },
             started: Instant::now(),
             host,
             trace: self.trace.clone(),
@@ -263,27 +272,13 @@ impl Shared {
         let mut options = Options::default();
         (options.timeout, options.tries) = upstream.patience();
         options.edns_fallback = false;
-        // The servers are plain: asked over the transport of the client (D65). `dedensd`'s `target` also maps the
-        // others (TLS, QUIC, HTTPS) to their transports; the driver has none of them (D133), and a pipeline that
-        // forwards to one stops the run rather than ask it in clear.
-        let carrier = if transport == Transport::Udp {
-            Carrier::Udp
-        } else {
-            Carrier::Tcp
-        };
         let mut stale_at = upstream.stale_after().map(|after| Instant::now() + after);
         loop {
-            let target = upstream.server();
-            assert!(
-                matches!(target.via, Via::Plain),
-                "the driver forwards over plain DNS only, not {:?} (D133)",
-                target.via
-            );
-            let server = target.addr;
+            let (server, carrier) = target(upstream.server(), transport);
             self.trace.record(
                 self.host,
                 What::Forwarded {
-                    server,
+                    server: server.addr,
                     transport: carrier.into(),
                 },
             );
@@ -331,5 +326,38 @@ impl Shared {
                 Step::Upstream(next) => upstream = next,
             }
         }
+    }
+}
+
+/// How the client reaches `server` for a query that came over `client`, as `dedensd`'s `target` (D65): a plain
+/// server over UDP for a query over UDP and over TCP otherwise, a DNS-over-TLS one over TLS, its certificate to
+/// hold the name of `server`.
+///
+/// # Panics
+///
+/// With a server over QUIC or HTTPS: they stay on compio (D133), and the run stops rather than ask them in clear.
+#[expect(
+    clippy::panic,
+    reason = "a pipeline the driver cannot forward for is a broken scenario"
+)]
+fn target(server: &Server, client: Transport) -> (Target, Carrier) {
+    match &server.via {
+        Via::Plain if client == Transport::Udp => (Target::from(server.addr), Carrier::Udp),
+        Via::Plain => (Target::from(server.addr), Carrier::Tcp),
+        Via::Tls(name) => {
+            let name = name
+                .as_deref()
+                .and_then(|name| ServerName::try_from(name).ok())
+                .map(|name| name.to_owned());
+            let target = Target {
+                name,
+                ..Target::from(server.addr)
+            };
+            (target, Carrier::Tls)
+        }
+        Via::Quic(_) | Via::Https { .. } => panic!(
+            "the driver forwards over plain DNS and TLS only, not {:?} (D133)",
+            server.via
+        ),
     }
 }

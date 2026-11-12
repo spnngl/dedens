@@ -803,8 +803,8 @@ fn a_server_that_refuses_the_connection_is_skipped_for_the_next() {
         let mut world = Topology::new()
             .upstream(answers())
             .resolver(|upstreams| {
-                let nobody = SocketAddr::new(upstreams[0].ip(), 54);
-                pipeline_with(Config::default(), &[nobody, upstreams[0]])
+                let nobody = SocketAddr::new(upstreams[0].addr.ip(), 54);
+                pipeline_with(Config::default(), &[nobody.into(), upstreams[0].clone()])
             })
             .build(seed);
         world.client(async move |stub| {
