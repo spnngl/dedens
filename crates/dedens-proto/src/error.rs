@@ -1,11 +1,15 @@
 //! Errors of decoding and encoding.
 
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
 /// A message that cannot be decoded: its structure is broken, so nothing can be recovered from this point.
 ///
 /// Rule violations in an otherwise readable message are not errors; they are reported as
 /// `Violation`s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("{kind} at offset {offset}")]
+#[cfg_attr(verus_only, verus_verify(external_derive))]
 pub struct DecodeError {
     /// Offset in the message where decoding failed.
     pub offset: usize,
@@ -16,6 +20,7 @@ pub struct DecodeError {
 /// The reason of a [`DecodeError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
+#[cfg_attr(verus_only, verus_verify(external_derive))]
 pub enum DecodeErrorKind {
     /// The message, or the RDATA being read, ends before a field does.
     #[error("unexpected end of data")]
