@@ -34,7 +34,8 @@ pub enum DocError {
     /// The CoAP exchange ended without a response.
     #[error(transparent)]
     Exchange(#[from] Failure),
-    /// No response before the deadline of the DNS query, whatever CoAP was still waiting for (D109).
+    /// No response before the deadline of the DNS query or of the discovery, whatever CoAP was still waiting for
+    /// (D109).
     #[error("no response before the deadline")]
     TimedOut,
     /// A response code other than 2.05: a CoAP error never holds a DNS response (RFC 9953 §4.3.1).
@@ -102,22 +103,29 @@ pub(crate) async fn coap(
 /// Asks `server` for its `DoC` resources, GET `/.well-known/core?rt=core.dns`, with the `random` bytes of [`coap`]:
 /// the path segments of each link that is hosted, has the resource type `core.dns` and, when it says what it returns,
 /// `application/dns-message`, and names a path on the server itself (RFC 9953 §3.1; RFC 6690 §2.2, §4.1;
-/// [`crate::coap::link`]). A server that does not filter lists other links too: they are not kept.
+/// [`crate::coap::link`]). A server that does not filter lists other links too: they are not kept. The exchange ends
+/// at `deadline`, as [`coap`]'s does (D109).
 ///
 /// # Errors
 ///
-/// [`ClientError::Doc`]: a socket failure, no response, a CoAP error code, a content format other than 40, a body
-/// outside the link format, or links with the resource type that all name a resource elsewhere. No such link is no
-/// error: no paths.
+/// [`ClientError::Doc`]: a socket failure, no response before `deadline`, a CoAP error code, a content format other
+/// than 40, a body outside the link format, or links with the resource type that all name a resource elsewhere. No
+/// such link is no error: no paths.
 pub(crate) async fn discover(
     server: SocketAddr,
     random: [u8; 14],
+    deadline: Instant,
 ) -> Result<Vec<Vec<Box<[u8]>>>, ClientError> {
     let [token @ .., id_high, id_low, s0, s1, s2, s3] = random;
     let token = Token::new(&token).expect("8 bytes fit a token");
     let first_id = u16::from_be_bytes([id_high, id_low]);
     let seed = u32::from_be_bytes([s0, s1, s2, s3]).max(1);
-    let response = run(discovery_request(token), server, first_id, seed).await?;
+    let response = timeout_at(
+        deadline,
+        run(discovery_request(token), server, first_id, seed),
+    )
+    .await
+    .unwrap_or(Err(DocError::TimedOut))?;
     debug!(
         %server,
         code = %response.code,

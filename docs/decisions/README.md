@@ -101,7 +101,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D92 [scope](scope.md): the key cache keeps no bogus zone
 - D93 [server](server.md) (amended by D124): an insecure answer is cached a day at most
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
-- D95 [transports](transports.md): DoC discovery through `/.well-known/core`
+- D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits
