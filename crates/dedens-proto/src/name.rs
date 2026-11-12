@@ -638,10 +638,8 @@ fn unpack<'s>(msg: &'s [u8], start: usize, buf: &'s mut [u8; MAX_NAME_LEN]) -> &
     }
     match single {
         Some(wire) => wire,
-        None => match buf.get(..len) {
-            Some(wire) if !wire.is_empty() => wire,
-            _ => &[0],
-        },
+        // Verus proves `len` within `buf` and the name never empty.
+        None => buf.get(..len).unwrap_or(&[0]),
     }
 }
 
@@ -1146,7 +1144,9 @@ mod tests {
         msg.extend_from_slice(&[0xC1, 0x02]);
         let mut r = Reader::new(&msg);
         r.bytes(0x0105).unwrap();
-        assert_eq!(Name::decode(&mut r).unwrap(), name(&[b"a"]));
+        let decoded = Name::decode(&mut r).unwrap();
+        assert_eq!(decoded, name(&[b"a"]));
+        assert_eq!(decoded.to_wire(&mut [0; MAX_NAME_LEN]), [1, b'a', 0]);
     }
 
     #[test]
@@ -1232,5 +1232,21 @@ mod tests {
             Name::decode(&mut sub).unwrap_err().kind,
             DecodeErrorKind::UnexpectedEnd
         );
+    }
+
+    /// A reader ends where its input does, whatever the message holds past it: a reserved label type, or the second
+    /// byte of a pointer to a valid name.
+    #[test]
+    fn a_sub_reader_cannot_read_a_label_type_or_a_pointer_past_its_end() {
+        // After the header, the root at 12, a pointer to it at 13, a reserved label type at 15.
+        let msg = [&[0; 12][..], &[0, 0xC0, 12, 0x40]].concat();
+        for (start, end) in [(13, 14), (15, 15)] {
+            assert_eq!(
+                Name::decode(&mut Reader::range(&msg, start, end))
+                    .unwrap_err()
+                    .kind,
+                DecodeErrorKind::UnexpectedEnd
+            );
+        }
     }
 }
