@@ -24,6 +24,9 @@ exclude_re = [
   # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same: dedens-sim's write
   # half too, which turmoil closes when dropped, right after its close.
   'replace <impl Outbound for (TcpStream|Half<W>|SimWrite)>::close with \(\)',
+  # dedensd's entry for the simulation: only dedens-sim's `serving` family calls it, and cargo-mutants runs the tests
+  # of the mutated package alone (D182).
+  'dedensd/src/serve/mod\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
