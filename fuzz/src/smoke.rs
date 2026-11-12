@@ -1,5 +1,5 @@
 //! Stable-toolchain stand-in for a short fuzz run: replays every captured response in `testdata/proto/`,
-//! `testdata/dnssec/` and `testdata/odoh/`, and the zone files of `testdata/zones/`, plus truncated and
+//! `testdata/dnssec/` and `testdata/odoh/`, the zone files of `testdata/zones/` and the root's anchors, plus truncated and
 //! bit-flipped variants through each target. Any panic fails the test and the offending input is written under
 //! `target/fuzz-smoke-crash/` (turn it into a test).
 
@@ -35,6 +35,11 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         }
     }
     seeds.extend(coap_seeds());
+    // Trust anchors: the root's DS records as IANA publishes them (RFC 9718 §2.2).
+    seeds.push((
+        "root.ds".into(),
+        include_bytes!("../../crates/dedens-dnssec/src/root.ds").to_vec(),
+    ));
     seeds.sort();
     seeds
 }

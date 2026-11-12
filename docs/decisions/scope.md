@@ -235,7 +235,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   file. The CMS signature of §3.2 is not checked: the file and its `.p7s` come from the same site, so the
   check proves nothing the HTTPS fetch does not; the test is that every bundled DS matches a key of the
   captured root DNSKEY RRset (`tests/anchor.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
-  anchors are zone text read by `ZoneReader` (the parser the fuzz targets already feed, so no new target), as
+  anchors are zone text read by `ZoneReader`, the fuzz target `parse_trust_anchors` feeding the checks above it, as
   Unbound's `trust-anchor-file`: absolute owners, class IN only, TTL defaulted to 0, DS and DNSKEY only (a CDS
   or CDNSKEY is not an anchor), no `$INCLUDE` (the library reads no file), at least one record (an empty set
   would call every answer insecure). Each error names its line (`ZoneReader::line` was added to `dedens-proto`
