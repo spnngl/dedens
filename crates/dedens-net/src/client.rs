@@ -626,25 +626,28 @@ impl<N: Io> Client<N> {
             if let Some(&[high, low]) = exchange.wire().get(..2) {
                 channel.expect(u16::from_be_bytes([high, low]));
             }
-            channel
-                .send(exchange.wire())
-                .await
-                .map_err(ClientError::Udp)?;
+            // An error of the shared socket, maybe another query's: the try is lost, not the exchange, unless it was
+            // the last (D31).
+            let lose = |exchange: Exchange, error: io::Error| match exchange.lose(self.io.now()) {
+                Progress::Done(Err(Failure::TimedOut { .. })) => Err(ClientError::Udp(error)),
+                progress => Ok(progress),
+            };
+            match channel.send(exchange.wire()).await {
+                Ok(()) => {}
+                // Never this datagram's: the ICMP port unreachable an earlier one got, maybe another query's (D50).
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    return lose(exchange, error);
+                }
+                // The route or the socket refuses this datagram itself: sending again does no better.
+                Err(error) => return Err(ClientError::Udp(error)),
+            }
             let mut exchange = exchange;
             loop {
                 let deadline = exchange.deadline();
                 let bytes = match channel.recv(deadline).await {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => return Ok(exchange.time_out(self.io.now().max(deadline))),
-                    // Maybe another query's: the try is lost, not the exchange, unless it was the last.
-                    Err(error) => {
-                        return match exchange.lose(self.io.now()) {
-                            Progress::Done(Err(Failure::TimedOut { .. })) => {
-                                Err(ClientError::Udp(error))
-                            }
-                            progress => Ok(progress),
-                        };
-                    }
+                    Err(error) => return lose(exchange, error),
                 };
                 match exchange.receive(server, Transport::Udp, bytes, self.io.now()) {
                     Progress::Wait(next) => exchange = next,

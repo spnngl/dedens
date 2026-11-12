@@ -2,16 +2,19 @@
 
 use std::cell::{Cell, RefCell};
 use std::io;
+use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
+use compio::buf::{IoBuf, IoBufMut};
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::rustls::DEFAULT_VERSIONS;
 use compio::tls::TlsAcceptor;
 use dedens_net::client::{Client, ClientError};
 use dedens_net::exchange::{Failure, Options};
+use dedens_net::io::{Compio, Io, TimedOut, Udp};
 use dedens_net::tcp::{TcpError, frame};
 use dedens_net::tls::Trust;
 use dedens_proto::edns::{Cookie, EdnsOption};
@@ -287,6 +290,91 @@ async fn without_cookies_a_slow_handshake_takes_every_query() {
         .expect("a response");
     assert!(response.sends >= 2, "{}", response.sends);
     assert_eq!(read.get(), u32::from(response.sends));
+}
+
+/// Compio whose UDP sockets fail the first send of them all, as a connected socket does once an ICMP port
+/// unreachable came for another query on it.
+#[derive(Debug, Clone, Default)]
+struct RefusingOnce {
+    refused: Rc<Cell<bool>>,
+}
+
+#[derive(Debug)]
+struct RefusingSocket {
+    socket: compio::net::UdpSocket,
+    refused: Rc<Cell<bool>>,
+}
+
+impl Udp for RefusingSocket {
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    async fn connect(&self, addr: SocketAddr) -> io::Result<()> {
+        self.socket.connect(addr).await
+    }
+
+    async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
+        self.socket.recv(buffer).await
+    }
+
+    async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
+        if self.refused.replace(true) {
+            self.socket.send(buffer).await
+        } else {
+            BufResult(Err(io::ErrorKind::ConnectionRefused.into()), buffer)
+        }
+    }
+}
+
+impl Io for RefusingOnce {
+    type Udp = RefusingSocket;
+    type Stream = compio::net::TcpStream;
+    type Task = compio::runtime::JoinHandle<()>;
+
+    fn now(&self) -> Instant {
+        Compio.now()
+    }
+
+    fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
+        Compio.spawn(task)
+    }
+
+    async fn timeout_at<F: Future>(
+        &self,
+        deadline: Instant,
+        future: F,
+    ) -> Result<F::Output, TimedOut> {
+        Compio.timeout_at(deadline, future).await
+    }
+
+    fn random(&self, bytes: &mut [u8]) -> io::Result<()> {
+        Compio.random(bytes)
+    }
+
+    async fn udp_bind(&self, addr: SocketAddr) -> io::Result<Self::Udp> {
+        Ok(RefusingSocket {
+            socket: Compio.udp_bind(addr).await?,
+            refused: Rc::clone(&self.refused),
+        })
+    }
+
+    async fn tcp_connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+        Compio.tcp_connect(addr).await
+    }
+}
+
+/// D31, D50: a send refused on the shared socket, for the ICMP error of an earlier datagram, maybe another query's,
+/// costs the try, not the exchange.
+#[compio::test]
+async fn a_failed_send_costs_one_try() {
+    let server = udp_responder(|query| Some(answer_plainly(query))).await;
+    let response = Client::with_io(RefusingOnce::default())
+        .exchange(crate::util::query(), server, &Options::default())
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Udp);
+    assert_eq!(response.sends, 2);
 }
 
 #[test]
