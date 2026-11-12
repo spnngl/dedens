@@ -10,8 +10,9 @@
 //! ```
 //! use dedens_server::{Budget, Budgets, Slot};
 //!
-//! // Two units at once, one more a second.
-//! let budgets = Budgets::new(Budget { per_second: 1, burst: 2, table: 1 << 10 })?;
+//! // Two units at once, one more a second. A fixed key, so that the two networks below never share a bucket; a
+//! // server takes `Budgets::new`'s random one.
+//! let budgets = Budgets::with_key(Budget { per_second: 1, burst: 2, table: 1 << 10 }, &[0; 16])?;
 //! let client = Slot::new("192.0.2.7".parse()?, true);
 //! assert!(budgets.admit(client, 0) && budgets.admit(client, 0));
 //! assert!(!budgets.admit(client, 0));
