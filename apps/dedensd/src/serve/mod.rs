@@ -6,6 +6,9 @@
 //! of its replies waiting to be written and the time they take to write (D47). A task that panics ends alone, and
 //! a listener's loop that ends starts again (D121).
 //!
+//! The UDP and TCP loops, the upstream queries and the supervision run on the thread's [`Io`] (D182): compio's in
+//! production, turmoil's in the simulation tests through [`simulated`]. QUIC, HTTP/3 and `CoAP` run on compio's.
+//!
 //! One file a transport: `udp.rs`, `tcp.rs` (and TLS), `quic.rs` (`DoQ`), `http3.rs` (`DoH` and `ODoH`), `coap.rs` (`DoC`);
 //! `upstream.rs` asks upstream, `isolate.rs` contains panics, `h3_budget.rs` rotates HTTP/3 connections.
 
@@ -31,10 +34,11 @@ use compio::driver::{DriverType, ProactorBuilder};
 use compio::net::UdpSocket;
 use compio::runtime::{JoinHandle, Runtime, spawn};
 use dedens_net::client::Client;
+use dedens_net::io::{Compio, Io, TimedOut, Udp as _};
 use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
 use dedens_server::{Pipeline, Step, Upstream};
-use futures_util::future::select_all;
+use futures_util::future::{join, select_all};
 use socket2::{Domain, Socket, Type};
 
 use self::h3_budget::Connections;
@@ -126,8 +130,11 @@ fn socket(addr: SocketAddr, ty: Type) -> io::Result<Socket> {
 /// Upstream queries in flight per thread: past them, a UDP query is dropped and a TCP query answered SERVFAIL.
 const UPSTREAM_QUERIES: usize = 1024;
 
-/// What the tasks of one thread share.
-struct Thread {
+/// What the tasks of one thread share, on the runtime `N`.
+struct Thread<N: Io = Compio> {
+    io: N,
+    /// When the cache's clock reads 0 (D43).
+    started: Instant,
     current: Arc<Current>,
     /// A message each time a reload replaced the pipeline, for [`follow`].
     reloads: sync::Receiver<()>,
@@ -142,7 +149,7 @@ struct Thread {
         )
     )]
     pipeline: RefCell<(u64, Rc<sync::Arc<Pipeline>>)>,
-    client: Client,
+    client: Client<N>,
     upstream: Slots,
     connections: Slots,
     /// The HTTP/3 connections whose bytes are counted (D119).
@@ -160,16 +167,32 @@ struct Thread {
 
 impl Thread {
     /// The state of a thread serving the pipeline of `current`, with room for `upstream_queries`, upstream servers
-    /// over TLS and QUIC checked against `trust`.
+    /// over TLS and QUIC checked against `trust`. Every thread's cache clock starts at the first one's start.
     fn new(current: Arc<Current>, upstream_queries: usize, trust: Trust) -> Self {
+        static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+        Self::with_io(Compio, *START, current, upstream_queries, trust)
+    }
+}
+
+impl<N: Io> Thread<N> {
+    /// As [`Thread::new`], on `io`, its cache clock reading 0 at `started`.
+    fn with_io(
+        io: N,
+        started: Instant,
+        current: Arc<Current>,
+        upstream_queries: usize,
+        trust: Trust,
+    ) -> Self {
         let (reloads, generation, pipeline) = current.follow();
         Self {
+            #[cfg(feature = "odoh")]
+            forwarder: Forwarder::new(trust.clone()),
+            client: Client::with_io(io.clone()).trusting(trust),
+            io,
+            started,
             pipeline: RefCell::new((generation, Rc::new(pipeline))),
             reloads,
             current,
-            #[cfg(feature = "odoh")]
-            forwarder: Forwarder::new(trust.clone()),
-            client: Client::new().trusting(trust),
             upstream: Slots::new(upstream_queries),
             connections: Slots::new(TCP_CONNECTIONS),
             h3: Rc::default(),
@@ -195,6 +218,17 @@ impl Thread {
         }
         Rc::clone(&held.1)
     }
+
+    /// Seconds since `started`, the clock of the cache (D43).
+    fn now(&self) -> u32 {
+        let elapsed = self.io.now().saturating_duration_since(self.started);
+        u32::try_from(elapsed.as_secs()).unwrap_or(u32::MAX)
+    }
+}
+
+/// Waits `time` on `io`'s clock.
+async fn pause<N: Io>(io: &N, time: Duration) {
+    let _: Result<(), TimedOut> = io.timeout_at(io.now() + time, std::future::pending()).await;
 }
 
 /// Takes each new pipeline as a reload makes it, whether queries come or not: `thread` would hold the old one, with
@@ -395,25 +429,64 @@ fn local(socket: &Socket) -> Option<SocketAddr> {
 }
 
 /// Spawns [`supervise`] for `listener`, with the loop `serving` makes of the thread each time it starts (D121).
-fn supervised<F: Future<Output = ()> + 'static>(
+fn supervised<N: Io, F: Future<Output = ()> + 'static>(
     listener: Listener,
-    thread: &Rc<Thread>,
-    serving: impl FnMut(&Listener, &Rc<Thread>) -> F + 'static,
-) -> JoinHandle<()> {
+    thread: &Rc<Thread<N>>,
+    serving: impl FnMut(&Listener, &Rc<Thread<N>>) -> F + 'static,
+) -> N::Task {
     supervised_with(BACKOFF, listener, thread, serving)
 }
 
 /// As [`supervised`], with the pauses `backoff`.
-fn supervised_with<F: Future<Output = ()> + 'static>(
+fn supervised_with<N: Io, F: Future<Output = ()> + 'static>(
     backoff: Backoff,
     listener: Listener,
-    thread: &Rc<Thread>,
-    mut serving: impl FnMut(&Listener, &Rc<Thread>) -> F + 'static,
-) -> JoinHandle<()> {
+    thread: &Rc<Thread<N>>,
+    mut serving: impl FnMut(&Listener, &Rc<Thread<N>>) -> F + 'static,
+) -> N::Task {
     let thread = Rc::clone(thread);
-    spawn(async move {
-        supervise(&listener, backoff, || serving(&listener, &thread)).await;
+    thread.io.clone().spawn(async move {
+        supervise(&thread.io, &listener, backoff, || {
+            serving(&listener, &thread)
+        })
+        .await;
     })
+}
+
+/// Answers over UDP on `udp` and TCP on `tcp`, both bound before, with `pipeline` on `io`, upstream servers over TLS
+/// checked against `trust`: the loops of [`serve`]'s plain listeners, supervised, for the simulation tests (D182).
+/// Never ends; a panic of a supervisor ends it, as it would end [`serve`]. Left out: reloads, QUIC, TLS, `CoAP`.
+pub(crate) async fn simulated<N: Io>(
+    io: N,
+    udp: N::Udp,
+    tcp: N::Listener,
+    pipeline: Pipeline,
+    trust: Trust,
+) {
+    let started = io.now();
+    let current = Arc::new(Current::new(pipeline));
+    let thread = Rc::new(Thread::with_io(
+        io,
+        started,
+        current,
+        UPSTREAM_QUERIES,
+        trust,
+    ));
+    let udp_name = Listener::new("udp", udp.local_addr().ok());
+    let tcp_name = Listener::new("tcp", None);
+    let (udp, tcp, outbox) = (Rc::new(udp), Rc::new(tcp), Rc::new(Outbox::new()));
+    let serving_udp = supervise(&thread.io, &udp_name, BACKOFF, || {
+        self::udp::udp(
+            Rc::clone(&udp),
+            Rc::clone(&outbox),
+            udp_name.clone(),
+            Rc::clone(&thread),
+        )
+    });
+    let serving_tcp = supervise(&thread.io, &tcp_name, BACKOFF, || {
+        self::tcp::tcp(Rc::clone(&tcp), None, tcp_name.clone(), Rc::clone(&thread))
+    });
+    join(serving_udp, serving_tcp).await;
 }
 
 /// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic of their own: the
@@ -441,8 +514,8 @@ enum Started {
 /// Runs `query`, from the client at `from` over `transport`, through `pipeline`, handing `push` the reply made in the thread's
 /// buffer, if any, before any wait; past the thread's upstream queries, the reply is SERVFAIL. `None` once `push`
 /// returned `false`: the client is gone.
-fn start(
-    thread: &Thread,
+fn start<N: Io>(
+    thread: &Thread<N>,
     pipeline: &Pipeline,
     query: &[u8],
     transport: Transport,
@@ -450,7 +523,7 @@ fn start(
     mut push: impl FnMut(&[u8]) -> bool,
 ) -> Option<Started> {
     let mut out = thread.scratch.borrow_mut();
-    let upstream = match pipeline.query(query, transport, from, now(), &mut out) {
+    let upstream = match pipeline.query(query, transport, from, thread.now(), &mut out) {
         Step::Reply(len) => return push(&out[..len]).then_some(Started::Done),
         Step::Drop => return Some(Started::Done),
         Step::Upstream(upstream) => upstream,
@@ -469,12 +542,6 @@ fn start(
         };
     };
     Some(Started::Upstream(upstream, slot))
-}
-
-/// Seconds since the first call, the clock of the cache (D43).
-fn now() -> u32 {
-    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
-    u32::try_from(START.elapsed().as_secs()).unwrap_or(u32::MAX)
 }
 
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
@@ -506,7 +573,7 @@ mod tests {
     use super::tcp::{TCP_PENDING, tcp};
     use super::udp::{Outbox, udp};
     use super::{
-        Slots, Started, Thread, UPSTREAM_QUERIES, first_end, follow, io_uring_serves, now,
+        Slots, Started, Thread, UPSTREAM_QUERIES, first_end, follow, io_uring_serves,
         parse_release, runtime, runtime_on, socket, start, supervised_with,
     };
     use crate::lists::Store;
@@ -559,7 +626,7 @@ mod tests {
         let (query, response) = example_com_a();
         let from = IpAddr::from([127, 0, 0, 1]);
         let mut out = vec![0; 65535];
-        let cached_at = now();
+        let cached_at = thread.now();
         let Step::Upstream(upstream) =
             pipeline.query(&query, Transport::Tcp, from, cached_at, &mut out)
         else {
@@ -568,7 +635,7 @@ mod tests {
         let step = pipeline.receive(upstream, Some(&response), cached_at, &mut out);
         assert!(matches!(step, Step::Reply(_)), "{step:?}");
         let deadline = Instant::now() + Duration::from_secs(3);
-        while now() == cached_at && Instant::now() < deadline {
+        while thread.now() == cached_at && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         let mut sent = 0;

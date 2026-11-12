@@ -1,5 +1,7 @@
 //! UDP: the tasks taking turns at a socket's datagrams (D48, D107), and its `Outbox`, whose one sender sends the
-//! replies they queue (D123).
+//! replies they queue (D123). The socket and the clock are the thread's [`Io`]'s (D182).
+
+#![deny(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
 use std::future::poll_fn;
@@ -13,8 +15,7 @@ use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::buf::{IntoInner, IoBuf, Slice};
-use compio::driver::op::RecvFromMultiResult;
-use compio::net::UdpSocket;
+use dedens_net::io::{Datagram, Io, Udp};
 use dedens_proto::Transport;
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
 use dedens_server::{Pipeline, Step, Upstream};
@@ -25,7 +26,7 @@ use futures_util::{Stream, StreamExt};
 
 use super::isolate::{Listener, Origin};
 use super::upstream::answer;
-use super::{ERROR_PAUSE, Thread, now};
+use super::{ERROR_PAUSE, Thread, pause};
 
 /// Tasks answering on each UDP socket, taking turns at its datagrams: with the replies queued, 1, 2 and 4 serve
 /// alike within noise, and two keep one free to take a datagram while the other answers (D48, D123).
@@ -57,16 +58,16 @@ const BUSY_PAUSE: Duration = Duration::from_millis(1);
 /// Answers the queries of one UDP socket with [`UDP_RECEIVES`] tasks, from one stream of datagrams, and sends the
 /// replies from one more future of its task (D123). `outbox` is the socket's, made with it: it outlives this loop,
 /// so after a restart (D121) the replies of queries still waiting for upstream go out as before.
-pub(super) async fn udp(
-    socket: Rc<UdpSocket>,
+pub(super) async fn udp<N: Io>(
+    socket: Rc<N::Udp>,
     outbox: Rc<Outbox>,
     listener: Listener,
-    thread: Rc<Thread>,
+    thread: Rc<Thread<N>>,
 ) {
-    let datagrams = pin!(socket.recv_from_multi());
+    let datagrams = pin!(socket.recv_multi());
     let datagrams = Mutex::new(datagrams);
     let tasks = (0..UDP_RECEIVES).map(|_| udp_queries(&datagrams, &outbox, &listener, &thread));
-    join(join_all(tasks), send_replies(&socket, &outbox)).await;
+    join(join_all(tasks), send_replies(&*socket, &outbox)).await;
 }
 
 /// A reply on its way out of a UDP socket: a slice of a buffer, so its length never passes the buffer's, and the
@@ -121,7 +122,7 @@ impl Outbox {
 /// Sends what `outbox` queues, [`UDP_SENDS`] at once at most, never ends. The tasks answering queue replies without
 /// waiting for them to go out, so one turn of the runtime sends all they made in one submission, not one for each
 /// task (`io_uring_enter` 0.255 → 0.005 a query, D123).
-async fn send_replies(socket: &UdpSocket, outbox: &Outbox) {
+async fn send_replies(socket: &impl Udp, outbox: &Outbox) {
     let mut incoming = outbox.outgoing.clone().into_stream();
     let mut sending = FuturesUnordered::new();
     poll_fn(|cx| {
@@ -227,11 +228,11 @@ async fn yield_now() {
 
 /// Answers queries from `datagrams`, one after the other; the lock passes the stream to the next task once a
 /// datagram is taken. Replies are queued in `outbox` (D123).
-async fn udp_queries(
-    datagrams: &Mutex<impl Stream<Item = io::Result<RecvFromMultiResult>> + Unpin>,
+async fn udp_queries<N: Io, D: Datagram>(
+    datagrams: &Mutex<impl Stream<Item = io::Result<D>> + Unpin>,
     outbox: &Rc<Outbox>,
     listener: &Listener,
-    thread: &Rc<Thread>,
+    thread: &Rc<Thread<N>>,
 ) {
     let mut out = outbox.buffer();
     let mut receiving = Receiving::Fine;
@@ -244,7 +245,7 @@ async fn udp_queries(
             Some(Ok(datagram)) => datagram,
             Some(Err(error)) => {
                 let busy = error.kind() == io::ErrorKind::ResourceBusy;
-                if warned.due(receiving, busy, Instant::now()) {
+                if warned.due(receiving, busy, thread.io.now()) {
                     tracing::warn!(%error, %listener, "UDP receive fails again, retried every {ERROR_PAUSE:?}");
                 } else {
                     tracing::debug!(%error, "UDP receive");
@@ -253,20 +254,23 @@ async fn udp_queries(
                 match receiving.failed(busy) {
                     Pause::None => {}
                     Pause::Yield => yield_now().await,
-                    Pause::Sleep(pause) => compio::time::sleep(pause).await,
+                    Pause::Sleep(time) => pause(&thread.io, time).await,
                 }
                 continue;
             }
             None => continue,
         };
         receiving = Receiving::Fine;
-        let Some(peer) = datagram.addr().and_then(|addr| addr.as_socket()) else {
+        let Some(peer) = datagram.peer() else {
             continue;
         };
         let pipeline = thread.pipeline();
         // A panic anywhere in the datagram's turn costs this query, not the socket (D121).
         let stepped = listener
-            .guard_async(peer, udp_step(outbox, &pipeline, datagram, peer, &mut out))
+            .guard_async(
+                peer,
+                udp_step(outbox, &pipeline, datagram, peer, thread.now(), &mut out),
+            )
             .await;
         let Some(Some(upstream)) = stepped else {
             continue;
@@ -276,7 +280,7 @@ async fn udp_queries(
             continue;
         };
         let (outbox, thread) = (Rc::clone(outbox), Rc::clone(thread));
-        Origin::new(listener, peer).spawn(async move {
+        Origin::new(listener, peer).spawn(&thread.io.clone(), async move {
             let deliver = async |reply: Vec<u8>| {
                 let len = reply.len();
                 outbox.push(reply, len, peer).await;
@@ -287,16 +291,17 @@ async fn udp_queries(
     }
 }
 
-/// The turn of one datagram: the pipeline's first step, the reply it makes sent, and the upstream query it leaves, if any.
-/// The datagram's buffer goes back to the pool before the reply waits to be sent.
+/// The turn of one datagram at `now`, the cache's clock: the pipeline's first step, the reply it makes sent, and the
+/// upstream query it leaves, if any. The datagram's buffer goes back to the pool before the reply waits to be sent.
 async fn udp_step(
     outbox: &Outbox,
     pipeline: &Pipeline,
-    datagram: RecvFromMultiResult,
+    datagram: impl Datagram,
     peer: SocketAddr,
+    now: u32,
     out: &mut Vec<u8>,
 ) -> Option<Box<Upstream>> {
-    let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now(), out);
+    let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now, out);
     drop(datagram);
     let (len, upstream) = match step {
         Step::Reply(len) => (Some(len), None),
@@ -313,7 +318,7 @@ async fn udp_step(
 }
 
 /// Sends `reply` to `peer`, and gives its buffer back, to [`send_replies`].
-async fn send(socket: &UdpSocket, reply: Slice<Vec<u8>>, peer: SocketAddr) -> Vec<u8> {
+async fn send(socket: &impl Udp, reply: Slice<Vec<u8>>, peer: SocketAddr) -> Vec<u8> {
     let BufResult(sent, out) = socket.send_to(reply, peer).await;
     if let Err(error) = sent {
         tracing::debug!(%error, %peer, "UDP send");
@@ -324,6 +329,10 @@ async fn send(socket: &UdpSocket, reply: Slice<Vec<u8>>, peer: SocketAddr) -> Ve
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
 #[cfg(test)]
 #[cfg(not(dedens_loom))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tests run on compio's runtime, clock and sockets"
+)]
 mod tests {
     use std::cell::Cell;
     use std::io;

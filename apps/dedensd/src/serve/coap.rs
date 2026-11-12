@@ -22,6 +22,7 @@ use dedens_net::coap::dns::{
 };
 use dedens_net::coap::server::{Blocks, Dedup, EXCHANGE_LIFETIME, Found, NON_LIFETIME, Seen};
 use dedens_net::coap::{Code, Message, Type};
+use dedens_net::io::Compio;
 use dedens_proto::Transport;
 
 use super::isolate::{Listener, Origin};
@@ -225,13 +226,10 @@ pub(super) async fn serve(coap: Rc<Coap>, listener: Listener, thread: Rc<Thread>
             continue;
         };
         dedup.borrow_mut().note(peer, message.id, now);
-        Origin::new(&listener, peer).spawn(handle(
-            Rc::clone(&coap),
-            Rc::clone(&thread),
-            message,
-            peer,
-            slot,
-        ));
+        Origin::new(&listener, peer).spawn(
+            &Compio,
+            handle(Rc::clone(&coap), Rc::clone(&thread), message, peer, slot),
+        );
     }
 }
 
@@ -252,7 +250,7 @@ async fn handle(
     _slot: Slot,
 ) {
     let pipeline = thread.pipeline();
-    let limited = || pipeline.limits(peer.ip(), super::now());
+    let limited = || pipeline.limits(peer.ip(), thread.now());
     if let Some(reply) = discovery(&request, coap.next_id(), &coap.path) {
         if limited() {
             return;
