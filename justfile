@@ -16,7 +16,7 @@ unbound_version := "1.26.2"
 # `DEDENS_ROUNDS=5` sets its rounds.
 container := env("DEDENS_CONTAINER", "docker")
 # The nfpm image of `just packages` (D156).
-nfpm := "docker.io/goreleaser/nfpm:v2.48.0@sha256:d57a1452e7a019896b355f7b1ec67262278f6c503631f652d4fce7aef9ac8df7"
+nfpm := "docker.io/goreleaser/nfpm:v2.49.0@sha256:9ea46a59c4d055ef7071b22f3520b53e8dad98e18043b2f881b53bd7ffec634e"
 
 # List recipes.
 default:
