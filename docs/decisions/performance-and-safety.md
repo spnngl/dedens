@@ -208,9 +208,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   spec for every `u64` (0.1 s); `Edns::append`, the cache-hit path, into any buffer of 25 bytes: it fits exactly when
   RFC 6891 §6.1.2 allows, adds 1 to ARCOUNT and writes the record, else changes nothing (9 s); a client subnet of up to
   8 bytes decodes and encodes back (RFC 7871 §6, 3 s); NSEC type bit maps of up to 6 bytes, `contains` agreeing with
-  `types` (RFC 4034 §4.1.2, 4.6 min); `covers` on chains of up to 4 `u8` owners, each other value covered by exactly
-  one link (RFC 4034 §4.1.1, 1 s), which holds for any total order, while `canonical_cmp` being one stays unproven;
-  the cache's `whole_cut` against its spec on 3 bytes of bits (6 s); a CoAP option nibble for every `u32` (RFC 7252
+  `types` (RFC 4034 §4.1.2, 4.6 min); the cache's `whole_cut` against its spec on 3 bytes of bits (6 s); a CoAP option nibble for every `u32` (RFC 7252
   §3.1, 0.3 s); ODoH's message and plaintext of up to 8 bytes parse and encode back (RFC 9230 §6.1, 9 s and 15 s).
   Dropped, over 10 min: the name table's `add`, `find` and `truncate` (3 names in one home group, the comparison
   with the message stubbed: no end in 15 min, 19 million variables, as every slot of 256 is symbolic), and a parsed
@@ -236,7 +234,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   name with pointers (`Name::to_wire`), returns that name for any `msg` and `start` `scan` accepted, so the copies of
   a decoded name are its RFC 1035 decompression; the step from `scan` to `unpack` goes through `Repr::Packed`,
   built only from what `scan` returns, which Verus does not follow. `uncompressed` is trusted, as any specification:
-  the proofs are worth what it is. `just verus` checks it all in 20 s from cold (Apple M5, 2026-11-12), outside the
+  the proofs are worth what it is. In `crates/dedens-dnssec/src/denial/names.rs`, `one_link_covers`: in a chain of
+  owners in order, of any length and under any strict order (irreflexive, transitive), a name is covered by exactly
+  one link unless it sorts alike an owner, which none covers (RFC 4034 §4.1.1, RFC 5155 §1.2); `covers` is that test
+  of a link wherever `<` is the type's order. That canonical order (`canonical_cmp`, RFC 4034 §6.1) is a strict one
+  stays unproven. Kani's proof of `covers`, on chains of up to 4 `u8` owners (D179), is dropped for it. `just verus` checks it all in 20 s from cold (Apple M5, 2026-11-12), outside the
   gate, and `deep.yml`'s `verus` job on each pull request, informational. The specifications are
   `#[cfg_attr(verus_only, verus_spec(..))]` on the Rust as it is, the hints `#[cfg(verus_only)] proof! {..}`: a
   build without Verus has neither them nor vstd, a dependency under `cfg(verus_keep_ghost)`, which `just verus` sets

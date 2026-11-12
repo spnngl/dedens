@@ -530,7 +530,7 @@ verus-install:
     toolchain="$(sed -n 's/.*"toolchain": "\([^ "]*\).*/\1/p' "$dir/version.json")"
     rustup toolchain install --profile minimal "$toolchain"
 
-# Verus's proofs of dedens-proto (D180), outside the gate; its own target dir, target/verus. `--cfg
+# Verus's proofs of dedens-proto and dedens-dnssec (D180), outside the gate; its own target dir, target/verus. `--cfg
 # verus_keep_ghost` brings in vstd, which no other build has.
 verus *args:
     #!/usr/bin/env bash
@@ -538,7 +538,7 @@ verus *args:
     dir="$PWD/target/verus-{{ verus_version }}"
     [[ -x "$dir/cargo-verus" ]] || just verus-install
     export PATH="$dir:$PATH" RUSTFLAGS="--cfg verus_keep_ghost"
-    cargo verus verify -p dedens-proto --target-dir target/verus --check-toolchain {{ args }}
+    cargo verus verify -p dedens-proto -p dedens-dnssec --target-dir target/verus --check-toolchain {{ args }}
 
 # Kani's proofs of `package` for every small input (D145), outside the gate: all of them by default, one with
 # `just kani dedens-proto --harness name_decoding`. Its own target dir, target/kani.
@@ -552,7 +552,6 @@ kani-fast:
     set -euo pipefail
     fast=(
         dedens-cache:the_cut_is_the_highest_whole_one
-        dedens-dnssec:each_name_is_covered_by_one_link_or_owns_one
         dedens-net:a_nibble_reads_back_what_was_written
         dedens-odoh:a_parsed_message_encodes_back
         dedens-odoh:a_parsed_plaintext_encodes_back

@@ -960,6 +960,7 @@ dependencies = [
  "proptest",
  "ring",
  "thiserror",
+ "vstd",
 ]
 
 [[package]]

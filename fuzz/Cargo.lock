@@ -593,6 +593,7 @@ dependencies = [
  "dedens-proto",
  "ring",
  "thiserror",
+ "vstd",
 ]
 
 [[package]]
