@@ -172,7 +172,7 @@ impl Ticks {
 ///
 /// # Errors
 ///
-/// A handler the OS refuses.
+/// A handler the OS refuses, or a thread it does not start.
 pub(crate) fn control(
     file: PathBuf,
     mut text: String,
@@ -186,51 +186,56 @@ pub(crate) fn control(
     {
         let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGHUP])?;
         let hangup = hangup.clone();
-        thread::spawn(move || {
-            for _ in signals.forever() {
-                let _ = hangup.send(());
-            }
-        });
+        thread::Builder::new()
+            .name("dedensd-hangups".to_owned())
+            .spawn(move || {
+                for _ in signals.forever() {
+                    let _ = hangup.send(());
+                }
+            })?;
     }
-    thread::spawn(move || {
-        // Held here, so `hangups` is never disconnected, SIGHUP or not.
-        let _hangup = hangup;
-        let client = Fetcher::new();
-        guarded("leftover sweep", || sweep(&downloads.urls, &downloads.dir));
-        let mut ticks = Ticks::new();
-        loop {
-            let wait = if downloads.urls.is_empty() {
-                Duration::MAX
-            } else {
-                let fetched = guarded("list download", || {
-                    client.fetch(&downloads.urls, &downloads.dir, &mut store)
-                })
-                // A panic may have come after a list was saved: reload, which costs little when nothing changed.
-                .unwrap_or(Fetched {
-                    changed: true,
-                    failed: true,
-                });
-                ticks.wait(fetched, downloads.refresh, || {
-                    let new = reload(&file, Read::Last, &mut text, &current, &fixed, &mut store)?;
-                    let refresh = new.refresh;
-                    downloads = new;
-                    Some(refresh)
-                })
-            };
-            // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
-            if hangups.recv_timeout(wait).is_ok() {
-                // Those queued meanwhile ask for what this one does (D104).
-                while hangups.try_recv().is_ok() {}
-                if let Some(new) =
-                    reload(&file, Read::File, &mut text, &current, &fixed, &mut store)
-                {
-                    downloads = new;
-                    // Built from the lists on disk, the pending reload included.
-                    ticks.served();
+    thread::Builder::new()
+        .name("dedensd-reload".to_owned())
+        .spawn(move || {
+            // Held here, so `hangups` is never disconnected, SIGHUP or not.
+            let _hangup = hangup;
+            let client = Fetcher::new();
+            guarded("leftover sweep", || sweep(&downloads.urls, &downloads.dir));
+            let mut ticks = Ticks::new();
+            loop {
+                let wait = if downloads.urls.is_empty() {
+                    Duration::MAX
+                } else {
+                    let fetched = guarded("list download", || {
+                        client.fetch(&downloads.urls, &downloads.dir, &mut store)
+                    })
+                    // A panic may have come after a list was saved: reload, which costs little when nothing changed.
+                    .unwrap_or(Fetched {
+                        changed: true,
+                        failed: true,
+                    });
+                    ticks.wait(fetched, downloads.refresh, || {
+                        let new =
+                            reload(&file, Read::Last, &mut text, &current, &fixed, &mut store)?;
+                        let refresh = new.refresh;
+                        downloads = new;
+                        Some(refresh)
+                    })
+                };
+                // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
+                if hangups.recv_timeout(wait).is_ok() {
+                    // Those queued meanwhile ask for what this one does (D104).
+                    while hangups.try_recv().is_ok() {}
+                    if let Some(new) =
+                        reload(&file, Read::File, &mut text, &current, &fixed, &mut store)
+                    {
+                        downloads = new;
+                        // Built from the lists on disk, the pending reload included.
+                        ticks.served();
+                    }
                 }
             }
-        }
-    });
+        })?;
     Ok(())
 }
 
