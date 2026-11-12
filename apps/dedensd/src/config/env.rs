@@ -83,7 +83,8 @@ fn alone(before: &str, after: &str) -> bool {
     let starts = head.is_empty()
         || (flow && head.ends_with(['[', '{', ',']))
         || (spaced && head.ends_with(':'))
-        || (spaced && head.chars().all(|c| c == '-' || c.is_whitespace()));
+        // Sequence indicators, each `-` apart: `--` starts a plain scalar, which the quotes would then be part of.
+        || (spaced && head.split_whitespace().all(|token| token == "-"));
     let tail = after.trim_start();
     let ends = tail.is_empty()
         || (tail.len() < after.len() && tail.starts_with('#'))
@@ -195,6 +196,7 @@ mod tests {
             ),
             ("{k: ${TEXT}}", "{k: 'a: b #c'}"),
             ("  - ${HASH}", "  - '#x'"),
+            ("- - ${TEXT}", "- - 'a: b #c'"),
             ("${TEXT}: v", "'a: b #c': v"),
             ("${TEXT}", "'a: b #c'"),
             // Inside quotes, escaped for them.
@@ -219,6 +221,9 @@ mod tests {
             "[x ${TEXT}]",
             "x ${TEXT}",
             "-${TEXT}",
+            "-- ${TEXT}",
+            "k: -- ${TEXT}",
+            "- -- ${TEXT}",
             "key: ${TEXT}#x",
             "key: ${TEXT} x",
             "key: ${TEXT},",
