@@ -121,8 +121,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   delays drives a `dedensd` process, whose timers run on the system clock in a process no injectable clock reaches, and
   checks how those timers meet a late answer; the library's own timers are tested on `dedens-sim`'s clock (D133).
   Rejected for those delays: an injectable clock or an order the test releases (the clock is `dedensd`'s, and what
-  the answer must come after happens inside it). A package reads the data through the kit, never through another
-  package's directory
+  the answer must come after happens inside it). A receive error other than an interrupted call or an earlier
+  datagram's ICMP error panics its thread, where it had stopped the server unsaid. A package reads the data through
+  the kit, never through another package's directory
   (`../dedens-*/tests/`), which tied each test to where another crate kept its files, and no test includes another
   package's file by `#[path]`. cargo-mutants skips the kit, test code as `tests/` is (`.cargo/mutants.toml`). The kit's
   public modules are one per concern, as D160's exceptions: `dnssec`, and `certificates` and `responder` behind their

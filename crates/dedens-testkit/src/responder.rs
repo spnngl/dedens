@@ -8,7 +8,7 @@
 //! times, the questions in flight the validator shares). A test of the library's own timers runs on `dedens-sim`'s
 //! clock instead (D133).
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
@@ -196,13 +196,16 @@ impl Responder {
 
     /// Answers over UDP and TCP on one port.
     fn serve(upstream: Upstream) -> Self {
+        /// The ports tried before giving up.
+        const TRIES: usize = 64;
         // The port UDP got may be taken over TCP by a test running beside this one: take another.
-        let (udp, tcp) = loop {
-            let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
-            if let Ok(tcp) = TcpListener::bind(udp.local_addr().expect("bound")) {
-                break (udp, tcp);
-            }
-        };
+        let (udp, tcp) = (0..TRIES)
+            .find_map(|_| {
+                let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+                let tcp = TcpListener::bind(udp.local_addr().expect("bound")).ok()?;
+                Some((udp, tcp))
+            })
+            .expect("a port free over both UDP and TCP");
         let responder = Self {
             addr: udp.local_addr().expect("bound"),
             upstream: Arc::new(upstream),
@@ -210,7 +213,8 @@ impl Responder {
         let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
-            while let Ok((len, from)) = udp.recv_from(&mut buf) {
+            loop {
+                let (len, from) = receive(&udp, &mut buf);
                 let query = &buf[..len];
                 if !is_query(query) {
                     continue;
@@ -484,7 +488,8 @@ impl Responder {
         let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
-            while let Ok((len, from)) = socket.recv_from(&mut buf) {
+            loop {
+                let (len, from) = receive(&socket, &mut buf);
                 let Ok(request) = Message::parse(&buf[..len]) else {
                     continue;
                 };
@@ -510,6 +515,27 @@ impl Responder {
             }
         });
         responder
+    }
+}
+
+/// The next datagram on `socket`, in `buf`: its length and sender. An interrupted receive, or the error of an earlier
+/// datagram some systems report (the ICMP error a reply to a client gone brings back), is skipped.
+///
+/// # Panics
+///
+/// On another error: the server would stop answering, and the test waiting on it would time out with no cause.
+fn receive(socket: &UdpSocket, buf: &mut [u8]) -> (usize, SocketAddr) {
+    loop {
+        match socket.recv_from(buf) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Interrupted
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionRefused
+                ) => {}
+            received => return received.expect("the responder's UDP socket receives"),
+        }
     }
 }
 
