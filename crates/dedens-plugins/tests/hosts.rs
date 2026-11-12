@@ -2,6 +2,7 @@
 //! records for its names (RFC 1035 §3.4.1, RFC 3596 §2.1), PTR records for the reverse names of its addresses
 //! (RFC 1035 §3.5, RFC 3596 §2.5), no data for other types (RFC 2308 §2.2).
 
+use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use dedens_plugins::{Hosts, LineError, LineErrorKind};
@@ -144,4 +145,18 @@ fn unreadable_lines_are_errors() {
     let long = format!("192.0.2.1 {}.example", "a".repeat(64));
     let error = Hosts::new(&long, Ttl::ZERO, false).expect_err("a label of 64 bytes");
     assert!(matches!(error.kind, LineErrorKind::Name(..)), "{error}");
+}
+
+/// A name with more addresses than a message carries is blamed on the last line adding one, not on a later line
+/// repeating an address.
+#[test]
+fn too_many_addresses_are_blamed_on_the_last_line_adding_one() {
+    let mut text = String::new();
+    for i in 0..3000 {
+        writeln!(text, "2001:db8::{i:x} many.example").unwrap();
+    }
+    text.push_str("2001:db8::0 many.example\n");
+    let error = Hosts::new(&text, Ttl::ZERO, false).expect_err("3000 AAAA records");
+    assert_eq!(error.line, 3000, "{error}");
+    assert!(matches!(error.kind, LineErrorKind::TooMany(_)), "{error}");
 }
