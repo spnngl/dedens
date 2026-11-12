@@ -93,7 +93,6 @@ async fn connection(
             What::Served {
                 question,
                 transport: Transport::Tls,
-                len: reply.len(),
             },
         );
         let Ok(len) = u16::try_from(reply.len()) else {

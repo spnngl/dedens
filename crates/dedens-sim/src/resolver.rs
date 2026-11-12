@@ -219,14 +219,8 @@ impl Shared {
         stale: bool,
         deliver: &mut impl AsyncFnMut(&[u8]),
     ) {
-        self.trace.record(
-            self.host,
-            What::Replied {
-                transport,
-                len: reply.len(),
-                stale,
-            },
-        );
+        self.trace
+            .record(self.host, What::Replied { transport, stale });
         deliver(reply).await;
     }
 
