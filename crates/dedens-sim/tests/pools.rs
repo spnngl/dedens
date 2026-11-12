@@ -407,6 +407,30 @@ fn a_dropped_client_closes_its_connections() {
     });
 }
 
+/// The same over DNS over TLS: the server counts the connection's end as a TCP server does.
+#[test]
+fn a_dropped_client_closes_its_tls_connections() {
+    seed::each(ONE, |seed| {
+        let (ca, presented) = certificates(0);
+        let dot = answers();
+        let ended = dot.ended();
+        let mut world = Topology::new().upstream(answers()).build(seed);
+        let server = world.dot_server(dot, presented);
+        world.client_direct(async move |client| {
+            let client = client.trusting(Trust::Roots(vec![ca]));
+            client
+                .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                .await?;
+            assert_eq!(ended.get(), 0);
+            drop(client);
+            tokio::time::sleep(SECOND).await;
+            assert_eq!(ended.get(), 1);
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
 /// Each client host is a host of its own, its IDs drawn from a stream of its own: two clients asking once each send
 /// two IDs.
 #[test]

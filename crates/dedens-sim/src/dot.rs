@@ -1,5 +1,6 @@
 //! A DNS-over-TLS server host (RFC 7858): port 853, rustls over turmoil's TCP through the seam's stream, answering
-//! from [`Answers`] one query at a time per connection.
+//! from [`Answers`] one query at a time per connection. The faults of [`Answers`] (`faulty`, `silent`, `tcp`) are
+//! plain DNS's: this host answers every query it holds data for.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::rc::Rc;
@@ -62,6 +63,18 @@ async fn connection(
     stream: TcpStream,
     host: IpAddr,
     trace: Trace,
+) {
+    serve_queries(&answers, acceptor, stream, host, &trace).await;
+    answers.closed();
+}
+
+/// The queries of [`connection`], until one side closes it or it fails.
+async fn serve_queries(
+    answers: &Answers,
+    acceptor: TlsAcceptor,
+    stream: TcpStream,
+    host: IpAddr,
+    trace: &Trace,
 ) {
     let Ok(stream) = SimStream::new(stream) else {
         return;
