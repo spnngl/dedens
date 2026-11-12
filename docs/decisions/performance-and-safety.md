@@ -201,7 +201,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D178 (builds on D103) The gate runs the tests under cargo-nextest: `just check` runs `cargo nextest run
   --workspace --all-features`, then `cargo test --workspace --all-features --doc`, as nextest runs no doctest. A
   process per test: warm, the workspace's 1920 tests took 33.8 s and the doctests 5.8 s, against 48.6 s for
-  `cargo test` (Apple M5, 2026-11-11); a test that aborts its process ends no other test. `.config/nextest.toml`
+  `cargo test` (Apple M5, 2026-11-11). On the `check` job, the tests without doctests (`cargo test`: from its first
+  test binary to the doctests; nextest: its summary), two runs each: `ubuntu-26.04` 138 and 163 s under `cargo test` (c1af86c, d10eec2), 86 and 105 s under nextest (ae0348e,
+  440e39d, 1924 and 1971 tests); `macos-26` 109 and 134 s against 98 and 138 s, a runner too uneven to tell. A
+  test that aborts its process ends no other test. `.config/nextest.toml`
   kills a test still running after 2 min (the slowest took 17.7 s), where a hang held the job to its 45 min; the
   `ci` profile (`NEXTEST_PROFILE=ci` in `ci.yml`) reports every failure, not the first. No retries: a test that
   passes on a second try still failed once. `dedensd`'s test servers start one at a time under a file lock in the
