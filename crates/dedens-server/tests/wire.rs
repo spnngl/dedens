@@ -1,9 +1,10 @@
 //! The server core's messages: responses to what a query asks and how it asks it.
 //!
 //! - RFC 1035 in the server core: the reply header (§4.1.1), reply sizes over UDP (§4.2.1) and TCP (§4.2.2), and moving
-//!   past failing servers (§7.3).
+//!   past failing servers (§7.3): any RCODE but NOERROR, NXDOMAIN and YXDOMAIN (RFC 6672 §2.2) is a failure (D41).
 //! - RFC 6891 in the server core: the OPT record of replies (§7), the UDP payload they fit (§6.2.3, §6.2.5), BADVERS
-//!   (§6.1.3) and several OPT records (§6.1.1); DO copied (RFC 3225 §3).
+//!   (§6.1.3), FORMERR with our OPT record to OPT records that break a rule (§6.1.1, §6.1.2, §7); DO copied (RFC 3225
+//!   §3).
 //! - RFC 7830 in the server core: replies to a padded query over TLS or QUIC are padded (§4), to a multiple of 468
 //!   bytes (RFC 8467 §4.1), with zeros (§3); no other reply is.
 //! - RFC 9619 in the server core: a query with more than one question gets FORMERR (§3).
@@ -141,6 +142,11 @@ fn servers_that_fail_refuse_or_do_not_answer_are_passed_over_in_order() {
         Some(with_rcode(answer.clone(), Rcode::REFUSED)),
         Some(with_rcode(answer.clone(), Rcode::NOTIMP)),
         Some(with_rcode(answer.clone(), Rcode::FORMERR)),
+        Some(with_rcode(answer.clone(), Rcode::YXRRSET)),
+        Some(with_rcode(answer.clone(), Rcode::NOTAUTH)),
+        Some(with_rcode(answer.clone(), Rcode::NOTZONE)),
+        Some(extended("a", Rcode::BADVERS)),
+        Some(extended("a", Rcode::BADCOOKIE)),
         Some(captured("truncated")),
         Some(answer[..30].to_vec()),
     ];
@@ -160,6 +166,18 @@ fn servers_that_fail_refuse_or_do_not_answer_are_passed_over_in_order() {
     }
 }
 
+/// The capture `case` with the 12-bit RCODE `rcode`, its upper bits in the capture's OPT record (RFC 6891 §6.1.3).
+fn extended(case: &str, rcode: Rcode) -> Vec<u8> {
+    let mut message = Message::decode(&captured(case))
+        .expect("a captured response decodes")
+        .message
+        .into_owned();
+    message
+        .set_rcode(rcode)
+        .expect("the capture has an OPT record");
+    wire(&message)
+}
+
 #[test]
 fn a_name_error_is_an_answer_not_a_failure() {
     let response = captured("nxdomain_soa");
@@ -172,6 +190,43 @@ fn a_name_error_is_an_answer_not_a_failure() {
     assert_eq!(done.asked.len(), 1);
     let wire = done.reply.expect("a reply");
     assert_eq!(decode(&wire).rcode(), Rcode::NXDOMAIN);
+}
+
+#[test]
+fn a_dname_loop_is_an_answer_not_a_failure() {
+    let response = with_rcode(captured("a"), Rcode::YXDOMAIN);
+    let done = run(
+        &forwarder(),
+        &wire(&query("a", 7)),
+        Transport::Udp,
+        &[Some(&response)],
+    );
+    assert_eq!(done.asked.len(), 1);
+    let wire = done.reply.expect("a reply");
+    assert_eq!(decode(&wire).rcode(), Rcode::YXDOMAIN);
+}
+
+/// None of the failures speaks of the client's query: after the last server, the client gets SERVFAIL, in our OPT
+/// record's 12 bits, not the upstream's extended RCODE.
+#[test]
+fn servfail_follows_the_last_server_answering_another_rcode() {
+    for rcode in [Rcode::BADVERS, Rcode::BADCOOKIE] {
+        let failure = extended("a", rcode);
+        let done = run(
+            &forwarder(),
+            &wire(&query("a", 7)),
+            Transport::Udp,
+            &[
+                Some(&failure),
+                Some(&with_rcode(captured("a"), Rcode::NXRRSET)),
+            ],
+        );
+        assert_eq!(done.asked, servers(), "after {rcode}");
+        let wire = done.reply.expect("a reply");
+        let reply = decode(&wire);
+        assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+        assert_eq!(reply.answer, []);
+    }
 }
 
 #[test]
@@ -246,7 +301,67 @@ fn several_opt_records_get_formerr() {
     twice.extend_from_slice(&query[query.len() - 11..]);
     twice[11] += 1;
     let wire = reply(&forwarder(), &twice, Transport::Udp, None);
-    assert_eq!(decode(&wire).rcode(), Rcode::FORMERR);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::FORMERR);
+    // RFC 6891 §6.1.1: the query had an OPT record, so the reply has ours.
+    assert_eq!(reply.edns, Some(Edns::default()));
+}
+
+/// The query of the `a` capture without EDNS, then `opt`, an OPT record of the additional section.
+fn with_opt(opt: &[u8]) -> Vec<u8> {
+    let mut query = query("a", 7);
+    query.edns = None;
+    let mut bytes = wire(&query);
+    bytes.extend_from_slice(opt);
+    bytes[11] = 1;
+    bytes
+}
+
+/// RFC 6891 §6.1.2 and §7: an OPT record outside the additional section, or not owned by the root, is a problem
+/// with the OPT record: FORMERR, with our OPT record. The client's is not read: its DO is not copied.
+#[test]
+fn a_misplaced_opt_record_gets_formerr_with_ours() {
+    let mut query = query("a", 7);
+    query.edns = Some(Edns {
+        flags: EdnsFlags::DO,
+        ..Edns::default()
+    });
+    // The OPT record, the last 11 bytes, counted in the authority section instead of the additional one.
+    let mut authority = wire(&query);
+    authority[9] = 1;
+    authority[11] = 0;
+    // An OPT record owned by the question's name, a pointer to it.
+    let owned = with_opt(&[0xC0, 0x0C, 0, 41, 0x04, 0xD0, 0, 0, 0x80, 0, 0, 0]);
+    for bytes in [authority, owned] {
+        let done = run(&forwarder(), &bytes, Transport::Udp, &[]);
+        assert_eq!(done.asked, []);
+        let wire = done.reply.expect("a reply");
+        let reply = decode(&wire);
+        assert_eq!(reply.rcode(), Rcode::FORMERR);
+        assert_eq!(reply.edns, Some(Edns::default()));
+    }
+}
+
+/// RFC 6891 §7: an option that cannot be read, a COOKIE of 3 bytes (RFC 7873 §4), is a problem with the OPT record:
+/// FORMERR, with our OPT record.
+#[test]
+fn an_invalid_option_gets_formerr_with_our_opt_record() {
+    let bytes = with_opt(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 7, 0, 10, 0, 3, 1, 2, 3]);
+    let wire = reply(&forwarder(), &bytes, Transport::Udp, None);
+    let reply = decode(&wire);
+    assert_eq!(reply.rcode(), Rcode::FORMERR);
+    assert_eq!(reply.edns, Some(Edns::default()));
+}
+
+/// An option overrunning its OPT record fails the whole read: the FORMERR has the header alone, no OPT record, short
+/// of RFC 6891 §7 (D41).
+#[test]
+fn an_option_overrunning_its_opt_record_gets_the_header_alone() {
+    let bytes = with_opt(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 4, 0, 10, 0, 8]);
+    let wire = reply(&forwarder(), &bytes, Transport::Udp, None);
+    let reply = decode(&wire);
+    assert_eq!((reply.rcode(), reply.questions.len()), (Rcode::FORMERR, 0));
+    assert_eq!(reply.edns, None);
 }
 
 #[test]

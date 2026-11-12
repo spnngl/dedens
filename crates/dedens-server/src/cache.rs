@@ -53,7 +53,7 @@ pub(crate) fn look(
     out: &mut [u8],
 ) -> Looked {
     let limit = client.limit().min(out.len());
-    let edns = client.edns.as_ref().map(|_| client.our_edns());
+    let edns = client.has_opt().then(|| client.our_edns());
     // Room is kept for our OPT record; a stale hit leaves room for its EDE option itself (`Cache::STALE_ROOM`).
     let opt = edns
         .as_ref()

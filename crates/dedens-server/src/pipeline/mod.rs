@@ -230,7 +230,9 @@ impl Pipeline {
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
     /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
-    /// a forwarder does not do. Responses are dropped, never answered.
+    /// a forwarder does not do. Responses are dropped, never answered. A FORMERR to OPT records that break a rule,
+    /// several (RFC 6891 §6.1.1), one outside the additional section or not owned by the root (§6.1.2) or with an
+    /// invalid option, has our OPT record (§6.1.1, §7); one to a query it cannot read has none: none was read.
     ///
     /// A query for ANY over UDP or CoAP is answered by the forward stage with a truncated, empty response, never
     /// forwarded nor cached; the other transports forward it (RFC 8482 §4.4, D114). A forward stage never passes

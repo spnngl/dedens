@@ -182,8 +182,10 @@ pub(crate) fn probe(question: &Question<'_>) -> Message<'static> {
 /// Whether an upstream response answers `asked`, the question sent, or the next server is asked (D111): not when
 /// it is no response to it (QR clear, an opcode other than QUERY, any other question than `asked`, the name in
 /// any case, RFC 4343 §4; RFC 5452 §9.1), as a transport drops one, but one of tomorrow may not; nor when it
-/// breaks the protocol (D9), is truncated, or says the server failed, refused, does not implement the query or
-/// did not understand it (RFC 1035 §7.3). The ID is the transport's to check: it picks it (D27).
+/// breaks the protocol (D9) or is truncated. Its RCODE must be NOERROR, NXDOMAIN or YXDOMAIN (RFC 6672 §2.2): any
+/// other, SERVFAIL, REFUSED, NOTIMP, FORMERR, an update code or an extended one from the server's own OPT record
+/// (BADVERS, BADCOOKIE, RFC 6891 §6.1.3), speaks of the server or of our query, not of the client's (RFC 1035
+/// §7.3). The ID is the transport's to check: it picks it (D27).
 pub(crate) fn usable(response: &Decoded<'_>, asked: &Question<'_>) -> bool {
     let message = &response.message;
     message.header.flags.contains(Flags::QR)
@@ -191,8 +193,8 @@ pub(crate) fn usable(response: &Decoded<'_>, asked: &Question<'_>) -> bool {
         && matches!(message.questions.as_slice(), [got] if got == asked)
         && response.violations.is_empty()
         && !message.header.flags.contains(Flags::TC)
-        && !matches!(
+        && matches!(
             message.rcode(),
-            Rcode::SERVFAIL | Rcode::REFUSED | Rcode::NOTIMP | Rcode::FORMERR
+            Rcode::NOERROR | Rcode::NXDOMAIN | Rcode::YXDOMAIN
         )
 }
