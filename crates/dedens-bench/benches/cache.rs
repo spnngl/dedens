@@ -74,10 +74,7 @@ fn hit(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
     let query = query(case, 7).to_vec().expect("a query fits");
     let cache = cache();
-    if !insert_at_0(&cache, &query, &response) {
-        // Not cacheable (TC, NXDOMAIN without SOA...): nothing to time.
-        return;
-    }
+    assert!(insert_at_0(&cache, &query, &response), "{case}: cacheable");
     let mut out = vec![0; 65_535];
     bencher.bench_local(|| hit_once(&cache, &query, &mut out));
 }
@@ -110,6 +107,11 @@ fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let query = query(case, 7).to_vec().expect("a query fits");
     let query = Query::read(&query).expect("a valid query");
     let cache = cache();
+    // A response the cache refuses would time the refusal.
+    assert!(
+        cache.insert(&query, &decoded, 0, 0).is_ok(),
+        "{case}: cacheable"
+    );
     bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0, 0).is_ok());
 }
 
@@ -205,6 +207,7 @@ fn insert_under_hits(bencher: Bencher<'_, '_>) {
     let (stored, response) = synthetic("other.example.com");
     let decoded = Message::decode(&response).expect("decodes");
     let stored = Query::read(&stored).expect("a valid query");
+    assert!(cache.insert(&stored, &decoded, 0, 0).is_ok(), "cacheable");
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..HITTERS {

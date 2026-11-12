@@ -167,7 +167,7 @@ fn budgets(burst: u32) -> Budgets {
 #[divan::bench(threads = [1, 4])]
 fn budget_admit(bencher: Bencher<'_, '_>) {
     let budgets = budgets(MAX_BUDGET);
-    bencher.bench(|| budgets.admit(Slot::new(black_box(client_of_thread()), true), 0));
+    bencher.bench(|| assert!(budgets.admit(Slot::new(black_box(client_of_thread()), true), 0)));
 }
 
 /// The same for a client that spent its budget: what a flood of posts costs the target instead of a decapsulation. Each
@@ -175,12 +175,12 @@ fn budget_admit(bencher: Bencher<'_, '_>) {
 #[divan::bench(threads = [1, 4])]
 fn budget_refuse(bencher: Bencher<'_, '_>) {
     let budgets = budgets(0);
-    bencher.bench(|| budgets.admit(Slot::new(black_box(client_of_thread()), true), 0));
+    bencher.bench(|| assert!(!budgets.admit(Slot::new(black_box(client_of_thread()), true), 0)));
 }
 
 /// The same flood from one network on all threads: they share a bucket, whose refusals write nothing.
 #[divan::bench(threads = [1, 4])]
 fn budget_refuse_one_network(bencher: Bencher<'_, '_>) {
     let budgets = budgets(0);
-    bencher.bench(|| budgets.admit(Slot::new(black_box(client()), true), 0));
+    bencher.bench(|| assert!(!budgets.admit(Slot::new(black_box(client()), true), 0)));
 }
