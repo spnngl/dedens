@@ -16,6 +16,8 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use compio::BufResult;
@@ -32,6 +34,30 @@ use crate::tcp::Outbound;
 /// A [`Io::timeout_at`] whose deadline passed before its future finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimedOut;
+
+pin_project_lite::pin_project! {
+    /// [`Compio::timeout_at`]: `future` against `timer`, polled in place. compio's `timeout_at` nests two `async fn`
+    /// over its future, each moving it once more: a TCP query's reads and writes ran 14% slower behind them (D182).
+    struct Deadline<F, T> {
+        #[pin]
+        future: F,
+        #[pin]
+        timer: T,
+    }
+}
+
+impl<F: Future, T: Future<Output = ()>> Future for Deadline<F, T> {
+    type Output = Result<F::Output, TimedOut>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if let Poll::Ready(output) = this.future.poll(cx) {
+            return Poll::Ready(Ok(output));
+        }
+        this.timer.poll(cx).map(|()| Err(TimedOut))
+    }
+}
 
 /// What the pools ask of the runtime. One value per thread of one runtime, cloned into the tasks it spawns.
 #[expect(
@@ -208,14 +234,15 @@ impl Io for Compio {
     }
 
     #[inline]
-    async fn timeout_at<F: Future>(
+    fn timeout_at<F: Future>(
         &self,
         deadline: Instant,
         future: F,
-    ) -> Result<F::Output, TimedOut> {
-        compio::time::timeout_at(deadline, future)
-            .await
-            .map_err(|_| TimedOut)
+    ) -> impl Future<Output = Result<F::Output, TimedOut>> {
+        Deadline {
+            future,
+            timer: compio::time::sleep_until(deadline),
+        }
     }
 
     #[inline]

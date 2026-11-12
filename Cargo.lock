@@ -976,6 +976,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "idna",
+ "pin-project-lite",
  "proptest",
  "rand_core 0.10.1",
  "rustls-platform-verifier",

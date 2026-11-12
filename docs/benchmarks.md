@@ -577,8 +577,30 @@ four. Apple M5, macOS, `poll` driver, load average 14-16 from other builds: sing
 | 32 | 65050 (91618) | 60122 (72739) |
 
 - No conclusion either way: the rounds of both overlap from end to end, and the code on a datagram's path is the same
-  calls through one `#[inline]` forwarder each. `just bench-dnsperf <base> forward` and `forward-tcp` on the Linux
-  VPS (`io_uring`) are the check to run, before and after.
+  calls through one `#[inline]` forwarder each.
+
+On Linux: the VPS of "UDP send queue and `io_uring` flags" below, `DEDENS_CONTAINER=podman DEDENS_BACK_CPU=2
+DEDENS_LOAD_CPUS=3-5 DEDENS_ROUNDS=<n> just bench-dnsperf 440e39dd <mode>`, base and tree alternating, no query lost
+in any run. Queries/s, min-max (median):
+
+| mode | before (440e39dd) | `timeout_at` forwarded | `Deadline` (kept) |
+| --- | --- | --- | --- |
+| `tcp` | 742k-807k (776k) | 656k-696k (665k) | 822k-883k (852k) |
+| `udp` | 190k-198k (194k) | 184k-195k (194k) | 184k-200k (192k) |
+| `forward` | 34.1k-36.8k (35.7k) | 40.5k-46.3k (44.6k) | 43.1k-48.0k (45.2k) |
+| `forward-tcp` | 48.1k-55.5k (53.7k) | 63.9k-68.5k (68.2k) | 73.3k-76.6k (73.6k) |
+
+- Six rounds for `tcp` forwarded, three for `udp`, five for forwarding; four in the `Deadline` column, six for its
+  `udp` (a four-round run before it had one round at 160k, its base none: a neighbour); each column's base runs
+  beside it, pooled here.
+- A/A control: the base against itself, `forward`, three rounds: 36.2k-36.9k against 35.6k-36.7k. The harness has no
+  bias of its own.
+- TCP 14% slower with `timeout_at` forwarded: a `perf` profile (`DEDENS_PERF=1`) showed `memmove` at 10% of the
+  server's time against 2.5% before, the reads' and writes' futures moved through compio's two nested `async fn` and
+  ours; the clock (vDSO) at 5.9% against 3.7%. `Deadline` polls them in place, one clock read: 10% faster than the
+  base.
+- Forwarding gains 25-35% under both: not explained. The client's exchange was on the seam already (D134); the
+  front server's queries now spawn through `Io::detach` and read one clock. No query lost, every reply NOERROR.
 
 ## dedensd under dnsperf (D48-D53)
 
