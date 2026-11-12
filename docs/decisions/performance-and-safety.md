@@ -117,7 +117,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   adds the loopback server the tests of `dedens` and `dedensd` query, one for both where each kept its own: it serves
   the captures named over UDP and TCP, TLS, QUIC or HTTP/3 (Oblivious `DoH` and CoAP with `odoh` and `doc`), matches a
   question by its name without case and its type, answers with the query's ID and question, and keeps every query with
-  its transport. A package reads the data through the kit, never through another package's directory
+  its transport. Its delays (`delayed`, `slow`) are wall-clock time, slept by the thread that answers: every test that
+  delays drives a `dedensd` process, whose timers run on the system clock in a process no injectable clock reaches, and
+  checks how those timers meet a late answer; the library's own timers are tested on `dedens-sim`'s clock (D133).
+  Rejected for those delays: an injectable clock or an order the test releases (the clock is `dedensd`'s, and what
+  the answer must come after happens inside it). A package reads the data through the kit, never through another
+  package's directory
   (`../dedens-*/tests/`), which tied each test to where another crate kept its files, and no test includes another
   package's file by `#[path]`. cargo-mutants skips the kit, test code as `tests/` is (`.cargo/mutants.toml`). The kit's
   public modules are one per concern, as D160's exceptions: `dnssec`, and `certificates` and `responder` behind their

@@ -1,6 +1,12 @@
 //! A loopback DNS server for the tests of `dedens` and `dedensd`: it answers over UDP and TCP, or TLS, QUIC, HTTP/3
 //! or CoAP, with the captured responses of `testdata/proto` and `testdata/dnssec`, their ID and question set to the
 //! query's, and keeps every query it gets.
+//!
+//! A delay ([`Responder::delayed`], [`Responder::slow`]) is wall-clock time, slept by the thread that answers: each
+//! test that delays drives a `dedensd` process, whose timers run on the system clock in a process no injectable clock
+//! reaches, and checks how those timers meet a late answer (the stale-answer timer, HTTP/3's idle and closing
+//! times, the questions in flight the validator shares). A test of the library's own timers runs on `dedens-sim`'s
+//! clock instead (D133).
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
@@ -164,26 +170,27 @@ impl Responder {
         })
     }
 
-    /// Serves the capture named `name`, its answer records' TTL `ttl`, every query after the first `delay` late.
+    /// Serves the capture named `name`, its answer records' TTL `ttl`.
     ///
     /// # Panics
     ///
     /// As [`Responder::start`], or when `ttl` is no TTL.
     #[must_use]
+    pub fn ttl(name: &str, ttl: u32) -> Self {
+        Self::serve(Upstream::new(canned_with(&[], &[with_ttl(name, ttl)])))
+    }
+
+    /// As [`Responder::ttl`], every query after the first `delay` late.
+    ///
+    /// # Panics
+    ///
+    /// As [`Responder::ttl`].
+    #[must_use]
     pub fn slow(name: &str, ttl: u32, delay: Duration) -> Self {
-        let wire = read(name);
-        let mut message = Message::decode(&wire)
-            .expect("a captured response decodes")
-            .message;
-        let ttl = Ttl::new(ttl).expect("a TTL");
-        for record in &mut message.answer {
-            record.ttl = ttl;
-        }
-        let wire = message.to_vec().expect("it fits");
         Self::serve(Upstream {
             delay,
             undelayed: 1,
-            ..Upstream::new(canned_with(&[], &[wire]))
+            ..Upstream::new(canned_with(&[], &[with_ttl(name, ttl)]))
         })
     }
 
@@ -612,6 +619,19 @@ fn read(name: &str) -> Vec<u8> {
     let path = found.next().expect("a captured response");
     assert_eq!(found.next(), None, "{name}: a capture of both");
     std::fs::read(path).expect("captured response")
+}
+
+/// The capture named `name`, its answer records' TTL `ttl`.
+fn with_ttl(name: &str, ttl: u32) -> Vec<u8> {
+    let wire = read(name);
+    let mut message = Message::decode(&wire)
+        .expect("a captured response decodes")
+        .message;
+    let ttl = Ttl::new(ttl).expect("a TTL");
+    for record in &mut message.answer {
+        record.ttl = ttl;
+    }
+    message.to_vec().expect("it fits")
 }
 
 /// The captured responses named, and the responses in `wires`.

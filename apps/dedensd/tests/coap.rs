@@ -80,7 +80,7 @@ fn ttls(wire: &[u8]) -> Vec<u32> {
 /// format 553; the least TTL is its Max-Age, taken from each TTL.
 #[test]
 fn s4_3_a_fetch_is_answered_2_05_with_the_least_ttl_as_max_age() {
-    let upstream = Responder::slow("a", 300, Duration::ZERO);
+    let upstream = Responder::ttl("a", 300);
     let server = serving(upstream.addr);
     let request = fetch(0x1234, &query_for("a", 0));
     let response = ask(server.addr, &request);
@@ -588,7 +588,7 @@ fn d105_the_next_blocks_of_a_response_are_served_a_bounded_number_of_times() {
 /// as they were.
 #[test]
 fn s4_3_2_a_ttl_is_the_max_age_less_what_was_taken() {
-    let upstream = Responder::slow("a", 120, Duration::ZERO);
+    let upstream = Responder::ttl("a", 120);
     let server = serving(upstream.addr);
     let response = ask(server.addr, &fetch(5, &query_for("a", 0)));
     let mut wire = response.payload.clone();
