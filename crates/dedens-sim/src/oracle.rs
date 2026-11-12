@@ -7,7 +7,8 @@
 //! or its stale answer TTL when the answer is stale. A negative answer keeps the SOA the server sent. SERVFAIL
 //! without an answer is the defined failure, unless the scenario says the path is live; it and the response codes
 //! a scenario accepts carry no answer, no AD, and no authority or additional record the server did not send.
-//! DNSSEC records the stub did not ask for (no DO) are not expected, and must not come (RFC 4035 §3.2.1).
+//! DNSSEC records the stub did not ask for (no DO) are not expected, and must not come (RFC 4035 §3.2.1); with DO,
+//! those of the authority section, a denial's proofs, come whole (RFC 4035 §3.1.3).
 
 use dedens_cache::Config;
 use dedens_proto::edns::{EdnsOption, InfoCode};
@@ -180,13 +181,16 @@ fn matches(
         &needed,
         !cut,
     )?;
+    // The proofs of a denial and their signatures go to a query with DO (RFC 4035 §3.1.3); a server may leave out
+    // the rest of the authority section.
+    let proof = |record: &Record<'_>| rules.dnssec && withheld(record, question);
     section(
         "authority",
         &held.authority,
         &message.authority,
         &ceiling,
-        &needed,
-        false,
+        &proof,
+        !cut,
     )?;
     section(
         "additional",
@@ -487,6 +491,35 @@ mod tests {
         // Without it they are not expected, and must not come (RFC 4035 §3.2.1).
         assert_eq!(judge(&held, &plain, &question, &bare), Ok(()));
         assert!(judge(&held, &plain, &question, &signed).is_err());
+    }
+
+    #[test]
+    fn a_denial_to_a_query_with_do_keeps_its_proofs() {
+        let denial = dedens_testkit::dnssec::response("nxdomain_nsec");
+        let question = denial.questions[0].clone();
+        let held = [Expected::of(&denial)];
+        let dnssec = Rules {
+            dnssec: true,
+            ..Rules::default()
+        };
+        let unproven = |rtype| {
+            let mut cut = denial.clone();
+            cut.authority.retain(|r| r.rtype() != rtype);
+            assert_ne!(
+                cut.authority.len(),
+                denial.authority.len(),
+                "{rtype:?} held"
+            );
+            cut
+        };
+        assert_eq!(judge(&held, &dnssec, &question, &denial), Ok(()));
+        assert!(judge(&held, &dnssec, &question, &unproven(RecordType::NSEC)).is_err());
+        assert!(judge(&held, &dnssec, &question, &unproven(RecordType::RRSIG)).is_err());
+        // Without DO, none of them come.
+        let plain = Rules::default();
+        let mut bare = denial.clone();
+        bare.authority.retain(|r| !withheld(r, &question));
+        assert_eq!(judge(&held, &plain, &question, &bare), Ok(()));
     }
 
     #[test]

@@ -20,7 +20,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the question (same response code and records, each once, no more authority or additional record, TTLs no higher
     than the server's, or the `floor` of the scenario's rules when it is higher, which must be the `min_ttl` of
     the pipeline's cache; the SOA of a negative answer; AD as the scenario says; RRSIG, NSEC and NSEC3 records only
-    when the stub set DO, as the upstream server sends them); a stale copy (EDE 3, RFC 8914, its TTLs bounded by
+    when the stub set DO, then all of the authority section's, as the upstream server sends them); a stale copy (EDE 3, RFC 8914, its TTLs bounded by
     the rules' `stale_ttl`, which must be the cache's `stale_answer_ttl`); SERVFAIL, or a response code the
     scenario accepts (never NOERROR), with no answer, no AD and no record the servers did not send; a SERVFAIL is
     refused when the scenario says the path is up; or the failure or I/O error the real client returns. A TC
