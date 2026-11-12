@@ -443,7 +443,7 @@ fn a_small_edns_size_has_the_stub_ask_again_over_tcp() {
 
 /// The property of the family: whatever the seed does to the network and the hosts, each query ends by its
 /// deadline in what an upstream server holds, SERVFAIL, or a failure (the checks of the stub), and the run
-/// passes.
+/// passes. A last query, once the fault is over, keeps the run going until both faults are made.
 #[test]
 fn whatever_the_seed_breaks_queries_end_well() {
     seed::each(SEEDS, |seed| {
@@ -510,6 +510,8 @@ fn whatever_the_seed_breaks_queries_end_well() {
             Carrier::Tcp
         };
         world.client(async move |stub| {
+            // The client starts after the run does: `begun + end` is past `end`.
+            let begun = tokio::time::Instant::now();
             for (name, qtype) in [
                 ("example.com", RecordType::A),
                 ("google.com", RecordType::TXT),
@@ -517,6 +519,9 @@ fn whatever_the_seed_breaks_queries_end_well() {
             ] {
                 stub.ask(question(name, qtype), carrier).await?;
             }
+            tokio::time::sleep_until(begun + end).await;
+            stub.ask(question("example.com", RecordType::A), carrier)
+                .await?;
             Ok(())
         });
         world.run().expect("the run passes its checks");

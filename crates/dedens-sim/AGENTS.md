@@ -13,6 +13,8 @@ scenario. A run must replay from its seed; these rules keep it so.
   D133's determinism list: a family that adds one calls `seed::in_two_processes(module_path!(), ..)` from its own
   module, with a scenario that uses it.
 - Scenarios go through `seed::each`, never a literal seed alone.
+- A run that ends before the time of a fault fails (`World::run`): a client whose work may end first waits for
+  the last fault (`sleep_until(begun + at)`, `begun` taken when its body starts).
 - A scenario that needs something the driver lacks adds it to `src/`, small, rather than a copy in `tests/`.
 - An upstream server or an event count two families use is in `tests/util.rs` (`answers`, `served`, `forwarded`); a
   family's own variant is named for how it differs (`forwarded_to`, `tried_over_udp`), never a shared name.

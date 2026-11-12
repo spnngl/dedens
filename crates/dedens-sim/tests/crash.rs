@@ -83,8 +83,7 @@ fn forwarded_to(events: &[Event], resolver: IpAddr, server: SocketAddr) -> usize
     )
 }
 
-/// How many queries the clients asked, and how many ended.
-/// Where `fault` is in the trace, or `None` if the run ended before its time. The trace's order, not the times: an
+/// Where `fault` is in the trace, or `None` if the run has no such fault. The trace's order, not the times: an
 /// event at the instant of a fault may come before or after it, and `World::run` makes a fault at the first step at
 /// or past its time.
 fn position(events: &[Event], fault: Fault) -> Option<usize> {
@@ -92,6 +91,7 @@ fn position(events: &[Event], fault: Fault) -> Option<usize> {
     events.iter().position(|event| event.what == fault)
 }
 
+/// How many queries the clients asked, and how many ended.
 fn asked_and_ended(events: &[Event]) -> (usize, usize) {
     let asked = events
         .iter()
@@ -233,6 +233,7 @@ fn a_second_close_fails_the_exchange() {
             }
             let (resolver, upstreams) = (world.resolver.ip(), world.upstreams.clone());
             world.client(async move |stub| {
+                let begun = tokio::time::Instant::now();
                 let outcome = stub
                     .ask(question("example.com", RecordType::A), Carrier::Tcp)
                     .await?;
@@ -246,6 +247,8 @@ fn a_second_close_fails_the_exchange() {
                     Rcode::SERVFAIL
                 };
                 assert_eq!(answer.message.rcode(), rcode, "{answer:?}");
+                // The restarts go on to the last, which a backup's early answer would leave unmade.
+                tokio::time::sleep_until(begun + first + 6 * 300 * MS).await;
                 Ok(())
             });
             let events = world.run().expect("the run passes its checks");
@@ -424,16 +427,23 @@ fn whatever_the_seed_crashes_queries_end_well() {
             Carrier::Tcp
         };
         let pause = world.pick(100 * MS, 3 * SECOND);
+        let last = back.unwrap_or(at);
         world.client(async move |stub| {
+            // The client starts after the run does: `begun + last` is past `last`.
+            let begun = tokio::time::Instant::now();
             for (name, qtype) in QUESTIONS.into_iter().cycle().take(6) {
                 stub.ask(question(name, qtype), carrier).await?;
                 tokio::time::sleep(pause).await;
             }
+            // A last query after the last fault, which the run then always makes.
+            tokio::time::sleep_until(begun + last).await;
+            stub.ask(question(QUESTIONS[0].0, QUESTIONS[0].1), carrier)
+                .await?;
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
         let (asked, ended) = asked_and_ended(&events);
-        assert_eq!((asked, ended), (6, 6), "{events:#?}");
+        assert_eq!((asked, ended), (7, 7), "{events:#?}");
         // The crashed host does nothing while it is down; what it sent before may still land, on another host.
         let crash = position(&events, Fault::Crash(server));
         let bounce = position(&events, Fault::Bounce(server));
