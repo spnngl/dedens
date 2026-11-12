@@ -37,10 +37,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `dedens`'s output, its `-v` events (both after `--color`) and `dedensd`'s text log, so `CLICOLOR`,
   `CLICOLOR_FORCE` and `TERM=dumb` steer them alike. Rejected: any value (against the convention); a hand-written
   check for stderr (it took any value and drifted from anstream on the same run's stdout).
-- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage,
-  a file an option names that cannot be used too, found before any query (`+odoh-config`, D79, `run::Usage`);
-  9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
-  which leaves the other results.
+- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage:
+  each mistake in the user's input, of the command line or found by the run before any query (`run::Usage`): a
+  name that is not one, a server the run reads (its port, its TLS name, `+doc-discover` without a CoAP server with
+  no path, D95), AXFR/IXFR, two queries with one id (D177), a file an option names that cannot be used (`-f` and its
+  queries' servers, options and expectations, `--tls-ca`, `+trust-anchor`, `+odoh-config` D79, the `--save-wire`
+  directory); 9 no reply (timeout, a refused or reset connection); 10 any other error: the network or a server
+  failing (a certificate without the name asked for too), no server in `resolv.conf`, a host name without an
+  address, a transport not built in, a failed `--save-wire` write, which leaves the other results.
 - D34 (amended by D76) Query file schema (D36): top-level `server` and `options`, then `queries`, each with `id` (the
   `--save-wire` file name, so no `/`, `\`, `.` or `..`, unique in the file; default `name_type`, `root_type`
   for the root), `name`, `type`, its own `server`/`options`, and `expect`: `rcode`, `flags` that must be set,
@@ -75,7 +79,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   A server's part of the id is its address, the transport its scheme forces (`+tls`, `+quic`, `+https`, `+odoh`,
   `+coap`), then the path of a `DoH` template other than `/dns-query` or of a CoAP URI, each `/` a `_`:
   `example.com_A@127.0.0.1:8443+https_a` for `https://127.0.0.1:8443/a`. Two queries with one id, as `dedens
-  example.com example.com` makes, are refused before any is asked: `two queries with id example.com_A`, exit 10,
+  example.com example.com` makes, are refused before any is asked: `two queries with id example.com_A`, exit 2 (D33),
   as D34 refuses them in a file. Rejected: asking the duplicate once, since the command line then says something
   other than what runs; numbering the files, since the id names the query. `servers disagree` names each server
   by that part of its id: two paths at one address told apart. Tests: `apps/dedens/tests/files.rs`

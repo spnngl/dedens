@@ -358,7 +358,7 @@ fn coap_doc_discover_ends_at_the_timeout_of_the_query() {
 }
 
 /// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a server
-/// over another transport, or a CoAP one with a path of its own, is not asked for its resource.
+/// over another transport, or a CoAP one with a path of its own, is a usage error (D33) before any query.
 #[cfg(feature = "doc")]
 #[test]
 fn coap_doc_discover_in_a_query_file_needs_a_coap_server_with_no_path() {
@@ -378,7 +378,7 @@ fn coap_doc_discover_in_a_query_file_needs_a_coap_server_with_no_path() {
             .args(["-f", "-", "+short"])
             .write_stdin(file)
             .assert()
-            .failure()
+            .code(2)
             .stderr(contains("+doc-discover needs a CoAP server with no path"));
     }
     assert!(udp.queries().is_empty() && coap.queries().is_empty());
@@ -437,18 +437,25 @@ fn tls_and_quic_to_one_address_have_their_own_ids() {
         );
 }
 
+/// D33: a `--tls-ca` file that cannot be read or holds no certificate is a usage error.
 #[test]
 fn a_ca_file_without_a_certificate_is_refused() {
     let empty = tempfile::NamedTempFile::new().expect("a file");
-    dedens()
-        .arg(format!("--tls-ca={}", empty.path().display()))
-        .args(["@tls://127.0.0.1:1", "example.com"])
-        .assert()
-        .code(10)
-        .stderr(contains(format!(
-            "no certificate in {}",
-            empty.path().display()
-        )));
+    let empty = empty.path().display();
+    for (file, error) in [
+        (empty.to_string(), format!("no certificate in {empty}")),
+        (
+            "/nonexistent/ca.pem".to_owned(),
+            "cannot read certificates from /nonexistent/ca.pem".to_owned(),
+        ),
+    ] {
+        dedens()
+            .arg(format!("--tls-ca={file}"))
+            .args(["@tls://127.0.0.1:1", "example.com"])
+            .assert()
+            .code(2)
+            .stderr(contains(error));
+    }
 }
 
 #[test]

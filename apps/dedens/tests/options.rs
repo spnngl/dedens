@@ -141,12 +141,40 @@ fn the_port_applies_to_a_server_without_one() {
     assert_eq!(server.queries().len(), 2);
 }
 
+/// D33: a mistake in a name or a server only the run reads is a usage error, found before any query: the server
+/// given right beside it is not asked.
+#[test]
+fn usage_errors_the_run_finds_exit_2_before_any_query() {
+    let server = Responder::start(&["a"]);
+    let at = server.at();
+    for (args, error) in [
+        (&["example.com", "a..b"][..], "a..b: not a domain name"),
+        (&["@127.0.0.1:x", "example.com"], "not a port"),
+        (
+            &["@127.0.0.1:53:53", "example.com"],
+            "not an address or a host name",
+        ),
+        (
+            &["@tls://127.0.0.1#not a name", "example.com"],
+            "not a name for TLS",
+        ),
+    ] {
+        dedens()
+            .arg(&at)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(contains(error));
+    }
+    assert_eq!(server.queries().len(), 0);
+}
+
 #[test]
 fn zone_transfers_are_refused() {
     dedens()
         .args(["@192.0.2.1", "example.com", "AXFR"])
         .assert()
-        .code(10)
+        .code(2)
         .stderr(contains("zone transfers"));
 }
 

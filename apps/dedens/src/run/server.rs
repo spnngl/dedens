@@ -14,7 +14,7 @@ use dedens_net::resolv_conf::ResolvConf;
 use dedens_proto::Transport;
 use dedens_scenario::Options;
 
-use super::Endpoint;
+use super::{Endpoint, Usage};
 use crate::args::Cli;
 
 /// The resolver configuration, from `DEDENS_RESOLV_CONF` when set (for tests), else /etc/resolv.conf.
@@ -121,6 +121,11 @@ pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result
 /// else its address. With `+odoh-proxy`, the server must be an `https://` one: the target of Oblivious `DoH`
 /// through that proxy. Without a port, `port`, else 443 over HTTPS, else 5683 over CoAP, else 853 over TLS or QUIC
 /// (`options` or a scheme), else 53.
+///
+/// # Errors
+///
+/// A [`Usage`] one for a mistake in `named` or `options`, `+doc-discover` without a CoAP server with no path among
+/// them (D95); otherwise, no server to read or no address for a host name.
 pub(super) fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
@@ -136,7 +141,7 @@ pub(super) fn server(
             })?,
     };
     let given = text;
-    refuse_conflicts(given, options)?;
+    refuse_conflicts(given, options).map_err(Usage)?;
     let (text, forced) = scheme(text);
     let (text, name) = match text.rsplit_once('#') {
         Some((text, name)) => (text, Some(name)),
@@ -167,7 +172,8 @@ pub(super) fn server(
     let port = match written {
         Some(written) => written
             .parse()
-            .with_context(|| format!("server {given}: not a port"))?,
+            .with_context(|| format!("server {given}: not a port"))
+            .map_err(Usage)?,
         None => port.unwrap_or(match (doh, coap, encrypted) {
             (true, ..) => HTTPS_PORT,
             (_, true, _) => COAP_PORT,
@@ -181,6 +187,36 @@ pub(super) fn server(
         .map_or(host, |(address, _)| address)
         .parse::<IpAddr>()
         .is_ok();
+    if !literal && (host.is_empty() || host.contains([':', '[', ']', '/'])) {
+        bail!(Usage(anyhow!(
+            "server {given}: not an address or a host name"
+        )));
+    }
+    let name = name
+        .or((!literal).then_some(host))
+        .filter(|_| encrypted)
+        .map(|name| ServerName::try_from(name.to_owned()))
+        .transpose()
+        .with_context(|| format!("server {given}: not a name for TLS"))
+        .map_err(Usage)?;
+    let template = doh
+        .then(|| {
+            let path = url_path
+                .as_deref()
+                .or(options.https_path())
+                .unwrap_or(DEFAULT_PATH);
+            template(host, port, path).with_context(|| format!("server {given}"))
+        })
+        .transpose()
+        .map_err(Usage)?;
+    // The segments of the path of a `coap://` URI (RFC 7252 §6.4), the root path having none.
+    let docpath = path_segments(url_path.as_deref().filter(|_| coap).unwrap_or_default());
+    // The resource is found at the server, so it is a CoAP one and not given (D95).
+    if options.doc_discover == Some(true) && (!coap || !docpath.is_empty()) {
+        bail!(Usage(anyhow!(
+            "server {given}: +doc-discover needs a CoAP server with no path"
+        )));
+    }
     let addr = match host.parse::<IpAddr>() {
         Ok(ip) => SocketAddr::new(ip, port),
         // A host name, or an address with its zone, which the system resolver reads.
@@ -190,23 +226,6 @@ pub(super) fn server(
             .next()
             .ok_or_else(|| anyhow!("server {given}: no address"))?,
     };
-    let name = name
-        .or((!literal).then_some(host))
-        .filter(|_| encrypted)
-        .map(|name| ServerName::try_from(name.to_owned()))
-        .transpose()
-        .with_context(|| format!("server {given}: not a name for TLS"))?;
-    let template = doh
-        .then(|| {
-            let path = url_path
-                .as_deref()
-                .or(options.https_path())
-                .unwrap_or(DEFAULT_PATH);
-            template(host, port, path).with_context(|| format!("server {given}"))
-        })
-        .transpose()?;
-    // The segments of the path of a `coap://` URI (RFC 7252 §6.4), the root path having none.
-    let docpath = path_segments(url_path.as_deref().filter(|_| coap).unwrap_or_default());
     Ok(Endpoint {
         server: Server {
             addr,
@@ -220,7 +239,8 @@ pub(super) fn server(
 }
 
 /// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
-/// without the option, an error for a target that is not an `https://` server, or without the `odoh` feature (D69).
+/// without the option, a [`Usage`] error for a target that is not an `https://` server or a proxy that is not an
+/// `https://` URI, an error without the `odoh` feature (D69).
 fn oblivious_proxy(
     options: &Options,
     forced: Option<Transport>,
@@ -233,10 +253,12 @@ fn oblivious_proxy(
         bail!("+odoh-proxy: built without the odoh feature");
     }
     if forced != Some(Transport::Https) {
-        bail!("server {given}: +odoh-proxy needs an https:// target server");
+        bail!(Usage(anyhow!(
+            "server {given}: +odoh-proxy needs an https:// target server"
+        )));
     }
     if !uri.starts_with("https://") {
-        bail!("+odoh-proxy {uri}: not an https:// URI");
+        bail!(Usage(anyhow!("+odoh-proxy {uri}: not an https:// URI")));
     }
     Ok(Some(Box::new(
         server(Some(uri), None, None, &Options::default())?.server,

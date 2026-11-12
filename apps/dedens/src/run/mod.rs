@@ -126,51 +126,30 @@ impl Route {
     }
 }
 
-/// A usage error the run finds, before any query, in what clap cannot read: a file an option names. Exit 2 (D33).
+/// A mistake in the user's input that the run finds, before any query, in what clap cannot read: a file an option
+/// names, a query file, its options and servers, a name. Exit 2 (D33); the network or a server failing never is one.
 #[derive(Debug)]
-pub(crate) struct Usage(String);
+pub(crate) struct Usage(anyhow::Error);
 
 impl std::fmt::Display for Usage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "{:#}", self.0)
     }
 }
 
+impl std::error::Error for Usage {}
+
 /// Runs `cli`; an error is one of the run as a whole, before any query or while printing, a [`Usage`] one among them.
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
-    let mut jobs = match &cli.file {
-        Some(path) => file_jobs(cli, path)?,
-        None => command_line_jobs(cli)?,
-    };
-    let mut judges = Judges::new()?;
-    for job in &mut jobs {
-        job.judge = judges.of(&job.options)?;
-    }
-    if let Some(job) = jobs
-        .iter()
-        .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
-    {
-        bail!("{}: zone transfers are not supported yet", job.id);
-    }
-    // Each report its own id: its `--save-wire` file and its name among the servers (D177).
-    let mut ids = HashSet::new();
-    for job in &jobs {
-        let id = match &job.route {
-            Route::Servers(servers) => servers.iter().map(|e| job.id_at(Some(e))).collect(),
-            Route::Trace(_) => vec![job.id.clone()],
-        }
-        .into_iter()
-        .find(|id| !ids.insert(id.clone()));
-        if let Some(id) = id {
-            bail!("two queries with id {id}");
-        }
-    }
+    let jobs = jobs(cli)?;
     if let Some(dir) = &cli.save_wire {
-        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("cannot create {}", dir.display()))
+            .map_err(Usage)?;
     }
     let format = cli.output.format();
     let mut out = anstream::AutoStream::new(io::stdout().lock(), cli.output.color());
-    let trust = cli.trust()?;
+    let trust = cli.trust().map_err(Usage)?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new().trusting(trust));
@@ -241,6 +220,41 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         anyhow::Ok(code)
     })?;
     Ok(ExitCode::from(code))
+}
+
+/// The queries of `cli`, of its words or its query file, each with its validator, checked before any is asked.
+fn jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
+    let mut jobs = match &cli.file {
+        Some(path) => file_jobs(cli, path)?,
+        None => command_line_jobs(cli)?,
+    };
+    let mut judges = Judges::new()?;
+    for job in &mut jobs {
+        job.judge = judges.of(&job.options).map_err(Usage)?;
+    }
+    if let Some(job) = jobs
+        .iter()
+        .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
+    {
+        bail!(Usage(anyhow!(
+            "{}: zone transfers are not supported yet",
+            job.id
+        )));
+    }
+    // Each report its own id: its `--save-wire` file and its name among the servers (D177).
+    let mut ids = HashSet::new();
+    for job in &jobs {
+        let id = match &job.route {
+            Route::Servers(servers) => servers.iter().map(|e| job.id_at(Some(e))).collect(),
+            Route::Trace(_) => vec![job.id.clone()],
+        }
+        .into_iter()
+        .find(|id| !ids.insert(id.clone()));
+        if let Some(id) = id {
+            bail!(Usage(anyhow!("two queries with id {id}")));
+        }
+    }
+    Ok(jobs)
 }
 
 /// Prints the responses of query `id` and saves them, then the error that ended it; returns the exit code they
@@ -433,7 +447,8 @@ async fn ask(
 
 /// `endpoint`, and with `+doc-discover` the path of its `DoC` resource, the first its `/.well-known/core` lists
 /// with the resource type `core.dns` (RFC 9953 §3.1, D95), as a URI path, asked within the query's timeout (D109).
-/// The server is the one named: never found, so what it lists is as trusted as it is (§3).
+/// The server is the one named: never found, so what it lists is as trusted as it is (§3). It is a CoAP server with
+/// no path, as [`server()`] refused any other before the run.
 async fn discovered<'a>(
     client: &Client,
     job: &Job,
@@ -444,9 +459,6 @@ async fn discovered<'a>(
         return Ok((Cow::Borrowed(endpoint), None));
     }
     let address = endpoint.server.addr;
-    if options.transport != Transport::Coap || !endpoint.server.docpath.is_empty() {
-        bail!("server {address}: +doc-discover needs a CoAP server with no path");
-    }
     let paths = client
         .discover_doc(address, options.timeout)
         .await
@@ -481,16 +493,18 @@ fn pin_odoh_configs(client: &Client, jobs: &[Job]) -> anyhow::Result<()> {
         };
         let configs = match read.entry(file) {
             std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
-            std::collections::hash_map::Entry::Vacant(new) => new
-                .insert(std::fs::read(file).with_context(|| {
-                    Usage(format!("+odoh-config {file}: cannot read the file"))
-                })?),
+            std::collections::hash_map::Entry::Vacant(new) => new.insert(
+                std::fs::read(file)
+                    .with_context(|| format!("+odoh-config {file}: cannot read the file"))
+                    .map_err(Usage)?,
+            ),
         };
         for endpoint in endpoints.iter().filter(|endpoint| endpoint.proxy.is_some()) {
             // The target is an `https://` server, so it has the template pinning needs: only the bytes can fail.
             client
                 .pin_odoh_configs(endpoint.server.clone(), configs)
-                .with_context(|| Usage(format!("+odoh-config {file}: not key configurations")))?;
+                .with_context(|| format!("+odoh-config {file}: not key configurations"))
+                .map_err(Usage)?;
         }
     }
     Ok(())
@@ -602,7 +616,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     let mut jobs = Vec::new();
     for (text, types) in lookups {
         let (ascii, warnings) =
-            idn::to_ascii(text).map_err(|e| anyhow!("{text}: not a domain name: {e}"))?;
+            idn::to_ascii(text).map_err(|e| Usage(anyhow!("{text}: not a domain name: {e}")))?;
         for warning in warnings {
             eprintln!("dedens: warning: {warning}");
         }
@@ -610,7 +624,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
             (Some(conf), true) => conf.candidates(&ascii),
             _ => ascii.parse().ok().map(|name| vec![name]),
         };
-        let candidates = candidates.ok_or_else(|| anyhow!("{text}: not a domain name"))?;
+        let candidates = candidates.ok_or_else(|| Usage(anyhow!("{text}: not a domain name")))?;
         jobs.extend(
             types
                 .into_iter()
@@ -623,22 +637,27 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     Ok(jobs)
 }
 
-/// The queries of the file of `-f`, with the options of the command line over theirs.
+/// The queries of the file of `-f`, with the options of the command line over theirs. The file, its queries, their
+/// options and servers are the user's input: a mistake in them is a [`Usage`] error.
 fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
-    let mut text = String::new();
-    if path == Path::new("-") {
-        io::stdin().read_to_string(&mut text)?;
+    let text = if path == Path::new("-") {
+        let mut text = String::new();
+        io::stdin().read_to_string(&mut text).map(|_| text)
     } else {
-        text = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-    }
-    let file = QueryFile::parse(&text).with_context(|| format!("{}", path.display()))?;
+        std::fs::read_to_string(path)
+    };
+    let text = text
+        .with_context(|| format!("cannot read {}", path.display()))
+        .map_err(Usage)?;
+    let file = QueryFile::parse(&text)
+        .with_context(|| format!("{}", path.display()))
+        .map_err(Usage)?;
     if let Some(id) = cli
         .only
         .iter()
         .find(|id| !file.queries.iter().any(|q| q.id() == **id))
     {
-        bail!("{}: no query with id {id}", path.display());
+        bail!(Usage(anyhow!("{}: no query with id {id}", path.display())));
     }
     let missing = file.server.is_none() && file.queries.iter().any(|q| q.server.is_none());
     let conf = (cli.servers().is_empty() && missing)
@@ -654,14 +673,19 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
                 .clone()
                 .or(query.options)
                 .or(file.options.clone());
-            options.check().with_context(|| format!("{id}"))?;
+            options
+                .check()
+                .with_context(|| format!("{id}"))
+                .map_err(Usage)?;
             if query
                 .expect
                 .as_ref()
                 .is_some_and(|expect| expect.dnssec.is_some())
                 && !options.validating()
             {
-                bail!("{id}: the dnssec expectation needs the validate option");
+                bail!(Usage(anyhow!(
+                    "{id}: the dnssec expectation needs the validate option"
+                )));
             }
             let named = query.server.as_deref().or(file.server.as_deref());
             Ok(Job {
