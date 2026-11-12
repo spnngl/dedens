@@ -87,8 +87,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D47 (amends D42; amended by D64, D90, D91, D113) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
-  replies (reading waits), and 10 s for the queue to empty from its first reply (a client that reads slower than
-  it asks loses its connection). A query waiting upstream holds no reply buffer until a reply is made. A QUIC
+  replies (reading waits), and 10 s for each write of the queued replies (a client that stops reading loses its
+  connection; one that reads slower than it asks waits on the 128 KiB). A query waiting upstream holds no reply buffer until a reply is made. A QUIC
   Initial from an address not yet validated is answered with a Retry (RFC 9000 §8.1.2) and takes no connection
   slot, so forged sources cannot fill them; always on, at the cost of a round trip for a first connection (a
   client holding a token from an earlier one skips it). A QUIC connection (DoQ, HTTP/3) is a TCP one in these
@@ -273,8 +273,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   three formats.
 - D64 (amends D44, D47, D54, D55, D57; amended by D104, D107, D121) Review fixes to D44, D47, D54, D55 and D57.
   - Limits (D47): a TCP connection bounds the bytes of its queued replies, not their count: reading waits while
-    more than 128 KiB wait for the writer, and the queue must empty within 10 s of its first reply, else the
-    connection closes (a client asking faster than it reads). Replies of upstream queries are queued without
+    more than 128 KiB wait for the writer, and each write of the queued replies must end within 10 s, else the
+    connection closes (a client that stops reading). Not 10 s for the queue to empty: a client that keeps asking
+    and reads all it is sent keeps it from emptying, and lost its connection at 10 s of steady load. Replies of upstream queries are queued without
     waiting, so none holds its 65535-byte buffer meanwhile; the worst left is 64 replies of 64 KiB in flight past
     the bound. A TCP query the thread has no upstream slot for gets SERVFAIL (`Pipeline::abandon`) instead of
     closing the connection; a UDP one is still dropped. A UDP receive that fails right after another waits
