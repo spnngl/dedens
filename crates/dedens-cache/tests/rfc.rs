@@ -245,9 +245,9 @@ mod negative {
     //! RFC 2308 negative caching, and the TTL rules of RFC 1035 §3.2.1 and RFC 2181 §8.
 
     use dedens_cache::{Cache, Config, ConfigError, Lookup, NotCached, StalePolicy};
-    use dedens_proto::rdata::RData;
-    use dedens_proto::{Flags, Message, Rcode, RecordType, Ttl};
-    use dedens_testkit::captured;
+    use dedens_proto::rdata::{Opaque, RData};
+    use dedens_proto::{Flags, MAX_NAME_LEN, Message, Rcode, RecordType, Ttl};
+    use dedens_testkit::{captured, dns};
 
     use crate::util::{
         T0, a, insert, lookup, min_cache, query, query_of, record, response, retimed, small_cache,
@@ -688,6 +688,39 @@ mod negative {
             vec![],
         );
         insert(&cache, &q, &r, T0).unwrap();
+    }
+
+    /// RFC 6672 §3.2 step 3C, RFC 1034 §3.6.2: below a DNAME's owner a question for DNAME, as for any type but
+    /// CNAME, restarts at the target of the CNAME the DNAME makes, so its answer ends there. With the names of RFC
+    /// 6672 §6.1, `www.frobozz-division.acme.example.com` owns no DNAME: NODATA, denied by the target's zone, not by
+    /// the zone of the name asked.
+    #[test]
+    fn a_dname_question_follows_the_cname_a_dname_makes() {
+        let cache = small_cache();
+        let qname = "www.frobozz.example.net";
+        let q = query(1, qname, RecordType::DNAME);
+        let mut wire = [0; MAX_NAME_LEN];
+        let target = dns("frobozz-division.acme.example.com");
+        let dname = Opaque::new(RecordType::DNAME, target.to_wire(&mut wire)).expect("one name");
+        let r = |zone| {
+            response(
+                qname,
+                RecordType::DNAME,
+                Rcode::NOERROR,
+                vec![
+                    record("frobozz.example.net", 3600, &RData::Opaque(dname.clone())),
+                    cname(qname, 3600, "www.frobozz-division.acme.example.com"),
+                ],
+                vec![soa(zone, 3600, 60)],
+            )
+        };
+        assert_eq!(
+            insert(&cache, &q, &r("example.net"), T0),
+            Err(NotCached::NoSoa)
+        );
+        insert(&cache, &q, &r("acme.example.com"), T0).unwrap();
+        let (_, served) = lookup(&cache, &q, T0, NEVER);
+        assert_eq!(ttls(&served.unwrap()), [60, 60, 60]);
     }
 }
 

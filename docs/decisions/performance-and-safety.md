@@ -66,7 +66,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the query's DO and CD. Checked (RFC 2308, no TC, no violations, no client subnet scope above 0, RFC 7871
   §7.3.1) and encoded once without OPT, its TTL offsets (and the cuts of D116) after it in the same allocation. Negative (NXDOMAIN, or no
   answer of the type asked, after any CNAME chain) only with an SOA at or above the chain's last name, and the
-  chain's TTLs within the negative TTL (RFC 2308 §2, §5). A hit copies and patches ID, flags (AA and Z clear, AD
+  chain's TTLs within the negative TTL (RFC 2308 §2, §5). The chain is followed for every type asked but CNAME and
+  ANY (RFC 1034 §3.6.2), DNAME included: below a DNAME's owner the CNAME it makes restarts the query at its target
+  whatever the type (RFC 6672 §3.2 step 3C), so a DNAME question there is answered, or denied, at the chain's end. A hit copies and patches ID, flags (AA and Z clear, AD
   only when asked), question case and TTLs, never above the stored TTL; one too large for the buffer is cut to it in the same way (D116). Serve-stale (RFC 8767: 30 s answer TTL, 3 days kept) and failure holds (RFC
   9520: 5 s doubling to 300 s, 30 s with stale data, never above 300 s; a failure during a hold does not count, a
   quiet spell over 300 s starts over); the caller decides when stale data may answer.
