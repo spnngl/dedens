@@ -369,10 +369,11 @@ fn for_subnet(message: &Message<'_>) -> bool {
 /// §8). The raise keeps data past the time its zone allows (RFC 1035 §3.2.1: how long a record may be cached): a
 /// deviation, chosen by the operator.
 ///
-/// A negative answer (RFC 2308 §2: NXDOMAIN, or NODATA, NOERROR without a record of the type asked, both maybe
-/// after a CNAME chain) lives at most as long as its SOA's TTL and MINIMUM allow, the records of the chain included,
-/// raised to `floor` as well and within `max_negative_ttl` (§5). The SOA must be at or above the name the answer
-/// ends at: the zone that denies it (§2.1, §2.2).
+/// A negative answer (RFC 2308 §2: NXDOMAIN, or NODATA, NOERROR without a record of the type asked at the name the
+/// answer ends at, both maybe after a CNAME chain) lives at most as long as its SOA's TTL and MINIMUM allow, the
+/// records of the chain included, raised to `floor` as well and within `max_negative_ttl` (§5). The SOA must be at
+/// or above the name the answer ends at: the zone that denies it (§2.1, §2.2). A record of the type asked at
+/// another name is no answer (§2.2: "no relevant answers").
 fn lifetime(
     message: &Message<'_>,
     question: &Question<'_>,
@@ -388,12 +389,11 @@ fn lifetime(
             .chain(&message.additional)
     };
     let smallest = records().map(|r| r.ttl.get()).min().unwrap_or(u32::MAX);
-    let answered = message
-        .answer
-        .iter()
-        .any(|r| question.qtype == RecordType::ANY || r.rtype() == question.qtype);
+    let end = chain_end(question, &message.answer);
+    let answered = message.answer.iter().any(|r| {
+        r.name == end && (question.qtype == RecordType::ANY || r.rtype() == question.qtype)
+    });
     let (smallest, cap) = if rcode == Rcode::NXDOMAIN || !answered {
-        let end = chain_end(&question.name, &message.answer);
         let soa = message
             .authority
             .iter()
@@ -416,16 +416,25 @@ fn lifetime(
     }
 }
 
-/// The name a CNAME chain from `qname` ends at, following the CNAME records of `answer` in order, as servers
-/// write them (RFC 1034 §4.3.2 step 3a).
-fn chain_end<'m>(qname: &Name<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
-    let mut name = qname.clone();
-    for record in answer {
-        if record.rtype() == RecordType::CNAME
-            && record.name == name
-            && let RData::Cname(target) = record.data()
-        {
-            name = target;
+/// The name the answer to `question` ends at: its name, after the CNAME records of `answer` in whatever order they
+/// come, at most one hop for each, so that a loop ends. A question for CNAME or ANY stops at the first CNAME, which
+/// answers it (RFC 1034 §4.3.2 step 3a).
+fn chain_end<'m>(question: &Question<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
+    let mut name = question.name.clone();
+    if matches!(question.qtype, RecordType::CNAME | RecordType::ANY) {
+        return name;
+    }
+    let targets: HashMap<&Name<'_>, Name<'m>> = answer
+        .iter()
+        .filter_map(|record| match record.data() {
+            RData::Cname(target) => Some((&record.name, target)),
+            _ => None,
+        })
+        .collect();
+    for _ in 0..targets.len() {
+        match targets.get(&name) {
+            Some(target) => name = target.clone(),
+            None => break,
         }
     }
     name

@@ -626,6 +626,68 @@ mod negative {
         );
         insert(&cache, &q, &r, T0).unwrap();
     }
+
+    /// §2.2: a record of the type asked at a name the chain does not end at is no relevant answer: the response is
+    /// NODATA, cached only with its SOA and within the negative cap.
+    #[test]
+    fn a_record_off_the_chain_is_no_answer() {
+        let cache = small_cache();
+        let q = query(1, "www.example", RecordType::A);
+        let answer = || {
+            vec![
+                cname("www.example", 86_400, "host.example"),
+                a("other.example", 86_400, 1),
+            ]
+        };
+        let r = response(
+            "www.example",
+            RecordType::A,
+            Rcode::NOERROR,
+            answer(),
+            vec![],
+        );
+        assert_eq!(insert(&cache, &q, &r, T0), Err(NotCached::NoSoa));
+        let r = response(
+            "www.example",
+            RecordType::A,
+            Rcode::NOERROR,
+            answer(),
+            vec![soa("example", 86_400, 86_400)],
+        );
+        insert(&cache, &q, &r, T0).unwrap();
+        let (_, served) = lookup(&cache, &q, T0, NEVER);
+        let most = cache.config().max_negative_ttl;
+        assert_eq!(ttls(&served.unwrap()), [most, most, most]);
+    }
+
+    /// RFC 1034 §4.3.2 step 3a: the chain ends where its CNAME records lead, in whatever order they come; a question
+    /// for CNAME is answered by the first.
+    #[test]
+    fn the_chain_is_followed_in_any_order_and_a_cname_answers_its_question() {
+        let cache = small_cache();
+        let q = query(1, "www.example", RecordType::A);
+        let r = response(
+            "www.example",
+            RecordType::A,
+            Rcode::NOERROR,
+            vec![
+                a("host.example", 600, 1),
+                cname("alias.example", 600, "host.example"),
+                cname("www.example", 600, "alias.example"),
+            ],
+            vec![],
+        );
+        insert(&cache, &q, &r, T0).unwrap();
+        let q = query(1, "www.example", RecordType::CNAME);
+        let r = response(
+            "www.example",
+            RecordType::CNAME,
+            Rcode::NOERROR,
+            vec![cname("www.example", 600, "alias.example")],
+            vec![],
+        );
+        insert(&cache, &q, &r, T0).unwrap();
+    }
 }
 
 mod stale {
