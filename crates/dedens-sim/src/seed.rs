@@ -23,6 +23,9 @@ pub enum SeedError {
     /// [`RUNS_VAR`] is not a positive number: no run would pass without checking anything.
     #[error("{RUNS_VAR} is not a positive number: {0:?}")]
     Runs(String),
+    /// The scenario has no seed of its own and no variable gives one: it would pass without running.
+    #[error("no seed: the scenario fixes none, and neither {SEED_VAR} nor {RUNS_VAR} is set")]
+    None,
 }
 
 impl Seed {
@@ -31,7 +34,7 @@ impl Seed {
     ///
     /// # Errors
     ///
-    /// [`SeedError`] when a variable is set but is not a number, or [`RUNS_VAR`] is 0.
+    /// [`SeedError`] when a variable is set but is not a number, or [`RUNS_VAR`] is 0, or no seed comes at all.
     pub fn chosen(fixed: &[u64]) -> Result<Vec<Self>, SeedError> {
         Self::choose(
             fixed,
@@ -60,6 +63,9 @@ impl Seed {
                 .parse()
                 .map_err(|_| SeedError::Runs(runs.to_owned()))?;
             return Ok((0..runs.get()).map(|_| Self(draw())).collect());
+        }
+        if fixed.is_empty() {
+            return Err(SeedError::None);
         }
         Ok(fixed.iter().copied().map(Self).collect())
     }
@@ -219,12 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn zero_runs_is_an_error() {
+    fn zero_runs_or_no_seed_is_an_error() {
         // No seed would run the scenario not once, and pass.
         assert_eq!(
             Seed::choose(&[1], None, Some("0"), || 0),
             Err(SeedError::Runs("0".to_owned()))
         );
+        assert_eq!(Seed::choose(&[], None, None, || 0), Err(SeedError::None));
+        assert_eq!(Seed::choose(&[], None, Some("1"), || 3), Ok(vec![Seed(3)]));
     }
 
     #[test]
