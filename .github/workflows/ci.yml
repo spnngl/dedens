@@ -174,7 +174,7 @@ jobs:
   gate:
     if: always()
     needs: [check, musl, deps]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:

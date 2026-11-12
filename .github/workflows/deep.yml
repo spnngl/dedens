@@ -7,7 +7,7 @@ name: deep
 # the runner, and fails over one (`just sim-time`, D164, D172); `careful` runs the tests on a checked standard
 # library under AddressSanitizer, a job per package (`just careful address`, D144); `kani` runs the Kani proofs of
 # under a minute each (`just kani-fast`, D145), the rest weekly in `kani.yml`; `verus` runs Verus's proofs of
-# dedens-proto (`just verus`, D180).
+# dedens-proto and dedens-dnssec (`just verus`, D180).
 on:
   pull_request:
 
