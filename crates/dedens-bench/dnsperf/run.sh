@@ -103,19 +103,22 @@ for round in $(seq "$rounds"); do
     for bin in "${bins[@]}"; do
         serve "$bin" "$config"
         sleep 1
-        dig +short @127.0.0.1 -p 5399 example.com A iana.org MX example.org A www.example.com AAAA >/dev/null
+        # Each query of the list once, so the cache holds them: a SERVFAIL here would have dnsperf time failures.
+        answered=$(dig @127.0.0.1 -p 5399 +noall +comments example.com A iana.org MX example.org A www.example.com AAAA |
+            grep -c 'status: NOERROR' || true)
+        [[ $answered == 4 ]] || { echo "$bin: $answered of 4 warm-up queries answered NOERROR" >&2; exit 1; }
         printf '%s, round %s:' "$bin" "$round"
         if [[ $mode == two-sockets ]]; then
             taskset -c "$load_cpus" dnsperf -m udp -s 127.0.0.1 -p 5399 -d /queries.txt -l 12 -c 8 -T 4 -q 500 >/flood.txt &
             flood=$!
             sleep 1
             taskset -c "$back_cpu" dnsperf -m udp -s 127.0.0.1 -p 5398 -d /queries.txt -l 10 -c 1 -T 1 -Q 2000 -q 100 |
-                grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
+                grep -E 'per second|lost|Average Latency|Response codes' | tr -s ' ' | tr '\n' ' '
             wait "$flood"
             grep -E 'lost' /flood.txt | tr -s ' ' | sed 's/^/ flood:/'
         else
             taskset -c "$load_cpus" dnsperf -m "$transport" -s 127.0.0.1 -p 5399 -d /queries.txt -l 10 -c 8 -T 4 -q 500 |
-                grep -E 'per second|lost|Average Latency' | tr -s ' ' | tr '\n' ' '
+                grep -E 'per second|lost|Average Latency|Response codes' | tr -s ' ' | tr '\n' ' '
         fi
         echo
         kill "$pid"
