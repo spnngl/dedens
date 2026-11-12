@@ -418,7 +418,10 @@ fn lifetime(
 
 /// The name the answer to `question` ends at: its name, after the CNAME records of `answer` in whatever order they
 /// come, at most one hop for each, so that a loop ends. A question for CNAME or ANY stops at the first CNAME, which
-/// answers it (RFC 1034 §4.3.2 step 3a).
+/// answers it (RFC 1034 §4.3.2 step 3a, §3.6.2). Every other type follows the chain, DNAME too (D22): below a DNAME's
+/// owner the server synthesizes a CNAME and restarts at its target whatever the type asked (RFC 6672 §3.2 step 3C),
+/// so a DNAME there is answered at the chain's end, not by the DNAME the answer carries. A DNAME owned by the name
+/// asked answers its question with no CNAME (RFC 6672 §2.3), so nothing is followed.
 fn chain_end<'m>(question: &Question<'m>, answer: &'m [Record<'_>]) -> Name<'m> {
     let mut name = question.name.clone();
     if matches!(question.qtype, RecordType::CNAME | RecordType::ANY) {
