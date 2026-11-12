@@ -5,14 +5,6 @@
     "customManagers": [
         {
             "customType": "regex",
-            "description": "Pinned stable Rust in rust-toolchain.toml.",
-            "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
-            "matchStrings": ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
-            "datasourceTemplate": "github-releases",
-            "depNameTemplate": "rust-lang/rust",
-        },
-        {
-            "customType": "regex",
             "description": "Versions in the justfile, annotated with a `# renovate:` comment on the line above.",
             "managerFilePatterns": ["/(^|/)justfile$/"],
             "matchStrings": [
@@ -29,6 +21,11 @@
         },
     ],
     "packageRules": [
+        {
+            "description": "The pinned stable (rust-toolchain.toml, Renovate's own manager) and the Containerfile's `rust:<channel>-alpine` move together: crates/dedens-repo/tests/repo.rs refuses them apart.",
+            "matchPackageNames": ["rust", "docker.io/library/rust"],
+            "groupName": "Rust",
+        },
         {
             "description": "D180: Verus's releases, `0.<date>.<commit>`, by date.",
             "matchPackageNames": ["verus-lang/verus"],
