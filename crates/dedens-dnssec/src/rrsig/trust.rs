@@ -1,6 +1,6 @@
 //! Trusting a DNSKEY `RRset` because the parent's DS `RRset` vouches for it (RFC 4035 §5.2).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use dedens_proto::rdata::{Ds, RData};
 use dedens_proto::{DigestType, SecAlgorithm};
@@ -21,7 +21,8 @@ fn vouches(ds: &Ds<'_>, key: &Key<'_>) -> bool {
 /// of the `RRset` is trusted (RFC 4035 §5.2).
 ///
 /// A DS record counts when its digest type and algorithm are supported (RFC 6840 §5.2), and a SHA-1 digest is
-/// ignored when a stronger one of the same key (key tag and algorithm) is there (RFC 4509 §3, D73). DS records
+/// ignored when the `RRset` holds a stronger one that counts, whatever key either names (RFC 4509 §3, D73): a
+/// SHA-1 second preimage of one key's DS then vouches for no key. DS records
 /// are indexed by key tag and algorithm once, so the digests computed are one per DNSKEY and DS record that
 /// share both; as a DNSKEY `RRset` is not authenticated yet, more than [`MAX_FAILED`] of them of another
 /// key (a colliding key tag) are refused: the answer is [`SigError::TooManyFailures`].
@@ -59,18 +60,19 @@ pub fn trusted_keys(
     if counted.is_empty() {
         return Err(unsupported.unwrap_or(SigError::NoKeyForDs));
     }
-    // The keys with a stronger digest than SHA-1, so that a SHA-1 DS of such a key is dropped.
-    let stronger: HashSet<(u16, SecAlgorithm)> = counted
+    // Every supported digest but SHA-1 is stronger than it: one that counts drops each SHA-1 DS of the `RRset`.
+    if counted
         .iter()
-        .filter(|ds| ds.digest_type() != DigestType::SHA1)
-        .map(|ds| (ds.key_tag(), ds.algorithm()))
-        .collect();
+        .any(|ds| ds.digest_type() != DigestType::SHA1)
+    {
+        counted.retain(|ds| ds.digest_type() != DigestType::SHA1);
+    }
     let mut by_key: HashMap<(u16, SecAlgorithm), Vec<&Ds<'_>>> = HashMap::new();
     for record in &counted {
-        let key = (record.key_tag(), record.algorithm());
-        if record.digest_type() != DigestType::SHA1 || !stronger.contains(&key) {
-            by_key.entry(key).or_default().push(record);
-        }
+        by_key
+            .entry((record.key_tag(), record.algorithm()))
+            .or_default()
+            .push(record);
     }
     let mut failed = 0;
     let mut keys = Vec::new();

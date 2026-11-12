@@ -280,12 +280,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   succeeding the error returned is the closest to a success, in `SigError::rank` order. `trusted_keys(dnskeys,
   sigs, ds, now, budget)` counts the DS records whose digest type and algorithm are supported (else
   `UnsupportedDigest` or `UnsupportedAlgorithm` when none counts, which `SigError::is_unsupported` tells: the
-  zone is insecure, RFC 4035 §5.2, RFC 6840 §5.2), ignores a SHA-1 DS where a stronger digest of the same key
-  (key tag and algorithm) is present (RFC 4509 §3: of the key, not of the `RRset`, so a SHA-1 DS of another key
-  still counts), indexes the DS records by key tag and algorithm once, matches each DNSKEY by digest against
-  those of its tag and algorithm only, and requires the DNSKEY `RRset` to verify by one of those keys (RFC 4035
-  §5.2). A zone can publish many keys of one tag before its `RRset` is authenticated, so more than 8 keys that
-  match a tag and no digest are `TooManyFailures`; a DS that matches no key is `NoKeyForDs`, bogus. Every
+  zone is insecure, RFC 4035 §5.2, RFC 6840 §5.2), ignores every SHA-1 DS of the `RRset` when it holds a DS of
+  a stronger digest (SHA-256 or SHA-384) that counts, whatever key each names (RFC 4509 §3 speaks of the DS
+  `RRset`: a SHA-1 second preimage of one key's DS then vouches for no key; rejected: ignoring it only beside a
+  stronger digest of its own key, which leaves that open), indexes the DS records by key tag and algorithm once,
+  matches each DNSKEY by digest against those of its tag and algorithm only, and requires the DNSKEY `RRset` to
+  verify by one of those keys (RFC 4035 §5.2). A zone can publish many keys of one tag before its `RRset` is
+  authenticated, so more than 8 keys that match a tag and no digest are `TooManyFailures`; a DS that matches no
+  key is `NoKeyForDs`, bogus. Every
   `SigError` maps to one EDE code (RFC 8914 §4) through `SigError::ede(&RrSet)`, whose text names the `RRset`
   and the key tag: 1, 2, 6, 7, 8, 9 (missing and revoked keys), 10, 11, 25. Canonical form (RFC 4034 §6, RFC
   6840 §5.1) lowercases the owner and the names in the RDATA of the types of RFC 4034 §6.2 (NSEC's next name
