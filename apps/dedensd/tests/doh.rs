@@ -287,7 +287,7 @@ mod h3_frames {
     use std::cell::Cell;
     use std::num::NonZero;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use compio::bytes::{Buf, Bytes};
     use compio::io::AsyncWriteExt;
@@ -597,6 +597,32 @@ mod h3_frames {
             let (connection, _driver, _requests) = h3_connected(server.addr, &ca, keep_alive).await;
             let code = closed(&connection, Duration::from_secs(20)).await;
             assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+        });
+    }
+
+    /// §5.1, D84: the idle time counts from the last reply too: a connection whose request is answered 5 s late is
+    /// closed 10 s after the reply, not 10 s after the request.
+    #[test]
+    fn s5_1_the_idle_time_counts_from_the_last_reply() {
+        let upstream = Responder::delayed(&["a"], Duration::from_secs(5));
+        let ca = certificates();
+        let server = serving_with(&ca, &upstream, "", 8_000);
+        Runtime::new().expect("a runtime").block_on(async {
+            let keep_alive = Some(Duration::from_secs(1));
+            let (connection, _driver, mut requests) =
+                h3_connected(server.addr, &ca, keep_alive).await;
+            let (status, _) = post(&mut requests, server.addr, &query_for("a", 0))
+                .await
+                .expect("an answer");
+            assert_eq!(status, http::StatusCode::OK);
+            let answered = Instant::now();
+            let code = closed(&connection, Duration::from_secs(15)).await;
+            let idle = answered.elapsed();
+            assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+            assert!(
+                (9..13).contains(&idle.as_secs()),
+                "closed {idle:?} after the reply"
+            );
         });
     }
 

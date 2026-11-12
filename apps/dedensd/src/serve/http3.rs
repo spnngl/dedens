@@ -37,7 +37,8 @@ pub(super) const H3_UNI_STREAMS: u32 = 16;
 /// Answers the requests of one HTTP/3 connection (RFC 9114 §4), each alone on a stream the client opened, as
 /// soon as it can be: the HTTP/3 setup and each request's reading must end within [`TCP_IDLE`], and a new request
 /// must come within it too, as `quic::streams` says, unless one is still being answered: closing would lose its
-/// response (RFC 9114 §5.1). Requests go through the pipeline as any query; the client is `peer`.
+/// response (RFC 9114 §5.1). The idle time counts from the later of the last request taken and the last reply sent
+/// (D84). Requests go through the pipeline as any query; the client is `peer`.
 /// Once the connection passed its byte budget (D119) it is sent `GOAWAY` at the next request, and ends when it is
 /// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`]. Each request's task holds the connection's
 /// `slot`.
@@ -55,6 +56,8 @@ pub(super) async fn requests(
         Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 setup failed"),
         Err(_) => return tracing::debug!(%peer, "HTTP/3 setup timed out"),
     };
+    // When the last request was taken, or the connection set up.
+    let mut taken = Instant::now();
     // Set at `GOAWAY`: the last time a request was taken, then.
     let mut going_away = None::<Instant>;
     loop {
@@ -67,7 +70,7 @@ pub(super) async fn requests(
         let wait = if going_away.is_some() {
             DRAIN_TICK
         } else {
-            TCP_IDLE
+            idle_left(taken, budget)
         };
         match compio::time::timeout(wait, requests.accept()).await {
             Ok(Ok(Some(pending))) => {
@@ -78,14 +81,15 @@ pub(super) async fn requests(
                     drop(flight);
                     drop(slot);
                 });
+                taken = Instant::now();
                 if let Some(last) = &mut going_away {
-                    *last = Instant::now();
+                    *last = taken;
                 }
             }
             Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
             Ok(Ok(None)) if going_away.is_none() => return,
             Err(_) if going_away.is_none() => {
-                if budget.quiet() {
+                if idle_left(taken, budget).is_zero() {
                     return tracing::debug!(%peer, "HTTP/3 connection idle");
                 }
             }
@@ -98,6 +102,16 @@ pub(super) async fn requests(
                 compio::time::sleep(DRAIN_TICK).await;
             }
         }
+    }
+}
+
+/// What is left of the idle time of a connection whose last request was taken at `taken`: all of [`TCP_IDLE`] while
+/// a request is being answered, else what [`TCP_IDLE`] leaves from the later of `taken` and the last reply (D84).
+fn idle_left(taken: Instant, budget: &Budget) -> Duration {
+    if budget.quiet() {
+        TCP_IDLE.saturating_sub(taken.max(budget.landed()).elapsed())
+    } else {
+        TCP_IDLE
     }
 }
 
