@@ -58,3 +58,14 @@ fn diagnostics(cli: &args::Cli) {
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .init();
 }
+
+#[cfg(test)]
+mod tests {
+    /// D181: the entry of `fuzz/` reads a command line as `main` does, and refuses what it refuses.
+    #[test]
+    fn parse_args_refuses_what_main_refuses() {
+        let parse = |words: &[&str]| super::parse_args(words.iter().map(super::OsString::from));
+        assert!(parse(&["dedens", "example.com", "+tries=2"]).is_ok());
+        assert!(parse(&["dedens", "example.com", "+tries=many"]).is_err());
+    }
+}

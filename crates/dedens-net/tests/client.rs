@@ -292,20 +292,31 @@ async fn without_cookies_a_slow_handshake_takes_every_query() {
     assert_eq!(read.get(), u32::from(response.sends));
 }
 
-/// Compio whose UDP sockets fail the first send of them all, as a connected socket does once an ICMP port
-/// unreachable came for another query on it.
-#[derive(Debug, Clone, Default)]
-struct RefusingOnce {
-    refused: Rc<Cell<bool>>,
+/// Compio whose UDP sockets fail the first send of them all with `kind`: `ConnectionRefused` as a connected socket
+/// does once an ICMP port unreachable came for another query on it.
+#[derive(Debug, Clone)]
+struct FailingOnce {
+    kind: io::ErrorKind,
+    failed: Rc<Cell<bool>>,
+}
+
+impl FailingOnce {
+    fn new(kind: io::ErrorKind) -> Self {
+        Self {
+            kind,
+            failed: Rc::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
-struct RefusingSocket {
+struct FailingSocket {
     socket: compio::net::UdpSocket,
-    refused: Rc<Cell<bool>>,
+    kind: io::ErrorKind,
+    failed: Rc<Cell<bool>>,
 }
 
-impl Udp for RefusingSocket {
+impl Udp for FailingSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -319,16 +330,16 @@ impl Udp for RefusingSocket {
     }
 
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
-        if self.refused.replace(true) {
+        if self.failed.replace(true) {
             self.socket.send(buffer).await
         } else {
-            BufResult(Err(io::ErrorKind::ConnectionRefused.into()), buffer)
+            BufResult(Err(self.kind.into()), buffer)
         }
     }
 }
 
-impl Io for RefusingOnce {
-    type Udp = RefusingSocket;
+impl Io for FailingOnce {
+    type Udp = FailingSocket;
     type Stream = compio::net::TcpStream;
     type Task = compio::runtime::JoinHandle<()>;
 
@@ -353,9 +364,10 @@ impl Io for RefusingOnce {
     }
 
     async fn udp_bind(&self, addr: SocketAddr) -> io::Result<Self::Udp> {
-        Ok(RefusingSocket {
+        Ok(FailingSocket {
             socket: Compio.udp_bind(addr).await?,
-            refused: Rc::clone(&self.refused),
+            kind: self.kind,
+            failed: Rc::clone(&self.failed),
         })
     }
 
@@ -369,12 +381,25 @@ impl Io for RefusingOnce {
 #[compio::test]
 async fn a_failed_send_costs_one_try() {
     let server = udp_responder(|query| Some(answer_plainly(query))).await;
-    let response = Client::with_io(RefusingOnce::default())
+    let response = Client::with_io(FailingOnce::new(io::ErrorKind::ConnectionRefused))
         .exchange(crate::util::query(), server, &Options::default())
         .await
         .expect("a response");
     assert_eq!(response.transport, Transport::Udp);
     assert_eq!(response.sends, 2);
+}
+
+/// D50: a send the route refuses for this datagram itself ends the exchange: sending again does no better.
+#[compio::test]
+async fn an_unroutable_send_ends_the_exchange() {
+    let server = udp_responder(|query| Some(answer_plainly(query))).await;
+    let got = Client::with_io(FailingOnce::new(io::ErrorKind::NetworkUnreachable))
+        .exchange(crate::util::query(), server, &Options::default())
+        .await;
+    let Err(ClientError::Udp(error)) = got else {
+        panic!("{got:?}");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::NetworkUnreachable);
 }
 
 #[test]
