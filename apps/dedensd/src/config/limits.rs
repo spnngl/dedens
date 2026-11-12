@@ -363,10 +363,19 @@ mod tests {
         ] {
             read(&format!("{text}\n{MINIMAL}"), env, &Pipeline::default()).unwrap();
         }
-        for refused in ["cookies: {secret: 'abcd'}", "cookies: {secret: zz}"] {
+        for refused in [
+            "cookies: {secret: 'abcd'}",
+            "cookies: {secret: zz}",
+            "cookies: {secret: 1234567890}",
+            "cookies: {secret: [1234567890]}",
+        ] {
             let text = format!("{refused}\n{MINIMAL}");
             let error = read(&text, env, &Pipeline::default()).unwrap_err();
-            assert!(!error.to_string().contains("zz"), "{error}");
+            let shown = format!("{error:#}");
+            assert!(
+                !shown.contains("zz") && !shown.contains("1234567890"),
+                "{shown}"
+            );
         }
         let text = format!("cookies: {{accept: ['{}']}}\n{MINIMAL}", "ab".repeat(16));
         let error = read(&text, env, &Pipeline::default()).unwrap_err();
