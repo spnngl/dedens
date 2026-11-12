@@ -4,9 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # internals, so its version and this nightly move together: bump both by hand. Stable is pinned in
 # rust-toolchain.toml.
 nightly := "nightly-2026-10-26"
-# A commit of RAPx's main: its fix for async closures (safer-rust/RAPx#319) is in no release yet (0.7.65 predates it).
-# Back to a crates.io version once one has it.
-rapx_rev := "8d9d0a2f0389f48891b9e8bd3321a70a932e2e90"
+rapx_version := "0.7.71"
 # Kani brings a nightly and CBMC of its own (`just kani-install`).
 # renovate: datasource=crate depName=kani-verifier
 kani_version := "0.68.0"
@@ -498,7 +496,7 @@ rapx-install:
     fi
     rustup toolchain install {{ nightly }} --profile minimal --component rustc-dev,rust-src,llvm-tools-preview
     rustc="$(rustup which --toolchain {{ nightly }} rustc)"
-    RUSTC="$rustc" rustup run {{ nightly }} cargo install --git https://github.com/safer-rust/RAPx --rev {{ rapx_rev }} rapx --locked
+    RUSTC="$rustc" rustup run {{ nightly }} cargo install rapx@{{ rapx_version }} --locked
 
 # RAPx static analysis, outside the gate: use-after-free, double free and leaks by default; `just rapx opt` for
 # optimization hints. Own target dir: RAPx runs `cargo clean --workspace` before each analysis.
