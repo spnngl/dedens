@@ -115,8 +115,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D49 (amends D42) UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
   io_uring multishot receive per socket fills them, and the socket's tasks (D48) take turns at its stream
   of datagrams behind a lock, each giving its buffer back before its reply waits to be sent. About 400k →
-  480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than a buffer (about 3.9 KiB) is
-  cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
+  480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than 3952 bytes (a buffer less
+  `io_uring`'s 16-byte header and the 128 bytes compio keeps for the sender's address) is cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
   asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
 - D50 (amends D27; amended by D108) Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
   on first use on port 0 and connected, then kept: a query takes one at random and waits for datagrams with its

@@ -22,7 +22,6 @@ use compio::io::{AsyncRead, AsyncWrite};
 use dedens_net::exchange::Exchange;
 use dedens_net::io::{Datagram, Io, Listener, Stream, TimedOut, Udp};
 use dedens_net::tcp::Outbound;
-use dedens_proto::MAX_MESSAGE_LEN;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::AbortHandle;
 use turmoil::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -31,7 +30,13 @@ use turmoil::net::{TcpListener, TcpStream, UdpSocket};
 use crate::seed::Rng;
 use crate::trace::{Trace, What};
 
-/// Errors to inject into the UDP sockets of one [`Sim`]: the next `n` sends, or the next `n` arrivals.
+/// The longest datagram `dedensd`'s loop reads whole on `io_uring`: a buffer of its pool, 4096 bytes, less the
+/// kernel's 16-byte header and the 128 bytes compio keeps for the sender's address (D49). A longer one is cut, as
+/// there.
+const DATAGRAM_LEN: usize = 4096 - 16 - 128;
+
+/// Errors to inject into the connected UDP sockets of one [`Sim`], a client's: the next `n` sends, or the next `n`
+/// arrivals.
 #[derive(Debug, Default)]
 pub struct Glitches {
     sends: Cell<u32>,
@@ -239,36 +244,22 @@ impl Udp for SimUdp {
 
     type Datagram = SimDatagram;
 
+    /// Datagrams from any peer, each received into one scratch buffer of 3952 bytes (D49) and copied out.
     fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<SimDatagram>> {
-        futures_util::stream::unfold(self, |socket| async move {
-            Some((socket.recv_datagram().await, socket))
+        let scratch = vec![0; DATAGRAM_LEN];
+        futures_util::stream::unfold((self, scratch), |(socket, mut scratch)| async move {
+            let received = socket.socket.recv_from(&mut scratch).await;
+            let datagram = received.map(|(len, peer)| SimDatagram {
+                data: scratch.get(..len).unwrap_or_default().to_vec(),
+                peer,
+            });
+            Some((datagram, (socket, scratch)))
         })
     }
 
     async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
-        if Glitches::take(&self.glitches.sends) {
-            return BufResult(Err(io::ErrorKind::NetworkUnreachable.into()), buffer);
-        }
         let sent = self.socket.send_to(buffer.as_init(), peer).await;
         BufResult(sent, buffer)
-    }
-}
-
-impl SimUdp {
-    /// The next datagram from any peer, of a message's largest size at most: compio's pool cuts one at about 3.9
-    /// KiB, which no scenario sends.
-    async fn recv_datagram(&self) -> io::Result<SimDatagram> {
-        let mut scratch = vec![0; MAX_MESSAGE_LEN];
-        let received = self.socket.recv_from(&mut scratch).await;
-        if Glitches::take(&self.glitches.receives) {
-            return Err(io::ErrorKind::ConnectionRefused.into());
-        }
-        let (len, peer) = received?;
-        scratch.truncate(len);
-        Ok(SimDatagram {
-            data: scratch,
-            peer,
-        })
     }
 }
 

@@ -41,8 +41,8 @@ const UDP_SENDS: usize = 64;
 /// two.
 pub(super) const UDP_BUFFERS: NonZero<u16> = NonZero::new(256).expect("256 is not zero");
 
-/// The bytes of each buffer, `io_uring`'s header and the sender's address included: a query longer than about 3.9
-/// KiB is cut short, so read as broken.
+/// The bytes of each buffer, `io_uring`'s header and the sender's address included: a query longer than 3952 bytes
+/// (less 16 for the header, 128 for the address, D49) is cut short, so read as broken.
 pub(super) const UDP_BUFFER_LEN: usize = 4096;
 
 /// Bytes a UDP socket may hold before the OS drops datagrams (`SO_RCVBUF`).
