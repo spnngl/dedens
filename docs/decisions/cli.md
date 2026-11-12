@@ -37,7 +37,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `dedens`'s output, its `-v` events (both after `--color`) and `dedensd`'s text log, so `CLICOLOR`,
   `CLICOLOR_FORCE` and `TERM=dumb` steer them alike. Rejected: any value (against the convention); a hand-written
   check for stderr (it took any value and drifted from anstream on the same run's stdout).
-- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage;
+- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage,
+  a file an option names that cannot be used too, found before any query (`+odoh-config`, D79, `run::Usage`);
   9 no reply (timeout, a refused or reset connection); 10 any other error, a failed `--save-wire` write too,
   which leaves the other results.
 - D34 (amended by D76) Query file schema (D36): top-level `server` and `options`, then `queries`, each with `id` (the

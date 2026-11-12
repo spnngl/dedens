@@ -57,7 +57,8 @@ pub struct Options {
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub doc_discover: Option<bool>,
     /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
-    /// are not fetched from the target, which would give it the client's address, and no query is linked to it.
+    /// are not fetched from the target, which would give it the client's address, and no query is linked to it. Read
+    /// once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error.
     /// Default: fetched from the target.
     #[cfg_attr(feature = "clap", arg(long, value_name = "FILE"))]
     pub odoh_config: Option<String>,

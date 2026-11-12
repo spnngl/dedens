@@ -175,7 +175,7 @@ false
 .RE
 .TP
 \fB\-\-odoh\-config\fR \fI<FILE>\fR
-A file with the target\*(Aqs key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they are not fetched from the target, which would give it the client\*(Aqs address, and no query is linked to it. Default: fetched from the target
+A file with the target\*(Aqs key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they are not fetched from the target, which would give it the client\*(Aqs address, and no query is linked to it. Read once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error. Default: fetched from the target
 .TP
 \fB\-\-ignore\fR[=\fI<IGNORE>\fR]
 Keep a truncated UDP response instead of asking again over TCP. Default: off

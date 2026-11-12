@@ -197,7 +197,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     target forbids keeping and a proxy is used, it prints a warning on stderr (`odoh::Notice::ConfigsNotToBeKept`,
     from `Client::take_odoh_notices`), and `+odoh-config=FILE` (a file of the configurations as the target serves
     them, `Client::pin_odoh_configs`) fetches nothing: pinned ones never expire and are never fetched again, a 401 is
-    an error then. Other discovery (through the proxy, SVCB) is in `docs/TODECIDE.md`.
+    an error then. `dedens` reads each such file once per run and pins it before the first query (`--repeat` asks
+    again from memory; a target given two files keeps the later one's); a file that cannot be read or is no
+    `ObliviousDoHConfigs` (§6) is a usage error (exit 2, D33), and no query is sent. Other discovery (through the proxy, SVCB) is in `docs/TODECIDE.md`.
   - Errors: a 401 (the target does not hold the key, §4.3) after configurations kept from the cache fetches them
     again and asks once more, when the target made it: with a proxy, a response
     with a `Proxy-Status` header holding an `error` parameter (RFC 9209) is the proxy's (`OdohError::Proxy`) and ends

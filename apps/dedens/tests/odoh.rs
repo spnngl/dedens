@@ -2,6 +2,7 @@
 //! the usage errors.
 
 use std::io::Write as _;
+use std::time::Duration;
 
 use dedens_odoh::{Configs, TargetKey};
 use dedens_proto::Message;
@@ -87,6 +88,90 @@ fn odoh_config_gives_the_configurations() {
         .args(["+odoh-config=/nonexistent/odoh.configs", "example.com"])
         .assert()
         .code(2);
+}
+
+/// D79: a `+odoh-config` file is read once per run, not again for each query of `--repeat`: a named pipe written
+/// once gives its bytes to one read, and a second would wait for a writer that never comes.
+#[cfg(unix)]
+#[test]
+fn odoh_config_is_read_once_per_run() {
+    let (server, ca) = Responder::oblivious(&["a"], TargetKey::derive(&[7; 32]));
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let target = format!("@https://127.0.0.1:{port}#{NAME}");
+    let proxy = format!("+odoh-proxy=https://127.0.0.1:{port}#{NAME}");
+    let dir = tempfile::tempdir().expect("a directory");
+    let pipe = dir.path().join("configs");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "mkfifo: {made}");
+    let encoded = Configs::new(vec![TargetKey::derive(&[7; 32]).config().clone()])
+        .encode()
+        .expect("configurations encode");
+    // Opening the pipe waits for the reader: the thread ends once dedens has read it.
+    let writer = std::thread::spawn({
+        let pipe = pipe.clone();
+        move || std::fs::write(pipe, encoded)
+    });
+    let given = format!("+odoh-config={}", pipe.display());
+    dedens()
+        .args([&target, &proxy, &given, &ca, "+repeat=3", "example.com"])
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .code(0);
+    writer
+        .join()
+        .expect("the writer does not panic")
+        .expect("written");
+    assert_eq!(server.queries().len(), 3);
+}
+
+/// D33, D79: a `+odoh-config` file that cannot be read, or holds no `ObliviousDoHConfigs` (RFC 9230 §6), is a usage
+/// error found before any query, `--repeat` or not, and in a query file too: nothing reaches the target.
+#[test]
+fn a_bad_odoh_config_is_a_usage_error_before_any_query() {
+    let (server, ca) = Responder::oblivious(&["a"], TargetKey::derive(&[7; 32]));
+    let ca = format!("--tls-ca={}", ca.path().display());
+    let port = server.addr.port();
+    let target = format!("https://127.0.0.1:{port}#{NAME}");
+    let proxy = format!("https://127.0.0.1:{port}#{NAME}");
+    // A captured DNS query: real bytes, and no configurations.
+    let query = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/doh/quad9_mx.query"
+    );
+    for (file, error) in [
+        ("/nonexistent/odoh.configs", "cannot read the file"),
+        (query, "not key configurations"),
+    ] {
+        let message = format!("+odoh-config {file}: {error}");
+        let at = format!("@{target}");
+        let given = [
+            format!("+odoh-proxy={proxy}"),
+            format!("+odoh-config={file}"),
+        ];
+        for repeat in ["+repeat=1", "+repeat=3"] {
+            dedens()
+                .args([&at, &ca, repeat, "example.com"])
+                .args(&given)
+                .assert()
+                .code(2)
+                .stderr(contains(&message));
+        }
+        let queries = format!(
+            "server: {target}\noptions: {{odoh_proxy: '{proxy}', odoh_config: '{file}'}}\n\
+             queries: [{{name: example.com, type: A}}]"
+        );
+        dedens()
+            .args(["-f", "-", &ca])
+            .write_stdin(queries)
+            .assert()
+            .code(2)
+            .stderr(contains(&message));
+    }
+    assert_eq!(server.queries().len(), 0, "no query reaches the target");
 }
 
 /// D33, D79: a proxy that never answers is no reply, as a `DoH` server that never answers is: exit 9.
