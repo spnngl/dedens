@@ -155,8 +155,8 @@ impl Topology {
     }
 
     /// Runs `dedensd`'s serving loop of UDP and TCP on the resolver host ([`Resolver::serve_dedensd`]) in place of
-    /// the driver ([`Resolver::serve`]): its tasks, queues, timers and caps, on the simulated network (D182). The
-    /// trace then has none of the resolver's `Replied`, `Forwarded` and `Stored`.
+    /// the driver ([`Resolver::serve`]), on the simulated network and clock (D182 lists what no scenario reaches).
+    /// The trace then has none of the resolver's `Replied`, `Forwarded` and `Stored`.
     #[must_use]
     pub const fn dedensd(mut self) -> Self {
         self.software = Software::Dedensd;

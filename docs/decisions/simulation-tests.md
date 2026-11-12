@@ -152,7 +152,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   may take 14 s and the binary 70 s, about 30% over that run's slowest. Rejected: a larger scale, which hides more of
   a slowdown.
 - D182 (amends D133, D134, D181) `dedensd`'s serving loop of UDP and TCP goes behind D134's seam, so that a simulation
-  runs it on its network and clock: its tasks, queues, timers and caps, which the driver of D133 leaves out.
+  runs it on its network and clock, which the driver of D133 leaves out.
   - `crates/dedens-net/src/io.rs`: `Io` gains `Listener` (a bound TCP listener's `accept`) and `detach` (a task
     nobody waits for: a query's, a connection's); `Udp` gains `recv_multi` (a stream of `Datagram`s, data and peer:
     compio's multishot receive) and `send_to`; a `Stream`'s write half is `Outbound`. Only what the loop calls;
@@ -180,4 +180,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Sim::detach` watches nothing.
   - Left out: QUIC (DoQ, DoH/3, ODoH: `compio-quic`'s endpoint and clock), DoC, the TLS listener (generic, with no
     scenario), reload, several threads, D86's flights (validator questions only; no scenario validates here).
+    Run but reached by no scenario yet: the caps (`TCP_CONNECTIONS`, `UPSTREAM_QUERIES`, `TCP_PENDING`,
+    `TCP_QUEUED`), the idle close (`TCP_IDLE`), the write timeout (`TCP_WRITE`), a listener restart (D121). Not
+    simulated: the buffer pool and its `ResourceBusy` (D107), as `SimUdp` has none.
   - Cost in `docs/benchmarks.md`; the Linux check is `just bench-dnsperf <base> forward` and `forward-tcp`.
