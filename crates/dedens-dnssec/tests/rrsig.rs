@@ -454,7 +454,7 @@ mod key_tags {
             let set = rrset("example.", 43, &[ds(digest_type, digest)]);
             assert!(trust(&set).is_ok(), "{digest_type}");
         }
-        // RFC 4509 §3: a SHA-1 DS is ignored when a SHA-256 one of the key is there, so a right SHA-1 digest does
+        // RFC 4509 §3: a SHA-1 DS is ignored when a SHA-256 one is there, so a right SHA-1 digest does
         // not save a wrong SHA-256 one.
         let both = rrset(
             "example.",
@@ -490,28 +490,28 @@ mod key_tags {
     }
 
     #[test]
-    fn a_sha1_ds_is_ignored_only_beside_a_stronger_digest_of_its_own_key() {
-        // RFC 4509 §3 speaks of the same key: a SHA-256 DS of the ZSK does not drop the SHA-1 DS of the KSK.
+    fn a_sha1_ds_is_ignored_beside_a_stronger_digest_of_any_key() {
+        // RFC 4509 §3 speaks of the DS `RRset` (D73): a SHA-256 DS of the ZSK drops the SHA-1 DS of the KSK, the
+        // key that signs the DNSKEY `RRset`, so only the ZSK is trusted and the KSK's signature has no key.
         let (_, _, keys) = appendix_a();
         let sigs = rrsig_set("example.", &rrsig(48, 5, 1, 9465), DNSKEY_SIGNATURE);
         let ksk = dnskey_rdata(257, 5, KSK);
         let zsk = dnskey_rdata(256, 5, RFC4035_ZSK);
-        let ds = rrset(
-            "example.",
-            43,
-            &[
-                ds_of(&ksk, DigestType::SHA1),
-                ds_of(&zsk, DigestType::SHA256),
-            ],
+        let trust = |rdatas: &[Vec<u8>]| {
+            rrsig::trusted_keys(
+                &keys,
+                &Signature::all(&sigs),
+                &rrset("example.", 43, rdatas),
+                INCEPTION,
+                &mut Budget::default(),
+            )
+        };
+        let sha1 = ds_of(&ksk, DigestType::SHA1);
+        assert!(trust(std::slice::from_ref(&sha1)).is_ok());
+        assert_eq!(
+            trust(&[sha1, ds_of(&zsk, DigestType::SHA256)]),
+            Err(SigError::NoKey { key_tag: 9465 })
         );
-        let trusted = rrsig::trusted_keys(
-            &keys,
-            &Signature::all(&sigs),
-            &ds,
-            INCEPTION,
-            &mut Budget::default(),
-        );
-        assert!(trusted.is_ok(), "{trusted:?}");
     }
 
     /// `count` DNSKEY RDATA with the key tag of `key`, each different: two bytes at distances of two are swapped,
@@ -1721,7 +1721,7 @@ mod captured {
 
     use dedens_dnssec::crypto::{self, Budget};
     use dedens_dnssec::rrsig::{self, Key, RrSet, SigError, Signature};
-    use dedens_proto::{Message, RecordType};
+    use dedens_proto::{DigestType, Message, RecordType};
     use dedens_testkit::dnssec::{captured_at, names, response};
 
     use crate::util::try_records;
@@ -2141,5 +2141,39 @@ mod captured {
             trusted(&dnskey, &changed, captured_at()),
             Err(SigError::NoKeyForDs)
         );
+    }
+
+    /// The DS RDATA of the zone `id` whose digest type is `digest`.
+    fn ds_rdatas(id: &str, digest: DigestType) -> Vec<Vec<u8>> {
+        let (_, ds) = zone(id);
+        let rdatas: Vec<Vec<u8>> = ds
+            .rdatas()
+            .iter()
+            .map(|r| r.wire().into_owned())
+            .filter(|r| r.get(3) == Some(&digest.0))
+            .collect();
+        assert!(!rdatas.is_empty(), "{id} has a DS of digest {digest}");
+        rdatas
+    }
+
+    #[test]
+    fn a_usable_sha256_ds_of_another_key_drops_every_sha1_ds() {
+        // RFC 4509 §3 (D73): `la`'s SHA-1 DS is right, but beside the SHA-256 DS of `cr`, a key `la` does not
+        // have, it is ignored: a SHA-1 second preimage of another key's DS vouches for nothing. A SHA-256 DS of
+        // an algorithm not supported (`ed448.nl`, D71) does not count, so it leaves the SHA-1 DS counting.
+        let (dnskey, la) = zone("la");
+        let sha1 = ds_rdatas("la", DigestType::SHA1);
+        let trust = |others: Vec<Vec<u8>>| {
+            let rdatas: Vec<Vec<u8>> = sha1.iter().cloned().chain(others).collect();
+            let records = try_records(&la.owner().to_string(), 43, 3600, &rdatas).expect("decodes");
+            let ds = RrSet::group(&records).pop().expect("one RRset");
+            trusted(&dnskey, &ds, captured_at())
+        };
+        assert_eq!(trust(Vec::new()), Ok(()));
+        assert_eq!(
+            trust(ds_rdatas("cr", DigestType::SHA256)),
+            Err(SigError::NoKeyForDs)
+        );
+        assert_eq!(trust(ds_rdatas("ed448_nl", DigestType::SHA256)), Ok(()));
     }
 }
