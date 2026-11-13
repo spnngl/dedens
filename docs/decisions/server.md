@@ -44,7 +44,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   writer (§6.2.1.1); reading stops after 10 s without a query, the connection closes once pending replies are
   written (§6.2.3). Listeners and upstreams from the configuration (D44). Rejected: one socket shared by all
   threads (contention on one receive queue); a task per query on the cached path (an allocation per hit).
-- D43 (amends D41; amended by D45, D46, D77, D114, D124) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
+- D43 (amends D41; amended by D45, D46, D77, D96, D114, D124) Cache stage (D22 in D41's pipeline): `Stage::Cache` looks the query up at `now`,
   seconds the caller passes (`dedensd`: since start), so `Pipeline::query` and `Pipeline::receive` take it. A hit
   is the stored bytes patched by `dedens-cache`, then D41's flags (AA clear, RA set, AD as asked, TC kept) and our
   OPT when the query had one; room for the OPT is kept before the lookup, and a stale hit leaves 6 more bytes for
@@ -188,7 +188,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`. A plain line
     of one label: D56.
     Any class asked (D110). Formats, duplicates and the allowlist in D56.
-- D55 (amended by D64, D107, D122) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+- D55 (amended by D64, D96, D107, D122) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed (a thread no query reaches takes it when woken by the reload, D107), holding it in
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
@@ -1202,3 +1202,46 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     holds D43's one prefetch per response under racing threads; both pass on the mutex.
   - Open: a read path that writes no shared line (per-core copies, a lock-free read), and the shard count from
     `threads`: `docs/TODECIDE.md`.
+
+- D96 (amends D43, D55; builds on D47, D56, D77, D115, D124) Prewarm: a cache stage's `prewarm: {entries, file, types}`
+  names the questions kept answered in the cache with no client asking, so a client's first query for one is a hit
+  and stays one past its TTL. `prewarm` sits beside `dedens_cache::Config` in the stage (`CacheFile`), not in it, so a
+  reload that changes only the list keeps the cache (D55 replaces a cache whose settings change); serde's `flatten`
+  ignores `deny_unknown_fields`, so a map takes the keys no field reads and the stage says `unknown field` itself.
+  - Names: `entries`, then `file`, one name a line, read as D56 reads a plain blocklist line
+    (`dedens_plugins::host_names`); `*.name` is refused, a wildcard cannot be asked. `types` is any of A and AAAA, both
+    by default, and not empty. At most 10 000 names (`MAX_PREWARM_NAMES`, a bound as D115's: each name is up to four
+    questions and a schedule entry). A `file` that does not read fails the read, so a reload leaves the running
+    pipeline (D55). No `urls`: a download is a blocklist's (D57), and a name list a download feeds to the resolver is
+    an attack surface for nothing. A prewarm with no forward stage after the cache is refused: nothing could ask.
+  - Questions: the pipeline carries them (`Pipeline::with_prewarm`): each name and type without DO, and again with DO
+    when a forward stage validates (D77), so that a later client with DO hits too and the entry keeps its verdict (AD
+    on the hit); CD stays clear (D43's key holds DO and CD). `Pipeline::prewarm(warm, now)` runs the stages as a
+    client's query goes: a stage before the cache answering the name (blocklist, hosts) is `Local`, nothing to
+    keep; a fresh entry is `Fresh(at)`, with the time to ask again; else the forward stage's `Upstream`, as a prefetch
+    (`Purpose::Prefetch`): no reply, and a failure is not held (RFC 9520 §3.2: the hold is for a failure a client's
+    query met; no client asked). The query is the server's own: no access list, rate limit or cookie, and no
+    client network's share of the validator's budget, the global allowance only.
+  - Freshness: `Cache::refresh_at` is when the entry reaches `prefetch_percent` of its TTL left (the TTL the cache
+    keeps, after D124's `min_ttl` and `max_ttl`, negative answers too), read with no metrics and no use: a prewarm
+    lookup is no client's hit, and S3-FIFO's counts are the clients'. The name is asked at that time, so no entry is
+    served stale (D22) for want of a client. A TTL under 2 s, possible with `min_ttl: 0` only, can lapse between two
+    asks: the schedule never goes faster than once a second.
+  - Schedule (`apps/dedensd/src/serve/prewarm.rs`): one task, on serving thread 0, the cache being shared, so a name
+    is asked once whatever the threads. At most 16 queries in flight, of the thread's 1024 upstream queries (D47): a
+    list of thousands leaves the rest to clients. They go over TCP, so that the answer is whole. A query counts `ok`
+    when the cache holds the answer after it, `error` when not, in `dedensd_prewarm_queries_total{result}`. A failure
+    is asked again after 1 minute, doubling up to the cache's `failure_max` (RFC 9520 §3.2: 5 minutes at most).
+  - Reload: the new pipeline's names are taken at once. While the cache stays (`Arc::ptr_eq`), the schedule of names
+    still listed stays (no burst per SIGHUP), new names are asked, removed ones dropped; a replaced cache is empty,
+    so every name is asked again and the answers of queries begun for the old one are not heard.
+  - Tests: `crates/dedens-server/tests/prewarm.rs` (sans-IO, with the captured signed zones: the DO and the non-DO
+    hits, AD, blocklist before cache, failure not held); `apps/dedensd/tests/prewarm.rs` (a loopback upstream counting
+    queries, D89: asked once before any client, hit past the TTL, a reload asking the new name alone, a blocked name
+    never asked, the refusal); `crates/dedens-sim/tests/serving.rs` (D182: refresh before expiry and the retry
+    backoff on simulated time, `dedensd::simulated` running the prewarm task); the schedule's reload in
+    `serve/prewarm.rs`'s own tests, `simulated` having no reload. The real-clock `dedensd` tests cannot validate: the
+    captured signatures have expired, so AD is checked at the pipeline.
+  - Rejected: a plugin of D54 (it needs the cache and the upstream, which a plugin has not); asking only when an
+    entry has expired (the first client after it waits); counting prewarm lookups as hits; one task per thread
+    (every thread asking each name).

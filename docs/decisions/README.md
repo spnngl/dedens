@@ -1,7 +1,7 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 96-102, 126-132, 148, 149 and 173 were never
+number, and gets its line below; a number is never reused (85, 97-102, 126-132, 148, 149 and 173 were never
 assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
@@ -50,7 +50,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
 - D41 [server](server.md) (amended by D43, D46, D77, D111, D114): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
 - D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
-- D43 [server](server.md) (amended by D45, D46, D77, D114, D124): cache stage in the pipeline, time passed in by the caller
+- D43 [server](server.md) (amended by D45, D46, D77, D96, D114, D124): cache stage in the pipeline, time passed in by the caller
 - D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
 - D45 [server](server.md) (amended by D77, D115): upstream timeout and the client response timer (RFC 8767)
 - D46 [server](server.md) (amended by D121): a query without RD gets fresh cached data or REFUSED, never goes upstream
@@ -62,7 +62,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D52 [server](server.md) (superseded by D63): TCP replies after upstream reuse kept 65535-byte buffers
 - D53 [server](server.md): upstream TCP writer sends queued queries in one write
 - D54 [server](server.md) (amended by D64, D110, D118, D120): plugins: a `Plugin` trait object as a stage
-- D55 [server](server.md) (amended by D64, D107, D122): `dedensd` reloads its configuration file on SIGHUP
+- D55 [server](server.md) (amended by D64, D96, D107, D122): `dedensd` reloads its configuration file on SIGHUP
 - D56 [server](server.md) (amended by D118, D120): blocklist contents: the line formats read
 - D57 [server](server.md) (amended by D64, D104, D115, D118, D120): `dedensd` downloads blocklists and allowlists with `ureq`
 - D58 [server](server.md) (amended by D110, D120): a blocklist holds a keyed 64-bit SipHash of each name
@@ -102,6 +102,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D93 [server](server.md) (amended by D124): an insecure answer is cached a day at most
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
 - D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
+- D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline, again at the prefetch point
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits

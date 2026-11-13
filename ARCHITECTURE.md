@@ -37,6 +37,9 @@ Planned: `dedens-resolver`.
 - Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
   `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)
   → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).
+- Server, prewarm: a cache stage's `prewarm` names → `Pipeline::with_prewarm` (`crates/dedens-server/src/pipeline/prewarm.rs`)
+  → one task of thread 0 (`apps/dedensd/src/serve/prewarm.rs`) asks each through `Pipeline::prewarm`, as a prefetch,
+  when `Cache::refresh_at` says (D96).
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents
