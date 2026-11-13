@@ -3,24 +3,23 @@
 //!
 //! One task of one thread runs it, so a name is asked once whatever the threads: the cache is shared. Its queries
 //! are [`IN_FLIGHT`] at most at a time, so a long list leaves the rest of the thread's upstream queries (D47) to
-//! clients. The refresh point is the cache's (`Cache::refresh_at`), in the seconds of its clock (D43): a name whose
-//! TTL is a few seconds may expire before it is asked again.
+//! clients. The refresh point is the cache's (`Cache::refresh`, [`Pipeline::prewarm`]), in the seconds of its clock
+//! (D43). The task sleeps until the next one, or a reload (D107), and follows the reloads in the place of
+//! [`super::follow`], which the thread does not run beside it: both would take the same wake-up.
 
-use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dedens_cache::Cache;
 use dedens_net::io::Io;
-use dedens_proto::Transport;
 use dedens_server::{Pipeline, Stage, Warm, Warmth};
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 
+use super::Thread;
 use super::upstream::answer;
-use super::{Thread, pause};
 
 /// Prewarm queries by result: `ok` for an answer now kept, `error` for one that was not.
 const QUERIES: &str = "dedensd_prewarm_queries_total";
@@ -33,9 +32,6 @@ const IN_FLIGHT: usize = 16;
 /// `failure_max`: the first retry of RFC 9520 §3.2's holds for clients, at the minute.
 const RETRY: u32 = 60;
 
-/// How long the task sleeps with nothing to do, so that a reload is seen within it.
-const TICK: Duration = Duration::from_secs(1);
-
 /// Describes the metrics of this module.
 pub(crate) fn describe() {
     metrics::describe_counter!(
@@ -46,16 +42,14 @@ pub(crate) fn describe() {
 
 /// Keeps `thread`'s pipeline's `prewarm` names answered, until the end of the thread.
 pub(super) async fn run<N: Io>(thread: Rc<Thread<N>>) {
-    let schedule = RefCell::new(Schedule::default());
+    let mut schedule = Schedule::default();
     let mut asking = FuturesUnordered::new();
     loop {
         let pipeline = thread.pipeline();
         let now = thread.now();
-        schedule
-            .borrow_mut()
-            .follow(thread.generation(), &pipeline, now);
+        schedule.follow(thread.generation(), &pipeline, now);
         while asking.len() < IN_FLIGHT {
-            let Some((warm, epoch)) = schedule.borrow_mut().next(now) else {
+            let Some((warm, epoch)) = schedule.next(now) else {
                 break;
             };
             let (thread, pipeline) = (&thread, Rc::clone(&pipeline));
@@ -64,23 +58,50 @@ pub(super) async fn run<N: Io>(thread: Rc<Thread<N>>) {
                 (warm, epoch, outcome)
             });
         }
+        // Not held while waiting: the thread would keep the pipeline a reload replaced (D107).
+        drop(pipeline);
+        // Full, only an end frees a place; else the next name due is the next thing to do.
+        let due = if asking.len() < IN_FLIGHT {
+            schedule.due()
+        } else {
+            None
+        };
+        let deadline = due.map(|due| thread.started + Duration::from_secs(u64::from(due)));
         if asking.is_empty() {
-            pause(&thread.io, TICK).await;
+            wait_for_reload(&thread, deadline).await;
             continue;
         }
-        let deadline = thread.io.now() + TICK;
-        if let Ok(Some((warm, epoch, outcome))) =
-            thread.io.timeout_at(deadline, asking.next()).await
-        {
-            match outcome {
-                Outcome::Asked(_) => metrics::counter!(QUERIES, "result" => "ok").increment(1),
-                Outcome::Failed => metrics::counter!(QUERIES, "result" => "error").increment(1),
-                Outcome::Local | Outcome::Fresh(_) | Outcome::Busy => {}
+        let ended = match deadline {
+            Some(deadline) => thread
+                .io
+                .timeout_at(deadline, asking.next())
+                .await
+                .ok()
+                .flatten(),
+            None => asking.next().await,
+        };
+        if let Some((warm, epoch, outcome)) = ended {
+            if let Some(result) = outcome.result() {
+                metrics::counter!(QUERIES, "result" => result).increment(1);
             }
-            schedule
-                .borrow_mut()
-                .finish(&warm, epoch, outcome, thread.now());
+            schedule.finish(&warm, epoch, outcome, thread.now());
         }
+    }
+}
+
+/// Returns when a reload replaced the pipeline, or at `deadline`; at no time if there is none and no reload.
+async fn wait_for_reload<N: Io>(thread: &Thread<N>, deadline: Option<Instant>) {
+    let reloaded = async {
+        // Disconnected: no reload will come.
+        if thread.reloads.recv_async().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    match deadline {
+        Some(deadline) => {
+            let _ = thread.io.timeout_at(deadline, reloaded).await;
+        }
+        None => reloaded.await,
     }
 }
 
@@ -93,35 +114,47 @@ enum Outcome {
     Fresh(u32),
     /// Asked, and the cache holds the answer now, to be refreshed at that time.
     Asked(u32),
-    /// Asked, and the cache does not hold an answer: no answer, or one that is not kept.
+    /// Asked, and the cache does not hold an answer: no answer, or one that is not kept; a bogus one is not either.
     Failed,
-    /// No upstream query left to ask with.
+    /// No upstream query left to ask with, or the allowance of validation spent: asked again at once.
     Busy,
+}
+
+impl Outcome {
+    /// The `result` of the metric for what was asked, `None` if nothing was.
+    const fn result(self) -> Option<&'static str> {
+        match self {
+            Self::Asked(_) => Some("ok"),
+            Self::Failed => Some("error"),
+            Self::Local | Self::Fresh(_) | Self::Busy => None,
+        }
+    }
 }
 
 /// Asks for `warm` if its entry is due, through `pipeline`, and says whether the cache holds it then.
 async fn ask<N: Io>(thread: &Thread<N>, pipeline: &Pipeline, warm: &Warm) -> Outcome {
-    let upstream = match pipeline.prewarm(warm, thread.now()) {
-        Warmth::Local | Warmth::Refused => return Outcome::Local,
-        Warmth::Fresh(at) => return Outcome::Fresh(at),
-        Warmth::Upstream(upstream) => upstream,
-    };
+    // Before the pipeline: its query takes a unit of the validator's allowance, which a name left unasked would waste.
     let Some(_slot) = thread.upstream.take() else {
         return Outcome::Busy;
     };
-    // Over TCP, so that the answer is whole: the cache keeps it as it is and truncates what a UDP client gets.
+    let upstream = match pipeline.prewarm(warm, thread.now()) {
+        Warmth::Local | Warmth::Unaskable => return Outcome::Local,
+        Warmth::Fresh(at) => return Outcome::Fresh(at),
+        Warmth::Shed => return Outcome::Busy,
+        Warmth::Upstream(upstream) => upstream,
+    };
     answer(
         thread,
         pipeline,
         upstream,
-        Transport::Tcp,
+        Warm::TRANSPORT,
         async |_reply| {},
     )
     .await;
-    match pipeline.prewarm(warm, thread.now()) {
-        Warmth::Fresh(at) => Outcome::Asked(at),
-        _ => Outcome::Failed,
-    }
+    // Read only: asking again would spend the allowance once more, to find an entry that is there.
+    pipeline
+        .warm_until(warm, thread.now())
+        .map_or(Outcome::Failed, Outcome::Asked)
 }
 
 /// A name and when it is asked again.
@@ -203,6 +236,11 @@ impl Schedule {
         }
     }
 
+    /// When the first name is due, `None` if none waits.
+    fn due(&self) -> Option<u32> {
+        self.queue.first().map(|&(due, _)| due)
+    }
+
     /// The name most overdue at `now`, taken to be asked, with the epoch it is asked in.
     fn next(&mut self, now: u32) -> Option<(Warm, u64)> {
         let &(due, place) = self.queue.first()?;
@@ -225,6 +263,10 @@ impl Schedule {
             return;
         };
         let entry = &mut self.entries[place];
+        // A name taken out and listed again while its query was in flight is another entry, queued already.
+        if !entry.asking {
+            return;
+        }
         entry.asking = false;
         let due = match outcome {
             Outcome::Local => None,
@@ -300,10 +342,7 @@ mod tests {
         for _ in 0..4 {
             let (warm, epoch) = schedule.next(at).expect("due");
             schedule.finish(&warm, epoch, Outcome::Failed, at);
-            let wait = (at..=at + 1000)
-                .find(|now| schedule.queue.first().is_some_and(|&(due, _)| due <= *now))
-                .expect("a retry")
-                - at;
+            let wait = schedule.due().expect("a retry") - at;
             waits.push(wait);
             at += wait;
         }
@@ -350,5 +389,58 @@ mod tests {
         schedule.follow(2, &second, 1);
         schedule.finish(&warm, epoch, Outcome::Fresh(500), 1);
         assert_eq!(taken(&mut schedule, 1), ["a.example."]);
+    }
+
+    #[test]
+    fn only_what_was_asked_counts_and_by_its_result() {
+        assert_eq!(Outcome::Asked(5).result(), Some("ok"));
+        assert_eq!(Outcome::Failed.result(), Some("error"));
+        for nothing in [Outcome::Local, Outcome::Fresh(5), Outcome::Busy] {
+            assert_eq!(nothing.result(), None, "{nothing:?}");
+        }
+    }
+
+    #[test]
+    fn the_next_name_due_is_the_time_to_wake_for() {
+        let mut schedule = Schedule::default();
+        assert_eq!(schedule.due(), None);
+        schedule.follow(
+            1,
+            &pipeline("a.example, b.example", "", &Pipeline::default()),
+            7,
+        );
+        assert_eq!(schedule.due(), Some(7));
+        let (warm, epoch) = schedule.next(7).expect("due");
+        schedule.finish(&warm, epoch, Outcome::Fresh(500), 7);
+        let (warm, epoch) = schedule.next(7).expect("due");
+        schedule.finish(&warm, epoch, Outcome::Fresh(300), 7);
+        assert_eq!(schedule.due(), Some(300));
+    }
+
+    #[test]
+    fn a_busy_name_is_asked_in_a_second_with_no_failure_counted() {
+        let mut schedule = Schedule::default();
+        schedule.follow(1, &pipeline("a.example", "", &Pipeline::default()), 0);
+        let (warm, epoch) = schedule.next(0).expect("due");
+        schedule.finish(&warm, epoch, Outcome::Busy, 10);
+        assert_eq!(schedule.due(), Some(11));
+        assert_eq!(schedule.entries[0].failures, 0);
+    }
+
+    /// A name taken out and listed again while its query is in flight is a new entry, due at once and queued once: the
+    /// end of the old query neither moves it nor queues it twice.
+    #[test]
+    fn the_end_of_a_query_for_a_name_listed_again_is_not_heard() {
+        let first = pipeline("a.example", "", &Pipeline::default());
+        let mut schedule = Schedule::default();
+        schedule.follow(1, &first, 0);
+        let (warm, epoch) = schedule.next(0).expect("due");
+        let without = pipeline("", "", &first);
+        schedule.follow(2, &without, 1);
+        let again = pipeline("a.example", "", &without);
+        schedule.follow(3, &again, 2);
+        schedule.finish(&warm, epoch, Outcome::Fresh(500), 3);
+        assert_eq!(taken(&mut schedule, 3), ["a.example."]);
+        assert_eq!(taken(&mut schedule, 1000), Vec::<String>::new());
     }
 }

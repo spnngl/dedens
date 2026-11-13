@@ -7,7 +7,8 @@ use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dedens_cache::{
-    Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, StalePolicy,
+    Cache, Checked, Config, ConfigError, Freshness, Hit, Key, Lookup, NotCached, Refresh,
+    StalePolicy,
 };
 use dedens_proto::edns::{ClientSubnet, Edns, EdnsOption};
 use dedens_proto::{Flags, Message, Opcode, Query, Rcode, RecordType};
@@ -180,21 +181,26 @@ fn prefetch_is_asked_once_near_expiry() {
     assert_eq!(freshness(T0 + 190), Freshness::Fresh { prefetch: true });
 }
 
-/// D96: `refresh_at` is the second the prefetch starts at, without counting a lookup or a use, and nothing for what
-/// is not fresh.
+/// D96: `refresh` says the second the prefetch starts at and when the entry expires, without counting a lookup or a
+/// use, and nothing for what is not fresh.
 #[test]
 fn the_refresh_comes_when_a_prefetch_would() {
     let cache = small_cache();
     let q = query(1, "www.example", RecordType::A);
     let wire = Query::read(&q).unwrap();
-    assert_eq!(cache.refresh_at(&wire, T0), None);
+    assert_eq!(cache.refresh(&wire, T0), None);
     insert(&cache, &q, &www(100, 1), T0).unwrap();
     // Under 10% left from the 91st second, as the prefetch above.
-    assert_eq!(cache.refresh_at(&wire, T0), Some(T0 + 91));
-    // An entry already ending is due now.
-    assert_eq!(cache.refresh_at(&wire, T0 + 95), Some(T0 + 95));
+    let due = Refresh {
+        at: T0 + 91,
+        expires: T0 + 100,
+        bogus: false,
+    };
+    assert_eq!(cache.refresh(&wire, T0), Some(due));
+    // An entry already ending is still due from that second.
+    assert_eq!(cache.refresh(&wire, T0 + 95), Some(due));
     // Expired: nothing fresh is kept.
-    assert_eq!(cache.refresh_at(&wire, T0 + 100), None);
+    assert_eq!(cache.refresh(&wire, T0 + 100), None);
     // Not a use: the first hit under 10% still asks for the prefetch.
     match lookup(&cache, &q, T0 + 91, NEVER).0 {
         Lookup::Hit(hit) => assert_eq!(hit.freshness, Freshness::Fresh { prefetch: true }),
