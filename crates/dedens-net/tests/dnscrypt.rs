@@ -54,6 +54,20 @@ struct Seen {
     cookie: bool,
 }
 
+/// What is wrong with the first response to a certificates' query, whatever carried it: a relay asks the resolver
+/// over UDP all the same.
+#[derive(Clone, Copy)]
+enum Fault {
+    /// No response.
+    Silent,
+    /// Truncated, with no certificate.
+    Truncated,
+    /// Another ID than the query's.
+    WrongId,
+    /// The QR bit is clear: it is a query, not a response.
+    NotAResponse,
+}
+
 /// What the resolver serves and has seen.
 struct Script {
     signer: SigningKey,
@@ -67,6 +81,8 @@ struct Script {
     truncate_certificates: bool,
     /// Whether UDP gets no certificate at all, as at a resolver serving them over TCP only.
     mute_udp_certificates: bool,
+    /// What is wrong with the certificates' response over UDP, if anything.
+    certificate_fault: Option<Fault>,
     /// The certificate queries, over UDP and over TCP.
     fetched: (u32, u32),
     /// The certificate queries that carry a DNS cookie.
@@ -140,7 +156,15 @@ fn handle(
             return None;
         }
         let mut answer = response(&decoded.message, Rcode::NOERROR);
-        if carrier == Carrier::Udp && script.truncate_certificates {
+        let mut truncated = carrier == Carrier::Udp && script.truncate_certificates;
+        match script.certificate_fault.take() {
+            Some(Fault::Silent) => return None,
+            Some(Fault::Truncated) => truncated = true,
+            Some(Fault::WrongId) => answer.header.id = answer.header.id.wrapping_add(1),
+            Some(Fault::NotAResponse) => answer.header.flags = Flags::from_word(0),
+            None => {}
+        }
+        if truncated {
             answer.header.flags = answer.header.flags.with(Flags::TC);
         } else {
             for certificate in &script.served {
@@ -235,6 +259,7 @@ impl Resolver {
             acts: VecDeque::new(),
             truncate_certificates: false,
             mute_udp_certificates: false,
+            certificate_fault: None,
             fetched: (0, 0),
             fetched_with_cookie: 0,
             seen: Vec::new(),
@@ -749,7 +774,7 @@ async fn certificates_and_queries_go_through_the_relay_over_udp() {
         assert_eq!(relayed.prefix, prefix);
         assert!(relayed.passed.is_some(), "{relayed:?}");
     }
-    assert!(certificates.inner_len >= 1200, "{certificates:?}");
+    assert_eq!(certificates.inner_len, 1200, "{certificates:?}");
     let script = resolver.script();
     assert_eq!(script.fetched, (1, 0));
     assert_eq!(script.seen.len(), 1);
@@ -831,23 +856,94 @@ async fn a_relay_that_fails_is_skipped_by_the_next_try() {
     let live = LoopbackRelay::start(false).await;
     let mut options = quick();
     options.tries = NonZeroU8::new(3).expect("three");
-    let response = Client::new()
-        .exchange_dnscrypt_via(
-            query(),
-            &resolver.stamp,
-            &[mute.stamp, live.stamp],
-            &options,
-        )
-        .await
-        .expect("a response");
-    assert!(response.dnscrypt.is_some());
+    let client = Client::new();
+    let queries = 16;
+    for _ in 0..queries {
+        let response = client
+            .exchange_dnscrypt_via(
+                query(),
+                &resolver.stamp,
+                &[mute.stamp, live.stamp],
+                &options,
+            )
+            .await
+            .expect("a response");
+        assert!(response.dnscrypt.is_some());
+    }
     assert!(
         live.seen.borrow().iter().any(|r| r.passed.is_some()),
         "the live relay passed the query"
     );
-    // The certificates' query over UDP then over TCP in one try, then the sealed query in the next: no more.
+    // The certificates' query over UDP then over TCP, or one sealed query, before the relay is skipped for good.
     assert!(mute.seen.borrow().len() <= 3, "{:?}", mute.seen.borrow());
-    assert_eq!(resolver.script().seen.len(), 1);
+    assert_eq!(resolver.script().seen.len(), queries);
+}
+
+/// "Anonymized `DNSCrypt`": the same resolver asked direct and through a relay is two resolvers: the second query goes
+/// to the relay, not to the address the first one knew.
+#[compio::test]
+async fn a_stamp_asked_direct_and_through_a_relay_is_asked_both_ways() {
+    let resolver = Resolver::start().await;
+    let relay = LoopbackRelay::start(false).await;
+    let client = Client::new();
+    let options = Options::default();
+    client
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    assert!(relay.seen.borrow().is_empty());
+    client
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[relay.stamp], &options)
+        .await
+        .expect("a response");
+    assert_eq!(relay.seen.borrow().len(), 2, "the certificates, the query");
+    assert_eq!(resolver.script().fetched, (2, 0), "each asked its own");
+}
+
+/// "Anonymized `DNSCrypt`": a certificates' response through the relay that is truncated, or that never comes over
+/// UDP, is asked again over TCP with the largest inner packet.
+#[compio::test]
+async fn certificates_through_the_relay_go_over_tcp_when_udp_fails() {
+    for fault in [Fault::Truncated, Fault::Silent] {
+        let resolver = Resolver::start().await;
+        resolver.script().certificate_fault = Some(fault);
+        let relay = LoopbackRelay::start(false).await;
+        let mut options = quick();
+        options.tries = NonZeroU8::MIN;
+        let listing = Client::new()
+            .dnscrypt_certificates_via(&resolver.stamp, &[relay.stamp], &options)
+            .await
+            .expect("a listing");
+        assert_eq!(listing.response.transport, Transport::Tcp);
+        assert_eq!(listing.certificates.len(), 1);
+        let seen: Vec<_> = relay
+            .seen
+            .borrow()
+            .iter()
+            .map(|relayed| (relayed.carrier, relayed.inner_len))
+            .collect();
+        assert_eq!(seen, [(Carrier::Udp, 1200), (Carrier::Tcp, 4096)]);
+        assert_eq!(resolver.script().fetched, (2, 0), "the relay asks over UDP");
+    }
+}
+
+/// "Anonymized `DNSCrypt`", "Relay Behavior": a response to the certificates' query must have the query's ID and be a
+/// response; one that is not is disregarded as a spoof is, and the certificates come over TCP.
+#[compio::test]
+async fn a_certificates_response_that_is_not_the_answer_is_disregarded() {
+    for fault in [Fault::WrongId, Fault::NotAResponse] {
+        let resolver = Resolver::start().await;
+        resolver.script().certificate_fault = Some(fault);
+        let relay = LoopbackRelay::start(false).await;
+        let mut options = quick();
+        options.tries = NonZeroU8::MIN;
+        let listing = Client::new()
+            .dnscrypt_certificates_via(&resolver.stamp, &[relay.stamp], &options)
+            .await
+            .expect("a listing");
+        assert_eq!(listing.response.transport, Transport::Tcp);
+        assert_eq!(resolver.script().fetched, (2, 0), "the relay asks over UDP");
+    }
 }
 
 /// "Anonymized `DNSCrypt`", D100: with the only relay silent there is no response, and no query goes direct: the

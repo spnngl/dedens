@@ -316,6 +316,12 @@ fn dnscrypt_usage_errors_exit_2() {
         .assert()
         .code(2)
         .stderr(contains("relay"));
+    // D100: the relay is one of what +trace does not go with, said first, whatever the server.
+    dedens()
+        .args(["+dnscrypt-relay=192.0.2.1", "+trace", "example.com"])
+        .assert()
+        .code(2)
+        .stderr(contains("+trace goes with"));
 }
 
 /// D98: a resolver that does not answer, not even with its certificates, is no reply: exit 9, as for any server.
