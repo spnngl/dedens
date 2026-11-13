@@ -477,19 +477,33 @@ fn meaning(rcode: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// A certificate's validity is written in UTC: the epoch, a leap day, the end of a year, Quad9's and the last
-    /// second a `u32` holds.
+    /// A certificate's validity is written in UTC: every day from 1970 to 2106 against a calendar walked one day at a
+    /// time (leap years of the Gregorian rule), at its first and last second, and the last second a `u32` holds.
     #[test]
     fn seconds_are_written_as_utc() {
-        for (seconds, text) in [
-            (0, "1970-01-01T00:00:00Z"),
-            (951_782_400, "2000-02-29T00:00:00Z"),
-            (1_767_225_599, "2025-12-31T23:59:59Z"),
-            (1_767_648_962, "2026-01-05T21:36:02Z"),
-            (u32::MAX, "2106-02-07T06:28:15Z"),
-        ] {
-            assert_eq!(utc(seconds), text);
+        let (mut year, mut month, mut day) = (1970_u32, 1_u32, 1_u32);
+        for days in 0..=(u32::MAX / 86_400) {
+            let date = format!("{year:04}-{month:02}-{day:02}");
+            let start = days * 86_400;
+            assert_eq!(utc(start), format!("{date}T00:00:00Z"));
+            if let Some(end) = start.checked_add(86_399) {
+                assert_eq!(utc(end), format!("{date}T23:59:59Z"));
+            }
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let length = match month {
+                2 if leap => 29,
+                2 => 28,
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            (month, day) = if day == length {
+                (month % 12 + 1, 1)
+            } else {
+                (month, day + 1)
+            };
+            year += u32::from(month == 1 && day == 1);
         }
+        assert_eq!(utc(u32::MAX), "2106-02-07T06:28:15Z");
     }
 
     /// Two servers at one address, apart by their path, are named apart.

@@ -25,7 +25,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl};
 
 use crate::util::loopback::Peer;
-use crate::util::{query, response, wire};
+use crate::util::{cookie_of, query, response, wire};
 
 /// The provider name of the resolvers of these tests.
 const PROVIDER: &str = "2.dnscrypt-cert.test.example.";
@@ -50,6 +50,8 @@ struct Seen {
     packet_len: usize,
     client_key: PublicKey,
     from: Option<SocketAddr>,
+    /// Whether the query, opened, carries a DNS cookie.
+    cookie: bool,
 }
 
 /// What the resolver serves and has seen.
@@ -67,6 +69,8 @@ struct Script {
     mute_udp_certificates: bool,
     /// The certificate queries, over UDP and over TCP.
     fetched: (u32, u32),
+    /// The certificate queries that carry a DNS cookie.
+    fetched_with_cookie: u32,
     seen: Vec<Seen>,
 }
 
@@ -127,6 +131,7 @@ fn handle(
             RecordType::TXT,
             "the only query in the clear is the certificates'"
         );
+        script.fetched_with_cookie += u32::from(cookie_of(packet).is_some());
         match carrier {
             Carrier::Udp => script.fetched.0 += 1,
             Carrier::Tcp => script.fetched.1 += 1,
@@ -158,6 +163,7 @@ fn handle(
         packet_len: packet.len(),
         client_key: key,
         from,
+        cookie: cookie_of(&plaintext).is_some(),
     });
     let act = script.acts.pop_front().unwrap_or(Act::Answer);
     let query = Message::decode(&plaintext).expect("a DNS query").message;
@@ -230,6 +236,7 @@ impl Resolver {
             truncate_certificates: false,
             mute_udp_certificates: false,
             fetched: (0, 0),
+            fetched_with_cookie: 0,
             seen: Vec::new(),
         }));
         let shared = Rc::clone(&script);
@@ -305,6 +312,10 @@ async fn a_query_goes_sealed_and_gets_its_response_opened() {
     assert_eq!(seen.carrier, Carrier::Udp);
     assert!(seen.packet_len >= 256, "{}", seen.packet_len);
     assert_eq!((seen.packet_len - QUERY_OVERHEAD) % 64, 0);
+    // D98: the cookies of the default options are not sent, in the clear or sealed.
+    assert!(!seen.cookie);
+    assert_eq!(script.fetched_with_cookie, 0);
+    assert!(info.valid_from <= now() - 3590 && info.valid_until >= now() + 86_000);
 }
 
 /// "Key Management": every query has a client key and a source port of its own, and the certificate is not fetched
@@ -326,6 +337,8 @@ async fn each_query_has_its_own_key_and_socket_and_the_certificate_is_kept() {
     };
     assert_ne!(first.client_key, second.client_key);
     assert_ne!(first.from, second.from);
+    // No TC came back, so the floor of the padding stays.
+    assert_eq!(first.packet_len, second.packet_len);
 }
 
 /// "Client Queries Over TCP": the query is framed and padded to a multiple of 64 bytes; the certificates come over
@@ -347,6 +360,8 @@ async fn a_tcp_exchange_seals_over_tcp_all_through() {
     };
     assert_eq!(seen.carrier, Carrier::Tcp);
     assert_eq!((seen.packet_len - QUERY_OVERHEAD) % 64, 0);
+    assert!(!seen.cookie);
+    assert_eq!(script.fetched_with_cookie, 0);
 }
 
 /// "Resolver Responses Over UDP": a truncated response is asked again over TCP, and the next UDP queries are
@@ -463,6 +478,7 @@ async fn no_valid_certificate_is_an_error() {
         matches!(error, ClientError::DnsCrypt(DnsCryptError::NoCertificate)),
         "{error:?}"
     );
+    assert!(!error.is_local());
     assert!(resolver.script().seen.is_empty());
 }
 

@@ -129,6 +129,9 @@ exclude_re = [
   # A padding to the length the message already has: `<=` pushes the marker and `resize` cuts it again, `<` leaves
   # the message as it is, the same bytes.
   'dedens-dnscrypt/src/padding\.rs:\d+:\d+: replace < with <= in pad$',
+  # A certificate kept to the very `Instant` its hour ends, or an `Instant` equal to the one it was chosen at: equal
+  # `Instant`s never happen (D98).
+  'dnscrypt\.rs:\d+:\d+: replace < with <= in Resolver::kept$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
