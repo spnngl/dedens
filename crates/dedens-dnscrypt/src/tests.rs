@@ -1,6 +1,10 @@
 //! What only the crate's inside can build: packets whose plaintext is authentic but wrongly padded, or whose
 //! resolver nonce is zero, which no [`ClientSession`] or [`ResponseContext`] makes.
 
+use chacha20::cipher::array::Array as ChaChaArray;
+use chacha20::{R20, hchacha};
+use dedens_testkit::hex;
+
 use crate::secretbox::{self, TAG_LEN};
 use crate::{
     Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession, EncryptionSystem,
@@ -139,4 +143,24 @@ fn response_with_bad_padding_or_zero_nonce_is_dropped() {
         context.decrypt_response(&packet([0; 12], &padded)),
         Err(ResponseError::ZeroResolverNonce)
     );
+}
+
+/// "Test Vector For The HChaCha20 Block Function": the hash that makes the shared key of `0x0002` (with a NUL
+/// input there) and the subkey of XChaCha20, as the draft pins it.
+#[test]
+fn hchacha20_block_vector() {
+    let key: [u8; 32] = array_from(&hex(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    ));
+    let input: [u8; 16] = array_from(&hex("000102030405060708090a0b0c0d0e0f"));
+    let out = hchacha::<R20>(&ChaChaArray::from(key), &ChaChaArray::from(input));
+    assert_eq!(
+        <[u8; 32]>::from(out).as_slice(),
+        hex("51e3ff45a895675c4b33b46c64f4a9ace110d34df6a2ceab486372bacbd3eff6")
+    );
+}
+
+/// `bytes` as an array of `N`.
+fn array_from<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    bytes.try_into().expect("N bytes")
 }
