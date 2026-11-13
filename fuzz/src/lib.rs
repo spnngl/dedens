@@ -26,7 +26,9 @@ pub use cli::parse_command_line;
 pub use coap::{coap_doc, parse_coap, parse_link_format};
 pub use daemon::read_config;
 pub use dnssec::{denial, dnssec_crypto, parse_trust_anchors, rrsig_verify, validate};
-pub use net::{parse_doh_template, parse_resolv_conf, read_doh_response, server_request};
+pub use net::{
+    parse_dns_stamp, parse_doh_template, parse_resolv_conf, read_doh_response, server_request,
+};
 pub use odoh::{odoh_decrypt, parse_odoh_configs, parse_odoh_message, read_odoh_http};
 pub use plugins::parse_lists;
 pub use proto::{
@@ -51,6 +53,7 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_resolv_conf", parse_resolv_conf),
     ("parse_lists", parse_lists),
     ("parse_doh_template", parse_doh_template),
+    ("parse_dns_stamp", parse_dns_stamp),
     ("server_request", server_request),
     ("read_doh_response", read_doh_response),
     ("dnssec_crypto", dnssec_crypto),

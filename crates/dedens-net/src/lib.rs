@@ -5,7 +5,8 @@
 //! `Response`; D160). The modules are of two kinds:
 //!
 //! - Sans-IO, fed bytes and time, with no socket, clock or randomness: `exchange` (one query, D26), `doh` (the
-//!   messages of DNS over HTTPS, D82), `coap` (CoAP and the messages of DNS over CoAP, D80), `resolv_conf`.
+//!   messages of DNS over HTTPS, D82), `coap` (CoAP and the messages of DNS over CoAP, D80), `resolv_conf`,
+//!   `stamp` (feature `dnscrypt`, D102: the `sdns://` stamps of `DNSCrypt` resolvers and relays).
 //! - On compio: `udp`, `tcp`, `quic`, `http3`, `doc` (feature `doc`) the transports, `dial` the QUIC endpoints and
 //!   connections, `client` the exchange run over the transports, `io` the seam of the UDP and TCP pools (D134), `tls`
 //!   the TLS configurations, `odoh` (feature `odoh`, D79) Oblivious `DoH`: its requests, responses and target
@@ -44,6 +45,8 @@ pub mod io;
 pub mod odoh;
 pub mod quic;
 pub mod resolv_conf;
+#[cfg(feature = "dnscrypt")]
+pub mod stamp;
 pub mod tcp;
 pub mod tls;
 pub mod udp;

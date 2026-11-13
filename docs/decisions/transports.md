@@ -389,6 +389,35 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
+- D102 DNS stamps (draft-denis-dns-stamps-02, archived) are read and written by `dedens_net::stamp`, sans-IO, behind
+  the feature `dnscrypt` (off by default, no dependency), for the DNSCrypt client and the relays of Anonymized
+  DNSCrypt, which take their servers from the `sdns://` strings `DNSCrypt/dnscrypt-resolvers` publishes:
+  - `Stamp` is `DnsCrypt` (0x01: properties, address, 32-byte Ed25519 provider key, provider name) or `Relay`
+    (0x81: address). `FromStr` reads, `Display` writes. The other kinds the draft defines (plain DNS, DoH, DoT, DoQ,
+    ODoH target and relay) are refused with the kind's name (`StampError::Unsupported`), an identifier it does not
+    define as `UnknownKind`; the DoH, DoT, DoQ and ODoH kinds map to transports we have and wait in `docs/TODECIDE.md`.
+  - A stamp that is read is written back byte for byte, so nothing is normalised: the base64url is canonical (no
+    padding, the unused bits of the last character zero, the alphabet of RFC 4648 §5: `StampError::Base64` for any
+    other text of the same bytes), an address is the one text it is written as (`[2001:db8::1]:53`, no zeros before a port, `StampError::Address` for
+    `[2001:0DB8::1]`) and keeps its port or the lack of one, a provider name its case and is the
+    text of a name without its final dot (never the root, at most 255 bytes, no escape that makes the text differ), the
+    properties' reserved bits are zero when written and ignored when read (§3.4 MUST). The
+    draft's own example B.2 is not canonical (its last character has bits set that no byte uses): it is refused as
+    base64, as `go-dnsstamps` (`dnscrypt-proxy`'s) `RawURLEncoding.Strict()` refuses it; the test says it, and that the
+    draft's payload with the bits cleared is refused by its kind (an erratum to report). Unlike `go-dnsstamps`, which
+    drops a default port when it writes, a port is written as it was read.
+    Rejected: a lenient reading, which writes back another text than it read.
+  - The address is an IP literal, IPv6 in brackets, with a port from 1 to 65535 or none (`Endpoint`); none is
+    443, the draft's default for DNSCrypt. A relay stamp without a port is read too, against §4.7.2's "mandatory",
+    as `dnscrypt-proxy` does: 237 of the 315 published relay stamps have
+    none. A host name is no address here: refused.
+  - Not checked: that the key is a point of the curve, or the provider name's `2.dnscrypt-cert.` form: the DNSCrypt
+    core finds out when it fetches the certificates.
+  - Tests (`tests/stamps.rs`): the draft's examples, and the 401 DNSCrypt and 315 relay stamps of `public-resolvers.md`
+    and `relays.md` (copied into `tests/testdata/stamps/`, with the commit and the date) read back byte for byte,
+    their 497 other stamps refused by kind; fields cut short at every length, bytes after the last field, a key of
+    another length, bad addresses and names refused. Fuzz: `parse_dns_stamp` (what is written reads again as the same
+    stamp; a relay is written as it was, a resolver but for the reserved bits), seeded by stamps of the lists.
 - D105 (amends D81; amended by D113) `dedensd` CoAP server limits (audit S7, S9, L10, E7), as D47 bounds the other listeners:
   - Replays (RFC 7252 §4.5, §4.8): `Dedup` sends the kept reply again at most `MAX_RETRANSMIT` = 4 times per entry
     (`coap::MAX_RETRANSMIT`, shared with the client's `Params`), the retransmissions a client makes, so every one of a

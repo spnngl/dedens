@@ -1,0 +1,5 @@
+# Tokens of a DNS stamp (draft-denis-dns-stamps-02): the scheme, and the base64url of the protocol identifiers of
+# DNSCrypt (0x01) and of a relay (0x81) behind it.
+"sdns://"
+"sdns://AQ"
+"sdns://gQ"

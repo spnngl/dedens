@@ -37,6 +37,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
     }
     seeds.extend(coap_seeds());
     seeds.extend(command_lines());
+    seeds.extend(stamps());
     seeds.extend(configs());
     // Trust anchors: the root's DS records as IANA publishes them (RFC 9718 §2.2).
     seeds.push((
@@ -89,6 +90,15 @@ fn command_lines() -> Vec<(String, Vec<u8>)> {
                 line.replace(' ', "\0").into_bytes(),
             )
         })
+        .collect()
+}
+
+/// The stamps of `seeds/stamps.txt`, one to a line, as `just fuzz` writes them.
+fn stamps() -> Vec<(String, Vec<u8>)> {
+    include_str!("../seeds/stamps.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| (format!("stamp {line}"), line.as_bytes().to_vec()))
         .collect()
 }
 
