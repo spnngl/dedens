@@ -70,6 +70,9 @@ fn template(host: &str, port: u16, path: &str) -> Result<Template, TemplateError
     ))
 }
 
+/// The scheme of a DNS stamp (D98).
+const STAMP_SCHEME: &str = "sdns://";
+
 /// `text` without its scheme, and the transport the scheme forces: `tls://`, `quic://`, `https://` or `coap://`.
 fn scheme(text: &str) -> (&str, Option<Transport>) {
     [
@@ -91,8 +94,18 @@ fn scheme(text: &str) -> (&str, Option<Transport>) {
 /// For `tls://`, `quic://` or `https://` with `noedns`, as their queries are padded with EDNS (RFC 8467 §4.1),
 /// unless through an Oblivious `DoH` proxy, which pads inside its encryption (D79); for `https://` with TCP, TLS or
 /// QUIC, as HTTPS is HTTP/3, over QUIC; for CoAP, `coap://` or the option, with another scheme or transport, as it
-/// is over UDP, unprotected.
+/// is over UDP, unprotected; for an `sdns://` stamp, `DNSCrypt`, with TLS, QUIC, HTTPS, Oblivious `DoH` or CoAP, which
+/// it goes with none of; for `dnscrypt_cert`, with a server that is no stamp (D98).
 pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result<()> {
+    let stamp = given.starts_with(STAMP_SCHEME);
+    if stamp
+        && (options.encrypted() || options.https() || options.odoh() || options.coap == Some(true))
+    {
+        bail!("server {given}: DNSCrypt goes with no TLS, QUIC, HTTPS, Oblivious DoH or CoAP");
+    }
+    if options.dnscrypt_cert == Some(true) && !stamp {
+        bail!("server {given}: +dnscrypt-cert needs an sdns:// stamp");
+    }
     let (_, forced) = scheme(given);
     let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
     if coap
@@ -114,7 +127,8 @@ pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result
     Ok(())
 }
 
-/// `named`, else the first name server of `conf`: an address, IPv6 possibly in brackets or with its zone, or a
+/// `named`, else the first name server of `conf`: an `sdns://` stamp of a `DNSCrypt` resolver (D98), which carries its
+/// address and port, else an address, IPv6 possibly in brackets or with its zone, or a
 /// host name, each with or without a port; `tls://` or `quic://` before it for TLS or QUIC, `https://` and a path
 /// after it for DNS over HTTPS (else the path of `options`, else `/dns-query`), `coap://` and a path after it for
 /// DNS over CoAP (D81), and `#NAME` after it for the name the server's certificate must hold, else its host name,
@@ -132,7 +146,7 @@ pub(super) fn server(
     port: Option<u16>,
     options: &Options,
 ) -> anyhow::Result<Endpoint> {
-    let text = match named {
+    let given = match named {
         Some(text) => text,
         None => conf
             .and_then(|conf| conf.nameservers.first())
@@ -140,9 +154,11 @@ pub(super) fn server(
                 anyhow!("no server: give @server, or a nameserver in /etc/resolv.conf")
             })?,
     };
-    let given = text;
     refuse_conflicts(given, options).map_err(Usage)?;
-    let (text, forced) = scheme(text);
+    if given.starts_with(STAMP_SCHEME) {
+        return stamped(given);
+    }
+    let (text, forced) = scheme(given);
     let (text, name) = match text.rsplit_once('#') {
         Some((text, name)) => (text, Some(name)),
         None => (text, None),
@@ -217,25 +233,63 @@ pub(super) fn server(
             "server {given}: +doc-discover needs a CoAP server with no path"
         )));
     }
-    let addr = match host.parse::<IpAddr>() {
-        Ok(ip) => SocketAddr::new(ip, port),
-        // A host name, or an address with its zone, which the system resolver reads.
-        Err(_) => (host, port)
-            .to_socket_addrs()
-            .with_context(|| format!("server {given}"))?
-            .next()
-            .ok_or_else(|| anyhow!("server {given}: no address"))?,
-    };
     Ok(Endpoint {
         server: Server {
-            addr,
+            addr: address(host, port, given)?,
             name,
             doh: template,
             docpath,
         },
         forced,
         proxy,
+        #[cfg(feature = "dnscrypt")]
+        dnscrypt: None,
     })
+}
+
+/// The address of the server `given`, `host` and `port` of it: an IP address, or a host name the system resolves.
+fn address(host: &str, port: u16, given: &str) -> anyhow::Result<SocketAddr> {
+    match host.parse::<IpAddr>() {
+        Ok(ip) => Ok(SocketAddr::new(ip, port)),
+        // A host name, or an address with its zone, which the system resolver reads.
+        Err(_) => (host, port)
+            .to_socket_addrs()
+            .with_context(|| format!("server {given}"))?
+            .next()
+            .ok_or_else(|| anyhow!("server {given}: no address")),
+    }
+}
+
+/// The `DNSCrypt` resolver the stamp `given` names, at the address and port it holds (`-p` gives none to a stamp).
+///
+/// # Errors
+///
+/// A [`Usage`] one for text that is no stamp, a relay stamp, which names no server to ask, and a build without the
+/// `dnscrypt` feature.
+#[cfg(feature = "dnscrypt")]
+fn stamped(given: &str) -> anyhow::Result<Endpoint> {
+    use dedens_net::stamp::Stamp;
+
+    match given.parse::<Stamp>() {
+        Ok(Stamp::DnsCrypt(stamp)) => Ok(Endpoint {
+            server: Server::from(stamp.address.socket_addr()),
+            forced: None,
+            proxy: None,
+            dnscrypt: Some(Box::new(stamp)),
+        }),
+        Ok(Stamp::Relay(_)) => bail!(Usage(anyhow!(
+            "server {given}: a relay stamp names no resolver to ask"
+        ))),
+        Err(error) => bail!(Usage(anyhow!("server {given}: {error}"))),
+    }
+}
+
+/// Without the `dnscrypt` feature, a stamp is refused.
+#[cfg(not(feature = "dnscrypt"))]
+fn stamped(given: &str) -> anyhow::Result<Endpoint> {
+    bail!(Usage(anyhow!(
+        "server {given}: a DNSCrypt stamp, built without the dnscrypt feature"
+    )))
 }
 
 /// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
@@ -278,6 +332,15 @@ mod tests {
         server(Some(text), None, None, &options)
     }
 
+    /// As [`endpoint`], after the conflicts between the server and the options are refused, as the run does.
+    #[cfg(feature = "dnscrypt")]
+    fn endpoint_of(text: &str, set: impl FnOnce(&mut Options)) -> anyhow::Result<Endpoint> {
+        let mut options = Options::default();
+        set(&mut options);
+        refuse_conflicts(text, &options)?;
+        server(Some(text), None, None, &options)
+    }
+
     /// The port of the server `text` names, with `set` applied to the options.
     fn port(text: &str, set: impl FnOnce(&mut Options)) -> u16 {
         endpoint(text, set).unwrap().server.addr.port()
@@ -297,6 +360,49 @@ mod tests {
         assert_eq!(port("coap://192.0.2.1", |_| ()), 5683);
         assert_eq!(port("192.0.2.1", |o| o.coap = Some(true)), 5683);
         assert_eq!(port("tls://192.0.2.1:8853", |_| ()), 8853);
+    }
+
+    /// Quad9's `DNSCrypt` stamp (dnscrypt-resolvers, `v3/public-resolvers.md`) and a relay's (`v3/relays.md`).
+    #[cfg(feature = "dnscrypt")]
+    const QUAD9: &str = "sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0";
+    #[cfg(feature = "dnscrypt")]
+    const RELAY: &str = "sdns://gQ8xNDYuNzAuODIuMzo0NDM";
+
+    /// D98: a stamp is the resolver, at its own address and port, whatever `-p` says; a relay or a bad stamp is a
+    /// usage error, and `+dnscrypt-cert` and the other transports refuse each other.
+    #[cfg(feature = "dnscrypt")]
+    #[test]
+    fn a_stamp_is_a_dnscrypt_resolver() {
+        let endpoint = endpoint(QUAD9, |_| ()).unwrap();
+        assert_eq!(endpoint.server.addr.to_string(), "9.9.9.9:8443");
+        assert!(endpoint.dnscrypt.is_some());
+        assert_eq!(endpoint.label(), "9.9.9.9:8443+dnscrypt");
+        assert_eq!(
+            server(Some(QUAD9), None, Some(53), &Options::default())
+                .unwrap()
+                .server
+                .addr
+                .port(),
+            8443
+        );
+        for (text, error) in [
+            (RELAY, "relay"),
+            ("sdns://AQ", "server sdns://AQ"),
+            ("sdns://", "server sdns://"),
+        ] {
+            let message = format!("{:#}", endpoint_of(text, |_| ()).unwrap_err());
+            assert!(message.contains(error), "{text}: {message}");
+        }
+        for set in [
+            (|o: &mut Options| o.tls = Some(true)) as fn(&mut Options),
+            |o| o.quic = Some(true),
+            |o| o.https = Some(HttpsOption::On),
+            |o| o.coap = Some(true),
+        ] {
+            assert!(endpoint_of(QUAD9, set).is_err());
+        }
+        assert!(endpoint_of("192.0.2.1", |o| o.dnscrypt_cert = Some(true)).is_err());
+        assert!(endpoint_of(QUAD9, |o| o.dnscrypt_cert = Some(true)).is_ok());
     }
 
     /// An IPv6 address is read whole without brackets, and its port after them.

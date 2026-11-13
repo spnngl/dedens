@@ -4,7 +4,7 @@
 .SH NAME
 dedens \- A dig\-like DNS client
 .SH SYNOPSIS
-\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
+\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
 .SH DESCRIPTION
 A dig\-like DNS client.
 .PP
@@ -12,10 +12,10 @@ dig\*(Aqs syntax works too: `@server` is `\-\-server server`, `+opt` is `\-\-opt
 .SH OPTIONS
 .TP
 \fB\-\-server\fR \fI<SERVER>\fR
-A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP. Each query is asked of each, side by side. Default: the first `nameserver` of /etc/resolv.conf
+A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP, `sdns://…` for the `DNSCrypt` resolver of a DNS stamp (a build with the `dnscrypt` feature). Each query is asked of each, side by side. Default: the first `nameserver` of /etc/resolv.conf
 .TP
 \fB\-p\fR, \fB\-\-port\fR \fI<PORT>\fR
-The port of a server given without one. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53
+The port of a server given without one, a stamp having its own. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53
 .TP
 \fB\-\-tls\-ca\fR \fI<FILE>\fR
 Trust the certificate authorities of this PEM file over TLS, instead of the system\*(Aqs
@@ -163,6 +163,19 @@ false
 .TP
 \fB\-\-doc\-discover\fR[=\fI<DOC_DISCOVER>\fR]
 Ask the CoAP server for its `DoC` resource, GET `/.well\-known/core?rt=core.dns`, and query the first it lists, instead of the path of the URI (RFC 9953 §3.1; D95). The server is the one named, never found: the list is as trusted as the server is. Needs CoAP (`coap`, or a `coap://` server) with no path in the server\*(Aqs URI. Default: off
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+true
+.IP \(bu 2
+false
+.RE
+.TP
+\fB\-\-dnscrypt\-cert\fR[=\fI<DNSCRYPT_CERT>\fR]
+List the certificates of a `DNSCrypt` resolver, the server, which must be an `sdns://` stamp (D98): their system, serial and validity, instead of an answer. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`. Default: off
 .br
 
 .br

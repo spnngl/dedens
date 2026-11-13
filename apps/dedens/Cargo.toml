@@ -34,10 +34,13 @@ mimalloc.workspace = true
 # D69: experimental transports, off by default.
 odoh = ["dedens-net/odoh", "dedens-testkit/odoh"]
 doc = ["dedens-net/doc", "dedens-testkit/doc"]
+# D98: DNSCrypt, off by default.
+dnscrypt = ["dedens-net/dnscrypt"]
 
 [dev-dependencies]
 assert_cmd.workspace = true
 clap_mangen.workspace = true
+dedens-dnscrypt.workspace = true
 dedens-odoh.workspace = true
 dedens-testkit = { workspace = true, features = ["responder"] }
 insta.workspace = true

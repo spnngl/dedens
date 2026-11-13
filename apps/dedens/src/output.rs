@@ -7,8 +7,8 @@ use std::io::{self, Write};
 use anstyle::{AnsiColor, Style};
 use dedens_proto::{Message, Name};
 use dedens_scenario::{
-    DnssecReport, DnssecStatus, EdeReport, EdnsReport, OptionReport, RecordReport, Report,
-    Transport, server_text,
+    CertificateReport, DnssecReport, DnssecStatus, EdeReport, EdnsReport, OptionReport,
+    RecordReport, Report, Transport, server_text,
 };
 
 /// How responses are printed.
@@ -50,10 +50,15 @@ pub(crate) fn print(
             let decoded = Message::decode(wire).map_err(io::Error::other)?;
             human(out, report, decoded.message.referral(), printing.trace)
         }
-        Format::Short => report
-            .answer
-            .iter()
-            .try_for_each(|record| writeln!(out, "{}", record.data)),
+        Format::Short => match listed(report) {
+            Some(certificates) => certificates
+                .iter()
+                .try_for_each(|certificate| writeln!(out, "{}", certificate_line(certificate))),
+            None => report
+                .answer
+                .iter()
+                .try_for_each(|record| writeln!(out, "{}", record.data)),
+        },
         Format::Json => {
             serde_json::to_writer(&mut *out, report)?;
             writeln!(out)
@@ -72,6 +77,12 @@ fn human(
     trace: bool,
 ) -> io::Result<()> {
     status(out, report)?;
+    // `+dnscrypt-cert` lists the certificates, not what the response holds (D98).
+    if let Some(certificates) = listed(report) {
+        return certificates
+            .iter()
+            .try_for_each(|certificate| writeln!(out, "{}", certificate_line(certificate)));
+    }
     let brief = trace && referral.is_some();
     let none = Vec::new();
     let sections = [
@@ -143,6 +154,50 @@ fn human(
     Ok(())
 }
 
+/// The certificates `+dnscrypt-cert` listed, if `report` is of a listing.
+fn listed(report: &Report) -> Option<&[CertificateReport]> {
+    let dnscrypt = report.exchange.as_ref()?.dnscrypt.as_ref()?;
+    dnscrypt
+        .certificate
+        .is_none()
+        .then_some(&dnscrypt.certificates)
+}
+
+/// A certificate in a line: its system, serial and validity in UTC.
+fn certificate_line(certificate: &CertificateReport) -> String {
+    format!(
+        "{} serial {} valid {} to {}",
+        certificate.system,
+        certificate.serial,
+        utc(certificate.valid_from),
+        utc(certificate.valid_until)
+    )
+}
+
+/// `seconds` since 1970 as `YYYY-MM-DDTHH:MM:SSZ` (Howard Hinnant's `civil_from_days`).
+fn utc(seconds: u32) -> String {
+    let (days, time) = (seconds / 86_400, seconds % 86_400);
+    // Days from 0000-03-01, in eras of 400 years.
+    let days = u64::from(days) + 719_468;
+    let (era, day_of_era) = (days / 146_097, days % 146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let (month, year) = if shifted_month < 10 {
+        (shifted_month + 3, year_of_era + era * 400)
+    } else {
+        (shifted_month - 9, year_of_era + era * 400 + 1)
+    };
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        time / 3600,
+        time % 3600 / 60,
+        time % 60
+    )
+}
+
 /// The question, the rcode in color, and how the response came.
 fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
     for question in &report.question {
@@ -175,6 +230,13 @@ fn status(out: &mut impl Write, report: &Report) -> io::Result<()> {
         }
         if let Some(path) = &exchange.doc_path {
             write!(out, " (discovered {path})")?;
+        }
+        if let Some(certificate) = exchange.dnscrypt.as_ref().and_then(|d| d.certificate) {
+            write!(
+                out,
+                " (DNSCrypt {} serial {})",
+                certificate.system, certificate.serial
+            )?;
         }
         if exchange.sends > 1 {
             write!(out, " after {} queries", exchange.sends)?;
@@ -414,6 +476,21 @@ fn meaning(rcode: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A certificate's validity is written in UTC: the epoch, a leap day, the end of a year, Quad9's and the last
+    /// second a `u32` holds.
+    #[test]
+    fn seconds_are_written_as_utc() {
+        for (seconds, text) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (1_767_225_599, "2025-12-31T23:59:59Z"),
+            (1_767_648_962, "2026-01-05T21:36:02Z"),
+            (u32::MAX, "2106-02-07T06:28:15Z"),
+        ] {
+            assert_eq!(utc(seconds), text);
+        }
+    }
 
     /// Two servers at one address, apart by their path, are named apart.
     #[test]

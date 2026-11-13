@@ -56,6 +56,11 @@ pub struct Options {
     /// Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub doc_discover: Option<bool>,
+    /// List the certificates of a `DNSCrypt` resolver, the server, which must be an `sdns://` stamp (D98): their
+    /// system, serial and validity, instead of an answer. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`.
+    /// Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub dnscrypt_cert: Option<bool>,
     /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
     /// are not fetched from the target, which would give it the client's address, and no query is linked to it. Read
     /// once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error.
@@ -129,6 +134,7 @@ impl Options {
             odoh_proxy: self.odoh_proxy.or(fallback.odoh_proxy),
             coap: self.coap.or(fallback.coap),
             doc_discover: self.doc_discover.or(fallback.doc_discover),
+            dnscrypt_cert: self.dnscrypt_cert.or(fallback.dnscrypt_cert),
             odoh_config: self.odoh_config.or(fallback.odoh_config),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
@@ -154,7 +160,8 @@ impl Options {
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
     /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; `odoh_proxy` with `tcp`, `tls`,
     /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`; `odoh_config` without
-    /// `odoh_proxy`.
+    /// `odoh_proxy`; `dnscrypt_cert` with `tls`, `quic`, HTTPS, `odoh_proxy` or CoAP, which a `DNSCrypt` server
+    /// goes with none of.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -197,6 +204,13 @@ impl Options {
         {
             return Err(InvalidOption(
                 "coap goes with no tcp, tls, quic, https or odoh-proxy: it is CoAP over UDP",
+            ));
+        }
+        if self.dnscrypt_cert == Some(true)
+            && (self.encrypted() || self.https() || self.odoh() || self.coap == Some(true))
+        {
+            return Err(InvalidOption(
+                "dnscrypt-cert goes with no tls, quic, https, odoh-proxy or coap: it asks a DNSCrypt server",
             ));
         }
         Ok(())
@@ -632,5 +646,54 @@ mod tests {
         assert_eq!(line.or(file.clone()).doc_discover, Some(false));
         assert_eq!(Options::default().or(file.clone()).doc_discover, Some(true));
         assert_eq!(file.check(), Ok(()));
+    }
+
+    /// D98: `dnscrypt_cert` is merged with the command line first, and refused with the transports a `DNSCrypt` server
+    /// goes with none of; whether the server is a stamp is the caller's to check.
+    #[test]
+    fn dnscrypt_cert_goes_with_no_other_transport() {
+        let on = Options {
+            dnscrypt_cert: Some(true),
+            ..Options::default()
+        };
+        assert_eq!(on.check(), Ok(()));
+        assert_eq!(
+            Options {
+                tcp: Some(true),
+                ..on.clone()
+            }
+            .check(),
+            Ok(())
+        );
+        for refused in [
+            Options {
+                tls: Some(true),
+                ..on.clone()
+            },
+            Options {
+                quic: Some(true),
+                ..on.clone()
+            },
+            Options {
+                https: Some(HttpsOption::On),
+                ..on.clone()
+            },
+            Options {
+                odoh_proxy: Some("https://proxy.example/proxy".to_owned()),
+                ..on.clone()
+            },
+            Options {
+                coap: Some(true),
+                ..on.clone()
+            },
+        ] {
+            assert!(refused.check().is_err(), "{refused:?}");
+        }
+        let line = Options {
+            dnscrypt_cert: Some(false),
+            ..Options::default()
+        };
+        assert_eq!(line.or(on.clone()).dnscrypt_cert, Some(false));
+        assert_eq!(Options::default().or(on).dnscrypt_cert, Some(true));
     }
 }
