@@ -842,6 +842,26 @@ differ by the stream cipher alone, and on equal plaintexts the gap is small and 
 costs 0.1-0.2 µs more on 128 and 192 bytes (15-40%, cause not investigated) and 10-20% less on 1216. One run of three
 had `decrypt_query_with` for XChaCha20 at 1.27 µs, a disturbed machine.
 
+## DNSCrypt in `dedensd` (D99)
+
+Queries per second over UDP on loopback, one `dedensd` thread (macOS has no `SO_REUSEPORT` spreading, so `threads: 1`), a
+`hosts` stage answering `example.test A`, release build, a throwaway client of N threads each sending 16 queries and
+reading 16 answers for five seconds (not committed: `dnsperf` speaks no DNSCrypt, and `just bench-dnsperf` needs
+Linux). DNSCrypt is XChaCha20-Poly1305, a query padded to 256 bytes. Apple M5, one run each, the machine not
+quiet (another build ran on it): the shape holds, the digits do not.
+
+| Client threads | plain UDP | DNSCrypt, one client key | DNSCrypt, a new client key per query |
+|---|---|---|---|
+| 1 | 93,500 | 69,400 | 20,200 |
+| 2 | 109,500 | 80,100 | 23,200 |
+| 4 | 115,300 | 89,600 | 26,600 |
+
+A client that keeps its key costs `dedensd` 25% of the plain rate, which the sealing and the client's own work account
+for; a new key per query (as `dedens` does, D98) pays the X25519 multiplication at every packet (D97's 19 µs): 3.4 times
+fewer queries. The per-thread cache of shared keys (D99) is what separates the two columns: without it every client
+would be in the right-hand one. The cache fills only from a packet whose tag verified, holds 1024 keys and is cleared
+when full.
+
 ## DNSSEC `RRset` verification (D73)
 
 `benches/dnssec.rs`, `verify_rrset`: one `rrsig::verify` of a captured `RRset` (`testdata/dnssec`)
