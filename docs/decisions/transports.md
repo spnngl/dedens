@@ -486,8 +486,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D97 (amends D69) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
   systems: `0x0002` XChaCha20-Poly1305 (the draft's) and `0x0001` XSalsa20-Poly1305 (v2 of 2023, which the draft no
   longer specifies; the resolvers in the field still serve it, Quad9 both). Not here: the post-quantum system `0x0003`
-  (certificates of an unknown system are skipped, as the draft tells clients), Anonymized DNSCrypt, stamps and
-  the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are arguments.
+  (certificates of an unknown system are skipped, as the draft tells clients), Anonymized DNSCrypt, stamps (D102)
+  and the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are
+  arguments.
   The draft is cited by section name, as its numbers move between revisions; the archive holds revision 11 and the 2023
   text (`docs/rfc/list.md`, `coverage.md`). The crate has no `dnscrypt` Cargo feature: it is a library nothing else
   depends on yet, and the feature (off by default) belongs to the crates that use it, from step 10b. Its modules are
