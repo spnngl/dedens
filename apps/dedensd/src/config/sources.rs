@@ -186,8 +186,8 @@ pub(crate) struct Downloads {
 }
 
 impl StageFile {
-    /// Whether building it reads a file: its `file`, its `trust_anchors`, the saved copies of its `urls`, or of those
-    /// of its `allow`.
+    /// Whether building it reads a file: its `file`, its `prewarm` `file`, its `trust_anchors`, the saved copies of
+    /// its `urls`, or of those of its `allow`.
     pub(super) fn names_files(&self) -> bool {
         match self {
             Self::Cache(CacheFile { prewarm, .. }) => prewarm
