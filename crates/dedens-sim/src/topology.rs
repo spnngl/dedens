@@ -75,6 +75,8 @@ pub struct Topology {
     repair_rate: Option<f64>,
     pipeline: Build,
     software: Software,
+    #[cfg(feature = "dnscrypt")]
+    dnscrypt: Option<(Arc<str>, [u8; 32])>,
 }
 
 impl fmt::Debug for Topology {
@@ -100,6 +102,8 @@ impl Default for Topology {
             repair_rate: None,
             pipeline: Rc::new(resolver::pipeline),
             software: Software::Driver,
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: None,
         }
     }
 }
@@ -178,6 +182,18 @@ impl Topology {
         self
     }
 
+    /// Has `dedensd`'s loop ([`Topology::dedensd`]) answer as the `DNSCrypt` provider `name` (D99), its signing key made
+    /// from `seed`, over UDP and TCP on port 53, in place of plain DNS: a client asks the certificates in the clear
+    /// and then seals its queries. The short-term keys are dated from the run's epoch, so that they rotate and expire
+    /// on simulated time.
+    #[cfg(feature = "dnscrypt")]
+    #[must_use]
+    pub fn dnscrypt(mut self, name: &str, seed: [u8; 32]) -> Self {
+        self.software = Software::Dedensd;
+        self.dnscrypt = Some((Arc::from(name), seed));
+        self
+    }
+
     /// Makes the simulation: the resolver (`resolver`) and the upstream servers (`upstream-<n>`), on a network
     /// whose latencies and order of hosts follow `seed`. Clients are added to the [`World`].
     #[must_use]
@@ -241,6 +257,15 @@ impl Topology {
             rng: Rc::new(RefCell::new(Rng::new(seed, 0))),
             trace: trace.clone(),
             build: self.pipeline,
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: self.dnscrypt.map(|(name, seed)| resolver::Provider {
+                name,
+                seed,
+                unix: self
+                    .epoch
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs()),
+            }),
         };
         let software = self.software;
         sim.host("resolver", move || {
