@@ -7,6 +7,7 @@ use clap::ValueEnum;
 use compio::driver::DriverType;
 
 use crate::config::Listen;
+use crate::serve::Services;
 
 /// How events are written on stderr (`--log-format`).
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -50,9 +51,36 @@ pub(crate) fn announce(config: &str, listen: &[Listen], drivers: &[DriverType]) 
     }
 }
 
+/// What the start says of the listeners beyond what [`announce`] does: the stamp of each `dnscrypt://` address of
+/// `listen`, which `services` answers (what a client is given to use it, D99; a wildcard address is logged as bound:
+/// the client's needs the address it reaches), and a warning for each `CoAP` one.
+pub(crate) fn notices(
+    #[cfg_attr(
+        not(any(feature = "doc", feature = "dnscrypt")),
+        expect(unused_variables, reason = "only these listeners are noted")
+    )]
+    listen: &[Listen],
+    #[cfg_attr(
+        not(feature = "dnscrypt"),
+        expect(unused_variables, reason = "only `DNSCrypt` has a service to note")
+    )]
+    services: &Services,
+) {
+    #[cfg(feature = "doc")]
+    warn_coap(listen);
+    #[cfg(feature = "dnscrypt")]
+    if let Some(service) = &services.dnscrypt {
+        for listen in listen {
+            if let Listen::Dnscrypt(addr) = listen {
+                tracing::info!(stamp = %service.stamp(*addr), "DNSCrypt");
+            }
+        }
+    }
+}
+
 /// Warns of each CoAP address in `listen`: DNS there is unprotected (RFC 9953 §6).
 #[cfg(feature = "doc")]
-pub(crate) fn warn_coap(listen: &[Listen]) {
+fn warn_coap(listen: &[Listen]) {
     for listen in listen.iter().filter(|l| matches!(l, Listen::Coap(..))) {
         tracing::warn!(
             ?listen,

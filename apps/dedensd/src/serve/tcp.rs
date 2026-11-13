@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::io;
+use std::net::IpAddr;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use compio::tls::TlsAcceptor;
 use dedens_net::io::{Io, Listener as _, Stream as _};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
+use dedens_server::Pipeline;
 use socket2::Socket;
 
 use super::isolate::{Listener, Origin};
@@ -41,6 +43,78 @@ const TCP_QUEUED: usize = 128 << 10;
 /// emptying while it reads all it is sent, and one that reads slower than it asks is held back by [`TCP_QUEUED`].
 pub(super) const TCP_WRITE: Duration = Duration::from_secs(10);
 
+/// What a connection makes of each message it reads and of each reply: DNS as it is, or sealed `DNSCrypt` packets
+/// (D99). One value serves all the connections of a listener on a thread.
+pub(super) trait Codec: 'static {
+    /// What a query leaves for its reply: the keys it was opened under.
+    type Context: 'static;
+
+    /// Whether the client at `ip` is to get nothing, a connection included, before any work is done for it (D91).
+    fn silenced(&self, pipeline: &Pipeline, ip: IpAddr) -> bool;
+
+    /// What `message`, read off a connection from the client at `from`, is.
+    fn open<N: Io>(
+        &self,
+        thread: &Thread<N>,
+        from: IpAddr,
+        message: Vec<u8>,
+    ) -> Opened<Self::Context>;
+
+    /// The reply to a query opened under `context`, `wire`, behind its length; `None` if it has none to send.
+    fn seal<N: Io>(
+        &self,
+        thread: &Thread<N>,
+        context: &Self::Context,
+        wire: &[u8],
+    ) -> Option<Vec<u8>>;
+
+    /// As [`Codec::seal`], for a reply [`answer`] made, `framed` behind its length already.
+    fn reseal<N: Io>(
+        &self,
+        thread: &Thread<N>,
+        context: &Self::Context,
+        framed: Vec<u8>,
+    ) -> Option<Vec<u8>>;
+}
+
+/// What [`Codec::open`] made of a message.
+#[cfg_attr(
+    not(feature = "dnscrypt"),
+    expect(dead_code, reason = "only `DNSCrypt` has replies of its own and drops")
+)]
+pub(super) enum Opened<C> {
+    /// A query for the pipeline, and what its reply is sealed with.
+    Query(Vec<u8>, C),
+    /// A reply to send as it is, behind its length: the message was for the server itself.
+    Reply(Vec<u8>),
+    /// Nothing to answer.
+    Drop,
+}
+
+/// DNS over TCP or TLS as RFC 7766 has it: messages are queries, replies go out as made.
+struct Plain;
+
+impl Codec for Plain {
+    type Context = ();
+
+    fn silenced(&self, pipeline: &Pipeline, ip: IpAddr) -> bool {
+        pipeline.drops(ip)
+    }
+
+    fn open<N: Io>(&self, _: &Thread<N>, _: IpAddr, message: Vec<u8>) -> Opened<()> {
+        Opened::Query(message, ())
+    }
+
+    fn seal<N: Io>(&self, _: &Thread<N>, (): &(), wire: &[u8]) -> Option<Vec<u8>> {
+        // A reply fits 65535 bytes.
+        frame(wire)
+    }
+
+    fn reseal<N: Io>(&self, _: &Thread<N>, (): &(), framed: Vec<u8>) -> Option<Vec<u8>> {
+        Some(framed)
+    }
+}
+
 /// Serves the TCP listener `tcp_listener`, over TLS with `acceptor` if any, as the listener `scheme`. A restarted
 /// loop takes the same listener: a panic leaves it open.
 pub(super) fn tcp_task(
@@ -48,6 +122,17 @@ pub(super) fn tcp_task(
     tcp_listener: Socket,
     scheme: &str,
     acceptor: Option<TlsAcceptor>,
+) -> io::Result<JoinHandle<()>> {
+    tcp_task_with(thread, tcp_listener, scheme, acceptor, Rc::new(Plain))
+}
+
+/// [`tcp_task`] for messages `codec` reads and seals.
+pub(super) fn tcp_task_with<C: Codec>(
+    thread: &Rc<Thread>,
+    tcp_listener: Socket,
+    scheme: &str,
+    acceptor: Option<TlsAcceptor>,
+    codec: Rc<C>,
 ) -> io::Result<JoinHandle<()>> {
     let name = Listener::new(scheme, local(&tcp_listener));
     #[expect(
@@ -57,7 +142,14 @@ pub(super) fn tcp_task(
     let tcp_listener = Rc::new(TcpListener::from_std(tcp_listener.into())?);
     Ok(supervised(name, thread, move |name, thread| {
         let (tcp_listener, acceptor) = (Rc::clone(&tcp_listener), acceptor.clone());
-        tcp(tcp_listener, acceptor, name.clone(), Rc::clone(thread))
+        let codec = Rc::clone(&codec);
+        accept(
+            tcp_listener,
+            acceptor,
+            name.clone(),
+            Rc::clone(thread),
+            codec,
+        )
     }))
 }
 
@@ -69,11 +161,22 @@ pub(super) async fn tcp<N: Io>(
     listener: Listener,
     thread: Rc<Thread<N>>,
 ) {
+    accept(tcp_listener, acceptor, listener, thread, Rc::new(Plain)).await;
+}
+
+/// [`tcp`] for messages `codec` reads and seals.
+pub(super) async fn accept<N: Io, C: Codec>(
+    tcp_listener: Rc<N::Listener>,
+    acceptor: Option<TlsAcceptor>,
+    listener: Listener,
+    thread: Rc<Thread<N>>,
+    codec: Rc<C>,
+) {
     loop {
         match tcp_listener.accept().await {
             Ok((stream, peer)) => {
                 // `action: drop` (D91): no slot, no handshake, no reply; `refuse` answers each query.
-                if thread.pipeline().drops(peer.ip()) {
+                if codec.silenced(&thread.pipeline(), peer.ip()) {
                     drop(stream);
                     continue;
                 }
@@ -81,7 +184,8 @@ pub(super) async fn tcp<N: Io>(
                     tracing::debug!(%peer, "too many connections: closed");
                     continue;
                 };
-                let (acceptor, thread) = (acceptor.clone(), Rc::clone(&thread));
+                let (acceptor, thread, codec) =
+                    (acceptor.clone(), Rc::clone(&thread), Rc::clone(&codec));
                 let origin = Origin::new(&listener, peer);
                 origin.clone().spawn(&thread.io.clone(), async move {
                     // Queries are small and each waits for its answer: send replies without delay (RFC 7766 §10).
@@ -94,6 +198,7 @@ pub(super) async fn tcp<N: Io>(
                             Transport::Tcp,
                             &origin,
                             &thread,
+                            &codec,
                         )
                         .await;
                         drop(slot);
@@ -107,7 +212,8 @@ pub(super) async fn tcp<N: Io>(
                     {
                         Ok(Ok(secured)) => {
                             let (reader, writer) = Polled::halves(secured);
-                            connection(reader, writer, Transport::Tls, &origin, &thread).await;
+                            connection(reader, writer, Transport::Tls, &origin, &thread, &codec)
+                                .await;
                         }
                         Ok(Err(error)) => tracing::debug!(%peer, %error, "TLS handshake failed"),
                         Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
@@ -128,12 +234,13 @@ pub(super) async fn tcp<N: Io>(
 /// (§6.2.1.1). Reading waits while [`TCP_PENDING`] queries are in flight or more than [`TCP_QUEUED`] bytes of
 /// replies wait to be written, and stops after [`TCP_IDLE`] without a query, at the first error, or once the
 /// writer gave up; the connection closes once the replies still waiting are written (§6.2.3).
-async fn connection<N: Io>(
+async fn connection<N: Io, C: Codec>(
     mut reader: impl Inbound,
     writer: impl Outbound + 'static,
     transport: Transport,
     origin: &Origin,
     thread: &Rc<Thread<N>>,
+    codec: &Rc<C>,
 ) {
     let (sender, queue) = flume::unbounded::<Vec<u8>>();
     let replies = Replies {
@@ -161,13 +268,25 @@ async fn connection<N: Io>(
             }
         }
         let deadline = thread.io.now() + TCP_IDLE;
-        let Ok(Ok(query)) = thread.io.timeout_at(deadline, reader.message()).await else {
+        let Ok(Ok(message)) = thread.io.timeout_at(deadline, reader.message()).await else {
             break;
         };
         let pipeline = thread.pipeline();
         let from = origin.peer.ip();
+        let (query, context) = match codec.open(thread, from, message) {
+            Opened::Query(query, context) => (query, context),
+            Opened::Reply(framed) => {
+                if replies.queue(framed) {
+                    continue;
+                }
+                break;
+            }
+            Opened::Drop => continue,
+        };
         let (upstream, slot) = match start(thread, &pipeline, &query, transport, from, |wire| {
-            replies.push(wire)
+            codec
+                .seal(thread, &context, wire)
+                .is_none_or(|framed| replies.queue(framed))
         }) {
             Some(Started::Upstream(upstream, slot)) => (upstream, slot),
             Some(Started::Done) => continue,
@@ -177,9 +296,12 @@ async fn connection<N: Io>(
             break;
         }
         let (replies, place, thread) = (replies.clone(), Place(done.clone()), Rc::clone(thread));
+        let codec = Rc::clone(codec);
         origin.clone().spawn(&thread.io.clone(), async move {
             let deliver = async |framed| {
-                replies.queue(framed);
+                if let Some(framed) = codec.reseal(&thread, &context, framed) {
+                    replies.queue(framed);
+                }
             };
             answer(&thread, &pipeline, upstream, transport, deliver).await;
             drop(slot);
@@ -213,19 +335,13 @@ struct Replies {
 }
 
 impl Replies {
-    /// Queues `wire` behind its length for the writer, without waiting: the reader bounds the bytes queued. `false`
-    /// once the writer gave up.
-    fn push(&self, wire: &[u8]) -> bool {
-        // A reply fits 65535 bytes.
-        frame(wire).is_none_or(|framed| self.queue(framed))
-    }
-
     /// Whether more than [`TCP_QUEUED`] bytes wait for the writer: reading waits (RFC 7766 §10).
     fn full(&self) -> bool {
         self.queued.get() > TCP_QUEUED
     }
 
-    /// Queues `framed`, a reply behind its length, as [`Replies::push`] does.
+    /// Queues `framed`, a reply behind its length, for the writer, without waiting: the reader bounds the bytes
+    /// queued. `false` once the writer gave up.
     fn queue(&self, framed: Vec<u8>) -> bool {
         let len = framed.len();
         let sent = self.sender.send(framed).is_ok();
@@ -298,7 +414,7 @@ mod tests {
     use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
     use dedens_server::Pipeline;
 
-    use super::{Replies, TCP_QUEUED, TCP_WRITE, connection, tcp, write};
+    use super::{Plain, Replies, TCP_QUEUED, TCP_WRITE, connection, tcp, write};
     use crate::lists::Store;
     use crate::reload::Current;
     use crate::serve::isolate::{Listener, Origin};
@@ -385,6 +501,7 @@ mod tests {
                     Transport::Tcp,
                     &origin,
                     &thread,
+                    &Rc::new(Plain),
                 )
                 .await;
             });
@@ -444,7 +561,7 @@ mod tests {
             ));
             let reply = vec![0; 1000];
             for _ in 0..200 {
-                assert!(replies.push(&reply));
+                assert!(replies.queue(frame(&reply).expect("framed")));
             }
             let total = 200 * 1002;
             assert_eq!(replies.queued.get(), total);
@@ -499,7 +616,7 @@ mod tests {
             ));
             let reply = vec![0; 13105];
             for _ in 0..6 {
-                assert!(replies.push(&reply));
+                assert!(replies.queue(frame(&reply).expect("framed")));
             }
             for _ in 0..2 {
                 open.send(()).expect("open");
@@ -553,7 +670,10 @@ mod tests {
             let start = std::time::Instant::now();
             let mut pushed = 0;
             while start.elapsed() < TCP_WRITE + Duration::from_secs(1) {
-                assert!(replies.push(&[0; 100]), "the writer gave up");
+                assert!(
+                    replies.queue(frame(&[0; 100]).expect("framed")),
+                    "the writer gave up"
+                );
                 pushed += 102;
                 compio::time::sleep(Duration::from_millis(100)).await;
             }

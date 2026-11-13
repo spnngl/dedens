@@ -1125,6 +1125,7 @@ dependencies = [
  "clap_mangen",
  "compio",
  "dedens-cache",
+ "dedens-dnscrypt",
  "dedens-dnssec",
  "dedens-net",
  "dedens-odoh",

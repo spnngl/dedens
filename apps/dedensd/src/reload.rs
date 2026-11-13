@@ -105,6 +105,9 @@ pub(crate) struct Fixed {
     /// The Oblivious `DoH` target's settings: its key is read at start (D79).
     #[cfg(feature = "odoh")]
     pub(crate) odoh: Option<crate::odoh::Section>,
+    /// The `DNSCrypt` resolver's settings: its key is read at start (D99).
+    #[cfg(feature = "dnscrypt")]
+    pub(crate) dnscrypt: Option<crate::dnscrypt::Section>,
 }
 
 /// The first wait after a failed download or reload; each failure in a row doubles it, up to the refresh interval.
@@ -293,6 +296,10 @@ fn reload(
             #[cfg(feature = "odoh")]
             if new.odoh != fixed.odoh {
                 tracing::warn!(%config, "changes to `odoh` take a restart");
+            }
+            #[cfg(feature = "dnscrypt")]
+            if new.dnscrypt != fixed.dnscrypt {
+                tracing::warn!(%config, "changes to `dnscrypt` take a restart");
             }
             new.warn_access(&fixed.listen);
             if let (Some(presented), Some(new)) = (&fixed.presented, new.presented) {

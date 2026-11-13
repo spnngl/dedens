@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 
 mod config;
+#[cfg(feature = "dnscrypt")]
+mod dnscrypt;
 mod download;
 mod flights;
 mod lists;
@@ -36,7 +38,7 @@ use crate::config::Config;
 use crate::lists::Store;
 use crate::log::{LogFormat, announce, diagnostics};
 use crate::reload::{Current, Fixed};
-use crate::serve::isolate;
+use crate::serve::{Services, isolate};
 
 /// A DNS server: answers from its cache and forwards the rest to upstream servers.
 #[derive(Debug, Parser)]
@@ -59,6 +61,16 @@ struct Args {
 enum Command {
     /// Reads the configuration and builds the pipeline, without binding any socket.
     Validate,
+    /// Makes the provider key of a `DNSCrypt` resolver (D99): prints the `secret_key` line for the `dnscrypt` section of
+    /// the configuration, and the stamp clients use. Needs the dnscrypt feature.
+    DnscryptKeygen {
+        /// The provider name, starting with `2.dnscrypt-cert.`.
+        #[arg(long, value_name = "NAME")]
+        provider_name: String,
+        /// The address clients reach the resolver at, IP or IP:PORT, port 443 by default.
+        #[arg(long, value_name = "ADDR")]
+        address: String,
+    },
 }
 
 /// Runs `dedensd` on the process's command line, until a signal ends it or a serving thread fails.
@@ -70,6 +82,13 @@ enum Command {
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     diagnostics(args.verbose, args.log_format);
+    if let Some(Command::DnscryptKeygen {
+        provider_name,
+        address,
+    }) = &args.command
+    {
+        return keygen(provider_name, address);
+    }
     // Global, for `dedensd validate --config FILE`, so clap cannot require it.
     let Some(file) = args.config else {
         Args::command()
@@ -83,14 +102,8 @@ pub fn main() -> anyhow::Result<()> {
     let text = read(&file)?;
     let mut store = Store::default();
     let config = build(&file, &text, &Pipeline::default(), &mut store)?;
-    // The key is read here, once: `validate` checks it reads.
-    #[cfg(feature = "odoh")]
-    let odoh = config
-        .odoh
-        .as_ref()
-        .map(odoh::Section::service)
-        .transpose()?
-        .map(Arc::new);
+    // The keys are read here, once: `validate` checks they read.
+    let services = Services::new(&config)?;
     if let Some(Command::Validate) = args.command {
         writeln!(io::stdout(), "{path}: valid")?;
         return Ok(());
@@ -126,13 +139,14 @@ pub fn main() -> anyhow::Result<()> {
             presented: presented.clone(),
             #[cfg(feature = "odoh")]
             odoh: config.odoh.clone(),
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: config.dnscrypt.clone(),
         },
         downloads,
         store,
     )
     .context("cannot handle SIGHUP")?;
-    #[cfg(feature = "doc")]
-    log::warn_coap(&listen);
+    log::notices(&listen, &services);
     let threads = sockets.len();
     let (ended, end) = stop_on_signal().context("cannot handle SIGTERM")?;
     let (listening, listened) = mpsc::channel();
@@ -140,8 +154,7 @@ pub fn main() -> anyhow::Result<()> {
         let (current, ended) = (Arc::clone(&current), ended.clone());
         let listening = listening.clone();
         let (trust, presented) = (config.trust.clone(), presented.clone());
-        #[cfg(feature = "odoh")]
-        let odoh = odoh.clone();
+        let services = services.clone();
         let serving = move || {
             let served = panic::catch_unwind(AssertUnwindSafe(|| {
                 let serving = serve::serve(
@@ -149,8 +162,7 @@ pub fn main() -> anyhow::Result<()> {
                     current,
                     trust,
                     presented,
-                    #[cfg(feature = "odoh")]
-                    odoh,
+                    services,
                     index == 0,
                     listening,
                 );
@@ -207,6 +219,64 @@ pub async fn simulated<N: dedens_net::io::Io>(
     trust: dedens_net::tls::Trust,
 ) {
     serve::simulated(io, udp, tcp, pipeline, trust).await;
+}
+
+/// The `DNSCrypt` provider of [`simulated_dnscrypt`]: its `name`, the `seed` it signs with, the Unix time `unix` its
+/// first keys are made at.
+#[cfg(feature = "dnscrypt")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct SimulatedProvider<'a> {
+    pub name: &'a str,
+    pub seed: &'a [u8; 32],
+    pub unix: u64,
+}
+
+/// As [`simulated`], answering `DNSCrypt` as `provider`, both encryption systems offered (D99, D182).
+///
+/// # Errors
+///
+/// A provider name or a seed `dedensd` refuses. Otherwise never ends.
+#[cfg(feature = "dnscrypt")]
+#[doc(hidden)]
+pub async fn simulated_dnscrypt<N: dedens_net::io::Io>(
+    io: N,
+    udp: N::Udp,
+    tcp: N::Listener,
+    pipeline: Pipeline,
+    trust: dedens_net::tls::Trust,
+    provider: &SimulatedProvider<'_>,
+) -> anyhow::Result<()> {
+    use dedens_dnscrypt::EncryptionSystem;
+
+    let SimulatedProvider { name, seed, unix } = *provider;
+
+    let systems = vec![
+        EncryptionSystem::XChaCha20Poly1305,
+        EncryptionSystem::XSalsa20Poly1305,
+    ];
+    let service = dnscrypt::Service::new(seed, config::provider(name)?, systems, unix, &io)?;
+    serve::simulated_dnscrypt(io, udp, tcp, pipeline, trust, Arc::new(service)).await;
+    Ok(())
+}
+
+/// The `secret_key` and the stamp of a new `DNSCrypt` provider (`dedensd dnscrypt-keygen`), printed.
+///
+/// # Errors
+///
+/// Arguments the command refuses, a build without the `dnscrypt` feature, or output that cannot be written.
+fn keygen(provider_name: &str, address: &str) -> anyhow::Result<()> {
+    #[cfg(feature = "dnscrypt")]
+    {
+        let text = dnscrypt::keygen(provider_name, address)?;
+        write!(io::stdout(), "{text}")?;
+        Ok(())
+    }
+    #[cfg(not(feature = "dnscrypt"))]
+    {
+        let _ = (provider_name, address);
+        anyhow::bail!("`dnscrypt-keygen` needs a dedensd built with the dnscrypt feature")
+    }
 }
 
 /// Ends the server on SIGTERM or SIGINT (D157), as `docker stop`, systemd and Ctrl-C ask: at once, since nothing is

@@ -30,7 +30,7 @@ use super::{ERROR_PAUSE, Thread, pause};
 
 /// Tasks answering on each UDP socket, taking turns at its datagrams: with the replies queued, 1, 2 and 4 serve
 /// alike within noise, and two keep one free to take a datagram while the other answers (D48, D123).
-const UDP_RECEIVES: usize = 2;
+pub(super) const UDP_RECEIVES: usize = 2;
 
 /// Replies a UDP socket holds queued for its sender, as many in flight at most, and as many spare buffers kept: a
 /// task with a reply waits for room in the queue (D123).
@@ -98,13 +98,13 @@ impl Outbox {
     }
 
     /// A buffer of [`DEFAULT_UDP_PAYLOAD`] bytes: a spare one if there is, else a new one.
-    fn buffer(&self) -> Vec<u8> {
+    pub(super) fn buffer(&self) -> Vec<u8> {
         let spare = self.spare.borrow_mut().pop();
         spare.unwrap_or_else(|| vec![0; usize::from(DEFAULT_UDP_PAYLOAD)])
     }
 
     /// Queues the first `len` bytes of `buffer` for `peer`, once there is room.
-    async fn push(&self, buffer: Vec<u8>, len: usize, peer: SocketAddr) {
+    pub(super) async fn push(&self, buffer: Vec<u8>, len: usize, peer: SocketAddr) {
         let reply = buffer.slice(..len);
         // The outbox holds the receiver too: sending cannot fail.
         let _ = self.queue.send_async(Outgoing { reply, peer }).await;
@@ -122,7 +122,7 @@ impl Outbox {
 /// Sends what `outbox` queues, [`UDP_SENDS`] at once at most, never ends. The tasks answering queue replies without
 /// waiting for them to go out, so one turn of the runtime sends all they made in one submission, not one for each
 /// task (`io_uring_enter` 0.255 → 0.005 a query, D123).
-async fn send_replies(socket: &impl Udp, outbox: &Outbox) {
+pub(super) async fn send_replies(socket: &impl Udp, outbox: &Outbox) {
     let mut incoming = outbox.outgoing.clone().into_stream();
     let mut sending = FuturesUnordered::new();
     poll_fn(|cx| {
@@ -148,7 +148,7 @@ async fn send_replies(socket: &impl Udp, outbox: &Outbox) {
 
 /// Receives that failed in a row on one task of a UDP socket, which decide how long it waits before the next (D107).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Receiving {
+pub(super) enum Receiving {
     /// The last one gave a datagram, or none has failed yet.
     Fine,
     /// The last one failed, of an error other than `Busy`.
@@ -194,7 +194,7 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// before; one that repeats leaves the socket deaf, as compio's refused receive before Linux 6.0 did (D174), so it is
 /// warned of, once a [`WARN_EVERY`] at most. Only a failed receive asks: a datagram costs nothing.
 #[derive(Default)]
-struct Warned(Option<Instant>);
+pub(super) struct Warned(Option<Instant>);
 
 impl Warned {
     /// Whether a receive that failed at `now`, `busy` if for a lack of free buffers, after its task was `before`, is
@@ -226,6 +226,28 @@ async fn yield_now() {
     .await;
 }
 
+/// What a task of a UDP socket does after a receive failed with `error`: logs it, and waits as `receiving` says.
+pub(super) async fn receive_failed<N: Io>(
+    error: &io::Error,
+    receiving: &mut Receiving,
+    warned: &mut Warned,
+    listener: &Listener,
+    thread: &Thread<N>,
+) {
+    let busy = error.kind() == io::ErrorKind::ResourceBusy;
+    if warned.due(*receiving, busy, thread.io.now()) {
+        tracing::warn!(%error, %listener, "UDP receive fails again, retried every {ERROR_PAUSE:?}");
+    } else {
+        tracing::debug!(%error, "UDP receive");
+    }
+    // Only this task pauses: the socket's other tasks go on receiving (D107).
+    match receiving.failed(busy) {
+        Pause::None => {}
+        Pause::Yield => yield_now().await,
+        Pause::Sleep(time) => pause(&thread.io, time).await,
+    }
+}
+
 /// Answers queries from `datagrams`, one after the other; the lock passes the stream to the next task once a
 /// datagram is taken. Replies are queued in `outbox` (D123).
 async fn udp_queries<N: Io, D: Datagram>(
@@ -244,18 +266,7 @@ async fn udp_queries<N: Io, D: Datagram>(
         let datagram = match next {
             Some(Ok(datagram)) => datagram,
             Some(Err(error)) => {
-                let busy = error.kind() == io::ErrorKind::ResourceBusy;
-                if warned.due(receiving, busy, thread.io.now()) {
-                    tracing::warn!(%error, %listener, "UDP receive fails again, retried every {ERROR_PAUSE:?}");
-                } else {
-                    tracing::debug!(%error, "UDP receive");
-                }
-                // Only this task pauses: the socket's other tasks go on receiving (D107).
-                match receiving.failed(busy) {
-                    Pause::None => {}
-                    Pause::Yield => yield_now().await,
-                    Pause::Sleep(time) => pause(&thread.io, time).await,
-                }
+                receive_failed(&error, &mut receiving, &mut warned, listener, thread).await;
                 continue;
             }
             None => continue,

@@ -31,7 +31,8 @@ pub(super) struct TlsFile {
 /// over QUIC, on port 853 unless `:PORT` follows (RFC 7858 §3.1, RFC 9250 §4.1.1); behind `https://` over HTTP/3, on
 /// port 443 unless `:PORT` follows, at `/PATH` (`/dns-query` unless set; RFC 8484 §3, RFC 9114 §3.1); behind `coap://`
 /// over CoAP, unprotected, on UDP port 5683 unless `:PORT` follows, at `/PATH` (`/` unless set; RFC 9953, D81; the `doc`
-/// feature).
+/// feature); behind `dnscrypt://` as a `DNSCrypt` resolver (D99), over UDP and TCP, on port 443
+/// unless `:PORT` follows (the `dnscrypt` feature).
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
 pub(crate) enum Listen {
@@ -41,6 +42,8 @@ pub(crate) enum Listen {
     Https(SocketAddr, Arc<str>),
     #[cfg(feature = "doc")]
     Coap(SocketAddr, Arc<str>),
+    #[cfg(feature = "dnscrypt")]
+    Dnscrypt(SocketAddr),
 }
 
 impl Listen {
@@ -50,6 +53,8 @@ impl Listen {
             Self::Plain(addr) | Self::Tls(addr) | Self::Quic(addr) | Self::Https(addr, _) => *addr,
             #[cfg(feature = "doc")]
             Self::Coap(addr, _) => *addr,
+            #[cfg(feature = "dnscrypt")]
+            Self::Dnscrypt(addr) => *addr,
         }
     }
 
@@ -59,6 +64,8 @@ impl Listen {
             Self::Plain(_) => false,
             #[cfg(feature = "doc")]
             Self::Coap(..) => false,
+            #[cfg(feature = "dnscrypt")]
+            Self::Dnscrypt(_) => false,
             Self::Tls(_) | Self::Quic(_) | Self::Https(..) => true,
         }
     }
@@ -74,6 +81,8 @@ impl fmt::Debug for Listen {
             Self::Https(addr, path) => write!(f, "https://{addr}{path}"),
             #[cfg(feature = "doc")]
             Self::Coap(addr, path) => write!(f, "coap://{addr}{path}"),
+            #[cfg(feature = "dnscrypt")]
+            Self::Dnscrypt(addr) => write!(f, "dnscrypt://{addr}"),
         }
     }
 }
@@ -102,14 +111,47 @@ impl TryFrom<String> for Listen {
                     split_coap_path(rest).map_err(|error| format!("`{text}`: {error}"))?;
                 address(rest, COAP_PORT).map(|addr| Self::Coap(addr, path))
             }
+            #[cfg(feature = "dnscrypt")]
+            Some(("dnscrypt", rest)) => address(rest, HTTPS_PORT).map(Self::Dnscrypt),
             Some(_) => None,
         };
         listen.ok_or_else(|| {
             format!(
-                "`{text}` is neither IP:PORT nor tls://, quic://, https:// or coap:// (built with the `doc` feature) before IP[:PORT]"
+                "`{text}` is neither IP:PORT nor tls://, quic://, https://, coap:// (built with the `doc` feature) or dnscrypt:// (built with the `dnscrypt` feature) before IP[:PORT]"
             )
         })
     }
+}
+
+/// Refuses a `dnscrypt://` address on the IP and the port of another listener's UDP socket or TCP listener: one
+/// socket for both goes to `docs/TODECIDE.md` (D99). Other pairs are not checked: the OS refuses a bound port, but
+/// where it allows `SO_REUSEPORT`, the two would share it and each would see the other's datagrams.
+///
+/// # Errors
+///
+/// A `dnscrypt://` address and another that share a port.
+#[cfg(feature = "dnscrypt")]
+pub(super) fn distinct_ports(listen: &[Listen]) -> anyhow::Result<()> {
+    // The transports an address takes a port of: (UDP, TCP).
+    let ports = |listen: &Listen| match listen {
+        Listen::Plain(_) | Listen::Dnscrypt(_) => (true, true),
+        Listen::Tls(_) => (false, true),
+        Listen::Quic(_) | Listen::Https(..) => (true, false),
+        #[cfg(feature = "doc")]
+        Listen::Coap(..) => (true, false),
+    };
+    for (index, one) in listen.iter().enumerate() {
+        let others = listen.iter().skip(index + 1);
+        for other in others.filter(|other| other.addr() == one.addr()) {
+            let both = matches!(one, Listen::Dnscrypt(_)) || matches!(other, Listen::Dnscrypt(_));
+            let ((udp, tcp), (other_udp, other_tcp)) = (ports(one), ports(other));
+            ensure!(
+                !both || !(udp && other_udp || tcp && other_tcp),
+                "`listen`: {one:?} and {other:?} take the same port"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `ADDR[/PATH]` split in `ADDR` and the path, `/dns-query` unless set (RFC 8484 §3): a path of a request target
@@ -154,7 +196,7 @@ fn split_coap_path(text: &str) -> Result<(&str, Arc<str>), String> {
 }
 
 /// `IP:PORT`, or an IP address, on `port`; an IPv6 address in brackets or not.
-pub(super) fn address(text: &str, port: u16) -> Option<SocketAddr> {
+pub(crate) fn address(text: &str, port: u16) -> Option<SocketAddr> {
     let bare = text
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
@@ -250,6 +292,32 @@ mod tests {
         ] {
             assert!(Listen::try_from(text.to_owned()).is_err(), "{text}");
         }
+    }
+
+    /// A `dnscrypt://` address takes UDP and TCP of its port, the other listeners one of them: none shares an address
+    /// with it.
+    #[cfg(feature = "dnscrypt")]
+    #[test]
+    fn dnscrypt_does_not_share_a_port_by_transport() {
+        let addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let dnscrypt = Listen::Dnscrypt(addr);
+        for other in [
+            Listen::Plain(addr),
+            Listen::Tls(addr),
+            Listen::Quic(addr),
+            Listen::Https(addr, "/dns-query".into()),
+            Listen::Dnscrypt(addr),
+        ] {
+            assert!(distinct_ports(&[dnscrypt.clone(), other.clone()]).is_err());
+            assert!(distinct_ports(&[other, dnscrypt.clone()]).is_err());
+        }
+        // Listeners of other kinds share a port by transport, which this check leaves to the bind.
+        let tls = Listen::Tls(addr);
+        let quic = Listen::Quic(addr);
+        assert!(distinct_ports(&[tls, quic]).is_ok());
+        assert!(
+            distinct_ports(&[dnscrypt, Listen::Plain("127.0.0.1:444".parse().unwrap())]).is_ok()
+        );
     }
 
     /// `coap://` takes port 5683 and the path `/` unless set, a path without query, fragment or `%`, with no `.` or
