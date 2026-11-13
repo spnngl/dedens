@@ -104,7 +104,7 @@ fn stamps() -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', and the example of
+/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml` and the example of
 /// `apps/dedensd/src/config/mod.rs`.
 fn configs() -> Vec<(String, Vec<u8>)> {
     let mut example = include_str!("../../apps/dedensd/src/config/mod.rs")
@@ -126,6 +126,10 @@ fn configs() -> Vec<(String, Vec<u8>)> {
         (
             "dedensd.conf.yaml".into(),
             include_bytes!("../../deploy/packages/dedensd.conf.yaml").to_vec(),
+        ),
+        (
+            "dnscrypt.yaml".into(),
+            include_bytes!("../seeds/dnscrypt.yaml").to_vec(),
         ),
         ("example.yaml".into(), example.into_bytes()),
     ]

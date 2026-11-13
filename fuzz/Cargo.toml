@@ -24,7 +24,7 @@ dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 dedens-server = { path = "../crates/dedens-server" }
-dedensd = { path = "../apps/dedensd", features = ["odoh", "doc"] }
+dedensd = { path = "../apps/dedensd", features = ["odoh", "doc", "dnscrypt"] }
 # The second implementation of `differential_hickory`; the same version as the workspace's (D14).
 hickory-proto = { version = "0.26.3", default-features = false, features = [
   "std",
