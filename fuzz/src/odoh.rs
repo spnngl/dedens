@@ -366,7 +366,7 @@ fn percent_decoded(value: &str) -> String {
 }
 
 /// Bytes the "randomness" of a fuzz run repeats: the exchange stays deterministic.
-struct Fixed(u8);
+pub(crate) struct Fixed(pub(crate) u8);
 
 impl TryRng for Fixed {
     type Error = core::convert::Infallible;

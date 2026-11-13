@@ -1,7 +1,7 @@
 //! The encryption systems, `<es-version>` (draft "Certificates").
 
 /// A classical encryption system. Both share X25519 and a Poly1305 tag over the ciphertext; they differ in the
-/// stream cipher and in the derivation of the shared key (draft "Certificates", "Appendix 1: The Box-XChaChaPoly Algorithm"; for `0x0001` the 2023 text of the protocol, `docs/rfc/archive/dnscrypt-v2-protocol-64eb920.txt`).
+/// stream cipher and in the derivation of the shared key (draft "Certificates", "Appendix 1: The Box-XChaChaPoly Algorithm"; for `0x0001` the 2023 text of the protocol, `docs/rfc/archive/dnscrypt-v2-protocol.txt`).
 ///
 /// `X-Wing` (`<es-version>` 0x0003) is not here: a certificate of that system is skipped, as one of any system
 /// this crate does not implement (draft "Certificates").
