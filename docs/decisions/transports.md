@@ -692,7 +692,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     certificate whose profile differs (`CertificateError::PqProfile`), as the draft's negative cases 1 and 2 ask. The
     es-version on the wire and the signed lengths are the one profile; `select` ranks `0x0003` over `0x0002` over
     `0x0001` under `SystemPolicy::Preferred` and keeps only `0x0003` under `SystemPolicy::Only(EncryptionSystem::XWing)`.
-  - Downgrade (draft "PQ Downgrade Protection"): a stamp has no flag for it (the stamps' properties name none), so the client's `Options::dnscrypt_pq` (`+dnscrypt-pq`) is the provisioned knowledge: it takes only a
+  - Downgrade (draft "PQ Downgrade Protection"): a stamp has no flag for it (the stamps' properties name none), so the client's `Options::dnscrypt.pq` (`+dnscrypt-pq`) is the provisioned knowledge: it takes only a
     PQ certificate, and a resolver that offers none is an error, never a classical exchange. Without it the client
     prefers PQ when it is offered and falls back when it is not, as the draft lets a client with no knowledge do. A kept
     certificate is dropped when the policy no longer allows its system.
@@ -711,7 +711,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     client then asks again with a ciphertext. The resumed key is derived from the resume secret, the resumed client nonce
     and the ticket's hash, so no two resumed queries share a key (a nonce the client must not repeat: it draws it
     anew). A resumed response can bring a renewed ticket, issued from the resumed key by the same formula.
-  - Client (D98): `+dnscrypt-resume` (`Options::dnscrypt_resume`, off by default: a ticket links the queries of a
+  - Client (D98): `+dnscrypt-resume` (`Options::dnscrypt.resume`, off by default: a ticket links the queries of a
     client, the draft's unlinkability note) keeps the ticket of the last PQ response in the resolver's state and uses it
     while it is for the certificate in use (same serial) and not expired (the lifetime from receipt, capped by the
     certificate's end); a renewed ticket replaces it; a resumed query that gets no answer drops the ticket, so the retry

@@ -132,7 +132,7 @@ struct State {
     stale: bool,
     /// The smallest packet of the next UDP queries: raised when a response came truncated, so that the next one fits.
     floor: usize,
-    /// The ticket of the last PQ response, kept only for `Options::dnscrypt_resume`.
+    /// The ticket of the last PQ response, kept only for `DnsCryptOptions::resume`.
     ticket: Option<Ticket>,
 }
 
@@ -274,7 +274,7 @@ impl Resolver {
         let nonce = ClientNonce::random(&mut entropy);
         let padding = if transport == Transport::Tcp {
             QueryPadding::tcp(wire.len(), &mut entropy)
-        } else if pq && !options.dnscrypt_resume {
+        } else if pq && !options.dnscrypt.resume {
             // The ciphertext alone makes the packet longer than any response needs to be.
             QueryPadding::udp(wire.len(), 0)
         } else {
@@ -282,23 +282,20 @@ impl Resolver {
         };
         // A ticket in hand and asked for: the query is a resumed one, with no encapsulation.
         let resumed = self.resumed(&certificate, options, wire, padding, nonce);
-        let (packet, context, resumed) = match resumed {
-            Some(sealed) => {
-                let (packet, context) = sealed.map_err(DnsCryptError::from)?;
-                (packet, context, true)
+        let (packet, context, resumed) = if let Some(sealed) = resumed {
+            let (packet, context) = sealed.map_err(DnsCryptError::from)?;
+            (packet, context, true)
+        } else {
+            let session = if pq {
+                ClientSession::xwing(&certificate, &mut entropy)
+            } else {
+                ClientSession::new(&certificate, &SecretKey::generate(&mut entropy))
             }
-            None => {
-                let session = if pq {
-                    ClientSession::xwing(&certificate, &mut entropy)
-                } else {
-                    ClientSession::new(&certificate, &SecretKey::generate(&mut entropy))
-                }
+            .map_err(DnsCryptError::from)?;
+            let (packet, context) = session
+                .encrypt_query(wire, padding, nonce)
                 .map_err(DnsCryptError::from)?;
-                let (packet, context) = session
-                    .encrypt_query(wire, padding, nonce)
-                    .map_err(DnsCryptError::from)?;
-                (packet, context, false)
-            }
+            (packet, context, false)
         };
         entropy
             .finish()
@@ -319,7 +316,7 @@ impl Resolver {
             }
             return Ok(Reply::TimedOut);
         };
-        if options.dnscrypt_resume {
+        if options.dnscrypt.resume {
             self.keep(&certificate, resumed, resumption);
         }
         Ok(Reply::Answer(message, info(&certificate)))
@@ -335,7 +332,7 @@ impl Resolver {
         padding: QueryPadding,
         nonce: ClientNonce,
     ) -> Option<Result<(Vec<u8>, QueryContext), EncryptQueryError>> {
-        if !options.dnscrypt_resume {
+        if !options.dnscrypt.resume {
             return None;
         }
         let mut state = self.state.borrow_mut();
@@ -475,7 +472,7 @@ fn certificate_query(question: Question<'_>) -> Message<'_> {
 
 /// Which certificates the client takes: any, the PQ one first, or with `+dnscrypt-pq` the PQ ones only (D101).
 fn policy(options: &Options) -> SystemPolicy {
-    if options.dnscrypt_pq {
+    if options.dnscrypt.pq {
         SystemPolicy::Only(EncryptionSystem::XWing)
     } else {
         SystemPolicy::Preferred

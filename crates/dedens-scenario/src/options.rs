@@ -334,8 +334,8 @@ impl Options {
             options.transport = Transport::Tcp;
         }
         options.tcp_fallback = self.ignore != Some(true);
-        options.dnscrypt_pq = self.dnscrypt_pq == Some(true);
-        options.dnscrypt_resume = self.dnscrypt_resume == Some(true);
+        options.dnscrypt.pq = self.dnscrypt_pq == Some(true);
+        options.dnscrypt.resume = self.dnscrypt_resume == Some(true);
         options.cookies = self.cookie != Some(CookieOption::Off);
         if let Some(Timeout(timeout)) = self.time {
             options.timeout = timeout;
@@ -752,9 +752,9 @@ mod tests {
             }
         }
         assert!(!Options::default().dnscrypt());
-        assert!(pq.exchange().dnscrypt_pq && !pq.exchange().dnscrypt_resume);
-        assert!(resume.exchange().dnscrypt_resume && !resume.exchange().dnscrypt_pq);
-        assert!(!Options::default().exchange().dnscrypt_pq);
+        assert!(pq.exchange().dnscrypt.pq && !pq.exchange().dnscrypt.resume);
+        assert!(resume.exchange().dnscrypt.resume && !resume.exchange().dnscrypt.pq);
+        assert!(!Options::default().exchange().dnscrypt.pq);
         let off = Options {
             dnscrypt_pq: Some(false),
             ..Options::default()

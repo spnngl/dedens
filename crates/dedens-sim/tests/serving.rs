@@ -709,7 +709,7 @@ mod dnscrypt {
                 );
 
                 // Just before the rotation of the keys, 12 hours after the start.
-                sleep(12 * HOUR - 1000 * SECOND).await;
+                sleep(std::time::Duration::from_secs(12 * 3600 - 1000)).await;
                 let old = ticket(&socket, resolver, pq).await?.expect("a ticket");
                 sleep(400 * SECOND).await;
                 let found = certificates_padded(&socket, resolver, &provider).await?;

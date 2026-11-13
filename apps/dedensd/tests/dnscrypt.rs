@@ -246,7 +246,7 @@ fn a_pq_server_answers_under_x_wing_and_a_classical_one_cannot_be_asked_for_it()
         }
     }
     let response = ask_with(&client, &resolver.stamp, Transport::Udp, |options| {
-        options.dnscrypt_pq = true;
+        options.dnscrypt.pq = true;
     })
     .expect("an answer");
     assert_eq!(response.dnscrypt.expect("a certificate").es_version, 3);
@@ -257,7 +257,7 @@ fn a_pq_server_answers_under_x_wing_and_a_classical_one_cannot_be_asked_for_it()
         &classical.stamp,
         Transport::Udp,
         |options| {
-            options.dnscrypt_pq = true;
+            options.dnscrypt.pq = true;
         },
     )
     .expect_err("no PQ certificate");
@@ -274,7 +274,7 @@ fn a_resumed_query_is_answered() {
     for transport in [Transport::Udp, Transport::Tcp] {
         for _ in 0..3 {
             let response = ask_with(&client, &resolver.stamp, transport, |options| {
-                options.dnscrypt_resume = true;
+                options.dnscrypt.resume = true;
             })
             .expect("an answer");
             assert_eq!(response.transport, transport);

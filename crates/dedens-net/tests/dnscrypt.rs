@@ -681,13 +681,13 @@ async fn a_pq_certificate_is_preferred_and_each_query_has_a_new_ciphertext() {
     );
 }
 
-/// D101, "Downgrade Protection": `dnscrypt_pq` takes a PQ certificate only: a resolver whose PQ certificate was
+/// D101, "Downgrade Protection": `dnscrypt.pq` takes a PQ certificate only: a resolver whose PQ certificate was
 /// stripped is refused, and one that never had any, as the client that is not told falls back.
 #[compio::test]
 async fn pq_required_is_not_downgraded() {
     let resolver = Resolver::start_pq().await;
     let mut options = Options::default();
-    options.dnscrypt_pq = true;
+    options.dnscrypt.pq = true;
     let client = Client::new();
     let response = client
         .exchange_dnscrypt(query(), &resolver.stamp, &options)
@@ -713,13 +713,13 @@ async fn pq_required_is_not_downgraded() {
     assert_eq!(response.dnscrypt.map(|info| info.es_version), Some(2));
 }
 
-/// D101, "Resumption Tickets": with `dnscrypt_resume`, the response to the first query brings a ticket, the next
+/// D101, "Resumption Tickets": with `dnscrypt.resume`, the response to the first query brings a ticket, the next
 /// queries are resumed with it, with no ciphertext, and a resolver that drops the ticket gets a full query again.
 #[compio::test]
 async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
     let resolver = Resolver::start_pq().await;
     let mut options = quick();
-    options.dnscrypt_resume = true;
+    options.dnscrypt.resume = true;
     let client = Client::new();
     for _ in 0..3 {
         client
@@ -754,7 +754,7 @@ async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
     );
 }
 
-/// D101: without `dnscrypt_resume` a ticket is not kept, and no query is resumed.
+/// D101: without `dnscrypt.resume` a ticket is not kept, and no query is resumed.
 #[compio::test]
 async fn tickets_are_not_used_unless_asked_for() {
     let resolver = Resolver::start_pq().await;
