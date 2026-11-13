@@ -57,7 +57,7 @@
 //!     capacity: 67108864               # bytes of memory, entries and what holds them (D116)
 //!     max_entry_bytes: 8192            # a response stored larger is answered, not cached; unset: 8 KiB (D116)
 //!     prewarm:                         # names kept answered with no client, asked through the stages (D96)
-//!       entries: [www.example.com]     # then `file`, one name a line as a plain blocklist; up to 10000 names
+//!       entries: [www.example.com]     # then `file`, one name a line as a plain blocklist; up to 1000 names
 //!       types: [A, AAAA]               # both by default
 //!   upstream:
 //!     type: forward
@@ -410,7 +410,7 @@ fn stages(
 
 /// The most names a cache stage's `prewarm` lists: each is asked for each type and, with `dnssec: validate`, with and
 /// without DO, and kept scheduled, so the bound stops a list of a whole zone, not a machine (D96, D115).
-const MAX_PREWARM_NAMES: usize = 10_000;
+const MAX_PREWARM_NAMES: usize = 1000;
 
 /// The longest `refresh_minutes`: a year, far below the overflow of a `Duration` or an `Instant`.
 const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
@@ -543,6 +543,33 @@ mod tests {
         assert_eq!(asked(&text("      entries: [com]\n")).len(), 2);
         let config = read(MINIMAL, env, &Pipeline::default()).unwrap();
         assert_eq!(config.pipeline.warmed(), []);
+    }
+
+    /// D96: at most `MAX_PREWARM_NAMES` distinct names, however many entries repeat them.
+    #[test]
+    fn the_names_kept_answered_are_bounded_once_distinct() {
+        let text = |entries: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    prewarm:\n      entries: [{entries}]\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        let names = |count: usize| {
+            (0..count)
+                .map(|n| format!("n{n}.example"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let full = read(
+            &text(&format!("{}, n0.example", names(MAX_PREWARM_NAMES))),
+            env,
+            &Pipeline::default(),
+        )
+        .unwrap();
+        assert_eq!(full.pipeline.warmed().len(), 2 * MAX_PREWARM_NAMES);
+        assert_eq!(
+            error(&text(&names(MAX_PREWARM_NAMES + 1))),
+            "stage `c`: `prewarm` names more than 1000 names"
+        );
     }
 
     /// D55, D96: the names are beside the cache settings, so a change of the names keeps the cache.
