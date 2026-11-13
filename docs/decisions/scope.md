@@ -191,7 +191,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   gzips them (rpmlint told so by `CompressExtension`; a `doc` of the rpm). A deb is also installed in an Ubuntu
   container without systemd, as in a chroot: `useradd` makes the user, a purge removes the configuration. Rejected: a notice in the repository (it would
   drift from `Cargo.lock`); pages made at build time (a generator in the image, or a hidden command in the binary).
-- D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
+- D69 (amends D2; amended by D71, D74, D75, D76, D78, D79, D80, D97) DNSSEC comes before the recursive resolver, as a validating stub and forwarder: `dedens`
   and `dedensd`'s forward stage validate the answers of an upstream they do not trust to have validated, and
   only the validator's verdict (secure, insecure, bogus, indeterminate) reaches the cache and the reply. The
   code is `dedens-dnssec`, sans-IO, the clock passed in. ODoH (RFC 9230) and DoC (RFC 9953) are experimental:

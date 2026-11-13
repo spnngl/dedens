@@ -483,3 +483,52 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `QuicError::MessageId`, the query not sent again (§4.3.3 SHOULD). Passed on to the exchange, such a
   response was dropped as not answering ID 0, and the next try went on the connection that broke the protocol. Not
   checked: a response carrying edns-tcp-keepalive (§4.3.3, §5.5.2).
+- D97 (amends D69) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
+  systems: `0x0002` XChaCha20-Poly1305 (the draft's) and `0x0001` XSalsa20-Poly1305 (v2 of 2023, which the draft no
+  longer specifies; the resolvers in the field still serve it, Quad9 both). Not here: the post-quantum system `0x0003`
+  (certificates of an unknown system are skipped, as the draft tells clients), Anonymized DNSCrypt, stamps and
+  the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are arguments.
+  The draft is cited by section name, as its numbers move between revisions; the archive holds revision 11 and the 2023
+  text (`docs/rfc/list.md`, `coverage.md`).
+  - Crypto: the ciphers are RustCrypto's `chacha20` (0.10.2, `xchacha` only), `salsa20` (0.11.0) and `poly1305`
+    (0.9.1); X25519 is `x25519-dalek`'s `x25519` function (3.0.0, already in the tree for `hpke`, so no new X25519);
+    Ed25519 and HMAC-SHA256 are `ring`'s (D71, D78). The box is NaCl's layout, written here once over both stream
+    ciphers: the first 32 bytes of the keystream are the Poly1305 key, the message is XORed with the rest, the tag
+    over the ciphertext is compared in constant time before anything is decrypted. The shared key is HSalsa20 (`0x0001`,
+    as `crypto_box_beforenm`) or HChaCha20 (`0x0002`) of the X25519 output; an all-zero output (a small-order key) is
+    refused. RustCrypto's XChaCha20 (a 32-bit counter) equals the draft's below 256 GiB, far above a packet.
+    Rejected: `crypto_box` (0.9.1: ChaChaBox is the right layout, but it sits on the older `cipher` 0.4,
+    `chacha20` 0.9, `salsa20` 0.10 and `x25519-dalek` 2, a second copy of each, with no check of a weak key and no
+    say over the nonce); our own primitives (nothing to gain). `cargo tree -d` shows no duplicate of these crates and
+    `cargo deny` passes.
+  - Certificates: `Certificate` is a certificate whose signature was checked, so a value that exists is signed;
+    `parse` and `from_txt` (the strings of a TXT RDATA joined, as the draft says) need the provider key, `sign` makes
+    one for tests and servers. The signed bytes are the draft's (the key, the client magic, the serial, the validity
+    and the extensions: unknown extensions are kept and ignored); the es-version and the minor version are not signed
+    and the minor one is not kept. A client magic of eight 0xFF, one that starts with seven zero bytes, and
+    `PQResume` is refused (`ClientMagic`); a validity needs `start < end` and holds from `start` to `end` both
+    included (`Validity`). A certificate of a system this crate lacks is skipped without reading its fields,
+    whatever the length. `select` takes, among the valid ones, the best by the caller's `SystemPolicy` (the default
+    prefers XChaCha20) and then the highest serial.
+  - Packets: a query is the client magic, the client key, the half-nonce, the tag and the ciphertext (68 bytes of
+    overhead), a response the resolver magic, the nonce of both halves, the tag and the ciphertext (48). The resolver
+    nonce is never all zero (drawn again), and a client reads the response only after the magic, the half it sent
+    and that nonce, then the tag, the padding, the DNS message, its ID and its question (each failure has its own
+    error, `ResponseError`). Packets are at most 4096 bytes, a response under 4096.
+  - Padding (ISO/IEC 7816-4: 0x80, then zeros): a UDP query is padded to a multiple of 64 and to 256 bytes at least
+    (`QueryPadding::udp`); a TCP query by 1 to 256 bytes drawn from the randomness, a multiple of 64 in all (`tcp`); the
+    caller may give any length (`to`, raised to leave room for the 0x80). A resolver's response padding is a function
+    of the shared key and the client nonce (an HMAC, so a caller needs no randomness and the length repeats for a
+    repeated query), 1 to 256 bytes, a multiple of 64 when the packet limit leaves room. A resolver accepts any padding
+    that is well formed, not only its own rule. The two-byte length of TCP is the transport's, not ours.
+  - Responses over UDP are at most the query packet's size (the amplification rule); a longer one is cut to fit by
+    `Message::encode_truncated` with TC set, before it is padded, and never dropped (the draft's "never stay
+    silent"). A response the question alone does not fit is `EncryptResponseError::NoRoom`. The resolver's
+    `decrypt_query` returns the plaintext without reading it as DNS: what to answer is the server's.
+  - Secrets: the secret keys and the shared keys are `Zeroizing` and print as redacted; not wiped: `ring`'s key
+    schedule, the plaintexts, copies the allocator moved. No `unwrap`, `expect`, `as` or `unsafe` in non-test code.
+  - Tests: every vector of the draft's "Appendix 2: DNSCrypt Test Vectors" and its negative cases (`tests/draft.rs`),
+    certificates (`tests/certificate.rs`), round trips and the limits (`tests/exchange.rs`), and exchanges captured from
+    Quad9 for both systems, which a resolver of the field answered (`tests/quad9.rs`, `testdata/dnscrypt/README.md`).
+    Fuzz targets `parse_dnscrypt_certificate`, `dnscrypt_decrypt` and `dnscrypt_encrypt_response` (seeded with those
+    captures). Bench: `docs/benchmarks.md`.
