@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::limits::BudgetFile;
-use super::upstream::{Dnssec, Insecure, Server};
+use super::upstream::{Dnssec, Insecure, Relay, Server};
 use super::{DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES};
 use crate::download;
 use crate::lists::Store;
@@ -36,8 +36,12 @@ pub(super) enum StageFile {
     /// root's bundled ones unless set; `insecure` lists names answered as they are, with their subdomains (RFC 7646).
     /// `client_share` is what a client network may spend of the validation allowance, in `rate` units a second and
     /// `burst` at once (D117): a unit is a question upstream or a signature check, about 10 µs.
+    /// `relays` are Anonymized `DNSCrypt` relays (D100), relay stamps or addresses: every `sdns://` server of the stage
+    /// is asked through one of them, drawn for each query; the stage needs such a server.
     Forward {
         servers: Vec<Server>,
+        #[serde(default)]
+        relays: Vec<Relay>,
         timeout_ms: Option<NonZeroU32>,
         tries: Option<NonZeroU8>,
         #[serde(default)]

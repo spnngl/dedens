@@ -385,6 +385,7 @@ fn stages(
             }
             StageFile::Forward {
                 servers,
+                relays,
                 timeout_ms,
                 tries,
                 dnssec,
@@ -399,7 +400,12 @@ fn stages(
                     client_share,
                 };
                 Stage::Forward(forward(
-                    name, servers, timeout_ms, tries, validation, previous,
+                    name,
+                    (servers, relays),
+                    timeout_ms,
+                    tries,
+                    validation,
+                    previous,
                 )?)
             }
             StageFile::Hosts {

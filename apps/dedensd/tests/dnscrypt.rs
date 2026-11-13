@@ -17,6 +17,7 @@ use dedens_net::exchange::Options;
 use dedens_net::stamp::{DnsCrypt, Endpoint, Stamp};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Question, Rcode, RecordType, Transport};
+use dedens_testkit::relay::Relay;
 use dedens_testkit::responder::Responder;
 
 use crate::util::{Server, ask_tcp, ask_udp, decode, framed, write_config, write_key};
@@ -349,6 +350,50 @@ fn a_forward_stage_asks_a_dnscrypt_server() {
         upstream.queries().len(),
         2,
         "both queries went through to the responder"
+    );
+}
+
+/// D100: a forward stage with `relays` asks its `sdns://` server through one of them: the certificates, then each
+/// query, over UDP for a client over UDP and over TCP for a client over TCP, and nothing goes direct; the relay is
+/// the only one the resolver hears from.
+#[test]
+fn a_forward_stage_asks_through_its_relays() {
+    let upstream = Responder::start(&["a"]);
+    let resolver = resolver("", "", &upstream.addr.to_string());
+    let stamp = Stamp::DnsCrypt(resolver.stamp.clone()).to_string();
+    let relay = Relay::start();
+    let server = Server::configured(|listen| {
+        format!(
+            "listen: ['{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{stamp}']\n    relays: ['{}']\n    timeout_ms: 2000\n    tries: 1\n",
+            relay.addr
+        )
+    });
+    let query = dedens_testkit::query("a", 0x0304)
+        .to_vec()
+        .expect("a query");
+    let reply = ask_udp(server.addr, &query);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert_eq!(reply.answer, decode(&dedens_testkit::captured("a")).answer);
+    assert_eq!(relay.seen(), (2, 0), "the certificates, then the query");
+    let reply = ask_tcp(server.addr, &query);
+    assert_eq!(reply.answer, decode(&dedens_testkit::captured("a")).answer);
+    assert_eq!(
+        relay.seen(),
+        (2, 1),
+        "the query over TCP, the certificates kept"
+    );
+    assert_eq!(upstream.queries().len(), 2);
+}
+
+/// D100: `relays` with no `sdns://` server stops the start.
+#[test]
+fn relays_without_a_stamp_stop_the_start() {
+    let text = "listen: ['127.0.0.1:5353']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    relays: ['192.0.2.9']\n";
+    let (code, stderr) = crate::util::validate(text);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("`relays` needs an `sdns://` server"),
+        "{stderr}"
     );
 }
 

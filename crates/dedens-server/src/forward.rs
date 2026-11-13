@@ -121,7 +121,13 @@ pub enum Via {
     /// A `DNSCrypt` resolver (draft-denis-dprive-dnscrypt), its provider name and keys those of the stamp, as the
     /// `sdns://` text `dedensd` checked when it read the configuration: this crate has no network code, and the
     /// text is parsed again where the query is sent, as the path of an HTTPS server is (D99).
-    Dnscrypt(Arc<str>),
+    Dnscrypt {
+        /// The resolver's `sdns://` stamp.
+        stamp: Arc<str>,
+        /// The `sdns://` stamps of the Anonymized `DNSCrypt` relays the queries and the certificates' go through, one
+        /// drawn for each query; none when the resolver is asked direct (D100).
+        relays: Arc<[Arc<str>]>,
+    },
 }
 
 impl From<SocketAddr> for Server {
@@ -138,7 +144,7 @@ impl From<SocketAddr> for Server {
 impl fmt::Display for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (scheme, name, path) = match &self.via {
-            Via::Dnscrypt(stamp) => return f.write_str(stamp),
+            Via::Dnscrypt { stamp, .. } => return f.write_str(stamp),
             Via::Plain => ("", None, ""),
             Via::Tls(name) => ("tls://", name.as_deref(), ""),
             Via::Quic(name) => ("quic://", name.as_deref(), ""),
