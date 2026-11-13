@@ -1,5 +1,5 @@
 {
-  "source": "draft-denis-dprive-dnscrypt-11, Appendix 2 (14), copied by script from docs/rfc/archive",
+  "source": "draft-denis-dprive-dnscrypt-11, Appendix 2: DNSCrypt Test Vectors, copied by script from docs/rfc/archive",
   "provider_pk": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
   "resolver_pk": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
   "client_pk": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
