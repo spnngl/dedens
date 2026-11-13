@@ -2,7 +2,8 @@
 //! them (draft-denis-dprive-dnscrypt, D97). Experimental, as the draft is.
 //!
 //! Both classical systems are here: XChaCha20-Poly1305 (`es-version` 2, the draft's) and XSalsa20-Poly1305 (1,
-//! the one older resolvers also serve). The keys are X25519, the certificates are signed with Ed25519. Nothing
+//! the one older resolvers also serve), and `PQDNSCrypt`'s X-Wing (3, D101). The classical keys are X25519, the
+//! certificates are signed with Ed25519. Nothing
 //! here sends a packet or reads a clock: callers hand in bytes, Unix seconds and a random source, so an exchange
 //! is reproducible under test.
 //!
@@ -12,6 +13,8 @@
 //! - `client`: [`ClientSession::encrypt_query`] and [`QueryContext::decrypt_response`].
 //! - `resolver`: [`ResolverKey::decrypt_query`] and [`ResponseContext::encrypt_response`].
 //! - `system`: [`EncryptionSystem`] and the client's [`SystemPolicy`].
+//! - `xwing`, `pq` and `ticket`: the X-Wing keys, `PQDNSCrypt`'s key schedule and control field, and the resumption
+//!   tickets a resolver issues and opens ([`TicketKeys`]); the client's side of them is [`Resumption`].
 //! - `error`: the error of each step.
 //! - `secretbox` and `padding`: the cipher, and the ISO/IEC 7816-4 padding with the lengths the draft suggests.
 //!
@@ -28,23 +31,31 @@ mod client;
 mod error;
 mod key;
 mod padding;
+mod pq;
 mod resolver;
 mod secretbox;
 mod system;
 #[cfg(test)]
 mod tests;
+mod ticket;
+mod xwing;
 
 pub use certificate::{
-    Certificate, CertificateBody, ClientMagic, ProviderKey, SigningKey, Validity, select,
+    Certificate, CertificateBody, ClientMagic, ProviderKey, ResolverPublicKey, SigningKey,
+    Validity, select,
 };
-pub use client::{ClientNonce, ClientSession, QueryContext, QueryPadding};
+pub use client::{ClientNonce, ClientSession, Opened, QueryContext, QueryPadding, Resumption};
 pub use error::{
-    CertificateError, EncryptQueryError, EncryptResponseError, InvalidClientMagic, LowOrderKey,
-    PaddingError, QueryError, ResponseError, SigningKeyRejected,
+    CertificateError, ControlError, EncryptQueryError, EncryptResponseError, InvalidClientMagic,
+    InvalidXWingKey, LowOrderKey, PaddingError, QueryError, ResponseError, SessionError,
+    SigningKeyRejected,
 };
 pub use key::{KEY_LEN, PublicKey, SecretKey, SharedKey};
-pub use resolver::{Carrier, ResolverKey, ResponseContext};
+pub use pq::{RESUME_MAGIC, TicketOffer};
+pub use resolver::{Carrier, ResolverKey, ResolverSecret, ResponseContext};
 pub use system::{EncryptionSystem, SystemPolicy};
+pub use ticket::{ResumedQuery, Ticket, TicketKey, TicketKeys};
+pub use xwing::{XWING_CIPHERTEXT_LEN, XWING_PUBLIC_KEY_LEN, XWingPublicKey, XWingSecretKey};
 
 /// Length of a `<client-magic>`.
 pub const CLIENT_MAGIC_LEN: usize = 8;

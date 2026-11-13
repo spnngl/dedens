@@ -163,6 +163,8 @@ ureq = { version = "3.5.0", default-features = false, features = [
 # D180: Verus's specifications and proofs in dedens-proto, built only by `just verus` (`cfg(verus_keep_ghost)`);
 # its pre-release version is the one of the Verus release pinned in the justfile.
 vstd = "=0.0.0-2026-11-01-0251"
+# D101: DNSCrypt's X-Wing KEM (RustCrypto, ML-KEM-768 and X25519), keys wiped when dropped.
+x-wing = { version = "0.1.1", default-features = false, features = ["zeroize"] }
 # D97: DNSCrypt's X25519, the scalar multiplication alone.
 x25519-dalek = { version = "3.0.0", default-features = false }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.

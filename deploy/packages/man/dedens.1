@@ -4,7 +4,7 @@
 .SH NAME
 dedens \- A dig\-like DNS client
 .SH SYNOPSIS
-\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
+\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-pq\fR] [\fB\-\-dnscrypt\-resume\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
 .SH DESCRIPTION
 A dig\-like DNS client.
 .PP
@@ -176,6 +176,32 @@ false
 .TP
 \fB\-\-dnscrypt\-cert\fR[=\fI<DNSCRYPT_CERT>\fR]
 List the certificates of a `DNSCrypt` resolver, the server, which must be an `sdns://` stamp (D98): their system, serial and validity, instead of an answer. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`. Default: off
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+true
+.IP \(bu 2
+false
+.RE
+.TP
+\fB\-\-dnscrypt\-pq\fR[=\fI<DNSCRYPT_PQ>\fR]
+Over `DNSCrypt`, take only a post\-quantum certificate (`X\-Wing`, D101): a resolver known to offer one is not downgraded by a stripped certificate (draft "Downgrade Protection"). Off, the PQ certificate is preferred when offered. Needs an `sdns://` stamp. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`. Default: off
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+true
+.IP \(bu 2
+false
+.RE
+.TP
+\fB\-\-dnscrypt\-resume\fR[=\fI<DNSCRYPT_RESUME>\fR]
+Over `DNSCrypt` with a PQ certificate, resume the queries with the ticket the last response brought, with no new encapsulation (D101). A ticket links the queries it resumes: off, each query has an encapsulation of its own. Needs an `sdns://` stamp, as `dnscrypt_pq`. Default: off
 .br
 
 .br

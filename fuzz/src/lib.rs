@@ -27,8 +27,8 @@ pub use cli::parse_command_line;
 pub use coap::{coap_doc, parse_coap, parse_link_format};
 pub use daemon::read_config;
 pub use dnscrypt::{
-    dnscrypt_decrypt, dnscrypt_encrypt_response, dnscrypt_tamper_query, dnscrypt_tamper_response,
-    dnscrypt_unpad, parse_dnscrypt_certificate,
+    dnscrypt_control, dnscrypt_decrypt, dnscrypt_encrypt_response, dnscrypt_tamper_query,
+    dnscrypt_tamper_response, dnscrypt_ticket, dnscrypt_unpad, parse_dnscrypt_certificate,
 };
 pub use dnssec::{denial, dnssec_crypto, parse_trust_anchors, rrsig_verify, validate};
 pub use net::{
@@ -72,6 +72,8 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("dnscrypt_unpad", dnscrypt_unpad),
     ("dnscrypt_tamper_query", dnscrypt_tamper_query),
     ("dnscrypt_tamper_response", dnscrypt_tamper_response),
+    ("dnscrypt_ticket", dnscrypt_ticket),
+    ("dnscrypt_control", dnscrypt_control),
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
     ("validate", validate),

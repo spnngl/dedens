@@ -11,7 +11,7 @@ use salsa20::hsalsa;
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
-use crate::error::LowOrderKey;
+use crate::error::{LowOrderKey, SessionError};
 use crate::system::EncryptionSystem;
 
 /// Length of every key of this crate: X25519 public and secret keys, the shared key, Ed25519 keys and seeds.
@@ -81,16 +81,17 @@ impl SecretKey {
     ///
     /// # Errors
     ///
-    /// [`LowOrderKey`] when `peer` is of low order, so that the shared point is all zero whatever this key is
-    /// (draft, "Negative Cases").
+    /// [`SessionError::LowOrderKey`] when `peer` is of low order, so that the shared point is all zero whatever
+    /// this key is (draft, "Negative Cases"); [`SessionError::WrongSystem`] for X-Wing, whose shared key does not
+    /// come from X25519 alone.
     pub fn shared_key(
         &self,
         system: EncryptionSystem,
         peer: &PublicKey,
-    ) -> Result<SharedKey, LowOrderKey> {
+    ) -> Result<SharedKey, SessionError> {
         let point = Zeroizing::new(x25519_dalek::x25519(*self.0, peer.0));
         if bool::from(point.ct_eq(&[0; KEY_LEN])) {
-            return Err(LowOrderKey);
+            return Err(LowOrderKey.into());
         }
         // The key schedule of NaCl's `crypto_box_beforenm`, with the system's hash: HSalsa20 or HChaCha20 of the
         // shared point and sixteen NUL bytes.
@@ -103,6 +104,7 @@ impl SecretKey {
                 &ChaChaArray::from(*point),
                 &ChaChaArray::default(),
             )),
+            EncryptionSystem::XWing => return Err(SessionError::WrongSystem),
         };
         Ok(SharedKey {
             system,
@@ -128,6 +130,10 @@ pub struct SharedKey {
 }
 
 impl SharedKey {
+    pub(crate) const fn new(system: EncryptionSystem, key: Zeroizing<[u8; KEY_LEN]>) -> Self {
+        Self { system, key }
+    }
+
     /// The system this key was derived for.
     #[must_use]
     pub const fn system(&self) -> EncryptionSystem {

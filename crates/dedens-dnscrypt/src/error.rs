@@ -13,6 +13,28 @@ pub struct LowOrderKey;
 #[error("Ed25519 seed refused")]
 pub struct SigningKeyRejected;
 
+/// The 1216 bytes of an X-Wing encapsulation key were refused (the ML-KEM part is not a valid key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("X-Wing encapsulation key refused")]
+pub struct InvalidXWingKey;
+
+/// A `<control>` block of version 1 that is cut short, or holds no ticket (draft "PQ Query and Response Format").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("malformed PQ response control block")]
+pub struct ControlError;
+
+/// A session that cannot be made from a certificate and a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SessionError {
+    /// See [`LowOrderKey`].
+    #[error(transparent)]
+    LowOrderKey(#[from] LowOrderKey),
+    /// The certificate is of the other kind of system than the key: X25519 against X-Wing.
+    #[error("certificate and key are of different encryption systems")]
+    WrongSystem,
+}
+
 /// A `<client-magic>` the draft forbids (draft "Certificates").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("client-magic is all 0xff, starts with seven NUL bytes or is the resume magic")]
@@ -44,6 +66,13 @@ pub enum CertificateError {
     /// The secret key does not belong to the certificate's `<resolver-pk>`.
     #[error("secret key is not the certificate's")]
     KeyMismatch,
+    /// See [`InvalidXWingKey`].
+    #[error(transparent)]
+    XWingKey(#[from] InvalidXWingKey),
+    /// An X-Wing certificate whose `<extensions>` are not the 12-byte `PQD` profile this crate speaks (draft "PQ
+    /// Certificates").
+    #[error("PQ certificate without the PQD profile extension, or with another")]
+    PqProfile,
 }
 
 /// Padding that is no ISO/IEC 7816-4 padding (draft "Padding For Client Queries Over UDP", "Negative Cases" case 2).
@@ -73,6 +102,27 @@ pub enum QueryError {
     /// See [`PaddingError`].
     #[error(transparent)]
     Padding(#[from] PaddingError),
+    /// A call for the other kind of key than this one's: X25519 against X-Wing.
+    #[error("query is for the other kind of encryption system")]
+    WrongSystem,
+    /// A resumed query whose ticket is not one this resolver sealed: unknown key, wrong length or changed.
+    #[error("ticket does not open")]
+    Ticket,
+    /// A resumed query whose ticket has expired.
+    #[error("ticket expired")]
+    TicketExpired,
+    /// A resumed query whose ticket is bound to a certificate that is no current one of this resolver.
+    #[error("ticket is bound to no current certificate")]
+    TicketContext,
+}
+
+impl From<SessionError> for QueryError {
+    fn from(error: SessionError) -> Self {
+        match error {
+            SessionError::LowOrderKey(low) => Self::LowOrderKey(low),
+            SessionError::WrongSystem => Self::WrongSystem,
+        }
+    }
 }
 
 /// A packet a client does not accept as the answer to its query (draft "Client Queries Over UDP", "Negative Cases" case 4).
@@ -109,6 +159,9 @@ pub enum ResponseError {
     /// The question is not the query's.
     #[error("question is not the query's")]
     QuestionMismatch,
+    /// A PQ response too short for its `<control-len>`, or with a malformed control block.
+    #[error("malformed PQ control field")]
+    Control,
 }
 
 /// A query that cannot be sent.

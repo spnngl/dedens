@@ -58,6 +58,22 @@ pub struct Options {
     /// How a query goes over [`Transport::Https`]: by GET, which HTTP caches can keep, or by POST (RFC 8484 §4.1).
     /// Default: GET.
     pub method: Method,
+    /// What a `DNSCrypt` server is asked, see [`DnsCryptOptions`].
+    pub dnscrypt: DnsCryptOptions,
+}
+
+/// How a `DNSCrypt` resolver is asked (D101): the choices of `PQDNSCrypt`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DnsCryptOptions {
+    /// Whether only a post-quantum certificate (`X-Wing`) is taken: a resolver known to offer one is not to be
+    /// downgraded by a stripped certificate (draft "Downgrade Protection"). Off, the PQ certificate is preferred
+    /// when offered, any other used otherwise. Default: off.
+    pub pq: bool,
+    /// With a PQ certificate, whether a query is resumed with the ticket of the last response, with no
+    /// encapsulation (draft "Resumption Tickets"). A ticket links the queries it resumes to each other: off, each
+    /// query has an encapsulation of its own. Default: off.
+    pub resume: bool,
 }
 
 impl Default for Options {
@@ -71,6 +87,7 @@ impl Default for Options {
             random_case: None,
             cookies: true,
             method: Method::Get,
+            dnscrypt: DnsCryptOptions::default(),
         }
     }
 }
@@ -114,7 +131,7 @@ pub struct Response {
 /// D98).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CertificateInfo {
-    /// The `<es-version>`: 1 for `X25519-XSalsa20Poly1305`, 2 for `X25519-XChaCha20Poly1305`.
+    /// The `<es-version>`: 1 for `X25519-XSalsa20Poly1305`, 2 for `X25519-XChaCha20Poly1305`, 3 for `X-Wing-XChaCha20Poly1305`.
     pub es_version: u16,
     /// The `<serial>`: a higher one is a newer certificate.
     pub serial: u32,

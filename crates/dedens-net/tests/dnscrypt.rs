@@ -13,8 +13,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use compio::BufResult;
 use compio::net::{TcpListener, UdpSocket};
 use dedens_dnscrypt::{
-    Carrier, Certificate, CertificateBody, ClientMagic, EncryptionSystem, LowOrderKey, PublicKey,
-    QUERY_OVERHEAD, RESPONSE_MAGIC, ResolverKey, SecretKey, SigningKey, Validity,
+    Carrier, Certificate, CertificateBody, ClientMagic, LowOrderKey, PublicKey, QUERY_OVERHEAD,
+    RESPONSE_MAGIC, RESUME_MAGIC, ResolverKey, ResolverPublicKey, SecretKey, SessionError,
+    SigningKey, TicketKey, TicketKeys, Validity, XWingSecretKey,
 };
 use dedens_net::client::{Client, ClientError};
 use dedens_net::dnscrypt::DnsCryptError;
@@ -48,7 +49,10 @@ enum Act {
 struct Seen {
     carrier: Carrier,
     packet_len: usize,
-    client_key: PublicKey,
+    /// What the packet holds in place of the client's key: the key, the X-Wing ciphertext, or the ticket of a
+    /// resumed query.
+    client_key: Vec<u8>,
+    resumed: bool,
     from: Option<SocketAddr>,
     /// Whether the query, opened, carries a DNS cookie.
     cookie: bool,
@@ -71,6 +75,10 @@ struct Script {
     fetched: (u32, u32),
     /// The certificate queries that carry a DNS cookie.
     fetched_with_cookie: u32,
+    /// The size of the certificate queries over UDP.
+    fetch_sizes: Vec<usize>,
+    /// The keys of the tickets issued to the full queries of PQ certificates; none, none is issued.
+    tickets: Option<TicketKeys>,
     seen: Vec<Seen>,
 }
 
@@ -100,11 +108,24 @@ fn certificate(
     Certificate::sign(
         signer,
         CertificateBody {
-            system: EncryptionSystem::XChaCha20Poly1305,
-            resolver_key: secret.public_key(),
+            resolver_key: ResolverPublicKey::XChaCha20(secret.public_key()),
             client_magic: ClientMagic::try_from([serial.to_be_bytes()[3]; 8]).expect("a magic"),
             serial,
             validity: Validity::new(at(start), at(end)).expect("a validity"),
+            extensions: Vec::new(),
+        },
+    )
+}
+
+/// A PQ certificate of `serial` for the X-Wing key `secret`, valid now.
+fn pq_certificate(signer: &SigningKey, secret: &XWingSecretKey, serial: u32) -> Certificate {
+    Certificate::sign(
+        signer,
+        CertificateBody {
+            resolver_key: ResolverPublicKey::XWing(secret.public_key()),
+            client_magic: ClientMagic::try_from([serial.to_be_bytes()[3]; 8]).expect("a magic"),
+            serial,
+            validity: Validity::new(now() - 3600, now() + 86400).expect("a validity"),
             extensions: Vec::new(),
         },
     )
@@ -133,7 +154,10 @@ fn handle(
         );
         script.fetched_with_cookie += u32::from(cookie_of(packet).is_some());
         match carrier {
-            Carrier::Udp => script.fetched.0 += 1,
+            Carrier::Udp => {
+                script.fetched.0 += 1;
+                script.fetch_sizes.push(packet.len());
+            }
             Carrier::Tcp => script.fetched.1 += 1,
         }
         if carrier == Carrier::Udp && script.mute_udp_certificates {
@@ -154,14 +178,28 @@ fn handle(
         }
         return Some(wire(&answer));
     }
-    let (plaintext, context, key) = script.keys.iter().find_map(|key| {
-        let (plaintext, context) = key.decrypt_query(packet).ok()?;
-        Some((plaintext, context, key.client_key(packet).ok()?))
-    })?;
+    let at = u64::from(now());
+    let resumed = packet.starts_with(&RESUME_MAGIC);
+    let (plaintext, context, client_key) = if resumed {
+        let tickets = script.tickets.as_ref()?;
+        let query = tickets.open(packet, at).ok()?;
+        let (plaintext, context) = script
+            .keys
+            .iter()
+            .find_map(|key| key.decrypt_resumed(&query, at).ok())?;
+        (plaintext, context, packet[10..140].to_vec())
+    } else {
+        script.keys.iter().find_map(|key| {
+            let (plaintext, context) = key.decrypt_query(packet).ok()?;
+            let kex = if context.is_pq() { 1120 } else { 32 };
+            Some((plaintext, context, packet[8..8 + kex].to_vec()))
+        })?
+    };
     script.seen.push(Seen {
         carrier,
         packet_len: packet.len(),
-        client_key: key,
+        client_key,
+        resumed,
         from,
         cookie: cookie_of(&plaintext).is_some(),
     });
@@ -179,9 +217,15 @@ fn handle(
         Act::Truncate | Act::Answer => {}
     }
     let mut entropy = Entropy::new().expect("randomness");
+    // A ticket goes with the response to a full query of a PQ certificate.
+    let ticket = script
+        .tickets
+        .as_ref()
+        .filter(|_| !resumed)
+        .and_then(|tickets| tickets.issue(&context, at, 300, &mut entropy));
     Some(
         context
-            .encrypt_response(&wire(&answer), carrier, &mut entropy)
+            .encrypt_response_with(&wire(&answer), ticket.as_ref(), carrier, &mut entropy)
             .expect("a response"),
     )
 }
@@ -205,6 +249,27 @@ impl Resolver {
             vec![certificate],
         )
         .await
+    }
+
+    /// A resolver with a classical certificate of serial 5 and a PQ one of serial 1, and tickets.
+    async fn start_pq() -> Self {
+        let signer = signer(1);
+        let secret = SecretKey::from_bytes([2; 32]);
+        let classical = valid(&signer, &secret, 5);
+        let pq_secret = XWingSecretKey::from_seed([3; 32]);
+        let pq = pq_certificate(&signer, &pq_secret, 1);
+        let resolver = Self::with(
+            signer,
+            vec![
+                ResolverKey::new(&classical, secret).expect("a key"),
+                ResolverKey::new(&pq, pq_secret).expect("a key"),
+            ],
+            vec![classical, pq],
+        )
+        .await;
+        resolver.script().tickets =
+            Some(TicketKeys::new(TicketKey::new([0, 0, 0, 1], [9; 32]), None));
+        resolver
     }
 
     async fn with(signer: SigningKey, keys: Vec<ResolverKey>, served: Vec<Certificate>) -> Self {
@@ -237,6 +302,8 @@ impl Resolver {
             mute_udp_certificates: false,
             fetched: (0, 0),
             fetched_with_cookie: 0,
+            fetch_sizes: Vec::new(),
+            tickets: None,
             seen: Vec::new(),
         }));
         let shared = Rc::clone(&script);
@@ -489,8 +556,7 @@ async fn a_resolver_key_of_low_order_is_refused() {
     let low = Certificate::sign(
         &signer,
         CertificateBody {
-            system: EncryptionSystem::XChaCha20Poly1305,
-            resolver_key: PublicKey::from_bytes([0; 32]),
+            resolver_key: ResolverPublicKey::XChaCha20(PublicKey::from_bytes([0; 32])),
             client_magic: ClientMagic::try_from([4; 8]).expect("a magic"),
             serial: 1,
             validity: Validity::new(now() - 3600, now() + 3600).expect("a validity"),
@@ -505,7 +571,9 @@ async fn a_resolver_key_of_low_order_is_refused() {
     assert!(
         matches!(
             error,
-            ClientError::DnsCrypt(DnsCryptError::LowOrderKey(LowOrderKey))
+            ClientError::DnsCrypt(DnsCryptError::Session(SessionError::LowOrderKey(
+                LowOrderKey
+            )))
         ),
         "{error:?}"
     );
@@ -578,4 +646,124 @@ async fn a_silent_resolver_is_a_timeout() {
         .await
         .expect_err("no response");
     assert!(!error.is_local(), "{error:?}");
+}
+
+/// D101, "Certificate Retrieval": the query for the certificates is padded to cover the rollover set; over UDP the
+/// PQ certificate is preferred to a classical one of a higher serial, and the query goes with an X-Wing
+/// ciphertext, a new one each time, no ticket used unless asked for.
+#[compio::test]
+async fn a_pq_certificate_is_preferred_and_each_query_has_a_new_ciphertext() {
+    let resolver = Resolver::start_pq().await;
+    let client = Client::new();
+    let mut infos = Vec::new();
+    for _ in 0..2 {
+        let response = client
+            .exchange_dnscrypt(query(), &resolver.stamp, &Options::default())
+            .await
+            .expect("a response");
+        infos.push(response.dnscrypt.expect("the certificate"));
+    }
+    assert!(
+        infos
+            .iter()
+            .all(|info| (info.es_version, info.serial) == (3, 1))
+    );
+    let script = resolver.script();
+    assert_eq!(script.fetch_sizes, [3072]);
+    let [first, second] = &script.seen[..] else {
+        panic!("two queries")
+    };
+    assert!(first.packet_len >= 1220 && first.packet_len == second.packet_len);
+    assert!(!first.resumed && !second.resumed);
+    assert_ne!(
+        first.client_key, second.client_key,
+        "a fresh encapsulation each"
+    );
+}
+
+/// D101, "Downgrade Protection": `dnscrypt.pq` takes a PQ certificate only: a resolver whose PQ certificate was
+/// stripped is refused, and one that never had any, as the client that is not told falls back.
+#[compio::test]
+async fn pq_required_is_not_downgraded() {
+    let resolver = Resolver::start_pq().await;
+    let mut options = Options::default();
+    options.dnscrypt.pq = true;
+    let client = Client::new();
+    let response = client
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    assert_eq!(response.dnscrypt.map(|info| info.es_version), Some(3));
+
+    // The PQ certificate is stripped on the way: the certificate in use is no longer served.
+    let stripped = Resolver::start().await;
+    let error = Client::new()
+        .exchange_dnscrypt(query(), &stripped.stamp, &options)
+        .await
+        .expect_err("no PQ certificate");
+    assert!(
+        matches!(error, ClientError::DnsCrypt(DnsCryptError::NoCertificate)),
+        "{error:?}"
+    );
+    assert!(stripped.script().seen.is_empty(), "nothing was sent sealed");
+    let response = Client::new()
+        .exchange_dnscrypt(query(), &stripped.stamp, &Options::default())
+        .await
+        .expect("a response");
+    assert_eq!(response.dnscrypt.map(|info| info.es_version), Some(2));
+}
+
+/// D101, "Resumption Tickets": with `dnscrypt.resume`, the response to the first query brings a ticket, the next
+/// queries are resumed with it, with no ciphertext, and a resolver that drops the ticket gets a full query again.
+#[compio::test]
+async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
+    let resolver = Resolver::start_pq().await;
+    let mut options = quick();
+    options.dnscrypt.resume = true;
+    let client = Client::new();
+    for _ in 0..3 {
+        client
+            .exchange_dnscrypt(query(), &resolver.stamp, &options)
+            .await
+            .expect("a response");
+    }
+    {
+        let script = resolver.script();
+        let kinds: Vec<_> = script.seen.iter().map(|seen| seen.resumed).collect();
+        assert_eq!(kinds, [false, true, true]);
+        assert!(script.seen[1].packet_len < script.seen[0].packet_len);
+        assert_eq!(
+            script.seen[1].client_key, script.seen[2].client_key,
+            "the same ticket"
+        );
+        assert_eq!(script.fetched, (1, 0), "the certificates once");
+    }
+
+    // The resolver lost its ticket keys: the resumed query is dropped, the next try is a full one.
+    resolver.script().tickets = Some(TicketKeys::new(TicketKey::new([0, 0, 0, 2], [8; 32]), None));
+    client
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    let script = resolver.script();
+    let kinds: Vec<_> = script.seen.iter().map(|seen| seen.resumed).collect();
+    assert_eq!(
+        kinds,
+        [false, true, true, false],
+        "the dropped one is not seen"
+    );
+}
+
+/// D101: without `dnscrypt.resume` a ticket is not kept, and no query is resumed.
+#[compio::test]
+async fn tickets_are_not_used_unless_asked_for() {
+    let resolver = Resolver::start_pq().await;
+    let client = Client::new();
+    for _ in 0..2 {
+        client
+            .exchange_dnscrypt(query(), &resolver.stamp, &Options::default())
+            .await
+            .expect("a response");
+    }
+    assert!(resolver.script().seen.iter().all(|seen| !seen.resumed));
 }

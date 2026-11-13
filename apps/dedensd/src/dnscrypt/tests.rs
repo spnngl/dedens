@@ -106,7 +106,7 @@ fn the_certificate_query_is_answered_with_the_newest_of_each_system() {
     assert_eq!(set.len(), 4);
     let query = certificate_query(PROVIDER, RecordType::TXT);
     let wire = set
-        .certificates(&query, service.provider())
+        .certificates(&query, service.provider(), Carrier::Udp)
         .expect("an answer");
     let answer = Message::decode(&wire).expect("a message").message;
     assert_eq!(answer.header.id, 7);
@@ -130,7 +130,10 @@ fn the_certificate_query_is_answered_with_the_newest_of_each_system() {
             u32::try_from(T0 + ROTATION).expect("fits")
         );
     }
-    assert_ne!(certificates[0].body().system, certificates[1].body().system);
+    assert_ne!(
+        certificates[0].body().system(),
+        certificates[1].body().system()
+    );
 }
 
 /// Only the clear certificate query is answered: the provider's name, TXT, class IN, a query. The name's case does
@@ -139,7 +142,7 @@ fn the_certificate_query_is_answered_with_the_newest_of_each_system() {
 fn only_the_certificate_query_is_answered() {
     let service = service(both());
     let set = service.keys(T0, &Compio);
-    let ask = |query: &[u8]| set.certificates(query, service.provider());
+    let ask = |query: &[u8]| set.certificates(query, service.provider(), Carrier::Udp);
     assert!(ask(&certificate_query(PROVIDER, RecordType::TXT)).is_some());
     assert!(
         ask(&certificate_query(
@@ -182,9 +185,88 @@ fn the_certificate_answer_is_small() {
         .certificates(
             &certificate_query(PROVIDER, RecordType::TXT),
             service.provider(),
+            Carrier::Udp,
         )
         .expect("an answer");
     assert!(wire.len() < 512, "{} bytes", wire.len());
+}
+
+fn pq() -> Vec<EncryptionSystem> {
+    vec![EncryptionSystem::XChaCha20Poly1305, EncryptionSystem::XWing]
+}
+
+/// The systems of an answer, with whether it is truncated.
+fn systems_of(wire: &[u8]) -> (Vec<EncryptionSystem>, bool) {
+    let answer = Message::decode(wire).expect("a message").message;
+    let provider = SigningKey::from_seed(&SEED).expect("a seed").provider_key();
+    let systems = answer
+        .answer
+        .iter()
+        .map(|record| match record.data() {
+            RData::Txt(txt) => Certificate::from_txt(&txt, &provider)
+                .expect("signed")
+                .body()
+                .system(),
+            other => panic!("not a TXT: {other:?}"),
+        })
+        .collect();
+    (systems, answer.header.flags.contains(Flags::TC))
+}
+
+/// D101, draft "Certificate Retrieval": a PQ certificate goes over UDP only when the answer is no longer than the
+/// query, else the answer has the classical certificate, with TC set; over TCP it always goes.
+#[test]
+fn the_pq_certificate_goes_over_udp_only_in_an_answer_no_longer_than_the_query() {
+    let service = service(pq());
+    let set = service.keys(T0, &Compio);
+    let small = certificate_query(PROVIDER, RecordType::TXT);
+    let ask = |query: &[u8], carrier| {
+        systems_of(
+            &set.certificates(query, service.provider(), carrier)
+                .expect("an answer"),
+        )
+    };
+    assert_eq!(
+        ask(&small, Carrier::Udp),
+        (vec![EncryptionSystem::XChaCha20Poly1305], true)
+    );
+    assert_eq!(
+        ask(&small, Carrier::Tcp),
+        (pq(), false),
+        "TCP has no size to keep"
+    );
+    // The query padded as a client does, with an EDNS padding option to 3072 bytes.
+    let mut padded = Message::decode(&small)
+        .expect("a message")
+        .message
+        .into_owned();
+    let edns = padded.edns.as_mut().expect("EDNS");
+    edns.options
+        .push(dedens_proto::edns::EdnsOption::Padding(3000));
+    let padded = padded.to_vec().expect("encodes");
+    assert_eq!(ask(&padded, Carrier::Udp), (pq(), false));
+}
+
+/// D101: tickets have keys only when `pq` is offered; a rotation seals with a new one and keeps the last to open the
+/// tickets sealed under it, until they have expired.
+#[test]
+fn ticket_keys_follow_the_rotation_and_the_last_is_dropped_when_its_tickets_expire() {
+    assert!(service(both()).keys(T0, &Compio).tickets().is_none());
+    let service = service(pq());
+    let first = service.keys(T0, &Compio);
+    let previous = |set: &KeySet| set.tickets.as_ref().map(|ticketing| ticketing.has_previous);
+    assert_eq!(previous(&first), Some(false));
+    assert_eq!(first.refresh_at, T0 + ROTATION);
+    let second = service.keys(T0 + ROTATION, &Compio);
+    assert_eq!(previous(&second), Some(true));
+    assert_eq!(
+        second.refresh_at,
+        T0 + ROTATION + u64::from(TICKET_LIFETIME),
+        "looked at again when the last ticket key can go"
+    );
+    let third = service.keys(T0 + ROTATION + u64::from(TICKET_LIFETIME), &Compio);
+    assert_eq!(previous(&third), Some(false));
+    assert_eq!(third.refresh_at, T0 + 2 * ROTATION);
 }
 
 /// The stamp names the provider key, and the port unless it is 443.

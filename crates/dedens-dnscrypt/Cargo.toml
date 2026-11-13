@@ -18,6 +18,7 @@ ring.workspace = true
 salsa20.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+x-wing.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 

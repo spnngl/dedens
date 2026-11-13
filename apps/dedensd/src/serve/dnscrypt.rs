@@ -14,7 +14,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_dnscrypt::{Carrier, ClientMagic, PublicKey, ResponseContext, SharedKey};
+use dedens_dnscrypt::{
+    Carrier, ClientMagic, EncryptionSystem, PublicKey, RESUME_MAGIC, ResponseContext, SharedKey,
+};
 use dedens_net::entropy::Entropy;
 use dedens_net::io::{Datagram, Io, Udp as _};
 use dedens_net::tcp::frame;
@@ -29,7 +31,7 @@ use super::tcp::{Codec, Opened};
 use super::udp::{Outbox, Receiving, UDP_RECEIVES, Warned, receive_failed, send_replies};
 use super::upstream::answer;
 use super::{Slot, Started, Thread, pause, start};
-use crate::dnscrypt::{KeySet, Service};
+use crate::dnscrypt::{KeySet, Service, TICKET_LIFETIME};
 
 /// Client key pairs a thread keeps the shared key of, so that a client asking again skips the key exchange: 19 µs
 /// of the 19.5 µs a query costs to open, against 0.5 (`docs/benchmarks.md`). A bound on memory, 100 bytes a
@@ -106,16 +108,21 @@ impl Keys {
         pipeline: &Pipeline,
         from: IpAddr,
         packet: &[u8],
+        carrier: Carrier,
     ) -> Open {
         if pipeline.denies(from) {
             dropped("none");
             return Open::Drop;
         }
-        self.refresh(self.service.unix(thread.now()), &thread.io);
+        let unix = self.service.unix(thread.now());
+        self.refresh(unix, &thread.io);
         let mut held = self.held.borrow_mut();
         let Held { set, shared } = &mut *held;
+        if packet.starts_with(&RESUME_MAGIC) {
+            return resume(set, packet, unix, from);
+        }
         let Some(issued) = set.find(packet) else {
-            let answer = set.certificates(packet, self.service.provider());
+            let answer = set.certificates(packet, self.service.provider(), carrier);
             return answer.map_or_else(
                 || {
                     dropped("none");
@@ -126,6 +133,23 @@ impl Keys {
         };
         let tally = Tally::new(issued.system());
         let resolver = &issued.resolver;
+        if issued.system() == EncryptionSystem::XWing {
+            // A new ciphertext each query: there is no shared key to keep.
+            return match resolver.decrypt_query(packet) {
+                Ok((query, context)) => Open::Query(
+                    query,
+                    Reply {
+                        context,
+                        tally,
+                        ticket: Issuing::of(set, unix),
+                    },
+                ),
+                Err(error) => {
+                    tracing::debug!(%from, %error, "DNSCrypt query does not open");
+                    Open::Drop
+                }
+            };
+        }
         let Ok(client) = resolver.client_key(packet) else {
             return Open::Drop;
         };
@@ -146,12 +170,75 @@ impl Keys {
             opened
         };
         match opened {
-            Ok((query, context)) => Open::Query(query, Reply { context, tally }),
+            Ok((query, context)) => Open::Query(
+                query,
+                Reply {
+                    context,
+                    tally,
+                    ticket: None,
+                },
+            ),
             Err(error) => {
                 tracing::debug!(%from, %error, "DNSCrypt query does not open");
                 Open::Drop
             }
         }
+    }
+}
+
+/// A resumed query (draft "Resuming", D101): its ticket opened with the keys of `set`, then the query with the key
+/// pair of its certificate. A ticket close to its end is renewed in the reply. Dropped, with no word, when any of
+/// it fails.
+fn resume(set: &Arc<KeySet>, packet: &[u8], unix: u64, from: IpAddr) -> Open {
+    let opened = set
+        .tickets()
+        .ok_or(dedens_dnscrypt::QueryError::Ticket)
+        .and_then(|tickets| tickets.open(packet, unix));
+    let Ok(query) = opened else {
+        dropped("none");
+        return Open::Drop;
+    };
+    let Some(issued) = set.find_magic(query.client_magic()) else {
+        dropped("none");
+        return Open::Drop;
+    };
+    let tally = Tally::new(issued.system());
+    match issued.resolver.decrypt_resumed(&query, unix) {
+        Ok((plaintext, context)) => {
+            let near_end = u64::from(query.expiry()) <= unix + u64::from(TICKET_LIFETIME / 2);
+            Open::Query(
+                plaintext,
+                Reply {
+                    context,
+                    tally,
+                    ticket: if near_end {
+                        Issuing::of(set, unix)
+                    } else {
+                        None
+                    },
+                },
+            )
+        }
+        Err(error) => {
+            tracing::debug!(%from, %error, "DNSCrypt resumed query does not open");
+            Open::Drop
+        }
+    }
+}
+
+/// What issues a ticket with a reply: the keys that seal it and the time it is issued at.
+struct Issuing {
+    set: Arc<KeySet>,
+    unix: u64,
+}
+
+impl Issuing {
+    /// The issuing of `set` at `unix`, if it has keys to seal tickets with.
+    fn of(set: &Arc<KeySet>, unix: u64) -> Option<Self> {
+        set.tickets().is_some().then(|| Self {
+            set: Arc::clone(set),
+            unix,
+        })
     }
 }
 
@@ -165,6 +252,9 @@ fn dropped(system: &'static str) {
 pub(super) struct Reply {
     context: ResponseContext,
     tally: Tally,
+    /// A ticket goes with the reply: the first reply of a PQ session, and the one of a resumed query near the end of
+    /// its ticket (D101).
+    ticket: Option<Issuing>,
 }
 
 impl Reply {
@@ -172,7 +262,15 @@ impl Reply {
     /// "Response" rules are the library's); `None` if no randomness can be drawn: the client is not answered.
     fn seal<N: Io>(&self, thread: &Thread<N>, wire: &[u8], carrier: Carrier) -> Option<Vec<u8>> {
         let mut entropy = Entropy::from_io(&thread.io).ok()?;
-        let sealed = self.context.encrypt_response(wire, carrier, &mut entropy);
+        let ticket = self.ticket.as_ref().and_then(|issuing| {
+            issuing
+                .set
+                .tickets()?
+                .issue(&self.context, issuing.unix, TICKET_LIFETIME, &mut entropy)
+        });
+        let sealed =
+            self.context
+                .encrypt_response_with(wire, ticket.as_ref(), carrier, &mut entropy);
         entropy.finish().ok()?;
         match sealed {
             Ok(sealed) => {
@@ -198,6 +296,7 @@ impl Tally {
         let system = match system {
             dedens_dnscrypt::EncryptionSystem::XSalsa20Poly1305 => "xsalsa20",
             dedens_dnscrypt::EncryptionSystem::XChaCha20Poly1305 => "xchacha20",
+            dedens_dnscrypt::EncryptionSystem::XWing => "xwing",
         };
         Self {
             system,
@@ -243,7 +342,10 @@ impl Codec for Encrypted {
     }
 
     fn open<N: Io>(&self, thread: &Thread<N>, from: IpAddr, message: Vec<u8>) -> Opened<Reply> {
-        match self.0.open(thread, &thread.pipeline(), from, &message) {
+        match self
+            .0
+            .open(thread, &thread.pipeline(), from, &message, Carrier::Tcp)
+        {
             Open::Query(query, reply) => Opened::Query(query, reply),
             Open::Clear(answer) => frame(&answer).map_or(Opened::Drop, Opened::Reply),
             Open::Drop => Opened::Drop,
@@ -329,7 +431,7 @@ async fn step<N: Io>(
     datagram: impl Datagram,
     peer: SocketAddr,
 ) -> Option<(Box<Upstream>, Slot, Reply)> {
-    let opened = keys.open(thread, pipeline, peer.ip(), datagram.data());
+    let opened = keys.open(thread, pipeline, peer.ip(), datagram.data(), Carrier::Udp);
     drop(datagram);
     let (query, reply) = match opened {
         Open::Query(query, reply) => (query, reply),

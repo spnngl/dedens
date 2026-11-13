@@ -1,7 +1,7 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 100, 101, 126-132, 148, 149 and 173 were never
+number, and gets its line below; a number is never reused (85, 100, 126-132, 148, 149 and 173 were never
 assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
@@ -103,9 +103,10 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
 - D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
 - D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline over UDP with a share of the validator's allowance of its own, again at the prefetch point (a margin before the expiry)
-- D97 [transports](transports.md): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
-- D98 [transports](transports.md): DNSCrypt client: `dedens @sdns://…` and `dedens_net::dnscrypt`, an envelope over the UDP and TCP loop, certificates fetched over UDP then TCP and kept until they stop answering, a fresh key per query
-- D99 [transports](transports.md): DNSCrypt in `dedensd`: a `dnscrypt://` listener, keys rotated every 12 hours, shared keys cached per thread, and `sdns://` upstream servers
+- D97 [transports](transports.md) (amended by D101): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
+- D98 [transports](transports.md) (amended by D101): DNSCrypt client: `dedens @sdns://…` and `dedens_net::dnscrypt`, an envelope over the UDP and TCP loop, certificates fetched over UDP then TCP and kept until they stop answering, a fresh key per query
+- D99 [transports](transports.md) (amended by D101): DNSCrypt in `dedensd`: a `dnscrypt://` listener, keys rotated every 12 hours, shared keys cached per thread, and `sdns://` upstream servers
+- D101 [transports](transports.md): PQDNSCrypt: the X-Wing system `0x0003` from the `x-wing` crate, PQ certificates, and resumption tickets, in the core, the client (`+dnscrypt-pq`, `+dnscrypt-resume`) and `dedensd` (`pq` in `systems`)
 - D102 [transports](transports.md) (amended by D98): DNS stamps of DNSCrypt resolvers and relays: typed, canonical, written back byte for byte
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
