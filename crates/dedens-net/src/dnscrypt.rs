@@ -19,7 +19,7 @@
 //! client's. A relay forwards over UDP whatever the client used, and drops a response larger than the query it
 //! forwarded: so the certificate query is padded to hold the response, and over TCP the inner query is the
 //! largest a packet can be. One relay is picked at random for each query, but the one that failed the last: that is
-//! skipped, once.
+//! skipped until another fails, so that a relay that is down costs one try, not one in every few.
 
 use std::cell::RefCell;
 use std::io;
@@ -149,7 +149,7 @@ struct State {
     stale: bool,
     /// The smallest packet of the next UDP queries: raised when a response came truncated, so that the next one fits.
     floor: usize,
-    /// The relay that failed the last time: not picked the next.
+    /// The relay that failed the last: not picked while another is, until another fails.
     avoid: Option<Relay>,
 }
 
@@ -168,10 +168,11 @@ impl Resolver {
         }
     }
 
-    /// The relay for the next packets: one of the relays at random, but the one that failed the last time when
-    /// there is another; none when the resolver is reached direct.
+    /// The relay for the next packets: one of the relays at random, but the one that failed the last when there is
+    /// another; none when the resolver is reached direct. A certificate fetch that follows a failed query must not
+    /// pick the one that failed: it is kept until another fails.
     fn pick<N: Io>(&self, io: &N) -> Result<Option<Relay>, ClientError> {
-        let avoid = self.state.borrow_mut().avoid.take();
+        let avoid = self.state.borrow().avoid;
         let mut draw = [0; 2];
         io.random(&mut draw).map_err(ClientError::Random)?;
         Ok(choose(&self.relays, avoid, u16::from_be_bytes(draw)))
@@ -182,7 +183,7 @@ impl Resolver {
         self.state.borrow_mut().avoid = relay;
     }
 
-    /// A query got no response: the relay is skipped by the next, and the certificate made stale when `stale`.
+    /// A query got no response: the relay is skipped by the next picks, and the certificate made stale when `stale`.
     fn lost(&self, relay: Option<Relay>, stale: bool) -> Reply {
         if stale {
             self.state.borrow_mut().stale = true;
@@ -297,7 +298,7 @@ impl Resolver {
 
     /// The same query through a relay: for each of the tries, a relay, UDP with the query padded to hold the
     /// response, and TCP with the query as large as can be when UDP got no answer or a truncated one. A relay that
-    /// answers neither is skipped by the next try.
+    /// answers neither is skipped by the next picks.
     async fn fetch_relayed<N: Io>(
         &self,
         io: &N,

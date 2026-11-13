@@ -692,10 +692,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `2.dnscrypt-cert.`, which a stamp with another provider name cannot pass: no relay can serve it, and the
     command says so as it says any missing response).
   - Which relay: drawn at random for each query from the two bytes of the `Io`'s randomness (`Resolver::pick`), except the
-    one that failed last (a silent or closed packet, a certificate fetch with no answer), which the next pick skips
-    once; with one relay it is the one asked again. Rejected: round-robin (state shared by the queries for no gain), a
-    relay for each server (one list for the stage is what an operator keeps), and a health table (a relay that
-    fails twice is skipped once more, no longer: the cost of a table is state to expire).
+    one that failed last (a silent or closed packet, a certificate fetch with no answer), which the next picks skip
+    until another fails (a certificate fetch after a silent query must not pick it again: with two relays and one down
+    one query in eight would otherwise fail its three tries); with one relay it is the one asked again. Rejected:
+    round-robin (state shared by the queries for no gain), a relay for each server (one list for the stage is what an
+    operator keeps), and a health table (a relay that is down is skipped as long as another carries, with no timer to
+    bring it back; a table would need one).
   - No fallback direct. A relay that does not answer is no response (exit 9 in `dedens`, SERVFAIL for a client of
     `dedensd`): going direct would hand the resolver the address the relay hides. Rejected: a fallback behind an option
     (a way to leak, with no use in a test).

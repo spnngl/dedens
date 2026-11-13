@@ -422,7 +422,7 @@ impl<N: Io> Client<N> {
     /// As [`Client::exchange_dnscrypt`], through Anonymized `DNSCrypt` `relays` when there are any: each query, and
     /// the certificates' too, goes to one of them with the resolver's address before it, so that the resolver never
     /// sees the client's (draft-denis-dprive-dnscrypt "Anonymized `DNSCrypt`", D100). The relay is picked at random
-    /// for each query, and the one that failed the last time is skipped, unless it is the only one.
+    /// for each query, and the one that failed the last is skipped, unless it is the only one, until another fails.
     ///
     /// # Errors
     ///
