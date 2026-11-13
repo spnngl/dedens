@@ -292,3 +292,19 @@ fn time_counts_from_the_start() {
     assert_eq!(service.unix(0), T0);
     assert_eq!(service.unix(90), T0 + 90);
 }
+
+/// The draft allows a key pair 24 hours at most ("Key Management"): twelve, and a certificate valid for the day, read
+/// off in seconds.
+#[test]
+fn keys_rotate_every_twelve_hours_and_certificates_last_a_day() {
+    let service = service(both());
+    let first = service.keys(T0, &Compio);
+    assert_eq!(first.refresh_at, T0 + 43_200);
+    assert_eq!(service.keys(T0 + 43_199, &Compio).len(), 2);
+    assert_eq!(service.keys(T0 + 43_200, &Compio).len(), 4);
+    let last = service.keys(T0 + 86_400, &Compio);
+    assert_eq!(
+        last.last_end(),
+        Some(u32::try_from(T0 + 86_400 + 86_400).expect("fits"))
+    );
+}

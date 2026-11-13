@@ -260,10 +260,25 @@ impl KeySet {
             .find(|issued| issued.resolver.client_magic().as_bytes() == magic)
     }
 
-    /// The key pairs, newest first.
+    /// The number of key pairs.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.keys.len()
+    }
+
+    /// The newest key pair.
+    #[cfg(test)]
+    pub(crate) fn newest(&self) -> Option<&Arc<Issued>> {
+        self.keys.first()
+    }
+
+    /// The validity end of the last certificate made, as Unix seconds.
+    #[cfg(test)]
+    pub(crate) fn last_end(&self) -> Option<u32> {
+        self.keys
+            .iter()
+            .map(|issued| issued.certificate.body().validity.end())
+            .max()
     }
 
     /// The answer to `query` if it is the clear certificate query for `provider` (draft, "Certificates"): a TXT

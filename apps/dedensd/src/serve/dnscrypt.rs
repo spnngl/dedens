@@ -83,13 +83,13 @@ impl Keys {
         }
     }
 
-    /// Takes the service's keys if they are due, and returns the Unix time from which to look again. Keys whose
-    /// certificate expired are not used from the second they do, and are erased once no thread holds them.
-    fn refresh<N: Io>(&self, thread: &Thread<N>) -> u64 {
-        let unix = self.service.unix(thread.now());
+    /// Takes the service's keys if they are due at the Unix time `unix`, and returns the Unix time from which to look
+    /// again. Keys whose certificate expired are not used from the second they do, and are erased once no thread holds
+    /// them.
+    fn refresh(&self, unix: u64, io: &impl Io) -> u64 {
         let mut held = self.held.borrow_mut();
         if held.set.refresh_at <= unix {
-            let set = self.service.keys(unix, &thread.io);
+            let set = self.service.keys(unix, io);
             if !Arc::ptr_eq(&set, &held.set) {
                 held.shared.clear();
             }
@@ -111,7 +111,7 @@ impl Keys {
             dropped("none");
             return Open::Drop;
         }
-        self.refresh(thread);
+        self.refresh(self.service.unix(thread.now()), &thread.io);
         let mut held = self.held.borrow_mut();
         let Held { set, shared } = &mut *held;
         let Some(issued) = set.find(packet) else {
@@ -221,8 +221,8 @@ impl Drop for Tally {
 /// past its certificate, which erasing it is the point of (draft, "Key Management"). Never ends.
 pub(super) async fn rotate<N: Io>(keys: Rc<Keys>, thread: Rc<Thread<N>>) {
     loop {
-        let due = keys.refresh(&thread);
         let now = keys.service.unix(thread.now());
+        let due = keys.refresh(now, &thread.io);
         pause(
             &thread.io,
             Duration::from_secs(due.saturating_sub(now).max(1)),
@@ -359,5 +359,109 @@ async fn step<N: Io>(
     match started {
         Some(Started::Upstream(upstream, slot)) => Some((upstream, slot, reply)),
         Some(Started::Done) | None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dedens_dnscrypt::{EncryptionSystem, SecretKey};
+    use dedens_net::io::Compio;
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+    use crate::serve::tests::answering;
+
+    /// A Unix time of 2026, so that certificates fit their 32 bits.
+    const T0: u64 = 1_800_000_000;
+    const HALF_DAY: u64 = 43_200;
+
+    fn service() -> Arc<Service> {
+        let provider = "2.dnscrypt-cert.test.example"
+            .parse()
+            .expect("a provider name");
+        let systems = vec![EncryptionSystem::XChaCha20Poly1305];
+        Arc::new(Service::new(&[7; 32], provider, systems, T0, &Compio).expect("a service"))
+    }
+
+    /// A key shared with the first key pair of `keys`, as a verified query leaves.
+    fn learn(keys: &Keys) {
+        let mut entropy = Entropy::new().expect("entropy");
+        let client = SecretKey::generate(&mut entropy).public_key();
+        let mut held = keys.held.borrow_mut();
+        let issued = Arc::clone(held.set.newest().expect("a key pair"));
+        let shared = issued.resolver.shared_key(&client).expect("a shared key");
+        held.shared
+            .insert((issued.resolver.client_magic(), client), shared);
+    }
+
+    /// D99: a thread takes the service's keys when they are due and no sooner, forgets the shared keys of the pairs
+    /// it replaces, and says when to look again.
+    #[test]
+    fn a_thread_takes_the_keys_when_they_are_due() {
+        let thread = answering();
+        let keys = Keys::new(service(), &thread);
+        learn(&keys);
+        let first = Arc::clone(&keys.held.borrow().set);
+        assert_eq!(keys.refresh(T0 + 1, &thread.io), T0 + HALF_DAY);
+        assert!(Arc::ptr_eq(&first, &keys.held.borrow().set));
+        assert_eq!(keys.held.borrow().shared.len(), 1);
+
+        assert_eq!(keys.refresh(T0 + HALF_DAY, &thread.io), T0 + 2 * HALF_DAY);
+        let held = keys.held.borrow();
+        assert!(!Arc::ptr_eq(&first, &held.set));
+        assert_eq!(held.set.len(), 2, "the older pair is still valid");
+        assert!(held.shared.is_empty(), "no shared key outlives a rotation");
+    }
+
+    /// D99, D48: the count of each query by system and result, described.
+    #[test]
+    fn queries_are_counted_by_system_and_result() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            drop(Tally::new(EncryptionSystem::XSalsa20Poly1305));
+            let answered = Tally::new(EncryptionSystem::XChaCha20Poly1305);
+            answered.answered.set(true);
+            drop(answered);
+            dropped("none");
+        });
+        let mut counted: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, description, value)| match value {
+                DebugValue::Counter(count) if key.key().name() == QUERIES => {
+                    let labels: Vec<_> = key
+                        .key()
+                        .labels()
+                        .map(|label| label.value().to_owned())
+                        .collect();
+                    Some((labels, count, description.is_some()))
+                }
+                _ => None,
+            })
+            .collect();
+        counted.sort();
+        let row = |system: &str, result: &str| vec![system.to_owned(), result.to_owned()];
+        assert_eq!(
+            counted,
+            [
+                (row("none", "dropped"), 1, true),
+                (row("xchacha20", "answered"), 1, true),
+                (row("xsalsa20", "dropped"), 1, true),
+            ]
+        );
+    }
+
+    /// D99, D91: a client the access check denies is silenced at accept, whichever action it sets; an allowed one is
+    /// not.
+    #[test]
+    fn a_denied_client_is_silenced() {
+        let thread = answering();
+        let codec = Encrypted(Rc::new(Keys::new(service(), &thread)));
+        let pipeline = thread.pipeline();
+        assert!(codec.silenced(&pipeline, "8.8.8.8".parse().expect("an address")));
+        assert!(!codec.silenced(&pipeline, "127.0.0.1".parse().expect("an address")));
     }
 }
