@@ -332,6 +332,48 @@ fn udp_response_losing_additional_records_has_tc() {
     assert!(truncated(&received));
 }
 
+/// "Resolver Responses Over UDP": a response that is as long as the room the query packet leaves (a marker byte
+/// short of it) is not sent as it is, with no room for the padding marker: it is read again, and as it encodes
+/// shorter, nothing is left out and TC stays clear.
+#[test]
+fn udp_response_filling_the_room_is_padded_not_truncated() {
+    let (packet, query_context, context) = send(
+        EncryptionSystem::XChaCha20Poly1305,
+        QueryPadding::udp(33, 256),
+    );
+    let room = packet.len() - 48;
+    // The header and the question, then a TXT answer whose owner is written out, which the encoder compresses.
+    let text = room - 61;
+    let name = &hex(DNS_RESPONSE)[12..29];
+    let response = [
+        &hex(DNS_RESPONSE)[..33],
+        name,
+        &[
+            0,
+            16,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1 + u8::try_from(text).expect("a short string"),
+        ],
+        &[u8::try_from(text).expect("a short string")],
+        &vec![b'a'; text],
+    ]
+    .concat();
+    assert_eq!(response.len(), room);
+    let sent = context
+        .encrypt_response(&response, Carrier::Udp, &mut rng())
+        .expect("a response");
+    assert!(sent.len() <= packet.len());
+    let message = read(&query_context, &sent);
+    assert_eq!(message.answer.len(), 1);
+    assert!(!truncated(&message));
+}
+
 /// "Resolver Responses Over TCP": no limit but the 4096 bytes of a packet, under which the response is sent whole
 /// and above which it is truncated.
 #[test]

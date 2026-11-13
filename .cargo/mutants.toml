@@ -124,6 +124,9 @@ exclude_re = [
   # dedensd: root only, tested by `tests/privileges.rs` under sudo in CI's own job, not by the mutants shards: the
   # groups of the user dropped to (Linux), and off Linux a function not built there.
   'privileges/unix\.rs:\d+:\d+: replace groups -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
+  # A padding to the length the message already has: `<=` pushes the marker and `resize` cuts it again, `<` leaves
+  # the message as it is, the same bytes.
+  'dedens-dnscrypt/src/padding\.rs:\d+:\d+: replace < with <= in pad$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

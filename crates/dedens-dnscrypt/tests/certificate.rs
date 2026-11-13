@@ -200,6 +200,7 @@ fn validity_includes_both_ends() {
         [false, true, true, true, true, false]
     );
     assert!(!validity.contains(u64::from(u32::MAX) + 100));
+    assert_eq!((validity.start(), validity.end()), (100, 200));
 }
 
 /// "Certificates": extensions are signed with the rest and otherwise ignored, so a certificate with some is read,
