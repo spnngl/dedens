@@ -30,6 +30,9 @@ const PORT: u16 = 53;
 /// seconds, a try more for each fallback) and the resolver's own tries behind it.
 const DURATION: Duration = Duration::from_secs(120);
 
+/// The step of simulated time, by default: turmoil's.
+const TICK: Duration = Duration::from_millis(1);
+
 /// How long into a run the clients start: the hosts have bound their ports by then, as a server that has been up
 /// before its clients. turmoil starts hosts in no fixed order, and a datagram or a connection to a port not bound yet
 /// is lost or refused.
@@ -68,6 +71,7 @@ pub struct Topology {
     upstreams: Vec<(Answers, Speaks)>,
     epoch: SystemTime,
     duration: Duration,
+    tick: Duration,
     repair_rate: Option<f64>,
     pipeline: Build,
     software: Software,
@@ -79,6 +83,7 @@ impl fmt::Debug for Topology {
             .field("upstreams", &self.upstreams)
             .field("epoch", &self.epoch)
             .field("duration", &self.duration)
+            .field("tick", &self.tick)
             .field("repair_rate", &self.repair_rate)
             .field("software", &self.software)
             .finish_non_exhaustive()
@@ -91,6 +96,7 @@ impl Default for Topology {
             upstreams: Vec::new(),
             epoch: UNIX_EPOCH + EPOCH,
             duration: DURATION,
+            tick: TICK,
             repair_rate: None,
             pipeline: Rc::new(resolver::pipeline),
             software: Software::Driver,
@@ -135,6 +141,15 @@ impl Topology {
         self
     }
 
+    /// Steps the simulation by `tick` of simulated time; by default 1 ms, turmoil's. A run of minutes, as the retries
+    /// of a failure are, takes seconds of real time at 1 ms: a coarser step keeps it within D133's budget, where no
+    /// latency or order under it matters.
+    #[must_use]
+    pub const fn tick(mut self, tick: Duration) -> Self {
+        self.tick = tick;
+        self
+    }
+
     /// The probability for a link that [`Fault::Loss`] broke to be repaired by each message sent on it; by
     /// default 1, turmoil's. turmoil has no setter for it during a run, so it holds from the start.
     #[must_use]
@@ -172,6 +187,7 @@ impl Topology {
             .rng_seed(seed.0)
             .epoch(self.epoch)
             .simulation_duration(self.duration)
+            .tick_duration(self.tick)
             .enable_random_order();
         if let Some(rate) = self.repair_rate {
             builder.repair_rate(rate);
