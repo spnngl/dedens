@@ -327,3 +327,64 @@ impl Stream for TcpStream {
         Self::set_nodelay(self, nodelay)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::future::{pending, ready};
+    use std::net::Ipv4Addr;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use compio::runtime::Runtime;
+    use futures_util::StreamExt;
+
+    use super::{BufResult, Compio, Datagram, Instant, Io, SocketAddr, TimedOut, Udp, UdpSocket};
+
+    /// A detached task runs, no handle kept.
+    #[test]
+    fn a_detached_task_runs() {
+        Runtime::new().expect("a runtime").block_on(async {
+            let ran = Rc::new(Cell::new(false));
+            let flag = Rc::clone(&ran);
+            Compio.detach(async move { flag.set(true) });
+            compio::time::sleep(Duration::from_millis(1)).await;
+            assert!(ran.get());
+        });
+    }
+
+    /// A datagram of `recv_multi` holds what was sent, and the sender's address.
+    #[test]
+    fn a_datagram_holds_its_data_and_peer() {
+        Runtime::new().expect("a runtime").block_on(async {
+            let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+            let receiver = UdpSocket::bind(loopback).await.expect("a socket");
+            let sender = UdpSocket::bind(loopback).await.expect("a socket");
+            let to = receiver.local_addr().expect("an address");
+            let mut datagrams = std::pin::pin!(Udp::recv_multi(&receiver));
+            let BufResult(sent, _) = Udp::send_to(&sender, b"query".to_vec(), to).await;
+            sent.expect("sent");
+            let datagram = datagrams
+                .next()
+                .await
+                .expect("a datagram")
+                .expect("received");
+            // The trait's, not compio's own of the same name.
+            assert_eq!(Datagram::data(&datagram), b"query");
+            assert_eq!(datagram.peer(), sender.local_addr().ok());
+        });
+    }
+
+    /// A future done by its deadline is its output; one still pending then is [`TimedOut`].
+    #[test]
+    fn a_timeout_ends_only_a_late_future() {
+        Runtime::new().expect("a runtime").block_on(async {
+            let deadline = Instant::now() + Duration::from_millis(5);
+            assert_eq!(Compio.timeout_at(deadline, ready(1)).await, Ok(1));
+            assert_eq!(
+                Compio.timeout_at(deadline, pending::<()>()).await,
+                Err(TimedOut)
+            );
+        });
+    }
+}

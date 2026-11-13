@@ -416,6 +416,8 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
+    use futures_util::StreamExt;
+
     use super::*;
     use crate::seed::Seed;
 
@@ -432,5 +434,30 @@ mod tests {
         });
         let failure = sim.run().expect_err("the task's panic fails the run");
         assert!(failure.to_string().contains("panic"), "{failure}");
+    }
+
+    /// A datagram longer than a buffer of `dedensd`'s pool is cut to 3952 bytes, as on `io_uring` (D49).
+    #[test]
+    fn a_long_datagram_is_cut_as_the_pool_cuts_it() {
+        let mut sim = turmoil::Builder::new().build();
+        sim.client("server", async {
+            let rng = Rc::new(RefCell::new(Rng::new(Seed(1), 1)));
+            let io = Sim::new(rng, turmoil::lookup("server"), Trace::new());
+            let socket = io.udp_bind((Ipv4Addr::UNSPECIFIED, 53).into()).await?;
+            let mut datagrams = std::pin::pin!(socket.recv_multi());
+            let datagram = datagrams.next().await.expect("a datagram")?;
+            assert_eq!(datagram.data(), [7; 3952]);
+            Ok(())
+        });
+        sim.client("client", async {
+            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+            // The server binds first.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            socket
+                .send_to(&[7; 4096], (turmoil::lookup("server"), 53))
+                .await?;
+            Ok(())
+        });
+        sim.run().expect("the datagram comes, cut");
     }
 }

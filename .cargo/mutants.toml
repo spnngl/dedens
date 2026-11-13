@@ -26,7 +26,7 @@ exclude_re = [
   'replace <impl Outbound for (TcpStream|Half<W>|SimWrite)>::close with \(\)',
   # dedensd's entry for the simulation: only dedens-sim's `serving` family calls it, and cargo-mutants runs the tests
   # of the mutated package alone (D182).
-  'dedensd/src/serve/mod\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
+  'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
