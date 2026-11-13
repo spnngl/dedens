@@ -381,9 +381,14 @@ mod tests {
         );
     }
 
-    /// A target of `limits` and a source of its queries: each call is a fresh query for it.
+    /// A target of `limits` and a source of its queries: each call is a fresh query for it. The budgets' tables
+    /// hash with a fixed key, as a random one put two of the tests' networks in one slot now and then (D113).
     fn flooded(limits: Limits) -> (Service, impl FnMut() -> Vec<u8>) {
-        let target = Service::new(None, limits).expect("a target");
+        let target = Service {
+            clients: Budgets::with_key(limits.client, &[7; 16]).expect("`client_budget`"),
+            global: Budgets::with_key(limits.global, &[7; 16]).expect("`budget`"),
+            ..Service::new(None, limits).expect("a target")
+        };
         let configs = dedens_odoh::Configs::parse(&target.configs).expect("configurations");
         let mut entropy = Entropy::new().expect("randomness");
         let query = move || {
