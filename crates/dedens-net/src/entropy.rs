@@ -108,3 +108,22 @@ impl TryRng for Entropy {
 }
 
 impl TryCryptoRng for Entropy {}
+
+#[cfg(test)]
+mod tests {
+    use rand_core::TryRng;
+
+    use super::*;
+
+    /// A draw takes the next bytes in order, as the 32-bit and the 64-bit integers `rand_core` asks for.
+    #[test]
+    fn integers_are_the_next_bytes_in_order() {
+        let mut entropy = Entropy::new().expect("randomness");
+        let bytes = entropy.bytes.to_vec();
+        let (Ok(first), Ok(second)) = (entropy.try_next_u32(), entropy.try_next_u64());
+        assert_eq!(first.to_le_bytes(), bytes[..4]);
+        assert_eq!(second.to_le_bytes(), bytes[4..12]);
+        assert_eq!(entropy.used, 12);
+        assert!(entropy.finish().is_ok());
+    }
+}

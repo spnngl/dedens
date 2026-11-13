@@ -533,13 +533,11 @@ impl<N: Io> Client<N> {
         options: &Options,
     ) -> Result<Response, ClientError> {
         let server = target.addr;
-        // A sealed query carries no cookie: the packet is the resolver's, whatever EDNS it holds (D98).
-        let sealed = Options {
-            cookies: false,
-            ..*options
-        };
-        let options = if via.is_sealed() { &sealed } else { options };
+        #[cfg(feature = "dnscrypt")]
         let mut dnscrypt = self.certified(via, options).await?;
+        // Without the `dnscrypt` feature no query is sealed.
+        #[cfg(not(feature = "dnscrypt"))]
+        let mut dnscrypt = None;
         // The ID, then the UDP socket of the pool.
         let random = self.draw::<4>()?;
         query.header.id = u16::from_be_bytes([random[0], random[1]]);
@@ -549,7 +547,9 @@ impl<N: Io> Client<N> {
         let mut udp = None;
         // A connection slower than the try's timeout costs that try (D27).
         let mut slow = false;
+        // A sealed query carries no cookie: the packet is the resolver's, and it goes out of a socket of its own (D98).
         let source = match target.link(options.transport) {
+            _ if via.is_sealed() => None,
             None if matches!(
                 options.transport,
                 Transport::Quic | Transport::Https | Transport::Odoh | Transport::Coap
@@ -557,8 +557,6 @@ impl<N: Io> Client<N> {
             {
                 None
             }
-            // A sealed query goes out of a socket of its own.
-            None if via.is_sealed() => None,
             None => {
                 let waiting = self
                     .udp
@@ -653,17 +651,6 @@ impl<N: Io> Client<N> {
             }
             _ => Ok(None),
         }
-    }
-
-    /// Without the `dnscrypt` feature no query is sealed.
-    #[cfg(not(feature = "dnscrypt"))]
-    #[expect(clippy::unused_async, reason = "the same call as with the feature")]
-    async fn certified(
-        &self,
-        _via: Via<'_>,
-        _options: &Options,
-    ) -> Result<Option<CertificateInfo>, ClientError> {
-        Ok(None)
     }
 
     /// The next `LEN` random bytes.

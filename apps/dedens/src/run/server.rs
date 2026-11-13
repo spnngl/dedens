@@ -156,7 +156,13 @@ pub(super) fn server(
     };
     refuse_conflicts(given, options).map_err(Usage)?;
     if given.starts_with(STAMP_SCHEME) {
+        #[cfg(feature = "dnscrypt")]
         return stamped(given);
+        // Without the `dnscrypt` feature, a stamp is refused.
+        #[cfg(not(feature = "dnscrypt"))]
+        bail!(Usage(anyhow!(
+            "server {given}: a DNSCrypt stamp, built without the dnscrypt feature"
+        )));
     }
     let (text, forced) = scheme(given);
     let (text, name) = match text.rsplit_once('#') {
@@ -282,14 +288,6 @@ fn stamped(given: &str) -> anyhow::Result<Endpoint> {
         ))),
         Err(error) => bail!(Usage(anyhow!("server {given}: {error}"))),
     }
-}
-
-/// Without the `dnscrypt` feature, a stamp is refused.
-#[cfg(not(feature = "dnscrypt"))]
-fn stamped(given: &str) -> anyhow::Result<Endpoint> {
-    bail!(Usage(anyhow!(
-        "server {given}: a DNSCrypt stamp, built without the dnscrypt feature"
-    )))
 }
 
 /// The proxy of `+odoh-proxy`, `https://HOST[:PORT][/PATH][#NAME]`, for the target `given` forced to `forced`: none
