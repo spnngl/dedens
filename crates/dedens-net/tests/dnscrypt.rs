@@ -472,6 +472,20 @@ async fn truncated_certificates_are_asked_again_over_tcp() {
     assert_eq!(resolver.script().fetched, (1, 1));
 }
 
+/// "Certificates": the retry over TCP is the certificates' own, whatever the options of the query ask for.
+#[compio::test]
+async fn truncated_certificates_are_asked_again_over_tcp_though_the_query_has_no_fallback() {
+    let resolver = Resolver::start().await;
+    resolver.script().truncate_certificates = true;
+    let mut options = Options::default();
+    options.tcp_fallback = false;
+    Client::new()
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    assert_eq!(resolver.script().fetched, (1, 1));
+}
+
 /// "Certificates": a resolver that serves them over TCP alone is asked there once UDP got no answer.
 #[compio::test]
 async fn certificates_are_asked_over_tcp_when_udp_gets_none() {
@@ -732,6 +746,10 @@ async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
         let kinds: Vec<_> = script.seen.iter().map(|seen| seen.resumed).collect();
         assert_eq!(kinds, [false, true, true]);
         assert!(script.seen[1].packet_len < script.seen[0].packet_len);
+        assert!(
+            script.seen[1].packet_len >= 256,
+            "a resumed query keeps the floor of the padding"
+        );
         assert_eq!(
             script.seen[1].client_key, script.seen[2].client_key,
             "the same ticket"
@@ -751,6 +769,43 @@ async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
         kinds,
         [false, true, true, false],
         "the dropped one is not seen"
+    );
+}
+
+/// D101: a ticket is of the certificate it was issued under: the certificate changed, the resumed query is not made.
+#[compio::test]
+async fn a_ticket_of_another_certificate_is_not_used() {
+    let resolver = Resolver::start_pq().await;
+    let mut options = quick();
+    options.dnscrypt.resume = true;
+    let client = Client::new();
+    for _ in 0..2 {
+        client
+            .exchange_dnscrypt(query(), &resolver.stamp, &options)
+            .await
+            .expect("a response");
+    }
+    {
+        // A newer PQ certificate, and a forged response: the client fetches the certificates again.
+        let mut script = resolver.script();
+        let secret = XWingSecretKey::from_seed([4; 32]);
+        let certificate = pq_certificate(&script.signer, &secret, 2);
+        script
+            .keys
+            .push(ResolverKey::new(&certificate, secret).expect("a key"));
+        script.served.push(certificate);
+        script.acts.push_back(Act::Forge);
+    }
+    client
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    let script = resolver.script();
+    let kinds: Vec<_> = script.seen.iter().map(|seen| seen.resumed).collect();
+    assert_eq!(
+        kinds,
+        [false, true, true, false],
+        "the resumed query that is forged an answer to, then a full one"
     );
 }
 

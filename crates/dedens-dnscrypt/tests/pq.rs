@@ -730,3 +730,90 @@ fn the_two_kinds_of_key_do_not_mix() {
 fn classical_secret_again() -> dedens_dnscrypt::SecretKey {
     dedens_dnscrypt::SecretKey::from_bytes([7; 32])
 }
+
+/// "PQ Query and Response Format": the control field is sent only when it leaves a byte for the padding marker, so
+/// with `<control-len>`, the control field and the response one byte short of the budget the ticket is sent, and at
+/// the budget it is withheld.
+#[test]
+fn ticket_is_sent_only_when_the_marker_still_fits() {
+    let draft = draft();
+    // 8 + 2 + 130 + 12 + 16 + 128 bytes: a budget of 296 - 48 = 248 bytes of plaintext.
+    let (packet, context) = resumed(&resumption(), QueryPadding::to(128));
+    assert_eq!(packet.len(), 296);
+    let query = ticket_keys().open(&packet, NOW).expect("the ticket opens");
+    let (_, response) = resolver()
+        .decrypt_resumed(&query, NOW)
+        .expect("the resumed query");
+    let ticket = ticket_keys()
+        .issue(&response, NOW, LIFETIME, &mut Replay::new(&seq(1, 24)))
+        .expect("a ticket");
+    // The draft's question, and one TXT answer of `length - 46` bytes of text.
+    let sized = |length: usize| {
+        let mut wire = hex(&draft.dns_response)[..33].to_vec();
+        wire.extend_from_slice(&[0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 0]);
+        let text = length - 46;
+        wire.extend_from_slice(&[0, u8::try_from(text + 1).expect("short")]);
+        wire.push(u8::try_from(text).expect("short"));
+        wire.resize(length, b'a');
+        wire
+    };
+    let sent_with = |length: usize| {
+        let wire = sized(length);
+        let sealed = response
+            .encrypt_response_with(
+                &wire,
+                Some(&ticket),
+                Carrier::Udp,
+                &mut Replay::new(&seq(0x10, 12)),
+            )
+            .expect("a response");
+        let opened = context.open_response(&sealed).expect("the response");
+        assert_eq!(opened.message, wire);
+        opened.resumption.is_some()
+    };
+    // 2 + 141 + 104 = 247 < 248, and 2 + 141 + 105 = 248.
+    assert!(sent_with(104));
+    assert!(!sent_with(105));
+}
+
+/// A packet longer than `MAX_PACKET_LEN` is refused as too long before its ticket is looked at; one of exactly that
+/// length is not.
+#[test]
+fn a_resumed_query_may_be_as_long_as_a_packet() {
+    let mut packet = dedens_dnscrypt::RESUME_MAGIC.to_vec();
+    packet.resize(dedens_dnscrypt::MAX_PACKET_LEN, 0);
+    assert_eq!(
+        ticket_keys().open(&packet, NOW).err(),
+        Some(QueryError::Ticket)
+    );
+    packet.push(0);
+    assert_eq!(
+        ticket_keys().open(&packet, NOW).err(),
+        Some(QueryError::TooLong)
+    );
+}
+
+/// A policy allows the systems it can choose: `Preferred` all, `Only` its own.
+#[test]
+fn a_policy_allows_the_systems_it_can_choose() {
+    let systems = [
+        EncryptionSystem::XSalsa20Poly1305,
+        EncryptionSystem::XChaCha20Poly1305,
+        EncryptionSystem::XWing,
+    ];
+    for system in systems {
+        assert!(SystemPolicy::Preferred.allows(system));
+        for only in systems {
+            assert_eq!(SystemPolicy::Only(only).allows(system), only == system);
+        }
+    }
+}
+
+/// A resolver key made for another X-Wing key than the certificate's is refused.
+#[test]
+fn another_x_wing_key_does_not_match_the_certificate() {
+    assert_eq!(
+        ResolverKey::new(&certificate(), XWingSecretKey::from_seed([9; 32])).err(),
+        Some(CertificateError::KeyMismatch)
+    );
+}

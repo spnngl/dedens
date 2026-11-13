@@ -140,6 +140,9 @@ exclude_re = [
   # A certificate kept to the very `Instant` its hour ends, or an `Instant` equal to the one it was chosen at: equal
   # `Instant`s never happen (D98).
   'dnscrypt\.rs:\d+:\d+: replace < with <= in Resolver::kept$',
+  # A ticket that expires this very second, read from the system clock (`unix_now`): a test's two queries come
+  # within one second of each other, never at its end (D101).
+  'dnscrypt\.rs:\d+:\d+: replace > with >= in Resolver::resumed$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
