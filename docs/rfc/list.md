@@ -98,6 +98,13 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 9462](https://datatracker.ietf.org/doc/html/rfc9462):** Discovery of Designated Resolvers (DDR)
 * **[RFC 9953](https://datatracker.ietf.org/doc/html/rfc9953):** DNS over the Constrained Application Protocol (DoC), for constrained IoT networks; experimental in dédéns, last of the transports
 
+### Drafts and other texts
+
+Not RFCs: a draft at one revision, a text at one commit, each linked by the URL `just rfc-archive` downloads. The row of each is in the second table of [`coverage.md`](coverage.md).
+
+* **[draft-denis-dprive-dnscrypt-11](https://www.ietf.org/archive/id/draft-denis-dprive-dnscrypt-11.txt):** The DNSCrypt Protocol (Internet-Draft, 23 July 2026), the revision the code is written from: both classical systems (`0x0001`, `0x0002`) and Anonymized DNSCrypt
+* **[DNSCRYPT-V2-PROTOCOL](https://raw.githubusercontent.com/DNSCrypt/dnscrypt-protocol/97c0e1176d030d3730423353b81857add35255f3/DNSCRYPT-V2-PROTOCOL.txt):** The DNSCrypt v2 protocol as published in 2023 (`dnscrypt-protocol` at `97c0e11`, before the draft replaced it), the text the draft's `0x0001` description is checked against
+
 ### Authentication, Linking, and Local Discovery
 * **[RFC 6698](https://datatracker.ietf.org/doc/html/rfc6698):** The DNS-Based Authentication of Named Entities (DANE) Transport Layer Security (TLS) Protocol: TLSA
 * **[RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762):** Multicast DNS (mDNS)
