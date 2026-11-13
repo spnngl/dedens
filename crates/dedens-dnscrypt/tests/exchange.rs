@@ -291,6 +291,28 @@ fn oversized_udp_response_is_truncated() {
     assert_eq!(message.questions.len(), 1);
 }
 
+/// "Resolver Responses Over UDP": the resolver sets TC whenever it truncates, also when only additional records
+/// are left out.
+#[test]
+fn udp_response_losing_additional_records_has_tc() {
+    let (_, query_context, context) = send(
+        EncryptionSystem::XChaCha20Poly1305,
+        QueryPadding::udp(33, 256),
+    );
+    let wire = hex(DNS_RESPONSE);
+    let mut message = Message::decode(&wire).expect("a response").message;
+    let record = message.answer[0].clone();
+    message.additional = vec![record; 40];
+    let response = message.to_vec().expect("an encoded response");
+    let sent = context
+        .encrypt_response(&response, Carrier::Udp, &mut rng())
+        .expect("a response");
+    let received = read(&query_context, &sent);
+    assert_eq!(received.answer.len(), 1);
+    assert!(received.additional.len() < 40);
+    assert!(truncated(&received));
+}
+
 /// "Resolver Responses Over TCP": no limit but the 4096 bytes of a packet, under which the response is sent whole
 /// and above which it is truncated.
 #[test]

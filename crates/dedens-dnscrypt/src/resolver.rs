@@ -1,7 +1,7 @@
 //! The resolver's side: queries decrypted with a certificate's secret key, and responses encrypted for the client
 //! that sent them.
 
-use dedens_proto::Message;
+use dedens_proto::{Flags, Message};
 use rand_core::CryptoRng;
 
 use crate::certificate::{Certificate, ClientMagic};
@@ -171,9 +171,9 @@ impl ResponseContext {
     ///
     /// The response is padded to a multiple of 64 bytes, by a length that depends on the key and the client nonce
     /// alone, so that a retransmitted query gets the same padding, when the carrier's budget allows it, and to less
-    /// when it does not. A response that does not fit even unpadded is truncated: answer and authority records
-    /// left out and TC set, never silence (draft "Padding For Resolver Responses", "Resolver Responses Over
-    /// UDP", "Resolver Responses Over TCP").
+    /// when it does not. A response that does not fit even unpadded is truncated: the records that do not fit
+    /// are left out and TC is set, whichever section lost them, never silence (draft "Padding For Resolver
+    /// Responses", "Resolver Responses Over UDP", "Resolver Responses Over TCP").
     ///
     /// `rng` makes the resolver nonce.
     ///
@@ -202,6 +202,14 @@ impl ResponseContext {
             let mut buf = vec![0; plaintext_budget.saturating_sub(1)];
             let encoded = decoded.message.encode_truncated(&mut buf)?;
             buf.truncate(encoded.len);
+            // `encode_truncated` leaves TC clear when only additional records were left out; the draft
+            // wants it set whenever anything is.
+            let [tc_byte, _] = Flags::TC.bits().to_be_bytes();
+            if encoded.dropped > 0
+                && let Some(flags) = buf.get_mut(2)
+            {
+                *flags |= tc_byte;
+            }
             buf
         };
         let extra_blocks = padding::response_extra_blocks(&self.shared, &self.client_nonce);
