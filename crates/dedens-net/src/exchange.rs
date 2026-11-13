@@ -58,14 +58,22 @@ pub struct Options {
     /// How a query goes over [`Transport::Https`]: by GET, which HTTP caches can keep, or by POST (RFC 8484 §4.1).
     /// Default: GET.
     pub method: Method,
-    /// Over `DNSCrypt`, whether only a post-quantum certificate (`X-Wing`) is taken: a resolver known to offer one is
-    /// not to be downgraded by a stripped certificate (draft "Downgrade Protection", D101). Off, the PQ certificate
-    /// is preferred when offered, any other used otherwise. Default: off.
-    pub dnscrypt_pq: bool,
-    /// Over `DNSCrypt` with a PQ certificate, whether a query is resumed with the ticket of the last response, with
-    /// no encapsulation (draft "Resumption Tickets", D101). A ticket links the queries it resumes to each other: off,
-    /// each query has an encapsulation of its own. Default: off.
-    pub dnscrypt_resume: bool,
+    /// What a `DNSCrypt` server is asked, see [`DnsCryptOptions`].
+    pub dnscrypt: DnsCryptOptions,
+}
+
+/// How a `DNSCrypt` resolver is asked (D101): the choices of `PQDNSCrypt`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DnsCryptOptions {
+    /// Whether only a post-quantum certificate (`X-Wing`) is taken: a resolver known to offer one is not to be
+    /// downgraded by a stripped certificate (draft "Downgrade Protection"). Off, the PQ certificate is preferred
+    /// when offered, any other used otherwise. Default: off.
+    pub pq: bool,
+    /// With a PQ certificate, whether a query is resumed with the ticket of the last response, with no
+    /// encapsulation (draft "Resumption Tickets"). A ticket links the queries it resumes to each other: off, each
+    /// query has an encapsulation of its own. Default: off.
+    pub resume: bool,
 }
 
 impl Default for Options {
@@ -79,8 +87,7 @@ impl Default for Options {
             random_case: None,
             cookies: true,
             method: Method::Get,
-            dnscrypt_pq: false,
-            dnscrypt_resume: false,
+            dnscrypt: DnsCryptOptions::default(),
         }
     }
 }

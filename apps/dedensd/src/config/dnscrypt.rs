@@ -25,7 +25,7 @@ enum SystemFile {
     Xsalsa20,
     /// `X25519-XChaCha20Poly1305`, `<es-version>` 0x0002.
     Xchacha20,
-    /// `X-Wing`, `XChaCha20Poly1305`, `<es-version>` 0x0003 (PQDNSCrypt, D101).
+    /// `X-Wing`, `XChaCha20Poly1305`, `<es-version>` 0x0003 (`PQDNSCrypt`, D101).
     Pq,
 }
 
