@@ -17,8 +17,8 @@
 //! With relays (draft "Anonymized `DNSCrypt`", D100) every packet, the certificate query included, goes to a relay
 //! with the resolver's address before it ([`dedens_dnscrypt::relay_query`]), and the resolver never sees the
 //! client's. A relay forwards over UDP whatever the client used, and drops a response larger than the query it
-//! forwarded: so the certificate query is padded to hold the response, and over TCP the inner query is the
-//! largest a packet can be. One relay is picked at random for each query, but the one that failed the last: that is
+//! forwarded: so the certificate query is padded to hold the response, and over TCP the inner query is
+//! as large as [`RELAY_PACKET_LEN`] says. One relay is picked at random for each query, but the one that failed the last: that is
 //! skipped until another fails, so that a relay that is down costs one try, not one in every few.
 
 use std::cell::RefCell;
@@ -52,6 +52,12 @@ const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
 
 /// The smallest packet of a UDP query at first (draft "Padding For Client Queries Over UDP": `<min-query-len>`, 256).
 const FIRST_FLOOR: usize = 256;
+
+/// The inner query a relay gets over TCP, certificate query or sealed packet: the relay asks the resolver over UDP and
+/// drops a response longer than it, so it is large, but not 4096 bytes: `dedensd` on `io_uring` cuts a UDP query longer than
+/// 3952 bytes (D49), so the sealed packet is the largest of whole 64-byte blocks that fits, 3840 bytes of plaintext and
+/// 68 of overhead (D100).
+const RELAY_PACKET_LEN: usize = 3840 + 68;
 
 /// The length of a certificate query to a relay over UDP: the relay drops a response longer than the query, and the
 /// classical certificates a resolver serves make a response of about 400 bytes (draft "Anonymized `DNSCrypt`",
@@ -315,7 +321,7 @@ impl Resolver {
                 let len = if transport == Transport::Udp {
                     CERTIFICATE_UDP_LEN
                 } else {
-                    MAX_PACKET_LEN
+                    RELAY_PACKET_LEN
                 };
                 let query = self.certificate_query(io, len)?;
                 let packet = relay_query(target, &query);
@@ -389,8 +395,8 @@ impl Resolver {
         let padding = if transport != Transport::Tcp {
             QueryPadding::udp(wire.len(), self.state.borrow().floor)
         } else if relay.is_some() {
-            // A relay asks the resolver over UDP, and drops a response longer than the query: as large as can be.
-            QueryPadding::udp(wire.len(), MAX_PACKET_LEN)
+            // A relay asks the resolver over UDP, and drops a response longer than the query: as large as is safe.
+            QueryPadding::udp(wire.len(), RELAY_PACKET_LEN)
         } else {
             QueryPadding::tcp(wire.len(), &mut entropy)
         };
