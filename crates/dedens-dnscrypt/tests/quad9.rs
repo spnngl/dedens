@@ -8,7 +8,8 @@ use dedens_dnscrypt::{
     Certificate, ClientNonce, ClientSession, EncryptionSystem, ProviderKey, QueryPadding,
     SecretKey, SystemPolicy, select,
 };
-use dedens_proto::{Message, rdata::RData};
+use dedens_proto::Message;
+use dedens_proto::rdata::RData;
 use dedens_testkit::hex;
 use serde::Deserialize;
 

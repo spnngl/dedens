@@ -23,7 +23,9 @@ fn root() -> &'static Path {
 /// justfile's `fuzz_seeds`: every target gets every seed, whatever format it parses.
 fn seeds() -> Vec<(String, Vec<u8>)> {
     let mut seeds = Vec::new();
-    for dir in ["proto", "zones", "dnssec", "odoh", "dnscrypt", "doh", "plugins"] {
+    for dir in [
+        "proto", "zones", "dnssec", "odoh", "dnscrypt", "doh", "plugins",
+    ] {
         let dir = root().join("../testdata").join(dir);
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
             let path = entry.expect("dir entry").path();

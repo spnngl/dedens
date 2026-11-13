@@ -4,25 +4,27 @@
 use std::sync::LazyLock;
 
 use dedens_dnscrypt::{
-    Carrier, Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession, EncryptionSystem,
-    ProviderKey, QueryContext, QueryPadding, ResolverKey, ResponseContext, SecretKey, SigningKey,
-    Validity,
+    Carrier, Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession,
+    EncryptionSystem, ProviderKey, QueryContext, QueryPadding, ResolverKey, ResponseContext,
+    SecretKey, SigningKey, Validity,
 };
-use dedens_proto::{Message, rdata::RData};
+use dedens_proto::Message;
+use dedens_proto::rdata::RData;
 
 use crate::odoh::Fixed;
 
 /// The provider key of Quad9's stamp (`testdata/dnscrypt/quad9.json`): the captured response of its
 /// certificates verifies under it.
 const QUAD9_PROVIDER_KEY: [u8; 32] = [
-    0x67, 0xc8, 0x47, 0xb8, 0xc8, 0x75, 0x8c, 0xd1, 0x20, 0x24, 0x55, 0x43, 0xbe, 0x75, 0x67, 0x46, 0xdf,
-    0x34, 0xdf, 0x1d, 0x84, 0xc0, 0x0b, 0x8c, 0x47, 0x03, 0x68, 0xdf, 0x82, 0x1d, 0x86, 0x3e,
+    0x67, 0xc8, 0x47, 0xb8, 0xc8, 0x75, 0x8c, 0xd1, 0x20, 0x24, 0x55, 0x43, 0xbe, 0x75, 0x67, 0x46,
+    0xdf, 0x34, 0xdf, 0x1d, 0x84, 0xc0, 0x0b, 0x8c, 0x47, 0x03, 0x68, 0xdf, 0x82, 0x1d, 0x86, 0x3e,
 ];
 
 /// A query for `www.example.com` A.
 const DNS_QUERY: [u8; 33] = [
-    0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, b'w', b'w', b'w', 0x07, b'e', b'x',
-    b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+    0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, b'w', b'w', b'w',
+    0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+    0x01,
 ];
 
 /// The provider of the certificate below, from a seed the fuzzer does not know.
@@ -52,9 +54,14 @@ static EXCHANGE: LazyLock<Exchange> = LazyLock::new(|| {
             extensions: Vec::new(),
         },
     );
-    let session = ClientSession::new(&certificate, &SecretKey::from_bytes([3; 32])).expect("a good key");
+    let session =
+        ClientSession::new(&certificate, &SecretKey::from_bytes([3; 32])).expect("a good key");
     let (query, query_context) = session
-        .encrypt_query(&DNS_QUERY, QueryPadding::udp(DNS_QUERY.len(), 256), ClientNonce::from_bytes([4; 12]))
+        .encrypt_query(
+            &DNS_QUERY,
+            QueryPadding::udp(DNS_QUERY.len(), 256),
+            ClientNonce::from_bytes([4; 12]),
+        )
         .expect("a query");
     let resolver = ResolverKey::new(&certificate, secret).expect("the certificate's key");
     let (_, response_context) = resolver.decrypt_query(&query).expect("our own query");
@@ -63,7 +70,13 @@ static EXCHANGE: LazyLock<Exchange> = LazyLock::new(|| {
     let response = response_context
         .encrypt_response(&answer, Carrier::Udp, &mut Fixed(5))
         .expect("a response");
-    Exchange { resolver, query, query_context, response_context, response }
+    Exchange {
+        resolver,
+        query,
+        query_context,
+        response_context,
+        response,
+    }
 });
 
 /// A certificate read from arbitrary bytes as the provider's (draft "Certificates"), and the TXT answers of a DNS
@@ -98,11 +111,17 @@ pub fn parse_dnscrypt_certificate(data: &[u8]) {
         word.copy_from_slice(&times[at..at + 4]);
         u32::from_be_bytes(word)
     });
-    let (Ok(client_magic), Ok(validity)) = (ClientMagic::try_from(*magic), Validity::new(start, end)) else {
+    let (Ok(client_magic), Ok(validity)) =
+        (ClientMagic::try_from(*magic), Validity::new(start, end))
+    else {
         return;
     };
     let body = CertificateBody {
-        system: if system & 1 == 0 { EncryptionSystem::XChaCha20Poly1305 } else { EncryptionSystem::XSalsa20Poly1305 },
+        system: if system & 1 == 0 {
+            EncryptionSystem::XChaCha20Poly1305
+        } else {
+            EncryptionSystem::XSalsa20Poly1305
+        },
         resolver_key: SecretKey::from_bytes([2; 32]).public_key(),
         client_magic,
         serial,
@@ -111,9 +130,15 @@ pub fn parse_dnscrypt_certificate(data: &[u8]) {
     };
     let certificate = Certificate::sign(&PROVIDER, body);
     let provider = PROVIDER.provider_key();
-    assert_eq!(Certificate::parse(certificate.as_bytes(), &provider).as_ref(), Ok(&certificate));
+    assert_eq!(
+        Certificate::parse(certificate.as_bytes(), &provider).as_ref(),
+        Ok(&certificate)
+    );
     if let Ok(txt) = certificate.to_txt() {
-        assert_eq!(Certificate::from_txt(&txt, &provider).as_ref(), Ok(&certificate));
+        assert_eq!(
+            Certificate::from_txt(&txt, &provider).as_ref(),
+            Ok(&certificate)
+        );
     }
 }
 
@@ -156,7 +181,10 @@ pub fn dnscrypt_decrypt(data: &[u8]) {
 pub fn dnscrypt_encrypt_response(data: &[u8]) {
     let exchange = &*EXCHANGE;
     for (carrier, limit) in [(Carrier::Udp, exchange.query.len()), (Carrier::Tcp, 4095)] {
-        if let Ok(packet) = exchange.response_context.encrypt_response(data, carrier, &mut Fixed(5)) {
+        if let Ok(packet) = exchange
+            .response_context
+            .encrypt_response(data, carrier, &mut Fixed(5))
+        {
             assert!(packet.len() <= limit);
             let _ = exchange.query_context.decrypt_response(&packet);
         }

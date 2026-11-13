@@ -2,16 +2,17 @@
 
 use std::fmt;
 
-use chacha20::{R20, cipher::array::Array as ChaChaArray, hchacha};
+use chacha20::cipher::array::Array as ChaChaArray;
+use chacha20::{R20, hchacha};
 use rand_core::CryptoRng;
-use salsa20::{
-    cipher::{array::Array as SalsaArray, consts::U10},
-    hsalsa,
-};
+use salsa20::cipher::array::Array as SalsaArray;
+use salsa20::cipher::consts::U10;
+use salsa20::hsalsa;
 use subtle::ConstantTimeEq as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::{error::LowOrderKey, system::EncryptionSystem};
+use crate::error::LowOrderKey;
+use crate::system::EncryptionSystem;
 
 /// Length of every key of this crate: X25519 public and secret keys, the shared key, Ed25519 keys and seeds.
 pub const KEY_LEN: usize = 32;

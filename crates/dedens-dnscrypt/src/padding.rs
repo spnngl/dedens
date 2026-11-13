@@ -2,7 +2,9 @@
 
 use ring::hmac;
 
-use crate::{NONCE_HALF_LEN, error::PaddingError, key::SharedKey};
+use crate::NONCE_HALF_LEN;
+use crate::error::PaddingError;
+use crate::key::SharedKey;
 
 /// The block the padded plaintexts are a multiple of when the budget allows.
 pub(crate) const BLOCK: usize = 64;

@@ -11,7 +11,8 @@ use dedens_dnscrypt::{
     EncryptionSystem, LowOrderKey, PublicKey, QueryContext, QueryError, QueryPadding, ResolverKey,
     ResponseContext, ResponseError, SecretKey, SigningKey, Validity,
 };
-use dedens_proto::{Message, RecordType, rdata::RData};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, RecordType};
 use dedens_testkit::hex;
 use serde::Deserialize;
 

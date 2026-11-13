@@ -3,14 +3,14 @@
 //! "Appendix 2").
 
 use chacha20::XChaCha20;
-use poly1305::{Poly1305, universal_hash::KeyInit as _};
-use salsa20::{
-    XSalsa20,
-    cipher::{KeyIvInit as _, StreamCipher},
-};
+use poly1305::Poly1305;
+use poly1305::universal_hash::KeyInit as _;
+use salsa20::XSalsa20;
+use salsa20::cipher::{KeyIvInit as _, StreamCipher};
 use subtle::ConstantTimeEq as _;
 
-use crate::{key::KEY_LEN, key::SharedKey, system::EncryptionSystem};
+use crate::key::{KEY_LEN, SharedKey};
+use crate::system::EncryptionSystem;
 
 /// Length of the Poly1305 tag, which goes before the ciphertext.
 pub(crate) const TAG_LEN: usize = 16;

@@ -3,14 +3,12 @@
 use dedens_proto::{Message, Question};
 use rand_core::CryptoRng;
 
-use crate::{
-    MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC,
-    certificate::{Certificate, ClientMagic},
-    error::{EncryptQueryError, LowOrderKey, ResponseError},
-    key::{PublicKey, SecretKey, SharedKey},
-    padding::{self, BLOCK},
-    secretbox::{self, NONCE_LEN, TAG_LEN},
-};
+use crate::certificate::{Certificate, ClientMagic};
+use crate::error::{EncryptQueryError, LowOrderKey, ResponseError};
+use crate::key::{PublicKey, SecretKey, SharedKey};
+use crate::padding::{self, BLOCK};
+use crate::secretbox::{self, NONCE_LEN, TAG_LEN};
+use crate::{MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC};
 
 /// The 12 bytes the client picks for a query; the resolver repeats them in its response, which is how the client
 /// knows what the response answers (draft "Protocol Components": `<client-nonce>`).

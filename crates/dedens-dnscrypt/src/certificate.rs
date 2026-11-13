@@ -6,11 +6,9 @@ use std::fmt;
 use dedens_proto::rdata::{Txt, TxtError};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair as _, UnparsedPublicKey};
 
-use crate::{
-    error::{CertificateError, InvalidClientMagic, SigningKeyRejected},
-    key::{KEY_LEN, PublicKey},
-    system::{EncryptionSystem, SystemPolicy},
-};
+use crate::error::{CertificateError, InvalidClientMagic, SigningKeyRejected};
+use crate::key::{KEY_LEN, PublicKey};
+use crate::system::{EncryptionSystem, SystemPolicy};
 
 /// `<cert-magic>`: `DNSC`.
 const CERT_MAGIC: [u8; 4] = *b"DNSC";

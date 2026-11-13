@@ -4,15 +4,14 @@
 use dedens_proto::Message;
 use rand_core::CryptoRng;
 
+use crate::certificate::{Certificate, ClientMagic};
+use crate::error::{CertificateError, EncryptResponseError, LowOrderKey, QueryError};
+use crate::key::{KEY_LEN, PublicKey, SecretKey, SharedKey};
+use crate::secretbox::{self, NONCE_LEN, TAG_LEN};
+use crate::system::EncryptionSystem;
 use crate::{
     CLIENT_MAGIC_LEN, MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC,
-    RESPONSE_OVERHEAD,
-    certificate::{Certificate, ClientMagic},
-    error::{CertificateError, EncryptResponseError, LowOrderKey, QueryError},
-    key::{KEY_LEN, PublicKey, SecretKey, SharedKey},
-    padding,
-    secretbox::{self, NONCE_LEN, TAG_LEN},
-    system::EncryptionSystem,
+    RESPONSE_OVERHEAD, padding,
 };
 
 /// The secret key of one certificate, with the magic and the system that go with it: what a resolver needs to
