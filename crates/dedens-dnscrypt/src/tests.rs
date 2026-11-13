@@ -1,10 +1,10 @@
 //! What only the crate's inside can build: packets whose plaintext is authentic but wrongly padded, or whose
 //! resolver nonce is zero, which no [`ClientSession`] or [`ResponseContext`] makes.
 
+use crate::secretbox::{self, TAG_LEN};
 use crate::{
     Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession, EncryptionSystem,
     QueryError, ResolverKey, ResponseError, SecretKey, SigningKey, Validity, padding,
-    secretbox::{self, TAG_LEN},
 };
 
 const DNS_QUERY: [u8; 33] = [
