@@ -1,5 +1,5 @@
-//! draft-denis-dprive-dnscrypt-11, "Appendix 2: `DNSCrypt` Test Vectors" (14): the pinned inputs, the keys, the
-//! certificate, its retrieval, one query and one response, and the negative cases (14.8).
+//! draft-denis-dprive-dnscrypt-11, "Appendix 2: `DNSCrypt` Test Vectors": the pinned inputs, the keys, the
+//! certificate, its retrieval, one query and one response, and the "Negative Cases".
 //!
 //! The vectors are `testdata/dnscrypt/draft-vectors.json`, copied from the draft by script, see
 //! `testdata/dnscrypt/README.md`. They are the system `0x0002`, XChaCha20-Poly1305.
@@ -90,7 +90,7 @@ fn resolver() -> ResolverKey {
 
 /// Appendix 2, "Public Keys and Shared Key": the keys of the pinned inputs.
 #[test]
-fn draft_14_2_public_keys() {
+fn public_keys_and_shared_key() {
     let draft = draft();
     assert_eq!(
         provider().provider_key().as_bytes().as_slice(),
@@ -109,7 +109,7 @@ fn draft_14_2_public_keys() {
 /// Appendix 2, "Certificate": signing the pinned fields gives the 124 bytes of the vector, and reading them
 /// back gives the fields.
 #[test]
-fn draft_14_3_certificate() {
+fn certificate_vector() {
     let signed = Certificate::sign(&provider(), body());
     assert_eq!(signed.as_bytes(), hex(&draft().certificate));
     assert_eq!(certificate(), signed);
@@ -119,7 +119,7 @@ fn draft_14_3_certificate() {
 /// Appendix 2, "Certificate Retrieval": the question is `2.dnscrypt-cert.example.com` TXT IN, and the TXT answer
 /// holds the certificate in one character-string.
 #[test]
-fn draft_14_4_certificate_retrieval() {
+fn certificate_retrieval() {
     let draft = draft();
     let wire = hex(&draft.certificate_query);
     let question = Message::decode(&wire)
@@ -148,14 +148,14 @@ fn draft_14_4_certificate_retrieval() {
 
 /// Appendix 2, "Client Query (UDP)": the packet of 324 bytes.
 #[test]
-fn draft_14_5_query_encrypts_to_the_vector() {
+fn client_query_encrypts_to_the_vector() {
     let (packet, _) = query();
     assert_eq!(packet, hex(&draft().query_packet));
 }
 
 /// Appendix 2, "Client Query (UDP)": the resolver reads the packet and finds the DNS query before its padding.
 #[test]
-fn draft_14_5_query_decrypts_to_the_dns_query() {
+fn client_query_decrypts_to_the_dns_query() {
     let draft = draft();
     let resolver = resolver();
     let packet = hex(&draft.query_packet);
@@ -170,7 +170,7 @@ fn draft_14_5_query_decrypts_to_the_dns_query() {
 
 /// Appendix 2, "Server Response (UDP)": the client reads the response of the vector.
 #[test]
-fn draft_14_6_response_decrypts_to_the_dns_response() {
+fn server_response_decrypts_to_the_dns_response() {
     let draft = draft();
     let (_, context) = query();
     let plaintext = context
@@ -194,7 +194,7 @@ fn response_context() -> ResponseContext {
 /// The padding length is the resolver's choice (draft "Padding For Resolver Responses"), so the bytes are not
 /// the vector's unless the choice is the same.
 #[test]
-fn draft_14_6_response_encrypts_for_the_client() {
+fn server_response_encrypts_for_the_client() {
     let draft = draft();
     let mut rng = Replay::new(&seq(0xc0, 12));
     let packet = response_context()
@@ -210,10 +210,10 @@ fn draft_14_6_response_encrypts_for_the_client() {
     );
 }
 
-/// 14.8 case 1: flipping any byte of the packets makes them fail, the resolver drops the query and the client
+/// "Negative Cases", "Tampered ciphertext": flipping any byte of the packets makes them fail, the resolver drops the query and the client
 /// the response.
 #[test]
-fn draft_14_8_1_tampered_packets_fail() {
+fn negative_tampered_packets_fail() {
     let draft = draft();
     let resolver = resolver();
     let query_packet = hex(&draft.query_packet);
@@ -234,9 +234,9 @@ fn draft_14_8_1_tampered_packets_fail() {
     }
 }
 
-/// 14.8 case 1: the error says which check failed, for bytes of each field.
+/// "Negative Cases", "Tampered ciphertext": the error says which check failed, for bytes of each field.
 #[test]
-fn draft_14_8_1_tampering_is_told_by_field() {
+fn negative_tampering_is_told_by_field() {
     let draft = draft();
     let resolver = resolver();
     let query_packet = hex(&draft.query_packet);
@@ -281,9 +281,9 @@ fn draft_14_8_1_tampering_is_told_by_field() {
     );
 }
 
-/// 14.8 case 3: a query with another magic than the certificate's is no query for this resolver.
+/// "Negative Cases", "Wrong <client-magic>": a query with another magic than the certificate's is no query for this resolver.
 #[test]
-fn draft_14_8_3_wrong_client_magic() {
+fn negative_wrong_client_magic() {
     let mut packet = hex(&draft().query_packet);
     packet[7] = 0;
     assert_eq!(
@@ -292,9 +292,9 @@ fn draft_14_8_3_wrong_client_magic() {
     );
 }
 
-/// 14.8 case 4: a response whose client nonce is not the query's is dropped.
+/// "Negative Cases", "Response nonce mismatch": a response whose client nonce is not the query's is dropped.
 #[test]
-fn draft_14_8_4_response_nonce_mismatch() {
+fn negative_response_nonce_mismatch() {
     let session = ClientSession::new(&certificate(), &client_secret()).expect("a session");
     let other = ClientNonce::from_bytes(array(&seq(0x10, 12)));
     let (_, context) = session
@@ -306,13 +306,23 @@ fn draft_14_8_4_response_nonce_mismatch() {
     );
 }
 
-/// 14.8 case 5: a public key of low order gives an all-zero shared point, and no shared key, on both sides.
+/// "Negative Cases", "Weak public key": a public key of low order gives an all-zero shared point, and no shared
+/// key, on both sides.
+///
+/// The points are 0, 1, a point of order 8 and the non-canonical encoding of 0 (the prime p, which X25519 reads
+/// as 0); the last two are on libsodium's list of blocked points.
 #[test]
-fn draft_14_8_5_weak_public_key() {
+fn negative_weak_public_key() {
     let system = EncryptionSystem::XChaCha20Poly1305;
     let mut one = [0; 32];
     one[0] = 1;
-    for weak in [[0; 32], one] {
+    let order_8 = array(&hex(
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+    ));
+    let prime = array(&hex(
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ));
+    for weak in [[0; 32], one, order_8, prime] {
         let weak = PublicKey::from_bytes(weak);
         assert_eq!(
             client_secret().shared_key(system, &weak).err(),
