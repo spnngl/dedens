@@ -204,6 +204,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dnscrypt_unpad"
+path = "fuzz_targets/dnscrypt_unpad.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_tamper_query"
+path = "fuzz_targets/dnscrypt_tamper_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_tamper_response"
+path = "fuzz_targets/dnscrypt_tamper_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "denial"
 path = "fuzz_targets/denial.rs"
 test = false
