@@ -17,6 +17,8 @@ recorder = ["metrics", "dep:metrics-util"]
 
 [dependencies]
 dedens-cache.workspace = true
+# The exchange of `benches/dnscrypt.rs`.
+dedens-dnscrypt.workspace = true
 dedens-dnssec.workspace = true
 dedens-net.workspace = true
 # The exchange of `benches/odoh.rs`.
@@ -30,7 +32,7 @@ http.workspace = true
 domain = { workspace = true, features = ["zonefile"] }
 hickory-proto = { workspace = true, features = ["std"] }
 metrics-util = { workspace = true, features = ["debugging"], optional = true }
-# The randomness of `benches/odoh.rs`.
+# The randomness of `benches/odoh.rs` and `benches/dnscrypt.rs`.
 rand_core.workspace = true
 
 [dev-dependencies]
@@ -70,6 +72,10 @@ name = "odoh"
 harness = false
 
 [[bench]]
+name = "dnscrypt"
+harness = false
+
+[[bench]]
 name = "coap"
 harness = false
 
@@ -84,6 +90,7 @@ harness = false
 [package.metadata.cargo-shear]
 ignored = [
   "dedens-cache",
+  "dedens-dnscrypt",
   "dedens-dnssec",
   "dedens-net",
   "dedens-odoh",

@@ -916,6 +916,7 @@ name = "dedens-bench"
 version = "0.1.0"
 dependencies = [
  "dedens-cache",
+ "dedens-dnscrypt",
  "dedens-dnssec",
  "dedens-net",
  "dedens-odoh",
