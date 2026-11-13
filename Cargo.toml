@@ -16,6 +16,8 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 anyhow = "1.0.104"
 assert_cmd = "2.2.2"
+# D97: DNSCrypt's XChaCha20-Poly1305 (es-version 0x0002): the stream cipher and its HChaCha20 key derivation.
+chacha20 = { version = "0.10.2", default-features = false, features = ["xchacha"] }
 clap = { version = "4.6.7", features = ["derive"] }
 # D158: the man pages, checked against the command lines by a test of each binary.
 clap_mangen = "0.3.3"
@@ -36,6 +38,7 @@ compio = { version = "0.19.2", default-features = false, features = [
 # D71: the RFC examples' base64, base32hex and hex in the crypto tests; the lock has it already.
 data-encoding = "2.11.1"
 dedens-cache = { path = "crates/dedens-cache" }
+dedens-dnscrypt = { path = "crates/dedens-dnscrypt" }
 dedens-dnssec = { path = "crates/dedens-dnssec" }
 dedens-net = { path = "crates/dedens-net" }
 dedens-odoh = { path = "crates/dedens-odoh" }
@@ -89,6 +92,8 @@ nix = { version = "0.31.3", default-features = false, features = [
   "process",
   "user",
 ] }
+# D97: DNSCrypt's one-time authenticator, NaCl's secretbox tag.
+poly1305 = { version = "0.9.1", default-features = false }
 # D182: `Compio::timeout_at`'s future, polled in place; futures-util depends on it already.
 pin-project-lite = "0.2.17"
 predicates = "3.1.4"
@@ -106,6 +111,8 @@ rcgen = { version = "0.14.10", default-features = false, features = [
   "pem",
   "ring",
 ] }
+# D97: DNSCrypt's XSalsa20-Poly1305 (es-version 0x0001): the stream cipher and its HSalsa20 key derivation.
+salsa20 = { version = "0.11.0", default-features = false }
 # D60: the OS trust store for DNS over TLS, as ureq's for the list downloads.
 rustls-platform-verifier = "0.7.1"
 # D36: query files and the JSON and YAML output (D37).
@@ -149,6 +156,8 @@ ureq = { version = "3.5.0", default-features = false, features = [
 # D180: Verus's specifications and proofs in dedens-proto, built only by `just verus` (`cfg(verus_keep_ghost)`);
 # its pre-release version is the one of the Verus release pinned in the justfile.
 vstd = "=0.0.0-2026-11-01-0251"
+# D97: DNSCrypt's X25519, the scalar multiplication alone.
+x25519-dalek = { version = "3.0.0", default-features = false }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
 # D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.
