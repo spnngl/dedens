@@ -6,7 +6,8 @@
 
 use dedens_dnscrypt::{
     Certificate, CertificateBody, CertificateError, ClientMagic, EncryptionSystem,
-    InvalidClientMagic, ProviderKey, SecretKey, SigningKey, SystemPolicy, Validity, select,
+    InvalidClientMagic, ProviderKey, ResolverPublicKey, SecretKey, SigningKey, SystemPolicy,
+    Validity, select,
 };
 use dedens_testkit::hex;
 use ring::signature::Ed25519KeyPair;
@@ -40,8 +41,11 @@ fn magic(last: u8) -> ClientMagic {
 
 fn body(system: EncryptionSystem, serial: u32, start: u32, end: u32) -> CertificateBody {
     CertificateBody {
-        system,
-        resolver_key: SecretKey::from_bytes([7; 32]).public_key(),
+        resolver_key: ResolverPublicKey::classical(
+            system,
+            SecretKey::from_bytes([7; 32]).public_key(),
+        )
+        .expect("a classical system"),
         client_magic: magic(0x10),
         serial,
         validity: Validity::new(start, end).expect("a validity"),
@@ -136,11 +140,11 @@ fn every_prefix_is_too_short() {
     }
 }
 
-/// "Certificates": a system this crate does not implement, as `PQDNSCrypt`''s `0x0003` with its 1216-byte key, is
+/// "Certificates": a system this crate does not implement, as a future `0x0004` with a key of another length, is
 /// ignored as a whole, whatever follows its `<es-version>`: the length of `<resolver-pk>` is not guessed.
 #[test]
 fn unsupported_system_is_not_read_further() {
-    for (es_version, number) in [([0, 3], 3), ([0, 0], 0), ([1, 2], 0x0102)] {
+    for (es_version, number) in [([0, 4], 4), ([0, 0], 0), ([1, 2], 0x0102)] {
         let mut bytes = b"DNSC".to_vec();
         bytes.extend_from_slice(&es_version);
         bytes.extend_from_slice(&[0xff; 7]);
@@ -255,7 +259,7 @@ fn selection_by_validity_system_and_serial() {
     })
     .collect();
     let serial_at = |now, policy| {
-        select(&certificates, now, policy).map(|c| (c.body().system, c.body().serial))
+        select(&certificates, now, policy).map(|c| (c.body().system(), c.body().serial))
     };
 
     assert_eq!(serial_at(100, SystemPolicy::Preferred), Some((x, 3)));

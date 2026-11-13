@@ -5,5 +5,6 @@ mod anonymized;
 mod certificate;
 mod draft;
 mod exchange;
+mod pq;
 mod quad9;
 mod util;

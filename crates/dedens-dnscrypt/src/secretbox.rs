@@ -39,7 +39,7 @@ pub(crate) fn seal(key: &SharedKey, nonce: &[u8; NONCE_LEN], buf: &mut [u8]) -> 
         EncryptionSystem::XSalsa20Poly1305 => {
             seal_with(XSalsa20::new(&(*key.bytes()).into(), &(*nonce).into()), buf)
         }
-        EncryptionSystem::XChaCha20Poly1305 => seal_with(
+        EncryptionSystem::XChaCha20Poly1305 | EncryptionSystem::XWing => seal_with(
             XChaCha20::new(&(*key.bytes()).into(), &(*nonce).into()),
             buf,
         ),
@@ -61,7 +61,7 @@ pub(crate) fn open(
             tag,
             buf,
         ),
-        EncryptionSystem::XChaCha20Poly1305 => open_with(
+        EncryptionSystem::XChaCha20Poly1305 | EncryptionSystem::XWing => open_with(
             XChaCha20::new(&(*key.bytes()).into(), &(*nonce).into()),
             tag,
             buf,
