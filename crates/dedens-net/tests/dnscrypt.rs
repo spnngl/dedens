@@ -63,6 +63,8 @@ struct Script {
     acts: VecDeque<Act>,
     /// Whether the certificates come truncated over UDP.
     truncate_certificates: bool,
+    /// Whether UDP gets no certificate at all, as at a resolver serving them over TCP only.
+    mute_udp_certificates: bool,
     /// The certificate queries, over UDP and over TCP.
     fetched: (u32, u32),
     seen: Vec<Seen>,
@@ -128,6 +130,9 @@ fn handle(
         match carrier {
             Carrier::Udp => script.fetched.0 += 1,
             Carrier::Tcp => script.fetched.1 += 1,
+        }
+        if carrier == Carrier::Udp && script.mute_udp_certificates {
+            return None;
         }
         let mut answer = response(&decoded.message, Rcode::NOERROR);
         if carrier == Carrier::Udp && script.truncate_certificates {
@@ -223,6 +228,7 @@ impl Resolver {
             served,
             acts: VecDeque::new(),
             truncate_certificates: false,
+            mute_udp_certificates: false,
             fetched: (0, 0),
             seen: Vec::new(),
         }));
@@ -322,8 +328,8 @@ async fn each_query_has_its_own_key_and_socket_and_the_certificate_is_kept() {
     assert_ne!(first.from, second.from);
 }
 
-/// "Client Queries Over TCP": the query is framed and padded to a multiple of 64 bytes, and the certificates come
-/// over TCP too.
+/// "Client Queries Over TCP": the query is framed and padded to a multiple of 64 bytes; the certificates come over
+/// UDP, which every resolver serves them over, whatever the transport of the queries.
 #[compio::test]
 async fn a_tcp_exchange_seals_over_tcp_all_through() {
     let resolver = Resolver::start().await;
@@ -335,7 +341,7 @@ async fn a_tcp_exchange_seals_over_tcp_all_through() {
         .expect("a response");
     assert_eq!(response.transport, Transport::Tcp);
     let script = resolver.script();
-    assert_eq!(script.fetched, (0, 1));
+    assert_eq!(script.fetched, (1, 0));
     let [seen] = &script.seen[..] else {
         panic!("one query")
     };
@@ -382,6 +388,23 @@ async fn truncated_certificates_are_asked_again_over_tcp() {
         .await
         .expect("a response");
     assert_eq!(resolver.script().fetched, (1, 1));
+}
+
+/// "Certificates": a resolver that serves them over TCP alone is asked there once UDP got no answer.
+#[compio::test]
+async fn certificates_are_asked_over_tcp_when_udp_gets_none() {
+    let resolver = Resolver::start().await;
+    resolver.script().mute_udp_certificates = true;
+    let response = Client::new()
+        .exchange_dnscrypt(query(), &resolver.stamp, &quick())
+        .await
+        .expect("a response");
+    assert_eq!(response.dnscrypt.map(|info| info.serial), Some(1));
+    assert_eq!(
+        resolver.script().fetched,
+        (2, 1),
+        "two tries over UDP, then TCP"
+    );
 }
 
 /// "Certificates": of the certificates served, those the provider's key did not sign and those not valid now are
@@ -526,7 +549,7 @@ async fn a_closed_tcp_connection_ends_the_try() {
         .await
         .expect("a response");
     assert_eq!(response.sends, 2);
-    assert_eq!(resolver.script().fetched.1, 2);
+    assert_eq!(resolver.script().fetched.0, 2);
 }
 
 /// A resolver that never answers is a timeout, not an error of the certificates.
