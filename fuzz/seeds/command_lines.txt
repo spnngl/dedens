@@ -32,3 +32,6 @@
 --color=always -vv @[::1]:5353 example.com
 +search www
 -- +x @y
+@sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0 +tcp example.com
+@sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0 +dnscrypt-cert
+@sdns://gQ8xNDYuNzAuODIuMzo0NDM +tls example.com

@@ -11,7 +11,9 @@
 //!   connections, `client` the exchange run over the transports, `io` the seam of the UDP and TCP pools (D134), `tls`
 //!   the TLS configurations, `odoh` (feature `odoh`, D79) Oblivious `DoH`: its requests, responses and target
 //!   classifier are sans-IO, but `odoh::client` fetches the configurations over `http3` and keeps them by the clock,
-//!   and `Entropy` draws the system's randomness.
+//!   `dnscrypt` (feature `dnscrypt`, D98) the `DNSCrypt` client: a resolver's certificates, fetched and kept by the
+//!   clock, and the sealing of each query, which `client` sends over `udp` and `tcp`, and `entropy` draws the
+//!   system's randomness for both.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
