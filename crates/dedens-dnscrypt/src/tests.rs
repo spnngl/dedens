@@ -145,8 +145,8 @@ fn response_with_bad_padding_or_zero_nonce_is_dropped() {
     );
 }
 
-/// "Test Vector For The HChaCha20 Block Function": the hash that makes the shared key of `0x0002` (with a NUL
-/// input there) and the subkey of XChaCha20, as the draft pins it.
+/// "Test Vector For The `HChaCha20` Block Function": the hash that makes the shared key of `0x0002` (with a NUL
+/// input there) and the subkey of `XChaCha20`, as the draft pins it.
 #[test]
 fn hchacha20_block_vector() {
     let key: [u8; 32] = array_from(&hex(
