@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use dedens_dnscrypt::{
-    Certificate, CertificateBody, ClientMagic, EncryptionSystem, ResolverKey, SecretKey,
-    SigningKey, Validity,
+    Carrier, Certificate, CertificateBody, ClientMagic, EncryptionSystem, ResolverKey,
+    ResolverPublicKey, ResolverSecret, SecretKey, SigningKey, TicketKey, TicketKeys, Validity,
+    XWingSecretKey,
 };
 use dedens_net::entropy::Entropy;
 use dedens_net::io::Io;
@@ -43,6 +44,10 @@ const RETRY: u64 = 60;
 /// The TTL of the certificates in the answer to their query, in seconds: shorter than [`ROTATION`] by far, and
 /// longer than a client's burst of retries.
 const CERTIFICATE_TTL: u32 = 600;
+
+/// How long a resumption ticket is good for, in seconds (D101): short, so that a recorded resumed query is of little
+/// use and the key before a rotation is kept briefly, and no longer than a client's burst of queries needs.
+pub(crate) const TICKET_LIFETIME: u32 = 600;
 
 /// The settings of the `dnscrypt` section (D99): kept to tell a reload that changed them, which takes a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +202,7 @@ pub(crate) struct Issued {
 
 impl Issued {
     pub(crate) fn system(&self) -> EncryptionSystem {
-        self.certificate.body().system
+        self.certificate.body().system()
     }
 }
 
@@ -206,11 +211,50 @@ impl Issued {
 #[derive(Default)]
 pub(crate) struct KeySet {
     keys: Vec<Arc<Issued>>,
+    /// The keys tickets are sealed with, when `X-Wing` is offered and a key could be made (D101).
+    tickets: Option<Ticketing>,
     /// The Unix time from which the set must be made again: a rotation is due, or a certificate expires.
     pub(crate) refresh_at: u64,
 }
 
+/// The ticket keys, when the current one was made (Unix seconds), and whether the one before it is still kept.
+#[derive(Clone)]
+struct Ticketing {
+    keys: TicketKeys,
+    rotated: u64,
+    has_previous: bool,
+}
+
+/// The ticket keys after a rotation: a new key seals, the one before only opens (D101). `old` stays when no key can
+/// be made: tickets go on with it.
+fn rotate_tickets(old: Option<Ticketing>, now: u64, io: &impl Io) -> Option<Ticketing> {
+    let Ok(mut entropy) = Entropy::from_io(io) else {
+        return old;
+    };
+    let next = TicketKey::generate(&mut entropy);
+    if entropy.finish().is_err() {
+        return old;
+    }
+    Some(match old {
+        Some(old) => Ticketing {
+            keys: old.keys.rotated(next),
+            rotated: now,
+            has_previous: true,
+        },
+        None => Ticketing {
+            keys: TicketKeys::new(next, None),
+            rotated: now,
+            has_previous: false,
+        },
+    })
+}
+
 impl KeySet {
+    /// The keys to seal and open tickets with (D101): `None` unless `X-Wing` is offered.
+    pub(crate) fn tickets(&self) -> Option<&TicketKeys> {
+        self.tickets.as_ref().map(|ticketing| &ticketing.keys)
+    }
+
     /// The set after the key pairs whose certificates are not valid at `now` are dropped, and, if the newest is
     /// [`ROTATION`] old or there is none, a new pair for each of `systems`. Kept ones stay valid and accepted
     /// (draft, "Key Management": a resolver keeps accepting queries for a certificate a client may still hold).
@@ -229,17 +273,32 @@ impl KeySet {
             .collect();
         let newest = keys.iter().map(|issued| issued.at).max();
         let mut due = newest.map_or(now, |newest| newest.saturating_add(ROTATION));
+        let mut tickets = self.tickets.clone();
         if due <= now {
             match issue(signing, systems, now, io) {
                 Ok(mut fresh) => {
                     fresh.append(&mut keys);
                     keys = fresh;
                     due = now.saturating_add(ROTATION);
+                    if systems.contains(&EncryptionSystem::XWing) {
+                        tickets = rotate_tickets(tickets, now, io);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(error = format!("{error:#}"), "dnscrypt: no new key pair");
                     due = now.saturating_add(RETRY);
                 }
+            }
+        }
+        // The key before the last rotation opens the tickets sealed under it, until they have expired (D101).
+        let mut ticket_due = u64::MAX;
+        if let Some(ticketing) = tickets.as_mut().filter(|ticketing| ticketing.has_previous) {
+            let stale = ticketing.rotated.saturating_add(u64::from(TICKET_LIFETIME));
+            if stale <= now {
+                ticketing.keys = ticketing.keys.without_previous();
+                ticketing.has_previous = false;
+            } else {
+                ticket_due = stale;
             }
         }
         let expiry = keys
@@ -248,13 +307,18 @@ impl KeySet {
             .min();
         Self {
             keys,
-            refresh_at: expiry.map_or(due, |expiry| expiry.min(due)),
+            tickets,
+            refresh_at: expiry.map_or(due, |expiry| expiry.min(due)).min(ticket_due),
         }
     }
 
     /// The key pair a query packet is for, by its client magic.
     pub(crate) fn find(&self, packet: &[u8]) -> Option<&Arc<Issued>> {
-        let magic = packet.get(..8)?;
+        self.find_magic(packet.get(..8)?)
+    }
+
+    /// The key pair of the client magic `magic`.
+    pub(crate) fn find_magic(&self, magic: &[u8]) -> Option<&Arc<Issued>> {
         self.keys
             .iter()
             .find(|issued| issued.resolver.client_magic().as_bytes() == magic)
@@ -284,7 +348,15 @@ impl KeySet {
     /// The answer to `query` if it is the clear certificate query for `provider` (draft, "Certificates"): a TXT
     /// question in class IN for the provider name, answered with the newest certificate of each system. `None` for
     /// any other message, and when there is no certificate to give.
-    pub(crate) fn certificates(&self, query: &[u8], provider: &Name<'_>) -> Option<Vec<u8>> {
+    ///
+    /// Over UDP the `X-Wing` certificate goes in only when the answer is no longer than the query (draft
+    /// "Certificate Retrieval"; D101): else the answer has the others, with TC set, and the client asks again over TCP.
+    pub(crate) fn certificates(
+        &self,
+        query: &[u8],
+        provider: &Name<'_>,
+        carrier: Carrier,
+    ) -> Option<Vec<u8>> {
         let message = Message::decode(query).ok()?.message;
         let [question] = message.questions.as_slice() else {
             return None;
@@ -299,6 +371,7 @@ impl KeySet {
         }
         let mut seen = Vec::new();
         let mut answer = Vec::new();
+        let mut post_quantum = Vec::new();
         for issued in &self.keys {
             let system = issued.system();
             if seen.contains(&system) {
@@ -313,17 +386,34 @@ impl KeySet {
                 ttl,
                 &RData::Txt(txt),
             ));
+            post_quantum.push(system == EncryptionSystem::XWing);
         }
         if answer.is_empty() {
             return None;
         }
-        let mut response = message.clone().into_owned();
-        response.header.flags = response.header.flags.with(Flags::QR).with(Flags::AA);
-        response.answer = answer;
-        response.authority.clear();
-        response.additional.clear();
-        response.edns = message.edns.as_ref().map(|_| Edns::default());
-        response.to_vec().ok()
+        let respond = |with_pq: bool| {
+            let mut response = message.clone().into_owned();
+            response.header.flags = response.header.flags.with(Flags::QR).with(Flags::AA);
+            let kept = answer
+                .iter()
+                .zip(&post_quantum)
+                .filter(|(_, pq)| with_pq || !**pq)
+                .map(|(record, _)| record.clone())
+                .collect::<Vec<_>>();
+            if kept.len() < answer.len() {
+                response.header.flags = response.header.flags.with(Flags::TC);
+            }
+            response.answer = kept;
+            response.authority.clear();
+            response.additional.clear();
+            response.edns = message.edns.as_ref().map(|_| Edns::default());
+            response.to_vec().ok()
+        };
+        let full = respond(true)?;
+        if carrier == Carrier::Udp && post_quantum.contains(&true) && full.len() > query.len() {
+            return respond(false);
+        }
+        Some(full)
     }
 }
 
@@ -349,17 +439,32 @@ fn issue(
         .iter()
         .map(|&system| {
             let mut entropy = Entropy::from_io(io).context("no randomness")?;
-            let secret = SecretKey::generate(&mut entropy);
+            let (public, secret, magic) = if system == EncryptionSystem::XWing {
+                let secret = XWingSecretKey::generate(&mut entropy);
+                let magic = ClientMagic::random(&mut entropy);
+                (
+                    ResolverPublicKey::XWing(secret.public_key()),
+                    ResolverSecret::from(secret),
+                    magic.ok(),
+                )
+            } else {
+                let secret = SecretKey::generate(&mut entropy);
+                let public = secret.public_key();
+                // The start of the public key, which a client cannot tell from a random one.
+                let magic = <[u8; 8]>::try_from(public.as_bytes().get(..8).unwrap_or_default())
+                    .ok()
+                    .and_then(|bytes| ClientMagic::try_from(bytes).ok());
+                (
+                    ResolverPublicKey::classical(system, public).context("a classical system")?,
+                    ResolverSecret::from(secret),
+                    magic,
+                )
+            };
             entropy.finish().context("no randomness")?;
-            let public = secret.public_key();
-            let magic = <[u8; 8]>::try_from(public.as_bytes().get(..8).unwrap_or_default())
-                .ok()
-                .and_then(|bytes| ClientMagic::try_from(bytes).ok())
-                .context("a key that cannot be a client magic")?;
+            let magic = magic.context("a key that cannot be a client magic")?;
             let certificate = Certificate::sign(
                 signing,
                 CertificateBody {
-                    system,
                     resolver_key: public,
                     client_magic: magic,
                     serial,

@@ -12,7 +12,8 @@ pub(super) struct DnscryptFile {
     provider_name: String,
     /// A file with the provider's `Ed25519` seed, 64 hexadecimal digits: `dedensd dnscrypt-keygen` makes one.
     secret_key: PathBuf,
-    /// The encryption systems offered. Default: both.
+    /// The encryption systems offered: `xsalsa20`, `xchacha20` and `pq`, the post-quantum `X-Wing` one with resumption
+    /// tickets (D101). Default: `xchacha20` and `xsalsa20`.
     systems: Option<Vec<SystemFile>>,
 }
 
@@ -24,6 +25,8 @@ enum SystemFile {
     Xsalsa20,
     /// `X25519-XChaCha20Poly1305`, `<es-version>` 0x0002.
     Xchacha20,
+    /// `X-Wing`, `XChaCha20Poly1305`, `<es-version>` 0x0003 (PQDNSCrypt, D101).
+    Pq,
 }
 
 /// The first labels of a provider name (draft "Certificates": the certificate query's name is `<version>.dnscrypt-cert.`
@@ -91,6 +94,7 @@ pub(super) fn section(
         let system = match system {
             SystemFile::Xsalsa20 => EncryptionSystem::XSalsa20Poly1305,
             SystemFile::Xchacha20 => EncryptionSystem::XChaCha20Poly1305,
+            SystemFile::Pq => EncryptionSystem::XWing,
         };
         ensure!(
             !systems.contains(&system),

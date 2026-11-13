@@ -24,7 +24,7 @@
 //! dnscrypt:                          # DNSCrypt resolver on the dnscrypt:// addresses (D99); needs the dnscrypt feature
 //!   provider_name: 2.dnscrypt-cert.dns.example   # certificates are asked under this name
 //!   secret_key: /etc/dedensd/dnscrypt.key        # the provider's Ed25519 seed, 64 hex digits; `dedensd dnscrypt-keygen` makes one
-//!   systems: [xchacha20, xsalsa20]               # both by default
+//!   systems: [xchacha20, xsalsa20]               # both classical systems by default; `pq` adds X-Wing (D101)
 //! access:                           # who is answered (D91); default: loopback, private and link-local networks
 //!   allow: ["10.0.0.0/8", "2001:db8::/32"]
 //!   deny: ["10.9.0.0/16"]            # the longest network holding the client decides; deny wins a tie

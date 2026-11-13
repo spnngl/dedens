@@ -254,6 +254,7 @@ pub async fn simulated_dnscrypt<N: dedens_net::io::Io>(
     let systems = vec![
         EncryptionSystem::XChaCha20Poly1305,
         EncryptionSystem::XSalsa20Poly1305,
+        EncryptionSystem::XWing,
     ];
     let service = dnscrypt::Service::new(seed, config::provider(name)?, systems, unix, &io)?;
     serve::simulated_dnscrypt(io, udp, tcp, pipeline, trust, Arc::new(service)).await;
