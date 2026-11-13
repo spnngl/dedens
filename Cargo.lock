@@ -986,6 +986,7 @@ name = "dedens-net"
 version = "0.1.0"
 dependencies = [
  "compio",
+ "dedens-dnscrypt",
  "dedens-odoh",
  "dedens-proto",
  "dedens-testkit",

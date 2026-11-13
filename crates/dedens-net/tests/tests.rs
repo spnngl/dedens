@@ -3,6 +3,8 @@
 
 mod client;
 mod coap;
+#[cfg(feature = "dnscrypt")]
+mod dnscrypt;
 mod doh;
 mod exchange;
 #[cfg(feature = "odoh")]

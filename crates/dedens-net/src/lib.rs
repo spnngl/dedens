@@ -35,9 +35,13 @@ macro_rules! trace {
 pub mod client;
 pub mod coap;
 mod dial;
+#[cfg(feature = "dnscrypt")]
+pub mod dnscrypt;
 #[cfg(feature = "doc")]
 pub mod doc;
 pub mod doh;
+#[cfg(any(feature = "odoh", feature = "dnscrypt"))]
+pub mod entropy;
 pub mod exchange;
 pub mod http3;
 pub mod io;
