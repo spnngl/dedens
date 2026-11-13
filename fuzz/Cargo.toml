@@ -17,7 +17,7 @@ cargo-fuzz = true
 dedens = { path = "../apps/dedens", features = ["odoh", "doc"] }
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-dnssec = { path = "../crates/dedens-dnssec" }
-dedens-net = { path = "../crates/dedens-net", features = ["odoh"] }
+dedens-net = { path = "../crates/dedens-net", features = ["odoh", "dnscrypt"] }
 dedens-odoh = { path = "../crates/dedens-odoh" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
@@ -114,6 +114,13 @@ bench = false
 [[bin]]
 name = "parse_doh_template"
 path = "fuzz_targets/parse_doh_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_dns_stamp"
+path = "fuzz_targets/parse_dns_stamp.rs"
 test = false
 doc = false
 bench = false

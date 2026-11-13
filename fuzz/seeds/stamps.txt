@@ -1,0 +1,12 @@
+# Real stamps of `DNSCrypt/dnscrypt-resolvers` (`v3/public-resolvers.md`, `v3/relays.md`, see
+# `crates/dedens-net/tests/testdata/stamps/SOURCE.md`), one a line: DNSCrypt resolvers (IPv4 and IPv6, with a port
+# and without, the properties differing) and relays (IPv4 and IPv6), seeds of `parse_dns_stamp`.
+sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20
+sdns://AQcAAAAAAAAADTM3LjEyMC4xNTEuMTEgMTNyrVlWMsJBa4cvCY-FG925ZShMbL6aTxkJZDDbqVoeMi5kbnNjcnlwdC1jZXJ0LmNyeXB0b3N0b3JtLmlz
+sdns://AQcAAAAAAAAADDQ1LjkwLjU5LjE5MyApCKLNC-QxtyiyCC4AQIb36KxxFcalmSGG9V_CLDDyVxkyLmRuc2NyeXB0LWNlcnQuZG5zY3J5LnB0
+sdns://AQcAAAAAAAAAE1syNjAyOmY5NTM6NjoyNTo6YV0gVScmW_w9Ems3sm531o-Q1mfDVIMYovs4Pa_jfFTUlrQZMi5kbnNjcnlwdC1jZXJ0LmRuc2NyeS5wdA
+sdns://AQMAAAAAAAAADzE2My4xNzIuMTgwLjEyNSDfYnO_x1IZKotaObwMhaw_-WRF1zZE9mJygl01WPGh_x8yLmRuc2NyeXB0LWNlcnQuc2Z3LnNjYWxld2F5LWZy
+sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw
+sdns://gSJbMjQwNDo5NDAwOjE6MDoyMTY6M2VmZjpmZWY2OjcxOTRd
+sdns://gRNbMjQwMjo3MzQwOjgwMDA6OjVd
+sdns://gRVbMmEwMjoyOWI4OjgwMDE6NDo6YV0

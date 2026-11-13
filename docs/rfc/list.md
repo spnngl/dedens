@@ -196,3 +196,10 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 7129](https://datatracker.ietf.org/doc/html/rfc7129):** Authenticated Denial of Existence in the DNS
 * **[RFC 8020](https://datatracker.ietf.org/doc/html/rfc8020):** NXDOMAIN: There Really Is Nothing Underneath
 * **[RFC 8767](https://datatracker.ietf.org/doc/html/rfc8767):** Serving Stale Data to Improve DNS Resiliency
+
+
+## Part 3: Internet-Drafts
+
+Drafts that dedens implements, archived at the revision read, under the name of that revision (`archive/draft-NAME-NN.txt`, downloaded by `just rfc-archive`).
+
+* **[draft-denis-dns-stamps-02](https://datatracker.ietf.org/doc/html/draft-denis-dns-stamps-02):** DNS Stamps (the `sdns://` strings that name a DNS server: DNSCrypt resolvers and Anonymized DNSCrypt relays are read)

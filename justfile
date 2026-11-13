@@ -325,19 +325,21 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/configs"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
-# lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; dedensd's
-# configurations, the image's, the packages' and the example of its config module, in fuzz/target/seeds/configs (D181).
+# lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
+# of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
+# packages' and the example of its config module, in fuzz/target/seeds/configs (D181).
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/configs
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/configs
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
+    perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/stamps/$." or die; print $out $_' fuzz/seeds/stamps.txt
     cp deploy/dedensd.yaml fuzz/target/seeds/configs/dedensd.yaml
     cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
     perl -ne 'last unless s{^//! ?}{}; print if /^```yaml$/ ... /^```$/ and !/^```/' apps/dedensd/src/config/mod.rs > fuzz/target/seeds/configs/example.yaml
@@ -580,11 +582,14 @@ kani-fast:
         cargo kani -p "$package" "${args[@]}"
     done
 
-# Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org.
+# Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org, and every
+# Internet-Draft (at the revision linked) from ietf.org.
 rfc-archive:
     mkdir -p docs/rfc/archive
     grep -oE "datatracker\.ietf\.org/doc/html/rfc[0-9]+" docs/rfc/list.md | grep -oE "[0-9]+$" | sort -un \
         | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/rfc{}.txt https://www.rfc-editor.org/rfc/rfc{}.txt
+    grep -oE "datatracker\.ietf\.org/doc/html/draft-[a-z0-9-]+-[0-9]+" docs/rfc/list.md | grep -oE "draft-.*$" | sort -u \
+        | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/{}.txt https://www.ietf.org/archive/id/{}.txt
 
 # Refresh IANA's root hints, bundled for `dedens +trace`.
 root-hints:

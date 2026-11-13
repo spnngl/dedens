@@ -8,6 +8,8 @@ mod exchange;
 #[cfg(feature = "odoh")]
 mod odoh;
 mod quic;
+#[cfg(feature = "dnscrypt")]
+mod stamps;
 mod tcp;
 mod tls;
 mod udp;

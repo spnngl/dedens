@@ -13,11 +13,14 @@ extend-exclude = [
   "testdata/plugins/",
   # Hex of captured CoAP datagrams.
   "testdata/coap/",
+  # The resolver and relay lists of `DNSCrypt/dnscrypt-resolvers`, as published (D102).
+  "crates/dedens-net/tests/testdata/stamps/",
 ]
 [default]
-# RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:
+# DNS stamps (`sdns://` and base64url), RFC 4648 §10 base64 and base32hex test vectors, and what sits between `// spellchecker:off` and `// spellchecker:on`:
 # the base64 keys and signatures of the RFC examples (`crates/dedens-dnssec/tests/util/mod.rs`).
 extend-ignore-re = [
+  'sdns://[A-Za-z0-9_-]+',
   '\("fo", "(Zm8=|cpng)"\)',
   '(?s)//\s*spellchecker:off.*?//\s*spellchecker:on',
 ]

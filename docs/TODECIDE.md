@@ -291,3 +291,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   on `io_uring`, did not crash. Suspect: the tests' client runtimes, dropped with QUIC operations in flight, which
   `dedensd` never does (D107), though compio 0.12.5 closes the ring before freeing them. Default: as is, watched.
   Alternative: hunt it, the test in a loop on runners with core dumps uploaded, or under AddressSanitizer.
+- DNS stamps of the other kinds (D102): `dedens_net::stamp` reads the DNSCrypt (0x01) and relay (0x81) kinds and
+  refuses plain DNS (0x00), DoH (0x02), DoT (0x03), DoQ (0x04) and Oblivious DoH (0x05, 0x85) by name. The encrypted
+  kinds name servers of transports we have (certificate hashes, host names with ports, bootstrap addresses, a DoH
+  path), so `@sdns://...` could be an upstream of `dedens` and of the `forward` stage. Default: not read.
+  Alternative: read them, as the published lists hold 497 of them, and map each to the transport's upstream.

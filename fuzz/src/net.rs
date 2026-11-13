@@ -1,8 +1,9 @@
-//! Targets of dedens-net: `resolv.conf`, and the sans-IO core of `DoH` (RFC 8484): URI Templates, a server's
-//! reading of requests and a client's reading of responses.
+//! Targets of dedens-net: `resolv.conf`, the DNS stamps of `DNSCrypt`, and the sans-IO core of `DoH` (RFC 8484): URI
+//! Templates, a server's reading of requests and a client's reading of responses.
 
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
+use dedens_net::stamp::Stamp;
 use dedens_proto::{MAX_MESSAGE_LEN, Message};
 
 /// Arbitrary text as `/etc/resolv.conf`: `ndots` stays at most 15, and any of its words has the name itself and at
@@ -25,6 +26,28 @@ pub fn parse_resolv_conf(data: &[u8]) {
                 candidates.len()
             );
         }
+    }
+}
+
+/// Arbitrary text as a DNS stamp (draft-denis-dns-stamps-02, D102): a stamp that reads is written back as it was, but
+/// for the reserved bits of its properties, which are zero when written; what is written reads again as the same stamp
+/// and is written the same.
+///
+/// # Panics
+///
+/// On a bug in the reader.
+pub fn parse_dns_stamp(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(stamp) = text.parse::<Stamp>() else {
+        return;
+    };
+    let written = stamp.to_string();
+    assert_eq!(written.parse::<Stamp>().as_ref(), Ok(&stamp), "{written}");
+    match stamp {
+        Stamp::Relay(_) => assert_eq!(written, text, "does not write back as it was"),
+        Stamp::DnsCrypt(_) => assert_eq!(written.len(), text.len(), "{written}"),
     }
 }
 

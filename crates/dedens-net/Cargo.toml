@@ -29,6 +29,8 @@ zeroize = { workspace = true, optional = true }
 # D69: experimental transports, off by default: Oblivious DoH (RFC 9230) and DNS over CoAP (DoC).
 odoh = ["dep:dedens-odoh", "dep:idna", "dep:rand_core", "dep:zeroize"]
 doc = []
+# D102: `sdns://` stamps of DNSCrypt resolvers and relays, sans-IO.
+dnscrypt = []
 # D30: debug events on dropped messages, retries and fallbacks, trace events per message; none without it.
 tracing = ["dep:tracing"]
 
