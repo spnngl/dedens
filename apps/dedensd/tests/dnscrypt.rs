@@ -325,6 +325,33 @@ fn a_stamp_of_another_key_finds_no_certificate() {
     assert!(ask(&Client::new(), &other, "a", Transport::Udp).is_err());
 }
 
+/// D99: a forward stage whose server is an `sdns://` stamp asks it over `DNSCrypt`, for a client over UDP and one over
+/// TCP: here a second `dedensd`, its `dnscrypt://` listener the upstream, which forwards to a responder that counts
+/// what reaches it.
+#[test]
+fn a_forward_stage_asks_a_dnscrypt_server() {
+    let upstream = Responder::start(&["a"]);
+    let resolver = resolver("", "", &upstream.addr.to_string());
+    let stamp = Stamp::DnsCrypt(resolver.stamp.clone()).to_string();
+    let server = Server::configured(|listen| {
+        format!(
+            "listen: ['{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{stamp}']\n    timeout_ms: 2000\n    tries: 1\n"
+        )
+    });
+    let query = dedens_testkit::query("a", 0x0304)
+        .to_vec()
+        .expect("a query");
+    for reply in [ask_udp(server.addr, &query), ask_tcp(server.addr, &query)] {
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+        assert_eq!(reply.answer, decode(&dedens_testkit::captured("a")).answer);
+    }
+    assert_eq!(
+        upstream.queries().len(),
+        2,
+        "both queries went through to the responder"
+    );
+}
+
 /// D99: a key file others can read, or that is not 64 hex digits, stops the start.
 #[cfg(unix)]
 #[test]

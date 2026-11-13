@@ -357,7 +357,7 @@ impl Shared {
 ///
 /// # Panics
 ///
-/// With a server over QUIC or HTTPS: they stay on compio (D133), and the run stops rather than ask them in clear.
+/// With a server over QUIC, HTTPS or DNSCrypt: they stay on compio (D133), and the run stops rather than ask them in clear.
 #[expect(
     clippy::panic,
     reason = "a pipeline the driver cannot forward for is a broken scenario"
@@ -377,7 +377,7 @@ fn target(server: &Server, client: Transport) -> (Target, Carrier) {
             };
             (target, Carrier::Tls)
         }
-        Via::Quic(_) | Via::Https { .. } => panic!(
+        Via::Quic(_) | Via::Https { .. } | Via::Dnscrypt(_) => panic!(
             "the driver forwards over plain DNS and TLS only, not {:?} (D133)",
             server.via
         ),
