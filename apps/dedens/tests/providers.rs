@@ -100,6 +100,10 @@ struct Resolver {
     /// `DoH` URLs of servers where HTTP/3 does not answer: parsed, not asked until HTTP/2 (D83).
     #[serde(default)]
     https_h2: Vec<String>,
+    /// `DNSCrypt` stamps (`sdns://…`), asked over UDP then TCP; only by a `dedens` built with the `dnscrypt` feature
+    /// (D98): `just providers` builds it so.
+    #[serde(default)]
+    dnscrypt: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,7 +178,8 @@ struct Probe {
 }
 
 impl Resolver {
-    /// One probe per address and transport, plain addresses over UDP then TCP, then one per `DoH` URL.
+    /// One probe per address and transport, plain addresses over UDP then TCP, then one per `DoH` URL, then each
+    /// `DNSCrypt` stamp over UDP and TCP (with the `dnscrypt` feature).
     fn probes(&self, provider: &str) -> Vec<Probe> {
         let prefix = format!("{provider}.{}", self.id);
         let mut probes = Vec::new();
@@ -215,8 +220,31 @@ impl Resolver {
                 cookie: !self.stale_cookies,
             });
         }
+        #[cfg(feature = "dnscrypt")]
+        for (number, text) in (1..).zip(&self.dnscrypt) {
+            for (transport, tcp) in [("udp", false), ("tcp", true)] {
+                probes.push(Probe {
+                    id: format!("{prefix}.dnscrypt.{transport}.{number}"),
+                    address: Some(stamp(text).address.ip),
+                    server: text.clone(),
+                    tcp,
+                    // Cookies are not sent through the sealed exchange.
+                    cookie: false,
+                });
+            }
+        }
         probes
     }
+}
+
+/// The `DNSCrypt` resolver a stamp of the catalog names.
+#[cfg(feature = "dnscrypt")]
+fn stamp(text: &str) -> dedens_net::stamp::DnsCrypt {
+    match text.parse() {
+        Ok(dedens_net::stamp::Stamp::DnsCrypt(stamp)) => Some(stamp),
+        _ => None,
+    }
+    .unwrap_or_else(|| unreachable!("{text}: not a DNSCrypt resolver stamp"))
 }
 
 fn catalog() -> Catalog {
@@ -329,8 +357,14 @@ fn catalog_is_well_formed() {
                 r.https.iter().all(|url| !r.https_h2.contains(url)),
                 "{at}: a URL in https and https_h2"
             );
+            assert!(unique(&r.dnscrypt), "{at}: DNSCrypt stamps repeat");
+            for text in &r.dnscrypt {
+                assert!(text.starts_with("sdns://"), "{at}: {text} is no stamp");
+                #[cfg(feature = "dnscrypt")]
+                stamp(text);
+            }
             assert!(
-                !r.probes(&p.id).is_empty() || !r.https_h2.is_empty(),
+                !r.probes(&p.id).is_empty() || !r.https_h2.is_empty() || !r.dnscrypt.is_empty(),
                 "{at}: no endpoint"
             );
         }

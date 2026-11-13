@@ -472,7 +472,7 @@ capture-dnssec:
 
 # Ask every public resolver of docs/providers/providers.yaml over the network, IPv4 and IPv6 (D67).
 providers:
-    cargo test -p dedens --test tests -- --ignored providers:: --nocapture
+    cargo test -p dedens --features dnscrypt --test tests -- --ignored providers:: --nocapture
 
 # Oblivious DoH against public targets: a stale key gets the 401, one refetch and an answer (RFC 9230 §4.3, D79).
 odoh-live:
