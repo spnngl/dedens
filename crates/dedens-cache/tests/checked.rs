@@ -327,3 +327,17 @@ fn the_minimum_is_refused_above_every_cap() {
     // 0 is off, whatever the caps.
     assert_eq!(with(0, 1, 1, Some(1)).validate(), Ok(()));
 }
+
+/// D96: a bogus response is due at its end, and says so, so that a refresh does not take it for a kept answer.
+#[test]
+fn a_bogus_response_is_not_due_before_it_expires_and_says_so() {
+    let cache = small_cache();
+    store(&cache, false, Checked::Bogus(InfoCode::DNSSEC_BOGUS));
+    let query = query_with(2, "www.example", RecordType::A, Flags::RD, true);
+    let refresh = cache
+        .refresh(&Query::read(&query).expect("a query"), T0 + 1)
+        .expect("a fresh entry");
+    assert!(refresh.bogus);
+    assert_eq!(refresh.at, refresh.expires);
+    assert_eq!(refresh.expires, T0 + small_config().bogus_ttl);
+}

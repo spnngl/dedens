@@ -6,12 +6,19 @@
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
+use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::{Class, Flags, Message, Question, Rcode, RecordType, Transport};
-use dedens_server::{Answer, Forward, Pipeline, Plugin, Stage, Step, Upstream, Warm, Warmth};
+use dedens_server::{
+    Answer, Budget, Budgets, Forward, Pipeline, Plugin, Stage, Step, Upstream, Validating, Warm,
+    Warmth,
+};
 use dedens_testkit::dnssec::Captures;
 use dedens_testkit::{captured, dns, query};
 
-use crate::util::{caching, client_query, decode, run_at, servers, validating};
+use crate::util::{
+    caching, caching_with, captured_at, client_query, decode, run_at, run_captured, servers,
+    validating, validating_under,
+};
 
 fn a_of(name: &str) -> Question<'static> {
     Question::new(dns(name), RecordType::A)
@@ -210,7 +217,7 @@ fn nothing_is_asked_without_a_forward_stage() {
     let pipeline = Pipeline::new(vec![cache]).with_prewarm([a_of("www.example")]);
     assert!(matches!(
         pipeline.prewarm(&pipeline.warmed()[0], 0),
-        Warmth::Refused
+        Warmth::Unaskable
     ));
 }
 
@@ -249,4 +256,80 @@ fn a_validated_name_is_a_hit_with_and_without_do() {
             .iter()
             .all(|r| r.rtype() != RecordType::RRSIG)
     );
+}
+
+/// D96: an entry is asked again `MARGIN` seconds before it expires if its prefetch point is later: a TTL of 5 s, of
+/// which the default 10% leaves no second, would lapse before a refresh that comes at its last second landed.
+#[test]
+fn a_short_lived_entry_is_asked_again_a_margin_before_it_expires() {
+    let response = captured("a");
+    let query = query("a", 7);
+    let config = Config {
+        min_ttl: 0,
+        max_ttl: 5,
+        ..Config::default()
+    };
+    let pipeline = caching_with(config).with_prewarm(query.questions.clone());
+    let warm = &pipeline.warmed()[0];
+    assert_eq!(pipeline.warm_until(warm, 0), None);
+    let _ = play(&pipeline, upstream_of(&pipeline, warm, 0), 0, |_| {
+        Some(response.clone())
+    });
+    assert_eq!(pipeline.warm_until(warm, 1), Some(3));
+    assert!(matches!(pipeline.prewarm(warm, 2), Warmth::Fresh(3)));
+    assert!(matches!(pipeline.prewarm(warm, 3), Warmth::Upstream(_)));
+    // An entry that lives less than the margin is asked at once, for the caller to hold back.
+    assert_eq!(pipeline.warm_until(warm, 4), Some(3));
+}
+
+/// D96, D117: prewarm spends a share of the validation allowance of its own, so that it never sheds a client, and a
+/// share spent is [`Warmth::Shed`], to be asked again.
+#[test]
+fn prewarm_spends_a_share_of_its_own_and_sheds_none_of_the_clients() {
+    let validator = Validator::new(TrustAnchors::root(), Limits::default());
+    // Two units for prewarm's address, in a table far larger than the addresses using it.
+    let share = Budgets::with_key(
+        Budget {
+            per_second: 1,
+            burst: 2,
+            table: 1 << 16,
+        },
+        &[7; 16],
+    )
+    .expect("a share");
+    let pipeline = validating_under(
+        Validating::new(validator, std::sync::Arc::new(captured_at)).sharing(share),
+    )
+    .with_prewarm([a_of("cloudflare.com")]);
+    let warm = &pipeline.warmed()[0];
+    assert!(matches!(pipeline.prewarm(warm, 0), Warmth::Upstream(_)));
+    assert!(matches!(pipeline.prewarm(warm, 0), Warmth::Upstream(_)));
+    assert!(matches!(pipeline.prewarm(warm, 0), Warmth::Shed));
+    // A client, from another address, is not shed.
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let done = run_captured(&pipeline, &query, 0, &Captures::new());
+    assert!(
+        !done.requests.is_empty(),
+        "the client's question went upstream"
+    );
+}
+
+/// D96, D77: a prewarm whose answer is bogus stores nothing, as a refresh does: it is not a kept answer. One a client
+/// stored is not one either, whatever its end: [`Pipeline::warm_until`] says so.
+#[test]
+fn a_bogus_answer_is_not_a_kept_one() {
+    let pipeline = validating().with_prewarm([a_of("dnssec-failed.org")]);
+    let warm = &pipeline.warmed()[1];
+    assert!(warm.dnssec());
+    let captures = Captures::new();
+    let _ = play(&pipeline, upstream_of(&pipeline, warm, 0), 0, |request| {
+        captures.answer(request).map(<[u8]>::to_vec)
+    });
+    assert_eq!(pipeline.warm_until(warm, 1), None);
+    // A client's query stores the bogus answer for 60 s.
+    let query = client_query("dnssec-failed.org.", RecordType::A, Flags::NONE, true);
+    let _ = run_captured(&pipeline, &query, 1, &captures);
+    assert_eq!(pipeline.warm_until(warm, 2), None);
+    // Due before it expires, as any other (D96).
+    assert!(matches!(pipeline.prewarm(warm, 2), Warmth::Fresh(59)));
 }

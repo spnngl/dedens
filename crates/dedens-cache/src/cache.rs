@@ -9,7 +9,7 @@ use dedens_proto::{Decoded, HEADER_LEN, MAX_NAME_LEN, Query};
 use crate::config::{Config, ConfigError};
 use crate::key::Key;
 use crate::metrics::Metrics;
-use crate::response::{Checked, NotCached, Response};
+use crate::response::{Checked, NotCached, Refresh, Response};
 use crate::shard::Shard;
 
 /// When expired data may answer (RFC 8767 §5).
@@ -142,18 +142,16 @@ impl Cache {
         }
     }
 
-    /// The second from which the response stored for `query` is due a refresh, for the one that keeps it fresh
-    /// without a client: the first second under `Config::prefetch_percent` of its TTL is left, or its expiry for a
-    /// bogus response or percent 0. Not before `now` for an entry already in that last part. `None` when nothing
-    /// fresh is stored for `query`: expired data and a failure hold do not count. Not a use of the entry, as
-    /// [`Cache::stored`], and not a lookup in the metrics.
+    /// When the response stored for `query` is due a refresh, for the one that keeps it fresh without a client.
+    /// `None` when nothing fresh is stored for `query` at `now`: expired data and a failure hold do not count. Not a
+    /// use of the entry, as [`Cache::stored`], and not a lookup in the metrics.
     #[must_use]
-    pub fn refresh_at(&self, query: &Query<'_>, now: u32) -> Option<u32> {
+    pub fn refresh(&self, query: &Query<'_>, now: u32) -> Option<Refresh> {
         let key = Key::of(query)?;
         let (hash, shard) = self.shard(&key);
         let mut shard = lock(shard);
         let response = shard.get(hash, key.as_bytes())?.response.as_ref()?;
-        (now < response.expires).then(|| response.refresh_at(self.config.prefetch_percent).max(now))
+        (now < response.expires).then(|| response.refresh(self.config.prefetch_percent))
     }
 
     /// [`Cache::lookup`] without the metrics; `used` counts a hit and may ask for a prefetch.

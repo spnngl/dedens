@@ -391,13 +391,8 @@ impl Pipeline {
                     match self.look(index, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh, .. } => {
                             if refresh
-                                && let Ok(mut upstream) = self.upstream(
-                                    index,
-                                    query,
-                                    client,
-                                    (Some(source), now),
-                                    Some(index),
-                                )
+                                && let Ok(mut upstream) =
+                                    self.upstream(index, query, client, (source, now), Some(index))
                             {
                                 upstream.purpose = Purpose::Prefetch;
                                 return Step::Refresh(len, upstream);
@@ -434,7 +429,7 @@ impl Pipeline {
                 }
                 Stage::Forward(_) => {
                     let mut upstream =
-                        match self.upstream(index, query, client, (Some(source), now), cache) {
+                        match self.upstream(index, query, client, (source, now), cache) {
                             Ok(upstream) => upstream,
                             Err(Refused::NoServer) => return Step::Drop,
                             // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
@@ -458,13 +453,12 @@ impl Pipeline {
     /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`; none if
     /// the stage has no server, or validates the query and finds the allowance spent at second `now`, the global
     /// one or the share of the network of `source` (D77, D117), before any question is sent or response decoded.
-    /// `source` is `None` for the server's own query, which has no share (D96).
     fn upstream(
         &self,
         from: usize,
         query: &Query<'_>,
         client: &Client<'_>,
-        (source, now): (Option<Source>, u32),
+        (source, now): (Source, u32),
         cache: Option<usize>,
     ) -> Result<Box<Upstream>, Refused> {
         let (index, forward) = self
@@ -484,13 +478,11 @@ impl Pipeline {
             .filter(|_| !client.header.flags.contains(Flags::CD) && question.qclass == Class::IN);
         let validate = match validating {
             Some(validating) => {
-                let share = source.filter(|source| {
-                    !self
-                        .rate_limit
-                        .as_ref()
-                        .is_some_and(|limit| limit.exempts(source.address))
-                });
-                Some(validating.admit(share, now).ok_or(Refused::Shed)?)
+                let exempt = self
+                    .rate_limit
+                    .as_ref()
+                    .is_some_and(|limit| limit.exempts(source.address));
+                Some(validating.admit(source, exempt, now).ok_or(Refused::Shed)?)
             }
             None => None,
         };

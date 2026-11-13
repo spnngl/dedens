@@ -72,6 +72,19 @@ pub enum Checked {
     Bogus(InfoCode),
 }
 
+/// When a stored response is due a refresh without a client asking, and until when it is fresh: see
+/// [`Cache::refresh`](crate::Cache::refresh).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refresh {
+    /// The first second at which a lookup would flag a prefetch (under `Config::prefetch_percent` of the TTL left),
+    /// or `expires` for a bogus response and for percent 0, which are never ending.
+    pub at: u32,
+    /// The first second at which the response is not fresh any more.
+    pub expires: u32,
+    /// The response failed validation: it is kept for `Config::bogus_ttl` and answers SERVFAIL (RFC 4035 §4.7).
+    pub bogus: bool,
+}
+
 /// A cached response, without OPT record; serving writes the ID, flags and question case of the query, and one
 /// TTL in every record.
 #[derive(Debug)]
@@ -213,16 +226,21 @@ impl Response {
         left * 100 < u64::from(self.ttl) * u64::from(percent)
     }
 
-    /// The first second at which [`Response::ending`] holds for `percent`, or the response expires, whichever comes
-    /// first: a bogus response, or `percent` 0, is never ending, and goes at its expiry.
-    pub(crate) fn refresh_at(&self, percent: u8) -> u32 {
+    /// When the response is due a refresh at `percent` (the cache's `prefetch_percent`).
+    pub(crate) fn refresh(&self, percent: u8) -> Refresh {
         let scaled = u64::from(self.ttl) * u64::from(percent);
-        if self.bad || scaled == 0 {
-            return self.expires;
+        let at = if self.bad || scaled == 0 {
+            self.expires
+        } else {
+            // `left * 100 < scaled` holds for `left` up to this many seconds.
+            let ending = u32::try_from((scaled - 1) / 100).unwrap_or(u32::MAX);
+            self.expires.saturating_sub(ending)
+        };
+        Refresh {
+            at,
+            expires: self.expires,
+            bogus: self.bad,
         }
-        // `left * 100 < scaled` holds for `left` up to this many seconds.
-        let ending = u32::try_from((scaled - 1) / 100).unwrap_or(u32::MAX);
-        self.expires.saturating_sub(ending)
     }
 
     /// Seconds left at `now`, at most the lifetime given at insert, should `now` be before the insert.

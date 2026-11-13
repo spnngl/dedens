@@ -137,7 +137,7 @@ struct Thread<N: Io = Compio> {
     /// When the cache's clock reads 0 (D43).
     started: Instant,
     current: Arc<Current>,
-    /// A message each time a reload replaced the pipeline, for [`follow`].
+    /// A message each time a reload replaced the pipeline, for [`follow`] or the prewarm task.
     reloads: sync::Receiver<()>,
     /// The pipeline taken from `current`, with its generation; behind an `Rc`, so a query holding it touches no
     /// count shared with other threads.
@@ -429,12 +429,14 @@ pub(crate) async fn serve(
         };
         tasks.push(task);
     }
-    tasks.push(spawn(follow(Rc::clone(&thread))));
+    // The prewarm task follows the reloads itself: two tasks on `reloads` would take each other's wake-up.
     if prewarms {
         let name = Listener::new("prewarm", None);
         tasks.push(supervised(name, &thread, |_, thread| {
             prewarm::run(Rc::clone(thread))
         }));
+    } else {
+        tasks.push(spawn(follow(Rc::clone(&thread))));
     }
     // The receiver is gone only if another thread failed first.
     let _ = listening.send(Runtime::with_current(Runtime::driver_type));

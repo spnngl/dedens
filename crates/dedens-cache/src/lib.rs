@@ -26,4 +26,4 @@ mod shard;
 pub use cache::{Cache, Freshness, Hit, Lookup, StalePolicy};
 pub use config::{Config, ConfigError};
 pub use key::Key;
-pub use response::{Checked, NotCached};
+pub use response::{Checked, NotCached, Refresh};
