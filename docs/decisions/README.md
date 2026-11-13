@@ -1,7 +1,7 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 97-101, 126-132, 148, 149 and 173 were never
+number, and gets its line below; a number is never reused (85, 98-101, 126-132, 148, 149 and 173 were never
 assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
@@ -76,7 +76,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D66 [server](server.md) (amended by D115, D122): `dedensd` answers over TLS and QUIC
 - D67 [CLI](cli.md): public resolvers in `docs/providers/providers.yaml`, measured
 - D68 [transports](transports.md): tries exhausted after cookie-dropped responses fail as `Forged`
-- D69 [scope](scope.md) (amended by D71, D74, D75, D76, D78, D79, D80): DNSSEC before the recursive resolver: a validating stub and forwarder
+- D69 [scope](scope.md) (amended by D71, D74, D75, D76, D78, D79, D80, D97): DNSSEC before the recursive resolver: a validating stub and forwarder
 - D70 [wire format](wire-format.md) (amended by D159): typed DNSSEC RDATA: DS, DNSKEY, RRSIG, NSEC, NSEC3 and kin
 - D71 [scope](scope.md) (amended by D73, D106): DNSSEC crypto on `ring`; which algorithms validate
 - D72 [scope](scope.md): trust anchors per zone, negative ones, the root's bundled
@@ -103,6 +103,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
 - D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
 - D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline over UDP with a share of the validator's allowance of its own, again at the prefetch point (a margin before the expiry)
+- D97 [transports](transports.md): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
 - D102 [transports](transports.md): DNS stamps of DNSCrypt resolvers and relays: typed, canonical, written back byte for byte
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency

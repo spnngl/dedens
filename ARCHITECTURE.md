@@ -10,6 +10,7 @@
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response | none (sans-IO), time passed in |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69, D78): configurations, message encryption | none (sans-IO) |
+| `crates/dedens-dnscrypt` | DNSCrypt (draft-denis-dprive-dnscrypt), experimental (D97): certificates, query and response encryption for both classical systems | none (sans-IO), time and randomness passed in |
 | `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over sans-IO cores; the client's pools and `dedensd`'s serving loop behind the `Io` seam (D134, D182); Oblivious DoH, `odoh` feature (D79); DNS stamps, `dnscrypt` feature (D102); `resolv.conf` | sockets, timers |
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
