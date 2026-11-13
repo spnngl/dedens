@@ -19,14 +19,16 @@ use dedens_server::Forward;
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server};
 use dedens_sim::framing;
-use dedens_sim::resolver::pipeline_forwarding;
+use dedens_sim::resolver::{pipeline_forwarding, pipeline_with};
 use dedens_sim::seed::{self, Seed};
 use dedens_sim::stub::{Outcome, question};
 use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Verdict};
 
-use crate::util::{FORWARD_TRIES, SECOND, SEEDS, TRIES, answers_and_txt, served, served_by};
+use crate::util::{
+    FORWARD_TRIES, SECOND, SEEDS, TRIES, answers, answers_and_txt, served, served_by,
+};
 
 /// Fewer seeds for the scenarios in which a query runs through its timeouts: each costs the most wall time.
 const FEW: &[u64] = &[0, 7];
@@ -359,6 +361,114 @@ fn faulty(seed: Seed) -> (Vec<Event>, IpAddr) {
         });
     }
     (world.run().expect("the run passes its checks"), resolver)
+}
+
+/// A world of one upstream server holding `answers`, served by `dedensd` whose cache stage (`config`) prewarms
+/// `example.com A` (D96), its run `duration` long.
+fn prewarming(seed: Seed, answers: Answers, config: Config, duration: Duration) -> World {
+    Topology::new()
+        .upstream(answers)
+        .duration(duration)
+        .resolver(move |upstreams| {
+            pipeline_with(config.clone(), upstreams)
+                .with_prewarm([question("example.com", RecordType::A)])
+        })
+        .dedensd()
+        .build(seed)
+}
+
+/// The times at which `events` show the resolver at `resolver` starting an exchange: its queries sent less than
+/// 30 s after the one before are the tries of one.
+fn exchanges(events: &[Event], resolver: IpAddr) -> Vec<Duration> {
+    let mut starts: Vec<Duration> = Vec::new();
+    for event in events {
+        if event.host == resolver
+            && matches!(event.what, What::Sent { .. })
+            && starts
+                .last()
+                .is_none_or(|last| event.at.saturating_sub(*last) > 30 * SECOND)
+        {
+            starts.push(event.at);
+        }
+    }
+    starts
+}
+
+/// D96: the name is asked at the start, with no client, and again before each expiry; a client asking past several
+/// TTLs is answered from the cache, with no query of the upstream server between its query and its answer.
+#[test]
+fn a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it() {
+    seed::each(FEW, |seed| {
+        // A TTL of 10 s, refreshed with 5 s left (`prefetch_percent` 50).
+        let config = Config {
+            min_ttl: 1,
+            max_ttl: 10,
+            prefetch_percent: 50,
+            ..Config::default()
+        };
+        let mut world = prewarming(seed, answers(), config, 120 * SECOND);
+        world.client(async move |stub| {
+            tokio::time::sleep(33 * SECOND).await;
+            let answer = stub
+                .expect(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            assert_eq!(answer.message.answer.len(), 2);
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        let first = events
+            .iter()
+            .position(|event| matches!(event.what, What::Served { .. }))
+            .expect("the name asked");
+        let asked = events
+            .iter()
+            .position(|event| matches!(event.what, What::Asked { .. }))
+            .expect("the client asked");
+        assert!(first < asked, "asked before any client: {events:#?}");
+        // Refreshed at 5 s, 10 s... of the 10 s TTL: six times by 33 s, whatever the latency.
+        let before = count(&events[..asked], |event| {
+            matches!(event.what, What::Served { .. })
+        });
+        assert!((5..=7).contains(&before), "{before} queries: {events:#?}");
+        let end = events
+            .iter()
+            .position(|event| matches!(event.what, What::Answered { .. }))
+            .expect("the client answered");
+        let between = count(&events[asked..end], |event| {
+            matches!(event.what, What::Served { .. })
+        });
+        assert_eq!(between, 0, "{events:#?}");
+    });
+}
+
+/// D96, RFC 9520 §3.2: a failed query is not held; it is retried after a minute, and again after twice that, up to
+/// the cache's `failure_max`.
+#[test]
+fn a_failed_prewarm_is_retried_after_a_minute_doubling_up_to_failure_max() {
+    seed::each(FEW, |seed| {
+        let config = Config {
+            failure_max: 100,
+            ..Config::default()
+        };
+        let mut world = prewarming(seed, answers().silent(), config, 400 * SECOND);
+        let resolver = world.resolver.ip();
+        world.client(async move |_| {
+            tokio::time::sleep(390 * SECOND).await;
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        let starts = exchanges(&events, resolver);
+        let gaps: Vec<u64> = starts
+            .windows(2)
+            .map(|pair| pair[1].saturating_sub(pair[0]).as_secs())
+            .collect();
+        // The first retry a minute after the first failure ended, then 100 s (the cap), and so on: each gap holds
+        // the time the tries took.
+        assert!(gaps.len() >= 3, "{starts:?}");
+        assert!((60..75).contains(&gaps[0]), "{gaps:?}");
+        assert!((100..115).contains(&gaps[1]), "{gaps:?}");
+        assert!((100..115).contains(&gaps[2]), "{gaps:?}");
+    });
 }
 
 /// The property of the family: whatever the seed does to the links and the hosts, each query ends by its deadline

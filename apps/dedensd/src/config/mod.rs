@@ -56,6 +56,9 @@
 //!     type: cache
 //!     capacity: 67108864               # bytes of memory, entries and what holds them (D116)
 //!     max_entry_bytes: 8192            # a response stored larger is answered, not cached; unset: 8 KiB (D116)
+//!     prewarm:                         # names kept answered with no client, asked through the stages (D96)
+//!       entries: [www.example.com]     # then `file`, one name a line as a plain blocklist; up to 10000 names
+//!       types: [A, AAAA]               # both by default
 //!   upstream:
 //!     type: forward
 //!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
@@ -83,6 +86,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, ensure};
 use dedens_net::tls::{Presented, Trust};
+use dedens_proto::Question;
 use dedens_server::{Pipeline, Stage};
 use serde::Deserialize;
 
@@ -265,14 +269,69 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         rrl: file.rrl,
         cookies: file.cookies,
     };
-    let mut stages = file.stages;
-    let mut built = Vec::with_capacity(file.pipeline.len());
     let mut downloads = Downloads::new(file.downloads)?;
+    let (mut built, warmed) = stages(&file.pipeline, file.stages, previous, &mut downloads, store)?;
+    // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
+    // validator, or none, does not stand behind them (D77).
+    flush(&mut built, previous)?;
+    let pipeline = guard.around(built, previous)?.with_prewarm(warmed);
+    Ok(Config {
+        listen: file.listen,
+        presented,
+        threads,
+        user,
+        #[cfg(feature = "odoh")]
+        odoh,
+        pipeline,
+        access: source,
+        downloads,
+        trust: trusted(file.upstream_ca.as_deref())?,
+    })
+}
+
+/// The TTL of plugin records unless set, as the hosts plugin of `CoreDNS` gives them.
+const PLUGIN_TTL: u32 = 3600;
+
+/// Where downloaded lists are kept unless set, as the FHS places a program's cache.
+const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
+
+/// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
+const REFRESH_MINUTES: u64 = 1440;
+
+/// The longest `timeout_ms` of a forward stage, 30 s: the cap of the `timeout` option of the system resolver
+/// (`resolv.conf(5)`), between the 4 s a BIND stub resolver starts at and the 45 s ceiling of BIND's backoff
+/// (RFC 1536 §1), and far above the 3 s default. The bound stops a typo (`timeout_ms: 300000000` is 3.5 days)
+/// holding a query, its task and its socket (D115).
+const MAX_TIMEOUT_MS: u32 = 30_000;
+
+/// The most `tries` of a forward stage: the cap of the `attempts` option of the system resolver (`resolv.conf(5)`),
+/// and the default of `outbound-msg-retry` in Unbound. A stage with several servers asks each `tries` times, so
+/// the longest wait for a query is servers × `tries` × `timeout_ms` (D115).
+const MAX_TRIES: u8 = 5;
+
+/// The most `threads` that may be written: each holds a buffer pool of about 1 MiB and, per UDP socket, a
+/// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
+const MAX_THREADS: usize = 1024;
+
+/// The stages of `order`, built from `defined` after those of `previous`, and the questions their cache stage keeps
+/// answered (D96).
+///
+/// # Errors
+///
+/// As [`read`] lists for the stages.
+fn stages(
+    order: &[String],
+    mut defined: BTreeMap<String, StageFile>,
+    previous: &Pipeline,
+    downloads: &mut Downloads,
+    store: &mut Store,
+) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {
+    let mut built = Vec::with_capacity(order.len());
     // The cache stage that keeps names answered, its place in `built` and its questions (D96).
     let mut warm = None;
-    for (index, name) in file.pipeline.iter().enumerate() {
-        let Some(stage) = stages.remove(name) else {
-            if file.pipeline[..index].contains(name) {
+    for (index, name) in order.iter().enumerate() {
+        let Some(stage) = defined.remove(name) else {
+            if order[..index].contains(name) {
                 bail!("stage `{name}` is listed twice in `pipeline`");
             }
             bail!("stage `{name}` is listed in `pipeline` but not defined in `stages`");
@@ -327,18 +386,15 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
                     name,
                     (block, allow),
                     (action, ttl, tlds),
-                    (&mut downloads, store),
+                    (&mut *downloads, store),
                 )?
             }
         });
     }
-    if let Some(name) = stages.keys().next() {
+    if let Some(name) = defined.keys().next() {
         bail!("stage `{name}` is defined but not listed in `pipeline`");
     }
-    // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
-    // validator, or none, does not stand behind them (D77).
-    flush(&mut built, previous)?;
-    let warmed = match warm {
+    let questions = match warm {
         Some((name, at, _))
             if !built[at..]
                 .iter()
@@ -349,44 +405,8 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         Some((_, _, questions)) => questions,
         None => Vec::new(),
     };
-    let pipeline = guard.around(built, previous)?.with_prewarm(warmed);
-    Ok(Config {
-        listen: file.listen,
-        presented,
-        threads,
-        user,
-        #[cfg(feature = "odoh")]
-        odoh,
-        pipeline,
-        access: source,
-        downloads,
-        trust: trusted(file.upstream_ca.as_deref())?,
-    })
+    Ok((built, questions))
 }
-
-/// The TTL of plugin records unless set, as the hosts plugin of `CoreDNS` gives them.
-const PLUGIN_TTL: u32 = 3600;
-
-/// Where downloaded lists are kept unless set, as the FHS places a program's cache.
-const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
-
-/// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
-const REFRESH_MINUTES: u64 = 1440;
-
-/// The longest `timeout_ms` of a forward stage, 30 s: the cap of the `timeout` option of the system resolver
-/// (`resolv.conf(5)`), between the 4 s a BIND stub resolver starts at and the 45 s ceiling of BIND's backoff
-/// (RFC 1536 §1), and far above the 3 s default. The bound stops a typo (`timeout_ms: 300000000` is 3.5 days)
-/// holding a query, its task and its socket (D115).
-const MAX_TIMEOUT_MS: u32 = 30_000;
-
-/// The most `tries` of a forward stage: the cap of the `attempts` option of the system resolver (`resolv.conf(5)`),
-/// and the default of `outbound-msg-retry` in Unbound. A stage with several servers asks each `tries` times, so
-/// the longest wait for a query is servers × `tries` × `timeout_ms` (D115).
-const MAX_TRIES: u8 = 5;
-
-/// The most `threads` that may be written: each holds a buffer pool of about 1 MiB and, per UDP socket, a
-/// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
-const MAX_THREADS: usize = 1024;
 
 /// The most names a cache stage's `prewarm` lists: each is asked for each type and, with `dnssec: validate`, with and
 /// without DO, and kept scheduled, so the bound stops a list of a whole zone, not a machine (D96, D115).
@@ -522,7 +542,7 @@ mod tests {
         // A stage with no `prewarm` asks for nothing, and a one-label name is a name to ask for.
         assert_eq!(asked(&text("      entries: [com]\n")).len(), 2);
         let config = read(MINIMAL, env, &Pipeline::default()).unwrap();
-        assert!(config.pipeline.warmed().is_empty());
+        assert_eq!(config.pipeline.warmed(), []);
     }
 
     /// D55, D96: the names are beside the cache settings, so a change of the names keeps the cache.

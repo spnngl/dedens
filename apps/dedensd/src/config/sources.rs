@@ -97,6 +97,10 @@ struct CacheRaw {
     settings: dedens_cache::Config,
     prewarm: Option<PrewarmFile>,
     #[serde(flatten)]
+    #[expect(
+        clippy::zero_sized_map_values,
+        reason = "a map takes the keys no field reads: serde has no other way to see them next to a flatten"
+    )]
     unknown: BTreeMap<String, IgnoredAny>,
 }
 

@@ -17,6 +17,7 @@ mod coap;
 mod h3_budget;
 mod http3;
 pub(crate) mod isolate;
+pub(crate) mod prewarm;
 mod quic;
 mod tcp;
 mod udp;
@@ -219,11 +220,22 @@ impl<N: Io> Thread<N> {
         Rc::clone(&held.1)
     }
 
+    /// The generation of the pipeline [`Thread::pipeline`] returned last.
+    fn generation(&self) -> u64 {
+        self.pipeline.borrow().0
+    }
+
     /// Seconds since `started`, the clock of the cache (D43).
     fn now(&self) -> u32 {
         let elapsed = self.io.now().saturating_duration_since(self.started);
         u32::try_from(elapsed.as_secs()).unwrap_or(u32::MAX)
     }
+}
+
+/// Describes the metrics of the serving tasks.
+pub(crate) fn describe() {
+    isolate::describe();
+    prewarm::describe();
 }
 
 /// Waits `time` on `io`'s clock.
@@ -349,6 +361,7 @@ pub(crate) async fn serve(
     trust: Trust,
     presented: Option<Arc<Presented>>,
     #[cfg(feature = "odoh")] odoh: Option<Arc<odoh::Service>>,
+    prewarms: bool,
     listening: mpsc::Sender<DriverType>,
 ) -> io::Result<()> {
     #[cfg_attr(
@@ -417,6 +430,12 @@ pub(crate) async fn serve(
         tasks.push(task);
     }
     tasks.push(spawn(follow(Rc::clone(&thread))));
+    if prewarms {
+        let name = Listener::new("prewarm", None);
+        tasks.push(supervised(name, &thread, |_, thread| {
+            prewarm::run(Rc::clone(thread))
+        }));
+    }
     // The receiver is gone only if another thread failed first.
     let _ = listening.send(Runtime::with_current(Runtime::driver_type));
     drop(listening);
@@ -486,7 +505,11 @@ pub(crate) async fn simulated<N: Io>(
     let serving_tcp = supervise(&thread.io, &tcp_name, BACKOFF, || {
         self::tcp::tcp(Rc::clone(&tcp), None, tcp_name.clone(), Rc::clone(&thread))
     });
-    join(serving_udp, serving_tcp).await;
+    let name = Listener::new("prewarm", None);
+    let prewarming = supervise(&thread.io, &name, BACKOFF, || {
+        prewarm::run(Rc::clone(&thread))
+    });
+    join(join(serving_udp, serving_tcp), prewarming).await;
 }
 
 /// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic of their own: the

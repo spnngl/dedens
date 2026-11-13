@@ -98,7 +98,7 @@ pub fn main() -> anyhow::Result<()> {
     // Resolved while still root, so a user or a group that does not exist fails the start before any socket is bound.
     let plan = privileges::resolve(config.user.as_ref()).with_context(|| format!("in {path}"))?;
     config.warn_access(&config.listen);
-    isolate::describe();
+    serve::describe();
     isolate::hook();
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)
@@ -151,6 +151,7 @@ pub fn main() -> anyhow::Result<()> {
                     presented,
                     #[cfg(feature = "odoh")]
                     odoh,
+                    index == 0,
                     listening,
                 );
                 // Never dropped, not even when `serving` panics: dropping a runtime frees what its ring's
