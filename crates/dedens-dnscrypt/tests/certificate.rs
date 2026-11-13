@@ -72,28 +72,33 @@ fn fields(client_magic: [u8; 8], start: u32, end: u32) -> Vec<u8> {
 }
 
 /// "Certificates": `<signature>` covers `<resolver-pk> <client-magic> <serial> <ts-start> <ts-end>
-/// <extensions>`, so a changed byte of any of them, or of the signature, is refused: by the signature, or
-/// before it when the change is of `<ts-start>` to after `<ts-end>`.
+/// <extensions>`, so a changed byte of any of them, or of the signature, is refused by the signature.
 #[test]
 fn signature_covers_every_signed_byte() {
     for at in 8..draft_certificate().len() {
         let mut bytes = draft_certificate();
         bytes[at] ^= 1;
-        let refused = [
-            CertificateError::BadSignature,
-            CertificateError::EmptyValidity,
-        ];
-        assert!(
-            parse(&bytes).is_err_and(|e| refused.contains(&e)),
+        assert_eq!(
+            parse(&bytes),
+            Err(CertificateError::BadSignature),
             "byte {at}"
         );
-        if at != 116 {
-            assert_eq!(
-                parse(&bytes),
-                Err(CertificateError::BadSignature),
-                "byte {at}"
-            );
-        }
+    }
+}
+
+/// "Certificates": the signature is checked first, so bytes nobody signed decide nothing: a forbidden magic or an
+/// empty validity under another provider's signature is a bad signature, not a field error.
+#[test]
+fn unsigned_fields_are_not_read_before_the_signature() {
+    let other = ProviderKey::from_bytes([9; 32]);
+    for bytes in [
+        signed([0, 2], &fields([0xff; 8], 1, 2)),
+        signed([0, 2], &fields([1; 8], 5, 5)),
+    ] {
+        assert_eq!(
+            Certificate::parse(&bytes, &other),
+            Err(CertificateError::BadSignature)
+        );
     }
 }
 
