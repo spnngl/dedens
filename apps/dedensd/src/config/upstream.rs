@@ -107,7 +107,10 @@ fn dnscrypt(text: &str) -> Result<dedens_server::Server, String> {
     match text.parse::<Stamp>() {
         Ok(Stamp::DnsCrypt(stamp)) => Ok(dedens_server::Server {
             addr: stamp.address.socket_addr(),
-            via: Via::Dnscrypt(Stamp::DnsCrypt(stamp).to_string().into()),
+            via: Via::Dnscrypt {
+                stamp: Stamp::DnsCrypt(stamp).to_string().into(),
+                relays: Arc::from([]),
+            },
         }),
         Ok(Stamp::Relay(_)) => Err(format!(
             "`{text}` is the stamp of a DNSCrypt relay, which is no upstream server"
@@ -124,23 +127,68 @@ fn dnscrypt(text: &str) -> Result<dedens_server::Server, String> {
     ))
 }
 
+/// An Anonymized `DNSCrypt` relay of a forward stage (D100): a relay stamp, or an address, which is the same relay.
+/// Kept as the text of the stamp.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub(super) struct Relay(Arc<str>);
+
+#[cfg(feature = "dnscrypt")]
+impl TryFrom<String> for Relay {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        use dedens_net::stamp::{Relay as Parsed, Stamp};
+
+        let relay: Parsed = text.parse().map_err(|error| format!("`{text}`: {error}"))?;
+        Ok(Self(Stamp::Relay(relay).to_string().into()))
+    }
+}
+
+/// Without the `dnscrypt` feature a relay is refused (D99).
+#[cfg(not(feature = "dnscrypt"))]
+impl TryFrom<String> for Relay {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        Err(format!(
+            "`{text}`: a relay needs a dedensd built with the dnscrypt feature"
+        ))
+    }
+}
+
 /// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says; with the
 /// validator of `previous` when a forward stage of it validated the same way, so that a reload keeps the keys it
-/// cached (D86).
+/// cached (D86). The `DNSCrypt` servers are asked through `relays` (D100).
 ///
 /// # Errors
 ///
-/// A stage without a server, a `timeout_ms` above [`MAX_TIMEOUT_MS`] or `tries` above [`MAX_TRIES`].
+/// A stage without a server, `relays` with no `sdns://` server, a `timeout_ms` above [`MAX_TIMEOUT_MS`] or `tries`
+/// above [`MAX_TRIES`].
 pub(super) fn forward(
     name: &str,
-    servers: Vec<Server>,
+    (servers, relays): (Vec<Server>, Vec<Relay>),
     timeout_ms: Option<NonZeroU32>,
     tries: Option<NonZeroU8>,
     validation: Validation,
     previous: &Pipeline,
 ) -> anyhow::Result<Forward> {
-    let mut forward = Forward::new(servers.into_iter().map(|server| server.0))
-        .with_context(|| format!("stage `{name}` has no server"))?;
+    let relays: Arc<[Arc<str>]> = relays.into_iter().map(|relay| relay.0).collect();
+    let mut stamped = false;
+    let servers = servers.into_iter().map(|Server(mut server)| {
+        if let Via::Dnscrypt { relays: held, .. } = &mut server.via {
+            held.clone_from(&relays);
+            stamped = true;
+        }
+        server
+    });
+    let servers: Vec<_> = servers.collect();
+    ensure!(
+        relays.is_empty() || stamped,
+        "stage `{name}`: `relays` needs an `sdns://` server to ask through them"
+    );
+    let mut forward =
+        Forward::new(servers).with_context(|| format!("stage `{name}` has no server"))?;
     match validation.dnssec {
         Dnssec::Off => ensure!(
             validation.trust_anchors.is_none()
@@ -285,7 +333,13 @@ mod tests {
         {
             let read = server(RESOLVER).expect("a resolver");
             assert_eq!(read.addr, "94.140.14.14:5443".parse().expect("an address"));
-            assert_eq!(read.via, Via::Dnscrypt(RESOLVER.into()));
+            assert_eq!(
+                read.via,
+                Via::Dnscrypt {
+                    stamp: RESOLVER.into(),
+                    relays: Arc::from([]),
+                }
+            );
             assert_eq!(read.to_string(), RESOLVER);
             let error = server(RELAY).expect_err("a relay");
             assert!(error.contains("relay"), "{error}");
@@ -297,6 +351,56 @@ mod tests {
             let error = server(RESOLVER).expect_err("not built");
             assert!(error.contains("dnscrypt feature"), "{error}");
             let _ = RELAY;
+        }
+    }
+
+    /// D100: `relays` are relay stamps or addresses, kept as stamps; every `sdns://` server of the stage is asked through
+    /// them and the others as before; a resolver's stamp, a text that is no relay and `relays` with no `sdns://`
+    /// server are refused, and so is any without the `dnscrypt` feature.
+    #[test]
+    fn relays_go_with_the_stamped_servers_of_the_stage() {
+        const RESOLVER: &str = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20";
+        let text = |servers: &str, relays: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: [{servers}]\n    relays: [{relays}]\n"
+            )
+        };
+        let both = format!("'{RESOLVER}', '192.0.2.1'");
+        #[cfg(feature = "dnscrypt")]
+        {
+            let config = read(
+                &text(
+                    &both,
+                    "'sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw', '192.0.2.9:8443'",
+                ),
+                env,
+                &Pipeline::default(),
+            )
+            .unwrap();
+            let [Stage::Forward(forward)] = config.pipeline.stages() else {
+                panic!("a forward stage")
+            };
+            let held = format!("{forward:?}");
+            assert_eq!(held.matches("Dnscrypt").count(), 1, "{held}");
+            assert!(
+                held.contains("relays: [\"sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw\", \"sdns://gQ"),
+                "{held}"
+            );
+            assert!(held.contains("Plain"), "{held}");
+            for (servers, relay, needle) in [
+                ("'192.0.2.1'", "'192.0.2.9'", "needs an `sdns://` server"),
+                (&both[..], &format!("'{RESOLVER}'")[..], "relay"),
+                (&both[..], "'relay.example'", "relay.example"),
+            ] {
+                let message = error(&text(servers, relay));
+                assert!(message.contains(needle), "{needle}: {message}");
+            }
+        }
+        #[cfg(not(feature = "dnscrypt"))]
+        {
+            let message = error(&text("'192.0.2.1'", "'192.0.2.9'"));
+            assert!(message.contains("dnscrypt feature"), "{message}");
+            let _ = both;
         }
     }
 

@@ -7,11 +7,14 @@
 //!
 //! By default the kit depends on `dedens-proto` and data-encoding alone. The feature `certificates` adds the TLS
 //! certificates of the encrypted transports' tests, on `dedens-net`, compio and rcgen; `responder` adds the
-//! loopback server the tests of `dedens` and `dedensd` query, and `odoh` and `doc` its experimental transports.
+//! loopback server the tests of `dedens` and `dedensd` query, with the Anonymized `DNSCrypt` relay they go through, and
+//! `odoh` and `doc` its experimental transports.
 
 #[cfg(feature = "certificates")]
 pub mod certificates;
 pub mod dnssec;
+#[cfg(feature = "responder")]
+pub mod relay;
 #[cfg(feature = "responder")]
 pub mod responder;
 

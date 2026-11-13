@@ -144,29 +144,37 @@ async fn fetch<'a, N: Io>(
         }
     }
     let result = match via {
-        Via::Dnscrypt(stamp) => exchange_dnscrypt(thread, request, stamp, options).await,
+        Via::Dnscrypt { stamp, relays } => {
+            exchange_dnscrypt(thread, request, (stamp, relays), options).await
+        }
         _ => thread.client.exchange(request, target, options).await,
     };
     Fetched::Own(result, lead)
 }
 
-/// Asks the `DNSCrypt` server of `stamp`, the text of a stamp checked when the configuration was read (D99).
+/// Asks the `DNSCrypt` server of `stamp`, through the `relays` if there are any, the texts of stamps checked when the
+/// configuration was read (D99, D100).
 #[cfg(feature = "dnscrypt")]
 async fn exchange_dnscrypt<N: Io>(
     thread: &Thread<N>,
     request: Message<'static>,
-    stamp: &str,
+    (stamp, relays): (&str, &[Arc<str>]),
     options: &Options,
 ) -> Result<Response, ClientError> {
-    use dedens_net::stamp::Stamp;
+    use dedens_net::stamp::{Relay, Stamp};
 
     let Ok(Stamp::DnsCrypt(stamp)) = stamp.parse() else {
         // The configuration holds resolvers' stamps in the text `Stamp` writes.
         return Err(ClientError::NotBuilt("DNSCrypt stamp"));
     };
+    let relays: Option<Vec<Relay>> = relays.iter().map(|relay| relay.parse().ok()).collect();
+    let Some(relays) = relays else {
+        // Nor a relay: a relay is not dropped, which would show the client's address to the resolver.
+        return Err(ClientError::NotBuilt("DNSCrypt relay stamp"));
+    };
     thread
         .client
-        .exchange_dnscrypt(request, &stamp, options)
+        .exchange_dnscrypt_via(request, &stamp, &relays, options)
         .await
 }
 
@@ -179,7 +187,7 @@ async fn exchange_dnscrypt<N: Io>(
 async fn exchange_dnscrypt<N: Io>(
     _thread: &Thread<N>,
     _request: Message<'static>,
-    _stamp: &str,
+    _stamp: (&str, &[Arc<str>]),
     _options: &Options,
 ) -> Result<Response, ClientError> {
     Err(ClientError::NotBuilt("DNSCrypt"))
@@ -190,8 +198,8 @@ async fn exchange_dnscrypt<N: Io>(
 /// the configuration was read.
 fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transport) {
     let (transport, name) = match &server.via {
-        Via::Plain | Via::Dnscrypt(_) if client == Transport::Udp => (Transport::Udp, None),
-        Via::Plain | Via::Dnscrypt(_) => (Transport::Tcp, None),
+        Via::Plain | Via::Dnscrypt { .. } if client == Transport::Udp => (Transport::Udp, None),
+        Via::Plain | Via::Dnscrypt { .. } => (Transport::Tcp, None),
         Via::Tls(name) => (Transport::Tls, name.as_deref()),
         Via::Quic(name) => (Transport::Quic, name.as_deref()),
         Via::Https { name, .. } => (Transport::Https, name.as_deref()),

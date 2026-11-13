@@ -6,6 +6,7 @@ mod forward {
 
     use std::borrow::Cow;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
 
     use dedens_proto::edns::{ClientSubnet, Cookie, Edns, EdnsOption};
     use dedens_proto::{Flags, Message, Transport};
@@ -117,7 +118,10 @@ mod forward {
         );
         let dnscrypt = Server {
             addr: "94.140.14.14:5443".parse().expect("an address"),
-            via: Via::Dnscrypt("sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20".into()),
+            via: Via::Dnscrypt {
+                stamp: "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20".into(),
+                relays: Arc::from([]),
+            },
         };
         assert_eq!(
             dnscrypt.to_string(),
