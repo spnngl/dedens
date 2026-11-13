@@ -537,3 +537,162 @@ fn a_faulty_run_replays_in_two_processes() {
     );
     assert!(runs.get() > 0);
 }
+
+/// `dedensd` answering `DNSCrypt` on simulated time (D99, D182; draft-denis-dprive-dnscrypt-11 "Key Management"): the
+/// short-term keys rotate every 12 hours and a certificate lives 24, a client holding the old one is still answered
+/// when its key has been replaced, and a query sealed under a key past its certificate is dropped, in silence.
+#[cfg(feature = "dnscrypt")]
+mod dnscrypt {
+    use std::net::SocketAddr;
+    use std::num::NonZeroU8;
+
+    use dedens_cache::Config;
+    use dedens_dnscrypt::{
+        Certificate, ClientNonce, ClientSession, EncryptionSystem, ProviderKey, QueryPadding,
+        SecretKey, SigningKey,
+    };
+    use dedens_net::entropy::Entropy;
+    use dedens_proto::rdata::RData;
+    use dedens_proto::{Message, RecordType};
+    use dedens_server::Forward;
+    use dedens_sim::resolver::pipeline_forwarding;
+    use tokio::time::{sleep, timeout};
+    use turmoil::net::UdpSocket;
+
+    use super::{FEW, SECOND, Topology, answers_and_txt, question, seed};
+
+    const PROVIDER: &str = "2.dnscrypt-cert.sim.example";
+    const SEED: [u8; 32] = [0x5d; 32];
+    const HOUR: std::time::Duration = std::time::Duration::from_hours(1);
+
+    /// The certificates the resolver serves, asked in the clear over UDP, newest first by serial.
+    async fn certificates(
+        socket: &UdpSocket,
+        resolver: SocketAddr,
+        provider: &ProviderKey,
+    ) -> turmoil::Result<Vec<Certificate>> {
+        let ask = Message::query(1, question(PROVIDER, RecordType::TXT)).to_vec()?;
+        socket.send_to(&ask, resolver).await?;
+        let mut buf = [0; 4096];
+        let (len, _) = timeout(120 * SECOND, socket.recv_from(&mut buf)).await??;
+        let reply = Message::decode(&buf[..len])?.message;
+        let mut found = Vec::new();
+        for record in &reply.answer {
+            let RData::Txt(txt) = record.data() else {
+                return Err("a TXT record".into());
+            };
+            found.push(Certificate::from_txt(&txt, provider)?);
+        }
+        found.sort_by_key(|certificate| std::cmp::Reverse(certificate.body().serial));
+        Ok(found)
+    }
+
+    /// The newest certificate of `system` among `found`.
+    fn newest(found: &[Certificate], system: EncryptionSystem) -> Option<&Certificate> {
+        found
+            .iter()
+            .find(|certificate| certificate.body().system == system)
+    }
+
+    /// Whether `example.com A` sealed under `certificate` gets its two records back within 2 minutes.
+    async fn answered(
+        socket: &UdpSocket,
+        resolver: SocketAddr,
+        certificate: &Certificate,
+        secret: &SecretKey,
+    ) -> turmoil::Result<bool> {
+        let session = ClientSession::new(certificate, secret).map_err(|_| "a key")?;
+        let wire = Message::query(7, question("example.com", RecordType::A)).to_vec()?;
+        let nonce = ClientNonce::random(&mut Entropy::new()?);
+        let (packet, context) = session
+            .encrypt_query(&wire, QueryPadding::udp(wire.len(), 256), nonce)
+            .map_err(|_| "a query")?;
+        socket.send_to(&packet, resolver).await?;
+        let mut buf = [0; 4096];
+        let Ok(received) = timeout(120 * SECOND, socket.recv_from(&mut buf)).await else {
+            return Ok(false);
+        };
+        let (len, _) = received?;
+        let response = context
+            .decrypt_response(&buf[..len])
+            .map_err(|_| "a response")?;
+        Ok(Message::decode(&response)?.message.answer.len() == 2)
+    }
+
+    /// The first certificate is answered at the start; after 13 hours the certificates served are new, with a higher
+    /// serial, and the old one is still answered; after 25 hours the old certificate has ended and is neither served nor
+    /// answered, the keys that replaced it are.
+    #[test]
+    fn keys_rotate_and_expired_keys_are_dropped() {
+        seed::each(FEW, |seed| {
+            let mut world = Topology::new()
+                .upstream(answers_and_txt())
+                // The coarse step makes every hop last ten seconds: the forward stage waits for them.
+                .resolver(|upstreams| {
+                    let forward = Forward::new(upstreams.iter().cloned())
+                        .expect("an upstream server to forward to")
+                        .with_timeout(60 * SECOND)
+                        .with_tries(NonZeroU8::MIN);
+                    pipeline_forwarding(Config::default(), forward)
+                })
+                .dnscrypt(PROVIDER, SEED)
+                .duration(30 * HOUR)
+                .tick(10 * SECOND)
+                .build(seed);
+            let resolver = world.resolver;
+            let provider = SigningKey::from_seed(&SEED).expect("a seed").provider_key();
+            world.client_direct(async move |_| {
+                let socket = UdpSocket::bind("0.0.0.0:0").await?;
+                let secret = SecretKey::generate(&mut Entropy::new()?);
+                let found = certificates(&socket, resolver, &provider).await?;
+                assert_eq!(found.len(), 2, "a certificate per system");
+                for system in [
+                    EncryptionSystem::XChaCha20Poly1305,
+                    EncryptionSystem::XSalsa20Poly1305,
+                ] {
+                    let certificate = newest(&found, system).expect("one per system");
+                    assert!(answered(&socket, resolver, certificate, &secret).await?);
+                }
+                let old = newest(&found, EncryptionSystem::XChaCha20Poly1305)
+                    .expect("one per system")
+                    .clone();
+
+                sleep(13 * HOUR).await;
+                let found = certificates(&socket, resolver, &provider).await?;
+                assert_eq!(
+                    found.len(),
+                    2,
+                    "the newest certificate of each system is served"
+                );
+                let new = newest(&found, EncryptionSystem::XChaCha20Poly1305).expect("a new one");
+                assert!(new.body().serial > old.body().serial);
+                assert!(
+                    answered(&socket, resolver, &old, &secret).await?,
+                    "the old key"
+                );
+                assert!(
+                    answered(&socket, resolver, new, &secret).await?,
+                    "the new key"
+                );
+                let new = new.clone();
+
+                sleep(12 * HOUR).await;
+                let found = certificates(&socket, resolver, &provider).await?;
+                assert!(
+                    found.iter().all(|c| c.body().serial > old.body().serial),
+                    "the ended certificate is not served"
+                );
+                assert!(
+                    !answered(&socket, resolver, &old, &secret).await?,
+                    "an expired key"
+                );
+                assert!(
+                    answered(&socket, resolver, &new, &secret).await?,
+                    "a valid key"
+                );
+                Ok(())
+            });
+            world.run().expect("the run passes its checks");
+        });
+    }
+}

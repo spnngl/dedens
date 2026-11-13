@@ -118,6 +118,24 @@ pub struct Resolver {
     pub trace: Trace,
     /// Makes the pipeline of each start.
     pub build: Build,
+    /// The `DNSCrypt` provider `dedensd`'s loop answers as, instead of plain DNS ([`Topology::dnscrypt`]).
+    ///
+    /// [`Topology::dnscrypt`]: crate::topology::Topology::dnscrypt
+    #[cfg(feature = "dnscrypt")]
+    pub dnscrypt: Option<Provider>,
+}
+
+/// A `DNSCrypt` provider (D99): the name its certificates are asked under, the seed of its signing key, and the Unix
+/// time its host starts at (the run's epoch), from which its short-term keys are dated.
+#[cfg(feature = "dnscrypt")]
+#[derive(Debug, Clone)]
+pub struct Provider {
+    /// The provider name, `2.dnscrypt-cert.…`.
+    pub name: Arc<str>,
+    /// The Ed25519 seed of the signing key; the stamp's key is the one it makes.
+    pub seed: [u8; 32],
+    /// Seconds since 1970 when the host starts.
+    pub unix: u64,
 }
 
 impl fmt::Debug for Resolver {
@@ -153,6 +171,16 @@ impl Resolver {
         let tcp = SimListener::bind(port).await?;
         let pipeline = (self.build)(&self.upstreams);
         let trust = self.trust.clone().unwrap_or_default();
+        #[cfg(feature = "dnscrypt")]
+        if let Some(provider) = &self.dnscrypt {
+            let provider = dedensd::SimulatedProvider {
+                name: &provider.name,
+                seed: &provider.seed,
+                unix: provider.unix,
+            };
+            dedensd::simulated_dnscrypt(io, udp, tcp, pipeline, trust, &provider).await?;
+            return Ok(());
+        }
         dedensd::simulated(io, udp, tcp, pipeline, trust).await;
         Ok(())
     }
@@ -357,7 +385,7 @@ impl Shared {
 ///
 /// # Panics
 ///
-/// With a server over QUIC, HTTPS or DNSCrypt: they stay on compio (D133), and the run stops rather than ask them in clear.
+/// With a server over QUIC, HTTPS or `DNSCrypt`: they stay on compio (D133), and the run stops rather than ask them in clear.
 #[expect(
     clippy::panic,
     reason = "a pipeline the driver cannot forward for is a broken scenario"

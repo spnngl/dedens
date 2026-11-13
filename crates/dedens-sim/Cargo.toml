@@ -9,6 +9,10 @@ repository.workspace = true
 publish.workspace = true
 autotests = false
 
+[features]
+# D99: scenarios of `dedensd` answering `DNSCrypt`.
+dnscrypt = ["dedensd/dnscrypt"]
+
 [dependencies]
 compio.workspace = true
 dedens-cache.workspace = true
@@ -33,6 +37,7 @@ tokio = { workspace = true, features = [
 turmoil.workspace = true
 
 [dev-dependencies]
+dedens-dnscrypt.workspace = true
 dedens-dnssec.workspace = true
 divan.workspace = true
 

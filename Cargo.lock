@@ -1084,6 +1084,7 @@ version = "0.1.0"
 dependencies = [
  "compio",
  "dedens-cache",
+ "dedens-dnscrypt",
  "dedens-dnssec",
  "dedens-net",
  "dedens-proto",
