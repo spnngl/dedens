@@ -389,7 +389,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
-- D102 (amended by D98) DNS stamps (draft-denis-dns-stamps-02, archived) are read and written by `dedens_net::stamp`, sans-IO, behind
+- D102 (amended by D98, D100) DNS stamps (draft-denis-dns-stamps-02, archived) are read and written by `dedens_net::stamp`, sans-IO, behind
   the feature `dnscrypt` (off by default, no dependency), for the DNSCrypt client and the relays of Anonymized
   DNSCrypt, which take their servers from the `sdns://` strings `DNSCrypt/dnscrypt-resolvers` publishes:
   - `Stamp` is `DnsCrypt` (0x01: properties, address, 32-byte Ed25519 provider key, provider name) or `Relay`
@@ -545,7 +545,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `dnscrypt_encrypt_response` (a packet fits its carrier, the client reads a response to its query, TC when
     records were left out). A padding the resolver refuses cannot be reached from a fuzz target, which holds no
     sealing key but the crate's: the unit tests of `padding` cover it. Bench: `docs/benchmarks.md`.
-- D98 (amends D102) The client asks a DNSCrypt resolver named by a stamp: `dedens @sdns://…`, `dedens_net::dnscrypt`
+- D98 (amends D102; amended by D100) The client asks a DNSCrypt resolver named by a stamp: `dedens @sdns://…`, `dedens_net::dnscrypt`
   and `Client::{exchange_dnscrypt, dnscrypt_certificates}`, behind the feature `dnscrypt` of `dedens-net` (off by
   default; it now pulls `dedens-dnscrypt`, `rand_core` and `zeroize`, where D102 said no dependency) and of `dedens`
   (`dnscrypt = ["dedens-net/dnscrypt"]`, which `just providers` builds with). Without it a stamp is a usage error.
@@ -598,7 +598,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     valid certificate, a low-order key, a rotated certificate fetched after a silent try, a forged response, a closed
     TCP connection, a silent resolver); `apps/dedens/tests/dnscrypt.rs` (the command over UDP, TCP and as JSON, the
     list, the refusals, exit 9); the offline checks of `providers.yaml`; a fuzz seed for `parse_command_line`.
-- D99 `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
+- D99 (amended by D100) `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
   (off by default; it enables `dedens-net/dnscrypt` and pulls `dedens-dnscrypt`) and of `dedens-sim`. Without it
   `dnscrypt://`, the `dnscrypt` section and `sdns://` servers are config errors, and `dnscrypt-keygen` says so.
   - Listener: `dnscrypt://ADDR[:PORT]` in `listen` (port 443), UDP and TCP on one address, with the section
@@ -670,3 +670,53 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     XChaCha20" while reading the `0x0001` certificate, and then keeps the `0x0002` one, as serials are equal); a
     `dedensd` forwarding by stamp to Quad9 (`9.9.9.9:8443`, the stamp of `docs/providers/providers.yaml`) answered `example.com` over UDP
     in 41 ms and over TCP.
+- D100 (amends D98, D99, D102) The client and `dedensd` ask a DNSCrypt resolver through an Anonymized DNSCrypt relay
+  (draft-denis-dprive-dnscrypt-11, "Anonymized DNSCrypt"), so that the resolver sees the relay's address, not the
+  client's: `dedens @sdns://… +dnscrypt-relay=RELAY` and `relays: [RELAY, …]` in a forward stage, in the feature
+  `dnscrypt` as D98 and D99 are. A RELAY is a relay stamp (`sdns://gQ…`, 0x81) or an address `ADDR[:port]` (443 unless
+  set), which is the same relay: `dedens_net::stamp::Relay` gains `FromStr` for both, and refuses a resolver's stamp.
+  - The prefix is sans-IO: `dedens_dnscrypt::relay_query(target, inner)` writes the ten magic bytes (`ff`×8, `00 00`),
+    the 16-byte IPv6 address (IPv4 mapped), the big-endian port and the inner packet, for the certificate query and the
+    sealed ones alike; tested against the draft's example (192.0.2.1:443). A TCP packet is framed by the usual
+    length, which covers the prefix.
+  - A hop, not a transport (as D98): the same UDP and TCP loop, so `+tcp`, TC and the tries are the plain ones; the
+    packets go to the relay's address and the response is read as the resolver's. `Resolvers` keys a `Resolver` by
+    stamp and relays, so the same stamp asked direct and through a relay does not share certificates.
+  - What a relay does shapes the sizes. It forwards the inner packet over UDP whatever the client used, and drops a
+    response larger than the inner packet (the reference relay, `encrypted-dns-server`, `anonymized_dns.rs`). So the
+    certificate query is padded with the EDNS padding option (RFC 7830) to 1200 bytes over UDP (room for both
+    certificates), and over TCP, tried when UDP is silent or truncated, to 4096 bytes; a sealed query over TCP is
+    padded to the largest packet (`QueryPadding::udp(len, MAX_PACKET_LEN)`), over UDP as D98 does, and a truncated
+    answer raises the padding target and goes again over TCP as D98's does. A certificate response is accepted when
+    its ID, QR and question are those of the query (the relay checked the rest: a TXT for a name that starts
+    `2.dnscrypt-cert.`, which a stamp with another provider name cannot pass: no relay can serve it, and the
+    command says so as it says any missing response).
+  - Which relay: drawn at random for each query from the two bytes of the `Io`'s randomness (`Resolver::pick`), except the
+    one that failed last (a silent or closed packet, a certificate fetch with no answer), which the next pick skips
+    once; with one relay it is the one asked again. Rejected: round-robin (state shared by the queries for no gain), a
+    relay for each server (one list for the stage is what an operator keeps), and a health table (a relay that
+    fails twice is skipped once more, no longer: the cost of a table is state to expire).
+  - No fallback direct. A relay that does not answer is no response (exit 9 in `dedens`, SERVFAIL for a client of
+    `dedensd`): going direct would hand the resolver the address the relay hides. Rejected: a fallback behind an option
+    (a way to leak, with no use in a test).
+  - `dedens`: `+dnscrypt-relay=RELAY` goes with a stamp, with no other transport and no `+trace`, found in the three
+    places D98 names (`args.rs`, `run/server.rs`, `run/mod.rs`); `Options::dnscrypt_relay` in `dedens-scenario`; a
+    bad relay is a usage error (exit 2); the man page is regenerated. `+dnscrypt-cert` goes through the relay too.
+  - `dedensd`: `relays: [RELAY, …]` of a forward stage applies to every `sdns://` server of the stage and is refused
+    when the stage has none (a setting that does nothing is a mistake), or in a build without the feature. Held as
+    canonical stamp texts: `Via::Dnscrypt { stamp, relays }` in `dedens-server` (D99's `Via::Dnscrypt(Arc<str>)`
+    gains the list; the crate stays free of `dedens-net`), parsed again where the query is sent
+    (`Client::exchange_dnscrypt_via`).
+  - Tests: `crates/dedens-dnscrypt/tests/anonymized.rs` (the draft's example, IPv6); `crates/dedens-net/tests/dnscrypt.rs`
+    (a loopback relay written in the test: the prefix byte for byte on every packet, certificates and queries over UDP
+    and TCP, the padded sizes, a truncated answer asked again larger, a failed relay skipped, a silent relay with no
+    direct query), `stamps.rs` (the relay's text forms); `apps/dedens/tests/dnscrypt.rs` and
+    `apps/dedensd/tests/dnscrypt.rs` through `dedens_testkit::relay::Relay` (UDP and TCP, the counts it saw, the
+    refusals); `fuzz/` parses a relay text in `parse_dns_stamp`, seeds for the command line and `relays`
+    (`fuzz/seeds/dnscrypt.yaml`, D181).
+  - Not covered: relay chains (the draft allows one hop), and PQ (a later step).
+  - Checked live on 2026-11-13 (`dedens` built with `dnscrypt`): Quad9 (`9.9.9.9:8443`, the stamp of
+    `docs/providers/providers.yaml`) through CryptoStorm's `anon-cs-fr` relay (`sdns://gRExNjMuMTcyLjM0LjU2OjQ0Mw`, from
+    `v3/relays.md` of dnscrypt-resolvers), another operator, answered `example.com` over UDP in 14 ms and over TCP in
+    24 ms, and `+dnscrypt-cert` listed both certificates through it; through `anon-cryptids-relay`
+    (`sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw`) in 237 ms; with `9.9.9.9`, no relay, as the relay, exit 9 and no response.
