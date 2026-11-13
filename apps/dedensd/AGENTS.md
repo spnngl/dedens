@@ -7,10 +7,14 @@ belongs in `crates/dedens-server` and its sans-IO tests.
   loom tests beside them see it (`just loom`, D135).
 - A new listener applies `action: drop` (`Pipeline::drops`) before it takes a connection slot or does a handshake
   (D91).
+- A `dnscrypt://` listener (D99) denies before it decrypts: `Pipeline::denies`, for both actions, in `serve/dnscrypt.rs` (UDP
+  and the TCP codec), before any key work. Its keys live in `src/dnscrypt/`, one `Service` for all threads; time comes
+  from the thread's `Io`, never `SystemTime`, but at start. `dnscrypt-keygen` is in the command line whatever the
+  features, or the man page differs by build.
 - A test that writes a key file goes through `util::write_key` (0600): a key others can read is refused (D115).
 - The benches include `tests/util/server.rs` alone by `#[path]` (D170): it names nothing else of `util`.
 - `tests/listeners.rs` expects the `io_uring` driver on Linux 6.0 or later (D174); set `DEDENS_TEST_ALLOW_POLL` where seccomp refuses it.
-- `serve/udp.rs`, `tcp.rs`, `upstream.rs`, `prewarm.rs` and `isolate.rs` take the clock, tasks, timers and sockets from the
+- `serve/udp.rs`, `tcp.rs`, `dnscrypt.rs`, `upstream.rs`, `prewarm.rs` and `isolate.rs` take the clock, tasks, timers and sockets from the
   thread's `Io` (`thread.io`, `serve::pause`), `clippy.toml` denying the rest, so that `dedens-sim` runs them
   (D182); a change there gets its scenario in `crates/dedens-sim/tests/serving.rs`.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in

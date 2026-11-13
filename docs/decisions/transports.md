@@ -598,3 +598,75 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     valid certificate, a low-order key, a rotated certificate fetched after a silent try, a forged response, a closed
     TCP connection, a silent resolver); `apps/dedens/tests/dnscrypt.rs` (the command over UDP, TCP and as JSON, the
     list, the refusals, exit 9); the offline checks of `providers.yaml`; a fuzz seed for `parse_command_line`.
+- D99 `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
+  (off by default; it enables `dedens-net/dnscrypt` and pulls `dedens-dnscrypt`) and of `dedens-sim`. Without it
+  `dnscrypt://`, the `dnscrypt` section and `sdns://` servers are config errors, and `dnscrypt-keygen` says so.
+  - Listener: `dnscrypt://ADDR[:PORT]` in `listen` (port 443), UDP and TCP on one address, with the section
+    `dnscrypt: {provider_name, secret_key, systems}`. `provider_name` starts with `2.dnscrypt-cert.` (the draft's
+    "Certificates"); `secret_key` is the provider's Ed25519 seed, 64 hex digits, required, read as D115's (0600, group
+    warned) by the code ODoH's key uses (`config/secret.rs`); `systems` is `xchacha20` and `xsalsa20` unless set, each
+    once. Refused: a `dnscrypt://` listener with no section and a section with no listener, an unknown or repeated or
+    empty system, a provider name that is no name, a `dnscrypt://` address on the IP and UDP or TCP port of another
+    listener (`distinct_ports`: a plain address takes both, `tls://` TCP, `quic://`, `https://` and `coap://` UDP).
+    One socket for two protocols is in `docs/TODECIDE.md`. The settings are fixed at start: a reload warns that a change
+    takes a restart (as `odoh`'s), and the key is read once, as root, before the privileges drop, like ODoH's (D122).
+    `dedensd dnscrypt-keygen --provider-name NAME --address ADDR[:PORT]` (always in the command line, so the man page
+    does not vary with the build) prints `secret_key:` (a seed from `getrandom`, one the library accepts) and `stamp:`
+    (a stamp of one XChaCha20 system, no properties set); `dedensd` logs the stamp it serves for each `dnscrypt://`
+    address at start (the event `DNSCrypt`, field `stamp`: its address is the one written in the listener, a wildcard
+    included, which the operator replaces by the public one). Read back by D102's parser in a test.
+  - Keys (`dnscrypt/mod.rs`): one `Service` for every thread, a `Mutex<Arc<KeySet>>` swapped as a whole. A key pair
+    (X25519, a client magic of the first eight bytes of its public key, a serial of its issue time) is made for each
+    system every 12 hours (`ROTATION`: the draft says at most 24), its certificate valid from an hour before to 24
+    hours after the making (`BACKDATE`, `VALIDITY`), so two are valid at any moment; a certificate query is answered
+    with the newest of each system (TTL 600), every pair whose certificate is valid still opens queries (the draft's
+    "Key Management": a client may hold a replaced certificate). A pair whose certificate ended is not used from the
+    second after, and erased (`zeroize`, by the key types) when the last thread holding the set drops it: a thread that
+    sees no packet holds it until the task that follows `refresh_at` takes the new set, so none longer than a pause.
+    A failed draw of randomness keeps the current keys and tries again after a minute (`RETRY`). The time is the
+    wall clock read once at start plus the `Io` clock's elapsed time (the monotonic clock stops in a suspend: a
+    machine that slept serves the keys of its sleep until it takes the wall clock again at a restart), so that the
+    simulation drives it (D182); rejected: the system time per query, which `dedens-sim` cannot move. The key for
+    signing stays in the serving process: the draft's advice to keep it apart ("Key Management") is in
+    `docs/TODECIDE.md`.
+  - Serving (`serve/dnscrypt.rs`, not the plain loops: `just bench-dnsperf` needs Linux, so `udp.rs` and `tcp.rs`
+    change only where their pieces are shared: `Codec`, the receive-error branch, visibility): a UDP loop on the
+    `Io` seam and a TCP accept loop that is `tcp::accept` with the `Encrypted` codec, one packet per frame; concurrency
+    limits, `Slots`, panics (D121), supervision and the answer to an upstream query are the plain listeners'.
+    The access check comes first, for both actions (`Pipeline::denies`, D91): a denied address gets no answer and no
+    decryption, not a sealed REFUSED, in UDP, at the TCP accept and for each message. A packet is for the key pair of
+    its first eight bytes; with none it is a certificate query if it is a query for the provider name (TXT, IN, QR
+    clear, one question), answered in the clear outside the pipeline, so with no rate limit (D113) but the access
+    check: two certificates fit in under 512 bytes, as the test asserts; anything else, a tag that fails or a low-order key is dropped without a word. The decrypted
+    query goes through the pipeline with the peer's address, as UDP or TCP by the carrier, and its reply is sealed within the
+    carrier's budget (D97: for UDP, the query packet's length, with TC when records were left out); no randomness is
+    no reply. An upstream answer arrives later and is sealed with the context of its query.
+  - Shared keys: per thread, by (key pair, client public key), filled only from a packet whose tag verified, 1024 at
+    most, cleared when full and at each new set (the draft: erase shared keys with the key). `docs/benchmarks.md`:
+    a client keeping its key is served at 69,400 queries/s, one with a key per query at 20,200 (D97's 19 µs of X25519
+    per query), plain UDP at 93,500 on one thread.
+  - Stats (D48): `dedensd_dnscrypt_queries_total{system, result}`, system `xchacha20`, `xsalsa20` or `none` (no key
+    pair opened the packet: unknown magic, denied), result `answered` or `dropped`; counted by a value that follows the
+    query (`Tally`) so that a panic or an unanswered upstream query counts as dropped. A certificate answer is not counted.
+  - Upstream: `Via::Dnscrypt(Arc<str>)` in `dedens-server` holds the canonical text of the `sdns://` stamp (the
+    stamp's address is the server's), validated when the config is read (a resolver stamp only: a relay stamp is
+    refused, as D98 does) and parsed again where the query is sent, as an HTTPS path is; `dedens-server` stays free of
+    network code and of D102's stamp type, which sits in `dedens-net`. `apps/dedensd/src/serve/upstream.rs` asks it with
+    `Client::exchange_dnscrypt` (D98): the transport is the plain one of the client's query (UDP, TCP after TC or when
+    the client came over TCP). Rejected: `dedens-server` depending on `dedens-net`, and a stamp crate of its own (churn
+    over D102's tests, fuzz target and coverage for one text).
+  - Tests: `apps/dedensd/tests/dnscrypt.rs` (the real client of D98 over UDP and TCP, both systems alone and together, TC
+    over UDP and the whole answer over TCP, a denied address and a packet that does not open, silence, certificates in
+    the clear, the stamp of `dnscrypt-keygen` read by D102's parser and equal to the logged one, a key file readable by
+    others, a forward stage asking a second `dedensd` by stamp); `dnscrypt/tests.rs` and `config/` (rotation and
+    expiry arithmetic, the certificate answer, the key file, the refused values); `crates/dedens-sim/tests/serving.rs`
+    `dnscrypt::keys_rotate_and_expired_keys_are_dropped` (simulated time: a client holding the old certificate is
+    answered 13 hours in, its query is dropped at 25 hours, the new key answers); a seed of `read_config`
+    (`fuzz/seeds/dnscrypt.yaml`, D181).
+  - Not covered: a failed draw on rotation (the `Io` of the simulation draws always) and the withdrawal of a compromised
+    key (an operator replaces the seed and restarts). Anonymized DNSCrypt relays and PQ are later steps.
+  - Checked live on 2026-11-13: `dnscrypt-proxy` 2.1.20 (macOS arm64, from its release) with the stamp `dedensd`
+    logged for `127.0.0.1:8443` reported `OK (DNSCrypt)` and gave answers over UDP and TCP (it prints "should upgrade to
+    XChaCha20" while reading the `0x0001` certificate, and then keeps the `0x0002` one, as serials are equal); a
+    `dedensd` forwarding by stamp to Quad9 (`9.9.9.9:8443`, the stamp of `docs/providers/providers.yaml`) answered `example.com` over UDP
+    in 41 ms and over TCP.

@@ -255,6 +255,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Special-use names below the TLDs (IANA's Special-Use Domain Names registry: `home.arpa` per RFC 8375,
   `resolver.arpa` per RFC 9462, the locally served zones of RFC 6303): `tlds.json` lists TLDs only. Default: with
   the recursive resolver, which must not send them upstream.
+- One socket for `dnscrypt://` and another listener (D99): a `dnscrypt://` address on the port of an `https://` (UDP) or
+  plain one is refused at the config, as the draft's "Client Queries Over UDP" lets a resolver share a port with
+  QUIC or plain DNS only by telling the packets apart (the client magic, the QUIC header, a DNS message), which the
+  listeners cannot do with a socket each. Default: refused; a shared socket when a deployment needs `:443` for both.
+- The DNSCrypt signing key beside query processing (D99, the draft's "Key Management" advises a signing key kept
+  apart): `dedensd` holds the provider seed in the process that serves queries, read once at start. Default: the
+  key file, 0600; a separate signer that certifies the short-term keys, with the rotation, when a deployment asks.
 - An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
   for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
