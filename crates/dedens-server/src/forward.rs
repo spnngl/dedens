@@ -118,6 +118,10 @@ pub enum Via {
         /// The URI template's path, `{?dns}` implied (RFC 8484 §3), starting with `/`.
         path: Arc<str>,
     },
+    /// A `DNSCrypt` resolver (draft-denis-dprive-dnscrypt), its provider name and keys those of the stamp, as the
+    /// `sdns://` text `dedensd` checked when it read the configuration: this crate has no network code, and the
+    /// text is parsed again where the query is sent, as the path of an HTTPS server is (D99).
+    Dnscrypt(Arc<str>),
 }
 
 impl From<SocketAddr> for Server {
@@ -130,10 +134,11 @@ impl From<SocketAddr> for Server {
 }
 
 /// As written in `dedensd`'s configuration: `IP:PORT`, `tls://IP:PORT#NAME`, `quic://IP:PORT`,
-/// `https://IP:PORT/PATH#NAME`.
+/// `https://IP:PORT/PATH#NAME`, the `sdns://` stamp of a `DNSCrypt` server.
 impl fmt::Display for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (scheme, name, path) = match &self.via {
+            Via::Dnscrypt(stamp) => return f.write_str(stamp),
             Via::Plain => ("", None, ""),
             Via::Tls(name) => ("tls://", name.as_deref(), ""),
             Via::Quic(name) => ("quic://", name.as_deref(), ""),

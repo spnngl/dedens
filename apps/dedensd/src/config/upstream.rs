@@ -22,7 +22,7 @@ use super::{MAX_TIMEOUT_MS, MAX_TRIES, unix_seconds};
 /// An upstream server (D65, D84): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in
 /// brackets); behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set; behind `https://`, asked
 /// over HTTP/3 at `/PATH` (`/dns-query` unless set), on port 443 unless set; and `#NAME` after it for the name its
-/// certificate must hold, else its address.
+/// certificate must hold, else its address. An `sdns://` stamp is a `DNSCrypt` server (D99, the `dnscrypt` feature).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub(super) struct Server(dedens_server::Server);
@@ -37,6 +37,9 @@ impl TryFrom<String> for Server {
     type Error = String;
 
     fn try_from(text: String) -> Result<Self, String> {
+        if text.starts_with("sdns://") {
+            return dnscrypt(&text).map(Self);
+        }
         let (rest, scheme) = match text.split_once("://") {
             Some((scheme, rest)) => (rest, Some(scheme)),
             None => (text.as_str(), None),
@@ -94,6 +97,31 @@ impl TryFrom<String> for Server {
         };
         Ok(Self(dedens_server::Server { addr, via }))
     }
+}
+
+/// The `DNSCrypt` server `text` is the stamp of: a resolver's, not a relay's (D99, D102).
+#[cfg(feature = "dnscrypt")]
+fn dnscrypt(text: &str) -> Result<dedens_server::Server, String> {
+    use dedens_net::stamp::Stamp;
+
+    match text.parse::<Stamp>() {
+        Ok(Stamp::DnsCrypt(stamp)) => Ok(dedens_server::Server {
+            addr: stamp.address.socket_addr(),
+            via: Via::Dnscrypt(Stamp::DnsCrypt(stamp).to_string().into()),
+        }),
+        Ok(Stamp::Relay(_)) => Err(format!(
+            "`{text}` is the stamp of a DNSCrypt relay, which is no upstream server"
+        )),
+        Err(error) => Err(format!("`{text}`: {error}")),
+    }
+}
+
+/// Without the `dnscrypt` feature a stamp is refused (D99).
+#[cfg(not(feature = "dnscrypt"))]
+fn dnscrypt(text: &str) -> Result<dedens_server::Server, String> {
+    Err(format!(
+        "`{text}`: an `sdns://` server needs a dedensd built with the dnscrypt feature"
+    ))
 }
 
 /// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says; with the
@@ -245,6 +273,32 @@ fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::
 mod tests {
     use super::*;
     use crate::config::tests::*;
+
+    /// D99: an `sdns://` server is a resolver's stamp, kept as the text the stamp parser writes, at the stamp's address;
+    /// a relay's stamp and a text that is no stamp are refused, and so is any without the `dnscrypt` feature.
+    #[test]
+    fn a_stamp_is_a_dnscrypt_server_when_built_for_it() {
+        const RESOLVER: &str = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20";
+        const RELAY: &str = "sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw";
+        let server = |text: &str| Server::try_from(text.to_owned()).map(|server| server.0);
+        #[cfg(feature = "dnscrypt")]
+        {
+            let read = server(RESOLVER).expect("a resolver");
+            assert_eq!(read.addr, "94.140.14.14:5443".parse().expect("an address"));
+            assert_eq!(read.via, Via::Dnscrypt(RESOLVER.into()));
+            assert_eq!(read.to_string(), RESOLVER);
+            let error = server(RELAY).expect_err("a relay");
+            assert!(error.contains("relay"), "{error}");
+            let error = server("sdns://AQMAAA").expect_err("not a stamp");
+            assert!(error.contains("sdns://AQMAAA"), "{error}");
+        }
+        #[cfg(not(feature = "dnscrypt"))]
+        {
+            let error = server(RESOLVER).expect_err("not built");
+            assert!(error.contains("dnscrypt feature"), "{error}");
+            let _ = RELAY;
+        }
+    }
 
     #[test]
     fn upstream_servers_take_port_53_by_default_853_encrypted_and_443_over_https() {

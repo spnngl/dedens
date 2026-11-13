@@ -45,7 +45,13 @@ pub(super) async fn answer<N: Io>(
             question: question.clone(),
         });
         let fetched = 'ask: {
-            let mut exchange = pin!(fetch(thread, key, upstream.request(), target, &options));
+            let mut exchange = pin!(fetch(
+                thread,
+                key,
+                upstream.request(),
+                (&server.via, target),
+                &options
+            ));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
                 if let Ok(fetched) = thread.io.timeout_at(at, exchange.as_mut()).await {
@@ -126,7 +132,7 @@ async fn fetch<'a, N: Io>(
     thread: &'a Thread<N>,
     key: Option<Key>,
     request: Message<'static>,
-    target: Server,
+    (via, target): (&Via, Server),
     options: &Options,
 ) -> Fetched<'a> {
     let flights: &Flights = thread.current.flights();
@@ -137,16 +143,55 @@ async fn fetch<'a, N: Io>(
             Entered::Shared(response) => return Fetched::Shared(response),
         }
     }
-    Fetched::Own(thread.client.exchange(request, target, options).await, lead)
+    let result = match via {
+        Via::Dnscrypt(stamp) => exchange_dnscrypt(thread, request, stamp, options).await,
+        _ => thread.client.exchange(request, target, options).await,
+    };
+    Fetched::Own(result, lead)
+}
+
+/// Asks the `DNSCrypt` server of `stamp`, the text of a stamp checked when the configuration was read (D99).
+#[cfg(feature = "dnscrypt")]
+async fn exchange_dnscrypt<N: Io>(
+    thread: &Thread<N>,
+    request: Message<'static>,
+    stamp: &str,
+    options: &Options,
+) -> Result<Response, ClientError> {
+    use dedens_net::stamp::Stamp;
+
+    let Ok(Stamp::DnsCrypt(stamp)) = stamp.parse() else {
+        // The configuration holds resolvers' stamps in the text `Stamp` writes.
+        return Err(ClientError::NotBuilt("DNSCrypt stamp"));
+    };
+    thread
+        .client
+        .exchange_dnscrypt(request, &stamp, options)
+        .await
+}
+
+/// Without the `dnscrypt` feature no configuration holds such a server (D99).
+#[cfg(not(feature = "dnscrypt"))]
+#[expect(
+    clippy::unused_async,
+    reason = "the same call as the one built with the feature"
+)]
+async fn exchange_dnscrypt<N: Io>(
+    _thread: &Thread<N>,
+    _request: Message<'static>,
+    _stamp: &str,
+    _options: &Options,
+) -> Result<Response, ClientError> {
+    Err(ClientError::NotBuilt("DNSCrypt"))
 }
 
 /// The server to ask for `server`, and the transport: its own, else UDP for a client over UDP and TCP for a client
-/// over a connection (D65); the URI template of an HTTPS one is at its path (D84). A name and a path were checked when
+/// over a connection (D65); the URI template of an HTTPS one is at its path (D84); a `DNSCrypt` one is asked over the client's, as a plain one (D99). A name and a path were checked when
 /// the configuration was read.
 fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transport) {
     let (transport, name) = match &server.via {
-        Via::Plain if client == Transport::Udp => (Transport::Udp, None),
-        Via::Plain => (Transport::Tcp, None),
+        Via::Plain | Via::Dnscrypt(_) if client == Transport::Udp => (Transport::Udp, None),
+        Via::Plain | Via::Dnscrypt(_) => (Transport::Tcp, None),
         Via::Tls(name) => (Transport::Tls, name.as_deref()),
         Via::Quic(name) => (Transport::Quic, name.as_deref()),
         Via::Https { name, .. } => (Transport::Https, name.as_deref()),

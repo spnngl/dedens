@@ -110,9 +110,8 @@ mod tests {
     use dedens_dnscrypt::EncryptionSystem;
     use dedens_server::Pipeline;
 
-    use crate::config::Config;
-    use crate::config::Listen;
     use crate::config::tests::*;
+    use crate::config::{Config, Listen};
 
     const SECTION: &str = "dnscrypt:\n  provider_name: 2.dnscrypt-cert.example.net\n  secret_key: /nonexistent/dnscrypt.key\n";
 
