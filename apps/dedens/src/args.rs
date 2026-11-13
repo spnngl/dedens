@@ -146,12 +146,12 @@ impl Cli {
                 || cli.options.https()
                 || cli.options.odoh()
                 || cli.options.coap == Some(true)
-                || cli.options.dnscrypt_cert == Some(true)
+                || cli.options.dnscrypt()
                 || cli.options.validating())
         {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert or +validate"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert, +dnscrypt-pq, +dnscrypt-resume or +validate"
                     .to_owned(),
             );
         }
@@ -169,13 +169,14 @@ impl Cli {
             );
         }
         let stamp = |server: &String| server.starts_with("sdns://");
-        if cli.options.dnscrypt_cert == Some(true)
+        if cli.options.dnscrypt()
             && cli.file.is_none()
             && (cli.server.is_empty() || !cli.server.iter().all(stamp))
         {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+dnscrypt-cert needs an sdns:// @server".to_owned(),
+                "+dnscrypt-cert, +dnscrypt-pq and +dnscrypt-resume need an sdns:// @server"
+                    .to_owned(),
             );
         }
         if !cli.discovers_where_it_can() {

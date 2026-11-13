@@ -236,8 +236,8 @@ pub struct DnsCryptReport {
 /// A certificate of a `DNSCrypt` resolver (draft-denis-dprive-dnscrypt "Certificates").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CertificateReport {
-    /// The encryption system: `X25519-XSalsa20Poly1305` (`es-version` 1), `X25519-XChaCha20Poly1305` (2), else
-    /// `unknown`.
+    /// The encryption system: `X25519-XSalsa20Poly1305` (`es-version` 1), `X25519-XChaCha20Poly1305` (2),
+    /// `X-Wing-XChaCha20Poly1305` (3, D101), else `unknown`.
     pub system: &'static str,
     /// The serial, which rises with each certificate of a provider.
     pub serial: u32,
@@ -255,6 +255,7 @@ impl CertificateReport {
             system: match info.es_version {
                 1 => "X25519-XSalsa20Poly1305",
                 2 => "X25519-XChaCha20Poly1305",
+                3 => "X-Wing-XChaCha20Poly1305",
                 _ => "unknown",
             },
             serial: info.serial,

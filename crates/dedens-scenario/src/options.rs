@@ -61,6 +61,16 @@ pub struct Options {
     /// Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub dnscrypt_cert: Option<bool>,
+    /// Over `DNSCrypt`, take only a post-quantum certificate (`X-Wing`, D101): a resolver known to offer one is not
+    /// downgraded by a stripped certificate (draft "Downgrade Protection"). Off, the PQ certificate is preferred when
+    /// offered. Needs an `sdns://` stamp. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub dnscrypt_pq: Option<bool>,
+    /// Over `DNSCrypt` with a PQ certificate, resume the queries with the ticket the last response brought, with no new
+    /// encapsulation (D101). A ticket links the queries it resumes: off, each query has an encapsulation of its own.
+    /// Needs an `sdns://` stamp, as `dnscrypt_pq`. Default: off.
+    #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
+    pub dnscrypt_resume: Option<bool>,
     /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
     /// are not fetched from the target, which would give it the client's address, and no query is linked to it. Read
     /// once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error.
@@ -135,6 +145,8 @@ impl Options {
             coap: self.coap.or(fallback.coap),
             doc_discover: self.doc_discover.or(fallback.doc_discover),
             dnscrypt_cert: self.dnscrypt_cert.or(fallback.dnscrypt_cert),
+            dnscrypt_pq: self.dnscrypt_pq.or(fallback.dnscrypt_pq),
+            dnscrypt_resume: self.dnscrypt_resume.or(fallback.dnscrypt_resume),
             odoh_config: self.odoh_config.or(fallback.odoh_config),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
@@ -160,8 +172,8 @@ impl Options {
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
     /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; `odoh_proxy` with `tcp`, `tls`,
     /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`; `odoh_config` without
-    /// `odoh_proxy`; `dnscrypt_cert` with `tls`, `quic`, HTTPS, `odoh_proxy` or CoAP, which a `DNSCrypt` server
-    /// goes with none of.
+    /// `odoh_proxy`; `dnscrypt_cert`, `dnscrypt_pq` or `dnscrypt_resume` with `tls`, `quic`, HTTPS, `odoh_proxy` or
+    /// CoAP, which a `DNSCrypt` server goes with none of.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -206,11 +218,11 @@ impl Options {
                 "coap goes with no tcp, tls, quic, https or odoh-proxy: it is CoAP over UDP",
             ));
         }
-        if self.dnscrypt_cert == Some(true)
+        if self.dnscrypt()
             && (self.encrypted() || self.https() || self.odoh() || self.coap == Some(true))
         {
             return Err(InvalidOption(
-                "dnscrypt-cert goes with no tls, quic, https, odoh-proxy or coap: it asks a DNSCrypt server",
+                "dnscrypt-cert, dnscrypt-pq and dnscrypt-resume go with no tls, quic, https, odoh-proxy or coap: they ask a DNSCrypt server",
             ));
         }
         Ok(())
@@ -293,6 +305,14 @@ impl Options {
         }
     }
 
+    /// Whether an option that is for a `DNSCrypt` server only is on (D98, D101).
+    #[must_use]
+    pub fn dnscrypt(&self) -> bool {
+        self.dnscrypt_cert == Some(true)
+            || self.dnscrypt_pq == Some(true)
+            || self.dnscrypt_resume == Some(true)
+    }
+
     /// The exchange options: transport, HTTP method, TCP fallback, cookies, timeout and tries.
     #[must_use]
     pub fn exchange(&self) -> exchange::Options {
@@ -314,6 +334,8 @@ impl Options {
             options.transport = Transport::Tcp;
         }
         options.tcp_fallback = self.ignore != Some(true);
+        options.dnscrypt_pq = self.dnscrypt_pq == Some(true);
+        options.dnscrypt_resume = self.dnscrypt_resume == Some(true);
         options.cookies = self.cookie != Some(CookieOption::Off);
         if let Some(Timeout(timeout)) = self.time {
             options.timeout = timeout;
@@ -695,5 +717,49 @@ mod tests {
         };
         assert_eq!(line.or(on.clone()).dnscrypt_cert, Some(false));
         assert_eq!(Options::default().or(on).dnscrypt_cert, Some(true));
+    }
+
+    /// D101: `dnscrypt_pq` and `dnscrypt_resume` are `DNSCrypt`'s as `dnscrypt_cert` is: refused with the other
+    /// transports, merged by field, and passed on to the exchange.
+    #[test]
+    fn dnscrypt_pq_and_resume_are_for_a_dnscrypt_server() {
+        let pq = Options {
+            dnscrypt_pq: Some(true),
+            ..Options::default()
+        };
+        let resume = Options {
+            dnscrypt_resume: Some(true),
+            ..Options::default()
+        };
+        for on in [&pq, &resume] {
+            assert_eq!(on.check(), Ok(()));
+            assert!(on.dnscrypt());
+            for refused in [
+                Options {
+                    tls: Some(true),
+                    ..on.clone()
+                },
+                Options {
+                    quic: Some(true),
+                    ..on.clone()
+                },
+                Options {
+                    coap: Some(true),
+                    ..on.clone()
+                },
+            ] {
+                assert!(refused.check().is_err(), "{refused:?}");
+            }
+        }
+        assert!(!Options::default().dnscrypt());
+        assert!(pq.exchange().dnscrypt_pq && !pq.exchange().dnscrypt_resume);
+        assert!(resume.exchange().dnscrypt_resume && !resume.exchange().dnscrypt_pq);
+        assert!(!Options::default().exchange().dnscrypt_pq);
+        let off = Options {
+            dnscrypt_pq: Some(false),
+            ..Options::default()
+        };
+        assert_eq!(off.or(pq.clone()).dnscrypt_pq, Some(false));
+        assert_eq!(Options::default().or(pq).dnscrypt_pq, Some(true));
     }
 }

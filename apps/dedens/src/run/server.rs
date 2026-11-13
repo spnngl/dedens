@@ -95,7 +95,7 @@ fn scheme(text: &str) -> (&str, Option<Transport>) {
 /// unless through an Oblivious `DoH` proxy, which pads inside its encryption (D79); for `https://` with TCP, TLS or
 /// QUIC, as HTTPS is HTTP/3, over QUIC; for CoAP, `coap://` or the option, with another scheme or transport, as it
 /// is over UDP, unprotected; for an `sdns://` stamp, `DNSCrypt`, with TLS, QUIC, HTTPS, Oblivious `DoH` or CoAP, which
-/// it goes with none of; for `dnscrypt_cert`, with a server that is no stamp (D98).
+/// it goes with none of; for `dnscrypt_cert`, `dnscrypt_pq` or `dnscrypt_resume`, with a server that is no stamp (D98, D101).
 pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result<()> {
     let stamp = given.starts_with(STAMP_SCHEME);
     if stamp
@@ -103,8 +103,10 @@ pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result
     {
         bail!("server {given}: DNSCrypt goes with no TLS, QUIC, HTTPS, Oblivious DoH or CoAP");
     }
-    if options.dnscrypt_cert == Some(true) && !stamp {
-        bail!("server {given}: +dnscrypt-cert needs an sdns:// stamp");
+    if options.dnscrypt() && !stamp {
+        bail!(
+            "server {given}: +dnscrypt-cert, +dnscrypt-pq and +dnscrypt-resume need an sdns:// stamp"
+        );
     }
     let (_, forced) = scheme(given);
     let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
@@ -400,6 +402,10 @@ mod tests {
             assert!(endpoint_of(QUAD9, set).is_err());
         }
         assert!(endpoint_of("192.0.2.1", |o| o.dnscrypt_cert = Some(true)).is_err());
+        assert!(endpoint_of("192.0.2.1", |o| o.dnscrypt_pq = Some(true)).is_err());
+        assert!(endpoint_of("192.0.2.1", |o| o.dnscrypt_resume = Some(true)).is_err());
+        assert!(endpoint_of(QUAD9, |o| o.dnscrypt_pq = Some(true)).is_ok());
+        assert!(endpoint_of(QUAD9, |o| o.dnscrypt_resume = Some(true)).is_ok());
         assert!(endpoint_of(QUAD9, |o| o.dnscrypt_cert = Some(true)).is_ok());
     }
 
