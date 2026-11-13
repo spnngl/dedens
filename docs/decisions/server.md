@@ -1006,8 +1006,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     §5.2, h3's `Connection::shutdown(0)`): the connection rotates, as a long one does, and the memory h3 holds for
     it goes with it. It is closed with `H3_EXCESSIVE_LOAD` (0x107, §8.1, §10.5) once it passes `BUDGET` plus
     `RECEIVE_WINDOW`, or does not end `DRAIN` after `GOAWAY`. An honest client is not cut: the requests accepted
-    before `GOAWAY` are answered (the connection ends only once none is in flight), and dedens' client opens a new
-    connection for the next query (`http3.rs`: a rejected or closed connection is set aside, not reused).
+    before `GOAWAY` are answered (the connection ends only once none is in flight, and `DRAIN_QUIET` after both the
+    last request taken and the last reply: finishing a stream only queues the reply, which the close would drop),
+    and dedens' client opens a new connection for the next query (`http3.rs`: a rejected or closed connection is
+    set aside, not reused).
   - Bound: one sweeper task per serving thread (`Thread::h3`) checks its HTTP/3 connections every `CHECK` (quinn has
     no event for bytes received), whatever their number; it ends when none is left, and holds them weakly, so a
     connection is checked as long as its service or a request on it lives. A peer returning its credit at once sends

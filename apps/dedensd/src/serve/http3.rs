@@ -39,8 +39,8 @@ pub(super) const H3_UNI_STREAMS: u32 = 16;
 /// response (RFC 9114 §5.1). The idle time counts from the later of the last request taken and the last reply sent
 /// (D84). Requests go through the pipeline as any query; the client is `peer`.
 /// Once the connection passed its byte budget (D119) it is sent `GOAWAY` at the next request, and ends when it is
-/// quiet: nothing in flight, and no request taken for [`DRAIN_QUIET`]. Each request's task holds the connection's
-/// `slot`.
+/// quiet: nothing in flight, and no request taken nor reply sent for [`DRAIN_QUIET`]. Each request's task holds the
+/// connection's `slot`.
 pub(super) async fn requests(
     connection: Connection,
     path: &Arc<str>,
@@ -95,7 +95,9 @@ pub(super) async fn requests(
             // After `GOAWAY`, h3 ends `accept` once the client did too: a request it sent before it heard of
             // `GOAWAY` may still come, to be refused, and dropping `requests` closes the connection.
             Ok(Ok(None)) | Err(_) => {
-                if budget.quiet() && going_away.is_some_and(|last| last.elapsed() >= DRAIN_QUIET) {
+                let quiet_since = going_away.map(|last| last.max(budget.landed()));
+                if budget.quiet() && quiet_since.is_some_and(|since| since.elapsed() >= DRAIN_QUIET)
+                {
                     return tracing::debug!(%peer, "HTTP/3 connection drained");
                 }
                 compio::time::sleep(DRAIN_TICK).await;
@@ -114,7 +116,9 @@ fn idle_left(taken: Instant, budget: &Budget) -> Duration {
     }
 }
 
-/// How long a connection sent `GOAWAY` waits for a request that was in flight, once its own are answered.
+/// How long a connection sent `GOAWAY` waits, once its own requests are answered, for a request that was in flight
+/// and for its last reply to go out: a reply is only queued when its stream is finished, and the connection's close
+/// drops what is still queued (quinn).
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 
 /// How often a connection sent `GOAWAY` looks for a request still to come, and for the end of its own.
