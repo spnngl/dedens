@@ -556,6 +556,98 @@ mod tests {
         );
     }
 
+    /// D101: the first reply of a PQ session brings a ticket; a resumed query is answered, and its reply renews the
+    /// ticket from half of the ticket's life on, not before.
+    #[test]
+    fn a_pq_reply_carries_a_ticket_and_a_resumed_query_renews_it_from_half_of_its_life() {
+        use dedens_dnscrypt::{Certificate, ClientNonce, ClientSession, QueryPadding, SigningKey};
+        use dedens_proto::rdata::RData;
+        use dedens_proto::{Message, Question, RecordType};
+
+        let thread = answering();
+        let provider = "2.dnscrypt-cert.test.example"
+            .parse()
+            .expect("a provider name");
+        let systems = vec![EncryptionSystem::XWing];
+        let service =
+            Arc::new(Service::new(&[7; 32], provider, systems, T0, &Compio).expect("a service"));
+        let keys = Keys::new(Arc::clone(&service), &thread);
+        let set = Arc::clone(&keys.held.borrow().set);
+
+        let certificates = Message::query(
+            7,
+            Question::new(service.provider().clone(), RecordType::TXT),
+        )
+        .to_vec()
+        .expect("encodes");
+        let answer = set
+            .certificates(&certificates, service.provider(), Carrier::Tcp)
+            .expect("an answer");
+        let provider_key = SigningKey::from_seed(&[7; 32])
+            .expect("a seed")
+            .provider_key();
+        let decoded = Message::decode(&answer).expect("a message").message;
+        let [record] = &decoded.answer[..] else {
+            panic!("one certificate")
+        };
+        let RData::Txt(txt) = record.data() else {
+            panic!("a TXT")
+        };
+        let certificate = Certificate::from_txt(&txt, &provider_key).expect("signed");
+
+        let mut entropy = Entropy::new().expect("entropy");
+        let wire = Message::query(
+            9,
+            Question::new("www.example".parse().expect("a name"), RecordType::A),
+        )
+        .to_vec()
+        .expect("encodes");
+        let session = ClientSession::xwing(&certificate, &mut entropy).expect("a session");
+        let (packet, context) = session
+            .encrypt_query(
+                &wire,
+                QueryPadding::to(64),
+                ClientNonce::random(&mut entropy),
+            )
+            .expect("a query");
+        let from: IpAddr = "127.0.0.1".parse().expect("an address");
+        let Open::Query(_, reply) =
+            keys.open(&thread, &thread.pipeline(), from, &packet, Carrier::Tcp)
+        else {
+            panic!("the query opens")
+        };
+        let issuing = reply.ticket.as_ref().expect("a ticket for the first reply");
+        let issued_at = issuing.unix;
+        let sealed = reply
+            .seal(&thread, &wire, Carrier::Tcp)
+            .expect("a sealed reply");
+        let resumption = context
+            .open_response(&sealed)
+            .expect("a response")
+            .resumption
+            .expect("the ticket");
+        assert_eq!(resumption.lifetime(), TICKET_LIFETIME);
+
+        let (resumed, _) = resumption
+            .encrypt_query(
+                &wire,
+                QueryPadding::to(256),
+                ClientNonce::random(&mut entropy),
+            )
+            .expect("a resumed query");
+        let renews = |unix: u64| {
+            let Open::Query(_, reply) = resume(&set, &resumed, unix, from) else {
+                panic!("the resumed query opens at {unix}")
+            };
+            reply.ticket.is_some()
+        };
+        let half = u64::from(TICKET_LIFETIME / 2);
+        assert!(!renews(issued_at));
+        assert!(!renews(issued_at + half - 1));
+        assert!(renews(issued_at + half));
+        assert!(renews(issued_at + 2 * half - 1));
+    }
+
     /// D99, D91: a client the access check denies is silenced at accept, whichever action it sets; an allowed one is
     /// not.
     #[test]

@@ -247,6 +247,47 @@ fn the_pq_certificate_goes_over_udp_only_in_an_answer_no_longer_than_the_query()
     assert_eq!(ask(&padded, Carrier::Udp), (pq(), false));
 }
 
+/// D101: the PQ certificates go over UDP in an answer exactly as long as the query, not in one a byte longer.
+#[test]
+fn the_pq_certificate_goes_over_udp_in_an_answer_as_long_as_the_query() {
+    let service = service(pq());
+    let set = service.keys(T0, &Compio);
+    let small = certificate_query(PROVIDER, RecordType::TXT);
+    let full = set
+        .certificates(&small, service.provider(), Carrier::Tcp)
+        .expect("an answer")
+        .len();
+    let padded = |padding: u16| {
+        let mut query = Message::decode(&small)
+            .expect("a message")
+            .message
+            .into_owned();
+        let edns = query.edns.as_mut().expect("EDNS");
+        edns.options
+            .push(dedens_proto::edns::EdnsOption::Padding(padding));
+        query.to_vec().expect("encodes")
+    };
+    let ask = |query: &[u8]| {
+        systems_of(
+            &set.certificates(query, service.provider(), Carrier::Udp)
+                .expect("an answer"),
+        )
+    };
+    let exact = (0..4000)
+        .map(padded)
+        .find(|query| query.len() == full)
+        .expect("a query as long as the answer");
+    assert_eq!(ask(&exact), (pq(), false));
+    let shorter = (0..4000)
+        .map(padded)
+        .find(|query| query.len() == full - 1)
+        .expect("a query a byte shorter");
+    assert_eq!(
+        ask(&shorter),
+        (vec![EncryptionSystem::XChaCha20Poly1305], true)
+    );
+}
+
 /// D101: tickets have keys only when `pq` is offered; a rotation seals with a new one and keeps the last to open the
 /// tickets sealed under it, until they have expired.
 #[test]
