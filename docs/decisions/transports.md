@@ -389,7 +389,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (listener `coap://127.0.0.1:56840/dns/query`) gets `</dns/query>;rt=core.dns;ct=553`, with `?rt=core.dns` the
     same and with `?rt=other` an empty payload, 4.05 for `-m post`, 4.06 for `-A 41`; `dedens +doc-discover
     @coap://127.0.0.1:56840 example.com` finds `/dns/query` and gets the answer.
-- D102 DNS stamps (draft-denis-dns-stamps-02, archived) are read and written by `dedens_net::stamp`, sans-IO, behind
+- D102 (amended by D98) DNS stamps (draft-denis-dns-stamps-02, archived) are read and written by `dedens_net::stamp`, sans-IO, behind
   the feature `dnscrypt` (off by default, no dependency), for the DNSCrypt client and the relays of Anonymized
   DNSCrypt, which take their servers from the `sdns://` strings `DNSCrypt/dnscrypt-resolvers` publishes:
   - `Stamp` is `DnsCrypt` (0x01: properties, address, 32-byte Ed25519 provider key, provider name) or `Relay`
@@ -545,3 +545,56 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `dnscrypt_encrypt_response` (a packet fits its carrier, the client reads a response to its query, TC when
     records were left out). A padding the resolver refuses cannot be reached from a fuzz target, which holds no
     sealing key but the crate's: the unit tests of `padding` cover it. Bench: `docs/benchmarks.md`.
+- D98 (amends D102) The client asks a DNSCrypt resolver named by a stamp: `dedens @sdns://…`, `dedens_net::dnscrypt`
+  and `Client::{exchange_dnscrypt, dnscrypt_certificates}`, behind the feature `dnscrypt` of `dedens-net` (off by
+  default; it now pulls `dedens-dnscrypt`, `rand_core` and `zeroize`, where D102 said no dependency) and of `dedens`
+  (`dnscrypt = ["dedens-net/dnscrypt"]`, which `just providers` builds with). Without it a stamp is a usage error.
+  - Not a transport: DNSCrypt is an envelope. The sealed packet goes through the same UDP and TCP loop as any query
+    (`Via::DnsCrypt` beside `Direct` and `Proxy` in `client.rs`), so the tries, the deadline, TC and `+tcp` are the
+    plain ones; `Transport` gains no variant and the report says UDP or TCP, with the certificate in a `dnscrypt`
+    object. Rejected: a `Transport::DnsCrypt` (the loop would be copied for a different payload).
+  - One `Resolver` per stamp in the `Client` (`Resolvers`): the stamp, the provider key and name, the chosen
+    certificate and its age. Certificates are asked in the clear, as a TXT query for the provider name at the stamp's
+    address, over UDP and over TCP when UDP gets no answer or a truncated one (Quad9 and CleanBrowsing answer none
+    over TCP, so TCP first would hang; OpenDNS and Comodo answer both), by the `Client`'s own exchange, so a
+    forged certificate response is a forged response. Each is read with D97's `Certificate::from_txt`, so an
+    unsigned or a forbidden one is skipped; the choice is D97's `select` with `Preferred`: among the valid ones the
+    XChaCha20 system, then the highest serial. No valid one is `DnsCryptError::NoCertificate`, a resolver of a low
+    order key `LowOrderKey`; a failed fetch is `Certificates`, the failure inside, so a silent resolver is exit 9 like
+    any server and the other errors are as local as the plain ones (`is_local`).
+  - Kept for an hour or until its validity ends, and dropped (`stale`) when the try shows it is no longer served:
+    UDP silent (a resolver that rotated its key drops what it cannot open: the draft's "Negative Cases" says so, and
+    a lost packet looks the same, so the try is paid once, then the fetch), a TCP connection closed with no response,
+    a response that does not authenticate. The next try fetches again and the query is sent again; the time of the
+    fetch is not in the exchange's round trip.
+  - A fresh X25519 key and a fresh UDP source socket (so no port or key links queries) per query; no shared key is
+    kept. The randomness is drawn before the sealing from `Io::random` (`Entropy`, moved from `odoh` to
+    `dedens_net::entropy`, D79), so a failure of it cannot occur inside. A sealed query carries no DNS cookie (the
+    packet is the resolver's, and the cookie would be sent inside the seal: nothing to protect it from). The first
+    UDP query is padded to 256 bytes (D97's `QueryPadding::udp`); a TC response raises that floor by doubling, at
+    most to 4096, for the next ones, and the query is asked again over TCP (padded 1 to 256 bytes, D97's `tcp`).
+    The stamp's port, 443 when it has none; `-p` has no effect on a stamp.
+  - `dedens`: a stamp refuses `+tls`, `+quic`, `+https`, `+coap`, `+odoh-proxy` and `+trace` (usage, exit 2), and a
+    relay stamp (0x81: it names a relay, not a resolver; Anonymized DNSCrypt is step 13) and a stamp that does not
+    read. `+dnscrypt-cert` lists the certificates (the system, the serial and the validity in UTC: human, `+short`
+    and the JSON `dnscrypt.certificates`) instead of an answer, and needs a stamp server. The status line names the
+    certificate used. Systems `0x0001` and `0x0002` are shown by their names, an unknown one is not reached (D97
+    skips it).
+  - Strict to the draft: a certificate whose client magic starts with seven zero bytes is refused (D97), so
+    AdGuard's resolvers, whose certificates (system `0x0001`, signed by the stamp's key) carry eight zero bytes as
+    their client magic, fail with "serves no usable certificate", checked on 2026-11-13 at `94.140.14.14:5443`;
+    dnscrypt-proxy accepts them. Rejected: an exception for it (the rule is there for QUIC confusion on a shared
+    port, and the draft states it as a MUST); AdGuard's stamps stay out of `providers.yaml`.
+  - Checked live on 2026-11-13, `dedens @sdns://… example.com` over UDP and with `+tcp`, stamps of
+    `dnscrypt-resolvers` `v3/public-resolvers.md`: Quad9 (`9.9.9.9:8443` and the unfiltered and ECS resolvers) offers
+    `0x0001` serial 2026010501 and `0x0002` serial 2026010502, both valid 2026-01-05 to 2027-01-05, and `0x0002` is
+    used; CleanBrowsing (`185.228.168.9:8443` and the adult and family ones) `0x0001` serial 202503; Comodo
+    (`8.20.247.20:443`, `8.26.56.26:443`) `0x0001`, serials 10 to 12; OpenDNS (`208.67.220.220:443`, and
+    FamilyShield) `0x0001`, serial 1780946721. `just providers` of that day: every DNSCrypt endpoint answers over UDP
+    and TCP (OpenDNS with EDE 16, filtered by law where it ran, as its other endpoints).
+  - Tests: `crates/dedens-net/tests/dnscrypt.rs`, a loopback resolver built from D97's resolver half, 13 cases (a
+    sealed exchange over UDP, a key and a socket per query with the certificate kept, TCP all through, TC then TCP
+    with the larger floor, truncated certificates and none over UDP asked over TCP, the highest valid serial, no
+    valid certificate, a low-order key, a rotated certificate fetched after a silent try, a forged response, a closed
+    TCP connection, a silent resolver); `apps/dedens/tests/dnscrypt.rs` (the command over UDP, TCP and as JSON, the
+    list, the refusals, exit 9); the offline checks of `providers.yaml`; a fuzz seed for `parse_command_line`.
