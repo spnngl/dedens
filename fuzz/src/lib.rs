@@ -26,7 +26,10 @@ mod smoke;
 pub use cli::parse_command_line;
 pub use coap::{coap_doc, parse_coap, parse_link_format};
 pub use daemon::read_config;
-pub use dnscrypt::{dnscrypt_decrypt, dnscrypt_encrypt_response, parse_dnscrypt_certificate};
+pub use dnscrypt::{
+    dnscrypt_decrypt, dnscrypt_encrypt_response, dnscrypt_tamper_query, dnscrypt_tamper_response,
+    dnscrypt_unpad, parse_dnscrypt_certificate,
+};
 pub use dnssec::{denial, dnssec_crypto, parse_trust_anchors, rrsig_verify, validate};
 pub use net::{
     parse_dns_stamp, parse_doh_template, parse_resolv_conf, read_doh_response, server_request,
@@ -66,6 +69,9 @@ pub const TARGETS: &[(&str, Entry)] = &[
     ("parse_dnscrypt_certificate", parse_dnscrypt_certificate),
     ("dnscrypt_decrypt", dnscrypt_decrypt),
     ("dnscrypt_encrypt_response", dnscrypt_encrypt_response),
+    ("dnscrypt_unpad", dnscrypt_unpad),
+    ("dnscrypt_tamper_query", dnscrypt_tamper_query),
+    ("dnscrypt_tamper_response", dnscrypt_tamper_response),
     ("rrsig_verify", rrsig_verify),
     ("denial", denial),
     ("validate", validate),
