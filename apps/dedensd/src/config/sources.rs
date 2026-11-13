@@ -1,6 +1,7 @@
 //! The stages as written and their data: hosts entries, blocklists and the lists they read (D54, D57, D104, D118,
 //! D120), and the cache stage a reload keeps or flushes (D77).
 
+use std::collections::{BTreeMap, HashSet};
 use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,14 +10,15 @@ use std::{fs, io};
 
 use anyhow::{Context, anyhow, ensure};
 use dedens_cache::Cache;
-use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds};
-use dedens_proto::Ttl;
+use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds, host_names};
+use dedens_proto::{Question, RecordType, Ttl};
 use dedens_server::{Pipeline, Stage};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use super::limits::BudgetFile;
 use super::upstream::{Dnssec, Insecure, Server};
-use super::{DOWNLOADS_DIR, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES};
+use super::{DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES};
 use crate::download;
 use crate::lists::Store;
 
@@ -24,8 +26,9 @@ use crate::lists::Store;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub(super) enum StageFile {
-    /// Settings of `dedens_cache::Config`, each defaulting to the RFCs' recommendation.
-    Cache(dedens_cache::Config),
+    /// Settings of `dedens_cache::Config`, each defaulting to the RFCs' recommendation, and the names to keep
+    /// answered (D96).
+    Cache(CacheFile),
     /// Upstream servers, asked in order, each `tries` times waiting `timeout_ms` for a response.
     ///
     /// `dnssec: validate` (D77) validates what they answer: AD is set for authentic answers only, a bogus one is
@@ -73,6 +76,61 @@ pub(super) enum StageFile {
         #[serde(default)]
         tlds: bool,
     },
+}
+
+/// A cache stage, as written: the settings of `dedens_cache::Config` and, beside them, the names to keep answered
+/// (D96). Beside, not in: a change of the names runs prewarm again and keeps the cache, which D55 replaces when its
+/// settings change.
+///
+/// The settings are flattened, which makes serde ignore `deny_unknown_fields`, so a map takes what no field reads
+/// and the conversion refuses it.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "CacheRaw")]
+pub(super) struct CacheFile {
+    pub(super) settings: dedens_cache::Config,
+    pub(super) prewarm: Option<PrewarmFile>,
+}
+
+#[derive(Deserialize)]
+struct CacheRaw {
+    #[serde(flatten)]
+    settings: dedens_cache::Config,
+    prewarm: Option<PrewarmFile>,
+    #[serde(flatten)]
+    unknown: BTreeMap<String, IgnoredAny>,
+}
+
+impl TryFrom<CacheRaw> for CacheFile {
+    type Error = String;
+
+    fn try_from(raw: CacheRaw) -> Result<Self, String> {
+        match raw.unknown.into_keys().next() {
+            Some(key) => Err(format!("unknown field `{key}`")),
+            None => Ok(Self {
+                settings: raw.settings,
+                prewarm: raw.prewarm,
+            }),
+        }
+    }
+}
+
+/// The names a cache stage keeps answered, as written (D96): `entries`, one name a line, then those of `file`, each
+/// asked for `types`, A and AAAA unless set.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PrewarmFile {
+    #[serde(default)]
+    entries: Vec<String>,
+    file: Option<PathBuf>,
+    types: Option<Vec<PrewarmType>>,
+}
+
+/// A type a name is kept answered for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+enum PrewarmType {
+    A,
+    #[serde(rename = "AAAA")]
+    Aaaa,
 }
 
 /// Names of a list, as written: `entries`, then those of `file`, then the saved copies of `urls` (D57).
@@ -128,7 +186,9 @@ impl StageFile {
     /// of its `allow`.
     pub(super) fn names_files(&self) -> bool {
         match self {
-            Self::Cache(_) => false,
+            Self::Cache(CacheFile { prewarm, .. }) => prewarm
+                .as_ref()
+                .is_some_and(|prewarm| prewarm.file.is_some()),
             Self::Forward { trust_anchors, .. } => trust_anchors.is_some(),
             Self::Hosts { file, .. } => file.is_some(),
             Self::Blocklist {
@@ -248,6 +308,45 @@ fn validations(stages: &[Stage]) -> Vec<Option<&str>> {
             _ => None,
         })
         .collect()
+}
+
+/// The questions a cache stage keeps answered, from `prewarm` (D96): each distinct name, in order, once for each of
+/// the types.
+///
+/// # Errors
+///
+/// A file that cannot be read, a line that is not a name, or a wildcard; more than [`MAX_PREWARM_NAMES`] names; no
+/// type.
+pub(super) fn prewarm(name: &str, prewarm: &PrewarmFile) -> anyhow::Result<Vec<Question<'static>>> {
+    let mut names = local(&prewarm.entries, prewarm.file.as_deref(), |text| {
+        Ok(host_names(text)?)
+    })
+    .with_context(|| format!("stage `{name}`, `prewarm`"))?;
+    let mut seen = HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    ensure!(
+        names.len() <= MAX_PREWARM_NAMES,
+        "stage `{name}`: `prewarm` names more than {MAX_PREWARM_NAMES} names"
+    );
+    let mut types = prewarm
+        .types
+        .clone()
+        .unwrap_or_else(|| vec![PrewarmType::A, PrewarmType::Aaaa]);
+    types.sort_unstable();
+    types.dedup();
+    ensure!(!types.is_empty(), "stage `{name}`: `prewarm` has no type");
+    Ok(names
+        .into_iter()
+        .flat_map(|name| {
+            types.iter().map(move |kind| {
+                let qtype = match kind {
+                    PrewarmType::A => RecordType::A,
+                    PrewarmType::Aaaa => RecordType::AAAA,
+                };
+                Question::new(name.clone(), qtype)
+            })
+        })
+        .collect())
 }
 
 /// The cache stage `name` of `config`: the one of `previous` while its settings stay, so that a reload keeps the

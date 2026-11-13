@@ -97,7 +97,9 @@ use self::limits::{CookiesFile, Guard, RrlFile, serving_threads};
 pub(crate) use self::listen::Listen;
 use self::listen::{TlsFile, presented};
 pub(crate) use self::sources::Downloads;
-use self::sources::{DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts};
+use self::sources::{
+    CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
+};
 use self::upstream::{Validation, forward};
 use crate::lists::Store;
 use crate::privileges::{Account, Identity};
@@ -266,6 +268,8 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
     let mut stages = file.stages;
     let mut built = Vec::with_capacity(file.pipeline.len());
     let mut downloads = Downloads::new(file.downloads)?;
+    // The cache stage that keeps names answered, its place in `built` and its questions (D96).
+    let mut warm = None;
     for (index, name) in file.pipeline.iter().enumerate() {
         let Some(stage) = stages.remove(name) else {
             if file.pipeline[..index].contains(name) {
@@ -275,7 +279,15 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         };
         placed(name, &stage, &built)?;
         built.push(match stage {
-            StageFile::Cache(config) => cache(name, config, previous)?,
+            StageFile::Cache(CacheFile {
+                settings,
+                prewarm: names,
+            }) => {
+                if let Some(names) = names {
+                    warm = Some((name.as_str(), built.len(), prewarm(name, &names)?));
+                }
+                cache(name, settings, previous)?
+            }
             StageFile::Forward {
                 servers,
                 timeout_ms,
@@ -326,7 +338,18 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
     // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
     // validator, or none, does not stand behind them (D77).
     flush(&mut built, previous)?;
-    let pipeline = guard.around(built, previous)?;
+    let warmed = match warm {
+        Some((name, at, _))
+            if !built[at..]
+                .iter()
+                .any(|stage| matches!(stage, Stage::Forward(_))) =>
+        {
+            bail!("stage `{name}`: `prewarm` has no forward stage after the cache to ask")
+        }
+        Some((_, _, questions)) => questions,
+        None => Vec::new(),
+    };
+    let pipeline = guard.around(built, previous)?.with_prewarm(warmed);
     Ok(Config {
         listen: file.listen,
         presented,
@@ -365,6 +388,10 @@ const MAX_TRIES: u8 = 5;
 /// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
 const MAX_THREADS: usize = 1024;
 
+/// The most names a cache stage's `prewarm` lists: each is asked for each type and, with `dnssec: validate`, with and
+/// without DO, and kept scheduled, so the bound stops a list of a whole zone, not a machine (D96, D115).
+const MAX_PREWARM_NAMES: usize = 10_000;
+
 /// The longest `refresh_minutes`: a year, far below the overflow of a `Duration` or an `Instant`.
 const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
 
@@ -392,6 +419,10 @@ fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use dedens_proto::RecordType;
+
     use super::*;
 
     /// [`super::read`] with a store of its own.
@@ -446,6 +477,94 @@ mod tests {
         assert_eq!(cache.config().max_insecure_ttl, Some(600));
         assert_eq!(cache.config().max_entry_bytes, Some(4096));
         assert!(read(MINIMAL, env, &Pipeline::default()).is_ok());
+    }
+
+    /// D96: the names to keep answered, from `entries` then `file`, each for the types asked, once.
+    #[test]
+    fn a_cache_stage_reads_the_names_it_keeps_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names");
+        std::fs::write(&path, "# popular\nwww.example.org\nExample.COM\n").unwrap();
+        let text = |prewarm: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    min_ttl: 120\n    prewarm:\n{prewarm}  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        let asked = |text: &str| -> Vec<(String, RecordType)> {
+            let config = read(text, env, &Pipeline::default()).unwrap();
+            config
+                .pipeline
+                .warmed()
+                .iter()
+                .map(|warm| (warm.question().name.to_string(), warm.question().qtype))
+                .collect()
+        };
+        let both = asked(&text(&format!(
+            "      entries: [example.com, 'EXAMPLE.com.']\n      file: {}\n",
+            path.display()
+        )));
+        assert_eq!(
+            both,
+            [
+                ("example.com.".to_owned(), RecordType::A),
+                ("example.com.".to_owned(), RecordType::AAAA),
+                ("www.example.org.".to_owned(), RecordType::A),
+                ("www.example.org.".to_owned(), RecordType::AAAA),
+            ]
+        );
+        assert_eq!(
+            asked(&text(
+                "      entries: [example.com]\n      types: [AAAA, AAAA]\n"
+            )),
+            [("example.com.".to_owned(), RecordType::AAAA)]
+        );
+        assert_eq!(asked(&text("      entries: []\n")), []);
+        // A stage with no `prewarm` asks for nothing, and a one-label name is a name to ask for.
+        assert_eq!(asked(&text("      entries: [com]\n")).len(), 2);
+        let config = read(MINIMAL, env, &Pipeline::default()).unwrap();
+        assert!(config.pipeline.warmed().is_empty());
+    }
+
+    /// D55, D96: the names are beside the cache settings, so a change of the names keeps the cache.
+    #[test]
+    fn a_reload_changing_the_names_keeps_the_cache() {
+        let text = |prewarm: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n{prewarm}  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
+            )
+        };
+        let cache = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Cache(cache)) => Arc::clone(cache),
+            stage => unreachable!("{stage:?}"),
+        };
+        let first = read(
+            &text("    prewarm:\n      entries: [a.example]\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .unwrap()
+        .pipeline;
+        let second = read(
+            &text("    prewarm:\n      entries: [a.example, b.example]\n"),
+            env,
+            &first,
+        )
+        .unwrap()
+        .pipeline;
+        assert_eq!(first.warmed().len(), 2);
+        assert_eq!(second.warmed().len(), 4);
+        assert!(Arc::ptr_eq(&cache(&first), &cache(&second)));
+    }
+
+    /// D96: an unreadable file is a failed read, which a reload leaves the running pipeline for (D55).
+    #[test]
+    fn a_names_file_that_is_missing_fails_the_read() {
+        let text = "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    prewarm:\n      file: /nonexistent/names\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        let message = error(text);
+        assert!(
+            message.contains("stage `c`, `prewarm`") && message.contains("/nonexistent/names"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -504,6 +623,22 @@ mod tests {
                 "stage `c`: the minimum TTL must be at most 59, the least of `max_ttl`, `max_negative_ttl` and the insecure TTL",
             ),
             (
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    prewarm:\n      entries: ['*.example']\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+                "stage `c`, `prewarm`: entry 1: `*.example` is a wildcard, which cannot be asked",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    prewarm:\n      entries: [a.example, 'b.example c.example']\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+                "stage `c`, `prewarm`: entry 2: `c.example` after the name",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c, up]\nstages:\n  c:\n    type: cache\n    prewarm:\n      entries: [a.example]\n      types: []\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
+                "stage `c`: `prewarm` has no type",
+            ),
+            (
+                "listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    prewarm:\n      entries: [a.example]\n",
+                "stage `c`: `prewarm` has no forward stage after the cache to ask",
+            ),
+            (
                 "listen: ['127.0.0.1:53']\npipeline: [c, h, up]\nstages:\n  c:\n    type: cache\n  h:\n    type: hosts\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n",
                 "stage `h` comes after a cache stage, whose answers, kept across reloads, would bypass it",
             ),
@@ -528,6 +663,8 @@ mod tests {
             (MINIMAL.replace("forward", "rewrite"), "rewrite"),
             (format!("{MINIMAL}  up:\n    type: cache\n"), "up"),
             ("listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    size: 1\n".to_owned(), "size"),
+            ("listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    prewarm:\n      urls: []\n".to_owned(), "urls"),
+            ("listen: ['127.0.0.1:53']\npipeline: [c]\nstages:\n  c:\n    type: cache\n    prewarm:\n      types: [MX]\n".to_owned(), "MX"),
             (MINIMAL.replace("192.0.2.1", "example.com"), "example.com"),
             (format!("{MINIMAL}    tries: 0\n"), "nonzero"),
             (format!("{MINIMAL}    timeout_ms: 0\n"), "nonzero"),

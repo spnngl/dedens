@@ -12,7 +12,7 @@ use dedens_proto::{
 };
 use dedens_server::{Answer, Plugin, Records, Reviewer};
 
-pub use self::lists::{List, ListError, Lists, Merged, Names, Origin, Read, Tlds};
+pub use self::lists::{List, ListError, Lists, Merged, Names, Origin, Read, Tlds, host_names};
 use crate::text;
 
 /// The reply to a blocked query, each with the Extended DNS Error Blocked (RFC 8914 §4.16) for clients sending an

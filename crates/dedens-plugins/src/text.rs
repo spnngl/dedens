@@ -30,6 +30,9 @@ pub enum LineErrorKind {
     /// A name of one label in a plain list: it would block, or allow, a whole top-level domain (D118).
     #[error("`{0}` is one label, a whole top-level domain")]
     SingleLabel(String),
+    /// A `*.name` in a list of names to ask for: a wildcard cannot be asked (D96).
+    #[error("`{0}` is a wildcard, which cannot be asked")]
+    Wildcard(String),
     /// A field after the one name a line holds.
     #[error("`{0}` after the name")]
     Extra(String),
