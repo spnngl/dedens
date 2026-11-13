@@ -842,6 +842,29 @@ differ by the stream cipher alone, and on equal plaintexts the gap is small and 
 costs 0.1-0.2 µs more on 128 and 192 bytes (15-40%, cause not investigated) and 10-20% less on 1216. One run of three
 had `decrypt_query_with` for XChaCha20 at 1.27 µs, a disturbed machine.
 
+## PQDNSCrypt (D101)
+
+`benches/dnscrypt.rs`, the `pq_*` benches, one call each on the captured response `a` (72 bytes), with fixed bytes for the
+randomness. A full query is the client's encapsulation to the resolver's `X-Wing` key and the sealing (a 1220-byte
+packet: the 1120-byte ciphertext replaces the 32-byte client key, no 256-byte floor); the resolver decapsulates with
+its secret key and opens. A resumed query carries the 130-byte ticket (424 bytes with the 256-byte padding) and needs
+no public-key operation. Apple M5, **one run on a loaded machine** (another worker was building and testing at the
+same time), so the numbers are an order of magnitude, not a ranking; the X25519 figures are D97's, the same run.
+
+| Measure | X-Wing (`0x0003`) | X25519 (`0x0002`) |
+|---|---|---|
+| Parse a certificate (Ed25519 verification) | 23.7 µs | 20.6 µs |
+| Full query, client (key agreement, sealing) | 67.8 µs | 39.9 µs |
+| Full query, resolver (key agreement, opening) | 101.4 µs | 20.8 µs |
+| Resumed query, client (sealing) | 1.1 µs | |
+| Resumed query, resolver (ticket and key derivation, opening) | 1.7 µs | |
+| Response with a ticket (resolver, 72-byte answer) | 1.7 µs | |
+
+Post-quantum key agreement costs the client about 1.7 times an X25519 session and the resolver about five times, 100 µs of
+a core a query: a resolver at 10,000 full PQ queries a second spends a core on decapsulation. That is why the draft has
+tickets: a resumed query costs the resolver 1.7 µs, 60 times less, and the client 1.1 µs. A certificate is 1320 bytes, a
+full query 1220 and a resumed one 424. The resolver's access and rate limits stand in front of the decapsulation (D101).
+
 ## DNSCrypt in `dedensd` (D99)
 
 Queries per second over UDP on loopback, one `dedensd` thread (macOS has no `SO_REUSEPORT` spreading, so `threads: 1`), a
