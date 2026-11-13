@@ -30,12 +30,13 @@ pub(crate) struct Cli {
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
     /// A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before
-    /// it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP. Each query is asked of each, side by
-    /// side. Default: the first `nameserver` of /etc/resolv.conf.
+    /// it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP, `sdns://…` for the `DNSCrypt` resolver
+    /// of a DNS stamp (a build with the `dnscrypt` feature). Each query is asked of each, side by side. Default: the
+    /// first `nameserver` of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
-    /// The port of a server given without one. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else
-    /// 53.
+    /// The port of a server given without one, a stamp having its own. Default: 443 over HTTPS, 5683 over CoAP, 853
+    /// over TLS or QUIC, else 53.
     #[arg(short, long, value_name = "PORT")]
     pub(crate) port: Option<u16>,
     /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.
@@ -145,11 +146,12 @@ impl Cli {
                 || cli.options.https()
                 || cli.options.odoh()
                 || cli.options.coap == Some(true)
+                || cli.options.dnscrypt_cert == Some(true)
                 || cli.options.validating())
         {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap or +validate"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert or +validate"
                     .to_owned(),
             );
         }
@@ -164,6 +166,16 @@ impl Cli {
             return usage(
                 ErrorKind::ArgumentConflict,
                 "+odoh-proxy needs an https:// target @server".to_owned(),
+            );
+        }
+        let stamp = |server: &String| server.starts_with("sdns://");
+        if cli.options.dnscrypt_cert == Some(true)
+            && cli.file.is_none()
+            && (cli.server.is_empty() || !cli.server.iter().all(stamp))
+        {
+            return usage(
+                ErrorKind::ArgumentConflict,
+                "+dnscrypt-cert needs an sdns:// @server".to_owned(),
             );
         }
         if !cli.discovers_where_it_can() {

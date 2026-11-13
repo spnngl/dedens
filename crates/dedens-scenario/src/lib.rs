@@ -25,8 +25,9 @@ pub use expect::{Expect, Expected};
 pub use file::{Id, InvalidId, Query, QueryFile, server_text};
 pub use options::{CookieOption, HttpsOption, InvalidOption, Options, Timeout};
 pub use report::{
-    DnssecReport, DnssecStatus, EdeReport, EdnsReport, ExchangeReport, HeaderReport, HttpReport,
-    Latency, OptionReport, QuestionReport, RecordReport, Report, Transport,
+    CertificateReport, DnsCryptReport, DnssecReport, DnssecStatus, EdeReport, EdnsReport,
+    ExchangeReport, HeaderReport, HttpReport, Latency, OptionReport, QuestionReport, RecordReport,
+    Report, Transport,
 };
 
 /// Reads a field from its text with [`FromStr`](std::str::FromStr), for types of other crates and scalars that

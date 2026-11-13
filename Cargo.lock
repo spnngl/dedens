@@ -895,6 +895,7 @@ dependencies = [
  "clap",
  "clap_mangen",
  "compio",
+ "dedens-dnscrypt",
  "dedens-dnssec",
  "dedens-net",
  "dedens-odoh",

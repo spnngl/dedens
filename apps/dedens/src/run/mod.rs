@@ -16,14 +16,20 @@ use compio::quic::ConnectionError;
 use compio::quic::h3::error::ConnectionError as H3Error;
 use dedens_dnssec::covered;
 use dedens_net::client::{Client, ClientError, Server};
+#[cfg(feature = "dnscrypt")]
+use dedens_net::dnscrypt::DnsCryptError;
 #[cfg(feature = "doc")]
 use dedens_net::doc::DocError;
 use dedens_net::doh::{DEFAULT_PATH, Template};
 use dedens_net::exchange::{self, Failure, Response};
 use dedens_net::http3::Http3Error;
 use dedens_net::quic::QuicError;
+#[cfg(feature = "dnscrypt")]
+use dedens_net::stamp::DnsCrypt;
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
+#[cfg(feature = "dnscrypt")]
+use dedens_scenario::{CertificateReport, DnsCryptReport};
 use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report, server_text};
 
 pub(crate) use self::server::refuse_conflicts;
@@ -69,11 +75,14 @@ struct Endpoint {
     forced: Option<Transport>,
     /// The proxy of Oblivious `DoH`, `server` being the target.
     proxy: Option<Box<Server>>,
+    /// The stamp of a `DNSCrypt` resolver, given as `sdns://…`; `server` is its address (D98).
+    #[cfg(feature = "dnscrypt")]
+    dnscrypt: Option<Box<DnsCrypt>>,
 }
 
 impl Endpoint {
     /// This server among several, as its reports name it: `1.1.1.1`, then `+tls`, `+quic`, `+https`, `+odoh` or
-    /// `+coap` when forced, then the path of its `DoH` template other than `/dns-query`, or of its CoAP URI, each
+    /// `+coap` when forced, `+dnscrypt` for a stamp, then the path of its `DoH` template other than `/dns-query`, or of its CoAP URI, each
     /// `/`, `\` or NUL a `_`: `tls://`, `quic://`, `https://` and `coap://` to one address, and two paths, stay apart.
     fn label(&self) -> String {
         let over = match self.forced {
@@ -83,6 +92,12 @@ impl Endpoint {
             Some(Transport::Odoh) => "+odoh",
             Some(Transport::Coap) => "+coap",
             _ => "",
+        };
+        #[cfg(feature = "dnscrypt")]
+        let over = if self.dnscrypt.is_some() {
+            "+dnscrypt"
+        } else {
+            over
         };
         let doh = self
             .server
@@ -391,6 +406,10 @@ async fn ask(
         options.transport = transport;
     }
     let address = endpoint.server.addr;
+    #[cfg(feature = "dnscrypt")]
+    if job.options.dnscrypt_cert == Some(true) {
+        return certificates(client, endpoint, &options, id).await;
+    }
     let (found, doc_path) = discovered(client, job, endpoint, &options).await?;
     let endpoint = &*found;
     let with_path = |mut report: Report| {
@@ -443,6 +462,35 @@ async fn ask(
         }
     }
     Err(anyhow!("no name to ask"))
+}
+
+/// The certificates of the `DNSCrypt` resolver of `endpoint` (`+dnscrypt-cert`, D98), reported on the response that
+/// held them, with the system, serial and validity of each. The expectations of a job do not apply: no answer is
+/// asked.
+#[cfg(feature = "dnscrypt")]
+async fn certificates(
+    client: &Client,
+    endpoint: &Endpoint,
+    options: &exchange::Options,
+    id: Id,
+) -> anyhow::Result<(Report, Vec<u8>)> {
+    let Some(stamp) = &endpoint.dnscrypt else {
+        bail!(Usage(anyhow!("+dnscrypt-cert needs an sdns:// server")));
+    };
+    let listing = client.dnscrypt_certificates(stamp, options).await?;
+    let decoded = Message::decode(&listing.response.wire)?;
+    let mut report = Report::exchanged(id, endpoint.server.addr, &listing.response, &decoded);
+    if let Some(exchange) = &mut report.exchange {
+        exchange.dnscrypt = Some(DnsCryptReport {
+            certificate: None,
+            certificates: listing
+                .certificates
+                .into_iter()
+                .map(CertificateReport::new)
+                .collect(),
+        });
+    }
+    Ok((report, listing.response.wire))
 }
 
 /// `endpoint`, and with `+doc-discover` the path of its `DoC` resource, the first its `/.well-known/core` lists
@@ -533,6 +581,10 @@ async fn exchange(
     query: Message<'_>,
     options: &exchange::Options,
 ) -> Result<Response, ClientError> {
+    #[cfg(feature = "dnscrypt")]
+    if let Some(stamp) = &endpoint.dnscrypt {
+        return client.exchange_dnscrypt(query, stamp, options).await;
+    }
     let server = endpoint.server.clone();
     match &endpoint.proxy {
         #[cfg(feature = "odoh")]
@@ -549,6 +601,11 @@ async fn exchange(
 
 /// Whether `error` is the server's silence, refusal or reset: dig's exit code 9.
 fn no_reply(error: &anyhow::Error) -> bool {
+    error.downcast_ref().is_some_and(silent)
+}
+
+/// Whether `error` is the server's silence, refusal or reset.
+fn silent(error: &ClientError) -> bool {
     let refused = |e: &io::Error| {
         matches!(
             e.kind(),
@@ -566,26 +623,27 @@ fn no_reply(error: &anyhow::Error) -> bool {
         Http3Error::Quic(e) => quiet(e),
         _ => false,
     };
-    match error.downcast_ref() {
-        Some(
-            ClientError::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. })
-            | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed),
-        ) => true,
-        Some(ClientError::Quic(e)) => quiet(e),
-        Some(ClientError::Https(e)) => https_quiet(e),
+    match error {
+        ClientError::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. })
+        | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed) => true,
+        ClientError::Quic(e) => quiet(e),
+        ClientError::Https(e) => https_quiet(e),
         // Oblivious DoH is DoH through a proxy: the proxy's or the target's silence is no reply too (D79).
         #[cfg(feature = "odoh")]
-        Some(ClientError::Odoh(dedens_net::odoh::OdohError::Https(e))) => https_quiet(e),
+        ClientError::Odoh(dedens_net::odoh::OdohError::Https(e)) => https_quiet(e),
         // The deadline of a discovery (D109); an exchange's is `Failure::TimedOut` above.
         #[cfg(feature = "doc")]
-        Some(ClientError::Doc(
+        ClientError::Doc(
             DocError::TimedOut | DocError::Exchange(dedens_net::coap::exchange::Failure::TimedOut),
-        )) => true,
+        ) => true,
         #[cfg(feature = "doc")]
-        Some(ClientError::Doc(DocError::Udp(e))) => refused(e),
-        Some(
-            ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e) | TcpError::Handshake(e)),
-        ) => refused(e),
+        ClientError::Doc(DocError::Udp(e)) => refused(e),
+        // A resolver that does not serve its certificates is as silent as one that does not answer (D98).
+        #[cfg(feature = "dnscrypt")]
+        ClientError::DnsCrypt(DnsCryptError::Certificates(inner)) => silent(inner),
+        ClientError::Udp(e) | ClientError::Tcp(TcpError::Connect(e) | TcpError::Handshake(e)) => {
+            refused(e)
+        }
         _ => false,
     }
 }
@@ -722,6 +780,8 @@ mod tests {
             },
             forced,
             proxy: None,
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: None,
         };
         let cases = [
             (at(None, None, &[]), "192.0.2.1"),

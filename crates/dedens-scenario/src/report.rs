@@ -4,7 +4,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use dedens_net::exchange::Response;
+use dedens_net::exchange::{CertificateInfo, Response};
 use dedens_proto::edns::{Edns, EdnsFlags, EdnsOption, ExtendedError, InfoCode};
 use dedens_proto::{Decoded, Hex, Question, Record};
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,10 @@ impl Report {
                     status: http.status.as_u16(),
                 }),
                 doc_path: None,
+                dnscrypt: response.dnscrypt.map(|info| DnsCryptReport {
+                    certificate: Some(CertificateReport::new(info)),
+                    certificates: Vec::new(),
+                }),
             }),
             ..Self::new(id, decoded, response.wire.len())
         }
@@ -212,6 +216,52 @@ pub struct ExchangeReport {
     /// URI path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_path: Option<String>,
+    /// Over `DNSCrypt`, the certificate the query was sealed under, and with `+dnscrypt-cert` the certificates listed
+    /// (D98).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dnscrypt: Option<DnsCryptReport>,
+}
+
+/// What a `DNSCrypt` exchange tells of the certificates of the resolver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DnsCryptReport {
+    /// The certificate the query was sealed under, none for a listing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<CertificateReport>,
+    /// The certificates the provider's key signed, as `+dnscrypt-cert` lists them, valid or not; empty for a query.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub certificates: Vec<CertificateReport>,
+}
+
+/// A certificate of a `DNSCrypt` resolver (draft-denis-dprive-dnscrypt "Certificates").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CertificateReport {
+    /// The encryption system: `X25519-XSalsa20Poly1305` (`es-version` 1), `X25519-XChaCha20Poly1305` (2), else
+    /// `unknown`.
+    pub system: &'static str,
+    /// The serial, which rises with each certificate of a provider.
+    pub serial: u32,
+    /// The start of the validity, in seconds since 1970.
+    pub valid_from: u32,
+    /// The end of the validity, in seconds since 1970.
+    pub valid_until: u32,
+}
+
+impl CertificateReport {
+    /// The report of a certificate `info` tells of.
+    #[must_use]
+    pub fn new(info: CertificateInfo) -> Self {
+        Self {
+            system: match info.es_version {
+                1 => "X25519-XSalsa20Poly1305",
+                2 => "X25519-XChaCha20Poly1305",
+                _ => "unknown",
+            },
+            serial: info.serial,
+            valid_from: info.valid_from,
+            valid_until: info.valid_until,
+        }
+    }
 }
 
 /// The HTTP response a DNS response came in (RFC 8484 §4.2.1).
@@ -615,6 +665,7 @@ mod tests {
                 query_size: response.query.len(),
                 http: None,
                 doc_path: None,
+                dnscrypt: None,
             })
         );
         assert_eq!(report.size, wire.len());
