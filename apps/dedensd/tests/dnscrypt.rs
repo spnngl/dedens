@@ -145,7 +145,7 @@ fn the_certificates_are_served_in_the_clear() {
                 };
                 let certificate = Certificate::from_txt(&txt, &provider).expect("signed");
                 assert!(certificate.is_valid_at(now));
-                certificate.body().system.es_version()
+                certificate.body().system().es_version()
             })
             .collect();
         systems.sort_unstable();
@@ -205,6 +205,80 @@ fn each_system_answers_alone() {
                 response.dnscrypt.expect("a certificate").es_version,
                 es_version
             );
+            assert_eq!(decode(&response.wire).rcode(), Rcode::NOERROR);
+        }
+    }
+}
+
+/// A query over `transport` with the options `set` changes.
+fn ask_with(
+    client: &Client,
+    stamp: &DnsCrypt,
+    transport: Transport,
+    set: impl FnOnce(&mut Options),
+) -> Result<dedens_net::exchange::Response, ClientError> {
+    let mut options = quick(transport);
+    set(&mut options);
+    Runtime::new()
+        .expect("a runtime")
+        .block_on(client.exchange_dnscrypt(dedens_testkit::query("a", 0x0102), stamp, &options))
+}
+
+/// D101: a server that offers `pq` is asked under X-Wing (es-version 3) by the client that prefers it, over UDP and
+/// over TCP, a new ciphertext each query; one that asks for it only is answered too, and by a server without it is
+/// not.
+#[test]
+fn a_pq_server_answers_under_x_wing_and_a_classical_one_cannot_be_asked_for_it() {
+    let upstream = Responder::start(&["a"]);
+    let resolver = resolver(
+        "  systems: [xchacha20, pq]\n",
+        "",
+        &upstream.addr.to_string(),
+    );
+    let client = Client::new();
+    for transport in [Transport::Udp, Transport::Tcp] {
+        for _ in 0..2 {
+            let response = ask(&client, &resolver.stamp, "a", transport).expect("an answer");
+            assert_eq!(response.transport, transport);
+            assert_eq!(response.dnscrypt.expect("a certificate").es_version, 3);
+            let reply = decode(&response.wire);
+            assert_eq!(reply.answer, decode(&dedens_testkit::captured("a")).answer);
+        }
+    }
+    let response = ask_with(&client, &resolver.stamp, Transport::Udp, |options| {
+        options.dnscrypt_pq = true;
+    })
+    .expect("an answer");
+    assert_eq!(response.dnscrypt.expect("a certificate").es_version, 3);
+
+    let classical = self::resolver("", "", &upstream.addr.to_string());
+    let error = ask_with(
+        &Client::new(),
+        &classical.stamp,
+        Transport::Udp,
+        |options| {
+            options.dnscrypt_pq = true;
+        },
+    )
+    .expect_err("no PQ certificate");
+    assert!(matches!(error, ClientError::DnsCrypt(_)), "{error:?}");
+}
+
+/// D101: a client that asked to resume sends the ticket of the first answer, and the server answers each resumed
+/// query; the client that did not ask sends none (the loopback test of the client sees the packets).
+#[test]
+fn a_resumed_query_is_answered() {
+    let upstream = Responder::start(&["a"]);
+    let resolver = resolver("  systems: [pq]\n", "", &upstream.addr.to_string());
+    let client = Client::new();
+    for transport in [Transport::Udp, Transport::Tcp] {
+        for _ in 0..3 {
+            let response = ask_with(&client, &resolver.stamp, transport, |options| {
+                options.dnscrypt_resume = true;
+            })
+            .expect("an answer");
+            assert_eq!(response.transport, transport);
+            assert_eq!(response.sends, 1, "no query was lost or dropped");
             assert_eq!(decode(&response.wire).rcode(), Rcode::NOERROR);
         }
     }

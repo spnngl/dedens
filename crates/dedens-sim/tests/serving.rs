@@ -538,9 +538,10 @@ fn a_faulty_run_replays_in_two_processes() {
     assert!(runs.get() > 0);
 }
 
-/// `dedensd` answering `DNSCrypt` on simulated time (D99, D182; draft-denis-dprive-dnscrypt-11 "Key Management"): the
-/// short-term keys rotate every 12 hours and a certificate lives 24, a client holding the old one is still answered
-/// when its key has been replaced, and a query sealed under a key past its certificate is dropped, in silence.
+/// `dedensd` answering `DNSCrypt` on simulated time (D99, D101, D182; draft-denis-dprive-dnscrypt-11 "Key Management",
+/// "Resumption Tickets"): the short-term keys rotate every 12 hours and a certificate lives 24, a client holding the
+/// old one is still answered when its key has been replaced, and a query sealed under a key past its certificate is
+/// dropped, in silence; a resumption ticket is good for ten minutes, across a rotation too.
 #[cfg(feature = "dnscrypt")]
 mod dnscrypt {
     use std::net::SocketAddr;
@@ -549,9 +550,10 @@ mod dnscrypt {
     use dedens_cache::Config;
     use dedens_dnscrypt::{
         Certificate, ClientNonce, ClientSession, EncryptionSystem, ProviderKey, QueryPadding,
-        SecretKey, SigningKey,
+        Resumption, SecretKey, SigningKey,
     };
     use dedens_net::entropy::Entropy;
+    use dedens_proto::edns::EdnsOption;
     use dedens_proto::rdata::RData;
     use dedens_proto::{Message, RecordType};
     use dedens_server::Forward;
@@ -587,11 +589,154 @@ mod dnscrypt {
         Ok(found)
     }
 
+    /// As [`certificates`], from a query padded to 3 KB, as a client's is: the PQ certificate comes with the others
+    /// (D101, draft "Certificate Retrieval").
+    async fn certificates_padded(
+        socket: &UdpSocket,
+        resolver: SocketAddr,
+        provider: &ProviderKey,
+    ) -> turmoil::Result<Vec<Certificate>> {
+        let mut ask = Message::query(1, question(PROVIDER, RecordType::TXT));
+        ask.edns
+            .as_mut()
+            .ok_or("EDNS")?
+            .options
+            .push(EdnsOption::Padding(3000));
+        socket.send_to(&ask.to_vec()?, resolver).await?;
+        let mut buf = [0; 4096];
+        let (len, _) = timeout(120 * SECOND, socket.recv_from(&mut buf)).await??;
+        let reply = Message::decode(&buf[..len])?.message;
+        let mut found = Vec::new();
+        for record in &reply.answer {
+            let RData::Txt(txt) = record.data() else {
+                return Err("a TXT record".into());
+            };
+            found.push(Certificate::from_txt(&txt, provider)?);
+        }
+        Ok(found)
+    }
+
+    /// A full PQ query sealed under `certificate`, answered with the ticket it asks for, or `None`.
+    async fn ticket(
+        socket: &UdpSocket,
+        resolver: SocketAddr,
+        certificate: &Certificate,
+    ) -> turmoil::Result<Option<Resumption>> {
+        let mut entropy = Entropy::new()?;
+        let session = ClientSession::xwing(certificate, &mut entropy).map_err(|_| "a session")?;
+        let wire = Message::query(7, question("example.com", RecordType::A)).to_vec()?;
+        let nonce = ClientNonce::random(&mut entropy);
+        let (packet, context) = session
+            .encrypt_query(&wire, QueryPadding::udp(wire.len(), 0), nonce)
+            .map_err(|_| "a query")?;
+        socket.send_to(&packet, resolver).await?;
+        let mut buf = [0; 4096];
+        let (len, _) = timeout(120 * SECOND, socket.recv_from(&mut buf)).await??;
+        let opened = context
+            .open_response(&buf[..len])
+            .map_err(|_| "a response")?;
+        assert_eq!(Message::decode(&opened.message)?.message.answer.len(), 2);
+        Ok(opened.resumption)
+    }
+
+    /// Whether the query resumed with `resumption` is answered within 2 minutes, and the ticket of a renewal.
+    async fn resumed(
+        socket: &UdpSocket,
+        resolver: SocketAddr,
+        resumption: &Resumption,
+    ) -> turmoil::Result<Option<Option<Resumption>>> {
+        let wire = Message::query(8, question("example.com", RecordType::A)).to_vec()?;
+        let nonce = ClientNonce::random(&mut Entropy::new()?);
+        let (packet, context) = resumption
+            .encrypt_query(&wire, QueryPadding::udp(wire.len(), 256), nonce)
+            .map_err(|_| "a query")?;
+        socket.send_to(&packet, resolver).await?;
+        let mut buf = [0; 4096];
+        let Ok(received) = timeout(120 * SECOND, socket.recv_from(&mut buf)).await else {
+            return Ok(None);
+        };
+        let (len, _) = received?;
+        let opened = context
+            .open_response(&buf[..len])
+            .map_err(|_| "a response")?;
+        assert_eq!(Message::decode(&opened.message)?.message.answer.len(), 2);
+        Ok(Some(opened.resumption))
+    }
+
+    /// D101: a ticket resumes queries for ten minutes, and not after; one taken just before a rotation still resumes
+    /// after it (the ticket key before is kept), and not past its end; a ticket near its end is renewed in the answer
+    /// to a resumed query.
+    #[test]
+    fn tickets_resume_for_ten_minutes_across_a_rotation() {
+        seed::each(FEW, |seed| {
+            let mut world = Topology::new()
+                .upstream(answers_and_txt())
+                .resolver(|upstreams| {
+                    let forward = Forward::new(upstreams.iter().cloned())
+                        .expect("an upstream server to forward to")
+                        .with_timeout(60 * SECOND)
+                        .with_tries(NonZeroU8::MIN);
+                    pipeline_forwarding(Config::default(), forward)
+                })
+                .dnscrypt(PROVIDER, SEED)
+                .duration(30 * HOUR)
+                .tick(10 * SECOND)
+                .build(seed);
+            let resolver = world.resolver;
+            let provider = SigningKey::from_seed(&SEED).expect("a seed").provider_key();
+            world.client_direct(async move |_| {
+                let socket = UdpSocket::bind("0.0.0.0:0").await?;
+                let found = certificates_padded(&socket, resolver, &provider).await?;
+                assert_eq!(found.len(), 3, "a certificate per system, PQ included");
+                let pq = newest(&found, EncryptionSystem::XWing).expect("a PQ certificate");
+
+                let first = ticket(&socket, resolver, pq).await?.expect("a ticket");
+                assert_eq!(first.lifetime(), 600);
+                sleep(60 * SECOND).await;
+                let renewed = resumed(&socket, resolver, &first)
+                    .await?
+                    .expect("resumed within its life");
+                assert!(renewed.is_none(), "no renewal early in its life");
+                sleep(300 * SECOND).await;
+                let renewed = resumed(&socket, resolver, &first)
+                    .await?
+                    .expect("resumed within its life");
+                assert!(renewed.is_some(), "renewed near its end");
+                sleep(300 * SECOND).await;
+                assert!(
+                    resumed(&socket, resolver, &first).await?.is_none(),
+                    "an expired ticket is dropped"
+                );
+
+                // Just before the rotation of the keys, 12 hours after the start.
+                sleep(12 * HOUR - 1000 * SECOND).await;
+                let old = ticket(&socket, resolver, pq).await?.expect("a ticket");
+                sleep(400 * SECOND).await;
+                let found = certificates_padded(&socket, resolver, &provider).await?;
+                let new = newest(&found, EncryptionSystem::XWing).expect("a PQ certificate");
+                assert!(new.body().serial > pq.body().serial, "rotated");
+                assert!(
+                    resumed(&socket, resolver, &old).await?.is_some(),
+                    "the key before the rotation opens its tickets"
+                );
+                sleep(400 * SECOND).await;
+                assert!(
+                    resumed(&socket, resolver, &old).await?.is_none(),
+                    "the ticket has expired"
+                );
+                let fresh = ticket(&socket, resolver, new).await?.expect("a ticket");
+                assert!(resumed(&socket, resolver, &fresh).await?.is_some());
+                Ok(())
+            });
+            world.run().expect("the run passes its checks");
+        });
+    }
+
     /// The newest certificate of `system` among `found`.
     fn newest(found: &[Certificate], system: EncryptionSystem) -> Option<&Certificate> {
         found
             .iter()
-            .find(|certificate| certificate.body().system == system)
+            .find(|certificate| certificate.body().system() == system)
     }
 
     /// Whether `example.com A` sealed under `certificate` gets its two records back within 2 minutes.
