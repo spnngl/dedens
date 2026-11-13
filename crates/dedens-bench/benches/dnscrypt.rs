@@ -216,7 +216,7 @@ fn decrypt_response(bencher: Bencher<'_, '_>, (system, case): (EncryptionSystem,
     });
 }
 
-/// The `X-Wing` side of PQDNSCrypt (D101): the certificate, one full query (encapsulation, then key derivation and
+/// The `X-Wing` side of `PQDNSCrypt` (D101): the certificate, one full query (encapsulation, then key derivation and
 /// sealing), its opening (decapsulation, then the same), and the queries resumed with a ticket.
 fn pq_certificate(secret: &XWingSecretKey) -> Certificate {
     Certificate::sign(

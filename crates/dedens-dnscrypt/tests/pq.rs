@@ -1,4 +1,4 @@
-//! draft-denis-dprive-dnscrypt-11, "Post-Quantum Key Exchange (PQDNSCrypt)" and "Appendix 3: PQ Test Vector
+//! draft-denis-dprive-dnscrypt-11, "Post-Quantum Key Exchange (`PQDNSCrypt`)" and "Appendix 3: PQ Test Vector
 //! Structure": the pinned inputs, the certificate, a full query, the ticket and its response, a resumed query, and
 //! the "Negative Cases", with the downgrade protection and the control field.
 //!
@@ -7,6 +7,7 @@
 //! `x-wing` crate against the draft's X-Wing: the ciphertext and the key derived from the KEM's secret are the
 //! draft's only if the KEM's are.
 
+use std::fmt::Write;
 use std::fs;
 
 use dedens_dnscrypt::{
@@ -49,8 +50,10 @@ fn sha256(bytes: &[u8]) -> String {
     digest(&SHA256, bytes)
         .as_ref()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .fold(String::new(), |mut text, byte| {
+            write!(text, "{byte:02x}").expect("a String takes any text");
+            text
+        })
 }
 
 /// The ticket's `<es-version>`-to-expiry clock: the query is sent at `<ts-start>` plus 300 seconds.
