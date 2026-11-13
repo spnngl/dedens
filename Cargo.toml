@@ -96,7 +96,9 @@ nix = { version = "0.31.3", default-features = false, features = [
   "user",
 ] }
 # D97: DNSCrypt's one-time authenticator, NaCl's secretbox tag.
-poly1305 = { version = "0.9.1", default-features = false, features = ["zeroize"] }
+poly1305 = { version = "0.9.1", default-features = false, features = [
+  "zeroize",
+] }
 # D182: `Compio::timeout_at`'s future, polled in place; futures-util depends on it already.
 pin-project-lite = "0.2.17"
 predicates = "3.1.4"
@@ -115,7 +117,9 @@ rcgen = { version = "0.14.10", default-features = false, features = [
   "ring",
 ] }
 # D97: DNSCrypt's XSalsa20-Poly1305 (es-version 0x0001): the stream cipher and its HSalsa20 key derivation.
-salsa20 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
+salsa20 = { version = "0.11.0", default-features = false, features = [
+  "zeroize",
+] }
 # D60: the OS trust store for DNS over TLS, as ureq's for the list downloads.
 rustls-platform-verifier = "0.7.1"
 # D36: query files and the JSON and YAML output (D37).

@@ -237,9 +237,10 @@ pub fn dnscrypt_unpad(data: &[u8]) {
     let exchange = exchange_of(hash);
     // Up to a little over the 4028 bytes a packet can carry, where the query is refused.
     let padding = QueryPadding::to(below(hash, 8, 4100));
-    let Ok((packet, _)) = exchange
-        .session
-        .encrypt_query(data, padding, ClientNonce::from_bytes(NONCE))
+    let Ok((packet, _)) =
+        exchange
+            .session
+            .encrypt_query(data, padding, ClientNonce::from_bytes(NONCE))
     else {
         return;
     };
