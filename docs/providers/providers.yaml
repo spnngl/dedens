@@ -13,7 +13,10 @@
 #   tls: {name, addresses}: DNS over TLS (RFC 7858), port 853, `name` the one its certificate holds;
 #   quic: {name, addresses}: DNS over QUIC (RFC 9250), UDP port 853;
 #   https: DNS over HTTPS (RFC 8484) URLs, asked over HTTP/3 (D83); the host name is resolved by the system;
-#   https_h2: URLs of servers where HTTP/3 does not answer (November 2026), asked once HTTP/2 is there (D83).
+#   https_h2: URLs of servers where HTTP/3 does not answer (November 2026), asked once HTTP/2 is there (D83);
+#   dnscrypt: DNSCrypt stamps (`sdns://…`) of the `v3/public-resolvers.md` list of DNSCrypt/dnscrypt-resolvers, each
+#     asked over UDP then TCP by a `dedens` built with the `dnscrypt` feature (D98); AdGuard's are left out: its
+#     certificates carry a client magic of eight zero bytes, which the draft forbids and `dedens` refuses.
 # IPv6 addresses are quoted: a plain YAML scalar cannot end with `:`. Anchors (`&x`, `*x`) share a list.
 
 # Per category, names a resolver blocking it blocks at least one of and the others answer (measured November
@@ -181,6 +184,9 @@ providers:
           - "2620:fe::9"
         tls: {name: dns.quad9.net, addresses: *quad9}
         quic: {name: dns.quad9.net, addresses: *quad9}
+        dnscrypt:
+          - sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0
+          - sdns://AQMAAAAAAAAAFDE0OS4xMTIuMTEyLjExMjo4NDQzIGfIR7jIdYzRICRVQ751Z0bfNN8dhMALjEcDaN-CHYY-GTIuZG5zY3J5cHQtY2VydC5xdWFkOS5uZXQ
         https:
           - https://dns.quad9.net/dns-query
       - id: unsecured
@@ -194,6 +200,9 @@ providers:
           - "2620:fe::10"
           - "2620:fe::fe:10"
         tls: {name: dns10.quad9.net, addresses: *quad9-unsecured}
+        dnscrypt:
+          - sdns://AQcAAAAAAAAADTkuOS45LjEwOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA
+          - sdns://AQcAAAAAAAAAEzE0OS4xMTIuMTEyLjEwOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA
         https:
           - https://dns10.quad9.net/dns-query
       - id: ecs
@@ -207,6 +216,9 @@ providers:
           - "2620:fe::11"
           - "2620:fe::fe:11"
         tls: {name: dns11.quad9.net, addresses: *quad9-ecs}
+        dnscrypt:
+          - sdns://AQMAAAAAAAAADTkuOS45LjExOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA
+          - sdns://AQMAAAAAAAAAEzE0OS4xMTIuMTEyLjExOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA
         https:
           - https://dns11.quad9.net/dns-query
 
@@ -231,6 +243,8 @@ providers:
           - "2a0d:2a00:1::2"
           - "2a0d:2a00:2::2"
         tls: {name: security-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-security}
+        dnscrypt:
+          - sdns://AQMAAAAAAAAAEjE4NS4yMjguMTY4Ljk6ODQ0MyC8rDL61UNpFx8IMtYHUCfDIIzu8Ojpn5QY3HdgZdSPKRFjbGVhbmJyb3dzaW5nLm9yZw
         https_h2:
           - https://doh.cleanbrowsing.org/doh/security-filter/
       - id: adult
@@ -245,6 +259,8 @@ providers:
           - "2a0d:2a00:1::1"
           - "2a0d:2a00:2::1"
         tls: {name: adult-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-adult}
+        dnscrypt:
+          - sdns://AQMAAAAAAAAAEzE4NS4yMjguMTY4LjEwOjg0NDMgvKwy-tVDaRcfCDLWB1AnwyCM7vDo6Z-UGNx3YGXUjykRY2xlYW5icm93c2luZy5vcmc
         https_h2:
           - https://doh.cleanbrowsing.org/doh/adult-filter/
       - id: family
@@ -259,6 +275,8 @@ providers:
           - "2a0d:2a00:1::"
           - "2a0d:2a00:2::"
         tls: {name: family-filter-dns.cleanbrowsing.org, addresses: *cleanbrowsing-family}
+        dnscrypt:
+          - sdns://AQMAAAAAAAAAFDE4NS4yMjguMTY4LjE2ODo4NDQzILysMvrVQ2kXHwgy1gdQJ8MgjO7w6OmflBjcd2Bl1I8pEWNsZWFuYnJvd3Npbmcub3Jn
         https_h2:
           - https://doh.cleanbrowsing.org/doh/family-filter/
 
@@ -282,6 +300,8 @@ providers:
           - "2620:119:35::35"
           - "2620:119:53::53"
         tls: {name: dns.opendns.com, addresses: *opendns}
+        dnscrypt:
+          - sdns://AQEAAAAAAAAADjIwOC42Ny4yMjAuMjIwILc1EUAgbyJdPivYItf9aR6hwzzI1maNDL4Ev6vKQ_t5GzIuZG5zY3J5cHQtY2VydC5vcGVuZG5zLmNvbQ
         https_h2:
           - https://doh.opendns.com/dns-query
       - id: familyshield
@@ -295,6 +315,8 @@ providers:
           - "2620:119:35::123"
           - "2620:119:53::123"
         tls: {name: familyshield.opendns.com, addresses: *opendns-familyshield}
+        dnscrypt:
+          - sdns://AQEAAAAAAAAADjIwOC42Ny4yMjAuMTIzILc1EUAgbyJdPivYItf9aR6hwzzI1maNDL4Ev6vKQ_t5GzIuZG5zY3J5cHQtY2VydC5vcGVuZG5zLmNvbQ
         https_h2:
           - https://doh.familyshield.opendns.com/dns-query
 
@@ -336,6 +358,9 @@ providers:
         plain:
           - 8.26.56.26
           - 8.20.247.20
+        dnscrypt:
+          - sdns://AQUAAAAAAAAACzguMjAuMjQ3LjIwINLCVKqWHB7KF5mW9V-8gB8INscjeatSfs2ohhvg4LOwKDIuZG5zY3J5cHQtY2VydC5zaGllbGQtMi5kbnNieWNvbW9kby5jb20
+          - sdns://AQUAAAAAAAAACjguMjYuNTYuMjYg0sJUqpYcHsoXmZb1X7yAHwg2xyN5q1J-zaiGG-Dgs7AoMi5kbnNjcnlwdC1jZXJ0LnNoaWVsZC0yLmRuc2J5Y29tb2RvLmNvbQ
 
   - id: controld
     name: Control D
