@@ -273,8 +273,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   copies of `urls`), as a fuzz input must not open the paths it names (`/dev/zero` or a FIFO hangs the run, a real
   file differs between machines). `fuzz/` drives them as `parse_command_line`, arguments between NUL bytes as the
   kernel passes them, and `read_config`, seeded by the command lines of the docs and the CLI's tests
-  (`fuzz/seeds/command_lines.txt`) and by `dedensd`'s configurations (the image's, the packages', the example of its
-  config module). The unit tests move into the library target: `just loom` and `just man` name `--lib`. D170's
+  (`fuzz/seeds/command_lines.txt`) and by `dedensd`'s configurations (the image's, the packages', the one of
+  `fuzz/seeds/dnscrypt.yaml`, the example of its config module). The unit tests move into the library target: `just loom` and `just man` name `--lib`. D170's
   benches keep including their harness: the library exposes no test helper. Rejected: `#[path]` includes from
   `fuzz/` (each parser reaches much of its crate through `crate::` paths, and a moved module breaks the fuzz build
   only); the parsers moved into a library crate (the configuration reaches the lists, the downloads, the privileges
