@@ -325,7 +325,7 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
@@ -582,14 +582,17 @@ kani-fast:
         cargo kani -p "$package" "${args[@]}"
     done
 
-# Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org, and every
-# Internet-Draft (at the revision linked) from ietf.org.
+# Download every RFC linked from docs/rfc/list.md into docs/rfc/archive/, as plain text from rfc-editor.org; every
+# Internet-Draft (at the revision linked) from ietf.org; and every other text linked there by a .txt URL (a draft at
+# one revision, a text at one commit), under the lowercased name of the URL's file.
 rfc-archive:
     mkdir -p docs/rfc/archive
     grep -oE "datatracker\.ietf\.org/doc/html/rfc[0-9]+" docs/rfc/list.md | grep -oE "[0-9]+$" | sort -un \
         | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/rfc{}.txt https://www.rfc-editor.org/rfc/rfc{}.txt
     grep -oE "datatracker\.ietf\.org/doc/html/draft-[a-z0-9-]+-[0-9]+" docs/rfc/list.md | grep -oE "draft-.*$" | sort -u \
         | xargs -P 8 -I{} curl -fsSL --retry 3 -o docs/rfc/archive/{}.txt https://www.ietf.org/archive/id/{}.txt
+    grep -oE "https://[^ )]+\.txt" docs/rfc/list.md | sort -u | while read -r url; do \
+        curl -fsSL --retry 3 -o "docs/rfc/archive/$(basename "$url" | tr '[:upper:]' '[:lower:]')" "$url"; done
 
 # Refresh IANA's root hints, bundled for `dedens +trace`.
 root-hints:

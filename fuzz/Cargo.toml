@@ -16,6 +16,7 @@ cargo-fuzz = true
 # The parsers of the two binaries, through their libraries (D181), with every transport they read.
 dedens = { path = "../apps/dedens", features = ["odoh", "doc"] }
 dedens-cache = { path = "../crates/dedens-cache" }
+dedens-dnscrypt = { path = "../crates/dedens-dnscrypt" }
 dedens-dnssec = { path = "../crates/dedens-dnssec" }
 dedens-net = { path = "../crates/dedens-net", features = ["odoh", "dnscrypt"] }
 dedens-odoh = { path = "../crates/dedens-odoh" }
@@ -31,7 +32,7 @@ hickory-proto = { version = "0.26.3", default-features = false, features = [
 # The messages of `doh`; the same version as the workspace's (D82).
 http = "1.5.0"
 libfuzzer-sys = "0.4"
-# The randomness of `odoh`; the same version as the workspace's (D78).
+# The randomness of `odoh` and `dnscrypt`; the same version as the workspace's (D78).
 rand_core = "0.10.1"
 
 [[bin]]
@@ -177,6 +178,27 @@ bench = false
 [[bin]]
 name = "read_odoh_http"
 path = "fuzz_targets/read_odoh_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_dnscrypt_certificate"
+path = "fuzz_targets/parse_dnscrypt_certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_decrypt"
+path = "fuzz_targets/dnscrypt_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_encrypt_response"
+path = "fuzz_targets/dnscrypt_encrypt_response.rs"
 test = false
 doc = false
 bench = false

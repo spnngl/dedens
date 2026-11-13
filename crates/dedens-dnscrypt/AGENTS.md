@@ -4,7 +4,7 @@ DNSCrypt v2 (draft-denis-dprive-dnscrypt, D97): the sans-IO core of both classic
 `src/lib.rs` maps the items. Stamps (D102) and the exchange over UDP, TCP and relays are other crates'.
 
 - Cite the draft by section name, never by number: the numbers move between revisions (the revision read is pinned in
-  `docs/rfc/list.md`). Where the draft is silent, `docs/rfc/archive/dnscrypt-v2-protocol-64eb920.txt` is the 2023 text.
+  `docs/rfc/list.md`). Where the draft is silent, `docs/rfc/archive/dnscrypt-v2-protocol.txt` is the 2023 text.
 - A `Certificate` is only ever a verified one: `parse` and `from_txt` check the signature, the validity order and the
   client magic. The time is a parameter, never read.
 - A packet that fails any check is dropped without a reply (resolver) or ignored (client). The errors say which check,

@@ -950,7 +950,6 @@ name = "dedens-dnscrypt"
 version = "0.1.0"
 dependencies = [
  "chacha20",
- "data-encoding",
  "dedens-proto",
  "dedens-testkit",
  "poly1305",
