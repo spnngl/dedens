@@ -525,8 +525,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Message::encode_truncated` with TC set, before it is padded, and never dropped (the draft's "never stay
     silent"). A response the question alone does not fit is `EncryptResponseError::NoRoom`. The resolver's
     `decrypt_query` returns the plaintext without reading it as DNS: what to answer is the server's.
-  - Secrets: the secret keys and the shared keys are `Zeroizing` and print as redacted; not wiped: `ring`'s key
-    schedule, the plaintexts, copies the allocator moved. No `unwrap`, `expect`, `as` or `unsafe` in non-test code.
+  - Secrets: the secret keys, the shared keys and the Poly1305 key block are `Zeroizing` and print as redacted;
+    the `zeroize` features of `chacha20`, `salsa20` and `poly1305` wipe the cipher and authenticator state on drop.
+    Not wiped: `ring`'s key schedule, the by-value copies of the secret key and of the X25519 output that go to
+    `x25519` and to HSalsa20 or HChaCha20, the arrays the keys are copied into to build a cipher, the plaintexts,
+    copies the allocator moved. No `unwrap`, `expect`, `as` or `unsafe` in non-test code.
   - Tests: every vector of the draft's "Appendix 2: DNSCrypt Test Vectors" and its negative cases (`tests/draft.rs`),
     certificates (`tests/certificate.rs`), round trips and the limits (`tests/exchange.rs`), and exchanges captured from
     Quad9 for both systems, which a resolver of the field answered (`tests/quad9.rs`, `testdata/dnscrypt/README.md`).
