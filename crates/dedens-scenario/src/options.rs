@@ -61,6 +61,12 @@ pub struct Options {
     /// Default: off.
     #[cfg_attr(feature = "clap", arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true"))]
     pub dnscrypt_cert: Option<bool>,
+    /// Ask the `DNSCrypt` resolver, the server, which must be an `sdns://` stamp, through this relay (Anonymized
+    /// `DNSCrypt`, D100), so that the resolver never sees the client's address: an `sdns://` relay stamp, or an
+    /// address with an optional port (443). Certificates are asked through it too. Not with `tls`, `quic`, `https`,
+    /// `odoh_proxy` or `coap`. Default: direct.
+    #[cfg_attr(feature = "clap", arg(long, value_name = "RELAY"))]
+    pub dnscrypt_relay: Option<String>,
     /// A file with the target's key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they
     /// are not fetched from the target, which would give it the client's address, and no query is linked to it. Read
     /// once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error.
@@ -135,6 +141,7 @@ impl Options {
             coap: self.coap.or(fallback.coap),
             doc_discover: self.doc_discover.or(fallback.doc_discover),
             dnscrypt_cert: self.dnscrypt_cert.or(fallback.dnscrypt_cert),
+            dnscrypt_relay: self.dnscrypt_relay.or(fallback.dnscrypt_relay),
             odoh_config: self.odoh_config.or(fallback.odoh_config),
             ignore: self.ignore.or(fallback.ignore),
             recurse: self.recurse.or(fallback.recurse),
@@ -160,8 +167,8 @@ impl Options {
     /// [`InvalidOption`] for `edns: false` with `bufsize`, `dnssec`, `nsid`, a cookie, or TLS, QUIC or HTTPS, whose queries are padded with
     /// EDNS (RFC 8467 §4.1); HTTPS together with `tcp`, `tls` or `quic`, or `https_get` with `https_post`; `odoh_proxy` with `tcp`, `tls`,
     /// `quic` or `https_get`; CoAP with `tcp`, `tls`, `quic`, HTTPS or `odoh_proxy`; `odoh_config` without
-    /// `odoh_proxy`; `dnscrypt_cert` with `tls`, `quic`, HTTPS, `odoh_proxy` or CoAP, which a `DNSCrypt` server
-    /// goes with none of.
+    /// `odoh_proxy`; `dnscrypt_cert` or `dnscrypt_relay` with `tls`, `quic`, HTTPS, `odoh_proxy` or CoAP, which a
+    /// `DNSCrypt` server goes with none of.
     pub fn check(&self) -> Result<(), InvalidOption> {
         let needs_edns = self.bufsize.is_some()
             || self.dnssec == Some(true)
@@ -206,11 +213,11 @@ impl Options {
                 "coap goes with no tcp, tls, quic, https or odoh-proxy: it is CoAP over UDP",
             ));
         }
-        if self.dnscrypt_cert == Some(true)
+        if (self.dnscrypt_cert == Some(true) || self.dnscrypt_relay.is_some())
             && (self.encrypted() || self.https() || self.odoh() || self.coap == Some(true))
         {
             return Err(InvalidOption(
-                "dnscrypt-cert goes with no tls, quic, https, odoh-proxy or coap: it asks a DNSCrypt server",
+                "dnscrypt-cert and dnscrypt-relay go with no tls, quic, https, odoh-proxy or coap: they ask a DNSCrypt server",
             ));
         }
         Ok(())
@@ -695,5 +702,31 @@ mod tests {
         };
         assert_eq!(line.or(on.clone()).dnscrypt_cert, Some(false));
         assert_eq!(Options::default().or(on).dnscrypt_cert, Some(true));
+    }
+
+    /// D100: `dnscrypt_relay` is merged as the other options, and goes with the transports `dnscrypt_cert` goes with.
+    #[test]
+    fn dnscrypt_relay_goes_with_no_other_transport() {
+        let relay = Options {
+            dnscrypt_relay: Some("192.0.2.1".to_owned()),
+            ..Options::default()
+        };
+        assert_eq!(relay.check(), Ok(()));
+        for refused in [
+            Options {
+                tls: Some(true),
+                ..relay.clone()
+            },
+            Options {
+                coap: Some(true),
+                ..relay.clone()
+            },
+        ] {
+            assert!(refused.check().is_err(), "{refused:?}");
+        }
+        assert_eq!(
+            Options::default().or(relay).dnscrypt_relay.as_deref(),
+            Some("192.0.2.1")
+        );
     }
 }

@@ -4,7 +4,7 @@
 .SH NAME
 dedens \- A dig\-like DNS client
 .SH SYNOPSIS
-\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
+\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-relay\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
 .SH DESCRIPTION
 A dig\-like DNS client.
 .PP
@@ -186,6 +186,9 @@ true
 .IP \(bu 2
 false
 .RE
+.TP
+\fB\-\-dnscrypt\-relay\fR \fI<RELAY>\fR
+Ask the `DNSCrypt` resolver, the server, which must be an `sdns://` stamp, through this relay (Anonymized `DNSCrypt`, D100), so that the resolver never sees the client\*(Aqs address: an `sdns://` relay stamp, or an address with an optional port (443). Certificates are asked through it too. Not with `tls`, `quic`, `https`, `odoh_proxy` or `coap`. Default: direct
 .TP
 \fB\-\-odoh\-config\fR \fI<FILE>\fR
 A file with the target\*(Aqs key configurations (RFC 9230 §5), as the target serves them, for `odoh_proxy`: they are not fetched from the target, which would give it the client\*(Aqs address, and no query is linked to it. Read once, before any query: a file that cannot be read or holds no configurations (RFC 9230 §6) is a usage error. Default: fetched from the target

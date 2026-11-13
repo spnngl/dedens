@@ -2,11 +2,12 @@
 //! half, and the usage errors. Real stamps and resolvers: `just providers`.
 
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
 use std::num::NonZeroU16;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, ClientMagic, EncryptionSystem, ResolverKey, SecretKey,
@@ -67,6 +68,8 @@ fn handle(
     {
         let mut answer = decoded.message.clone().into_owned();
         answer.header.flags = answer.header.flags.with(Flags::QR);
+        // The padding of a relayed query is not echoed: a relay drops a response longer than the query.
+        answer.edns = None;
         answer.answer.push(Record::new(
             decoded.message.questions[0].name.clone().into_owned(),
             Class::IN,
@@ -203,6 +206,165 @@ fn the_certificates_are_listed_on_request() {
     assert!(out.contains("\"certificates\":[{\"system\""), "{out}");
 }
 
+/// An Anonymized `DNSCrypt` relay (D100) on one loopback port, UDP and TCP: it passes the inner packet after the
+/// 28-byte prefix to the resolver over UDP, whatever carried it, and the response back if it is not longer.
+struct Relay {
+    /// The packets it got, UDP then TCP.
+    seen: Arc<(AtomicUsize, AtomicUsize)>,
+    addr: SocketAddr,
+}
+
+/// The response of the resolver named by the prefix of `packet`, if it is not longer than the inner packet.
+fn pass(packet: &[u8]) -> Option<Vec<u8>> {
+    let prefix = packet.get(..28)?;
+    assert_eq!(
+        &prefix[..10],
+        &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0]
+    );
+    let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&prefix[10..26]).expect("16 bytes"));
+    let target = SocketAddr::new(
+        ip.to_canonical(),
+        u16::from_be_bytes([prefix[26], prefix[27]]),
+    );
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("a timeout");
+    socket.send_to(&packet[28..], target).expect("sent");
+    let mut buf = vec![0; 65535];
+    let (len, _) = socket.recv_from(&mut buf).ok()?;
+    (len <= packet.len() - 28).then(|| buf[..len].to_vec())
+}
+
+impl Relay {
+    fn start() -> Self {
+        let (udp, tcp) = loop {
+            let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+            let addr = udp.local_addr().expect("an address");
+            if let Ok(tcp) = TcpListener::bind(addr) {
+                break (udp, tcp);
+            }
+        };
+        let addr = udp.local_addr().expect("an address");
+        let seen = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+        let counted = Arc::clone(&seen);
+        thread::spawn(move || {
+            let mut buf = vec![0; 65535];
+            while let Ok((len, from)) = udp.recv_from(&mut buf) {
+                counted.0.fetch_add(1, Ordering::SeqCst);
+                if let Some(reply) = pass(&buf[..len]) {
+                    let _ = udp.send_to(&reply, from);
+                }
+            }
+        });
+        let counted = Arc::clone(&seen);
+        thread::spawn(move || {
+            for stream in tcp.incoming() {
+                let counted = Arc::clone(&counted);
+                thread::spawn(move || relay_tcp(stream.expect("a connection"), &counted));
+            }
+        });
+        Self { seen, addr }
+    }
+
+    /// The packets got over UDP and over TCP.
+    fn seen(&self) -> (usize, usize) {
+        (
+            self.seen.0.load(Ordering::SeqCst),
+            self.seen.1.load(Ordering::SeqCst),
+        )
+    }
+
+    /// The relay as a relay stamp.
+    fn stamp(&self) -> String {
+        let relay = dedens_net::stamp::Relay {
+            address: Endpoint {
+                ip: self.addr.ip(),
+                port: NonZeroU16::new(self.addr.port()),
+            },
+        };
+        Stamp::Relay(relay).to_string()
+    }
+}
+
+/// Passes the framed packets of one TCP connection.
+fn relay_tcp(mut stream: impl Read + Write, seen: &(AtomicUsize, AtomicUsize)) {
+    loop {
+        let mut length = [0; 2];
+        if stream.read_exact(&mut length).is_err() {
+            return;
+        }
+        let mut packet = vec![0; usize::from(u16::from_be_bytes(length))];
+        if stream.read_exact(&mut packet).is_err() {
+            return;
+        }
+        seen.1.fetch_add(1, Ordering::SeqCst);
+        if let Some(reply) = pass(&packet) {
+            let framed = [
+                &u16::try_from(reply.len()).expect("short").to_be_bytes()[..],
+                &reply,
+            ]
+            .concat();
+            if stream.write_all(&framed).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// D100: `+dnscrypt-relay` sends the certificates' query and the sealed ones through the relay, given as an address
+/// or as a relay stamp, over UDP and over TCP with `+tcp`; the response is the resolver's, all the same.
+#[test]
+fn a_relay_carries_the_certificates_and_the_queries() {
+    let resolver = Resolver::start();
+    let relay = Relay::start();
+    let address = format!("+dnscrypt-relay={}", relay.addr);
+    let out = run(&[&resolver.stamp, "example.com", &address], 0);
+    assert!(
+        out.contains("over UDP") && out.contains("192.0.2.1"),
+        "{out}"
+    );
+    assert_eq!(relay.seen(), (2, 0), "the certificates, then the query");
+    let stamp = format!("+dnscrypt-relay={}", relay.stamp());
+    let out = run(&[&resolver.stamp, "example.com", "+tcp", &stamp], 0);
+    assert!(
+        out.contains("over TCP") && out.contains("192.0.2.1"),
+        "{out}"
+    );
+    assert_eq!(
+        relay.seen(),
+        (3, 1),
+        "the certificates over UDP, the query over TCP"
+    );
+    let out = run(
+        &[&resolver.stamp, "+dnscrypt-cert", "example.com", &address],
+        0,
+    );
+    assert!(out.contains(&format!("serial {SERIAL}")), "{out}");
+    assert_eq!(relay.seen(), (4, 1), "the certificates only");
+}
+
+/// D100: a relay that does not answer is no reply, and nothing goes direct to the resolver.
+#[test]
+fn a_silent_relay_exits_9() {
+    let resolver = Resolver::start();
+    let silent = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+    let relay = format!(
+        "+dnscrypt-relay={}",
+        silent.local_addr().expect("an address")
+    );
+    dedens()
+        .args([
+            &resolver.stamp,
+            "example.com",
+            &relay,
+            "+tries=1",
+            "+time=100ms",
+        ])
+        .assert()
+        .code(9);
+}
+
 /// D98: a stamp goes with no other transport, `+dnscrypt-cert` needs a stamp, a relay stamp names no resolver.
 #[test]
 fn dnscrypt_usage_errors_exit_2() {
@@ -232,6 +394,18 @@ fn dnscrypt_usage_errors_exit_2() {
         &["+dnscrypt-cert", "@127.0.0.1", "example.com"],
         &["+dnscrypt-cert", &stamp, "+tls", "example.com"],
         &[relay, "example.com"],
+        // D100: the relay goes with a stamp, no other transport, and is an address or a relay stamp.
+        &[&stamp, "+dnscrypt-relay=192.0.2.1", "+tls", "example.com"],
+        &[&stamp, "+dnscrypt-relay=192.0.2.1", "+trace", "example.com"],
+        &["+dnscrypt-relay=192.0.2.1", "example.com"],
+        &["+dnscrypt-relay=192.0.2.1", "@127.0.0.1", "example.com"],
+        &[&stamp, "+dnscrypt-relay=relay.example", "example.com"],
+        &[&stamp, "+dnscrypt-relay=192.0.2.1:0", "example.com"],
+        &[
+            &stamp,
+            &format!("+dnscrypt-relay={}", &stamp[1..]),
+            "example.com",
+        ],
         &["@sdns://AQ", "example.com"],
         &["@sdns://", "example.com"],
     ] {

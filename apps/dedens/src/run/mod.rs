@@ -25,7 +25,7 @@ use dedens_net::exchange::{self, Failure, Response};
 use dedens_net::http3::Http3Error;
 use dedens_net::quic::QuicError;
 #[cfg(feature = "dnscrypt")]
-use dedens_net::stamp::DnsCrypt;
+use dedens_net::stamp::{DnsCrypt, Relay};
 use dedens_net::tcp::TcpError;
 use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
 #[cfg(feature = "dnscrypt")]
@@ -78,6 +78,9 @@ struct Endpoint {
     /// The stamp of a `DNSCrypt` resolver, given as `sdns://…`; `server` is its address (D98).
     #[cfg(feature = "dnscrypt")]
     dnscrypt: Option<Box<DnsCrypt>>,
+    /// The relays of Anonymized `DNSCrypt` that every packet for `dnscrypt` goes through, none when direct (D100).
+    #[cfg(feature = "dnscrypt")]
+    relays: Vec<Relay>,
 }
 
 impl Endpoint {
@@ -477,7 +480,9 @@ async fn certificates(
     let Some(stamp) = &endpoint.dnscrypt else {
         bail!(Usage(anyhow!("+dnscrypt-cert needs an sdns:// server")));
     };
-    let listing = client.dnscrypt_certificates(stamp, options).await?;
+    let listing = client
+        .dnscrypt_certificates_via(stamp, &endpoint.relays, options)
+        .await?;
     let decoded = Message::decode(&listing.response.wire)?;
     let mut report = Report::exchanged(id, endpoint.server.addr, &listing.response, &decoded);
     if let Some(exchange) = &mut report.exchange {
@@ -583,7 +588,9 @@ async fn exchange(
 ) -> Result<Response, ClientError> {
     #[cfg(feature = "dnscrypt")]
     if let Some(stamp) = &endpoint.dnscrypt {
-        return client.exchange_dnscrypt(query, stamp, options).await;
+        return client
+            .exchange_dnscrypt_via(query, stamp, &endpoint.relays, options)
+            .await;
     }
     let server = endpoint.server.clone();
     match &endpoint.proxy {
@@ -782,6 +789,8 @@ mod tests {
             proxy: None,
             #[cfg(feature = "dnscrypt")]
             dnscrypt: None,
+            #[cfg(feature = "dnscrypt")]
+            relays: Vec::new(),
         };
         let cases = [
             (at(None, None, &[]), "192.0.2.1"),
