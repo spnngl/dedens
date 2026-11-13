@@ -377,10 +377,13 @@ fn a_forward_stage_asks_through_its_relays() {
     assert_eq!(relay.seen(), (2, 0), "the certificates, then the query");
     let reply = ask_tcp(server.addr, &query);
     assert_eq!(reply.answer, decode(&dedens_testkit::captured("a")).answer);
-    assert_eq!(
-        relay.seen(),
-        (2, 1),
-        "the query over TCP, the certificates kept"
+    // Each serving thread has its client and keeps its certificates: the thread that got the TCP query may be one
+    // that has not fetched them yet, so one more datagram is possible, and no more.
+    let (udp, tcp) = relay.seen();
+    assert_eq!(tcp, 1, "the query over TCP");
+    assert!(
+        (2..=3).contains(&udp),
+        "the certificates kept or fetched by another thread: {udp}"
     );
     assert_eq!(upstream.queries().len(), 2);
 }
