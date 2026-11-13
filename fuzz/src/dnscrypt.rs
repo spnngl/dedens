@@ -10,8 +10,9 @@ use std::sync::LazyLock;
 
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession,
-    EncryptionSystem, ProviderKey, QueryContext, QueryPadding, ResolverKey, ResponseContext,
-    SecretKey, SigningKey, Validity,
+    EncryptionSystem, ProviderKey, QueryContext, QueryPadding, RESUME_MAGIC, ResolverKey,
+    ResolverPublicKey, ResolverSecret, ResponseContext, SecretKey, SigningKey, TicketKey,
+    TicketKeys, TicketOffer, Validity, XWingSecretKey,
 };
 use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Question};
@@ -42,6 +43,10 @@ const TCP_LIMIT: usize = 4095;
 static PROVIDER: LazyLock<SigningKey> =
     LazyLock::new(|| SigningKey::from_seed(&[1; 32]).expect("a seed is a key"));
 
+/// The public key of the PQ certificates made from arbitrary bytes, derived once: the derivation is slow unoptimized.
+static PQ_KEY: LazyLock<ResolverPublicKey> =
+    LazyLock::new(|| ResolverPublicKey::XWing(XWingSecretKey::from_seed([2; 32]).public_key()));
+
 /// The question of [`DNS_QUERY`], which a response has to carry.
 static QUESTIONS: LazyLock<Vec<Question<'static>>> = LazyLock::new(|| {
     Message::decode(&DNS_QUERY)
@@ -64,25 +69,58 @@ struct Exchange {
     response: Vec<u8>,
 }
 
-fn exchange(system: EncryptionSystem) -> Exchange {
-    let secret = SecretKey::from_bytes([2; 32]);
+/// The certificate of `system`, the resolver's secret and the client's session under it.
+fn session(system: EncryptionSystem) -> (Certificate, ResolverSecret, ClientSession) {
+    let (resolver_key, secret) = match system {
+        EncryptionSystem::XWing => {
+            let secret = XWingSecretKey::from_seed([2; 32]);
+            (
+                ResolverPublicKey::XWing(secret.public_key()),
+                ResolverSecret::from(secret),
+            )
+        }
+        classical => {
+            let secret = SecretKey::from_bytes([2; 32]);
+            (
+                ResolverPublicKey::classical(classical, secret.public_key())
+                    .expect("a classical system"),
+                ResolverSecret::from(secret),
+            )
+        }
+    };
     let certificate = Certificate::sign(
         &PROVIDER,
         CertificateBody {
-            system,
-            resolver_key: secret.public_key(),
+            resolver_key,
             client_magic: ClientMagic::try_from([9; 8]).expect("a magic"),
             serial: 1,
             validity: Validity::new(1, 2).expect("a validity"),
             extensions: Vec::new(),
         },
     );
-    let session =
-        ClientSession::new(&certificate, &SecretKey::from_bytes([3; 32])).expect("a good key");
+    let session = if system == EncryptionSystem::XWing {
+        ClientSession::xwing(&certificate, &mut Fixed(3))
+    } else {
+        ClientSession::new(&certificate, &SecretKey::from_bytes([3; 32]))
+    }
+    .expect("a good key");
+    (certificate, secret, session)
+}
+
+/// The smallest packet of a UDP query: the draft's 256 bytes, but for a PQ query, which carries a ciphertext.
+const fn floor(system: EncryptionSystem) -> usize {
+    match system {
+        EncryptionSystem::XWing => 0,
+        _ => 256,
+    }
+}
+
+fn exchange(system: EncryptionSystem) -> Exchange {
+    let (certificate, secret, session) = session(system);
     let (query, query_context) = session
         .encrypt_query(
             &DNS_QUERY,
-            QueryPadding::udp(DNS_QUERY.len(), 256),
+            QueryPadding::udp(DNS_QUERY.len(), floor(system)),
             ClientNonce::from_bytes(NONCE),
         )
         .expect("a query");
@@ -104,10 +142,11 @@ fn exchange(system: EncryptionSystem) -> Exchange {
 }
 
 /// An exchange of each system, the draft's first.
-static EXCHANGES: LazyLock<[Exchange; 2]> = LazyLock::new(|| {
+static EXCHANGES: LazyLock<[Exchange; 3]> = LazyLock::new(|| {
     [
         exchange(EncryptionSystem::XChaCha20Poly1305),
         exchange(EncryptionSystem::XSalsa20Poly1305),
+        exchange(EncryptionSystem::XWing),
     ]
 });
 
@@ -120,8 +159,12 @@ fn hash(data: &[u8]) -> u64 {
 
 /// The exchange of the system the hash `hash` picks.
 fn exchange_of(hash: u64) -> &'static Exchange {
-    let [classical, salsa] = &*EXCHANGES;
-    if hash & 1 == 0 { classical } else { salsa }
+    let [classical, salsa, pq] = &*EXCHANGES;
+    match hash % 3 {
+        0 => classical,
+        1 => salsa,
+        _ => pq,
+    }
 }
 
 /// A number below `bound` (not 0) from the bits of `hash` after the first `shift`.
@@ -181,13 +224,14 @@ pub fn parse_dnscrypt_certificate(data: &[u8]) {
     else {
         return;
     };
+    // The PQ certificate's extensions are the profile's: `sign` sets them, what the fuzzer gives is for the others.
+    let resolver_key = match system % 3 {
+        0 => ResolverPublicKey::XChaCha20(SecretKey::from_bytes([2; 32]).public_key()),
+        1 => ResolverPublicKey::XSalsa20(SecretKey::from_bytes([2; 32]).public_key()),
+        _ => PQ_KEY.clone(),
+    };
     let body = CertificateBody {
-        system: if system & 1 == 0 {
-            EncryptionSystem::XChaCha20Poly1305
-        } else {
-            EncryptionSystem::XSalsa20Poly1305
-        },
-        resolver_key: SecretKey::from_bytes([2; 32]).public_key(),
+        resolver_key,
         client_magic,
         serial,
         validity,
@@ -361,4 +405,103 @@ pub fn dnscrypt_encrypt_response(data: &[u8]) {
             }
         }
     }
+}
+
+/// The ticket key of the targets below: nothing the fuzzer holds.
+static TICKET_KEYS: LazyLock<TicketKeys> =
+    LazyLock::new(|| TicketKeys::new(TicketKey::new([0, 0, 0, 1], [7; 32]), None));
+
+/// The time of the targets below, inside the certificate's life (1 to 2).
+const NOW: u64 = 1;
+
+/// The PQ exchange: the last of [`EXCHANGES`].
+fn pq_exchange() -> &'static Exchange {
+    &EXCHANGES[2]
+}
+
+/// A resumed query of the PQ exchange, as the client makes it from the ticket of a response.
+static RESUMED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let exchange = pq_exchange();
+    let ticket = TICKET_KEYS
+        .issue(&exchange.response_context, NOW, 600, &mut Fixed(8))
+        .expect("a ticket for a PQ session");
+    let packet = exchange
+        .response_context
+        .encrypt_response_with(&DNS_QUERY, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
+        .expect("a response");
+    let resumption = exchange
+        .query_context
+        .open_response(&packet)
+        .expect("our own response")
+        .resumption
+        .expect("the ticket");
+    resumption
+        .encrypt_query(
+            &DNS_QUERY,
+            QueryPadding::udp(DNS_QUERY.len(), 256),
+            ClientNonce::from_bytes([6; 12]),
+        )
+        .expect("a resumed query")
+        .0
+});
+
+/// Opens a resumed query, then decrypts it: whether the resolver reads it.
+fn resumed_is_read(packet: &[u8]) -> bool {
+    TICKET_KEYS
+        .open(packet, NOW)
+        .and_then(|query| pq_exchange().resolver.decrypt_resumed(&query, NOW))
+        .is_ok()
+}
+
+/// Arbitrary bytes as a resumed query (draft "Resumption Tickets"), alone and after the `PQResume` magic: refused,
+/// never a panic, the fuzzer holding no ticket key. The client's own resumed query is read, and with one bit of it
+/// changed, in the ticket or out of it, is not.
+///
+/// # Panics
+///
+/// When a packet that is not the client's own is read, or its own is not.
+pub fn dnscrypt_ticket(data: &[u8]) {
+    let magic = [RESUME_MAGIC.as_slice(), data].concat();
+    for packet in [data, &magic] {
+        if packet != RESUMED.as_slice() {
+            assert!(!resumed_is_read(packet));
+        }
+    }
+    assert!(resumed_is_read(&RESUMED));
+    assert!(!resumed_is_read(&flipped(&RESUMED, hash(data))));
+}
+
+/// Arbitrary bytes as the control field of a response (draft "Response Control Field"): never a panic, and a
+/// ticket that is offered is not empty and lives. A ticket the resolver issues, whatever the time and the lifetime
+/// the input picks, is read back by the client with the lifetime it was granted, at most the certificate's.
+///
+/// # Panics
+///
+/// When an offer is empty or lasts no time, or a ticket does not read back as it was made.
+pub fn dnscrypt_control(data: &[u8]) {
+    if let Ok(Some(offer)) = TicketOffer::parse(data) {
+        assert!(!offer.ticket.is_empty() && offer.lifetime > 0);
+    }
+
+    let hash = hash(data);
+    let now = hash & 3;
+    let lifetime = u32::try_from((hash >> 8) % 1000).expect("a small lifetime");
+    let exchange = pq_exchange();
+    let Some(ticket) = TICKET_KEYS.issue(&exchange.response_context, now, lifetime, &mut Fixed(8))
+    else {
+        return;
+    };
+    assert!(ticket.lifetime() > 0 && ticket.lifetime() <= lifetime);
+    let packet = exchange
+        .response_context
+        .encrypt_response_with(&DNS_QUERY, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
+        .expect("a response");
+    let opened = exchange
+        .query_context
+        .open_response(&packet)
+        .expect("our own response");
+    let resumption = opened.resumption.expect("the ticket");
+    assert_eq!(resumption.lifetime(), ticket.lifetime());
+    assert_eq!(resumption.ticket(), ticket.as_bytes());
+    assert!(resumption.expires_at(now) <= 2);
 }
