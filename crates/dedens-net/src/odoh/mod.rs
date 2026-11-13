@@ -18,7 +18,6 @@
 pub(crate) mod client;
 pub mod proxy;
 
-use core::convert::Infallible;
 use std::time::{Duration, SystemTime};
 
 use dedens_odoh::{ExchangeError, MEDIA_TYPE, Message, WireError};
@@ -26,13 +25,12 @@ use dedens_proto::MAX_MESSAGE_LEN;
 use http::header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderName};
 use http::uri::Authority;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
-use rand_core::{TryCryptoRng, TryRng};
-use zeroize::Zeroizing;
 
 #[cfg(doc)]
 use crate::client::Client;
 use crate::client::local_io;
 use crate::doh::{self, Template, TemplateError};
+pub use crate::entropy::Entropy;
 use crate::http3::Http3Error;
 use crate::quic::QuicError;
 
@@ -116,91 +114,6 @@ impl OdohError {
         matches!(self, Self::Status(StatusCode::UNAUTHORIZED))
     }
 }
-
-/// The bytes the ephemeral key of a query and the nonce of a response draw: 32 and 16 (RFC 9180 §7.1.3, RFC 9230
-/// §6.2), with room to spare.
-const ENTROPY: usize = 64;
-
-/// Random bytes for [`dedens_odoh::encrypt_query`] and [`dedens_odoh::encrypt_response`], drawn from the system when
-/// made, so that a failing generator is an error where the exchange starts and not a panic where the encryption
-/// draws. One per encryption: a second would reuse the bytes.
-///
-/// A draw past the bytes, which no encryption makes, gets zeros and is no panic: [`Entropy::finish`] says so, and
-/// what was encrypted is then dropped.
-pub struct Entropy {
-    bytes: Zeroizing<[u8; ENTROPY]>,
-    used: usize,
-    /// A draw found too few bytes left.
-    exhausted: bool,
-}
-
-impl Entropy {
-    /// Draws the bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`getrandom::Error`] when the system has none.
-    pub fn new() -> Result<Self, getrandom::Error> {
-        let mut bytes = Zeroizing::new([0; ENTROPY]);
-        getrandom::fill(bytes.as_mut_slice())?;
-        Ok(Self {
-            bytes,
-            used: 0,
-            exhausted: false,
-        })
-    }
-
-    /// Whether every draw got random bytes: to be asked once the encryption is done, before its output is used.
-    ///
-    /// # Errors
-    ///
-    /// [`getrandom::Error::UNEXPECTED`] when a draw found too few bytes left.
-    pub fn finish(self) -> Result<(), getrandom::Error> {
-        if self.exhausted {
-            Err(getrandom::Error::UNEXPECTED)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Fills `dst` with the next bytes, or with zeros when there are too few.
-    fn fill(&mut self, dst: &mut [u8]) {
-        let taken = self
-            .used
-            .checked_add(dst.len())
-            .and_then(|end| Some((self.bytes.get(self.used..end)?, end)));
-        if let Some((bytes, end)) = taken {
-            dst.copy_from_slice(bytes);
-            self.used = end;
-        } else {
-            dst.fill(0);
-            self.exhausted = true;
-        }
-    }
-}
-
-impl TryRng for Entropy {
-    type Error = Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-        let mut bytes = [0; 4];
-        self.fill(&mut bytes);
-        Ok(u32::from_le_bytes(bytes))
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-        let mut bytes = [0; 8];
-        self.fill(&mut bytes);
-        Ok(u64::from_le_bytes(bytes))
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
-        self.fill(dst);
-        Ok(())
-    }
-}
-
-impl TryCryptoRng for Entropy {}
 
 /// The characters of a query value left as they are: the unreserved ones (RFC 3986 §2.3) and `/`, which the query
 /// component allows (RFC 3986 §3.4) and the RFC's example leaves in `targetpath` (RFC 9230 §4.2).
@@ -483,11 +396,11 @@ mod tests {
         let key = TargetKey::derive(&[7; 32]);
         let mut entropy = Entropy::new().expect("randomness");
         let (query, _) = encrypt_query(key.config(), b"query", 0, &mut entropy).expect("a query");
-        assert!(entropy.used <= ENTROPY);
+        assert!(entropy.used <= crate::entropy::ENTROPY);
         let (_, context) = decrypt_query(&key, &query).expect("the query");
         let mut entropy = Entropy::new().expect("randomness");
         encrypt_response(context, b"response", response_padding(8), &mut entropy)
             .expect("a response");
-        assert!(entropy.used <= ENTROPY);
+        assert!(entropy.used <= crate::entropy::ENTROPY);
     }
 }

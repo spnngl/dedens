@@ -11,6 +11,7 @@ autotests = false
 
 [dependencies]
 compio.workspace = true
+dedens-dnscrypt = { workspace = true, optional = true }
 dedens-odoh = { workspace = true, optional = true }
 dedens-proto.workspace = true
 flume.workspace = true
@@ -29,13 +30,14 @@ zeroize = { workspace = true, optional = true }
 # D69: experimental transports, off by default: Oblivious DoH (RFC 9230) and DNS over CoAP (DoC).
 odoh = ["dep:dedens-odoh", "dep:idna", "dep:rand_core", "dep:zeroize"]
 doc = []
-# D102: `sdns://` stamps of DNSCrypt resolvers and relays, sans-IO.
-dnscrypt = []
+# D102: `sdns://` stamps of DNSCrypt resolvers and relays, sans-IO; D98: the DNSCrypt client over them.
+dnscrypt = ["dep:dedens-dnscrypt", "dep:rand_core", "dep:zeroize"]
 # D30: debug events on dropped messages, retries and fallbacks, trace events per message; none without it.
 tracing = ["dep:tracing"]
 
 [dev-dependencies]
 compio = { workspace = true, features = ["macros"] }
+dedens-dnscrypt.workspace = true
 dedens-odoh.workspace = true
 dedens-testkit = { workspace = true, features = ["certificates"] }
 proptest.workspace = true

@@ -24,10 +24,14 @@ use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::{Cookie, EdnsOption};
 use dedens_proto::{EncodeError, Message, Transport};
 
+#[cfg(feature = "dnscrypt")]
+use crate::dnscrypt::{self, DnsCryptError, Reply};
 #[cfg(feature = "doc")]
 use crate::doc::{DocError, coap, discover};
 use crate::doh::{DEFAULT_PATH, Template, TemplateError};
-use crate::exchange::{Exchange, Failure, Http, Options, Progress, Response, after};
+use crate::exchange::{
+    CertificateInfo, Exchange, Failure, Http, Options, Progress, Response, after,
+};
 use crate::http3::{Http3Error, Http3Pool};
 use crate::io::{Compio, Io};
 #[cfg(feature = "odoh")]
@@ -84,6 +88,10 @@ pub enum ClientError {
     #[cfg(feature = "doc")]
     #[error("CoAP")]
     Doc(#[from] DocError),
+    /// The `DNSCrypt` exchange failed (D98).
+    #[cfg(feature = "dnscrypt")]
+    #[error("DNSCrypt")]
+    DnsCrypt(#[from] DnsCryptError),
     /// The transport is not built in: its Cargo feature is off (D69).
     #[error("the {0} transport is not built in")]
     NotBuilt(&'static str),
@@ -123,6 +131,8 @@ impl ClientError {
             | Self::Tcp(TcpError::Connect(error))
             | Self::Quic(QuicError::Bind(error))
             | Self::Https(Http3Error::Quic(QuicError::Bind(error))) => error,
+            #[cfg(feature = "dnscrypt")]
+            Self::DnsCrypt(error) => return error.is_local(),
             #[cfg(feature = "doc")]
             Self::Doc(DocError::Udp(error)) => error,
             #[cfg(feature = "doc")]
@@ -150,6 +160,43 @@ pub(crate) fn local_io(error: &io::Error) -> bool {
             | io::ErrorKind::NetworkDown
             | io::ErrorKind::TimedOut
     )
+}
+
+/// How an exchange reaches its target.
+#[derive(Debug, Clone, Copy)]
+enum Via<'a> {
+    /// Straight to the target.
+    Direct,
+    /// Through the proxy of an Oblivious `DoH` exchange (D79).
+    #[cfg_attr(
+        not(feature = "odoh"),
+        expect(dead_code, reason = "only Oblivious DoH has a proxy")
+    )]
+    Proxy(&'a Server),
+    /// Sealed to a `DNSCrypt` resolver (D98).
+    #[cfg(feature = "dnscrypt")]
+    DnsCrypt(&'a dnscrypt::Resolver),
+}
+
+impl<'a> Via<'a> {
+    /// The Oblivious `DoH` proxy, if any.
+    const fn proxy(self) -> Option<&'a Server> {
+        match self {
+            Self::Proxy(proxy) => Some(proxy),
+            Self::Direct => None,
+            #[cfg(feature = "dnscrypt")]
+            Self::DnsCrypt(_) => None,
+        }
+    }
+
+    /// Whether the queries are sealed to a `DNSCrypt` resolver.
+    const fn is_sealed(self) -> bool {
+        match self {
+            Self::Direct | Self::Proxy(_) => false,
+            #[cfg(feature = "dnscrypt")]
+            Self::DnsCrypt(_) => true,
+        }
+    }
 }
 
 /// A server to ask.
@@ -241,6 +288,9 @@ pub struct Client<N: Io = Compio> {
     /// The key configurations of the Oblivious `DoH` targets asked (D79).
     #[cfg(feature = "odoh")]
     odoh: odoh::client::Configs,
+    /// The `DNSCrypt` resolvers asked, with their certificates (D98).
+    #[cfg(feature = "dnscrypt")]
+    dnscrypt: dnscrypt::Resolvers,
     /// By source and server address: the client cookie and the last cookie the server sent.
     cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
     random: RefCell<Random>,
@@ -305,6 +355,8 @@ impl<N: Io> Client<N> {
             https: Http3Pool::new(TCP_IDLE),
             #[cfg(feature = "odoh")]
             odoh: odoh::client::Configs::default(),
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: dnscrypt::Resolvers::default(),
             cookies: RefCell::default(),
             random: RefCell::new(Random {
                 bytes: [0; RANDOM_BATCH],
@@ -343,7 +395,46 @@ impl<N: Io> Client<N> {
         if options.transport == Transport::Odoh {
             return Err(ClientError::OdohWithoutProxy);
         }
-        self.run(query, &server.into(), None, options).await
+        self.run(query, &server.into(), Via::Direct, options).await
+    }
+
+    /// Sends `query` to the `DNSCrypt` resolver of `stamp`, sealed under its certificate, and returns the response
+    /// opened, over UDP or, with [`Options::transport`] [`Transport::Tcp`] or after a truncated response, TCP
+    /// (draft-denis-dprive-dnscrypt "Client Queries Over UDP", "Client Queries Over TCP", D98).
+    ///
+    /// The resolver's certificates are fetched at the first query, and again when the one in use is not valid any
+    /// more, after an hour, and after a response that does not open ([`crate::dnscrypt`]). The response has no
+    /// cookie: [`Options::cookies`] has no effect. [`Response::dnscrypt`] tells the certificate it came under.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::exchange`], and [`ClientError::DnsCrypt`] for the certificates or the encryption.
+    #[cfg(feature = "dnscrypt")]
+    pub async fn exchange_dnscrypt(
+        &self,
+        query: Message<'_>,
+        stamp: &crate::stamp::DnsCrypt,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let resolver = self.dnscrypt.of(stamp);
+        let target = Server::from(stamp.address.socket_addr());
+        self.run(query, &target, Via::DnsCrypt(&resolver), options)
+            .await
+    }
+
+    /// The certificates the `DNSCrypt` resolver of `stamp` serves that its provider key signed, and the response
+    /// that held them (draft "Certificates", D98).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::exchange`], for the TXT query that fetches them.
+    #[cfg(feature = "dnscrypt")]
+    pub async fn dnscrypt_certificates(
+        &self,
+        stamp: &crate::stamp::DnsCrypt,
+        options: &Options,
+    ) -> Result<dnscrypt::Listing, ClientError> {
+        self.dnscrypt.of(stamp).listing(self, options).await
     }
 
     /// Sends `query` to the Oblivious `DoH` `target` through `proxy`, or straight to it without one, and returns the
@@ -368,8 +459,8 @@ impl<N: Io> Client<N> {
             transport: Transport::Odoh,
             ..*options
         };
-        self.run(query, &target.into(), proxy.as_ref(), &options)
-            .await
+        let via = proxy.as_ref().map_or(Via::Direct, Via::Proxy);
+        self.run(query, &target.into(), via, &options).await
     }
 
     /// Keeps `configs`, the encoded key configurations of the Oblivious `DoH` `target`, for good: they are not
@@ -438,10 +529,17 @@ impl<N: Io> Client<N> {
         &self,
         mut query: Message<'_>,
         target: &Server,
-        proxy: Option<&Server>,
+        via: Via<'_>,
         options: &Options,
     ) -> Result<Response, ClientError> {
         let server = target.addr;
+        // A sealed query carries no cookie: the packet is the resolver's, whatever EDNS it holds (D98).
+        let sealed = Options {
+            cookies: false,
+            ..*options
+        };
+        let options = if via.is_sealed() { &sealed } else { options };
+        let mut dnscrypt = self.certified(via, options).await?;
         // The ID, then the UDP socket of the pool.
         let random = self.draw::<4>()?;
         query.header.id = u16::from_be_bytes([random[0], random[1]]);
@@ -459,6 +557,8 @@ impl<N: Io> Client<N> {
             {
                 None
             }
+            // A sealed query goes out of a socket of its own.
+            None if via.is_sealed() => None,
             None => {
                 let waiting = self
                     .udp
@@ -508,19 +608,62 @@ impl<N: Io> Client<N> {
                 Progress::Send(next) => {
                     self.io.sending(&next);
                     self.keep_cookie(pair, next.cookie());
-                    self.step(next, (target, proxy), udp.as_mut(), options, &mut http)
-                        .await?
+                    let sent = (target, via);
+                    self.step(
+                        next,
+                        sent,
+                        udp.as_mut(),
+                        options,
+                        (&mut http, &mut dnscrypt),
+                    )
+                    .await?
                 }
                 Progress::Wait(next) => {
-                    self.step(next, (target, proxy), udp.as_mut(), options, &mut http)
-                        .await?
+                    let sent = (target, via);
+                    self.step(
+                        next,
+                        sent,
+                        udp.as_mut(),
+                        options,
+                        (&mut http, &mut dnscrypt),
+                    )
+                    .await?
                 }
                 Progress::Done(done) => break done?,
             };
         };
         response.http = http;
+        response.dnscrypt = dnscrypt;
         self.keep_cookie(pair, response.cookie);
         Ok(response)
+    }
+
+    /// Over `DNSCrypt`, the certificate the queries will go under, fetched first so the try's clock does not run
+    /// while it is (D98).
+    #[cfg(feature = "dnscrypt")]
+    async fn certified(
+        &self,
+        via: Via<'_>,
+        options: &Options,
+    ) -> Result<Option<CertificateInfo>, ClientError> {
+        match via {
+            Via::DnsCrypt(resolver) => {
+                let certificate = resolver.certificate(self, &self.io, options).await?;
+                Ok(Some(dnscrypt::info(&certificate)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Without the `dnscrypt` feature no query is sealed.
+    #[cfg(not(feature = "dnscrypt"))]
+    #[expect(clippy::unused_async, reason = "the same call as with the feature")]
+    async fn certified(
+        &self,
+        _via: Via<'_>,
+        _options: &Options,
+    ) -> Result<Option<CertificateInfo>, ClientError> {
+        Ok(None)
     }
 
     /// The next `LEN` random bytes.
@@ -559,10 +702,10 @@ impl<N: Io> Client<N> {
     async fn step(
         &self,
         exchange: Exchange,
-        (target, proxy): (&Server, Option<&Server>),
+        (target, via): (&Server, Via<'_>),
         udp: Option<&mut UdpQuery<N>>,
         options: &Options,
-        http: &mut Option<Http>,
+        (http, dnscrypt): (&mut Option<Http>, &mut Option<CertificateInfo>),
     ) -> Result<Progress, ClientError> {
         let server = exchange.server();
         let transport = exchange.transport();
@@ -590,8 +733,14 @@ impl<N: Io> Client<N> {
             };
         }
         if transport == Transport::Odoh {
-            return self.oblivious(exchange, target, proxy, http).await;
+            return self.oblivious(exchange, target, via.proxy(), http).await;
         }
+        #[cfg(feature = "dnscrypt")]
+        if let Via::DnsCrypt(resolver) = via {
+            return self.sealed(exchange, resolver, options, dnscrypt).await;
+        }
+        #[cfg(not(feature = "dnscrypt"))]
+        let _ = dnscrypt;
         if transport == Transport::Coap {
             let random = self.draw::<14>()?;
             // Boxed, as HTTPS is: with its deadline the CoAP exchange's future grows every caller's past 16 KiB.
@@ -661,6 +810,36 @@ impl<N: Io> Client<N> {
             Ok(bytes) => Ok(self.answered(exchange, transport, bytes, deadline)),
             Err(TcpError::TimedOut) => Ok(exchange.time_out(self.io.now().max(deadline))),
             Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Sends the query of `exchange` sealed to the `DNSCrypt` `resolver` (D98).
+    #[cfg(feature = "dnscrypt")]
+    async fn sealed(
+        &self,
+        exchange: Exchange,
+        resolver: &dnscrypt::Resolver,
+        options: &Options,
+        certificate: &mut Option<CertificateInfo>,
+    ) -> Result<Progress, ClientError> {
+        let transport = exchange.transport();
+        let deadline = exchange.deadline();
+        // Boxed: the resolver may fetch its certificates with an exchange of this client.
+        let asked = Box::pin(resolver.exchange(
+            self,
+            &self.io,
+            exchange.wire(),
+            transport,
+            deadline,
+            options,
+        ));
+        match asked.await? {
+            Reply::Answer(bytes, info) => {
+                debug!(server = %exchange.server(), serial = info.serial, "DNSCrypt response");
+                *certificate = Some(info);
+                Ok(self.answered(exchange, transport, bytes, deadline))
+            }
+            Reply::TimedOut => Ok(exchange.time_out(self.io.now().max(deadline))),
         }
     }
 

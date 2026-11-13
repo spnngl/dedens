@@ -106,6 +106,22 @@ pub struct Response {
     /// Over [`Transport::Https`], the HTTP response the DNS response came in; [`Client::exchange`](crate::client::Client::exchange)
     /// sets it.
     pub http: Option<Http>,
+    /// Over `DNSCrypt`, the certificate the query was encrypted under; `Client::exchange_dnscrypt` sets it (D98).
+    pub dnscrypt: Option<CertificateInfo>,
+}
+
+/// A `DNSCrypt` certificate, as a response or a listing of the resolver's certificates tells it (draft "Certificates",
+/// D98).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertificateInfo {
+    /// The `<es-version>`: 1 for `X25519-XSalsa20Poly1305`, 2 for `X25519-XChaCha20Poly1305`.
+    pub es_version: u16,
+    /// The `<serial>`: a higher one is a newer certificate.
+    pub serial: u32,
+    /// The `<ts-start>`, in seconds since 1970.
+    pub valid_from: u32,
+    /// The `<ts-end>`, in seconds since 1970.
+    pub valid_until: u32,
 }
 
 /// The HTTP response a DNS response came in (RFC 8484 §4.2).
@@ -357,6 +373,7 @@ impl Exchange {
             sends: self.sends,
             cookie,
             http: None,
+            dnscrypt: None,
         }))
     }
 
