@@ -102,7 +102,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D93 [server](server.md) (amended by D124): an insecure answer is cached a day at most
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
 - D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
-- D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline, again at the prefetch point
+- D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline over UDP with a share of the validator's allowance of its own, again at the prefetch point (a margin before the expiry)
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
 - D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits

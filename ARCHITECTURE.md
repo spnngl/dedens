@@ -39,7 +39,7 @@ Planned: `dedens-resolver`.
   → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).
 - Server, prewarm: a cache stage's `prewarm` names → `Pipeline::with_prewarm` (`crates/dedens-server/src/pipeline/prewarm.rs`)
   → one task of thread 0 (`apps/dedensd/src/serve/prewarm.rs`) asks each through `Pipeline::prewarm`, as a prefetch,
-  when `Cache::refresh_at` says (D96).
+  when `Cache::refresh` says (D96).
 - Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
 
 ## Documents

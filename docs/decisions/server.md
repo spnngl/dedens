@@ -1210,8 +1210,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   ignores `deny_unknown_fields`, so a map takes the keys no field reads and the stage says `unknown field` itself.
   - Names: `entries`, then `file`, one name a line, read as D56 reads a plain blocklist line
     (`dedens_plugins::host_names`); `*.name` is refused, a wildcard cannot be asked. `types` is any of A and AAAA, both
-    by default, and not empty. At most 10 000 names (`MAX_PREWARM_NAMES`, a bound as D115's: each name is up to four
-    questions and a schedule entry). A `file` that does not read fails the read, so a reload leaves the running
+    by default, and not empty. At most 1000 names (`MAX_PREWARM_NAMES`, a bound as D115's: each name is up to four
+    questions and a schedule entry). The arithmetic: 1000 names, 2 types, and DO as well when validating make 4000
+    questions; at the default `min_ttl` of 60 s and `prefetch_percent` 10, each is asked every 54 s, 74 a second. With
+    16 in flight that holds while the upstream answers within about 200 ms (800 a second at 20 ms, 320 at 50 ms); a
+    longer list or a slower upstream falls behind, and an entry then expires and is asked as a client's is. A `file` that does not read fails the read, so a reload leaves the running
     pipeline (D55). No `urls`: a download is a blocklist's (D57), and a name list a download feeds to the resolver is
     an attack surface for nothing. A prewarm with no forward stage after the cache is refused: nothing could ask.
   - Questions: the pipeline carries them (`Pipeline::with_prewarm`): each name and type without DO, and again with DO
@@ -1220,18 +1223,31 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     client's query goes: a stage before the cache answering the name (blocklist, hosts) is `Local`, nothing to
     keep; a fresh entry is `Fresh(at)`, with the time to ask again; else the forward stage's `Upstream`, as a prefetch
     (`Purpose::Prefetch`): no reply, and a failure is not held (RFC 9520 §3.2: the hold is for a failure a client's
-    query met; no client asked). The query is the server's own: no access list, rate limit or cookie, and no
-    client network's share of the validator's budget, the global allowance only.
-  - Freshness: `Cache::refresh_at` is when the entry reaches `prefetch_percent` of its TTL left (the TTL the cache
-    keeps, after D124's `min_ttl` and `max_ttl`, negative answers too), read with no metrics and no use: a prewarm
-    lookup is no client's hit, and S3-FIFO's counts are the clients'. The name is asked at that time, so no entry is
-    served stale (D22) for want of a client. A TTL under 2 s, possible with `min_ttl: 0` only, can lapse between two
-    asks: the schedule never goes faster than once a second.
+    query met; no client asked). The query is the server's own: no access list, rate limit or cookie. It goes over
+    UDP, as a client's does, and falls back to TCP on a truncated answer (`Warm::TRANSPORT` is the one place that
+    says so: the in-flight key of D86 holds the transport). It spends a share of the validator's allowance of its
+    own (D117: the share of the unspecified address, `OWN`), so that a long list cannot starve the clients' shares,
+    nor they it; a question that share sheds is `Warmth::Shed`, asked again a second on. A name the stages cannot
+    ask is `Warmth::Unaskable`, nothing to keep, as `Local`. The slot of the thread's upstream queries (D47) is taken
+    before the pipeline is asked, so that a question left unasked spends no unit.
+  - Freshness: `Cache::refresh` says when the entry reaches `prefetch_percent` of its TTL left (the TTL the cache
+    keeps, after D124's `min_ttl` and `max_ttl`, negative answers too), when it expires, and whether it is bogus,
+    read with no metrics and no use: a prewarm lookup is no client's hit, and S3-FIFO's counts are the clients'. The
+    name is asked at the earlier of that time and 2 s (`MARGIN`) before the expiry, the second the clock ticks in
+    being the grain (D43): a TTL of 10 s or less at 10% would otherwise be asked at its expiry, and the first client
+    after it would wait. No entry is served stale (D22) for want of a client, down to a TTL of 3 s; under that the
+    schedule never goes faster than once a second. `Pipeline::warm_until` reads the same time with no allowance
+    spent, to check that a query's answer was kept. A bogus entry (D77) is not kept: only a client's query stores it
+    (a prefetch's bogus verdict leaves the entry it refreshes), for 60 s; it is `error`, retried as a failure.
   - Schedule (`apps/dedensd/src/serve/prewarm.rs`): one task, on serving thread 0, the cache being shared, so a name
     is asked once whatever the threads. At most 16 queries in flight, of the thread's 1024 upstream queries (D47): a
-    list of thousands leaves the rest to clients. They go over TCP, so that the answer is whole. A query counts `ok`
-    when the cache holds the answer after it, `error` when not, in `dedensd_prewarm_queries_total{result}`. A failure
-    is asked again after 1 minute, doubling up to the cache's `failure_max` (RFC 9520 §3.2: 5 minutes at most).
+    list of thousands leaves the rest to clients. A query counts `ok`
+    when the cache holds a good answer after it, `error` when not (none, a SERVFAIL, a bogus one), in
+    `dedensd_prewarm_queries_total{result}`. A failure is asked again after 1 minute, doubling up to the cache's
+    `failure_max` (RFC 9520 §3.2: 5 minutes at most). The task sleeps until the next name is due, or a reload (D107)
+    wakes it, and takes the reload wake-up in the place of the thread's `follow` task, so that a server with no
+    prewarm wakes no task each second; full, it waits for an end. A name taken out and listed again while its query
+    is in flight is a new entry: the end of the old query is not heard.
   - Reload: the new pipeline's names are taken at once. While the cache stays (`Arc::ptr_eq`), the schedule of names
     still listed stays (no burst per SIGHUP), new names are asked, removed ones dropped; a replaced cache is empty,
     so every name is asked again and the answers of queries begun for the old one are not heard.
@@ -1240,8 +1256,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     queries, D89: asked once before any client, hit past the TTL, a reload asking the new name alone, a blocked name
     never asked, the refusal); `crates/dedens-sim/tests/serving.rs` (D182: refresh before expiry and the retry
     backoff on simulated time, `dedensd::simulated` running the prewarm task); the schedule's reload in
-    `serve/prewarm.rs`'s own tests, `simulated` having no reload. The real-clock `dedensd` tests cannot validate: the
-    captured signatures have expired, so AD is checked at the pipeline.
+    `serve/prewarm.rs`'s own tests, `simulated` having no reload. The real-clock `dedensd` tests prove a hit
+    with a query with RD clear (D46: fresh data or REFUSED, never upstream), not the upstream's count, which comes
+    before the store. They cannot validate to a good verdict: the captured signatures have expired, so AD is
+    checked at the pipeline, and the shed test (the own share at one unit) counts questions only.
   - Rejected: a plugin of D54 (it needs the cache and the upstream, which a plugin has not); asking only when an
     entry has expired (the first client after it waits); counting prewarm lookups as hits; one task per thread
     (every thread asking each name).
