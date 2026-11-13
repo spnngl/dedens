@@ -30,7 +30,7 @@ fn warmed(pipeline: &Pipeline) -> Vec<(String, bool)> {
 fn upstream_of(pipeline: &Pipeline, warm: &Warm, now: u32) -> Box<Upstream> {
     match pipeline.prewarm(warm, now) {
         Warmth::Upstream(upstream) => upstream,
-        other => panic!("expected a query upstream, got {other:?}"),
+        other => unreachable!("a query upstream, not {other:?}"),
     }
 }
 
@@ -54,7 +54,9 @@ fn play(
                 step = pipeline.receive(upstream, response.as_deref(), now, &mut out);
             }
             Step::Drop => return sent,
-            step @ (Step::Reply(_) | Step::Refresh(..)) => panic!("a prewarm replies: {step:?}"),
+            step @ (Step::Reply(_) | Step::Refresh(..)) => {
+                unreachable!("a prewarm does not reply: {step:?}")
+            }
         }
     }
 }
