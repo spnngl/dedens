@@ -457,6 +457,32 @@ fn a_relay_without_a_port_reads_as_dnscrypt_proxy_does() {
     assert_eq!(Stamp::Relay(Relay { address }).to_string(), stamp);
 }
 
+/// A client is told of a relay by its stamp or by its address (D100); a resolver's stamp is no relay.
+#[test]
+fn a_relay_is_a_relay_stamp_or_an_address() {
+    let published = first_of(RELAYS, 0x81);
+    let Ok(Stamp::Relay(relay)) = published.parse() else {
+        panic!("not a relay");
+    };
+    assert_eq!(published.parse::<Relay>(), Ok(relay));
+    assert_eq!(
+        relay.address.to_string().parse::<Relay>(),
+        Ok(relay),
+        "the address of the stamp"
+    );
+    let bare = "192.0.2.1".parse::<Relay>().expect("an address");
+    assert_eq!(bare.address.socket_addr().to_string(), "192.0.2.1:443");
+    let v6 = "[2001:db8::1]:8443".parse::<Relay>().expect("an address");
+    assert_eq!(v6.address.socket_addr().to_string(), "[2001:db8::1]:8443");
+    assert_eq!(
+        first_of(RESOLVERS, 0x01).parse::<Relay>(),
+        Err(StampError::NotRelay)
+    );
+    for bad in ["", "relay.example", "192.0.2.1:0", "192.0.2.1:", "sdns://"] {
+        assert!(bad.parse::<Relay>().is_err(), "{bad:?}");
+    }
+}
+
 #[test]
 fn reserved_properties_are_ignored_when_read_and_zero_when_written() {
     let resolver = resolver();

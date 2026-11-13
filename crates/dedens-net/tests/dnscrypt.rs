@@ -579,3 +579,289 @@ async fn a_silent_resolver_is_a_timeout() {
         .expect_err("no response");
     assert!(!error.is_local(), "{error:?}");
 }
+
+/// What a relay got: the prefix and the inner packet's length, and the length of the response it passed back, if any.
+#[derive(Debug)]
+struct Relayed {
+    carrier: Carrier,
+    prefix: Vec<u8>,
+    inner_len: usize,
+    passed: Option<usize>,
+}
+
+impl Relayed {
+    /// A packet a mute relay got and dropped.
+    fn dropped(carrier: Carrier, packet: &[u8]) -> Self {
+        Self {
+            carrier,
+            prefix: packet[..28].to_vec(),
+            inner_len: packet.len() - 28,
+            passed: None,
+        }
+    }
+}
+
+/// The `Anonymized DNSCrypt` relay of the tests (draft "Anonymized `DNSCrypt`"), on UDP and TCP of one loopback
+/// port: it reads the prefix as the draft writes it, passes the inner packet to the address in it over UDP, whatever
+/// carried it, and drops a response longer than the inner packet. A `mute` relay drops everything.
+struct LoopbackRelay {
+    stamp: dedens_net::stamp::Relay,
+    seen: Rc<RefCell<Vec<Relayed>>>,
+}
+
+impl LoopbackRelay {
+    async fn start(mute: bool) -> Self {
+        let (socket, listener) = loop {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+            let addr = socket.local_addr().expect("an address");
+            if let Ok(listener) = TcpListener::bind(addr).await {
+                break (socket, listener);
+            }
+        };
+        let addr = socket.local_addr().expect("an address");
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&seen);
+        compio::runtime::spawn(async move {
+            let mut buf = Vec::with_capacity(65535);
+            loop {
+                buf.clear();
+                let BufResult(received, back) = socket.recv_from(buf).await;
+                buf = back;
+                let Ok((_, from)) = received else { return };
+                if mute {
+                    log.borrow_mut().push(Relayed::dropped(Carrier::Udp, &buf));
+                } else if let Some(reply) = Self::relay(&log, Carrier::Udp, &buf).await {
+                    let _ = socket.send_to(reply, from).await;
+                }
+            }
+        })
+        .detach();
+        let log = Rc::clone(&seen);
+        compio::runtime::spawn(async move {
+            loop {
+                let mut peer = Peer::accept(&listener).await;
+                let log = Rc::clone(&log);
+                compio::runtime::spawn(async move {
+                    while let Some(packet) = peer.read().await {
+                        if mute {
+                            log.borrow_mut()
+                                .push(Relayed::dropped(Carrier::Tcp, &packet));
+                            continue;
+                        }
+                        let Some(reply) = Self::relay(&log, Carrier::Tcp, &packet).await else {
+                            return;
+                        };
+                        if !peer.offer(&[reply]).await {
+                            return;
+                        }
+                    }
+                })
+                .detach();
+            }
+        })
+        .detach();
+        Self {
+            stamp: dedens_net::stamp::Relay {
+                address: Endpoint {
+                    ip: addr.ip(),
+                    port: NonZeroU16::new(addr.port()),
+                },
+            },
+            seen,
+        }
+    }
+
+    /// The response of the resolver named in `packet`, if it is not longer than the inner packet.
+    async fn relay(
+        log: &RefCell<Vec<Relayed>>,
+        carrier: Carrier,
+        packet: &[u8],
+    ) -> Option<Vec<u8>> {
+        assert_eq!(
+            &packet[..10],
+            &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0]
+        );
+        let ip: [u8; 16] = packet[10..26].try_into().expect("16 bytes");
+        let port = u16::from_be_bytes([packet[26], packet[27]]);
+        let target = SocketAddr::new(std::net::Ipv6Addr::from(ip).to_canonical(), port);
+        let inner = &packet[28..];
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+        let BufResult(sent, _) = socket.send_to(inner.to_vec(), target).await;
+        sent.expect("sent");
+        let received = compio::time::timeout(
+            Duration::from_millis(250),
+            socket.recv_from(Vec::with_capacity(65535)),
+        )
+        .await;
+        let reply = match received {
+            Ok(BufResult(Ok(_), reply)) if reply.len() <= inner.len() => Some(reply),
+            _ => None,
+        };
+        log.borrow_mut().push(Relayed {
+            carrier,
+            prefix: packet[..28].to_vec(),
+            inner_len: inner.len(),
+            passed: reply.as_ref().map(Vec::len),
+        });
+        reply
+    }
+}
+
+/// The prefix of the draft for a resolver at `addr`: the magic, the address as 16 bytes, the port.
+fn prefix_for(addr: SocketAddr) -> Vec<u8> {
+    let mut prefix = vec![0xff; 8];
+    prefix.extend([0, 0]);
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) => {
+            prefix.extend([0; 10]);
+            prefix.extend([0xff, 0xff]);
+            prefix.extend(ip.octets());
+        }
+        std::net::IpAddr::V6(ip) => prefix.extend(ip.octets()),
+    }
+    prefix.extend(addr.port().to_be_bytes());
+    prefix
+}
+
+/// "Anonymized `DNSCrypt`": the certificates' query and a sealed query over UDP both go to the relay, prefixed with
+/// the resolver's address; the certificates' query is padded, so that the relay passes the response back.
+#[compio::test]
+async fn certificates_and_queries_go_through_the_relay_over_udp() {
+    let resolver = Resolver::start().await;
+    let relay = LoopbackRelay::start(false).await;
+    let response = Client::new()
+        .exchange_dnscrypt_via(
+            query(),
+            &resolver.stamp,
+            &[relay.stamp],
+            &Options::default(),
+        )
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Udp);
+    let prefix = prefix_for(resolver.stamp.address.socket_addr());
+    let seen = relay.seen.borrow();
+    let [certificates, sealed] = &seen[..] else {
+        panic!("two packets: {seen:?}")
+    };
+    for relayed in [certificates, sealed] {
+        assert_eq!(relayed.carrier, Carrier::Udp);
+        assert_eq!(relayed.prefix, prefix);
+        assert!(relayed.passed.is_some(), "{relayed:?}");
+    }
+    assert!(certificates.inner_len >= 1200, "{certificates:?}");
+    let script = resolver.script();
+    assert_eq!(script.fetched, (1, 0));
+    assert_eq!(script.seen.len(), 1);
+    assert_eq!(script.seen[0].carrier, Carrier::Udp);
+}
+
+/// "Anonymized `DNSCrypt`": a relay passes the inner packet over UDP even when the client came over TCP, and drops a
+/// response longer than it, so the sealed query over TCP is the largest there is.
+#[compio::test]
+async fn a_tcp_query_through_the_relay_is_the_largest_packet() {
+    let resolver = Resolver::start().await;
+    let relay = LoopbackRelay::start(false).await;
+    let mut options = Options::default();
+    options.transport = Transport::Tcp;
+    let response = Client::new()
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[relay.stamp], &options)
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Tcp);
+    let seen = relay.seen.borrow();
+    let sealed = seen.last().expect("a packet");
+    assert_eq!(sealed.carrier, Carrier::Tcp);
+    assert_eq!(
+        sealed.prefix,
+        prefix_for(resolver.stamp.address.socket_addr())
+    );
+    assert_eq!(sealed.inner_len, 4096);
+    assert!(sealed.passed.is_some());
+    let script = resolver.script();
+    assert_eq!(script.seen.len(), 1);
+    assert_eq!(
+        script.seen[0].carrier,
+        Carrier::Udp,
+        "the relay asks over UDP"
+    );
+    assert_eq!(script.seen[0].packet_len, 4096);
+}
+
+/// "Anonymized `DNSCrypt`": a truncated response through the relay is asked again over TCP to the relay, with the
+/// largest inner packet, and the next UDP queries are larger.
+#[compio::test]
+async fn a_truncated_response_through_the_relay_is_asked_again_larger() {
+    let resolver = Resolver::start().await;
+    resolver.script().acts.push_back(Act::Truncate);
+    let relay = LoopbackRelay::start(false).await;
+    let client = Client::new();
+    let options = Options::default();
+    let response = client
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[relay.stamp], &options)
+        .await
+        .expect("a response");
+    assert_eq!((response.transport, response.sends), (Transport::Tcp, 2));
+    client
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[relay.stamp], &options)
+        .await
+        .expect("a response");
+    let seen = relay.seen.borrow();
+    let sealed: Vec<_> = seen
+        .iter()
+        .skip(1)
+        .map(|relayed| (relayed.carrier, relayed.inner_len))
+        .collect();
+    assert_eq!(sealed.len(), 3, "{sealed:?}");
+    assert_eq!(sealed[0].0, Carrier::Udp);
+    assert_eq!(sealed[1], (Carrier::Tcp, 4096));
+    assert_eq!(sealed[2].0, Carrier::Udp);
+    assert!(
+        sealed[2].1 >= 512 && sealed[2].1 > sealed[0].1,
+        "{sealed:?}"
+    );
+}
+
+/// "Anonymized `DNSCrypt`", D100: of several relays one is picked for each query, and one that failed is not picked
+/// for the next try: with one that drops everything, the query still gets its response by the other.
+#[compio::test]
+async fn a_relay_that_fails_is_skipped_by_the_next_try() {
+    let resolver = Resolver::start().await;
+    let mute = LoopbackRelay::start(true).await;
+    let live = LoopbackRelay::start(false).await;
+    let mut options = quick();
+    options.tries = NonZeroU8::new(3).expect("three");
+    let response = Client::new()
+        .exchange_dnscrypt_via(
+            query(),
+            &resolver.stamp,
+            &[mute.stamp, live.stamp],
+            &options,
+        )
+        .await
+        .expect("a response");
+    assert!(response.dnscrypt.is_some());
+    assert!(
+        live.seen.borrow().iter().any(|r| r.passed.is_some()),
+        "the live relay passed the query"
+    );
+    // The certificates' query over UDP then over TCP in one try, then the sealed query in the next: no more.
+    assert!(mute.seen.borrow().len() <= 3, "{:?}", mute.seen.borrow());
+    assert_eq!(resolver.script().seen.len(), 1);
+}
+
+/// "Anonymized `DNSCrypt`", D100: with the only relay silent there is no response, and no query goes direct: the
+/// resolver hears of no one.
+#[compio::test]
+async fn a_silent_relay_is_an_error_and_no_query_goes_direct() {
+    let resolver = Resolver::start().await;
+    let mute = LoopbackRelay::start(true).await;
+    let error = Client::new()
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[mute.stamp], &quick())
+        .await
+        .expect_err("no response");
+    assert!(!error.is_local(), "{error:?}");
+    let script = resolver.script();
+    assert_eq!(script.fetched, (0, 0));
+    assert!(script.seen.is_empty());
+}

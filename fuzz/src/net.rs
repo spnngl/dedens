@@ -3,7 +3,7 @@
 
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
-use dedens_net::stamp::Stamp;
+use dedens_net::stamp::{Relay, Stamp};
 use dedens_proto::{MAX_MESSAGE_LEN, Message};
 
 /// Arbitrary text as `/etc/resolv.conf`: `ndots` stays at most 15, and any of its words has the name itself and at
@@ -40,6 +40,11 @@ pub fn parse_dns_stamp(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
+    // A relay as a client is told of one: a stamp or an address (D100).
+    if let Ok(relay) = text.parse::<Relay>() {
+        let written = Stamp::Relay(relay).to_string();
+        assert_eq!(written.parse::<Relay>(), Ok(relay), "{written}");
+    }
     let Ok(stamp) = text.parse::<Stamp>() else {
         return;
     };

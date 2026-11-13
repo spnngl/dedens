@@ -98,6 +98,24 @@ pub struct Relay {
     pub address: Endpoint,
 }
 
+impl FromStr for Relay {
+    type Err = StampError;
+
+    /// Reads a relay as a client is told of one: a relay stamp (`sdns://gQ...`) or the address alone, `192.0.2.1` or
+    /// `[2001:db8::1]:8443`, its port [`DEFAULT_PORT`] when left out (D100).
+    fn from_str(text: &str) -> Result<Self, StampError> {
+        if !text.starts_with(SCHEME) {
+            return Ok(Self {
+                address: Endpoint::parse(text)?,
+            });
+        }
+        match text.parse()? {
+            Stamp::Relay(relay) => Ok(relay),
+            Stamp::DnsCrypt(_) => Err(StampError::NotRelay),
+        }
+    }
+}
+
 /// What a resolver's operator says of it: bits 0 to 2 of the stamp's properties (draft, "Properties Field"), the
 /// reserved ones ignored when read and zero when written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -222,6 +240,9 @@ pub enum StampError {
     /// The address is not an IP address with an optional port from 1 to 65535, in the one text it is written as.
     #[error("the address {0:?} is not an IP address in its canonical text, with a port or not")]
     Address(String),
+    /// A stamp that names a relay is one of a `DNSCrypt` resolver.
+    #[error("a relay is a relay stamp (0x81) or an address, not a DNSCrypt resolver's stamp")]
+    NotRelay,
     /// The provider public key is not 32 bytes.
     #[error("the provider public key is {0} bytes, not 32")]
     KeyLength(usize),

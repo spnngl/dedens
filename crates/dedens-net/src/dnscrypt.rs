@@ -13,9 +13,17 @@
 //! queries, nor does the address a client has when its network changes (draft "Key Management"), and a TCP
 //! connection carries one query (draft "Client Queries Over TCP"). Nothing of a query outlives it but the padding
 //! target of UDP.
+//!
+//! With relays (draft "Anonymized `DNSCrypt`", D100) every packet, the certificate query included, goes to a relay
+//! with the resolver's address before it ([`dedens_dnscrypt::relay_query`]), and the resolver never sees the
+//! client's. A relay forwards over UDP whatever the client used, and drops a response larger than the query it
+//! forwarded: so the certificate query is padded to hold the response, and over TCP the inner query is the
+//! largest a packet can be. One relay is picked at random for each query, but the one that failed the last: that is
+//! skipped, once.
 
 use std::cell::RefCell;
 use std::io;
+use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,16 +31,18 @@ use compio::BufResult;
 use compio::io::util::Splittable;
 use dedens_dnscrypt::{
     Certificate, ClientNonce, ClientSession, EncryptQueryError, LowOrderKey, MAX_PACKET_LEN,
-    ProviderKey, QueryContext, QueryPadding, ResponseError, SecretKey, SystemPolicy, select,
+    ProviderKey, QueryContext, QueryPadding, ResponseError, SecretKey, SystemPolicy, relay_query,
+    select,
 };
+use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Message, Question, RecordType, Transport};
+use dedens_proto::{Flags, Message, Question, RecordType, Transport};
 
 use crate::client::{Client, ClientError, Server};
 use crate::entropy::Entropy;
-use crate::exchange::{CertificateInfo, Options, Response};
+use crate::exchange::{CertificateInfo, Failure, Options, Response, after};
 use crate::io::{Io, Stream, Udp};
-use crate::stamp::DnsCrypt;
+use crate::stamp::{DnsCrypt, Relay};
 use crate::tcp::{TcpError, frame, read_message};
 use crate::udp::unspecified;
 
@@ -43,6 +53,14 @@ const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
 /// The smallest packet of a UDP query at first (draft "Padding For Client Queries Over UDP": `<min-query-len>`, 256).
 const FIRST_FLOOR: usize = 256;
 
+/// The length of a certificate query to a relay over UDP: the relay drops a response longer than the query, and the
+/// classical certificates a resolver serves make a response of about 400 bytes (draft "Anonymized `DNSCrypt`",
+/// "Certificate Retrieval Amplification"). 1200 bytes and the relay's prefix still fit the 1280 of the smallest IPv6
+/// link, with the headers.
+const CERTIFICATE_UDP_LEN: usize = 1200;
+
+/// What an EDNS option adds to its data: the code and the length (RFC 6891 §6.1.2).
+const OPTION_HEAD: usize = 4;
 /// Why a `DNSCrypt` exchange failed, besides the sockets.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -74,18 +92,22 @@ impl DnsCryptError {
     }
 }
 
-/// The resolvers a client has asked, by stamp.
+/// The resolvers a client has asked, by stamp and relays.
 #[derive(Debug, Default)]
 pub(crate) struct Resolvers(RefCell<Vec<Rc<Resolver>>>);
 
 impl Resolvers {
-    /// The resolver of `stamp`, made at the first call.
-    pub(crate) fn of(&self, stamp: &DnsCrypt) -> Rc<Resolver> {
+    /// The resolver of `stamp` reached through `relays`, made at the first call: the same resolver through other
+    /// relays is another, with its own certificates.
+    pub(crate) fn of(&self, stamp: &DnsCrypt, relays: &[Relay]) -> Rc<Resolver> {
         let mut known = self.0.borrow_mut();
-        if let Some(resolver) = known.iter().find(|resolver| resolver.stamp == *stamp) {
+        if let Some(resolver) = known
+            .iter()
+            .find(|resolver| resolver.stamp == *stamp && resolver.relays == relays)
+        {
             return Rc::clone(resolver);
         }
-        let resolver = Rc::new(Resolver::new(stamp.clone()));
+        let resolver = Rc::new(Resolver::new(stamp.clone(), relays.to_vec()));
         known.push(Rc::clone(&resolver));
         resolver
     }
@@ -109,11 +131,12 @@ pub(crate) enum Reply {
     TimedOut,
 }
 
-/// A `DNSCrypt` resolver: its stamp, the provider key its certificates are signed with, and what the client has
-/// learned of it.
+/// A `DNSCrypt` resolver: its stamp, the relays its packets go through, if any, the provider key its certificates
+/// are signed with, and what the client has learned of it.
 #[derive(Debug)]
 pub struct Resolver {
     stamp: DnsCrypt,
+    relays: Vec<Relay>,
     provider: ProviderKey,
     state: RefCell<State>,
 }
@@ -126,19 +149,46 @@ struct State {
     stale: bool,
     /// The smallest packet of the next UDP queries: raised when a response came truncated, so that the next one fits.
     floor: usize,
+    /// The relay that failed the last time: not picked the next.
+    avoid: Option<Relay>,
 }
 
 impl Resolver {
-    fn new(stamp: DnsCrypt) -> Self {
+    fn new(stamp: DnsCrypt, relays: Vec<Relay>) -> Self {
         Self {
             provider: ProviderKey::from_bytes(stamp.public_key),
             stamp,
+            relays,
             state: RefCell::new(State {
                 chosen: None,
                 stale: false,
                 floor: FIRST_FLOOR,
+                avoid: None,
             }),
         }
+    }
+
+    /// The relay for the next packets: one of the relays at random, but the one that failed the last time when
+    /// there is another; none when the resolver is reached direct.
+    fn pick<N: Io>(&self, io: &N) -> Result<Option<Relay>, ClientError> {
+        let avoid = self.state.borrow_mut().avoid.take();
+        let mut draw = [0; 2];
+        io.random(&mut draw).map_err(ClientError::Random)?;
+        Ok(choose(&self.relays, avoid, u16::from_be_bytes(draw)))
+    }
+
+    /// Notes that `relay` did not carry a query, so that the next is not sent through it.
+    fn failed(&self, relay: Option<Relay>) {
+        self.state.borrow_mut().avoid = relay;
+    }
+
+    /// A query got no response: the relay is skipped by the next, and the certificate made stale when `stale`.
+    fn lost(&self, relay: Option<Relay>, stale: bool) -> Reply {
+        if stale {
+            self.state.borrow_mut().stale = true;
+        }
+        self.failed(relay);
+        Reply::TimedOut
     }
 
     /// The certificate to seal queries under: the one kept while it is valid and recent, else the best of those the
@@ -152,7 +202,7 @@ impl Resolver {
         if let Some(kept) = self.kept(io) {
             return Ok(kept);
         }
-        let (_, certificates) = self.fetch(client, options).await?;
+        let (_, certificates) = self.fetch(client, io, options).await?;
         let chosen = select(&certificates, unix_now(), SystemPolicy::Preferred)
             .ok_or(DnsCryptError::NoCertificate)?
             .clone();
@@ -176,9 +226,10 @@ impl Resolver {
     pub(crate) async fn listing<N: Io>(
         &self,
         client: &Client<N>,
+        io: &N,
         options: &Options,
     ) -> Result<Listing, ClientError> {
-        let (response, certificates) = self.fetch(client, options).await?;
+        let (response, certificates) = self.fetch(client, io, options).await?;
         Ok(Listing {
             response,
             certificates: certificates.iter().map(info).collect(),
@@ -188,31 +239,17 @@ impl Resolver {
     /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, over UDP, then over
     /// TCP when UDP gets no answer, whatever the transport of the queries: a public resolver may serve the
     /// certificates over UDP alone (Quad9 and `CleanBrowsing` answer none over TCP, November 2026), and nothing
-    /// private is in them (draft "Certificates").
+    /// private is in them (draft "Certificates"). Through relays the query goes to one of them, UDP then TCP.
     async fn fetch<N: Io>(
         &self,
         client: &Client<N>,
+        io: &N,
         options: &Options,
     ) -> Result<(Response, Vec<Certificate>), ClientError> {
-        let question = Question::new(self.stamp.provider_name.name().clone(), RecordType::TXT);
-        let server = Server::from(self.stamp.address.socket_addr());
-        let attempt = |transport| {
-            // No cookie: the query is nothing to link, and the exchange keeps none.
-            let asked = Options {
-                transport,
-                cookies: false,
-                ..*options
-            };
-            let query = Message::query(0, question.clone());
-            let server = server.clone();
-            // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
-            async move { Box::pin(client.exchange(query, server, &asked)).await }
-        };
-        let response = match attempt(Transport::Udp).await {
-            Ok(response) => response,
-            Err(_) => attempt(Transport::Tcp)
-                .await
-                .map_err(|error| DnsCryptError::Certificates(Box::new(error)))?,
+        let response = if self.relays.is_empty() {
+            self.fetch_direct(client, options).await?
+        } else {
+            self.fetch_relayed(io, options).await?
         };
         let certificates = Message::decode(&response.wire)
             .map(|decoded| {
@@ -228,6 +265,104 @@ impl Resolver {
             })
             .unwrap_or_default();
         Ok((response, certificates))
+    }
+
+    /// The TXT query for the provider name to the resolver's address, over UDP, then over TCP.
+    async fn fetch_direct<N: Io>(
+        &self,
+        client: &Client<N>,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let question = Question::new(self.stamp.provider_name.name().clone(), RecordType::TXT);
+        let server = Server::from(self.stamp.address.socket_addr());
+        let attempt = |transport| {
+            // No cookie: the query is nothing to link, and the exchange keeps none.
+            let asked = Options {
+                transport,
+                cookies: false,
+                ..*options
+            };
+            let query = Message::query(0, question.clone());
+            let server = server.clone();
+            // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
+            async move { Box::pin(client.exchange(query, server, &asked)).await }
+        };
+        match attempt(Transport::Udp).await {
+            Ok(response) => Ok(response),
+            Err(_) => attempt(Transport::Tcp)
+                .await
+                .map_err(|error| DnsCryptError::Certificates(Box::new(error)).into()),
+        }
+    }
+
+    /// The same query through a relay: for each of the tries, a relay, UDP with the query padded to hold the
+    /// response, and TCP with the query as large as can be when UDP got no answer or a truncated one. A relay that
+    /// answers neither is skipped by the next try.
+    async fn fetch_relayed<N: Io>(
+        &self,
+        io: &N,
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let target = self.stamp.address.socket_addr();
+        let mut sends: u16 = 0;
+        for _ in 0..options.tries.get() {
+            let relay = self.pick(io)?;
+            let Some(hop) = relay.map(|relay| relay.address.socket_addr()) else {
+                break;
+            };
+            for transport in [Transport::Udp, Transport::Tcp] {
+                let len = if transport == Transport::Udp {
+                    CERTIFICATE_UDP_LEN
+                } else {
+                    MAX_PACKET_LEN
+                };
+                let query = self.certificate_query(io, len)?;
+                let packet = relay_query(target, &query);
+                let sent = io.now();
+                let deadline = after(sent, options.timeout);
+                let open = |datagram: &[u8]| certificate_response(&query, datagram);
+                sends = sends.saturating_add(1);
+                let heard = if transport == Transport::Udp {
+                    udp_round(io, hop, &packet, deadline, open).await?
+                } else {
+                    tcp_round(io, hop, &packet, deadline, open).await?
+                };
+                if let Heard::Answer(wire) = heard {
+                    // Truncated over UDP: the TCP query is as large as a relay lets it be.
+                    if transport == Transport::Tcp || !is_truncated(&wire) {
+                        return Ok(Response {
+                            wire,
+                            query,
+                            transport,
+                            rtt: io.now().saturating_duration_since(sent),
+                            sends,
+                            cookie: None,
+                            http: None,
+                            dnscrypt: None,
+                        });
+                    }
+                }
+            }
+            self.failed(relay);
+        }
+        Err(DnsCryptError::Certificates(Box::new(Failure::TimedOut { sends }.into())).into())
+    }
+
+    /// The TXT query for the provider name, its EDNS padded so that the message is `len` bytes (RFC 7830), with an
+    /// ID of its own: a relay checks the response against it.
+    fn certificate_query<N: Io>(&self, io: &N, len: usize) -> Result<Vec<u8>, ClientError> {
+        let mut id = [0; 2];
+        io.random(&mut id).map_err(ClientError::Random)?;
+        let question = Question::new(self.stamp.provider_name.name().clone(), RecordType::TXT);
+        let mut query = Message::query(u16::from_be_bytes(id), question);
+        let bare = query.to_vec()?;
+        let padding = len.saturating_sub(bare.len() + OPTION_HEAD);
+        if let (Some(edns), true) = (&mut query.edns, padding > 0) {
+            edns.options.push(EdnsOption::Padding(
+                u16::try_from(padding).unwrap_or(u16::MAX),
+            ));
+        }
+        Ok(query.to_vec()?)
     }
 
     /// Seals `wire`, a DNS query, under the certificate and sends it over `transport`, UDP or TCP: the response
@@ -246,13 +381,17 @@ impl Resolver {
         options: &Options,
     ) -> Result<Reply, ClientError> {
         let certificate = self.certificate(client, io, options).await?;
+        let relay = self.pick(io)?;
         let mut entropy = Entropy::from_io(io).map_err(ClientError::Random)?;
         let secret = SecretKey::generate(&mut entropy);
         let nonce = ClientNonce::random(&mut entropy);
-        let padding = if transport == Transport::Tcp {
-            QueryPadding::tcp(wire.len(), &mut entropy)
-        } else {
+        let padding = if transport != Transport::Tcp {
             QueryPadding::udp(wire.len(), self.state.borrow().floor)
+        } else if relay.is_some() {
+            // A relay asks the resolver over UDP, and drops a response longer than the query: as large as can be.
+            QueryPadding::udp(wire.len(), MAX_PACKET_LEN)
+        } else {
+            QueryPadding::tcp(wire.len(), &mut entropy)
         };
         entropy
             .finish()
@@ -261,86 +400,32 @@ impl Resolver {
         let (packet, context) = session
             .encrypt_query(wire, padding, nonce)
             .map_err(DnsCryptError::from)?;
-        let opened = if transport == Transport::Tcp {
-            self.over_tcp(io, &packet, &context, deadline).await?
-        } else {
-            self.over_udp(io, &packet, &context, deadline).await?
+        let (hop, packet) = match relay {
+            Some(relay) => (
+                relay.address.socket_addr(),
+                relay_query(self.stamp.address.socket_addr(), &packet),
+            ),
+            None => (self.stamp.address.socket_addr(), packet),
         };
-        Ok(match opened {
-            Some(response) => Reply::Answer(response, info(&certificate)),
-            None => Reply::TimedOut,
-        })
-    }
-
-    /// One datagram from a socket of its own, and the first that opens (draft "Client Queries Over UDP": a packet
-    /// that fails is disregarded).
-    async fn over_udp<N: Io>(
-        &self,
-        io: &N,
-        packet: &[u8],
-        context: &QueryContext,
-        deadline: Instant,
-    ) -> Result<Option<Vec<u8>>, ClientError> {
-        let server = self.stamp.address.socket_addr();
-        let socket = io
-            .udp_bind(unspecified(server))
-            .await
-            .map_err(ClientError::Udp)?;
-        socket.connect(server).await.map_err(ClientError::Udp)?;
-        let BufResult(sent, _) = socket.send(packet.to_vec()).await;
-        sent.map_err(ClientError::Udp)?;
-        // A response may be a spoof: the next datagram is waited for until the deadline.
-        loop {
-            let received = io
-                .timeout_at(
-                    deadline,
-                    socket.recv(Vec::with_capacity(MAX_PACKET_LEN + 1)),
-                )
-                .await;
-            let Ok(BufResult(read, datagram)) = received else {
-                // A resolver drops the queries of a certificate it rotated, without a word (draft "Negative
-                // Cases" case 1): silence is all the sign there is, and the next try fetches the certificates.
-                self.state.borrow_mut().stale = true;
-                return Ok(None);
-            };
-            read.map_err(ClientError::Udp)?;
-            if let Some(response) = self.opened(context, &datagram) {
-                if is_truncated(&response) {
+        let open = |datagram: &[u8]| self.opened(&context, datagram);
+        let heard = if transport == Transport::Tcp {
+            tcp_round(io, hop, &packet, deadline, open).await?
+        } else {
+            udp_round(io, hop, &packet, deadline, open).await?
+        };
+        Ok(match heard {
+            Heard::Answer(response) => {
+                if transport != Transport::Tcp && is_truncated(&response) {
                     self.raise_floor();
                 }
-                return Ok(Some(response));
+                Reply::Answer(response, info(&certificate))
             }
-        }
-    }
-
-    /// The query on a connection of its own, framed, and the response on it (draft "Client Queries Over TCP"). A
-    /// connection closed with no response, as a resolver does with a query of a certificate it dropped, makes the
-    /// certificate stale.
-    async fn over_tcp<N: Io>(
-        &self,
-        io: &N,
-        packet: &[u8],
-        context: &QueryContext,
-        deadline: Instant,
-    ) -> Result<Option<Vec<u8>>, ClientError> {
-        let server = self.stamp.address.socket_addr();
-        let framed = frame(packet).ok_or(TcpError::BadLength(packet.len()))?;
-        let asked = async {
-            let stream = io.tcp_connect(server).await.map_err(TcpError::Connect)?;
-            stream.set_nodelay(true).map_err(TcpError::Connect)?;
-            let (mut reader, mut writer) = stream.split();
-            let BufResult(written, _) = crate::tcp::Outbound::write_all(&mut writer, framed).await;
-            written.map_err(|_| TcpError::Closed)?;
-            Ok::<_, TcpError>(read_message(&mut reader).await.ok())
-        };
-        let Ok(asked) = io.timeout_at(deadline, asked).await else {
-            return Ok(None);
-        };
-        let Some(datagram) = asked? else {
-            self.state.borrow_mut().stale = true;
-            return Ok(None);
-        };
-        Ok(self.opened(context, &datagram))
+            // A resolver drops the queries of a certificate it rotated, without a word (draft "Negative Cases"
+            // case 1): silence over UDP, or a connection closed with no response, is all the sign there is, and
+            // the next try fetches the certificates. A TCP query may only have been slow.
+            Heard::Closed => self.lost(relay, true),
+            Heard::Silent => self.lost(relay, transport != Transport::Tcp),
+        })
     }
 
     /// The response in `packet`, if it opens; one that does not authenticate makes the certificate stale.
@@ -361,6 +446,102 @@ impl Resolver {
         let mut state = self.state.borrow_mut();
         state.floor = state.floor.saturating_mul(2).min(MAX_PACKET_LEN);
     }
+}
+
+/// What a packet sent to `hop`, the resolver or its relay, was answered with.
+#[derive(Debug, PartialEq, Eq)]
+enum Heard<T> {
+    /// A response that `open` took.
+    Answer(T),
+    /// A connection closed with no response.
+    Closed,
+    /// Nothing, or nothing `open` took, before the deadline.
+    Silent,
+}
+
+/// One datagram to `hop` from a socket of its own, and the first response `open` takes (draft "Client Queries Over
+/// UDP": a packet that fails is disregarded).
+async fn udp_round<N: Io, T>(
+    io: &N,
+    hop: SocketAddr,
+    packet: &[u8],
+    deadline: Instant,
+    mut open: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<Heard<T>, ClientError> {
+    let socket = io
+        .udp_bind(unspecified(hop))
+        .await
+        .map_err(ClientError::Udp)?;
+    socket.connect(hop).await.map_err(ClientError::Udp)?;
+    let BufResult(sent, _) = socket.send(packet.to_vec()).await;
+    sent.map_err(ClientError::Udp)?;
+    // A response may be a spoof: the next datagram is waited for until the deadline.
+    loop {
+        let received = io
+            .timeout_at(
+                deadline,
+                socket.recv(Vec::with_capacity(MAX_PACKET_LEN + 1)),
+            )
+            .await;
+        let Ok(BufResult(read, datagram)) = received else {
+            return Ok(Heard::Silent);
+        };
+        read.map_err(ClientError::Udp)?;
+        if let Some(response) = open(&datagram) {
+            return Ok(Heard::Answer(response));
+        }
+    }
+}
+
+/// The packet on a connection to `hop` of its own, framed, and the response on it, if `open` takes it (draft "Client
+/// Queries Over TCP").
+async fn tcp_round<N: Io, T>(
+    io: &N,
+    hop: SocketAddr,
+    packet: &[u8],
+    deadline: Instant,
+    open: impl FnOnce(&[u8]) -> Option<T>,
+) -> Result<Heard<T>, ClientError> {
+    let framed = frame(packet).ok_or(TcpError::BadLength(packet.len()))?;
+    let asked = async {
+        let stream = io.tcp_connect(hop).await.map_err(TcpError::Connect)?;
+        stream.set_nodelay(true).map_err(TcpError::Connect)?;
+        let (mut reader, mut writer) = stream.split();
+        let BufResult(written, _) = crate::tcp::Outbound::write_all(&mut writer, framed).await;
+        written.map_err(|_| TcpError::Closed)?;
+        Ok::<_, TcpError>(read_message(&mut reader).await.ok())
+    };
+    let Ok(asked) = io.timeout_at(deadline, asked).await else {
+        return Ok(Heard::Silent);
+    };
+    Ok(match asked? {
+        None => Heard::Closed,
+        Some(datagram) => open(&datagram).map_or(Heard::Silent, Heard::Answer),
+    })
+}
+
+/// The relay for a packet: one of `relays` by `draw`, but not `avoid`, the one that failed the last time, unless it is
+/// the only one; none when there are no relays.
+fn choose(relays: &[Relay], avoid: Option<Relay>, draw: u16) -> Option<Relay> {
+    let others: Vec<Relay> = relays
+        .iter()
+        .copied()
+        .filter(|relay| Some(*relay) != avoid)
+        .collect();
+    let pool = if others.is_empty() { relays } else { &others };
+    pool.get(usize::from(draw).checked_rem(pool.len())?)
+        .copied()
+}
+
+/// `datagram` if it answers the certificate query `query`: a response with its ID and question, the one a relay
+/// checks too (draft "Anonymized `DNSCrypt`", "Relay Behavior").
+fn certificate_response(query: &[u8], datagram: &[u8]) -> Option<Vec<u8>> {
+    let asked = Message::decode(query).ok()?.message;
+    let answer = Message::decode(datagram).ok()?.message;
+    (answer.header.id == asked.header.id
+        && answer.header.flags.contains(Flags::QR)
+        && answer.questions == asked.questions)
+        .then(|| datagram.to_vec())
 }
 
 /// What a certificate tells, as the exchange reports it.
