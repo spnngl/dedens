@@ -37,6 +37,10 @@ exclude_re = [
   'secret\.rs:\d+:\d+: replace \| with \^ in read_secret$',
   # Without the `dnscrypt` feature only: not built under `all_features`, so no test sees a change.
   'upstream\.rs:\d+:\d+: replace (dnscrypt|exchange_dnscrypt)(<N>)? -> .* with Ok\(Default::default\(\)\)$',
+  # The same for a relay of `relays` (D100): a build without the feature refuses one by name before it is read.
+  'upstream\.rs:\d+:\d+: replace <impl TryFrom<String> for Relay>::try_from -> Result<Self, String> with Ok\(Default::default\(\)\)$',
+  # The certificates' query of a relay is padded by what is left of its length, always more than the bare query.
+  'dnscrypt\.rs:\d+:\d+: replace > with >= in Resolver::certificate_query$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
