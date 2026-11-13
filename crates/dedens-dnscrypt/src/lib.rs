@@ -12,17 +12,19 @@
 //! - `client`: [`ClientSession::encrypt_query`] and [`QueryContext::decrypt_response`].
 //! - `resolver`: [`ResolverKey::decrypt_query`] and [`ResponseContext::encrypt_response`].
 //! - `system`: [`EncryptionSystem`] and the client's [`SystemPolicy`].
+//! - `anonymized`: [`relay_query`], the prefix that sends a query through an Anonymized `DNSCrypt` relay (D100).
 //! - `error`: the error of each step.
 //! - `secretbox` and `padding`: the cipher, and the ISO/IEC 7816-4 padding with the lengths the draft suggests.
 //!
 //! Every item is at the crate's root: the modules are private.
 //!
-//! What a packet is carried in is not here: the two-byte length of TCP, the relay prefix of Anonymized `DNSCrypt`
-//! and the certificate's DNS query belong to the transports.
+//! What a packet is carried in is not here: the two-byte length of TCP and the certificate's DNS query belong to
+//! the transports.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
+mod anonymized;
 mod certificate;
 mod client;
 mod error;
@@ -34,6 +36,7 @@ mod system;
 #[cfg(test)]
 mod tests;
 
+pub use anonymized::{RELAY_MAGIC, RELAY_PREFIX_LEN, relay_query};
 pub use certificate::{
     Certificate, CertificateBody, ClientMagic, ProviderKey, SigningKey, Validity, select,
 };

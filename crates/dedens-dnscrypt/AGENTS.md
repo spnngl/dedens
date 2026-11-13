@@ -1,8 +1,8 @@
 # dedens-dnscrypt
 
 DNSCrypt v2 (draft-denis-dprive-dnscrypt, D97): the sans-IO core of both classical systems, no socket and no clock.
-`src/lib.rs` maps the items. Stamps and the exchange over UDP, TCP and relays are other crates', and so is the resolver's serving and key
-rotation (`apps/dedensd`, D99).
+`src/lib.rs` maps the items. Stamps and the exchange over UDP, TCP and relays are other crates' (the relay's prefix is here, `anonymized.rs`,
+D100), and so is the resolver's serving and key rotation (`apps/dedensd`, D99).
 
 - Cite the draft by section name, never by number: the numbers move between revisions (the revision read is pinned in
   `docs/rfc/list.md`). Where the draft is silent, `docs/rfc/archive/dnscrypt-v2-protocol.txt` is the 2023 text.
