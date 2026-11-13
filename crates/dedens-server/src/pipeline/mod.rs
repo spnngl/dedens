@@ -2,6 +2,7 @@
 //! known, is written by `finish`.
 
 mod finish;
+mod prewarm;
 
 use std::net::IpAddr;
 use std::num::NonZeroU8;
@@ -16,6 +17,7 @@ use dedens_proto::{
 };
 
 use self::finish::{Finish, Refused, prohibit, reply, servfail, slip};
+pub use self::prewarm::{Warm, Warmth};
 use crate::access::{Access, Denial};
 use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
@@ -50,6 +52,8 @@ pub struct Pipeline {
     id: u64,
     /// For each stage, whether a plugin before it reviews responses (`Plugin::reviewer`).
     reviews: Box<[bool]>,
+    /// The questions kept in the cache without a client (D96).
+    warmed: Box<[Warm]>,
 }
 
 /// The id of the next pipeline: the marks of cache entries are compared to it, so that a response is reviewed again
@@ -130,6 +134,7 @@ impl Pipeline {
             cookies: None,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             reviews,
+            warmed: Box::default(),
         }
     }
 
@@ -386,8 +391,13 @@ impl Pipeline {
                     match self.look(index, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh, .. } => {
                             if refresh
-                                && let Ok(mut upstream) =
-                                    self.upstream(index, query, client, (source, now), Some(index))
+                                && let Ok(mut upstream) = self.upstream(
+                                    index,
+                                    query,
+                                    client,
+                                    (Some(source), now),
+                                    Some(index),
+                                )
                             {
                                 upstream.purpose = Purpose::Prefetch;
                                 return Step::Refresh(len, upstream);
@@ -424,7 +434,7 @@ impl Pipeline {
                 }
                 Stage::Forward(_) => {
                     let mut upstream =
-                        match self.upstream(index, query, client, (source, now), cache) {
+                        match self.upstream(index, query, client, (Some(source), now), cache) {
                             Ok(upstream) => upstream,
                             Err(Refused::NoServer) => return Step::Drop,
                             // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
@@ -448,12 +458,13 @@ impl Pipeline {
     /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`; none if
     /// the stage has no server, or validates the query and finds the allowance spent at second `now`, the global
     /// one or the share of the network of `source` (D77, D117), before any question is sent or response decoded.
+    /// `source` is `None` for the server's own query, which has no share (D96).
     fn upstream(
         &self,
         from: usize,
         query: &Query<'_>,
         client: &Client<'_>,
-        (source, now): (Source, u32),
+        (source, now): (Option<Source>, u32),
         cache: Option<usize>,
     ) -> Result<Box<Upstream>, Refused> {
         let (index, forward) = self
@@ -473,11 +484,13 @@ impl Pipeline {
             .filter(|_| !client.header.flags.contains(Flags::CD) && question.qclass == Class::IN);
         let validate = match validating {
             Some(validating) => {
-                let exempt = self
-                    .rate_limit
-                    .as_ref()
-                    .is_some_and(|limit| limit.exempts(source.address));
-                Some(validating.admit(source, exempt, now).ok_or(Refused::Shed)?)
+                let share = source.filter(|source| {
+                    !self
+                        .rate_limit
+                        .as_ref()
+                        .is_some_and(|limit| limit.exempts(source.address))
+                });
+                Some(validating.admit(share, now).ok_or(Refused::Shed)?)
             }
             None => None,
         };

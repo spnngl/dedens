@@ -191,10 +191,10 @@ impl Validating {
     /// D117).
     ///
     /// The share is taken first, so that a client over it never touches the allowance of the others; its unit is
-    /// given back when the allowance refuses. A source on the rate limit's exempt list (D113), `exempt`, has no
-    /// share.
-    pub(crate) fn admit(&self, source: Source, exempt: bool, now: u32) -> Option<Admitted> {
-        let share = (!exempt).then(|| Slot::new(source.address, source.proven));
+    /// given back when the allowance refuses. `source` is `None` for a query that has no share: from a source on the rate
+    /// limit's exempt list (D113), or the server's own (D96).
+    pub(crate) fn admit(&self, source: Option<Source>, now: u32) -> Option<Admitted> {
+        let share = source.map(|source| Slot::new(source.address, source.proven));
         if let Some(share) = share
             && !self.shares.admit(share, now)
         {
@@ -541,7 +541,7 @@ mod tests {
         };
         // The allowance holds nothing; the share's one unit is given back each time.
         assert!(
-            (0..10).all(|_| validating.admit(source, false, 0).is_none()),
+            (0..10).all(|_| validating.admit(Some(source), 0).is_none()),
             "the share is not drained by the shed"
         );
         let slot = Slot::new(source.address, source.proven);
