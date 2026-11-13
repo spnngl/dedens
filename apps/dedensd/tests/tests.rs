@@ -11,6 +11,7 @@ mod listeners;
 mod lists;
 #[cfg(feature = "odoh")]
 mod odoh;
+mod prewarm;
 #[cfg(unix)]
 mod privileges;
 mod quic;
