@@ -10,6 +10,7 @@
 
 use std::net::IpAddr;
 use std::num::NonZeroU8;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use dedens_cache::Config;
@@ -395,20 +396,36 @@ fn exchanges(events: &[Event], resolver: IpAddr) -> Vec<Duration> {
 }
 
 /// D96: the name is asked at the start, with no client, and again before each expiry; a client asking past several
-/// TTLs is answered from the cache, with no query of the upstream server between its query and its answer.
+/// TTLs is answered from the cache, with no query of the upstream server between its query and its answer. Of a TTL
+/// of 10 s with `prefetch_percent` 50, asked with 4 s left (under half, strictly): six times by 34 s. Of one of 5 s,
+/// with the default 10%, which leaves no second: asked with the margin of 2 s left, twelve times; the client comes
+/// between two refreshes.
 #[test]
 fn a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it() {
+    let long = Config {
+        min_ttl: 1,
+        max_ttl: 10,
+        prefetch_percent: 50,
+        ..Config::default()
+    };
+    let short = Config {
+        min_ttl: 1,
+        max_ttl: 5,
+        ..Config::default()
+    };
+    for (config, queries) in [(long, 5..=7), (short, 11..=13)] {
+        refreshed_before_it_expires(&config, &queries);
+    }
+}
+
+/// [`a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it`] for one `config`, whose queries of the
+/// name before the client's are `queries` in number.
+fn refreshed_before_it_expires(config: &Config, queries: &RangeInclusive<usize>) {
     seed::each(FEW, |seed| {
-        // A TTL of 10 s, refreshed with 5 s left (`prefetch_percent` 50).
-        let config = Config {
-            min_ttl: 1,
-            max_ttl: 10,
-            prefetch_percent: 50,
-            ..Config::default()
-        };
+        let config = config.clone();
         let mut world = prewarming(seed, answers(), config, 120 * SECOND);
         world.client(async move |stub| {
-            tokio::time::sleep(33 * SECOND).await;
+            tokio::time::sleep(34 * SECOND).await;
             let answer = stub
                 .expect(question("example.com", RecordType::A), Carrier::Udp)
                 .await?;
@@ -425,11 +442,11 @@ fn a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it() {
             .position(|event| matches!(event.what, What::Asked { .. }))
             .expect("the client asked");
         assert!(first < asked, "asked before any client: {events:#?}");
-        // Refreshed at 5 s, 10 s... of the 10 s TTL: six times by 33 s, whatever the latency.
+        // Whatever the latency.
         let before = count(&events[..asked], |event| {
             matches!(event.what, What::Served { .. })
         });
-        assert!((5..=7).contains(&before), "{before} queries: {events:#?}");
+        assert!(queries.contains(&before), "{before} queries: {events:#?}");
         let end = events
             .iter()
             .position(|event| matches!(event.what, What::Answered { .. }))
