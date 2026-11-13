@@ -70,7 +70,7 @@ impl Warm {
 pub enum Warmth {
     /// A stage before the cache answers it: a list's own data, nothing to keep.
     Local,
-    /// The cache holds a fresh response; ask again at this second: when a prefetch would, or [`MARGIN`] seconds
+    /// The cache holds a fresh response; ask again at this second: when a prefetch would, or `MARGIN` seconds
     /// before it expires if that is earlier.
     Fresh(u32),
     /// Cannot be asked, whenever: no forward stage after the cache.
