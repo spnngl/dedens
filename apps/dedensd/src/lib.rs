@@ -336,6 +336,7 @@ mod tests {
             stage(
                 "    type: forward\n    servers: ['192.0.2.1']\n    trust_anchors: /nonexistent/anchors\n",
             ),
+            stage("    type: cache\n    prewarm:\n      file: /nonexistent/names\n"),
             stage("    type: hosts\n    file: /nonexistent/hosts\n"),
             stage("    type: blocklist\n    file: /nonexistent/list\n"),
             stage("    type: blocklist\n    urls: ['https://lists.example/list.txt']\n"),
@@ -350,6 +351,7 @@ mod tests {
         let built = [
             unbuilt("stages: {}\n"),
             stage("    type: cache\n"),
+            stage("    type: cache\n    prewarm:\n      entries: ['example.org']\n"),
             stage("    type: forward\n    servers: ['192.0.2.1']\n"),
             stage("    type: hosts\n"),
             stage("    type: blocklist\n    allow:\n      entries: ['example.org']\n"),

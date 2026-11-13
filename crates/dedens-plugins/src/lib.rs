@@ -26,6 +26,7 @@ mod text;
 
 pub use blocklist::{
     Action, Blocklist, List, ListError, Lists, MAX_HOPS, Merged, Names, Origin, Read, Tlds,
+    host_names,
 };
 pub use hosts::Hosts;
 pub use text::{LineError, LineErrorKind};

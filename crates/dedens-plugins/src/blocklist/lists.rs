@@ -742,6 +742,34 @@ fn read_line<'t>(
     Ok(())
 }
 
+/// The names of `text`, one a line, `#` starting a comment, each read as a plain line of a blocklist is (D56, D96)
+/// but for the rule against one label: a name to ask for is no list of names. A `*.name` is refused, as a wildcard
+/// cannot be asked.
+///
+/// # Errors
+///
+/// [`LineError`] for a line that is not a host name, is a wildcard, or holds more than a name.
+pub fn host_names(text: &str) -> Result<Vec<Name<'static>>, LineError> {
+    let mut names = Vec::new();
+    for (line, mut fields) in text::lines(text) {
+        let field = fields.next().unwrap_or_default();
+        if let Some(extra) = fields.next() {
+            return Err(LineError {
+                line,
+                kind: LineErrorKind::Extra(extra.to_owned()),
+            });
+        }
+        if field.starts_with("*.") {
+            return Err(LineError {
+                line,
+                kind: LineErrorKind::Wildcard(field.to_owned()),
+            });
+        }
+        names.push(name(line, field)?);
+    }
+    Ok(names)
+}
+
 /// `field` as a host name, after an optional `*.`: labels of ASCII letters, digits, `-` and `_` (`_dmarc`)
 /// between dots, one of them not all digits so that no address reads as a name, and an optional trailing dot. No
 /// escapes, and no root (`.`, `@`): HTML, Adblock rules (`||name^`), URLs and `host:port` do not read, so an error

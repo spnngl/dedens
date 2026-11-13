@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use dedens_plugins::{
     Action, Blocklist, LineErrorKind, List, ListError, Lists, MAX_HOPS, Merged, Names, Origin,
-    Read, Tlds,
+    Read, Tlds, host_names,
 };
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
@@ -1070,6 +1070,32 @@ fn a_chain_to_a_listed_name_is_not_served() {
     let pipeline = pipeline_of("ads.example\n");
     let reply = resolve(&pipeline, &response);
     assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NOERROR, 5));
+}
+
+/// D96: a list of names to ask for reads as a plain list of a blocklist does, but for one label, and no wildcard.
+#[test]
+fn names_to_ask_read_as_a_plain_list_does() {
+    let names = host_names("\u{feff}# head\nExample.COM\n\ncom. # a TLD\n_dmarc.example.org\n")
+        .expect("names");
+    let shown: Vec<String> = names.iter().map(ToString::to_string).collect();
+    assert_eq!(shown, ["Example.COM.", "com.", "_dmarc.example.org."]);
+    let line = |text| host_names(text).expect_err("a line that does not read");
+    let error = line("ok.example\n*.ads.example");
+    assert_eq!(error.line, 2);
+    assert!(matches!(&error.kind, LineErrorKind::Wildcard(f) if f == "*.ads.example"));
+    assert!(
+        matches!(line("a.example b.example").kind, LineErrorKind::Extra(f) if f == "b.example")
+    );
+    assert!(matches!(
+        line("0.0.0.0 ads.example").kind,
+        LineErrorKind::Extra(_)
+    ));
+    assert!(matches!(
+        line("||ads.example^").kind,
+        LineErrorKind::Name(..)
+    ));
+    assert!(matches!(line(".").kind, LineErrorKind::Name(..)));
+    assert_eq!(host_names("").expect("empty"), []);
 }
 
 fn pipeline_of(text: &str) -> Pipeline {
