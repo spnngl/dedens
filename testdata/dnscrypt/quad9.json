@@ -1,0 +1,10 @@
+{
+  "source": "9.9.9.9:8443, quad9-dnscrypt-ip4-filter-pri of dnscrypt-resolvers v3 public-resolvers.md",
+  "provider_name": "2.dnscrypt-cert.quad9.net",
+  "provider_pk": "67c847b8c8758cd120245543be756746df34df1d84c00b8c470368df821d863e",
+  "captured_at": 1794567741,
+  "client_secret_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "client_nonce": "a0a1a2a3a4a5a6a7a8a9aaab",
+  "dns_query": "12340100000100000000000003777777076578616d706c6503636f6d0000010001",
+  "min_packet_len": 256
+}
