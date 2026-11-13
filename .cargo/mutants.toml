@@ -29,6 +29,14 @@ exclude_re = [
   # dedensd's entry for the simulation: only dedens-sim's `serving` family calls it, and cargo-mutants runs the tests
   # of the mutated package alone (D182).
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
+  # The same for the DNSCrypt provider's entry (D99): dedens-sim's `dnscrypt` test calls it.
+  'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated_dnscrypt(<N>)? (with \(\)|-> anyhow::Result<\(\)> with Ok\(\(\)\))$',
+  # A key file is read in one `read` or a few: an interrupted read is retried, which no test makes a file do.
+  'secret\.rs:\d+:\d+: replace (match guard error\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in read_secret$',
+  # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
+  'secret\.rs:\d+:\d+: replace \| with \^ in read_secret$',
+  # Without the `dnscrypt` feature only: not built under `all_features`, so no test sees a change.
+  'upstream\.rs:\d+:\d+: replace (dnscrypt|exchange_dnscrypt)(<N>)? -> .* with Ok\(Default::default\(\)\)$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
