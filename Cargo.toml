@@ -17,7 +17,9 @@ anstyle = "1.0.14"
 anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 # D97: DNSCrypt's XChaCha20-Poly1305 (es-version 0x0002): the stream cipher and its HChaCha20 key derivation.
-chacha20 = { version = "0.10.2", default-features = false, features = ["xchacha"] }
+chacha20 = { version = "0.10.2", default-features = false, features = [
+  "xchacha",
+] }
 clap = { version = "4.6.7", features = ["derive"] }
 # D158: the man pages, checked against the command lines by a test of each binary.
 clap_mangen = "0.3.3"
