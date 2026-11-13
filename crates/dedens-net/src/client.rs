@@ -416,7 +416,26 @@ impl<N: Io> Client<N> {
         stamp: &crate::stamp::DnsCrypt,
         options: &Options,
     ) -> Result<Response, ClientError> {
-        let resolver = self.dnscrypt.of(stamp);
+        self.exchange_dnscrypt_via(query, stamp, &[], options).await
+    }
+
+    /// As [`Client::exchange_dnscrypt`], through Anonymized `DNSCrypt` `relays` when there are any: each query, and
+    /// the certificates' too, goes to one of them with the resolver's address before it, so that the resolver never
+    /// sees the client's (draft-denis-dprive-dnscrypt "Anonymized `DNSCrypt`", D100). The relay is picked at random
+    /// for each query, and the one that failed the last time is skipped, unless it is the only one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::exchange_dnscrypt`].
+    #[cfg(feature = "dnscrypt")]
+    pub async fn exchange_dnscrypt_via(
+        &self,
+        query: Message<'_>,
+        stamp: &crate::stamp::DnsCrypt,
+        relays: &[crate::stamp::Relay],
+        options: &Options,
+    ) -> Result<Response, ClientError> {
+        let resolver = self.dnscrypt.of(stamp, relays);
         let target = Server::from(stamp.address.socket_addr());
         self.run(query, &target, Via::DnsCrypt(&resolver), options)
             .await
@@ -434,7 +453,25 @@ impl<N: Io> Client<N> {
         stamp: &crate::stamp::DnsCrypt,
         options: &Options,
     ) -> Result<dnscrypt::Listing, ClientError> {
-        self.dnscrypt.of(stamp).listing(self, options).await
+        self.dnscrypt_certificates_via(stamp, &[], options).await
+    }
+
+    /// As [`Client::dnscrypt_certificates`], through `relays` ([`Client::exchange_dnscrypt_via`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::dnscrypt_certificates`].
+    #[cfg(feature = "dnscrypt")]
+    pub async fn dnscrypt_certificates_via(
+        &self,
+        stamp: &crate::stamp::DnsCrypt,
+        relays: &[crate::stamp::Relay],
+        options: &Options,
+    ) -> Result<dnscrypt::Listing, ClientError> {
+        self.dnscrypt
+            .of(stamp, relays)
+            .listing(self, &self.io, options)
+            .await
     }
 
     /// Sends `query` to the Oblivious `DoH` `target` through `proxy`, or straight to it without one, and returns the
