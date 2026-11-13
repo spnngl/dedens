@@ -31,6 +31,9 @@ use crate::util::{
     FORWARD_TRIES, SECOND, SEEDS, TRIES, answers, answers_and_txt, served, served_by,
 };
 
+/// The step of simulated time of the prewarm scenarios, which run for minutes.
+const PREWARM_TICK: Duration = Duration::from_millis(10);
+
 /// Fewer seeds for the scenarios in which a query runs through its timeouts: each costs the most wall time.
 const FEW: &[u64] = &[0, 7];
 
@@ -366,10 +369,17 @@ fn faulty(seed: Seed) -> (Vec<Event>, IpAddr) {
 
 /// A world of one upstream server holding `answers`, served by `dedensd` whose cache stage (`config`) prewarms
 /// `example.com A` (D96), its run `duration` long.
-fn prewarming(seed: Seed, answers: Answers, config: Config, duration: Duration) -> World {
+fn prewarming(
+    seed: Seed,
+    answers: Answers,
+    config: Config,
+    duration: Duration,
+    tick: Duration,
+) -> World {
     Topology::new()
         .upstream(answers)
         .duration(duration)
+        .tick(tick)
         .resolver(move |upstreams| {
             pipeline_with(config.clone(), upstreams)
                 .with_prewarm([question("example.com", RecordType::A)])
@@ -423,7 +433,7 @@ fn a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it() {
 fn refreshed_before_it_expires(config: &Config, queries: &RangeInclusive<usize>) {
     seed::each(FEW, |seed| {
         let config = config.clone();
-        let mut world = prewarming(seed, answers(), config, 120 * SECOND);
+        let mut world = prewarming(seed, answers(), config, 120 * SECOND, PREWARM_TICK);
         world.client(async move |stub| {
             tokio::time::sleep(34 * SECOND).await;
             let answer = stub
@@ -467,7 +477,7 @@ fn a_failed_prewarm_is_retried_after_a_minute_doubling_up_to_failure_max() {
             failure_max: 100,
             ..Config::default()
         };
-        let mut world = prewarming(seed, answers().silent(), config, 400 * SECOND);
+        let mut world = prewarming(seed, answers().silent(), config, 400 * SECOND, PREWARM_TICK);
         let resolver = world.resolver.ip();
         world.client(async move |_| {
             tokio::time::sleep(390 * SECOND).await;
