@@ -262,6 +262,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - The DNSCrypt signing key beside query processing (D99, the draft's "Key Management" advises a signing key kept
   apart): `dedensd` holds the provider seed in the process that serves queries, read once at start. Default: the
   key file, 0600; a separate signer that certifies the short-term keys, with the rotation, when a deployment asks.
+- PQDNSCrypt ticket keys across a `dedensd` restart (D101): the ticket key is random and kept in memory, so a restart
+  ends every ticket and each client falls back to a full query after one lost query. Default: as is; a key file
+  or a derivation from the provider seed when a deployment's restarts or its decapsulation cost ask for it.
 - An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
   for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the

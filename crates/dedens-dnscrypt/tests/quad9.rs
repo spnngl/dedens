@@ -56,7 +56,7 @@ fn certificates() -> Vec<Certificate> {
 fn certificate(system: EncryptionSystem) -> Certificate {
     certificates()
         .into_iter()
-        .find(|certificate| certificate.body().system == system)
+        .find(|certificate| certificate.body().system() == system)
         .expect("a certificate of the system")
 }
 
@@ -67,7 +67,7 @@ fn certificates_are_read_and_chosen() {
     let now = capture().captured_at;
     let certificates = certificates();
     assert_eq!(certificates.len(), 2);
-    let chosen = |policy| select(&certificates, now, policy).map(|c| c.body().system);
+    let chosen = |policy| select(&certificates, now, policy).map(|c| c.body().system());
     assert_eq!(
         chosen(SystemPolicy::Preferred),
         Some(EncryptionSystem::XChaCha20Poly1305)

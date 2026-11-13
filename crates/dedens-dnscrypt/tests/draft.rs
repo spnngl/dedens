@@ -9,7 +9,8 @@ use std::fs;
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession,
     EncryptionSystem, LowOrderKey, PublicKey, QueryContext, QueryError, QueryPadding, ResolverKey,
-    ResponseContext, ResponseError, SecretKey, SigningKey, Validity,
+    ResolverPublicKey, ResponseContext, ResponseError, SecretKey, SessionError, SigningKey,
+    Validity,
 };
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, RecordType};
@@ -58,8 +59,7 @@ fn client_nonce() -> ClientNonce {
 
 fn body() -> CertificateBody {
     CertificateBody {
-        system: EncryptionSystem::XChaCha20Poly1305,
-        resolver_key: resolver_secret().public_key(),
+        resolver_key: ResolverPublicKey::XChaCha20(resolver_secret().public_key()),
         client_magic: ClientMagic::try_from(array(&seq(0xb1, 8))).expect("a client magic"),
         serial: 1,
         validity: Validity::new(0x6800_0000, 0x6801_5180).expect("a validity"),
@@ -326,7 +326,7 @@ fn negative_weak_public_key() {
         let weak = PublicKey::from_bytes(weak);
         assert_eq!(
             client_secret().shared_key(system, &weak).err(),
-            Some(LowOrderKey)
+            Some(SessionError::LowOrderKey(LowOrderKey))
         );
         let mut packet = hex(&draft().query_packet);
         packet[8..40].copy_from_slice(weak.as_bytes());
@@ -336,12 +336,12 @@ fn negative_weak_public_key() {
         );
     }
     let weak = CertificateBody {
-        resolver_key: PublicKey::from_bytes([0; 32]),
+        resolver_key: ResolverPublicKey::XChaCha20(PublicKey::from_bytes([0; 32])),
         ..body()
     };
     let certificate = Certificate::sign(&provider(), weak);
     assert_eq!(
         ClientSession::new(&certificate, &client_secret()).err(),
-        Some(LowOrderKey)
+        Some(SessionError::LowOrderKey(LowOrderKey))
     );
 }

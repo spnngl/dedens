@@ -7,7 +7,8 @@
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, CertificateError, ClientMagic, ClientNonce,
     ClientSession, EncryptQueryError, EncryptResponseError, EncryptionSystem, QueryContext,
-    QueryPadding, ResolverKey, ResponseContext, ResponseError, SecretKey, SigningKey, Validity,
+    QueryPadding, ResolverKey, ResolverPublicKey, ResponseContext, ResponseError, SecretKey,
+    SigningKey, Validity,
 };
 use dedens_proto::{Flags, Message};
 use dedens_testkit::hex;
@@ -39,8 +40,8 @@ fn certificate(system: EncryptionSystem) -> Certificate {
     Certificate::sign(
         &provider,
         CertificateBody {
-            system,
-            resolver_key: resolver_secret().public_key(),
+            resolver_key: ResolverPublicKey::classical(system, resolver_secret().public_key())
+                .expect("a classical system"),
             client_magic: ClientMagic::try_from(array(&seq(0xb1, 8))).expect("a magic"),
             serial: 1,
             validity: Validity::new(1, 2).expect("a validity"),
