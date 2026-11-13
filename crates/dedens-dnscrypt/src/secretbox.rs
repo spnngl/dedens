@@ -8,6 +8,7 @@ use poly1305::universal_hash::KeyInit as _;
 use salsa20::XSalsa20;
 use salsa20::cipher::{KeyIvInit as _, StreamCipher};
 use subtle::ConstantTimeEq as _;
+use zeroize::Zeroizing;
 
 use crate::key::{KEY_LEN, SharedKey};
 use crate::system::EncryptionSystem;
@@ -70,9 +71,9 @@ pub(crate) fn open(
 
 /// The Poly1305 key: the first 32 bytes of the keystream, which are used for nothing else.
 fn poly_key(cipher: &mut impl StreamCipher) -> Poly1305 {
-    let mut block = [0; KEY_LEN];
-    cipher.apply_keystream(&mut block);
-    Poly1305::new(&block.into())
+    let mut block = Zeroizing::new([0; KEY_LEN]);
+    cipher.apply_keystream(block.as_mut());
+    Poly1305::new(<&poly1305::Key>::from(&*block))
 }
 
 fn seal_with(mut cipher: impl StreamCipher, buf: &mut [u8]) -> [u8; TAG_LEN] {

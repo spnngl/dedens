@@ -9,7 +9,7 @@ use salsa20::cipher::array::Array as SalsaArray;
 use salsa20::cipher::consts::U10;
 use salsa20::hsalsa;
 use subtle::ConstantTimeEq as _;
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::error::LowOrderKey;
 use crate::system::EncryptionSystem;
@@ -88,7 +88,7 @@ impl SecretKey {
         system: EncryptionSystem,
         peer: &PublicKey,
     ) -> Result<SharedKey, LowOrderKey> {
-        let mut point = Zeroizing::new(x25519_dalek::x25519(*self.0, peer.0));
+        let point = Zeroizing::new(x25519_dalek::x25519(*self.0, peer.0));
         if bool::from(point.ct_eq(&[0; KEY_LEN])) {
             return Err(LowOrderKey);
         }
@@ -104,7 +104,6 @@ impl SecretKey {
                 &ChaChaArray::default(),
             )),
         };
-        point.zeroize();
         Ok(SharedKey {
             system,
             key: Zeroizing::new(key),
