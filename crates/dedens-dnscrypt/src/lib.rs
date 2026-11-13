@@ -6,13 +6,16 @@
 //! here sends a packet or reads a clock: callers hand in bytes, Unix seconds and a random source, so an exchange
 //! is reproducible under test.
 //!
-//! - [`certificate`]: [`Certificate`], read from the TXT RDATA of `2.dnscrypt-cert.<zone>` and checked with the
+//! - `certificate`: [`Certificate`], read from the TXT RDATA of `2.dnscrypt-cert.<zone>` and checked with the
 //!   provider's key, and [`select`] for the one a client uses.
-//! - [`key`]: [`SecretKey`], [`PublicKey`] and the [`SharedKey`] of the two.
-//! - [`client`]: [`ClientSession::encrypt_query`] and [`QueryContext::decrypt_response`].
-//! - [`resolver`]: [`ResolverKey::decrypt_query`] and [`ResponseContext::encrypt_response`].
-//! - [`system`]: [`EncryptionSystem`] and the client's [`SystemPolicy`].
+//! - `key`: [`SecretKey`], [`PublicKey`] and the [`SharedKey`] of the two.
+//! - `client`: [`ClientSession::encrypt_query`] and [`QueryContext::decrypt_response`].
+//! - `resolver`: [`ResolverKey::decrypt_query`] and [`ResponseContext::encrypt_response`].
+//! - `system`: [`EncryptionSystem`] and the client's [`SystemPolicy`].
+//! - `error`: the error of each step.
 //! - `secretbox` and `padding`: the cipher, and the ISO/IEC 7816-4 padding with the lengths the draft suggests.
+//!
+//! Every item is at the crate's root: the modules are private.
 //!
 //! What a packet is carried in is not here: the two-byte length of TCP, the relay prefix of Anonymized `DNSCrypt`
 //! and the certificate's DNS query belong to the transports.
@@ -20,15 +23,14 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
-pub mod certificate;
-pub mod client;
-pub mod error;
-pub mod key;
-pub mod resolver;
-pub mod system;
-
+mod certificate;
+mod client;
+mod error;
+mod key;
 mod padding;
+mod resolver;
 mod secretbox;
+mod system;
 #[cfg(test)]
 mod tests;
 
