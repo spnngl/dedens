@@ -483,11 +483,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `QuicError::MessageId`, the query not sent again (§4.3.3 SHOULD). Passed on to the exchange, such a
   response was dropped as not answering ID 0, and the next try went on the connection that broke the protocol. Not
   checked: a response carrying edns-tcp-keepalive (§4.3.3, §5.5.2).
-- D97 (amends D69) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
+- D97 (amends D69; amended by D101) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
   systems: `0x0002` XChaCha20-Poly1305 (the draft's) and `0x0001` XSalsa20-Poly1305 (v2 of 2023, which the draft no
   longer specifies; the resolvers in the field still serve it, Quad9 both). Not here: the post-quantum system `0x0003`
-  (certificates of an unknown system are skipped, as the draft tells clients), Anonymized DNSCrypt, stamps (D102)
-  and the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are
+  (D101), Anonymized DNSCrypt, stamps (D102) and the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are
   arguments.
   The draft is cited by section name, as its numbers move between revisions; the archive holds revision 11 and the 2023
   text (`docs/rfc/list.md`, `coverage.md`). The crate has no `dnscrypt` Cargo feature: it is a library nothing else
@@ -545,7 +544,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `dnscrypt_encrypt_response` (a packet fits its carrier, the client reads a response to its query, TC when
     records were left out). A padding the resolver refuses cannot be reached from a fuzz target, which holds no
     sealing key but the crate's: the unit tests of `padding` cover it. Bench: `docs/benchmarks.md`.
-- D98 (amends D102) The client asks a DNSCrypt resolver named by a stamp: `dedens @sdns://…`, `dedens_net::dnscrypt`
+- D98 (amends D102; amended by D101) The client asks a DNSCrypt resolver named by a stamp: `dedens @sdns://…`, `dedens_net::dnscrypt`
   and `Client::{exchange_dnscrypt, dnscrypt_certificates}`, behind the feature `dnscrypt` of `dedens-net` (off by
   default; it now pulls `dedens-dnscrypt`, `rand_core` and `zeroize`, where D102 said no dependency) and of `dedens`
   (`dnscrypt = ["dedens-net/dnscrypt"]`, which `just providers` builds with). Without it a stamp is a usage error.
@@ -598,7 +597,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     valid certificate, a low-order key, a rotated certificate fetched after a silent try, a forged response, a closed
     TCP connection, a silent resolver); `apps/dedens/tests/dnscrypt.rs` (the command over UDP, TCP and as JSON, the
     list, the refusals, exit 9); the offline checks of `providers.yaml`; a fuzz seed for `parse_command_line`.
-- D99 `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
+- D99 (amended by D101) `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
   (off by default; it enables `dedens-net/dnscrypt` and pulls `dedens-dnscrypt`) and of `dedens-sim`. Without it
   `dnscrypt://`, the `dnscrypt` section and `sdns://` servers are config errors, and `dnscrypt-keygen` says so.
   - Listener: `dnscrypt://ADDR[:PORT]` in `listen` (port 443), UDP and TCP on one address, with the section
@@ -645,7 +644,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     most, cleared when full and at each new set (the draft: erase shared keys with the key). `docs/benchmarks.md`:
     a client keeping its key is served at 69,400 queries/s, one with a key per query at 20,200 (D97's 19 µs of X25519
     per query), plain UDP at 93,500 on one thread.
-  - Stats (D48): `dedensd_dnscrypt_queries_total{system, result}`, system `xchacha20`, `xsalsa20` or `none` (no key
+  - Stats (D48): `dedensd_dnscrypt_queries_total{system, result}`, system `xchacha20`, `xsalsa20`, `xwing` (D101) or `none` (no key
     pair opened the packet: unknown magic, denied), result `answered` or `dropped`; counted by a value that follows the
     query (`Tally`) so that a panic or an unanswered upstream query counts as dropped. A certificate answer is not counted.
   - Upstream: `Via::Dnscrypt(Arc<str>)` in `dedens-server` holds the canonical text of the `sdns://` stamp (the
@@ -664,9 +663,98 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     answered 13 hours in, its query is dropped at 25 hours, the new key answers); a seed of `read_config`
     (`fuzz/seeds/dnscrypt.yaml`, D181).
   - Not covered: a failed draw on rotation (the `Io` of the simulation draws always) and the withdrawal of a compromised
-    key (an operator replaces the seed and restarts). Anonymized DNSCrypt relays and PQ are later steps.
+    key (an operator replaces the seed and restarts). Anonymized DNSCrypt relays are a later step; PQ is D101.
   - Checked live on 2026-11-13: `dnscrypt-proxy` 2.1.20 (macOS arm64, from its release) with the stamp `dedensd`
     logged for `127.0.0.1:8443` reported `OK (DNSCrypt)` and gave answers over UDP and TCP (it prints "should upgrade to
     XChaCha20" while reading the `0x0001` certificate, and then keeps the `0x0002` one, as serials are equal); a
     `dedensd` forwarding by stamp to Quad9 (`9.9.9.9:8443`, the stamp of `docs/providers/providers.yaml`) answered `example.com` over UDP
     in 41 ms and over TCP.
+- D101 (amends D97, D98, D99) PQDNSCrypt, the draft's X-Wing system `0x0003` and its resumption tickets (draft-denis-dprive-dnscrypt
+  revision 11, "Post-Quantum Key Exchange (PQDNSCrypt)"), in `dedens-dnscrypt`, the client of D98 and `dedensd` of D99.
+  The system is off in `dedensd` unless the operator lists `pq` in `systems`; in the client it is chosen when a
+  resolver offers it. D97's "not here" for `0x0003` no longer holds; Anonymized DNSCrypt is still not here.
+  - Crypto: the KEM is the `x-wing` crate (0.1.1, RustCrypto, on `ml-kem` 0.3 and `x25519-dalek` 3, `zeroize` feature,
+    no default features); the KDF is `ring`'s HKDF-SHA256, the AEAD D97's XChaCha20-Poly1305 box. **Neither `x-wing` nor
+    `ml-kem` has been independently audited** (both READMEs say so) and `x-wing` implements X-Wing draft 06, where the
+    DNSCrypt draft cites revision 10 (`docs/rfc/archive/draft-connolly-cfrg-xwing-kem-10.txt`): what pins it is that it
+    reproduces every vector of the DNSCrypt draft's Appendix 3 (resolver key, ciphertext, KEM output, the shared key,
+    the whole 1220-byte query), so the two agree on the bytes that matter here. Rejected: `aws-lc-rs` ML-KEM-768 (it
+    takes no encapsulation seed, so the client's side of the vectors cannot run, and the X-Wing combiner and the
+    SHAKE256 key expansion would be ours, a hand-made construction in place of a crate's), and a combiner of our own
+    over `ml-kem` (the same). The
+    reviewer's choice if an audited ML-KEM is required: the swap is `src/xwing.rs`, 100 lines, the rest of the crate sees
+    `XWingPublicKey`, `XWingSecretKey` and 32-byte secrets. No `unsafe`, and the secret key and the shared secrets are
+    `Zeroizing`. `cargo deny` passes; the crates added are `x-wing`, `ml-kem`, `module-lattice`, `kem`, `sha3`,
+    `keccak`, `shake` and `sponge-cursor`, all MIT or Apache-2.0.
+  - Certificates: `CertificateBody` holds a `ResolverPublicKey` (`XSalsa20`, `XChaCha20` or `XWing`) instead of a
+    system and a 32-byte key, so a PQ certificate cannot hold a short key and a classical one a long one. A PQ
+    certificate's extensions are exactly the draft's 12-byte `PQD` profile: `sign` writes them, `parse` refuses a
+    certificate whose profile differs (`CertificateError::PqProfile`), as the draft's negative cases 1 and 2 ask. The
+    es-version on the wire and the signed lengths are the one profile; `select` ranks `0x0003` over `0x0002` over
+    `0x0001` under `SystemPolicy::Preferred` and keeps only `0x0003` under `SystemPolicy::Only(EncryptionSystem::XWing)`.
+  - Downgrade (draft "PQ Downgrade Protection"): a stamp has no flag for it (the stamps' properties name none), so the client's `Options::dnscrypt_pq` (`+dnscrypt-pq`) is the provisioned knowledge: it takes only a
+    PQ certificate, and a resolver that offers none is an error, never a classical exchange. Without it the client
+    prefers PQ when it is offered and falls back when it is not, as the draft lets a client with no knowledge do. A kept
+    certificate is dropped when the policy no longer allows its system.
+  - Packets: a PQ query is D97's with the 1120-byte ciphertext where the client key was (no 256-byte floor: the draft
+    exempts it, `QueryPadding::udp(len, 0)`; 1220 bytes for the vectors' 33-byte question); `ClientSession::xwing` makes a
+    fresh encapsulation, so each query has a new key, and the resolver's `decrypt_query` decapsulates, with implicit
+    rejection (a tampered ciphertext gives another key and the same dropped packet). A PQ response always starts with
+    the two-byte control length and the control field (empty without a ticket), inside the padding; a control field of
+    an unknown magic or version is skipped, a malformed `PQDR` v1 one is `ResponseError::Control`. Over UDP the ticket is
+    withheld, the control length set to 0, when the response would no longer fit, before anything is truncated.
+  - Tickets (`TicketKeys`, `Ticket`, `Resumption`): the draft's, byte for byte (the 130-byte ticket of the vectors is
+    reproduced). The resolver issues one in the response to a full PQ query, `lifetime` seconds from `now`, cut at
+    the end of the certificate; a resumed query is opened by the key id (the current key or the previous one), then
+    checked against the current certificate (es-version, client magic, serial, end of validity, hash of the
+    extensions: `QueryError::TicketContext`) and the clock (`TicketExpired`); every failure is a dropped packet, the
+    client then asks again with a ciphertext. The resumed key is derived from the resume secret, the resumed client nonce
+    and the ticket's hash, so no two resumed queries share a key (a nonce the client must not repeat: it draws it
+    anew). A resumed response can bring a renewed ticket, issued from the resumed key by the same formula.
+  - Client (D98): `+dnscrypt-resume` (`Options::dnscrypt_resume`, off by default: a ticket links the queries of a
+    client, the draft's unlinkability note) keeps the ticket of the last PQ response in the resolver's state and uses it
+    while it is for the certificate in use (same serial) and not expired (the lifetime from receipt, capped by the
+    certificate's end); a renewed ticket replaces it; a resumed query that gets no answer drops the ticket, so the retry
+    is a full query. A network change is not seen (no socket is kept: `dedens` is one process, and the exchange is
+    over a fresh source port): the lifetime bounds a ticket's use. The certificate query is a TXT query padded with
+    EDNS Padding to 3072 bytes (two classical and two PQ certificates, the draft's "Certificate Retrieval"), UDP first,
+    TCP when the answer is truncated or missing; the entropy buffer of the exchange grew from 64 to 96 bytes for the
+    encapsulation's 64.
+  - `dedensd` (D99): `systems` takes `pq` (`SystemFile::Pq`); a PQ certificate and its X-Wing key are made at each
+    rotation like the others (12 hours, valid 24, backdated an hour). The ticket key is made at each rotation too,
+    random, kept in memory only (a restart ends all tickets: clients fall back to a ciphertext after one lost query);
+    the previous key is kept while its tickets can live, `TICKET_LIFETIME` = 600 seconds, a constant (as
+    `encrypted-dns-server`'s default): shorter than the certificate and the key, as the draft demands. A ticket is issued in the
+    response to every full PQ query and renewed in the response to a resumed query whose ticket has less than half its
+    life left. A PQ certificate goes in a UDP certificate answer only when the answer is not longer than the query,
+    otherwise the answer holds the classical certificates with TC set, and over TCP every certificate is sent. A
+    packet is resumed when it starts with `PQResume`; the access check and the rate limit stand before any
+    decapsulation (D99, D91, D113), the only protection against decapsulation as a cost (`pq_decrypt_query` below).
+    Tally name `xwing`.
+  - Tests: `crates/dedens-dnscrypt/tests/pq.rs`, every vector of the draft's "PQ Test Vector Structure" from
+    `testdata/dnscrypt/draft-pq-vectors.json` (the certificate, the full query, the ticket and the control field, the
+    response, the resumed query and response) and negative cases 1 to 8; `dedens-net` (`tests/dnscrypt.rs`: PQ chosen,
+    a fresh ciphertext per query, `+dnscrypt-pq` against a classical resolver, resumption and its fallback, no ticket
+    unless asked); `apps/dedensd/tests/dnscrypt.rs` and `apps/dedens/tests/dnscrypt.rs` (the client against `dedensd` and
+    a loopback resolver, over UDP and TCP, full and resumed); `dnscrypt/tests.rs` (the UDP certificate rule, the ticket
+    key rotation); `crates/dedens-sim/tests/serving.rs` `dnscrypt::tickets_resume_for_ten_minutes_across_a_rotation`
+    (simulated time: a ticket lives its 600 seconds, is renewed at half life, dies at expiry, and survives one rotation).
+    Fuzz targets: the PQ exchange joins the existing six (`dnscrypt_decrypt`, `dnscrypt_unpad`, `dnscrypt_tamper_*`,
+    `dnscrypt_encrypt_response`, `parse_dnscrypt_certificate`), and two are new, `dnscrypt_ticket` (arbitrary bytes as a
+    resumed query are refused; the client's own is read, with one bit changed is not) and `dnscrypt_control` (the
+    control-field parser; issued tickets read back as made). The fuzz crate builds `ml-kem` and its neighbours optimized in
+    the dev profile, as a decapsulation is slow unoptimized.
+  - Bench (`docs/benchmarks.md`): a PQ query costs the client 68 µs and the resolver 101 µs, against 40 and 21 µs for
+    X25519 (one run, on a loaded machine); a resumed query 1.1 and 1.7 µs. The 1220-byte query and the 1320-byte certificate
+    are the price on the wire; a resumed query is 424 bytes and its response 112 without a ticket.
+  - Checked live on 2026-11-13: `encrypted-dns-server` 0.9.22 (the draft's author's, built from `master`, `pq_enabled`)
+    on `127.0.0.1:8443`, no public resolver listing `0x0003` in `public-resolvers.md`: `dedens @sdns://… +dnscrypt-cert` lists both
+    certificates (the padded UDP query brought the PQ one), a default query chose `X-Wing-XChaCha20Poly1305` over UDP
+    and TCP, and with `--repeat 20 +dnscrypt-pq +dnscrypt-resume` the server logged 19 resumed queries accepted without
+    decapsulation and one full one (p50 0.5 ms against 3.9 ms for 20 full queries, the server answering from its cache).
+    `dedensd` with `systems: [xchacha20, pq]` served the same client over UDP and TCP, full and resumed.
+  - Not covered: Anonymized DNSCrypt of PQ (the draft's "PQ and Anonymized DNSCrypt": relays need no change, and
+    this client does not use relays yet), tickets surviving a `dedensd` restart (the ticket key is kept in
+    memory, `docs/TODECIDE.md`), a decapsulation limit of its own, and the network-change rule of the
+    ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
+    the order a resumed query is checked are the places a mistake would matter.

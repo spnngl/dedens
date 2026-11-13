@@ -1,14 +1,18 @@
 //! The client's side: queries encrypted for a certificate, and the responses to them.
 
+use std::fmt;
+
 use dedens_proto::{Message, Question};
 use rand_core::CryptoRng;
+use zeroize::Zeroizing;
 
-use crate::certificate::{Certificate, ClientMagic};
-use crate::error::{EncryptQueryError, LowOrderKey, ResponseError};
-use crate::key::{PublicKey, SecretKey, SharedKey};
+use crate::certificate::{Certificate, ClientMagic, ResolverPublicKey};
+use crate::error::{ControlError, EncryptQueryError, ResponseError, SessionError};
+use crate::key::{KEY_LEN, SecretKey, SharedKey};
 use crate::padding::{self, BLOCK};
+use crate::pq::{self, RESUME_MAGIC, TicketOffer};
 use crate::secretbox::{self, NONCE_LEN, TAG_LEN};
-use crate::{MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC};
+use crate::{CLIENT_MAGIC_LEN, MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC};
 
 /// The 12 bytes the client picks for a query; the resolver repeats them in its response, which is how the client
 /// knows what the response answers (draft "Protocol Components": `<client-nonce>`).
@@ -47,7 +51,8 @@ const MAX_PLAINTEXT_LEN: usize = MAX_PACKET_LEN - QUERY_OVERHEAD;
 /// Over UDP", "Padding For Client Queries Over TCP").
 ///
 /// A target below what the query needs, itself and one byte, is raised to that. [`QueryPadding::udp`] and
-/// [`QueryPadding::tcp`] stop at the 4028 bytes a packet can carry.
+/// [`QueryPadding::tcp`] stop at the 4028 bytes a classical packet can carry; a PQ packet, whose key field is
+/// longer, is refused when it comes out over 4096 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryPadding(usize);
 
@@ -82,30 +87,74 @@ impl QueryPadding {
     }
 }
 
-/// What a client keeps for one resolver certificate: the magic, the client's key and the shared key, so that a
-/// query costs no scalar multiplication.
+/// What a ticket of a PQ session is bound to, and the end of the certificate that caps its life.
+#[derive(Debug, Clone, Copy)]
+struct TicketOrigin {
+    magic: ClientMagic,
+    ts_end: u32,
+}
+
+/// What a client keeps for one resolver certificate: the magic, what the resolver reads the client's key from
+/// (the X25519 key, or the X-Wing ciphertext) and the shared key, so that a query costs no key agreement.
 #[derive(Debug, Clone)]
 pub struct ClientSession {
     magic: ClientMagic,
-    client_key: PublicKey,
+    /// `<client-pk>`: 32 bytes of X25519 public key, or the 1120 of an X-Wing ciphertext.
+    client_kex: Vec<u8>,
     shared: SharedKey,
+    origin: Option<TicketOrigin>,
 }
 
 impl ClientSession {
-    /// The session of the client key `secret` with the resolver of `certificate`.
+    /// The session of the client key `secret` with the resolver of `certificate`, an X25519 one.
     ///
     /// The client key can be one for all queries to a resolver, or one per query: the resolver sees it either way
     /// (draft "Protocol Components": `<client-pk>`).
     ///
     /// # Errors
     ///
-    /// [`LowOrderKey`] when the certificate's resolver key is of low order.
-    pub fn new(certificate: &Certificate, secret: &SecretKey) -> Result<Self, LowOrderKey> {
+    /// [`SessionError::LowOrderKey`] when the certificate's resolver key is of low order,
+    /// [`SessionError::WrongSystem`] when the certificate is an X-Wing one: see [`ClientSession::xwing`].
+    pub fn new(certificate: &Certificate, secret: &SecretKey) -> Result<Self, SessionError> {
         let body = certificate.body();
+        let resolver_key = body
+            .resolver_key
+            .x25519()
+            .ok_or(SessionError::WrongSystem)?;
         Ok(Self {
             magic: body.client_magic,
-            client_key: secret.public_key(),
-            shared: secret.shared_key(body.system, &body.resolver_key)?,
+            client_kex: secret.public_key().as_bytes().to_vec(),
+            shared: secret.shared_key(body.system(), resolver_key)?,
+            origin: None,
+        })
+    }
+
+    /// The session with the resolver of `certificate`, an X-Wing one: a fresh encapsulation, whose ciphertext is
+    /// the `<client-pk>` of the queries of the session (draft "PQ Key Derivation").
+    ///
+    /// A client that does not want a resolver to link its queries makes one session per query.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::WrongSystem`] when the certificate is an X25519 one: see [`ClientSession::new`].
+    pub fn xwing(
+        certificate: &Certificate,
+        rng: &mut impl CryptoRng,
+    ) -> Result<Self, SessionError> {
+        let body = certificate.body();
+        let ResolverPublicKey::XWing(resolver_key) = &body.resolver_key else {
+            return Err(SessionError::WrongSystem);
+        };
+        let (ciphertext, secret) = resolver_key.encapsulate(rng);
+        let context = pq::cert_context(&body.signed_bytes());
+        Ok(Self {
+            magic: body.client_magic,
+            shared: pq::session_key(&context, body.client_magic, &secret, &ciphertext),
+            client_kex: ciphertext,
+            origin: Some(TicketOrigin {
+                magic: body.client_magic,
+                ts_end: body.validity.end(),
+            }),
         })
     }
 
@@ -121,43 +170,133 @@ impl ClientSession {
         padding: QueryPadding,
         nonce: ClientNonce,
     ) -> Result<(Vec<u8>, QueryContext), EncryptQueryError> {
-        let decoded = Message::decode(query)?;
-        let message = decoded.message;
-        if message.questions.is_empty() {
-            return Err(EncryptQueryError::NoQuestion);
-        }
-        let padded_len = padding.0.max(query.len() + 1);
-        if QUERY_OVERHEAD + padded_len > MAX_PACKET_LEN {
-            return Err(EncryptQueryError::TooLong);
-        }
+        let mut head = Vec::with_capacity(CLIENT_MAGIC_LEN + self.client_kex.len());
+        head.extend_from_slice(self.magic.as_bytes());
+        head.extend_from_slice(&self.client_kex);
+        seal_query(&head, &self.shared, self.origin, query, padding, nonce)
+    }
+}
 
-        let mut ciphertext = Vec::with_capacity(padded_len);
-        ciphertext.extend_from_slice(query);
-        padding::pad(&mut ciphertext, padded_len);
-        let tag = secretbox::seal(
-            &self.shared,
-            &secretbox::query_nonce(nonce.as_bytes()),
-            &mut ciphertext,
+/// The packet of `query` sealed with `shared`, after `head`: everything that comes before the client nonce.
+fn seal_query(
+    head: &[u8],
+    shared: &SharedKey,
+    origin: Option<TicketOrigin>,
+    query: &[u8],
+    padding: QueryPadding,
+    nonce: ClientNonce,
+) -> Result<(Vec<u8>, QueryContext), EncryptQueryError> {
+    let decoded = Message::decode(query)?;
+    let message = decoded.message;
+    if message.questions.is_empty() {
+        return Err(EncryptQueryError::NoQuestion);
+    }
+    let padded_len = padding.0.max(query.len() + 1);
+    let overhead = head.len() + NONCE_HALF_LEN + TAG_LEN;
+    if overhead + padded_len > MAX_PACKET_LEN {
+        return Err(EncryptQueryError::TooLong);
+    }
+
+    let mut ciphertext = Vec::with_capacity(padded_len);
+    ciphertext.extend_from_slice(query);
+    padding::pad(&mut ciphertext, padded_len);
+    let tag = secretbox::seal(
+        shared,
+        &secretbox::query_nonce(nonce.as_bytes()),
+        &mut ciphertext,
+    );
+
+    let mut packet = Vec::with_capacity(overhead + padded_len);
+    packet.extend_from_slice(head);
+    packet.extend_from_slice(nonce.as_bytes());
+    packet.extend_from_slice(&tag);
+    packet.extend_from_slice(&ciphertext);
+
+    let context = QueryContext {
+        nonce,
+        id: message.header.id,
+        questions: message
+            .questions
+            .into_iter()
+            .map(Question::into_owned)
+            .collect(),
+        shared: shared.clone(),
+        origin,
+    };
+    Ok((packet, context))
+}
+
+/// A ticket the resolver gave, to resume a PQ session with (draft "Stateless Resumption"). A client that wants
+/// its queries unlinkable does not keep it, or keeps it only on the network it came from.
+///
+/// Holds a secret, wiped when dropped. A resumed query may be answered with a new ticket: take it from
+/// [`Opened::resumption`] and use that one next, as the old one expires.
+#[derive(Clone)]
+pub struct Resumption {
+    ticket: Vec<u8>,
+    lifetime: u32,
+    secret: Zeroizing<[u8; KEY_LEN]>,
+    origin: TicketOrigin,
+}
+
+impl Resumption {
+    /// The opaque ticket, as it goes in a resumed query.
+    #[must_use]
+    pub fn ticket(&self) -> &[u8] {
+        &self.ticket
+    }
+
+    /// The seconds from receipt the resolver says the ticket is good for.
+    #[must_use]
+    pub const fn lifetime(&self) -> u32 {
+        self.lifetime
+    }
+
+    /// When the ticket expires, in Unix seconds, if it was received at `received_at`: the resolver's lifetime,
+    /// cut short at the end of the certificate (draft "Resumption Tickets").
+    #[must_use]
+    pub fn expires_at(&self, received_at: u64) -> u64 {
+        received_at
+            .saturating_add(u64::from(self.lifetime))
+            .min(u64::from(self.origin.ts_end))
+    }
+
+    /// The packet for `query`, resumed with this ticket, and what is needed to read its response.
+    ///
+    /// `padding` is that of a classical UDP query, 256 bytes of packet at first (draft "PQ Query and Response
+    /// Format"): an Anonymized relay applies its size check to resumed queries too. `nonce` is never to be used
+    /// twice with this ticket.
+    ///
+    /// # Errors
+    ///
+    /// As [`ClientSession::encrypt_query`].
+    pub fn encrypt_query(
+        &self,
+        query: &[u8],
+        padding: QueryPadding,
+        nonce: ClientNonce,
+    ) -> Result<(Vec<u8>, QueryContext), EncryptQueryError> {
+        let shared = pq::resumed_key(
+            &self.secret,
+            *self.origin.magic.as_bytes(),
+            nonce.as_bytes(),
+            &self.ticket,
         );
+        let ticket_len =
+            u16::try_from(self.ticket.len()).map_err(|_| EncryptQueryError::TooLong)?;
+        let mut head = Vec::with_capacity(CLIENT_MAGIC_LEN + 2 + self.ticket.len());
+        head.extend_from_slice(&RESUME_MAGIC);
+        head.extend_from_slice(&ticket_len.to_be_bytes());
+        head.extend_from_slice(&self.ticket);
+        seal_query(&head, &shared, Some(self.origin), query, padding, nonce)
+    }
+}
 
-        let mut packet = Vec::with_capacity(QUERY_OVERHEAD + padded_len);
-        packet.extend_from_slice(self.magic.as_bytes());
-        packet.extend_from_slice(self.client_key.as_bytes());
-        packet.extend_from_slice(nonce.as_bytes());
-        packet.extend_from_slice(&tag);
-        packet.extend_from_slice(&ciphertext);
-
-        let context = QueryContext {
-            nonce,
-            id: message.header.id,
-            questions: message
-                .questions
-                .into_iter()
-                .map(Question::into_owned)
-                .collect(),
-            shared: self.shared.clone(),
-        };
-        Ok((packet, context))
+impl fmt::Debug for Resumption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Resumption")
+            .field("lifetime", &self.lifetime)
+            .finish_non_exhaustive()
     }
 }
 
@@ -168,11 +307,22 @@ pub struct QueryContext {
     id: u16,
     questions: Vec<Question<'static>>,
     shared: SharedKey,
+    origin: Option<TicketOrigin>,
+}
+
+/// A response that was accepted: the DNS message, and the ticket it carried, if it did.
+#[derive(Debug, Clone)]
+pub struct Opened {
+    /// The DNS response.
+    pub message: Vec<u8>,
+    /// The ticket of a PQ response, to resume with.
+    pub resumption: Option<Resumption>,
 }
 
 impl QueryContext {
     /// The DNS response in `packet`, if it answers the query: authenticated, decrypted, unpadded, a DNS message
-    /// with the query's ID and questions (draft "Client Queries Over UDP", "Resolver Responses Over UDP").
+    /// with the query's ID and questions (draft "Client Queries Over UDP", "Resolver Responses Over UDP"). The
+    /// ticket a PQ response carries is dropped: see [`QueryContext::open_response`].
     ///
     /// A client disregards a packet that fails, and goes on waiting for the one it asked for.
     ///
@@ -180,6 +330,17 @@ impl QueryContext {
     ///
     /// [`ResponseError`] saying what is wrong with the packet.
     pub fn decrypt_response(&self, packet: &[u8]) -> Result<Vec<u8>, ResponseError> {
+        self.open_response(packet).map(|opened| opened.message)
+    }
+
+    /// As [`QueryContext::decrypt_response`], with the ticket of a PQ response too.
+    ///
+    /// # Errors
+    ///
+    /// As [`QueryContext::decrypt_response`]; a PQ response whose control field is malformed is refused. A
+    /// control field of another type or version is skipped, whatever it holds (draft "PQ Query and Response
+    /// Format").
+    pub fn open_response(&self, packet: &[u8]) -> Result<Opened, ResponseError> {
         if packet.len() >= MAX_PACKET_LEN {
             return Err(ResponseError::TooLong);
         }
@@ -206,13 +367,46 @@ impl QueryContext {
             .map_err(|_| ResponseError::Authentication)?;
         plaintext.truncate(padding::unpadded_len(&plaintext)?);
 
-        let decoded = Message::decode(&plaintext)?;
+        let (message, resumption) = match self.origin {
+            Some(origin) => self.split_control(&plaintext, origin)?,
+            None => (plaintext.as_slice(), None),
+        };
+        let decoded = Message::decode(message)?;
         if decoded.message.header.id != self.id {
             return Err(ResponseError::IdMismatch);
         }
         if decoded.message.questions != self.questions {
             return Err(ResponseError::QuestionMismatch);
         }
-        Ok(plaintext)
+        Ok(Opened {
+            message: message.to_vec(),
+            resumption,
+        })
+    }
+
+    /// The DNS message and the ticket of a PQ response plaintext: `<control-len> <control> <response>`.
+    fn split_control<'p>(
+        &self,
+        plaintext: &'p [u8],
+        origin: TicketOrigin,
+    ) -> Result<(&'p [u8], Option<Resumption>), ResponseError> {
+        let (len, rest) = plaintext
+            .split_first_chunk::<2>()
+            .ok_or(ResponseError::Control)?;
+        let (control, message) = rest
+            .split_at_checked(usize::from(u16::from_be_bytes(*len)))
+            .ok_or(ResponseError::Control)?;
+        let offer = TicketOffer::parse(control).map_err(|ControlError| ResponseError::Control)?;
+        let resumption = offer.map(|offer| Resumption {
+            ticket: offer.ticket.to_vec(),
+            lifetime: offer.lifetime,
+            secret: pq::resume_secret(
+                &self.shared,
+                *origin.magic.as_bytes(),
+                self.nonce.as_bytes(),
+            ),
+            origin,
+        });
+        Ok((message, resumption))
     }
 }

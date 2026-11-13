@@ -8,7 +8,8 @@ use dedens_testkit::hex;
 use crate::secretbox::{self, TAG_LEN};
 use crate::{
     Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession, EncryptionSystem,
-    QueryError, ResolverKey, ResponseError, SecretKey, SigningKey, Validity, padding,
+    QueryError, ResolverKey, ResolverPublicKey, ResponseError, SecretKey, SigningKey, Validity,
+    padding,
 };
 
 const DNS_QUERY: [u8; 33] = [
@@ -54,8 +55,7 @@ fn certificate() -> (Certificate, SecretKey) {
     let certificate = Certificate::sign(
         &provider,
         CertificateBody {
-            system: EncryptionSystem::XChaCha20Poly1305,
-            resolver_key: secret.public_key(),
+            resolver_key: ResolverPublicKey::XChaCha20(secret.public_key()),
             client_magic: ClientMagic::try_from([9; 8]).expect("a magic"),
             serial: 1,
             validity: Validity::new(1, 2).expect("a validity"),
@@ -85,7 +85,11 @@ fn query_with_bad_padding_is_dropped() {
     let shared = client
         .shared_key(
             EncryptionSystem::XChaCha20Poly1305,
-            &certificate.body().resolver_key,
+            certificate
+                .body()
+                .resolver_key
+                .x25519()
+                .expect("an X25519 key"),
         )
         .expect("a shared key");
     for plaintext in [
