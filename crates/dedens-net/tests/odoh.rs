@@ -309,13 +309,13 @@ fn proxy_errors_are_found() {
 #[test]
 fn entropy_past_its_bytes_is_an_error() {
     let mut entropy = Entropy::new().expect("randomness");
-    let mut bytes = [1; 40];
+    let mut bytes = [1; 60];
     entropy.try_fill_bytes(&mut bytes).expect("infallible");
     assert!(entropy.finish().is_ok());
     let mut entropy = Entropy::new().expect("randomness");
     entropy.try_fill_bytes(&mut bytes).expect("infallible");
     entropy.try_fill_bytes(&mut bytes).expect("infallible");
-    assert_eq!(bytes, [0; 40]);
+    assert_eq!(bytes, [0; 60]);
     assert!(entropy.finish().is_err());
 }
 
