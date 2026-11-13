@@ -142,6 +142,20 @@ impl Cache {
         }
     }
 
+    /// The second from which the response stored for `query` is due a refresh, for the one that keeps it fresh
+    /// without a client: the first second under `Config::prefetch_percent` of its TTL is left, or its expiry for a
+    /// bogus response or percent 0. Not before `now` for an entry already in that last part. `None` when nothing
+    /// fresh is stored for `query`: expired data and a failure hold do not count. Not a use of the entry, as
+    /// [`Cache::stored`], and not a lookup in the metrics.
+    #[must_use]
+    pub fn refresh_at(&self, query: &Query<'_>, now: u32) -> Option<u32> {
+        let key = Key::of(query)?;
+        let (hash, shard) = self.shard(&key);
+        let mut shard = lock(shard);
+        let response = shard.get(hash, key.as_bytes())?.response.as_ref()?;
+        (now < response.expires).then(|| response.refresh_at(self.config.prefetch_percent).max(now))
+    }
+
     /// [`Cache::lookup`] without the metrics; `used` counts a hit and may ask for a prefetch.
     fn find(
         &self,

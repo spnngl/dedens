@@ -213,6 +213,18 @@ impl Response {
         left * 100 < u64::from(self.ttl) * u64::from(percent)
     }
 
+    /// The first second at which [`Response::ending`] holds for `percent`, or the response expires, whichever comes
+    /// first: a bogus response, or `percent` 0, is never ending, and goes at its expiry.
+    pub(crate) fn refresh_at(&self, percent: u8) -> u32 {
+        let scaled = u64::from(self.ttl) * u64::from(percent);
+        if self.bad || scaled == 0 {
+            return self.expires;
+        }
+        // `left * 100 < scaled` holds for `left` up to this many seconds.
+        let ending = u32::try_from((scaled - 1) / 100).unwrap_or(u32::MAX);
+        self.expires.saturating_sub(ending)
+    }
+
     /// Seconds left at `now`, at most the lifetime given at insert, should `now` be before the insert.
     pub(crate) fn left(&self, now: u32) -> u32 {
         self.expires.saturating_sub(now).min(self.ttl)
