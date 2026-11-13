@@ -22,9 +22,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use compio::BufResult;
 use compio::io::util::Splittable;
 use dedens_dnscrypt::{
-    Certificate, ClientNonce, ClientSession, EncryptQueryError, LowOrderKey, MAX_PACKET_LEN,
-    ProviderKey, QueryContext, QueryPadding, ResponseError, SecretKey, SystemPolicy, select,
+    Certificate, ClientNonce, ClientSession, EncryptQueryError, EncryptionSystem, MAX_PACKET_LEN,
+    Opened, ProviderKey, QueryContext, QueryPadding, ResponseError, Resumption, SecretKey,
+    SessionError, SystemPolicy, select,
 };
+use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Question, RecordType, Transport};
 
@@ -40,6 +42,10 @@ use crate::udp::unspecified;
 /// enough to avoid" an expired certificate, and hourly suits (draft "Certificates").
 const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
 
+/// The size of the query for the certificates: it covers the rollover set, two classical certificates and two PQ ones,
+/// about 3 KB (draft "Certificate Retrieval"), so that a resolver may answer them all over UDP.
+const CERTIFICATE_QUERY_LEN: usize = 3072;
+
 /// The smallest packet of a UDP query at first (draft "Padding For Client Queries Over UDP": `<min-query-len>`, 256).
 const FIRST_FLOOR: usize = 256;
 
@@ -54,9 +60,9 @@ pub enum DnsCryptError {
     /// client knows.
     #[error("the resolver serves no usable certificate")]
     NoCertificate,
-    /// The resolver's key is of low order.
+    /// The resolver's key is of low order, or of a system the certificate is not for.
     #[error(transparent)]
-    LowOrderKey(#[from] LowOrderKey),
+    Session(#[from] SessionError),
     /// The query cannot be sealed.
     #[error("cannot encrypt the query")]
     Encrypt(#[from] EncryptQueryError),
@@ -69,7 +75,7 @@ impl DnsCryptError {
         match self {
             Self::Certificates(error) => error.is_local(),
             Self::NoCertificate => false,
-            Self::LowOrderKey(_) | Self::Encrypt(_) => true,
+            Self::Session(_) | Self::Encrypt(_) => true,
         }
     }
 }
@@ -126,6 +132,17 @@ struct State {
     stale: bool,
     /// The smallest packet of the next UDP queries: raised when a response came truncated, so that the next one fits.
     floor: usize,
+    /// The ticket of the last PQ response, kept only for `Options::dnscrypt_resume`.
+    ticket: Option<Ticket>,
+}
+
+/// A resumption ticket and what the client checks before using it: the certificate it was issued under and when it
+/// expires, in Unix seconds.
+#[derive(Debug)]
+struct Ticket {
+    resumption: Resumption,
+    serial: u32,
+    expires: u64,
 }
 
 impl Resolver {
@@ -137,6 +154,7 @@ impl Resolver {
                 chosen: None,
                 stale: false,
                 floor: FIRST_FLOOR,
+                ticket: None,
             }),
         }
     }
@@ -149,11 +167,12 @@ impl Resolver {
         io: &N,
         options: &Options,
     ) -> Result<Certificate, ClientError> {
-        if let Some(kept) = self.kept(io) {
+        let policy = policy(options);
+        if let Some(kept) = self.kept(io, policy) {
             return Ok(kept);
         }
         let (_, certificates) = self.fetch(client, options).await?;
-        let chosen = select(&certificates, unix_now(), SystemPolicy::Preferred)
+        let chosen = select(&certificates, unix_now(), policy)
             .ok_or(DnsCryptError::NoCertificate)?
             .clone();
         let mut state = self.state.borrow_mut();
@@ -162,11 +181,13 @@ impl Resolver {
         Ok(chosen)
     }
 
-    /// The certificate in use, while it is valid, recent and no response failed under it.
-    fn kept<N: Io>(&self, io: &N) -> Option<Certificate> {
+    /// The certificate in use, while it is valid, recent, no response failed under it and `policy` allows its
+    /// system.
+    fn kept<N: Io>(&self, io: &N, policy: SystemPolicy) -> Option<Certificate> {
         let state = self.state.borrow();
         let (certificate, fetched) = state.chosen.as_ref()?;
         (!state.stale
+            && policy.allows(certificate.body().system())
             && certificate.is_valid_at(unix_now())
             && io.now().saturating_duration_since(*fetched) < REFRESH)
             .then(|| certificate.clone())
@@ -185,10 +206,11 @@ impl Resolver {
         })
     }
 
-    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, over UDP, then over
-    /// TCP when UDP gets no answer, whatever the transport of the queries: a public resolver may serve the
-    /// certificates over UDP alone (Quad9 and `CleanBrowsing` answer none over TCP, November 2026), and nothing
-    /// private is in them (draft "Certificates").
+    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, padded to cover the
+    /// rollover set (draft "Certificate Retrieval"), over UDP, then over TCP when UDP gets no answer or the answer is
+    /// truncated (a resolver cuts a response that would be longer than the query, PQ certificates left out), whatever
+    /// the transport of the queries: a public resolver may serve the certificates over UDP alone (Quad9 and
+    /// `CleanBrowsing` answer none over TCP, November 2026), and nothing private is in them (draft "Certificates").
     async fn fetch<N: Io>(
         &self,
         client: &Client<N>,
@@ -201,9 +223,10 @@ impl Resolver {
             let asked = Options {
                 transport,
                 cookies: false,
+                tcp_fallback: true,
                 ..*options
             };
-            let query = Message::query(0, question.clone());
+            let query = certificate_query(question.clone());
             let server = server.clone();
             // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
             async move { Box::pin(client.exchange(query, server, &asked)).await }
@@ -246,30 +269,102 @@ impl Resolver {
         options: &Options,
     ) -> Result<Reply, ClientError> {
         let certificate = self.certificate(client, io, options).await?;
+        let pq = certificate.body().system() == EncryptionSystem::XWing;
         let mut entropy = Entropy::from_io(io).map_err(ClientError::Random)?;
-        let secret = SecretKey::generate(&mut entropy);
         let nonce = ClientNonce::random(&mut entropy);
         let padding = if transport == Transport::Tcp {
             QueryPadding::tcp(wire.len(), &mut entropy)
+        } else if pq && !options.dnscrypt_resume {
+            // The ciphertext alone makes the packet longer than any response needs to be.
+            QueryPadding::udp(wire.len(), 0)
         } else {
             QueryPadding::udp(wire.len(), self.state.borrow().floor)
+        };
+        // A ticket in hand and asked for: the query is a resumed one, with no encapsulation.
+        let resumed = self.resumed(&certificate, options, wire, padding, nonce);
+        let (packet, context, resumed) = match resumed {
+            Some(sealed) => {
+                let (packet, context) = sealed.map_err(DnsCryptError::from)?;
+                (packet, context, true)
+            }
+            None => {
+                let session = if pq {
+                    ClientSession::xwing(&certificate, &mut entropy)
+                } else {
+                    ClientSession::new(&certificate, &SecretKey::generate(&mut entropy))
+                }
+                .map_err(DnsCryptError::from)?;
+                let (packet, context) = session
+                    .encrypt_query(wire, padding, nonce)
+                    .map_err(DnsCryptError::from)?;
+                (packet, context, false)
+            }
         };
         entropy
             .finish()
             .map_err(|error| ClientError::Random(io::Error::other(error)))?;
-        let session = ClientSession::new(&certificate, &secret).map_err(DnsCryptError::from)?;
-        let (packet, context) = session
-            .encrypt_query(wire, padding, nonce)
-            .map_err(DnsCryptError::from)?;
         let opened = if transport == Transport::Tcp {
             self.over_tcp(io, &packet, &context, deadline).await?
         } else {
             self.over_udp(io, &packet, &context, deadline).await?
         };
-        Ok(match opened {
-            Some(response) => Reply::Answer(response, info(&certificate)),
-            None => Reply::TimedOut,
-        })
+        let Some(Opened {
+            message,
+            resumption,
+        }) = opened
+        else {
+            // A resolver drops a ticket it does not accept in silence: the next try is a full query.
+            if resumed {
+                self.state.borrow_mut().ticket = None;
+            }
+            return Ok(Reply::TimedOut);
+        };
+        if options.dnscrypt_resume {
+            self.keep(&certificate, resumed, resumption);
+        }
+        Ok(Reply::Answer(message, info(&certificate)))
+    }
+
+    /// The query sealed under the ticket kept, if resuming is asked for and the ticket is of this certificate and
+    /// has not expired; a ticket that is no good is dropped.
+    fn resumed(
+        &self,
+        certificate: &Certificate,
+        options: &Options,
+        wire: &[u8],
+        padding: QueryPadding,
+        nonce: ClientNonce,
+    ) -> Option<Result<(Vec<u8>, QueryContext), EncryptQueryError>> {
+        if !options.dnscrypt_resume {
+            return None;
+        }
+        let mut state = self.state.borrow_mut();
+        let usable = state.ticket.as_ref().is_some_and(|ticket| {
+            ticket.serial == certificate.body().serial && ticket.expires > unix_now()
+        });
+        if !usable {
+            state.ticket = None;
+            return None;
+        }
+        state
+            .ticket
+            .as_ref()
+            .map(|ticket| ticket.resumption.encrypt_query(wire, padding, nonce))
+    }
+
+    /// Keeps the ticket of a response, which replaces the one in use; a resumed query answered with none leaves
+    /// the one in use, which the resolver still accepts until it expires.
+    fn keep(&self, certificate: &Certificate, resumed: bool, resumption: Option<Resumption>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(resumption) = resumption {
+            state.ticket = Some(Ticket {
+                expires: resumption.expires_at(unix_now()),
+                serial: certificate.body().serial,
+                resumption,
+            });
+        } else if !resumed {
+            state.ticket = None;
+        }
     }
 
     /// One datagram from a socket of its own, and the first that opens (draft "Client Queries Over UDP": a packet
@@ -280,7 +375,7 @@ impl Resolver {
         packet: &[u8],
         context: &QueryContext,
         deadline: Instant,
-    ) -> Result<Option<Vec<u8>>, ClientError> {
+    ) -> Result<Option<Opened>, ClientError> {
         let server = self.stamp.address.socket_addr();
         let socket = io
             .udp_bind(unspecified(server))
@@ -304,11 +399,11 @@ impl Resolver {
                 return Ok(None);
             };
             read.map_err(ClientError::Udp)?;
-            if let Some(response) = self.opened(context, &datagram) {
-                if is_truncated(&response) {
+            if let Some(opened) = self.opened(context, &datagram) {
+                if is_truncated(&opened.message) {
                     self.raise_floor();
                 }
-                return Ok(Some(response));
+                return Ok(Some(opened));
             }
         }
     }
@@ -322,7 +417,7 @@ impl Resolver {
         packet: &[u8],
         context: &QueryContext,
         deadline: Instant,
-    ) -> Result<Option<Vec<u8>>, ClientError> {
+    ) -> Result<Option<Opened>, ClientError> {
         let server = self.stamp.address.socket_addr();
         let framed = frame(packet).ok_or(TcpError::BadLength(packet.len()))?;
         let asked = async {
@@ -344,8 +439,8 @@ impl Resolver {
     }
 
     /// The response in `packet`, if it opens; one that does not authenticate makes the certificate stale.
-    fn opened(&self, context: &QueryContext, packet: &[u8]) -> Option<Vec<u8>> {
-        match context.decrypt_response(packet) {
+    fn opened(&self, context: &QueryContext, packet: &[u8]) -> Option<Opened> {
+        match context.open_response(packet) {
             Ok(response) => Some(response),
             Err(ResponseError::Authentication) => {
                 self.state.borrow_mut().stale = true;
@@ -363,11 +458,35 @@ impl Resolver {
     }
 }
 
+/// The query for the certificates: a TXT query, its EDNS padding bringing it to [`CERTIFICATE_QUERY_LEN`] bytes, which
+/// is also the response size it advertises.
+fn certificate_query(question: Question<'_>) -> Message<'_> {
+    let mut query = Message::query(0, question);
+    let mut buf = [0; 512];
+    let unpadded = query.encode(&mut buf).unwrap_or(buf.len());
+    // The option's own header is 4 bytes.
+    let padding = CERTIFICATE_QUERY_LEN.saturating_sub(unpadded + 4);
+    if let (Some(edns), Ok(padding)) = (query.edns.as_mut(), u16::try_from(padding)) {
+        edns.udp_payload = u16::try_from(CERTIFICATE_QUERY_LEN).unwrap_or(u16::MAX);
+        edns.options.push(EdnsOption::Padding(padding));
+    }
+    query
+}
+
+/// Which certificates the client takes: any, the PQ one first, or with `+dnscrypt-pq` the PQ ones only (D101).
+fn policy(options: &Options) -> SystemPolicy {
+    if options.dnscrypt_pq {
+        SystemPolicy::Only(EncryptionSystem::XWing)
+    } else {
+        SystemPolicy::Preferred
+    }
+}
+
 /// What a certificate tells, as the exchange reports it.
 pub(crate) fn info(certificate: &Certificate) -> CertificateInfo {
     let body = certificate.body();
     CertificateInfo {
-        es_version: u16::from_be_bytes(body.system.es_version()),
+        es_version: u16::from_be_bytes(body.system().es_version()),
         serial: body.serial,
         valid_from: body.validity.start(),
         valid_until: body.validity.end(),
