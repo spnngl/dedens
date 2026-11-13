@@ -187,10 +187,12 @@ impl ResponseContext {
         carrier: Carrier,
         rng: &mut impl CryptoRng,
     ) -> Result<Vec<u8>, EncryptResponseError> {
+        // A response is under 4096 bytes on both carriers, even when the query packet is 4096.
         let packet_budget = match carrier {
             Carrier::Udp => self.query_packet_len,
-            Carrier::Tcp => MAX_PACKET_LEN - 1,
-        };
+            Carrier::Tcp => MAX_PACKET_LEN,
+        }
+        .min(MAX_PACKET_LEN - 1);
         // One byte of the budget is for the 0x80 marker at least.
         let plaintext_budget = packet_budget.saturating_sub(RESPONSE_OVERHEAD);
         let mut plaintext = if response.len() < plaintext_budget {
