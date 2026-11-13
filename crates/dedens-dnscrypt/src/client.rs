@@ -40,10 +40,14 @@ impl ClientNonce {
     }
 }
 
+/// The most a query's padded plaintext can be: what is left of the 4096 bytes of a packet.
+const MAX_PLAINTEXT_LEN: usize = MAX_PACKET_LEN - QUERY_OVERHEAD;
+
 /// The length the plaintext of a query is padded to, with its 0x80 marker (draft "Padding For Client Queries
 /// Over UDP", "Padding For Client Queries Over TCP").
 ///
-/// A target below what the query needs, itself and one byte, is raised to that.
+/// A target below what the query needs, itself and one byte, is raised to that. [`QueryPadding::udp`] and
+/// [`QueryPadding::tcp`] stop at the 4028 bytes a packet can carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryPadding(usize);
 
@@ -55,21 +59,26 @@ impl QueryPadding {
     }
 
     /// For a UDP query of `query_len` bytes: the packet at least `min_packet_len` bytes (`<min-query-len>`, 256
-    /// at first), and the plaintext a multiple of 64 bytes.
+    /// at first), and the plaintext a multiple of 64 bytes, except at the largest packet.
+    ///
+    /// `min_packet_len` is a floor, not the packet's length: rounding to a block makes the packet up to 63 bytes
+    /// longer. A `min_packet_len` over 4096 gives the largest packet.
     #[must_use]
     pub fn udp(query_len: usize, min_packet_len: usize) -> Self {
         let wanted = (query_len + 1).max(min_packet_len.saturating_sub(QUERY_OVERHEAD));
-        Self(wanted.next_multiple_of(BLOCK))
+        Self(wanted.next_multiple_of(BLOCK).min(MAX_PLAINTEXT_LEN))
     }
 
     /// For a TCP query of `query_len` bytes: 1 to 256 bytes of padding, the plaintext a multiple of 64 bytes, with
-    /// a random number of blocks so that the same query is not padded the same twice.
+    /// a random number of blocks so that the same query is not padded the same twice, except at the largest
+    /// packet.
     #[must_use]
     pub fn tcp(query_len: usize, rng: &mut impl CryptoRng) -> Self {
         let mut byte = [0];
         rng.fill_bytes(&mut byte);
         let extra_blocks = usize::from(u8::from_ne_bytes(byte) & 0b11);
-        Self(query_len + padding::to_block(query_len, extra_blocks))
+        let padded = query_len + padding::to_block(query_len, extra_blocks);
+        Self(padded.min(MAX_PLAINTEXT_LEN))
     }
 }
 

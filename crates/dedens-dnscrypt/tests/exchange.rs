@@ -150,6 +150,25 @@ fn udp_query_padding() {
     assert_eq!(QueryPadding::udp(64, 0), QueryPadding::to(128));
 }
 
+/// "Padding For Client Queries Over UDP", "Padding For Client Queries Over TCP": the padding stops at the 4096
+/// bytes of a packet, so a large minimum or a large query is still sent.
+#[test]
+fn query_padding_stops_at_the_largest_packet() {
+    assert_eq!(QueryPadding::udp(33, 4096), QueryPadding::to(4096 - 68));
+    assert_eq!(QueryPadding::udp(33, 100_000), QueryPadding::to(4096 - 68));
+    assert_eq!(QueryPadding::udp(4000, 0), QueryPadding::to(4096 - 68));
+    // 4000 bytes and the three extra blocks the byte 0xff draws would be 4224.
+    assert_eq!(
+        QueryPadding::tcp(4000, &mut Replay::new(&[0xff])),
+        QueryPadding::to(4096 - 68)
+    );
+    let (packet, _, _) = send(
+        EncryptionSystem::XChaCha20Poly1305,
+        QueryPadding::udp(33, 4096),
+    );
+    assert_eq!(packet.len(), 4096);
+}
+
 /// "Padding For Client Queries Over TCP": 1 to 256 bytes of padding, the plaintext a multiple of 64, whatever the
 /// random byte and the length of the query.
 #[test]
