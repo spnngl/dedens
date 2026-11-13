@@ -8,6 +8,32 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# D101: the key exchange of the PQ system (ML-KEM-768, X25519) takes milliseconds unoptimized, and the smoke test
+# makes one for each packet a target tries: these crates are built optimized in the test profile too.
+[profile.dev.package.ml-kem]
+opt-level = 3
+
+[profile.dev.package.module-lattice]
+opt-level = 3
+
+[profile.dev.package.keccak]
+opt-level = 3
+
+[profile.dev.package.sha3]
+opt-level = 3
+
+[profile.dev.package.shake]
+opt-level = 3
+
+[profile.dev.package.x-wing]
+opt-level = 3
+
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
 # function of `src/`, which `cargo test --lib` also drives on stable with the captured responses in
 # `testdata/proto/`, `testdata/dnssec/` and `testdata/odoh/` as seeds (`just fuzz-smoke`), with those of `seeds/`.
@@ -220,6 +246,20 @@ bench = false
 [[bin]]
 name = "dnscrypt_tamper_response"
 path = "fuzz_targets/dnscrypt_tamper_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_ticket"
+path = "fuzz_targets/dnscrypt_ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnscrypt_control"
+path = "fuzz_targets/dnscrypt_control.rs"
 test = false
 doc = false
 bench = false
