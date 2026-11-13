@@ -815,27 +815,32 @@ extra hop. Three runs on a quiet machine agree within 1%.
 
 ## DNSCrypt (D97)
 
-`benches/dnscrypt.rs`, one call each, on the captured responses `a`, `mx` and `txt_large`, for both classical systems; the
-query is padded as a UDP query of the draft's "Padding For Client Queries Over UDP" (256 bytes at least), the response
-for TCP; median, with fixed bytes for the nonces (Apple M5, three runs agree within 2% on a quiet machine). X25519
-is `x25519-dalek`, the ciphers `chacha20`, `salsa20` and `poly1305` (RustCrypto), the Ed25519 verification and the
-response padding's HMAC `ring`.
+`benches/dnscrypt.rs`, one call each, on the captured responses `a`, `mx` and `txt_large` (72, 161 and 1187 bytes), for both
+classical systems; the query is padded as a UDP query of the draft's "Padding For Client Queries Over UDP" (256 bytes at
+least), the response for TCP; median, with fixed bytes for the nonces (Apple M5, three runs on a quiet machine, the
+range of their medians when it is wider than 2%). A response's padding is a function of the shared key and the client
+nonce, so a fixed nonce would seal one message to different lengths under the two systems: the benches pick, for each
+system and capture, the first client nonce of 64 whose response has no extra block of padding, and assert it, so both
+systems encrypt and decrypt the same plaintext (128, 192 and 1216 bytes padded). X25519 is `x25519-dalek`, the ciphers
+`chacha20`, `salsa20` and `poly1305` (RustCrypto), the Ed25519 verification and the response padding's HMAC `ring`.
 
 | Measure | XChaCha20-Poly1305 | XSalsa20-Poly1305 |
 |---|---|---|
-| Parse a certificate (Ed25519 verification) | 18.8 µs | (the same) |
-| Open a session (client: public key and shared key) | 38.8 µs | 38.8 µs |
-| Decrypt a query (resolver: shared key and open) | 19.1 µs | 18.9 µs |
-| Encrypt a query (client, session open) | 0.60 µs | 0.50 µs |
-| Encrypt a response, 3 captures | 0.92-1.99 µs | 0.46-2.01 µs |
-| Decrypt a response, 3 captures | 1.05-2.41 µs | 0.48-2.30 µs |
+| Parse a certificate (Ed25519 verification) | 19 µs | (the same) |
+| Open a session (client: public key and shared key) | 36.7-38.7 µs | 36.7-38.8 µs |
+| Decrypt a query (resolver: shared key and open) | 19.1-20.2 µs | 18.9-19.2 µs |
+| Decrypt a query, shared key kept (`decrypt_query_with`) | 0.67-0.69 µs | 0.49 µs |
+| Encrypt a query (client, session open) | 0.63-0.67 µs | 0.52-0.55 µs |
+| Encrypt a response: `a`, `mx`, `txt_large` | 0.59, 0.68, 1.67-1.75 µs | 0.49-0.51, 0.58, 2.02 µs |
+| Decrypt a response: `a`, `mx`, `txt_large` | 0.67-0.70, 0.86-0.92, 2.0 µs | 0.48, 0.67-0.70, 2.28-2.45 µs |
 
 The public-key work is the whole of the cost, as for ODoH: a session is two X25519 multiplications (the public key, then
 the shared key), a resolver's first packet from a client one (19 µs), and every other packet is a keystream, a
 Poly1305 and an allocation, 0.5-2.5 µs for the sizes here. A resolver that keeps the shared key of a client
-(`decrypt_query_with`) pays the multiplication once. The two systems differ by the stream cipher alone; the
-XChaCha20 side is up to twice the XSalsa20 one on a small message, cause not investigated, and equal at the
-largest response.
+(`decrypt_query_with`) pays the multiplication once: 28 times less for a packet of the same client. The two systems
+differ by the stream cipher alone, and on equal plaintexts the gap is small and changes sign with the size: XChaCha20
+costs 0.1-0.2 µs more on 128 and 192 bytes (15-40%, cause not investigated) and 10-20% less on 1216. One run of three
+had `decrypt_query_with` for XChaCha20 at 1.27 µs, a disturbed machine.
 
 ## DNSSEC `RRset` verification (D73)
 

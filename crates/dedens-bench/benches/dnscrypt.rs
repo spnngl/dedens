@@ -7,7 +7,8 @@ use std::hint::black_box;
 
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, ClientMagic, ClientNonce, ClientSession,
-    EncryptionSystem, ResolverKey, SecretKey, SigningKey, Validity,
+    EncryptionSystem, QueryContext, RESPONSE_OVERHEAD, ResolverKey, ResponseContext, SecretKey,
+    SigningKey, Validity,
 };
 use dedens_testkit::{captured, query};
 use divan::Bencher;
@@ -90,6 +91,41 @@ fn parties(system: EncryptionSystem, case: &str) -> (ResolverKey, ClientSession,
     )
 }
 
+/// One exchange of `case` up to the response: the client's context, the resolver's and the sealed response.
+///
+/// A response's padding is a function of the shared key and the client nonce, so two systems would seal the same
+/// message to different lengths, and the benches would compare the ciphers on unequal plaintexts. The nonce is the
+/// first of `[0; 12]`, `[1; 12]`, ... whose response is the shortest of 64 (no extra block of padding): the
+/// same plaintext length, the same packet length, for both systems.
+fn exchange(system: EncryptionSystem, case: &str) -> (QueryContext, ResponseContext, Vec<u8>) {
+    let (resolver, session, query) = parties(system, case);
+    let response = captured(case);
+    let mut best: Option<(QueryContext, ResponseContext, Vec<u8>)> = None;
+    for byte in 0..64 {
+        let (packet, client) = session
+            .encrypt_query(&query, padding(&query), ClientNonce::from_bytes([byte; 12]))
+            .expect("encrypts");
+        let (_, context) = resolver.decrypt_query(&packet).expect("decrypts");
+        let sealed = context
+            .encrypt_response(&response, Carrier::Tcp, &mut Fixed)
+            .expect("encrypts");
+        if best
+            .as_ref()
+            .is_none_or(|(_, _, shortest)| sealed.len() < shortest.len())
+        {
+            best = Some((client, context, sealed));
+        }
+    }
+    let best = best.expect("a nonce");
+    let unpadded = response.len() + RESPONSE_OVERHEAD;
+    assert_eq!(
+        best.2.len(),
+        unpadded + 64 - response.len() % 64,
+        "no extra block"
+    );
+    best
+}
+
 fn padding(query: &[u8]) -> dedens_dnscrypt::QueryPadding {
     dedens_dnscrypt::QueryPadding::udp(query.len(), 256)
 }
@@ -142,14 +178,26 @@ fn decrypt_query(bencher: Bencher<'_, '_>, system: EncryptionSystem) {
     });
 }
 
-#[divan::bench(args = RESPONSES)]
-fn encrypt_response(bencher: Bencher<'_, '_>, (system, case): (EncryptionSystem, &str)) {
-    let (resolver, session, query) = parties(system, case);
-    let response = captured(case);
+#[divan::bench(args = SYSTEMS)]
+fn decrypt_query_with(bencher: Bencher<'_, '_>, system: EncryptionSystem) {
+    let (resolver, session, query) = parties(system, "a");
     let (packet, _) = session
         .encrypt_query(&query, padding(&query), ClientNonce::from_bytes([7; 12]))
         .expect("encrypts");
-    let (_, context) = resolver.decrypt_query(&packet).expect("decrypts");
+    let shared = resolver
+        .shared_key(&resolver.client_key(&packet).expect("a key"))
+        .expect("a good key");
+    bencher.bench_local(|| {
+        resolver
+            .decrypt_query_with(black_box(&packet), &shared)
+            .expect("decrypts")
+    });
+}
+
+#[divan::bench(args = RESPONSES)]
+fn encrypt_response(bencher: Bencher<'_, '_>, (system, case): (EncryptionSystem, &str)) {
+    let (_, context, _) = exchange(system, case);
+    let response = captured(case);
     bencher.bench_local(|| {
         context
             .encrypt_response(black_box(&response), Carrier::Tcp, &mut Fixed)
@@ -159,15 +207,7 @@ fn encrypt_response(bencher: Bencher<'_, '_>, (system, case): (EncryptionSystem,
 
 #[divan::bench(args = RESPONSES)]
 fn decrypt_response(bencher: Bencher<'_, '_>, (system, case): (EncryptionSystem, &str)) {
-    let (resolver, session, query) = parties(system, case);
-    let response = captured(case);
-    let (packet, client) = session
-        .encrypt_query(&query, padding(&query), ClientNonce::from_bytes([7; 12]))
-        .expect("encrypts");
-    let (_, context) = resolver.decrypt_query(&packet).expect("decrypts");
-    let sealed = context
-        .encrypt_response(&response, Carrier::Tcp, &mut Fixed)
-        .expect("encrypts");
+    let (client, _, sealed) = exchange(system, case);
     bencher.bench_local(|| {
         client
             .decrypt_response(black_box(&sealed))
