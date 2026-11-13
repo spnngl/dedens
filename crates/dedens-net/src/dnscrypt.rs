@@ -185,32 +185,35 @@ impl Resolver {
         })
     }
 
-    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, over TCP when
-    /// `options` say so and over UDP, then TCP, else (draft "Certificates").
+    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, over UDP, then over
+    /// TCP when UDP gets no answer, whatever the transport of the queries: a public resolver may serve the
+    /// certificates over UDP alone (Quad9 and `CleanBrowsing` answer none over TCP, November 2026), and nothing
+    /// private is in them (draft "Certificates").
     async fn fetch<N: Io>(
         &self,
         client: &Client<N>,
         options: &Options,
     ) -> Result<(Response, Vec<Certificate>), ClientError> {
         let question = Question::new(self.stamp.provider_name.name().clone(), RecordType::TXT);
-        // No cookie: the query is nothing to link, and the exchange keeps none.
-        let asked = Options {
-            transport: if options.transport == Transport::Tcp {
-                Transport::Tcp
-            } else {
-                Transport::Udp
-            },
-            cookies: false,
-            ..*options
+        let server = Server::from(self.stamp.address.socket_addr());
+        let attempt = |transport| {
+            // No cookie: the query is nothing to link, and the exchange keeps none.
+            let asked = Options {
+                transport,
+                cookies: false,
+                ..*options
+            };
+            let query = Message::query(0, question.clone());
+            let server = server.clone();
+            // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
+            async move { Box::pin(client.exchange(query, server, &asked)).await }
         };
-        // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
-        let response = Box::pin(client.exchange(
-            Message::query(0, question),
-            Server::from(self.stamp.address.socket_addr()),
-            &asked,
-        ))
-        .await
-        .map_err(|error| DnsCryptError::Certificates(Box::new(error)))?;
+        let response = match attempt(Transport::Udp).await {
+            Ok(response) => response,
+            Err(_) => attempt(Transport::Tcp)
+                .await
+                .map_err(|error| DnsCryptError::Certificates(Box::new(error)))?,
+        };
         let certificates = Message::decode(&response.wire)
             .map(|decoded| {
                 decoded
