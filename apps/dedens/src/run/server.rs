@@ -95,7 +95,7 @@ fn scheme(text: &str) -> (&str, Option<Transport>) {
 /// unless through an Oblivious `DoH` proxy, which pads inside its encryption (D79); for `https://` with TCP, TLS or
 /// QUIC, as HTTPS is HTTP/3, over QUIC; for CoAP, `coap://` or the option, with another scheme or transport, as it
 /// is over UDP, unprotected; for an `sdns://` stamp, `DNSCrypt`, with TLS, QUIC, HTTPS, Oblivious `DoH` or CoAP, which
-/// it goes with none of; for `dnscrypt_cert`, with a server that is no stamp (D98).
+/// it goes with none of; for `dnscrypt_cert` or `dnscrypt_relay`, with a server that is no stamp (D98, D100).
 pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result<()> {
     let stamp = given.starts_with(STAMP_SCHEME);
     if stamp
@@ -103,8 +103,8 @@ pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result
     {
         bail!("server {given}: DNSCrypt goes with no TLS, QUIC, HTTPS, Oblivious DoH or CoAP");
     }
-    if options.dnscrypt_cert == Some(true) && !stamp {
-        bail!("server {given}: +dnscrypt-cert needs an sdns:// stamp");
+    if (options.dnscrypt_cert == Some(true) || options.dnscrypt_relay.is_some()) && !stamp {
+        bail!("server {given}: +dnscrypt-cert and +dnscrypt-relay need an sdns:// stamp");
     }
     let (_, forced) = scheme(given);
     let coap = forced == Some(Transport::Coap) || options.coap == Some(true);
@@ -157,7 +157,7 @@ pub(super) fn server(
     refuse_conflicts(given, options).map_err(Usage)?;
     if given.starts_with(STAMP_SCHEME) {
         #[cfg(feature = "dnscrypt")]
-        return stamped(given);
+        return stamped(given, options);
         // Without the `dnscrypt` feature, a stamp is refused.
         #[cfg(not(feature = "dnscrypt"))]
         bail!(Usage(anyhow!(
@@ -182,15 +182,7 @@ pub(super) fn server(
     };
     let doh = https || options.https() || proxy.is_some();
     let encrypted = (forced.is_some() && !coap) || options.encrypted() || doh;
-    // `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone: an IPv6 address among them.
-    let (host, written) = match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
-        Some((host, "")) => (host, None),
-        Some((host, port)) => (host, Some(port.strip_prefix(':').unwrap_or(port))),
-        None => match text.split_once(':') {
-            Some((host, port)) if !port.contains(':') => (host, Some(port)),
-            _ => (text, None),
-        },
-    };
+    let (host, written) = split_port(text);
     let port = match written {
         Some(written) => written
             .parse()
@@ -250,7 +242,22 @@ pub(super) fn server(
         proxy,
         #[cfg(feature = "dnscrypt")]
         dnscrypt: None,
+        #[cfg(feature = "dnscrypt")]
+        relays: Vec::new(),
     })
+}
+
+/// `[HOST]:PORT`, `[HOST]`, `HOST:PORT` with a single colon, else the host alone, as the host and the port if written:
+/// an IPv6 address among them.
+fn split_port(text: &str) -> (&str, Option<&str>) {
+    match text.strip_prefix('[').and_then(|text| text.split_once(']')) {
+        Some((host, "")) => (host, None),
+        Some((host, port)) => (host, Some(port.strip_prefix(':').unwrap_or(port))),
+        None => match text.split_once(':') {
+            Some((host, port)) if !port.contains(':') => (host, Some(port)),
+            _ => (text, None),
+        },
+    }
 }
 
 /// The address of the server `given`, `host` and `port` of it: an IP address, or a host name the system resolves.
@@ -266,15 +273,16 @@ fn address(host: &str, port: u16, given: &str) -> anyhow::Result<SocketAddr> {
     }
 }
 
-/// The `DNSCrypt` resolver the stamp `given` names, at the address and port it holds (`-p` gives none to a stamp).
+/// The `DNSCrypt` resolver the stamp `given` names, at the address and port it holds (`-p` gives none to a stamp),
+/// asked through the relay of `+dnscrypt-relay` if there is one (D100).
 ///
 /// # Errors
 ///
-/// A [`Usage`] one for text that is no stamp, a relay stamp, which names no server to ask, and a build without the
-/// `dnscrypt` feature.
+/// A [`Usage`] one for text that is no stamp, a relay stamp, which names no server to ask, a relay that is no relay
+/// stamp or address, and a build without the `dnscrypt` feature.
 #[cfg(feature = "dnscrypt")]
-fn stamped(given: &str) -> anyhow::Result<Endpoint> {
-    use dedens_net::stamp::Stamp;
+fn stamped(given: &str, options: &Options) -> anyhow::Result<Endpoint> {
+    use dedens_net::stamp::{Relay, Stamp};
 
     match given.parse::<Stamp>() {
         Ok(Stamp::DnsCrypt(stamp)) => Ok(Endpoint {
@@ -282,6 +290,15 @@ fn stamped(given: &str) -> anyhow::Result<Endpoint> {
             forced: None,
             proxy: None,
             dnscrypt: Some(Box::new(stamp)),
+            relays: options
+                .dnscrypt_relay
+                .iter()
+                .map(|relay| {
+                    relay
+                        .parse::<Relay>()
+                        .map_err(|error| Usage(anyhow!("+dnscrypt-relay {relay}: {error}")))
+                })
+                .collect::<Result<_, _>>()?,
         }),
         Ok(Stamp::Relay(_)) => bail!(Usage(anyhow!(
             "server {given}: a relay stamp names no resolver to ask"
