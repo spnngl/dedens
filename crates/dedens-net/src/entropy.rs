@@ -9,9 +9,9 @@ use zeroize::Zeroizing;
 use crate::io::Io;
 
 /// The bytes one encryption draws: for Oblivious `DoH`, the ephemeral key of a query and the nonce of a response, 32 and 16
-/// (RFC 9180 §7.1.3, RFC 9230 §6.2); for `DNSCrypt`, a client key, a nonce and a byte of padding, 32, 12 and 1; with
-/// room to spare.
-pub(crate) const ENTROPY: usize = 64;
+/// (RFC 9180 §7.1.3, RFC 9230 §6.2); for `DNSCrypt`, a nonce and a byte of padding, 12 and 1, and a client key, 32, or
+/// an X-Wing encapsulation, 64 (D101); with room to spare.
+pub(crate) const ENTROPY: usize = 96;
 
 /// Random bytes for one encryption (Oblivious `DoH`: `dedens_odoh::encrypt_query` and `encrypt_response`; `DNSCrypt`: a
 /// query), drawn when made, so that a failing generator is an error where the exchange starts and not a panic where the encryption

@@ -31,9 +31,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use compio::BufResult;
 use compio::io::util::Splittable;
 use dedens_dnscrypt::{
-    Certificate, ClientNonce, ClientSession, EncryptQueryError, LowOrderKey, MAX_PACKET_LEN,
-    ProviderKey, QueryContext, QueryPadding, ResponseError, SecretKey, SystemPolicy, relay_query,
-    select,
+    Certificate, ClientNonce, ClientSession, EncryptQueryError, EncryptionSystem, MAX_PACKET_LEN,
+    Opened, ProviderKey, QueryContext, QueryPadding, ResponseError, Resumption, SecretKey,
+    SessionError, SystemPolicy, relay_query, select,
 };
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
@@ -50,6 +50,10 @@ use crate::udp::unspecified;
 /// How long a chosen certificate is kept before the resolver is asked again: the draft asks for a refresh "early
 /// enough to avoid" an expired certificate, and hourly suits (draft "Certificates").
 const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// The size of the query for the certificates: it covers the rollover set, two classical certificates and two PQ ones,
+/// about 3 KB (draft "Certificate Retrieval"), so that a resolver may answer them all over UDP.
+const CERTIFICATE_QUERY_LEN: usize = 3072;
 
 /// The smallest packet of a UDP query at first (draft "Padding For Client Queries Over UDP": `<min-query-len>`, 256).
 const FIRST_FLOOR: usize = 256;
@@ -78,9 +82,9 @@ pub enum DnsCryptError {
     /// client knows.
     #[error("the resolver serves no usable certificate")]
     NoCertificate,
-    /// The resolver's key is of low order.
+    /// The resolver's key is of low order, or of a system the certificate is not for.
     #[error(transparent)]
-    LowOrderKey(#[from] LowOrderKey),
+    Session(#[from] SessionError),
     /// The query cannot be sealed.
     #[error("cannot encrypt the query")]
     Encrypt(#[from] EncryptQueryError),
@@ -93,7 +97,7 @@ impl DnsCryptError {
         match self {
             Self::Certificates(error) => error.is_local(),
             Self::NoCertificate => false,
-            Self::LowOrderKey(_) | Self::Encrypt(_) => true,
+            Self::Session(_) | Self::Encrypt(_) => true,
         }
     }
 }
@@ -157,6 +161,17 @@ struct State {
     floor: usize,
     /// The relay that failed the last: not picked while another is, until another fails.
     avoid: Option<Relay>,
+    /// The ticket of the last PQ response, kept only for `Options::dnscrypt_resume`.
+    ticket: Option<Ticket>,
+}
+
+/// A resumption ticket and what the client checks before using it: the certificate it was issued under and when it
+/// expires, in Unix seconds.
+#[derive(Debug)]
+struct Ticket {
+    resumption: Resumption,
+    serial: u32,
+    expires: u64,
 }
 
 impl Resolver {
@@ -170,6 +185,7 @@ impl Resolver {
                 stale: false,
                 floor: FIRST_FLOOR,
                 avoid: None,
+                ticket: None,
             }),
         }
     }
@@ -189,8 +205,12 @@ impl Resolver {
         self.state.borrow_mut().avoid = relay;
     }
 
-    /// A query got no response: the relay is skipped by the next picks, and the certificate made stale when `stale`.
-    fn lost(&self, relay: Option<Relay>, stale: bool) -> Reply {
+    /// A query got no response: the relay is skipped by the next picks, the certificate made stale when `stale`, and the
+    /// ticket it was sealed under, if any, dropped.
+    fn lost(&self, relay: Option<Relay>, stale: bool, resumed: bool) -> Reply {
+        if resumed {
+            self.state.borrow_mut().ticket = None;
+        }
         if stale {
             self.state.borrow_mut().stale = true;
         }
@@ -206,11 +226,12 @@ impl Resolver {
         io: &N,
         options: &Options,
     ) -> Result<Certificate, ClientError> {
-        if let Some(kept) = self.kept(io) {
+        let policy = policy(options);
+        if let Some(kept) = self.kept(io, policy) {
             return Ok(kept);
         }
         let (_, certificates) = self.fetch(client, io, options).await?;
-        let chosen = select(&certificates, unix_now(), SystemPolicy::Preferred)
+        let chosen = select(&certificates, unix_now(), policy)
             .ok_or(DnsCryptError::NoCertificate)?
             .clone();
         let mut state = self.state.borrow_mut();
@@ -219,11 +240,13 @@ impl Resolver {
         Ok(chosen)
     }
 
-    /// The certificate in use, while it is valid, recent and no response failed under it.
-    fn kept<N: Io>(&self, io: &N) -> Option<Certificate> {
+    /// The certificate in use, while it is valid, recent, no response failed under it and `policy` allows its
+    /// system.
+    fn kept<N: Io>(&self, io: &N, policy: SystemPolicy) -> Option<Certificate> {
         let state = self.state.borrow();
         let (certificate, fetched) = state.chosen.as_ref()?;
         (!state.stale
+            && policy.allows(certificate.body().system())
             && certificate.is_valid_at(unix_now())
             && io.now().saturating_duration_since(*fetched) < REFRESH)
             .then(|| certificate.clone())
@@ -243,10 +266,12 @@ impl Resolver {
         })
     }
 
-    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, over UDP, then over
-    /// TCP when UDP gets no answer, whatever the transport of the queries: a public resolver may serve the
-    /// certificates over UDP alone (Quad9 and `CleanBrowsing` answer none over TCP, November 2026), and nothing
-    /// private is in them (draft "Certificates"). Through relays the query goes to one of them, UDP then TCP.
+    /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, padded to cover the
+    /// rollover set (draft "Certificate Retrieval"), over UDP, then over TCP when UDP gets no answer or the answer is
+    /// truncated (a resolver cuts a response that would be longer than the query, PQ certificates left out), whatever
+    /// the transport of the queries: a public resolver may serve the certificates over UDP alone (Quad9 and
+    /// `CleanBrowsing` answer none over TCP, November 2026), and nothing private is in them (draft "Certificates").
+    /// Through relays the query goes to one of them, UDP then TCP.
     async fn fetch<N: Io>(
         &self,
         client: &Client<N>,
@@ -287,9 +312,10 @@ impl Resolver {
             let asked = Options {
                 transport,
                 cookies: false,
+                tcp_fallback: true,
                 ..*options
             };
-            let query = Message::query(0, question.clone());
+            let query = certificate_query(question.clone(), 0, CERTIFICATE_QUERY_LEN);
             let server = server.clone();
             // Boxed: this is a query of the client, which may be the one that is waiting for the certificate.
             async move { Box::pin(client.exchange(query, server, &asked)).await }
@@ -323,7 +349,7 @@ impl Resolver {
                 } else {
                     RELAY_PACKET_LEN
                 };
-                let query = self.certificate_query(io, len)?;
+                let query = self.certificate_wire(io, len)?;
                 let packet = relay_query(target, &query);
                 let sent = io.now();
                 let deadline = after(sent, options.timeout);
@@ -355,21 +381,13 @@ impl Resolver {
         Err(DnsCryptError::Certificates(Box::new(Failure::TimedOut { sends }.into())).into())
     }
 
-    /// The TXT query for the provider name, its EDNS padded so that the message is `len` bytes (RFC 7830), with an
-    /// ID of its own: a relay checks the response against it.
-    fn certificate_query<N: Io>(&self, io: &N, len: usize) -> Result<Vec<u8>, ClientError> {
+    /// The TXT query for the provider name as wire, `len` bytes long, with an ID of its own: a relay checks the
+    /// response against it.
+    fn certificate_wire<N: Io>(&self, io: &N, len: usize) -> Result<Vec<u8>, ClientError> {
         let mut id = [0; 2];
         io.random(&mut id).map_err(ClientError::Random)?;
         let question = Question::new(self.stamp.provider_name.name().clone(), RecordType::TXT);
-        let mut query = Message::query(u16::from_be_bytes(id), question);
-        let bare = query.to_vec()?;
-        let padding = len.saturating_sub(bare.len() + OPTION_HEAD);
-        if let (Some(edns), true) = (&mut query.edns, padding > 0) {
-            edns.options.push(EdnsOption::Padding(
-                u16::try_from(padding).unwrap_or(u16::MAX),
-            ));
-        }
-        Ok(query.to_vec()?)
+        Ok(certificate_query(question, u16::from_be_bytes(id), len).to_vec()?)
     }
 
     /// Seals `wire`, a DNS query, under the certificate and sends it over `transport`, UDP or TCP: the response
@@ -389,24 +407,45 @@ impl Resolver {
     ) -> Result<Reply, ClientError> {
         let certificate = self.certificate(client, io, options).await?;
         let relay = self.pick(io)?;
+        let pq = certificate.body().system() == EncryptionSystem::XWing;
         let mut entropy = Entropy::from_io(io).map_err(ClientError::Random)?;
-        let secret = SecretKey::generate(&mut entropy);
         let nonce = ClientNonce::random(&mut entropy);
         let padding = if transport != Transport::Tcp {
-            QueryPadding::udp(wire.len(), self.state.borrow().floor)
+            if pq && !options.dnscrypt_resume {
+                // The ciphertext alone makes the packet longer than any response needs to be.
+                QueryPadding::udp(wire.len(), 0)
+            } else {
+                QueryPadding::udp(wire.len(), self.state.borrow().floor)
+            }
         } else if relay.is_some() {
             // A relay asks the resolver over UDP, and drops a response longer than the query: as large as is safe.
             QueryPadding::udp(wire.len(), RELAY_PACKET_LEN)
         } else {
             QueryPadding::tcp(wire.len(), &mut entropy)
         };
+        // A ticket in hand and asked for: the query is a resumed one, with no encapsulation.
+        let resumed = self.resumed(&certificate, options, wire, padding, nonce);
+        let (packet, context, resumed) = match resumed {
+            Some(sealed) => {
+                let (packet, context) = sealed.map_err(DnsCryptError::from)?;
+                (packet, context, true)
+            }
+            None => {
+                let session = if pq {
+                    ClientSession::xwing(&certificate, &mut entropy)
+                } else {
+                    ClientSession::new(&certificate, &SecretKey::generate(&mut entropy))
+                }
+                .map_err(DnsCryptError::from)?;
+                let (packet, context) = session
+                    .encrypt_query(wire, padding, nonce)
+                    .map_err(DnsCryptError::from)?;
+                (packet, context, false)
+            }
+        };
         entropy
             .finish()
             .map_err(|error| ClientError::Random(io::Error::other(error)))?;
-        let session = ClientSession::new(&certificate, &secret).map_err(DnsCryptError::from)?;
-        let (packet, context) = session
-            .encrypt_query(wire, padding, nonce)
-            .map_err(DnsCryptError::from)?;
         let (hop, packet) = match relay {
             Some(relay) => (
                 relay.address.socket_addr(),
@@ -421,23 +460,30 @@ impl Resolver {
             udp_round(io, hop, &packet, deadline, open).await?
         };
         Ok(match heard {
-            Heard::Answer(response) => {
-                if transport != Transport::Tcp && is_truncated(&response) {
+            Heard::Answer(Opened {
+                message,
+                resumption,
+            }) => {
+                if transport != Transport::Tcp && is_truncated(&message) {
                     self.raise_floor();
                 }
-                Reply::Answer(response, info(&certificate))
+                if options.dnscrypt_resume {
+                    self.keep(&certificate, resumed, resumption);
+                }
+                Reply::Answer(message, info(&certificate))
             }
             // A resolver drops the queries of a certificate it rotated, without a word (draft "Negative Cases"
             // case 1): silence over UDP, or a connection closed with no response, is all the sign there is, and
-            // the next try fetches the certificates. A TCP query may only have been slow.
-            Heard::Closed => self.lost(relay, true),
-            Heard::Silent => self.lost(relay, transport != Transport::Tcp),
+            // the next try fetches the certificates. A TCP query may only have been slow. A resolver drops a ticket
+            // it does not accept in silence too: the next try is a full query.
+            Heard::Closed => self.lost(relay, true, resumed),
+            Heard::Silent => self.lost(relay, transport != Transport::Tcp, resumed),
         })
     }
 
     /// The response in `packet`, if it opens; one that does not authenticate makes the certificate stale.
-    fn opened(&self, context: &QueryContext, packet: &[u8]) -> Option<Vec<u8>> {
-        match context.decrypt_response(packet) {
+    fn opened(&self, context: &QueryContext, packet: &[u8]) -> Option<Opened> {
+        match context.open_response(packet) {
             Ok(response) => Some(response),
             Err(ResponseError::Authentication) => {
                 self.state.borrow_mut().stale = true;
@@ -551,11 +597,34 @@ fn certificate_response(query: &[u8], datagram: &[u8]) -> Option<Vec<u8>> {
         .then(|| datagram.to_vec())
 }
 
+/// The query for the certificates: a TXT query with `id`, its EDNS padding (RFC 7830) bringing it to `len` bytes, which
+/// is also the response size it advertises.
+fn certificate_query(question: Question<'_>, id: u16, len: usize) -> Message<'_> {
+    let mut query = Message::query(id, question);
+    let mut buf = [0; 512];
+    let unpadded = query.encode(&mut buf).unwrap_or(buf.len());
+    let padding = len.saturating_sub(unpadded + OPTION_HEAD);
+    if let (Some(edns), Ok(padding)) = (query.edns.as_mut(), u16::try_from(padding)) {
+        edns.udp_payload = u16::try_from(len).unwrap_or(u16::MAX);
+        edns.options.push(EdnsOption::Padding(padding));
+    }
+    query
+}
+
+/// Which certificates the client takes: any, the PQ one first, or with `+dnscrypt-pq` the PQ ones only (D101).
+fn policy(options: &Options) -> SystemPolicy {
+    if options.dnscrypt_pq {
+        SystemPolicy::Only(EncryptionSystem::XWing)
+    } else {
+        SystemPolicy::Preferred
+    }
+}
+
 /// What a certificate tells, as the exchange reports it.
 pub(crate) fn info(certificate: &Certificate) -> CertificateInfo {
     let body = certificate.body();
     CertificateInfo {
-        es_version: u16::from_be_bytes(body.system.es_version()),
+        es_version: u16::from_be_bytes(body.system().es_version()),
         serial: body.serial,
         valid_from: body.validity.start(),
         valid_until: body.validity.end(),
