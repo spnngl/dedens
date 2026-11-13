@@ -14,6 +14,8 @@ exclude_re = [
   '\bproofs(::|\.rs:)',
   # A pointer's offset: its high byte shifted holds no bit of the low byte, so `|` and `^` are the same.
   'name\.rs:\d+:\d+: replace \| with \^ in (scan|unpack)$',
+  # A stamp's properties: three flags each in a bit of its own, so `|` and `^` are the same.
+  'stamp\.rs:\d+:\d+: replace \| with \^ in Properties::bits$',
   # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.

@@ -336,6 +336,21 @@ fn a_provider_name_of_more_than_255_characters_is_refused() {
 }
 
 #[test]
+fn a_provider_name_of_255_characters_is_read() {
+    // 60 bytes, then 63 bytes three times: one byte written `\001`, so 255 characters, the most a stamp carries.
+    let text = format!(
+        "\\001{}.{}",
+        "a".repeat(59),
+        vec!["a".repeat(63); 3].join(".")
+    );
+    assert_eq!(text.len(), 255);
+    assert_eq!(
+        text.parse::<ProviderName>().map(|name| name.to_string()),
+        Ok(text)
+    );
+}
+
+#[test]
 fn the_case_of_a_provider_name_is_kept() {
     let resolver = resolver();
     let address = resolver.address.to_string();
