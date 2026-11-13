@@ -15,6 +15,7 @@ anyhow.workspace = true
 clap.workspace = true
 compio.workspace = true
 dedens-cache = { workspace = true, features = ["serde"] }
+dedens-dnscrypt = { workspace = true, optional = true }
 dedens-dnssec.workspace = true
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-odoh = { workspace = true, optional = true }
@@ -47,6 +48,8 @@ mimalloc.workspace = true
 # D69: experimental transports, off by default.
 odoh = ["dedens-net/odoh", "dep:dedens-odoh", "dep:zeroize"]
 doc = ["dedens-net/doc"]
+# D99: DNSCrypt, as a client of upstream servers and as a server.
+dnscrypt = ["dedens-net/dnscrypt", "dep:dedens-dnscrypt", "dep:zeroize"]
 
 [dev-dependencies]
 clap_mangen.workspace = true

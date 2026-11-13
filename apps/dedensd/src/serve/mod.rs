@@ -14,6 +14,8 @@
 
 #[cfg(feature = "doc")]
 mod coap;
+#[cfg(feature = "dnscrypt")]
+mod dnscrypt;
 mod h3_budget;
 mod http3;
 pub(crate) mod isolate;
@@ -46,6 +48,8 @@ use self::h3_budget::Connections;
 use self::http3::H3_UNI_STREAMS;
 use self::isolate::{BACKOFF, Backoff, Listener, supervise};
 use self::quic::{Service, quic_task};
+#[cfg(feature = "dnscrypt")]
+use self::tcp::tcp_task_with;
 use self::tcp::{TCP_BACKLOG, TCP_CONNECTIONS, tcp_task};
 use self::udp::{Outbox, UDP_BUFFER_LEN, UDP_BUFFERS, UDP_RECEIVE_BUFFER, udp};
 use crate::config::Listen;
@@ -76,6 +80,9 @@ pub(crate) enum Bound {
     /// A UDP socket for CoAP, serving `DoC` at the path (D81).
     #[cfg(feature = "doc")]
     Coap(Socket, Arc<str>),
+    /// A UDP socket and a TCP listener for `DNSCrypt` (D99).
+    #[cfg(feature = "dnscrypt")]
+    Dnscrypt(Socket, Socket),
 }
 
 /// The sockets of one thread.
@@ -104,6 +111,8 @@ pub(crate) fn bind(listen: &[Listen]) -> anyhow::Result<Sockets> {
             Listen::Coap(addr, path) => {
                 udp(*addr).map(|socket| Bound::Coap(socket, Arc::clone(path)))
             }
+            #[cfg(feature = "dnscrypt")]
+            Listen::Dnscrypt(addr) => Ok(Bound::Dnscrypt(udp(*addr)?, tcp(*addr)?)),
         })
         .collect()
 }
@@ -232,10 +241,58 @@ impl<N: Io> Thread<N> {
     }
 }
 
+/// What the listeners serve besides plain DNS, made once at start and shared by every thread: each is there when its
+/// section of the configuration is.
+#[derive(Clone, Default)]
+pub(crate) struct Services {
+    /// The Oblivious `DoH` target the HTTP/3 listeners serve (D79).
+    #[cfg(feature = "odoh")]
+    odoh: Option<Arc<odoh::Service>>,
+    /// The `DNSCrypt` resolver the `dnscrypt://` listeners serve (D99).
+    #[cfg(feature = "dnscrypt")]
+    pub(crate) dnscrypt: Option<Arc<crate::dnscrypt::Service>>,
+}
+
+impl Services {
+    /// The services `config` describes, their keys read.
+    ///
+    /// # Errors
+    ///
+    /// A key that does not read: see the services' sections.
+    #[cfg_attr(
+        not(any(feature = "odoh", feature = "dnscrypt")),
+        expect(
+            unused_variables,
+            clippy::unnecessary_wraps,
+            reason = "only a service reads the configuration, and fails"
+        )
+    )]
+    pub(crate) fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
+        Ok(Self {
+            #[cfg(feature = "odoh")]
+            odoh: config
+                .odoh
+                .as_ref()
+                .map(odoh::Section::service)
+                .transpose()?
+                .map(Arc::new),
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: config
+                .dnscrypt
+                .as_ref()
+                .map(crate::dnscrypt::Section::service)
+                .transpose()?
+                .map(Arc::new),
+        })
+    }
+}
+
 /// Describes the metrics of the serving tasks.
 pub(crate) fn describe() {
     isolate::describe();
     prewarm::describe();
+    #[cfg(feature = "dnscrypt")]
+    dnscrypt::describe();
 }
 
 /// Waits `time` on `io`'s clock.
@@ -360,10 +417,16 @@ pub(crate) async fn serve(
     current: Arc<Current>,
     trust: Trust,
     presented: Option<Arc<Presented>>,
-    #[cfg(feature = "odoh")] odoh: Option<Arc<odoh::Service>>,
+    services: Services,
     prewarms: bool,
     listening: mpsc::Sender<DriverType>,
 ) -> io::Result<()> {
+    let Services {
+        #[cfg(feature = "odoh")]
+        odoh,
+        #[cfg(feature = "dnscrypt")]
+        dnscrypt,
+    } = services;
     #[cfg_attr(
         not(feature = "odoh"),
         expect(unused_mut, reason = "only Oblivious DoH sets a field")
@@ -374,6 +437,8 @@ pub(crate) async fn serve(
         thread.odoh = odoh;
     }
     let thread = Rc::new(thread);
+    #[cfg(feature = "dnscrypt")]
+    let keys = dnscrypt.map(|service| Rc::new(dnscrypt::Keys::new(service, &thread)));
     let certificate = || {
         presented
             .clone()
@@ -426,6 +491,14 @@ pub(crate) async fn serve(
                     coap::serve(Rc::clone(&coap), name.clone(), Rc::clone(thread))
                 })
             }
+            #[cfg(feature = "dnscrypt")]
+            #[cfg(feature = "dnscrypt")]
+            Bound::Dnscrypt(udp_socket, tcp_listener) => {
+                let keys = keys
+                    .clone()
+                    .ok_or_else(|| io::Error::other("no DNSCrypt keys"))?;
+                dnscrypt_tasks(&thread, &keys, udp_socket, tcp_listener, &mut tasks)?
+            }
         };
         tasks.push(task);
     }
@@ -438,10 +511,40 @@ pub(crate) async fn serve(
     } else {
         tasks.push(spawn(follow(Rc::clone(&thread))));
     }
+    #[cfg(feature = "dnscrypt")]
+    if let Some(keys) = keys {
+        tasks.push(spawn(dnscrypt::rotate(keys, Rc::clone(&thread))));
+    }
     // The receiver is gone only if another thread failed first.
     let _ = listening.send(Runtime::with_current(Runtime::driver_type));
     drop(listening);
     first_end(tasks).await
+}
+
+/// The tasks of a `DNSCrypt` listener: the UDP one, pushed to `tasks`, and the TCP one, returned (D99).
+#[cfg(feature = "dnscrypt")]
+fn dnscrypt_tasks(
+    thread: &Rc<Thread>,
+    keys: &Rc<dnscrypt::Keys>,
+    udp_socket: Socket,
+    tcp_listener: Socket,
+    tasks: &mut Vec<JoinHandle<()>>,
+) -> io::Result<JoinHandle<()>> {
+    let name = Listener::new("dnscrypt-udp", local(&udp_socket));
+    let socket = Rc::new(UdpSocket::from_std(udp_socket.into())?);
+    let outbox = Rc::new(Outbox::new());
+    let serving = Rc::clone(keys);
+    tasks.push(supervised(name, thread, move |name, thread| {
+        dnscrypt::udp(
+            Rc::clone(&socket),
+            Rc::clone(&outbox),
+            Rc::clone(&serving),
+            name.clone(),
+            Rc::clone(thread),
+        )
+    }));
+    let codec = Rc::new(dnscrypt::Encrypted(Rc::clone(keys)));
+    tcp_task_with(thread, tcp_listener, "dnscrypt-tcp", None, codec)
 }
 
 /// The address `socket` is bound to, if it says.
@@ -512,6 +615,52 @@ pub(crate) async fn simulated<N: Io>(
         prewarm::run(Rc::clone(&thread))
     });
     join(join(serving_udp, serving_tcp), prewarming).await;
+}
+
+/// As [`simulated`], for a `DNSCrypt` resolver `service` on the same sockets: its loops, and the task that rotates the
+/// keys, on the simulated clock (D99, D182).
+#[cfg(feature = "dnscrypt")]
+pub(crate) async fn simulated_dnscrypt<N: Io>(
+    io: N,
+    udp: N::Udp,
+    tcp: N::Listener,
+    pipeline: Pipeline,
+    trust: Trust,
+    service: Arc<crate::dnscrypt::Service>,
+) {
+    let started = io.now();
+    let current = Arc::new(Current::new(pipeline));
+    let thread = Rc::new(Thread::with_io(
+        io,
+        started,
+        current,
+        UPSTREAM_QUERIES,
+        trust,
+    ));
+    let keys = Rc::new(dnscrypt::Keys::new(service, &thread));
+    let udp_name = Listener::new("dnscrypt-udp", udp.local_addr().ok());
+    let tcp_name = Listener::new("dnscrypt-tcp", None);
+    let (udp, tcp, outbox) = (Rc::new(udp), Rc::new(tcp), Rc::new(Outbox::new()));
+    let serving_udp = supervise(&thread.io, &udp_name, BACKOFF, || {
+        dnscrypt::udp(
+            Rc::clone(&udp),
+            Rc::clone(&outbox),
+            Rc::clone(&keys),
+            udp_name.clone(),
+            Rc::clone(&thread),
+        )
+    });
+    let serving_tcp = supervise(&thread.io, &tcp_name, BACKOFF, || {
+        tcp::accept(
+            Rc::clone(&tcp),
+            None,
+            tcp_name.clone(),
+            Rc::clone(&thread),
+            Rc::new(dnscrypt::Encrypted(Rc::clone(&keys))),
+        )
+    });
+    let rotating = dnscrypt::rotate(Rc::clone(&keys), Rc::clone(&thread));
+    join(join(serving_udp, serving_tcp), rotating).await;
 }
 
 /// Waits for the first of `tasks`, which are not none, to end. They never end but by a panic of their own: the

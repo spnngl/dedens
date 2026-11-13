@@ -4,6 +4,8 @@
 mod access;
 #[cfg(feature = "doc")]
 mod coap;
+#[cfg(feature = "dnscrypt")]
+mod dnscrypt;
 mod doh;
 mod end_to_end;
 mod flights;

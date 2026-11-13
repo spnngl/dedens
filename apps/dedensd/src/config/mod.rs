@@ -1,14 +1,14 @@
 //! The configuration file (D24, D44, D115): YAML, `${VAR}` replaced first, then read into named stages run in the
 //! order `pipeline` lists them. A value of `${VAR}` is one value, never YAML: left as it is when plain (letters,
 //! digits, `_./:@+=%~#-`), single-quoted when alone as a value, escaped between the template's own quotes, refused
-//! anywhere else. A TLS or `ODoH` key file readable by others is refused, by its group warned about. After the drop
+//! anywhere else. A TLS, `ODoH` or `DNSCrypt` key file readable by others is refused, by its group warned about. After the drop
 //! (D122) a reload reads as `user`: the files it reads (the certificate and its key, lists, `upstream_ca`, saved
 //! downloads) must be readable by it, and `downloads.dir` writable. The start reads the configuration again as `user`
 //! right after the drop, and ends if it cannot. A reload warns of a change to `user` or `group` as written: `user: 990`
 //! for `user: dedens` warns too.
 //!
 //! ```yaml
-//! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query"]
+//! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query", "dnscrypt://0.0.0.0"]
 //! threads: 4                       # serving threads, fixed at start, 1 to 1024; default: a core each on Linux, else 1 (D42)
 //! user: dedens                     # Linux, started as root: run as this user, a name or an id, once the sockets are bound (D122);
 //!                                  # a musl build looks a name up in /etc/passwd only, no NSS (D151)
@@ -21,6 +21,10 @@
 //!   proxy:                           # also the proxy of RFC 9230 §4 (D94): forwards to these targets only
 //!     targets: [odoh.cloudflare-dns.com, "odoh-target.example:8443"]   # HOST[:PORT], port 443 by default
 //!     timeout_ms: 5000
+//! dnscrypt:                          # DNSCrypt resolver on the dnscrypt:// addresses (D99); needs the dnscrypt feature
+//!   provider_name: 2.dnscrypt-cert.dns.example   # certificates are asked under this name
+//!   secret_key: /etc/dedensd/dnscrypt.key        # the provider's Ed25519 seed, 64 hex digits; `dedensd dnscrypt-keygen` makes one
+//!   systems: [xchacha20, xsalsa20]               # both by default
 //! access:                           # who is answered (D91); default: loopback, private and link-local networks
 //!   allow: ["10.0.0.0/8", "2001:db8::/32"]
 //!   deny: ["10.9.0.0/16"]            # the longest network holding the client decides; deny wins a tie
@@ -71,10 +75,20 @@
 //! ```
 
 mod access;
+#[cfg_attr(
+    not(feature = "dnscrypt"),
+    expect(
+        dead_code,
+        reason = "read by the resolver, built with the dnscrypt feature"
+    )
+)]
+mod dnscrypt;
 mod env;
 mod keys;
 mod limits;
 mod listen;
+#[cfg(any(feature = "odoh", feature = "dnscrypt"))]
+mod secret;
 mod sources;
 mod upstream;
 
@@ -91,15 +105,24 @@ use dedens_server::{Pipeline, Stage};
 use serde::Deserialize;
 
 use self::access::{AccessFile, AccessSource};
+use self::dnscrypt::DnscryptFile;
+#[cfg(feature = "dnscrypt")]
+pub(crate) use self::dnscrypt::provider;
+#[cfg(feature = "dnscrypt")]
+use self::dnscrypt::section as dnscrypt_section;
 use self::env::interpolate;
-#[cfg(feature = "odoh")]
-pub(crate) use self::keys::guard_key;
 #[cfg(feature = "odoh")]
 use self::keys::section;
 use self::keys::{OdohFile, trusted};
 use self::limits::{CookiesFile, Guard, RrlFile, serving_threads};
 pub(crate) use self::listen::Listen;
+#[cfg(feature = "dnscrypt")]
+pub(crate) use self::listen::address;
 use self::listen::{TlsFile, presented};
+#[cfg(all(test, feature = "odoh"))]
+pub(crate) use self::secret::KEY_FILE_MAX;
+#[cfg(any(feature = "odoh", feature = "dnscrypt"))]
+pub(crate) use self::secret::{SECRET_LEN, read_secret};
 pub(crate) use self::sources::Downloads;
 use self::sources::{
     CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
@@ -118,6 +141,7 @@ struct File {
     tls: Option<TlsFile>,
     /// Serving as an Oblivious `DoH` target at the paths of the `https://` addresses (D79).
     odoh: Option<OdohFile>,
+    dnscrypt: Option<DnscryptFile>,
     /// The clients answered (D91). Default: those of loopback, private and link-local networks.
     access: Option<AccessFile>,
     /// Response rate limiting over UDP and `DoC` (D113). Default: on.
@@ -170,6 +194,9 @@ pub(crate) struct Config {
     /// The Oblivious `DoH` target's settings, there when `odoh` is: the key is read at start only.
     #[cfg(feature = "odoh")]
     pub(crate) odoh: Option<crate::odoh::Section>,
+    /// The `DNSCrypt` resolver's settings, there when `dnscrypt` is: the key is read at start only (D99).
+    #[cfg(feature = "dnscrypt")]
+    pub(crate) dnscrypt: Option<crate::dnscrypt::Section>,
     pub(crate) pipeline: Pipeline,
     /// Where the access lists come from (D91).
     access: AccessSource,
@@ -262,6 +289,13 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         file.odoh.is_none(),
         "`odoh` needs a dedensd built with the odoh feature"
     );
+    #[cfg(feature = "dnscrypt")]
+    let dnscrypt = dnscrypt_section(file.dnscrypt.as_ref(), &file.listen)?;
+    #[cfg(not(feature = "dnscrypt"))]
+    ensure!(
+        file.dnscrypt.is_none(),
+        "`dnscrypt` needs a dedensd built with the dnscrypt feature"
+    );
     ensure!(!file.pipeline.is_empty(), "`pipeline` has no stage");
     let source = AccessSource::of(file.access.as_ref());
     let guard = Guard {
@@ -282,6 +316,8 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         user,
         #[cfg(feature = "odoh")]
         odoh,
+        #[cfg(feature = "dnscrypt")]
+        dnscrypt,
         pipeline,
         access: source,
         downloads,
