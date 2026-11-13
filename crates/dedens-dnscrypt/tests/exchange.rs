@@ -314,6 +314,24 @@ fn tcp_response_is_under_4096() {
     assert!(truncated(&message));
 }
 
+/// "Protocol Components": a response is under 4096 bytes even when the query packet is 4096 and the UDP budget
+/// would allow as much.
+#[test]
+fn udp_response_to_the_largest_query_is_under_4096() {
+    for system in SYSTEMS {
+        let (packet, query_context, context) = send(system, QueryPadding::to(4096 - 68));
+        assert_eq!(packet.len(), 4096);
+        // 250 answers is 4033 bytes: padded to a block, it would be 4096 once encrypted.
+        for answers in [250, 251, 300] {
+            let sent = context
+                .encrypt_response(&response_with(answers), Carrier::Udp, &mut rng())
+                .expect("a response");
+            assert!(sent.len() < 4096, "{system:?} answers {answers}");
+            query_context.decrypt_response(&sent).expect("readable");
+        }
+    }
+}
+
 /// A query packet with no room for the response's header and question gets no response, an error to the caller
 /// rather than a packet over the limit.
 #[test]
