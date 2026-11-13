@@ -234,6 +234,10 @@ impl Certificate {
         let (start, rest) = rest.split_first_chunk().ok_or(CertificateError::TooShort)?;
         let (end, extensions) = rest.split_first_chunk().ok_or(CertificateError::TooShort)?;
 
+        // The signature first: nothing of `signed` decides an error before it is known to be the provider's.
+        UnparsedPublicKey::new(&ED25519, provider.as_bytes())
+            .verify(signed, signature)
+            .map_err(|_| CertificateError::BadSignature)?;
         let body = CertificateBody {
             system,
             resolver_key: PublicKey::from_bytes(*resolver_key),
@@ -242,9 +246,6 @@ impl Certificate {
             validity: Validity::new(u32::from_be_bytes(*start), u32::from_be_bytes(*end))?,
             extensions: extensions.to_vec(),
         };
-        UnparsedPublicKey::new(&ED25519, provider.as_bytes())
-            .verify(signed, signature)
-            .map_err(|_| CertificateError::BadSignature)?;
         Ok(Self {
             body,
             wire: bytes.to_vec(),
