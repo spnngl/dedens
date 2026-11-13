@@ -48,7 +48,7 @@ pub(super) async fn run<N: Io>(thread: Rc<Thread<N>>) {
         let pipeline = thread.pipeline();
         let now = thread.now();
         schedule.follow(thread.generation(), &pipeline, now);
-        while asking.len() < IN_FLIGHT {
+        while room(asking.len()) {
             let Some((warm, epoch)) = schedule.next(now) else {
                 break;
             };
@@ -61,7 +61,7 @@ pub(super) async fn run<N: Io>(thread: Rc<Thread<N>>) {
         // Not held while waiting: the thread would keep the pipeline a reload replaced (D107).
         drop(pipeline);
         // Full, only an end frees a place; else the next name due is the next thing to do.
-        let due = if asking.len() < IN_FLIGHT {
+        let due = if room(asking.len()) {
             schedule.due()
         } else {
             None
@@ -87,6 +87,11 @@ pub(super) async fn run<N: Io>(thread: Rc<Thread<N>>) {
             schedule.finish(&warm, epoch, outcome, thread.now());
         }
     }
+}
+
+/// Whether another query may be in flight beside the `asking` ones.
+const fn room(asking: usize) -> bool {
+    asking < IN_FLIGHT
 }
 
 /// Returns when a reload replaced the pipeline, or at `deadline`; at no time if there is none and no reload.
@@ -442,5 +447,58 @@ mod tests {
         schedule.finish(&warm, epoch, Outcome::Fresh(500), 3);
         assert_eq!(taken(&mut schedule, 3), ["a.example."]);
         assert_eq!(taken(&mut schedule, 1000), Vec::<String>::new());
+    }
+
+    /// The serving tasks describe the metric, through `serve::describe` that `main` calls.
+    #[test]
+    fn the_counter_is_described() {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            super::super::describe();
+            metrics::counter!(QUERIES, "result" => "ok").increment(1);
+        });
+        let described = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .any(|(key, _, description, _)| key.key().name() == QUERIES && description.is_some());
+        assert!(described);
+    }
+
+    #[test]
+    fn no_more_than_the_queries_in_flight_are_asked_at_once() {
+        assert!(room(IN_FLIGHT - 1));
+        assert!(!room(IN_FLIGHT));
+    }
+
+    /// The end of a query of an older cache is not heard even for a name asked again since: the new entry is in flight
+    /// too, so only the epoch tells the two queries apart.
+    #[test]
+    fn the_end_of_an_older_query_does_not_end_the_one_of_the_new_cache() {
+        let first = pipeline("a.example", "", &Pipeline::default());
+        let mut schedule = Schedule::default();
+        schedule.follow(1, &first, 0);
+        let (old, old_epoch) = schedule.next(0).expect("due");
+        let second = pipeline("a.example", "    min_ttl: 5\n", &first);
+        schedule.follow(2, &second, 1);
+        let (_, epoch) = schedule.next(1).expect("due");
+        assert_ne!(epoch, old_epoch);
+        schedule.finish(&old, old_epoch, Outcome::Fresh(500), 2);
+        assert_eq!(schedule.due(), None, "the new query is still in flight");
+    }
+
+    /// A name a stage answered (`Local`) is asked again after a reload, the stage may not answer it any more.
+    #[test]
+    fn a_name_a_stage_answered_is_asked_again_after_a_reload() {
+        let first = pipeline("a.example", "", &Pipeline::default());
+        let mut schedule = Schedule::default();
+        schedule.follow(1, &first, 0);
+        let (warm, epoch) = schedule.next(0).expect("due");
+        schedule.finish(&warm, epoch, Outcome::Local, 0);
+        assert_eq!(schedule.due(), None);
+        let second = pipeline("a.example", "", &first);
+        schedule.follow(2, &second, 5);
+        assert_eq!(taken(&mut schedule, 5), ["a.example."]);
     }
 }
