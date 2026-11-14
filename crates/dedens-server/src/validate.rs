@@ -15,7 +15,7 @@ use dedens_dnssec::{Cost, MAX_CHASES, Next, Validation, Validator, Verdict, cove
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Class, Decoded, Flags, Message, Question, RecordType, Ttl};
 
-use crate::budget::{Budget, Budgets, MAX_BUDGET, Slot};
+use crate::budget::{Budget, Budgets, MAX_BUDGET, Slot, Spent};
 use crate::metrics::Metrics;
 
 /// Seconds since the Unix epoch, as signatures count them: read each time a response starts being validated.
@@ -195,20 +195,17 @@ impl Validating {
     /// share.
     pub(crate) fn admit(&self, source: Source, exempt: bool, now: u32) -> Option<Admitted> {
         let share = (!exempt).then(|| Slot::new(source.address, source.proven));
-        if let Some(share) = share
-            && !self.shares.admit(share, now)
-        {
-            self.metrics.shed_share();
-            return None;
-        }
-        if !self.bucket.admit(Slot::ONLY, now) {
-            if let Some(share) = share {
-                self.shares.refund(share);
+        match self.shares.admit_within(share, &self.bucket, now) {
+            Ok(()) => Some(Admitted { share }),
+            Err(Spent::Network) => {
+                self.metrics.shed_share();
+                None
             }
-            self.metrics.shed();
-            return None;
+            Err(Spent::Global) => {
+                self.metrics.shed();
+                None
+            }
         }
-        Some(Admitted { share })
     }
 
     /// Takes `units` of work done for `admitted` from its share and from the allowance (D106).

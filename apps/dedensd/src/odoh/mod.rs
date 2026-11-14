@@ -9,7 +9,7 @@ use dedens_net::odoh::{self, Entropy};
 use dedens_odoh::{
     ExchangeError, ResponseContext, TargetKey, decrypt_query, encrypt_response, response_padding,
 };
-use dedens_server::{Budget, Budgets, DEFAULT_SHARE, Slot};
+use dedens_server::{Budget, Budgets, DEFAULT_SHARE, Slot, Spent};
 use http::{Response, StatusCode};
 use zeroize::Zeroizing;
 
@@ -163,17 +163,9 @@ impl Service {
     ) -> Result<(Vec<u8>, ResponseContext), StatusCode> {
         // The peer of a QUIC connection completed its handshake: its address is no spoof.
         let network = (!exempt).then(|| Slot::new(from, true));
-        if let Some(network) = network
-            && !self.clients.admit(network, now)
-        {
-            return Err(limited("client", from));
-        }
-        if !self.global.admit(Slot::ONLY, now) {
-            if let Some(network) = network {
-                self.clients.refund(network);
-            }
-            return Err(limited("global", from));
-        }
+        self.clients
+            .admit_within(network, &self.global, now)
+            .map_err(|spent| limited(spent, from))?;
         let message = dedens_odoh::Message::parse(body).map_err(|_| StatusCode::BAD_REQUEST)?;
         match decrypt_query(&self.key, &message) {
             Ok((plaintext, context)) => Ok((plaintext.into_dns_message(), context)),
@@ -183,8 +175,9 @@ impl Service {
     }
 }
 
-/// The 503 of a request over the `budget` (`client` or `global`) of a target, counted and logged (D117).
-fn limited(budget: &'static str, from: IpAddr) -> StatusCode {
+/// The 503 of a request over a budget of a target, counted and logged (D117).
+fn limited(spent: Spent, from: IpAddr) -> StatusCode {
+    let budget = spent.name();
     metrics::counter!(LIMITED, "budget" => budget).increment(1);
     tracing::debug!(%from, budget, "ODoH budget spent: 503");
     StatusCode::SERVICE_UNAVAILABLE

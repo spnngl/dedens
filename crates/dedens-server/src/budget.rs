@@ -254,6 +254,34 @@ impl Budgets {
         admitted
     }
 
+    /// Whether a unit of work for `network` may start at second `now`, taken from its bucket of these budgets, then
+    /// from `global`, the allowance all networks share: one client cannot spend what all share. When `global`
+    /// refuses, the network's unit is given back, as no work starts. `None`, an exempt client, takes nothing from
+    /// these budgets (D117).
+    ///
+    /// # Errors
+    ///
+    /// The [`Spent`] budget, the network's or the global one.
+    pub fn admit_within(
+        &self,
+        network: Option<Slot>,
+        global: &Self,
+        now: u32,
+    ) -> Result<(), Spent> {
+        if let Some(network) = network
+            && !self.admit(network, now)
+        {
+            return Err(Spent::Network);
+        }
+        if !global.admit(Slot::ONLY, now) {
+            if let Some(network) = network {
+                self.refund(network);
+            }
+            return Err(Spent::Global);
+        }
+        Ok(())
+    }
+
     /// Gives back the unit an [`admit`](Budgets::admit) took, for work that did not start.
     pub fn refund(&self, slot: Slot) {
         self.word(slot)
@@ -279,6 +307,26 @@ impl Budgets {
                 let (last, debt) = unpack(word);
                 pack(last, debt.saturating_add(units).min(floor))
             });
+    }
+}
+
+/// The budget that refused a unit of work in [`Budgets::admit_within`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spent {
+    /// The bucket of the client's network.
+    Network,
+    /// The allowance all networks share.
+    Global,
+}
+
+impl Spent {
+    /// The budget's name in metrics and logs: `client` or `global`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Network => "client",
+            Self::Global => "global",
+        }
     }
 }
 
@@ -362,6 +410,31 @@ mod tests {
         assert!(!bucket.admit(Slot::ONLY, 50));
         assert!(!bucket.admit(Slot::ONLY, 100));
         assert!(bucket.admit(Slot::ONLY, 101));
+    }
+
+    /// D117: the network pays first; a global refusal gives its unit back, and an exempt client pays the global
+    /// allowance alone.
+    #[test]
+    fn the_network_pays_before_the_global_allowance() {
+        let networks = budgets(1, 1);
+        let client = Some(Slot::ONLY);
+        assert_eq!(
+            networks.admit_within(client, &budgets(1, 0), 5),
+            Err(Spent::Global)
+        );
+        let global = budgets(1, 2);
+        assert_eq!(networks.admit_within(client, &global, 5), Ok(()));
+        assert_eq!(
+            networks.admit_within(client, &global, 5),
+            Err(Spent::Network)
+        );
+        assert_eq!(networks.admit_within(None, &global, 5), Ok(()));
+        assert_eq!(networks.admit_within(None, &global, 5), Err(Spent::Global));
+        // The `budget` label of the ODoH and DNSCrypt counters.
+        assert_eq!(
+            [Spent::Network.name(), Spent::Global.name()],
+            ["client", "global"]
+        );
     }
 
     /// A refund gives the unit back, and no more than was taken.
