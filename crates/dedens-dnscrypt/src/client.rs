@@ -87,6 +87,14 @@ impl QueryPadding {
     }
 }
 
+/// The padded plaintext a resumed query over UDP starts at, with its overhead (draft "PQ Query and Response Format").
+const RESUMED_UDP_FLOOR: usize = 256;
+
+/// The `<client-magic>`, the `<ticket-len>` and the ticket that open a resumed query: the head `Resumption` seals after.
+const fn resumed_head_len(ticket_len: usize) -> usize {
+    RESUME_MAGIC.len() + 2 + ticket_len
+}
+
 /// What a ticket of a PQ session is bound to, and the end of the certificate that caps its life.
 #[derive(Debug, Clone, Copy)]
 struct TicketOrigin {
@@ -284,7 +292,7 @@ impl Resumption {
         );
         let ticket_len =
             u16::try_from(self.ticket.len()).map_err(|_| EncryptQueryError::TooLong)?;
-        let mut head = Vec::with_capacity(CLIENT_MAGIC_LEN + 2 + self.ticket.len());
+        let mut head = Vec::with_capacity(resumed_head_len(self.ticket.len()));
         head.extend_from_slice(&RESUME_MAGIC);
         head.extend_from_slice(&ticket_len.to_be_bytes());
         head.extend_from_slice(&self.ticket);
@@ -397,16 +405,82 @@ impl QueryContext {
             .split_at_checked(usize::from(u16::from_be_bytes(*len)))
             .ok_or(ResponseError::Control)?;
         let offer = TicketOffer::parse(control).map_err(|ControlError| ResponseError::Control)?;
-        let resumption = offer.map(|offer| Resumption {
-            ticket: offer.ticket.to_vec(),
-            lifetime: offer.lifetime,
-            secret: pq::resume_secret(
-                &self.shared,
-                *origin.magic.as_bytes(),
-                self.nonce.as_bytes(),
-            ),
-            origin,
-        });
+        // "It MAY ignore tickets that are too large for its supported query size" (draft "Resumption Tickets"): one
+        // whose resumed query, at the 256 bytes a classical UDP query starts at, would not fit the largest packet.
+        let fits = |ticket: &[u8]| {
+            resumed_head_len(ticket.len()) + NONCE_HALF_LEN + TAG_LEN + RESUMED_UDP_FLOOR
+                <= MAX_PACKET_LEN
+        };
+        let resumption = offer
+            .filter(|offer| fits(offer.ticket))
+            .map(|offer| Resumption {
+                ticket: offer.ticket.to_vec(),
+                lifetime: offer.lifetime,
+                secret: pq::resume_secret(
+                    &self.shared,
+                    *origin.magic.as_bytes(),
+                    self.nonce.as_bytes(),
+                ),
+                origin,
+            });
         Ok((message, resumption))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dedens_proto::RecordType;
+
+    use super::*;
+    use crate::EncryptionSystem;
+
+    /// The response to a query of this context, sealed as a resolver does, whose control field offers a ticket of
+    /// `ticket_len` bytes. The one thing no resolver of this workspace makes: it issues tickets of 130 bytes.
+    fn offering(ticket_len: usize) -> Result<Opened, ResponseError> {
+        let question = Question::new("www.example".parse().expect("a name"), RecordType::A);
+        let nonce = ClientNonce::from_bytes([3; NONCE_HALF_LEN]);
+        let shared = SharedKey::new(EncryptionSystem::XWing, Zeroizing::new([5; KEY_LEN]));
+        let context = QueryContext {
+            nonce,
+            id: 9,
+            questions: vec![question.clone().into_owned()],
+            shared: shared.clone(),
+            origin: Some(TicketOrigin {
+                magic: ClientMagic::try_from([1; 8]).expect("a magic"),
+                ts_end: 1_800_000_000,
+            }),
+        };
+        let mut control = b"PQDR\x01".to_vec();
+        control.extend_from_slice(&600_u32.to_be_bytes());
+        control.extend_from_slice(&u16::try_from(ticket_len).expect("a length").to_be_bytes());
+        control.resize(control.len() + ticket_len, 7);
+        let mut plaintext = u16::try_from(control.len())
+            .expect("a length")
+            .to_be_bytes()
+            .to_vec();
+        plaintext.extend_from_slice(&control);
+        plaintext.extend_from_slice(&Message::query(9, question).to_vec().expect("encodes"));
+        let padded = (plaintext.len() + 1).next_multiple_of(BLOCK);
+        padding::pad(&mut plaintext, padded);
+        let mut full_nonce = [0; NONCE_LEN];
+        full_nonce[..NONCE_HALF_LEN].copy_from_slice(nonce.as_bytes());
+        full_nonce[NONCE_HALF_LEN..].fill(4);
+        let tag = secretbox::seal(&shared, &full_nonce, &mut plaintext);
+        let packet = [&RESPONSE_MAGIC[..], &full_nonce, &tag, &plaintext].concat();
+        context.open_response(&packet)
+    }
+
+    /// Draft "Resumption Tickets": a client MAY ignore a ticket too large for its query size, as `dnscrypt-proxy`
+    /// does (`pq.go`) when the resumed query, 256 bytes at least, would not fit the largest packet: the response
+    /// is kept, the ticket is not. The largest ticket that fits is kept.
+    #[test]
+    fn a_ticket_too_large_for_a_resumed_query_is_ignored() {
+        let largest =
+            MAX_PACKET_LEN - RESUMED_UDP_FLOOR - resumed_head_len(0) - NONCE_HALF_LEN - TAG_LEN;
+        let kept = offering(largest).expect("a response");
+        assert_eq!(kept.resumption.expect("kept").ticket().len(), largest);
+        let ignored = offering(largest + 1).expect("a response");
+        assert!(ignored.resumption.is_none());
+        assert!(!ignored.message.is_empty());
     }
 }
