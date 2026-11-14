@@ -21,7 +21,7 @@ use dedens_net::stamp::{DEFAULT_PORT, DnsCrypt, Endpoint, ProviderName, Stamp};
 use dedens_proto::edns::Edns;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Opcode, Record, RecordType, Ttl};
-use dedens_server::{Budget, Budgets, Slot};
+use dedens_server::{Budget, Budgets, Slot, Spent};
 
 use crate::config::{SECRET_LEN, address, provider, read_secret};
 
@@ -98,36 +98,24 @@ impl Decapsulations {
         }
     }
 
-    /// Whether the client at `from` may have a packet decapsulated at second `now`, by the budget that refuses it
-    /// (`"client"` or `"global"`) if not. The network of `from` pays a unit first, then all clients: a refusal by
-    /// the second gives the first back, so a client over the global budget does not spend its network's. `proven` is
+    /// Whether the client at `from` may have a packet decapsulated at second `now`, its network paying a unit, then
+    /// all clients ([`Budgets::admit_within`]). `proven` is
     /// an address the client cannot have spoofed (a connection): an unproven one has a bucket of its own, so a flood
     /// in a victim's name from UDP drains only the victim's unproven bucket (D113). `exempt` is a source on the rate
     /// limit's exempt list: it pays no network unit.
     ///
     /// # Errors
     ///
-    /// The name of the budget that is spent.
+    /// The budget that is spent.
     pub(crate) fn admit(
         &self,
         from: IpAddr,
         proven: bool,
         exempt: bool,
         now: u32,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Spent> {
         let network = (!exempt).then(|| Slot::new(from, proven));
-        if let Some(network) = network
-            && !self.clients.admit(network, now)
-        {
-            return Err("client");
-        }
-        if !self.global.admit(Slot::ONLY, now) {
-            if let Some(network) = network {
-                self.clients.refund(network);
-            }
-            return Err("global");
-        }
-        Ok(())
+        self.clients.admit_within(network, &self.global, now)
     }
 }
 

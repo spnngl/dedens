@@ -882,7 +882,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Validation (S3). `Pipeline::query` passes the source (address, proven bit) and its `now` (the cache's clock,
     D43, monotonic; the validator keeps reading the wall clock for signatures) to `Validating::admit`, which takes
     one unit of the network's share, then one of the global allowance, and gives the first back if the second
-    refuses. `Check::next` charges both with what the validation spent (D106) and sheds when either is in debt:
+    refuses (`Budgets::admit_within`, which ODoH and DNSCrypt call too). `Check::next` charges both with what the validation spent (D106) and sheds when either is in debt:
     SERVFAIL with EDE 14, nothing held, counted `verdict="shed_share"` for the share and `verdict="shed"` for
     the allowance. Cache hits, CD and classes other than IN cost neither, as before. A source on D113's
     `rrl.exempt` list has no share and still spends the allowance. `client_share: {rate, burst}` on the forward
@@ -917,8 +917,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`apps/dedensd/tests/odoh.rs`), `a_client_share_is_set_per_stage_and_reload_keeps_the_keys`
     (`apps/dedensd/src/config/upstream.rs`), `an_odoh_target_has_limits` (`apps/dedensd/src/config/keys.rs`). No
     fuzz target: the key is an address; the ODoH parser has its own. Benches: `serve_shed_share`, `serve_cold`,
-    `serve_warm`, `serve_shed` (`crates/dedens-bench/benches/dnssec.rs`), `budget_admit`, `budget_refuse`,
-    `budget_refuse_one_network`, `decrypt_query_message` (`crates/dedens-bench/benches/odoh.rs`).
+    `serve_warm`, `serve_shed` (`crates/dedens-bench/benches/dnssec.rs`), `budget_admit`, `budget_admit_within`,
+    `budget_refuse`, `budget_refuse_one_network`, `decrypt_query_message` (`crates/dedens-bench/benches/odoh.rs`).
 
 - D118 (amends D22, D54, D56, D57, D116; amended by D120) Blocklist targets, from the audit (S13, S15): a name is no longer reached by a CNAME to
   a blocked one, and a one-label entry no longer blocks a top-level domain unless asked.

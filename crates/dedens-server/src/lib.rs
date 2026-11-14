@@ -34,7 +34,7 @@ mod rrl;
 mod validate;
 
 pub use access::{Access, Denial, Network, NetworkError};
-pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot};
+pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot, Spent};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use forward::{Forward, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream, Warm, Warmth};

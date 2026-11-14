@@ -1071,6 +1071,14 @@ the budget spent, each thread on a network of its own: 7.1 ns and 6.1 ns with 1 
 writes nothing, so the cores do not fight for its line. A refused post costs the target that and its `503`, three orders
 of magnitude below a decapsulation.
 
+`budget_admit_within` is the whole admission, `Budgets::admit_within`: the network's unit, then the global
+allowance's, whose one word all threads share. Written when the three copies of that order (`Validating::admit`,
+`odoh::Service::open`, DNSCrypt's `Decapsulations::admit`) became the one method; measured against the copied code as a
+bench beside it, 4 interleaved rounds of `cargo bench -p dedens-bench --bench odoh -- budget_admit` (Apple M5, macOS
+27.2.1, rustc 1.99.1 (Homebrew), the machine busy with two other builds, so the samples of 100 iterations sit at the timer's 41 ns
+floor and only those of 12 800 or more count): 14.8 ns median with 1 thread against 14.0 ns for the copy, 14.7 ns with 4
+against 35.7-59.6 ns. Fat LTO inlines the method; the difference is the machine's noise.
+
 A unit of D77 is about 10 µs, so the defaults (`client_share` 1000 a second, burst 2000; `odoh.client_budget` the same) let a
 network spend 1 % of a core on validations (about 80 cold ones a second, 160 in a burst) and 3.7 % of a core on
 decapsulations (1000 a second, 2000 in a burst); the global `odoh.budget` (10 000 a second, burst 20 000) caps all clients at

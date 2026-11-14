@@ -148,11 +148,12 @@ impl Keys {
                 .rate_limit()
                 .is_some_and(|limit| limit.exempts(from));
             let proven = carrier == Carrier::Tcp;
-            if let Err(budget) =
+            if let Err(spent) =
                 self.service
                     .decapsulations()
                     .admit(from, proven, exempt, thread.now())
             {
+                let budget = spent.name();
                 metrics::counter!(LIMITED, "budget" => budget).increment(1);
                 tracing::debug!(%from, budget, "DNSCrypt decapsulation budget spent: dropped");
                 return Open::Drop;

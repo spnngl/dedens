@@ -170,6 +170,17 @@ fn budget_admit(bencher: Bencher<'_, '_>) {
     bencher.bench(|| assert!(budgets.admit(Slot::new(black_box(client_of_thread()), true), 0)));
 }
 
+/// The whole admission of a post (D117): a unit of the client's network, then one of the global allowance, whose one
+/// bucket all threads share. Each thread has a network of its own.
+#[divan::bench(threads = [1, 4])]
+fn budget_admit_within(bencher: Bencher<'_, '_>) {
+    let (clients, global) = (budgets(MAX_BUDGET), budgets(MAX_BUDGET));
+    bencher.bench(|| {
+        let network = Some(Slot::new(black_box(client_of_thread()), true));
+        assert!(clients.admit_within(network, &global, 0).is_ok());
+    });
+}
+
 /// The same for a client that spent its budget: what a flood of posts costs the target instead of a decapsulation. Each
 /// thread has a network of its own.
 #[divan::bench(threads = [1, 4])]
