@@ -5,10 +5,10 @@ use std::fmt;
 
 use rand_core::CryptoRng;
 use x_wing::{
-    Decapsulate as _, DecapsulationKey, Decapsulator as _, Encapsulate as _, EncapsulationKey,
-    KeyExport as _,
+    Decapsulate as _, DecapsulationKey, Decapsulator as _, Encapsulate as _, EncapsulationKey, Key,
+    KeyExport as _, KeyInit as _,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::InvalidXWingKey;
 use crate::key::KEY_LEN;
@@ -52,8 +52,16 @@ impl XWingPublicKey {
         rng: &mut impl CryptoRng,
     ) -> (Vec<u8>, Zeroizing<[u8; KEY_LEN]>) {
         let (ciphertext, secret) = self.key.encapsulate_with_rng(rng);
-        (ciphertext.to_vec(), Zeroizing::new(secret.into()))
+        (ciphertext.to_vec(), wiped(secret))
     }
+}
+
+/// The 32 bytes of a secret the crate returned, with the crate's copy wiped when dropped.
+fn wiped(secret: impl AsRef<[u8]> + Zeroize) -> Zeroizing<[u8; KEY_LEN]> {
+    let secret = Zeroizing::new(secret);
+    let mut bytes = Zeroizing::new([0; KEY_LEN]);
+    bytes.copy_from_slice(secret.as_ref());
+    bytes
 }
 
 impl fmt::Debug for XWingPublicKey {
@@ -67,19 +75,24 @@ impl fmt::Debug for XWingPublicKey {
 pub struct XWingSecretKey(Box<DecapsulationKey>);
 
 impl XWingSecretKey {
-    /// The key of the 32-byte seed `seed`.
+    /// The key of the 32-byte seed `seed`, which is wiped here (a copy the caller made is the caller's to wipe).
     #[must_use]
-    pub fn from_seed(seed: [u8; KEY_LEN]) -> Self {
-        let seed = Zeroizing::new(seed);
-        Self(Box::new(DecapsulationKey::from(*seed)))
+    pub fn from_seed(mut seed: [u8; KEY_LEN]) -> Self {
+        let key = Zeroizing::new(Key::<DecapsulationKey>::from(seed));
+        seed.zeroize();
+        Self::from_key(&key)
     }
 
-    /// A fresh key from `rng`.
+    /// A fresh key from `rng`; the seed exists only in the zeroizing buffer.
     #[must_use]
     pub fn generate(rng: &mut impl CryptoRng) -> Self {
-        let mut seed = Zeroizing::new([0; KEY_LEN]);
-        rng.fill_bytes(seed.as_mut());
-        Self::from_seed(*seed)
+        let mut key = Zeroizing::new(Key::<DecapsulationKey>::default());
+        rng.fill_bytes(key.as_mut());
+        Self::from_key(&key)
+    }
+
+    fn from_key(key: &Key<DecapsulationKey>) -> Self {
+        Self(Box::new(DecapsulationKey::new(key)))
     }
 
     /// The encapsulation key of this key.
@@ -102,7 +115,7 @@ impl XWingSecretKey {
         ciphertext: &[u8; XWING_CIPHERTEXT_LEN],
     ) -> Zeroizing<[u8; KEY_LEN]> {
         let ciphertext = x_wing::Ciphertext::from(*ciphertext);
-        Zeroizing::new(self.0.decapsulate(&ciphertext).into())
+        wiped(self.0.decapsulate(&ciphertext))
     }
 
     /// Whether `public` is the encapsulation key of this key.
