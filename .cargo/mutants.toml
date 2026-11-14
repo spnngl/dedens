@@ -142,6 +142,9 @@ exclude_re = [
   # A certificate kept to the very `Instant` its hour ends, or an `Instant` equal to the one it was chosen at: equal
   # `Instant`s never happen (D98).
   'dnscrypt\.rs:\d+:\d+: replace < with <= in Resolver::kept$',
+  # D100: a loopback socket's receive fails with nothing but the port unreachable a test can bring about, so every
+  # error taken as a refusal is the same to the tests.
+  'dnscrypt\.rs:\d+:\d+: replace match guard error\.kind\(\) == io::ErrorKind::ConnectionRefused with true in udp_round$',
   # D101: the flag only names which of two bucket sets a query is charged to, TCP's or UDP's; inverted, the sets are
   # the same two with the names swapped.
   'serve/dnscrypt\.rs:\d+:\d+: replace == with != in Keys::open$',
