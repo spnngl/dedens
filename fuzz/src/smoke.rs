@@ -6,6 +6,7 @@
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use crate::{Entry, TARGETS};
@@ -272,23 +273,21 @@ fn run(target: &str, entry: Entry, label: &str, input: &[u8]) {
     );
 }
 
-#[test]
-fn every_target_survives_seeds_and_mutations() {
-    let seeds = seeds();
-    assert!(!seeds.is_empty(), "no seeds, run just capture");
-    for (target, entry) in TARGETS {
-        let started = Instant::now();
-        for (name, seed) in &seeds {
-            for (label, input) in variants(name, seed) {
-                run(target, *entry, &label, &input);
-            }
+/// Every seed, its variants and the edge cases through `entry`: the test `survives::<target>` of each target.
+pub(crate) fn survives(target: &str, entry: Entry) {
+    static SEEDS: LazyLock<Vec<(String, Vec<u8>)>> = LazyLock::new(seeds);
+    assert!(!SEEDS.is_empty(), "no seeds, run just capture");
+    let started = Instant::now();
+    for (name, seed) in SEEDS.iter() {
+        for (label, input) in variants(name, seed) {
+            run(target, entry, &label, &input);
         }
-        for (label, input) in edge_cases() {
-            run(target, *entry, &label, &input);
-        }
-        // Seen with `--nocapture`: a target whose time grows is a cost to look at before a fuzz run is.
-        println!("{target}: {:?}", started.elapsed());
     }
+    for (label, input) in edge_cases() {
+        run(target, entry, &label, &input);
+    }
+    // Seen with `--nocapture`: a target whose time grows is a cost to look at before a fuzz run is.
+    println!("{target}: {:?}", started.elapsed());
 }
 
 #[test]

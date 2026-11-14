@@ -811,8 +811,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Fuzz targets: the PQ exchange joins the existing six (`dnscrypt_decrypt`, `dnscrypt_unpad`, `dnscrypt_tamper_*`,
     `dnscrypt_encrypt_response`, `parse_dnscrypt_certificate`), and two are new, `dnscrypt_ticket` (arbitrary bytes as a
     resumed query are refused; the client's own is read, with one bit changed is not) and `dnscrypt_control` (the
-    control-field parser; issued tickets read back as made). The fuzz crate builds `ml-kem` and its neighbours optimized in
-    the dev profile, as a decapsulation is slow unoptimized.
+    control-field parser; issued tickets read back as made). The fuzz crate builds every dependency optimized in the dev
+    profile, as a decapsulation is slow unoptimized (as is generic cipher code instantiated in `dedens-dnscrypt`).
   - Bench (`docs/benchmarks.md`): a PQ query costs the client 68 µs and the resolver 101 µs, against 40 and 21 µs for
     X25519 (one run, on a loaded machine); a resumed query 1.1 and 1.7 µs. The 1220-byte query and the 1320-byte certificate
     are the price on the wire; a resumed query is 424 bytes and its response 112 without a ticket.

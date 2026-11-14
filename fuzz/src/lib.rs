@@ -44,43 +44,59 @@ pub use server::{cache_insert, parse_network, serve_query};
 /// A fuzz entry point.
 pub type Entry = fn(&[u8]);
 
-/// Every target by name; `fuzz_targets/<name>.rs` and this list stay in step (checked by the smoke test).
-pub const TARGETS: &[(&str, Entry)] = &[
-    ("decode_message", decode_message),
-    ("read_query", read_query),
-    ("parse_zone", parse_zone),
-    ("cache_insert", cache_insert),
-    ("serve_query", serve_query),
-    ("parse_name", parse_name),
-    ("parse_network", parse_network),
-    ("differential_hickory", differential_hickory),
-    ("parse_query_file", parse_query_file),
-    ("parse_resolv_conf", parse_resolv_conf),
-    ("parse_lists", parse_lists),
-    ("parse_doh_template", parse_doh_template),
-    ("parse_dns_stamp", parse_dns_stamp),
-    ("server_request", server_request),
-    ("read_doh_response", read_doh_response),
-    ("dnssec_crypto", dnssec_crypto),
-    ("parse_odoh_configs", parse_odoh_configs),
-    ("parse_odoh_message", parse_odoh_message),
-    ("odoh_decrypt", odoh_decrypt),
-    ("read_odoh_http", read_odoh_http),
-    ("parse_dnscrypt_certificate", parse_dnscrypt_certificate),
-    ("dnscrypt_decrypt", dnscrypt_decrypt),
-    ("dnscrypt_encrypt_response", dnscrypt_encrypt_response),
-    ("dnscrypt_unpad", dnscrypt_unpad),
-    ("dnscrypt_tamper_query", dnscrypt_tamper_query),
-    ("dnscrypt_tamper_response", dnscrypt_tamper_response),
-    ("dnscrypt_ticket", dnscrypt_ticket),
-    ("dnscrypt_control", dnscrypt_control),
-    ("rrsig_verify", rrsig_verify),
-    ("denial", denial),
-    ("validate", validate),
-    ("parse_trust_anchors", parse_trust_anchors),
-    ("parse_coap", parse_coap),
-    ("coap_doc", coap_doc),
-    ("parse_link_format", parse_link_format),
-    ("parse_command_line", parse_command_line),
-    ("read_config", read_config),
-];
+/// Every target, one name each: [`TARGETS`] lists them for `fuzz_targets/` and `[[bin]]` to agree with, and the smoke
+/// test, `survives::<name>`, replays the seeds through each on its own thread, so a slow target is seen by name.
+macro_rules! targets {
+    ($($name:ident),* $(,)?) => {
+        /// Every target by name; `fuzz_targets/<name>.rs` and this list stay in step (checked by the smoke test).
+        pub const TARGETS: &[(&str, Entry)] = &[$((stringify!($name), $name)),*];
+
+        #[cfg(test)]
+        mod survives {
+            $(#[test]
+            fn $name() {
+                crate::smoke::survives(stringify!($name), crate::$name);
+            })*
+        }
+    };
+}
+
+targets! {
+    decode_message,
+    read_query,
+    parse_zone,
+    cache_insert,
+    serve_query,
+    parse_name,
+    parse_network,
+    differential_hickory,
+    parse_query_file,
+    parse_resolv_conf,
+    parse_lists,
+    parse_doh_template,
+    parse_dns_stamp,
+    server_request,
+    read_doh_response,
+    dnssec_crypto,
+    parse_odoh_configs,
+    parse_odoh_message,
+    odoh_decrypt,
+    read_odoh_http,
+    parse_dnscrypt_certificate,
+    dnscrypt_decrypt,
+    dnscrypt_encrypt_response,
+    dnscrypt_unpad,
+    dnscrypt_tamper_query,
+    dnscrypt_tamper_response,
+    dnscrypt_ticket,
+    dnscrypt_control,
+    rrsig_verify,
+    denial,
+    validate,
+    parse_trust_anchors,
+    parse_coap,
+    coap_doc,
+    parse_link_format,
+    parse_command_line,
+    read_config,
+}
