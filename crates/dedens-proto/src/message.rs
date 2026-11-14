@@ -226,7 +226,7 @@ impl<'a> Message<'a> {
     #[must_use]
     pub fn rcode(&self) -> Rcode {
         let ext = self.edns.as_ref().map_or(0, |e| e.ext_rcode);
-        Rcode((u16::from(ext) << 4) | (self.header.rcode.0 & 0x0F))
+        Rcode::extended(self.header.rcode, ext)
     }
 
     /// The zone a response refers the query down to (RFC 1034 §4.3.2 step 3b): the owner of its first NS record
