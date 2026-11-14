@@ -141,7 +141,8 @@ impl TicketKeys {
     /// # Errors
     ///
     /// [`QueryError`] saying why the resolver drops the packet without a response: it is cut short, its ticket was
-    /// sealed under no key this has or was changed, or the ticket expired at `now`.
+    /// sealed under no key this has or was changed, or the ticket expires at or before `now` (the sealed expiry is the first second the ticket is
+    /// refused, as `encrypted-dns-server` reads it).
     pub fn open<'p>(&self, packet: &'p [u8], now: u64) -> Result<ResumedQuery<'p>, QueryError> {
         if packet.len() > MAX_PACKET_LEN {
             return Err(QueryError::TooLong);
@@ -189,7 +190,7 @@ impl TicketKeys {
         let (ts_end, rest) = rest.split_first_chunk().ok_or(QueryError::Ticket)?;
         let (expiry, extensions_hash) = rest.split_first_chunk().ok_or(QueryError::Ticket)?;
         let expiry = u32::from_be_bytes(*expiry);
-        if now > u64::from(expiry) {
+        if now >= u64::from(expiry) {
             return Err(QueryError::TicketExpired);
         }
         Ok(ResumedQuery {

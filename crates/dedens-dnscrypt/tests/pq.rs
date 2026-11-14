@@ -466,13 +466,16 @@ fn negative_corrupted_resumed_ciphertext_and_under_padding() {
 fn negative_expired_or_rotated_ticket() {
     let (packet, _) = resumed(&resumption(), QueryPadding::to(256));
     assert!(
-        ticket_keys().open(&packet, 0x6800_0258).is_ok(),
+        ticket_keys().open(&packet, 0x6800_0257).is_ok(),
         "the last second"
     );
-    assert_eq!(
-        ticket_keys().open(&packet, 0x6800_0259).err(),
-        Some(QueryError::TicketExpired)
-    );
+    for now in [0x6800_0258, 0x6800_0259] {
+        assert_eq!(
+            ticket_keys().open(&packet, now).err(),
+            Some(QueryError::TicketExpired),
+            "a ticket is refused from its expiry on, at {now:#x}"
+        );
+    }
 
     let rotated = TicketKeys::new(TicketKey::new([0, 0, 0, 2], array(&seq(0xa0, 32))), None);
     assert_eq!(
