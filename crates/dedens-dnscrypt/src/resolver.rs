@@ -354,7 +354,7 @@ impl ResponseContext {
     /// # Errors
     ///
     /// [`EncryptResponseError`] when `response` has to be truncated and is no DNS message, or when the packet has
-    /// no room for even the header and the question.
+    /// no room for even the header and the question, or when the control field is longer than 65535 bytes.
     pub fn encrypt_response(
         &self,
         response: &[u8],
@@ -402,7 +402,8 @@ impl ResponseContext {
         // `<control-len> <control>` goes before the response, in a PQ response only.
         let mut plaintext = Vec::new();
         if self.is_pq() {
-            let len = u16::try_from(control.len()).unwrap_or(0);
+            let len = u16::try_from(control.len())
+                .map_err(|_| EncryptResponseError::ControlTooLong(control.len()))?;
             plaintext.extend_from_slice(&len.to_be_bytes());
             plaintext.extend_from_slice(&control);
         }

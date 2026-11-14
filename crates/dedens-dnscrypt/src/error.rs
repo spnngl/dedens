@@ -189,4 +189,7 @@ pub enum EncryptResponseError {
     /// Not even the header, the question and the OPT record fit.
     #[error("no room for even the header and the question: {0}")]
     NoRoom(#[from] EncodeError),
+    /// The control field of a PQ response is longer than its two-byte length can say.
+    #[error("control field of {0} bytes does not fit its 16-bit length")]
+    ControlTooLong(usize),
 }
