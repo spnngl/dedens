@@ -311,7 +311,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     thousandfold in memory. Rejected: keeping gzip and capping the decoded body (`take(MAX + 1)` on the decoder).
     Gzip saves bandwidth only, about 4× on a list; without it a 36 MB list within the 30 s timeout needs about
     10 Mbit/s, and a bounded decoder is code to keep. Revisit if a list server needs it. `ureq`'s limit is
-    exclusive: a body of exactly 256 MiB is refused.
+    inclusive since 3.5.2: a body of exactly 256 MiB is saved, one byte more refused.
   - Retry: a pipeline reload that fails after a list was saved is retried. The copy and its `ETag` are saved
     before the reload (D64), so the next fetch is a 304 and nothing else would say the pipeline is behind. The reload
     thread keeps a `pending` flag, set when a fetch changed a list and cleared by a reload that serves (a SIGHUP
@@ -639,7 +639,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `just bench-dnsperf BASE two-sockets` (one core, two UDP ports, the first flooded, the second asked at 2000
     queries/s, `docs/benchmarks.md`) shows no loss and the same latency before and after (0.3 ms on average, 10-13 ms
     at most): the flood never emptied the pool, so it does not reach the case; the unit tests do.
-  - A runtime is never dropped (`ManuallyDrop` in the thread's closure, `main.rs`): dropping one on a thread that
+  - A runtime is never dropped (`ManuallyDrop` in the thread's closure, `lib.rs`): dropping one on a thread that
     panicked or failed closes the ring and frees the buffers of operations the kernel may still write to, while the
     other threads serve on. The process ends right after the first thread does, and the kernel then closes the
     ring. No `unsafe`: `ManuallyDrop` is safe, a leak being so.
@@ -1099,7 +1099,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     nothing else is tested; elsewhere either key is refused when the file is read, `validate` included. The target is
     resolved before any socket is bound, so a name that does not exist, a `user` or a group that is root, or a numeric
     uid with no passwd entry and no `group` ends the start at once.
-  - Order (`src/privileges/mod.rs`, called from `src/main.rs`): after the sockets are bound and the keys, lists and
+  - Order (`src/privileges/mod.rs`, called from `src/lib.rs`): after the sockets are bound and the keys, lists and
     certificates of the start are read, before the first thread starts (a second thread is refused: `NO_NEW_PRIVS` is
     inherited by the threads started after it): `initgroups` (the groups that list the user, plus `group`; none for
     a numeric id with no entry), `setgid`, `setuid`. Then the real, effective and saved ids are read back, no group
