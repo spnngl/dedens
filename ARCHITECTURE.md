@@ -58,3 +58,5 @@ Planned: `dedens-resolver`.
   formats, checked by `just blocklists` (D87).
 - [`docs/rfc/coverage.md`](docs/rfc/coverage.md): each RFC's status, code and tests; the RFC texts are in
   `docs/rfc/archive/`, the list in `docs/rfc/list.md`.
+- [`docs/comparison/`](docs/comparison/README.md): dedens against other DNS servers, feature by feature, each cell
+  citing code; TelltaleDNS first.
