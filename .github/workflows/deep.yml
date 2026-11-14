@@ -116,9 +116,12 @@ jobs:
           just-version: "1.59.0"
       # The stable toolchain alone: the scenarios need no nightly.
       - run: rustup toolchain install
+      # Every family builds the same test binary: one cache, saved by the first job. A cache per family put 3 GB in
+      # the repository's 10 GB for each pull request, evicting main's, which every check job starts from.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ matrix.test }}
+          shared-key: sim
+          save-if: ${{ strategy.job-index == 0 }}
       - run: just sim 100 "$TEST"
         env:
           TEST: ${{ matrix.test }}
