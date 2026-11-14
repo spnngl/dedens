@@ -41,7 +41,10 @@ impl TicketKey {
         let mut key = Zeroizing::new([0; KEY_LEN]);
         rng.fill_bytes(&mut id);
         rng.fill_bytes(key.as_mut());
-        Self::new(id, *key)
+        Self {
+            id,
+            key: SharedKey::new(EncryptionSystem::XChaCha20Poly1305, key),
+        }
     }
 }
 
