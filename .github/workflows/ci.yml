@@ -64,12 +64,14 @@ jobs:
         env:
           # `.config/nextest.toml`: every failure, not the first alone.
           NEXTEST_PROFILE: ci
-      # Root and a Linux kernel: dedensd drops to `nobody` after binding :53, and nothing else proves it (D122). `sudo -E`
-      # keeps HOME, so rustup finds its toolchains; the PATH is passed through `env`, which `sudo` would reset. The
-      # gate's packages and features reuse its build: `-p dedensd` alone would rebuild, as root, in the cached target.
+      # Root and a Linux kernel: dedensd drops to `nobody` after binding :53, and nothing else proves it (D122). Cargo
+      # runs as the runner and reuses the gate's build (its packages and features: `-p dedensd` alone would rebuild);
+      # only the test binaries run through `sudo`. Cargo itself under `sudo` gets root's HOME (Ubuntu's sudo-rs ignores
+      # `-E`): rustup installs the toolchain again and the whole workspace is rebuilt. DEDENS_PRIVILEGES_REQUIRED fails a
+      # test that would skip, not being root.
       - name: Privileges (root)
         if: runner.os == 'Linux'
-        run: sudo -E env "PATH=$PATH" cargo test --workspace --all-features --test tests -- --ignored 'privileges::'
+        run: cargo test --config "target.'cfg(all())'.runner = ['sudo', 'env', 'DEDENS_PRIVILEGES_REQUIRED=1']" --workspace --all-features --test tests -- --ignored 'privileges::'
 
   # The static musl binaries we ship (D151): the whole test suite on each architecture's musl target, natively in a
   # `rust:alpine` container of the runner's architecture (`just musl`), then dedensd's root-only `privileges` tests,
@@ -100,6 +102,7 @@ jobs:
         run: just musl "$TARGET"
       - env:
           TARGET: ${{ matrix.target }}
+          DEDENS_PRIVILEGES_REQUIRED: 1
         run: just musl "$TARGET" test -p dedensd --test tests -- --ignored 'privileges::'
 
   # Build matrix and dependency checks: platform-independent, Linux only.
