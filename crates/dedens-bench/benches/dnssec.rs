@@ -2,17 +2,17 @@
 //! tests verify (their keys and signatures are in `dedens_testkit::dnssec`), the DS digests and the NSEC3
 //! hash. The numbers size `Budget`'s defaults (`docs/benchmarks.md`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
-use dedens_dnssec::crypto::{Budget, ds_digest, nsec3_hash, verify};
+use dedens_dnssec::crypto::{Budget, ds_digest, key_tag, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::{Limits, Next, TrustAnchors, Validator, Verdict};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{
-    DigestType, Message, Name, Nsec3HashAlgorithm, RecordType, SecAlgorithm, Transport,
+    DigestType, Message, Name, Nsec3HashAlgorithm, Record, RecordType, SecAlgorithm, Transport,
 };
 use dedens_server::{
     Allowance, Budget as Share, Budgets, DEFAULT_SHARE, Forward, MAX_BUDGET, Pipeline, Stage, Step,
@@ -256,6 +256,75 @@ fn ds(bencher: divan::Bencher<'_, '_>, digest: DigestType) {
     let rdata = dnskey_rdata(256, 5, RFC4035_ZSK);
     bencher.bench_local(|| {
         ds_digest(digest, black_box(&owner), black_box(&rdata)).expect("supported")
+    });
+}
+
+/// The `RRset` of `rtype` at `example.` of the RDATA `rdatas`, TTL 3600, decoded from a message's answer section.
+fn example_rrset(rtype: RecordType, rdatas: &[Vec<u8>]) -> RrSet<'static> {
+    let mut wire = vec![0; 6];
+    wire.extend(
+        u16::try_from(rdatas.len())
+            .expect("a few records")
+            .to_be_bytes(),
+    );
+    wire.extend([0; 4]);
+    for rdata in rdatas {
+        wire.extend(canonical_name("example."));
+        wire.extend(u16::from(rtype).to_be_bytes());
+        wire.extend([0, 1, 0, 0, 0x0e, 0x10]);
+        wire.extend(
+            u16::try_from(rdata.len())
+                .expect("a short RDATA")
+                .to_be_bytes(),
+        );
+        wire.extend(rdata);
+    }
+    let message = Message::decode(&wire).expect("a message").message;
+    let records: Vec<_> = message.answer.into_iter().map(Record::into_owned).collect();
+    RrSet::group(&records).pop().expect("one RRset")
+}
+
+/// `trusted_keys` on a DNSKEY `RRset` of `count` keys of one tag, each with a SHA-256 and a SHA-384 DS, and no
+/// signature: the case of the DS digests in `KeyTrap` (D73), one digest per key and digest type.
+#[divan::bench(args = [8, 64])]
+fn trusted_keys_one_tag(bencher: divan::Bencher<'_, '_>, count: usize) {
+    let first = dnskey_rdata(257, 5, RFC4035_ZSK);
+    let tag = key_tag(&first);
+    // Two bytes at distances of two swapped leave the sum of the key tag as it is (RFC 4034 Appendix B).
+    let keys: Vec<Vec<u8>> = (4..first.len() - 2)
+        .map(|at| {
+            let mut key = first.clone();
+            key.swap(at, at + 2);
+            key
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(count)
+        .collect();
+    assert_eq!(keys.len(), count);
+    assert!(keys.iter().all(|key| key_tag(key) == tag));
+    let owner = dns("example.");
+    let ds: Vec<Vec<u8>> = keys
+        .iter()
+        .flat_map(|key| {
+            [DigestType::SHA256, DigestType::SHA384].map(|digest| {
+                let mut rdata = tag.to_be_bytes().to_vec();
+                rdata.extend([5, digest.0]);
+                rdata.extend(ds_digest(digest, &owner, key).expect("supported").as_ref());
+                rdata
+            })
+        })
+        .collect();
+    let keys = example_rrset(RecordType::DNSKEY, &keys);
+    let ds = example_rrset(RecordType::DS, &ds);
+    bencher.bench_local(|| {
+        rrsig::trusted_keys(
+            black_box(&keys),
+            &[],
+            black_box(&ds),
+            0,
+            &mut Budget::default(),
+        )
     });
 }
 
