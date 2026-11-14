@@ -48,6 +48,18 @@ fn a_reload_serves_the_new_configuration() {
     );
 }
 
+/// D55: what takes a restart is warned about and kept, the rest of the reload served: here the sockets.
+#[test]
+fn a_reload_keeps_the_sockets_and_warns_of_a_new_listen() {
+    let mut server = Server::configured(|listen| hosts(listen, "192.0.2.1"));
+    // The discard port, never bound: the reload must not try.
+    std::fs::write(&server.config, hosts("127.0.0.1:9", "192.0.2.2")).expect("rewritten");
+    server.hang_up();
+    assert!(server.event("changes to `listen` take a restart").is_some());
+    assert!(server.event("reloaded").is_some());
+    assert_eq!(addresses(&server), ["192.0.2.2".parse::<IpAddr>().unwrap()]);
+}
+
 #[test]
 fn a_configuration_that_does_not_read_leaves_the_running_one() {
     let mut server = Server::configured(|listen| hosts(listen, "192.0.2.1"));
