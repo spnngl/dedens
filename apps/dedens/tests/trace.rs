@@ -1,6 +1,6 @@
 //! `+trace`: the referrals followed from the roots without recursion (RFC 1034 §4.3.2).
 
-use dedens_proto::Flags;
+use dedens_proto::{Flags, Record};
 use dedens_testkit::responder::Responder;
 use dedens_testkit::{captured, message};
 use predicates::prelude::*;
@@ -78,6 +78,30 @@ fn trace_fails_on_a_response_that_leads_nowhere() {
         .stdout
         .clone();
     assert_eq!(String::from_utf8_lossy(&out).matches("NOERROR").count(), 1);
+}
+
+/// The referral of `example.com` from `com.` (the capture `referral_com`), its one glue record `hera.ns.cloudflare.com`
+/// at `ip`.
+fn referral_to(ip: &str) -> Vec<u8> {
+    let mut referral = message(&captured("referral_com"));
+    let glue = format!("hera.ns.cloudflare.com. 172800 IN A {ip}");
+    referral.additional = vec![glue.parse::<Record<'static>>().expect("a record")];
+    referral.to_vec().expect("the message fits")
+}
+
+/// `-p` is the port of every server the trace finds, as dig's (D40): the glue of a referral is asked on it.
+#[test]
+fn the_port_goes_to_every_server_of_the_trace() {
+    let root = Responder::start_with(&[], &[referral_to("127.0.0.1")]);
+    let server = Responder::start(&["a"]);
+    let port = server.addr.port().to_string();
+    trace(
+        &[&root],
+        &["example.com", "-p", &port, "+tries=1", "+time=100ms"],
+    )
+    .success()
+    .stdout(contains("example.com. A  NOERROR"));
+    assert_eq!((root.queries().len(), server.queries().len()), (1, 1));
 }
 
 /// A name server looked up for want of glue takes only the addresses its name owns, or the end of its CNAME chain:

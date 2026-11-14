@@ -35,8 +35,8 @@ pub(crate) struct Cli {
     /// first `nameserver` of /etc/resolv.conf.
     #[arg(long, value_name = "SERVER", value_parser = NonEmptyStringValueParser::new())]
     server: Vec<String>,
-    /// The port of a server given without one, a stamp having its own. Default: 443 over HTTPS, 5683 over CoAP, 853
-    /// over TLS or QUIC, else 53.
+    /// The port of a server given without one, a stamp having its own; with `+trace`, of every server asked, as dig.
+    /// Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53.
     #[arg(short, long, value_name = "PORT")]
     pub(crate) port: Option<u16>,
     /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.

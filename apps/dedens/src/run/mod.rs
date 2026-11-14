@@ -6,7 +6,6 @@ mod server;
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Write};
-use std::net::SocketAddr;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -37,7 +36,7 @@ use self::server::{resolv_conf, server, servers};
 use crate::args::{self, Cli};
 use crate::idn;
 use crate::output::{self, Format, Printing};
-use crate::trace::{self, Trail};
+use crate::trace::{self, Roots, Trail};
 use crate::validate::{Judge, Judges};
 
 /// The queries in flight at most: each holds a socket.
@@ -63,7 +62,7 @@ enum Route {
     /// To each of these servers, side by side; never empty, without duplicates.
     Servers(Vec<Endpoint>),
     /// From these root servers down the referrals (`+trace`).
-    Trace(Rc<[SocketAddr]>),
+    Trace(Rc<Roots>),
 }
 
 /// A server of the command line or of a query file.
@@ -332,21 +331,22 @@ fn show(
 }
 
 /// The root servers of `+trace` from `DEDENS_ROOTS`, addresses with ports separated by commas (for tests); else
-/// the root hints.
-fn roots() -> anyhow::Result<Rc<[SocketAddr]>> {
+/// the root hints on `port`. The servers the referrals lead to are asked on `port`.
+fn roots(port: u16) -> anyhow::Result<Rc<Roots>> {
     let Some(text) = std::env::var_os("DEDENS_ROOTS") else {
-        return Ok(trace::root_hints().into());
+        return Ok(Rc::new(Roots::hints(port)));
     };
     let text = text.to_string_lossy();
-    let roots = text.split(',').map(str::parse).collect::<Result<_, _>>();
-    roots.with_context(|| format!("DEDENS_ROOTS={text}"))
+    let servers = text.split(',').map(str::parse).collect::<Result<_, _>>();
+    let servers = servers.with_context(|| format!("DEDENS_ROOTS={text}"))?;
+    Ok(Rc::new(Roots { servers, port }))
 }
 
 /// Where one task sends a query.
 enum Target {
     Server(Endpoint),
     /// The root servers of `+trace`.
-    Trace(Rc<[SocketAddr]>),
+    Trace(Rc<Roots>),
 }
 
 /// Asks `job` of a server `times` in a row (see [`repeat`]), or traces it from the roots.
@@ -664,7 +664,7 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         .then(resolv_conf)
         .transpose()?;
     let route = match servers(cli, conf.as_ref(), &cli.options)? {
-        _ if cli.trace => Route::Trace(roots()?),
+        _ if cli.trace => Route::Trace(roots(cli.port.unwrap_or(53))?),
         servers if servers.is_empty() => {
             Route::Servers(vec![server(None, conf.as_ref(), cli.port, &cli.options)?])
         }
@@ -776,6 +776,8 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use super::*;
 
     /// D177: each transport forced, and each path, names a server apart from the others at its address.
