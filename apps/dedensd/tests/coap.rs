@@ -210,8 +210,9 @@ fn s4_3_1_a_request_that_is_no_query_gets_an_error_code() {
             Code::REQUEST_ENTITY_TOO_LARGE,
         ),
     ];
-    for (name, change, code) in cases {
-        let mut request = fetch(9, &query);
+    // A message ID each: a client's socket may get the port of an earlier one, whose ID the server keeps (§4.5).
+    for (id, (name, change, code)) in (9..).zip(cases) {
+        let mut request = fetch(id, &query);
         change(&mut request);
         let response = ask(server.addr, &request);
         assert_eq!(response.code, code, "{name}");
@@ -671,7 +672,8 @@ fn s3_1_the_well_known_core_lists_the_resource() {
 fn s3_1_the_filter_on_rt_keeps_or_empties_the_list() {
     let upstream = Responder::start(&["a"]);
     let server = serving(upstream.addr);
-    for (queries, listed) in [
+    // A message ID each, as in `s4_3_1_a_request_that_is_no_query_gets_an_error_code`.
+    for (id, (queries, listed)) in (1..).zip([
         (vec![], true),
         (vec!["rt=core.dns"], true),
         (vec!["rt=core.*"], true),
@@ -680,8 +682,8 @@ fn s3_1_the_filter_on_rt_keeps_or_empties_the_list() {
         (vec!["rt=core.sen"], false),
         (vec!["rt=core.dns2"], false),
         (vec!["rt=core.dns", "rt=other"], false),
-    ] {
-        let response = ask(server.addr, &discover(1, &queries));
+    ]) {
+        let response = ask(server.addr, &discover(id, &queries));
         assert_eq!(response.code, Code::CONTENT, "{queries:?}");
         assert_eq!(!response.payload.is_empty(), listed, "{queries:?}");
     }
@@ -715,8 +717,8 @@ fn s3_1_a_discovery_request_that_cannot_be_served_gets_an_error_code() {
             Code::BAD_OPTION,
         ),
     ];
-    for (what, change, code) in cases {
-        let mut request = discover(2, &[]);
+    for (id, (what, change, code)) in (10..).zip(cases) {
+        let mut request = discover(id, &[]);
         change(&mut request);
         assert_eq!(ask(server.addr, &request).code, code, "{what}");
     }
