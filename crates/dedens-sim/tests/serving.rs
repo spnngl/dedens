@@ -217,6 +217,17 @@ fn a_client_cut_off_from_the_resolver_times_out_while_another_is_served() {
 fn a_bounced_resolver_answers_the_clients_second_try() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new().upstream(slow_a()).dedensd().build(seed);
+        // The default links take up to 100 ms: a query still on its way at the bounce reaches the new resolver,
+        // which answers it at once (`tests/crash.rs` has the seed that caught it). Ten ms keep it ahead of the bounce.
+        world.fault(
+            Duration::ZERO,
+            Fault::Latency {
+                a: Node::Client(0),
+                b: Node::Resolver,
+                min: 10 * MS,
+                max: 10 * MS,
+            },
+        );
         let at = world.pick(100 * MS, 800 * MS);
         world.fault(at, Fault::Bounce(Server::Resolver));
         let upstream = world.upstreams[0].ip();
