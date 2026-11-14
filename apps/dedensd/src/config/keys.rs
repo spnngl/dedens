@@ -103,9 +103,9 @@ pub(super) fn section(
     )))
 }
 
-/// Checks the private key file `file`, opened from `path` for `setting` (`tls` or `odoh`), on the file itself, so that
-/// no swap of the path comes between the check and the read: the key stays unused when others can access it, and
-/// is warned about when its group can (D115). `ssh` and PostgreSQL refuse a key others can access; the group is
+/// Checks the private key file `file`, opened from `path` for `setting` (`tls`, `odoh` or `dnscrypt`), on the file
+/// itself, so that no swap of the path comes between the check and the read: the key stays unused when others can
+/// access it, and is warned about when its group can (D115). `ssh` and PostgreSQL refuse a key others can access; the group is
 /// allowed, as PostgreSQL allows a root-owned key its group: quietly for a root-owned key whose group the process is
 /// in (`root:dedens` 0640 read by the user `dedens` after the drop of D122, which is read again as that user, or a key
 /// shared through Debian's `ssl-cert`), with a warning otherwise. A process that is root is in no such group, and
