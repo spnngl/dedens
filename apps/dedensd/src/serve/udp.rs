@@ -41,9 +41,19 @@ const UDP_SENDS: usize = 64;
 /// two.
 pub(super) const UDP_BUFFERS: NonZero<u16> = NonZero::new(256).expect("256 is not zero");
 
-/// The bytes of each buffer, `io_uring`'s header and the sender's address included: a query longer than 3952 bytes
-/// (less 16 for the header, 128 for the address, D49) is cut short, so read as broken.
-pub(super) const UDP_BUFFER_LEN: usize = 4096;
+/// The longest UDP query read whole: 4096 bytes, as a `DNSCrypt` packet may be (D49).
+const UDP_QUERY_LEN: usize = 4096;
+
+/// The header `io_uring` writes in front of a datagram it receives into a pool buffer (`io_uring_recvmsg_out`).
+const URING_HEADER_LEN: usize = 16;
+
+/// The room compio asks for the sender's address in the buffer: a `sockaddr_storage`, whatever the family.
+const URING_ADDRESS_LEN: usize = 128;
+
+/// The bytes of each buffer: a query of [`UDP_QUERY_LEN`] bytes, with what `io_uring` puts before it. A buffer holds
+/// the datagram as it is, whatever its length, so it takes no page or alignment (D49). A longer query is cut short, so
+/// read as broken.
+pub(super) const UDP_BUFFER_LEN: usize = URING_HEADER_LEN + URING_ADDRESS_LEN + UDP_QUERY_LEN;
 
 /// Bytes a UDP socket may hold before the OS drops datagrams (`SO_RCVBUF`).
 pub(super) const UDP_RECEIVE_BUFFER: usize = 4 << 20;
@@ -366,12 +376,20 @@ mod tests {
     use socket2::{Domain, Socket, Type};
 
     use super::{
-        BUSY_PAUSE, BUSY_YIELDS, Outbox, Pause, Receiving, UDP_SENDS, WARN_EVERY, Warned,
-        send_replies, udp_queries,
+        BUSY_PAUSE, BUSY_YIELDS, Outbox, Pause, Receiving, UDP_BUFFER_LEN, UDP_BUFFERS, UDP_SENDS,
+        WARN_EVERY, Warned, send_replies, udp_queries,
     };
     use crate::reload::Current;
     use crate::serve::tests::udp_listener;
     use crate::serve::{ERROR_PAUSE, Thread};
+
+    /// D49 states the pool's memory: 256 buffers of 4240 bytes (16 of `io_uring`'s header, 128 of the address, 4096 of
+    /// query), 1,085,440 bytes a thread. A change of either number is a change of that decision.
+    #[test]
+    fn the_pool_holds_what_d49_says() {
+        assert_eq!(UDP_BUFFER_LEN, 4240);
+        assert_eq!(usize::from(UDP_BUFFERS.get()) * UDP_BUFFER_LEN, 1_085_440);
+    }
 
     #[test]
     fn a_yield_lets_the_other_tasks_run() {

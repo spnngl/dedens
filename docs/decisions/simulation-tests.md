@@ -174,7 +174,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `serve/udp.rs`, `tcp.rs`, `upstream.rs` and `isolate.rs`. `serve/mod.rs` converts the sockets and starts the
     runtime, ungated. `Listener::panicked` reads the system clock, for the log's rate only, under an `expect`.
   - `dedens-sim`: `Sim` implements the new methods (`SimListener`; `SimDatagram`, a datagram copied out of turmoil's,
-    through one scratch buffer per socket and cut at 3952 bytes, as compio's pool cuts it on `io_uring`, D49).
+    through one scratch buffer per socket and cut at 4096 bytes, as compio's pool cuts it on `io_uring`, D49).
     `Topology::dedensd` runs `Resolver::serve_dedensd` on the resolver host. `tests/serving.rs` runs the baseline,
     partition, loss and crash scenarios that concern the server against the loop, and TCP queries pipelined on one
     connection, answered out of order (RFC 7766 §6.2.1.1) where the driver answers in turn. The loop records none of

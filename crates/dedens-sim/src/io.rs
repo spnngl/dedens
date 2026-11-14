@@ -30,10 +30,10 @@ use turmoil::net::{TcpListener, TcpStream, UdpSocket};
 use crate::seed::Rng;
 use crate::trace::{Trace, What};
 
-/// The longest datagram `dedensd`'s loop reads whole on `io_uring`: a buffer of its pool, 4096 bytes, less the
-/// kernel's 16-byte header and the 128 bytes compio keeps for the sender's address (D49). A longer one is cut, as
-/// there.
-const DATAGRAM_LEN: usize = 4096 - 16 - 128;
+/// The longest datagram `dedensd`'s loop reads whole on `io_uring`: 4096 bytes, as the buffers of its pool hold the
+/// kernel's 16-byte header and the 128 bytes compio keeps for the sender's address besides (D49). A longer one is cut,
+/// as there.
+const DATAGRAM_LEN: usize = 4096;
 
 /// Errors to inject into the connected UDP sockets of one [`Sim`], a client's: the next `n` sends, or the next `n`
 /// arrivals.
@@ -244,7 +244,7 @@ impl Udp for SimUdp {
 
     type Datagram = SimDatagram;
 
-    /// Datagrams from any peer, each received into one scratch buffer of 3952 bytes (D49) and copied out.
+    /// Datagrams from any peer, each received into one scratch buffer of 4096 bytes (D49) and copied out.
     fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<SimDatagram>> {
         let scratch = vec![0; DATAGRAM_LEN];
         futures_util::stream::unfold((self, scratch), |(socket, mut scratch)| async move {
@@ -436,7 +436,7 @@ mod tests {
         assert!(failure.to_string().contains("panic"), "{failure}");
     }
 
-    /// A datagram longer than a buffer of `dedensd`'s pool is cut to 3952 bytes, as on `io_uring` (D49).
+    /// A datagram of 4096 bytes comes whole, and a longer one is cut to 4096 bytes, as on `io_uring` (D49).
     #[test]
     fn a_long_datagram_is_cut_as_the_pool_cuts_it() {
         let mut sim = turmoil::Builder::new().build();
@@ -446,18 +446,24 @@ mod tests {
             let socket = io.udp_bind((Ipv4Addr::UNSPECIFIED, 53).into()).await?;
             let mut datagrams = std::pin::pin!(socket.recv_multi());
             let datagram = datagrams.next().await.expect("a datagram")?;
-            assert_eq!(datagram.data(), [7; 3952]);
+            assert_eq!(datagram.data(), [7; 4096]);
+            let datagram = datagrams.next().await.expect("a datagram")?;
+            assert_eq!(datagram.data(), [8; 4096]);
             Ok(())
         });
         sim.client("client", async {
             let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
             // The server binds first.
             tokio::time::sleep(Duration::from_millis(1)).await;
-            socket
-                .send_to(&[7; 4096], (turmoil::lookup("server"), 53))
-                .await?;
+            for datagram in [&[7; 4096][..], &[8; 4097]] {
+                socket
+                    .send_to(datagram, (turmoil::lookup("server"), 53))
+                    .await?;
+                // Turmoil may reorder datagrams in flight.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
             Ok(())
         });
-        sim.run().expect("the datagram comes, cut");
+        sim.run().expect("the datagrams come, the second cut");
     }
 }
