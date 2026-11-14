@@ -371,7 +371,9 @@ pub fn dnscrypt_tamper_response(data: &[u8]) {
 /// When a packet is larger than its carrier allows, when the client refuses a response to its query, or when
 /// records were left out and TC is clear.
 pub fn dnscrypt_encrypt_response(data: &[u8]) {
-    for exchange in &*EXCHANGES {
+    // The system the input picks: the three are not each tried on every input, the PQ one costs a key exchange
+    // to set up and the smoke test runs every seed and mutation of it.
+    for exchange in [exchange_of(hash(data))] {
         for (carrier, limit) in [
             (Carrier::Udp, exchange.query.len()),
             (Carrier::Tcp, TCP_LIMIT),
