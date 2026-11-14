@@ -112,12 +112,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   queries). Copying each reply for the writer costs nothing measurable there (copying it twice did not move the
   numbers), so replies keep their copy and the writer task, which reads on while writing and keeps the replies
   of concurrent queries whole.
-- D49 (amends D42) UDP queries arrive in buffers made once per thread (256 of 4096 bytes, compio's buffer pool): on Linux one
+- D49 (amends D42) UDP queries arrive in buffers made once per thread (256 of 4240 bytes, 1.04 MiB, compio's buffer pool): on Linux one
   io_uring multishot receive per socket fills them, and the socket's tasks (D48) take turns at its stream
   of datagrams behind a lock, each giving its buffer back before its reply waits to be sent. About 400k →
-  480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query longer than 3952 bytes (a buffer less
-  `io_uring`'s 16-byte header and the 128 bytes compio keeps for the sender's address) is cut short and read as broken; the socket keeps datagrams while every buffer is taken. Rejected: a receive
-  asked for each datagram into the task's own 64 KiB buffer (one submission and one buffer per receive).
+  480k queries/s (`just bench-dnsperf`); 16 tasks no better. A query of up to 4096 bytes, the most a DNSCrypt packet
+  is, is read whole: `io_uring` writes a 16-byte header and the sender's address, 128 bytes (compio asks for a
+  `sockaddr_storage`), before the datagram in its buffer, so a buffer is 16 + 128 + 4096 = 4240 bytes. The kernel and
+  compio ask no page or alignment (each buffer is an allocation of its own, of any length). A thread holds 256 × 4240 =
+  1,085,440 bytes, 36,864 more than the 256 buffers of 4096 that cut a query at 3952 bytes (read as broken, so D100
+  padded relayed queries to 3908); the benches show no change (`docs/benchmarks.md`). A longer query is cut short and read as broken; the socket keeps datagrams while
+  every buffer is taken. Rejected: a receive asked for each datagram into the task's own 64 KiB buffer (one submission
+  and one buffer per receive).
 - D50 (amends D27; amended by D108) Upstream UDP queries share a fixed pool of 256 sockets per server and client (`dedens-net::udp`), each opened
   on first use on port 0 and connected, then kept: a query takes one at random and waits for datagrams with its
   ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
@@ -780,7 +785,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     when the next fetch runs. Now tested and documented.
   - `threads` (D42). Serving threads, 1 to 1024, fixed at start (a reload warns, as for `listen`). Default as before:
     one per core on Linux, one elsewhere; above 1 off Linux is refused, where `SO_REUSEPORT` spreads nothing and a
-    second thread would serve no query. Each thread costs about 1 MiB of buffers, 64 KiB of scratch and a 4 MiB
+    second thread would serve no query. Each thread costs about 1 MiB of buffers (D49), 64 KiB of scratch and a 4 MiB
     receive buffer per UDP socket, so fewer threads than cores serve a small host; 1024 stops a typo.
   - Tests: `a_key_readable_by_others_is_refused` (`tests/listeners.rs`: refused, kept on a reload, group warned),
     `a_long_key_file_is_refused_and_an_exposed_one_too` (`odoh/mod.rs`), `forward_patience_is_bounded`,

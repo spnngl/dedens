@@ -401,6 +401,31 @@ fn queries_over_udp_and_tcp_are_forwarded() {
     assert_eq!(reply.answer, upstream.answer);
 }
 
+/// D49: a UDP query of 4096 bytes, the largest a `DNSCrypt` packet is, reaches the pipeline whole, as does one just over
+/// the 3952 bytes that a pool buffer held, less `io_uring`'s header and the sender's address, before. The padding option
+/// (RFC 7830) is the last of the query: a query cut short would not decode, and would get no answer.
+#[test]
+fn a_udp_query_of_4096_bytes_is_read_whole() {
+    /// The option code and length that come before the padding.
+    const OPTION_HEAD: usize = 4;
+    let server = Server::start(Responder::start(&["a"]).addr, "");
+    for len in [3953, 4096] {
+        let mut query = dedens_testkit::query("a", 7);
+        let bare = query.to_vec().expect("a query fits").len();
+        let padding = u16::try_from(len - bare - OPTION_HEAD).expect("a padding fits");
+        query
+            .edns
+            .as_mut()
+            .expect("the query has EDNS")
+            .options
+            .push(EdnsOption::Padding(padding));
+        let wire = query.to_vec().expect("a query fits");
+        assert_eq!(wire.len(), len);
+        let reply = ask_udp(server.addr, &wire);
+        assert_eq!((reply.header.id, reply.rcode()), (7, Rcode::NOERROR));
+    }
+}
+
 /// D115: `threads` sets the serving threads, which the "serving" event counts; more than one needs Linux, where
 /// `SO_REUSEPORT` spreads queries.
 #[test]
