@@ -53,7 +53,12 @@ pub fn parse_lists(data: &[u8]) {
         let Ok(name) = word.parse::<Name<'static>>() else {
             continue;
         };
-        for qtype in [RecordType::A, RecordType::AAAA, RecordType::PTR] {
+        for qtype in [
+            RecordType::A,
+            RecordType::AAAA,
+            RecordType::PTR,
+            RecordType::ANY,
+        ] {
             let Ok(query) = Message::query(1, Question::new(name.clone(), qtype)).to_vec() else {
                 continue;
             };
