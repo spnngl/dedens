@@ -104,6 +104,8 @@ exclude_re = [
   'cookie\.rs:\d+:\d+: replace <impl Drop for Secret>::drop with \(\)$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
   'link\.rs:\d+:\d+: replace \| with \^ in decode$',
+  # `ext << 4 | low`, `low` masked to 4 bits: the shifted byte's low nibble is clear, so `|` and `^` agree.
+  'codes\.rs:\d+:\d+: replace \| with \^ in Rcode::extended$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
   'client\.rs:\d+:\d+: replace discover -> Result<Vec<Vec<Box<\[u8\]>>>, ClientError> with ',
   # Configurations that go stale at the very `Instant` they are read or kept: equal `Instant`s never happen.

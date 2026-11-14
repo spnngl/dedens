@@ -317,6 +317,13 @@ impl Default for Rcode {
     }
 }
 
+impl Rcode {
+    /// The 12-bit code: the header's low 4 bits under the OPT record's upper 8, `ext` (RFC 6891 §6.1.3).
+    pub(crate) fn extended(header: Self, ext: u8) -> Self {
+        Self((u16::from(ext) << 4) | (header.0 & 0x0F))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

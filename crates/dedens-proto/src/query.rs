@@ -98,7 +98,7 @@ impl<'a> Query<'a> {
     #[must_use]
     pub fn rcode(&self) -> Rcode {
         let ext = self.edns.as_ref().map_or(0, |edns| edns.ext_rcode);
-        Rcode((u16::from(ext) << 4) | (self.header.rcode.0 & 0x0F))
+        Rcode::extended(self.header.rcode, ext)
     }
 
     /// The first question; a query without one has nothing to answer.
