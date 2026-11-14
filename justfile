@@ -190,7 +190,9 @@ mutants-diff base="origin/main" *args:
 # The exclusions of .cargo/mutants.toml that match no mutant or file (D168), each listed, failing if any. Mutants are
 # listed without the configuration, with no build, and without colours, which CI's `CARGO_TERM_COLOR=always` would
 # put in the names. Perl matches the names: `--re` keeps every field deletion. The list is taken first, so a failing
-# cargo-mutants stops the recipe rather than leaving every pattern unmatched.
+# cargo-mutants stops the recipe rather than leaving every pattern unmatched. A branch of a group of alternatives
+# (one holding no group, not repeated) is tried in its place too: a pattern still matching by its other branches would
+# hide it.
 mutants-stale:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -202,9 +204,20 @@ mutants-stale:
         chomp(my @names = <STDIN>);
         my $stale = 0;
         for my $re (split /\n/, shift) {
-            next if grep { /$re/ } @names;
-            print "exclude_re matches no mutant: \x27$re\x27\n";
-            $stale = 1;
+            my @hits = grep { /$re/ } @names;
+            if (!@hits) {
+                print "exclude_re matches no mutant: \x27$re\x27\n";
+                $stale = 1;
+                next;
+            }
+            while ($re =~ /(?<!\\)\(((?:[^\\()]|\\.)*)\)(?![?*+{])/g) {
+                my ($before, $after, $group) = (substr($re, 0, $-[0]), substr($re, $+[0]), $1);
+                for my $branch (split /(?<!\\)\|/, $group, -1) {
+                    next if $branch eq $group || grep { /$before(?:$branch)$after/ } @hits;
+                    print "exclude_re branch matches no mutant: \x27$branch\x27 of \x27$re\x27\n";
+                    $stale = 1;
+                }
+            }
         }
         exit $stale;
     ' "$patterns" || stale=1
