@@ -7,13 +7,14 @@
 //! - RFC 4343: case-insensitive comparison, case preserved.
 //! - D28: records keep their RDATA as checked wire bytes, read as typed data on demand.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 
 use dedens_proto::rdata::{Mx, Opaque, RData, Soa, Srv, Txt, TxtError};
 use dedens_proto::{
     Class, DecodeErrorKind, HEADER_LEN, Header, MAX_NAME_LEN, Message, Name, Opcode, Question,
-    Rcode, Record, RecordType, Ttl, ttl_offsets,
+    Rcode, Record, RecordType, Ttl, WireRdata, ttl_offsets,
 };
 use dedens_testkit::dns;
 use proptest::prelude::*;
@@ -618,6 +619,27 @@ fn decoded_rdata_stays_in_the_message() {
         let rdata = record.rdata.wire();
         assert!(wire.as_ptr_range().contains(&rdata.as_ptr()), "{record}");
     }
+}
+
+/// RDATA whose names a captured response compressed is written with them whole elsewhere: a pointer copied as is
+/// would point into unrelated bytes of the new message (RFC 3597 §4).
+#[test]
+fn compressed_names_in_rdata_leave_their_message_whole() {
+    let wire = dedens_testkit::captured("mx");
+    let response = Message::decode(&wire).expect("decodes").message;
+    let record = response.answer.first().expect("the capture answers");
+    let rdata = record.rdata.wire();
+    assert!(
+        matches!(rdata, Cow::Owned(_)),
+        "the capture compresses the exchange"
+    );
+    assert_eq!(rdata, WireRdata::new(&record.data()).wire());
+    // Behind another question, where the pointers would land on other bytes.
+    let mut moved = Message::query(1, Question::new(dns("example."), RecordType::MX));
+    moved.answer = vec![record.clone()];
+    let again = moved.to_vec().expect("encodes");
+    let read = Message::decode(&again).expect("decodes").message;
+    assert_eq!(read.answer, moved.answer);
 }
 
 #[test]
