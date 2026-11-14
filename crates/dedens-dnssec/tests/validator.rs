@@ -699,6 +699,44 @@ fn a_validation_reports_what_it_cost() {
     assert_eq!(cost.nsec3_blocks, 0);
 }
 
+/// The verdict on `response` and its cost, with the caller answering none of the questions `unanswered`.
+fn cost_without(script: &Script, response: &Message<'static>, unanswered: &str) -> (Verdict, Cost) {
+    let question = response.questions.first().expect("a question").clone();
+    let mut validation = Script::validator().start(&question, response, u64::from(captured_at()));
+    let verdict = loop {
+        match validation.step() {
+            Next::Ask(ask) => {
+                let answered = format!("{} {}", ask.name, ask.qtype) != unanswered;
+                validation.answer(script.answer(&ask).filter(|_| answered));
+            }
+            Next::Done(verdict) => break verdict,
+        }
+    };
+    (verdict, validation.cost())
+}
+
+#[test]
+fn a_zone_left_indeterminate_is_not_checked_again_by_the_same_validation() {
+    // D92: no step spends the budget twice. The DS of `icann.org` is checked, its keys get no answer, and the NS
+    // `RRset` of `icann.org` in the authority section asks the walk for the zone again.
+    // It costs nothing more than the capture without it.
+    let script = Script::new();
+    let alone = response("cname_cross_zone");
+    let mut with_ns = alone.clone();
+    with_ns
+        .authority
+        .push(ns("icann.org", "a.iana-servers.net"));
+    let costs = [alone, with_ns].map(|response| {
+        let (verdict, cost) = cost_without(&script, &response, "icann.org. DNSKEY");
+        assert!(
+            matches!(&verdict, Verdict::Indeterminate { ede } if ede.code == InfoCode::NO_REACHABLE_AUTHORITY),
+            "{verdict:?}"
+        );
+        cost
+    });
+    assert_eq!(costs[0], costs[1]);
+}
+
 #[test]
 fn a_negative_trust_anchor_makes_a_name_insecure() {
     // RFC 7646 §2: the zone's answers are not validated, and `nl` is not asked about.

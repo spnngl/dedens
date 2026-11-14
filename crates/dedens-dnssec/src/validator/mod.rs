@@ -32,7 +32,7 @@ pub struct Limits {
     /// verdict is [`Verdict::Indeterminate`].
     pub questions: usize,
     /// Labels of a name below its closest trust anchor: 127 (D75), the most a name has, so that the limit
-    /// is the number of questions's. A name deeper is walked no further, and the verdict is
+    /// that binds is the one on questions. A name deeper is walked no further, and the verdict is
     /// [`Verdict::Indeterminate`], whatever the order of the questions.
     pub depth: usize,
     /// The signature checks and NSEC3 hashes of the validation, its chain of trust included (D71): 128
@@ -275,7 +275,8 @@ pub struct Validation {
     pending: Option<Question<'static>>,
     budget: Budget,
     /// What the walk found of each name that is, or sits below, an apex: written by `settle` only (and
-    /// copied from the key cache by `zone_of`), read by `zone_of` only, never an outcome of a limit.
+    /// copied from the key cache by `zone_of`), read by `zone_of` only. The limit on depth is checked before it
+    /// is read, and its outcome never written.
     zones: HashMap<Name<'static>, Zone>,
     done: Option<Verdict>,
 }
