@@ -813,6 +813,27 @@ fn a_response_too_large_clears_what_was_held() {
     assert_eq!(cache.len(), 1);
 }
 
+/// An answer refused for its TTL 0 or for a missing SOA outdates what the cache held of its key, as one too large
+/// does: the old data is not served stale (RFC 8767 §4: only data that cannot be refreshed), and the hold ends.
+#[test]
+fn an_answer_not_stored_ends_the_stale_data_and_the_hold() {
+    let q = query(1, "www.example", RecordType::A);
+    let no_soa = response("www.example", RecordType::A, Rcode::NOERROR, vec![], vec![]);
+    for (answer, refused) in [(www(0, 1), NotCached::ZeroTtl), (no_soa, NotCached::NoSoa)] {
+        let cache = small_cache();
+        insert(&cache, &q, &www(60, 1), T0).unwrap();
+        let later = T0 + 61;
+        assert!(cache.fail(&key_of(&q), later) > 0);
+        let (found, _) = lookup(&cache, &q, later, StalePolicy::IfFailing);
+        assert!(matches!(found, Lookup::Hit(_)), "{found:?}");
+        assert_eq!(insert(&cache, &q, &answer, later), Err(refused));
+        assert_eq!(
+            lookup(&cache, &q, later, StalePolicy::Always).0,
+            Lookup::Miss
+        );
+    }
+}
+
 /// Threads inserting and looking up at once: every hit is whole and for its query, the budget holds.
 #[test]
 fn threads_share_the_cache() {

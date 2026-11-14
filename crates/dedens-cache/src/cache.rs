@@ -241,7 +241,8 @@ impl Cache {
     ///
     /// # Errors
     ///
-    /// [`NotCached`] says why the response is not stored.
+    /// [`NotCached`] says why the response is not stored. An answer refused for its TTL 0, its size, a missing SOA
+    /// or a client subnet still ends what the key held: the response and the failure hold.
     pub fn insert(
         &self,
         query: &Query<'_>,
@@ -271,18 +272,18 @@ impl Cache {
         mark: u64,
     ) -> Result<(), NotCached> {
         let key = Key::of(query).ok_or(NotCached::Query)?;
-        let bad = matches!(checked, Checked::Bogus(_));
-        self.store(&key, response, now, (checked, mark), bad)?;
-        if bad {
-            self.store(
-                &key.with_checking_disabled(),
-                response,
-                now,
-                (Checked::Insecure, mark),
-                bad,
-            )?;
+        if !matches!(checked, Checked::Bogus(_)) {
+            return self.store(&key, response, now, (checked, mark), false);
         }
-        Ok(())
+        // Both entries take the response, or both end what they held: an error of one stops neither. A client
+        // that checks for itself asked under the second key already.
+        let unchecked = key.with_checking_disabled();
+        let stored = self.store(&unchecked, response, now, (Checked::Insecure, mark), true);
+        if unchecked == key {
+            return stored;
+        }
+        self.store(&key, response, now, (checked, mark), true)
+            .and(stored)
     }
 
     /// Sets the mark of the response stored for `query` to `mark`, if it is `seen` still: the caller read `seen` in
@@ -316,8 +317,15 @@ impl Cache {
     ) -> Result<(), NotCached> {
         let (hash, shard) = self.shard(key);
         let mut response = match Response::build(key, response, now, checked, bad, &self.config) {
-            Err(NotCached::TooLarge) => {
-                // Answered and not stored; an answer the cache holds is stale by it, and a failure held is over.
+            // Answered and not stored: an answer the cache holds is outdated by it, not to be served stale
+            // (RFC 8767 §4: only data that cannot be refreshed), and a failure held is over. A response refused
+            // as broken or as no answer to the query leaves both: it may be forged.
+            Err(
+                refused @ (NotCached::TooLarge
+                | NotCached::ZeroTtl
+                | NotCached::NoSoa
+                | NotCached::ClientSubnet),
+            ) => {
                 let evicted = lock(shard).update_existing(hash, key.as_bytes(), |entry| {
                     entry.response = None;
                     entry.prefetched = false;
@@ -325,7 +333,7 @@ impl Cache {
                     entry.hold_until = 0;
                 });
                 self.metrics.evicted(evicted);
-                return Err(NotCached::TooLarge);
+                return Err(refused);
             }
             built => built?,
         };
