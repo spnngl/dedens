@@ -800,11 +800,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     queries are dropped too and clients ask again (a ticket in hand skips it): the cost of the bound. Tally name `xwing`.
   - Tests: `crates/dedens-dnscrypt/tests/pq.rs`, every vector of the draft's "PQ Test Vector Structure" from
     `testdata/dnscrypt/draft-pq-vectors.json` (the certificate, the full query, the ticket and the control field, the
-    response, the resumed query and response) and negative cases 1 to 8; `dedens-net` (`tests/dnscrypt.rs`: PQ chosen,
+    response, the resumed query and response) and negative cases 1 to 8, a ticket refused from its expiry on, the X-Wing
+    draft's own three vectors (`testdata/dnscrypt/xwing-vectors.json`); `dedens-net` (`tests/dnscrypt.rs`: PQ chosen,
     a fresh ciphertext per query, `+dnscrypt-pq` against a classical resolver, resumption and its fallback, no ticket
-    unless asked); `apps/dedensd/tests/dnscrypt.rs` and `apps/dedens/tests/dnscrypt.rs` (the client against `dedensd` and
+    unless asked, a ticket expiring on a skewed clock, a ticket bound by client magic and validity); `apps/dedensd/tests/dnscrypt.rs` and `apps/dedens/tests/dnscrypt.rs` (the client against `dedensd` and
     a loopback resolver, over UDP and TCP, full and resumed); `dnscrypt/tests.rs` (the UDP certificate rule, the ticket
-    key rotation); `crates/dedens-sim/tests/serving.rs` `dnscrypt::tickets_resume_for_ten_minutes_across_a_rotation`
+    key rotation, the decapsulation budgets) and `serve/dnscrypt.rs` (a flood of junk ciphertexts cut, an idle thread
+    letting go of retired key sets); `crates/dedens-sim/tests/serving.rs` `dnscrypt::tickets_resume_for_ten_minutes_across_a_rotation`
     (simulated time: a ticket lives its 600 seconds, is renewed at half life, dies at expiry, and survives one rotation).
     Fuzz targets: the PQ exchange joins the existing six (`dnscrypt_decrypt`, `dnscrypt_unpad`, `dnscrypt_tamper_*`,
     `dnscrypt_encrypt_response`, `parse_dnscrypt_certificate`), and two are new, `dnscrypt_ticket` (arbitrary bytes as a
