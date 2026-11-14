@@ -477,6 +477,9 @@ mod tests {
         assert_eq!(unescape(br#""""#).unwrap(), b"");
         assert_eq!(unescape(br"\256"), Err(TextErrorKind::BadEscape));
         assert_eq!(unescape(br"\12"), Err(TextErrorKind::BadEscape));
+        // Three digits each, RFC 1035 §5.1's `\DDD`.
+        assert_eq!(unescape(br"\12x"), Err(TextErrorKind::BadEscape));
+        assert_eq!(unescape(br"\1x2"), Err(TextErrorKind::BadEscape));
         assert_eq!(unescape(br"a\"), Err(TextErrorKind::BadEscape));
     }
 
