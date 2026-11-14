@@ -608,6 +608,18 @@ fn mx_response() -> Message<'static> {
     response
 }
 
+/// A record decoded from a message keeps its RDATA in the message's bytes: decoding copies none.
+#[test]
+fn decoded_rdata_stays_in_the_message() {
+    let wire = dedens_testkit::captured("a");
+    let response = Message::decode(&wire).expect("decodes").message;
+    assert_ne!(response.answer.len(), 0, "the capture answers");
+    for record in &response.answer {
+        let rdata = record.rdata.wire();
+        assert!(wire.as_ptr_range().contains(&rdata.as_ptr()), "{record}");
+    }
+}
+
 #[test]
 fn rdata_with_a_compressed_name_outlives_its_message_once_owned() {
     let response = mx_response();
