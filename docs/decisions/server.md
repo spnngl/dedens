@@ -775,7 +775,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `_./:@+=%~#-`, not starting with `#`, `@` or `%` or a document marker, not ending in `:`) stays as it is, so
     ports, addresses, URLs and paths work anywhere, in a number or beside text. Any other value must stand alone
     as a value (after `key:`, `-`, `[`, `,`, `{`, before the end, a comment, `,`, `]`, `}`) and is written in single
-    quotes, or sit between quotes of the template, and is escaped for them; elsewhere it is refused. A control
+    quotes, or sit between quotes of the template, and is escaped for them; elsewhere it is refused. A plain value
+    YAML reads as null (`~`, `null`, `Null`, `NULL`) is quoted too when alone: `user: ${USER}` with `USER=null`
+    would read as no `user`, no drop of root (`a_value_that_reads_as_null_is_text`). A control
     character or line break is refused. `${VAR:-default}` text is the template's and stays as written. Rejected:
     quoting every value (breaks a number and a value inside the template's own quotes) and substituting in the
     parsed tree (loses the line numbers of errors and numbers' types).

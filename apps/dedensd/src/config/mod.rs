@@ -1,11 +1,11 @@
 //! The configuration file (D24, D44, D115): YAML, `${VAR}` replaced first, then read into named stages run in the
 //! order `pipeline` lists them. A value of `${VAR}` is one value, never YAML: left as it is when plain (letters,
-//! digits, `_./:@+=%~#-`), single-quoted when alone as a value, escaped between the template's own quotes, refused
-//! anywhere else. A TLS, `ODoH` or `DNSCrypt` key file readable by others is refused, by its group warned about. After the drop
-//! (D122) a reload reads as `user`: the files it reads (the certificate and its key, lists, `upstream_ca`, saved
-//! downloads) must be readable by it, and `downloads.dir` writable. The start reads the configuration again as `user`
-//! right after the drop, and ends if it cannot. A reload warns of a change to `user` or `group` as written: `user: 990`
-//! for `user: dedens` warns too.
+//! digits, `_./:@+=%~#-`) but for a null (`~`, `null`) alone, single-quoted when alone as a value, escaped
+//! between the template's own quotes, refused anywhere else. A TLS, `ODoH` or `DNSCrypt` key file readable by
+//! others is refused, by its group warned about. After the drop (D122) a reload reads as `user`: the files it reads
+//! (the certificate and its key, lists, `upstream_ca`, saved downloads) must be readable by it, and `downloads.dir`
+//! writable. The start reads the configuration again as `user` right after the drop, and ends if it cannot. A
+//! reload warns of a change to `user` or `group` as written: `user: 990` for `user: dedens` warns too.
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query", "dnscrypt://0.0.0.0"]
