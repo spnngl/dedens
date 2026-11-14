@@ -549,6 +549,36 @@ mod key_tags {
         assert_eq!(trust(MAX_FAILED), Err(SigError::NoSignature));
         assert_eq!(trust(MAX_FAILED + 1), Err(SigError::TooManyFailures));
     }
+
+    #[test]
+    fn each_key_of_a_tag_finds_its_ds_among_many() {
+        // Many keys of one tag, each with DS records of two digest types: a key is digested once per type and
+        // its digest searched among them, never digested again for each DS record (D73). Every key with a DS
+        // matches it; the keys without one are failures.
+        let keys = colliding(&dnskey_rdata(257, 5, KSK), 40);
+        let trust = |unmatched: usize| {
+            let ds: Vec<Vec<u8>> = keys[unmatched..]
+                .iter()
+                .rev()
+                .flat_map(|key| {
+                    [
+                        ds_of(key, DigestType::SHA384),
+                        ds_of(key, DigestType::SHA256),
+                    ]
+                })
+                .collect();
+            rrsig::trusted_keys(
+                &rrset("example.", 48, &keys),
+                &[],
+                &rrset("example.", 43, &ds),
+                INCEPTION,
+                &mut Budget::default(),
+            )
+        };
+        assert_eq!(trust(0), Err(SigError::NoSignature));
+        assert_eq!(trust(MAX_FAILED), Err(SigError::NoSignature));
+        assert_eq!(trust(MAX_FAILED + 1), Err(SigError::TooManyFailures));
+    }
 }
 
 mod verification {

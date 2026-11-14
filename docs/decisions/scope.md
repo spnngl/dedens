@@ -285,7 +285,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a stronger digest (SHA-256 or SHA-384) that counts, whatever key each names (RFC 4509 §3 speaks of the DS
   `RRset`: a SHA-1 second preimage of one key's DS then vouches for no key; rejected: ignoring it only beside a
   stronger digest of its own key, which leaves that open), indexes the DS records by key tag and algorithm once,
-  matches each DNSKEY by digest against those of its tag and algorithm only, and requires the DNSKEY `RRset` to
+  matches each DNSKEY by digest against those of its tag and algorithm only, one digest of the key per digest type
+  searched among them (one per DS record would cost the product of keys and DS records of a tag), and requires the DNSKEY `RRset` to
   verify by one of those keys (RFC 4035 §5.2). A zone can publish many keys of one tag before its `RRset` is
   authenticated, so more than 8 keys that match a tag and no digest are `TooManyFailures`; a DS that matches no
   key is `NoKeyForDs`, bogus. Every

@@ -793,6 +793,12 @@ proof of a name ten labels deep hashes about a dozen names, 1800 blocks at 150 i
 cap, a response that makes the validator check every signature against every key of one tag (KeyTrap,
 CVE-2023-50387) costs it seconds.
 
+`trusted_keys_one_tag`: `trusted_keys` on 8 and 64 DNSKEYs of one tag, each with a SHA-256 and a SHA-384 DS, no
+signature (2026-11-14, a machine shared with other builds). Digesting each key against each DS record of its tag
+took 10.8 / 640 µs, quadratic: a zone of a thousand keys and DS records of one tag, which a 64 KiB response
+holds, was hundreds of milliseconds no budget counted. One digest per key and digest type, searched among the
+sorted DS records (D73): 2.1 / 18.8 µs.
+
 ## Oblivious DoH (D78)
 
 `benches/odoh.rs`, one call each on the captured response `a` (and `mx`, `txt_large` for the responses), padded

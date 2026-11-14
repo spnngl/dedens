@@ -10,10 +10,20 @@ use super::rrset::{Key, RrSet, Signature};
 use super::verify::{MAX_FAILED, Verified, verify_any};
 use crate::crypto::{self, Budget};
 
-/// Whether the digest of `ds` is that of `key`.
-fn vouches(ds: &Ds<'_>, key: &Key<'_>) -> bool {
-    crypto::ds_digest(ds.digest_type(), key.owner, &key.wire)
-        .is_ok_and(|digest| digest.as_ref() == ds.digest())
+/// Whether a DS record of `bucket`, sorted by digest type and digest, is the digest of `key`: the key is digested
+/// once for each digest type and the digest searched, so a zone of many DS records and keys of one tag costs one
+/// digest per key and type, not one per key and DS record (D73).
+fn vouched(bucket: &[&Ds<'_>], key: &Key<'_>) -> bool {
+    bucket
+        .chunk_by(|a, b| a.digest_type() == b.digest_type())
+        .any(|same| {
+            same.first().is_some_and(|first| {
+                crypto::ds_digest(first.digest_type(), key.owner, &key.wire).is_ok_and(|digest| {
+                    same.binary_search_by(|ds| ds.digest().cmp(digest.as_ref()))
+                        .is_ok()
+                })
+            })
+        })
 }
 
 /// Authenticates `dnskeys`, the DNSKEY `RRset` of a zone, from its DS `RRset` `ds`, itself authenticated by the
@@ -23,8 +33,8 @@ fn vouches(ds: &Ds<'_>, key: &Key<'_>) -> bool {
 /// A DS record counts when its digest type and algorithm are supported (RFC 6840 §5.2), and a SHA-1 digest is
 /// ignored when the `RRset` holds a stronger one that counts, whatever key either names (RFC 4509 §3, D73): a
 /// SHA-1 second preimage of one key's DS then vouches for no key. DS records
-/// are indexed by key tag and algorithm once, so the digests computed are one per DNSKEY and DS record that
-/// share both; as a DNSKEY `RRset` is not authenticated yet, more than [`MAX_FAILED`] of them of another
+/// are indexed by key tag and algorithm once, so the digests computed are one per DNSKEY and digest type of the
+/// DS records that share both; as a DNSKEY `RRset` is not authenticated yet, more than [`MAX_FAILED`] of them of another
 /// key (a colliding key tag) are refused: the answer is [`SigError::TooManyFailures`].
 ///
 /// # Errors
@@ -74,6 +84,11 @@ pub fn trusted_keys(
             .or_default()
             .push(record);
     }
+    for bucket in by_key.values_mut() {
+        bucket.sort_unstable_by(|a, b| {
+            (a.digest_type(), a.digest()).cmp(&(b.digest_type(), b.digest()))
+        });
+    }
     let mut failed = 0;
     let mut keys = Vec::new();
     for key in Key::all(dnskeys) {
@@ -83,7 +98,7 @@ pub fn trusted_keys(
         let Some(candidates) = by_key.get(&(key.tag, key.dnskey.algorithm())) else {
             continue;
         };
-        if candidates.iter().any(|ds| vouches(ds, &key)) {
+        if vouched(candidates, &key) {
             keys.push(key);
         } else {
             failed += 1;
