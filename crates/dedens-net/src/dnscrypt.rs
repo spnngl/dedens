@@ -500,6 +500,13 @@ impl Resolver {
             // it does not accept in silence too: the next try is a full query.
             Heard::Closed => self.lost(relay, true, resumed),
             Heard::Silent => self.lost(relay, transport != Transport::Tcp, resumed),
+            // A relay that is down costs a try, as a silent one does: the next goes through another (D100). The
+            // resolver never heard of the query, so neither its certificate nor the ticket is in doubt.
+            Heard::Refused(_) if relay.is_some() => {
+                self.failed(relay);
+                Reply::TimedOut
+            }
+            Heard::Refused(error) => return Err(error),
         })
     }
 
@@ -576,7 +583,7 @@ impl Resolver {
 }
 
 /// What a packet sent to `hop`, the resolver or its relay, was answered with.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum Heard<T> {
     /// A response that `open` took.
     Answer(T),
@@ -584,6 +591,8 @@ enum Heard<T> {
     Closed,
     /// Nothing, or nothing `open` took, before the deadline.
     Silent,
+    /// `hop` refused the datagram or the connection: nothing listens there, or it cannot be reached.
+    Refused(ClientError),
 }
 
 /// One datagram to `hop` from a socket of its own, and the first response `open` takes (draft "Client Queries Over
@@ -613,7 +622,14 @@ async fn udp_round<N: Io, T>(
         let Ok(BufResult(read, datagram)) = received else {
             return Ok(Heard::Silent);
         };
-        read.map_err(ClientError::Udp)?;
+        match read {
+            Ok(_) => {}
+            // The ICMP port unreachable of this socket's one datagram.
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                return Ok(Heard::Refused(ClientError::Udp(error)));
+            }
+            Err(error) => return Err(ClientError::Udp(error)),
+        }
         if let Some(response) = open(&datagram) {
             return Ok(Heard::Answer(response));
         }
@@ -631,19 +647,23 @@ async fn tcp_round<N: Io, T>(
 ) -> Result<Heard<T>, ClientError> {
     let framed = frame(packet).ok_or(TcpError::BadLength(packet.len()))?;
     let asked = async {
-        let stream = io.tcp_connect(hop).await.map_err(TcpError::Connect)?;
+        let stream = match io.tcp_connect(hop).await {
+            Ok(stream) => stream,
+            Err(error) => return Ok(Err(TcpError::Connect(error))),
+        };
         stream.set_nodelay(true).map_err(TcpError::Connect)?;
         let (mut reader, mut writer) = stream.split();
         let BufResult(written, _) = crate::tcp::Outbound::write_all(&mut writer, framed).await;
         written.map_err(|_| TcpError::Closed)?;
-        Ok::<_, TcpError>(read_message(&mut reader).await.ok())
+        Ok::<_, TcpError>(Ok(read_message(&mut reader).await.ok()))
     };
     let Ok(asked) = io.timeout_at(deadline, asked).await else {
         return Ok(Heard::Silent);
     };
     Ok(match asked? {
-        None => Heard::Closed,
-        Some(datagram) => open(&datagram).map_or(Heard::Silent, Heard::Answer),
+        Err(refused) => Heard::Refused(refused.into()),
+        Ok(None) => Heard::Closed,
+        Ok(Some(datagram)) => open(&datagram).map_or(Heard::Silent, Heard::Answer),
     })
 }
 
