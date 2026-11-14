@@ -40,6 +40,7 @@ turmoil.workspace = true
 dedens-dnscrypt.workspace = true
 dedens-dnssec.workspace = true
 divan.workspace = true
+rand_core.workspace = true
 
 [[test]]
 name = "tests"

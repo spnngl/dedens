@@ -6,6 +6,7 @@
 //! Each scenario has the client host speak to a server host on its own, with no stub and no oracle.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{self, Event, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 
-use crate::util::{SECOND, SEEDS, answers, served};
+use crate::util::{SECOND, SEEDS, answers, served, served_by};
 
 /// Seeds for the scenarios with TLS: a handshake is the slowest thing the simulation does.
 const FEW: &[u64] = &[0, 7];
@@ -502,8 +503,9 @@ fn a_dropped_client_closes_its_tls_connections() {
     });
 }
 
-/// Each client host is a host of its own, its IDs drawn from a stream of its own: two clients asking once each send
-/// two IDs.
+/// Each client host is a host of its own, its IDs drawn from a stream of its own: two clients asking four times
+/// each send two series of IDs. Four, as two streams draw one same ID once in 65536 seeds, and `just sim` draws
+/// seeds at random.
 #[test]
 fn two_clients_are_two_hosts_drawing_their_own_ids() {
     seed::each(FEW, |seed| {
@@ -511,35 +513,50 @@ fn two_clients_are_two_hosts_drawing_their_own_ids() {
         let server = world.upstreams[0];
         for _ in 0..2 {
             world.client_direct(async move |client| {
-                client
-                    .exchange(ask(), server, Carrier::Udp, &Options::default())
-                    .await?;
+                for _ in 0..4 {
+                    client
+                        .exchange(ask(), server, Carrier::Udp, &Options::default())
+                        .await?;
+                }
                 Ok(())
             });
         }
         let events = world.run().expect("the run passes its checks");
-        let sent: Vec<(IpAddr, u16)> = events
-            .iter()
-            .filter_map(|event| match event.what {
-                What::Sent { id, .. } => Some((event.host, id)),
-                _ => None,
-            })
-            .collect();
-        let [(one, first), (other, second)] = sent.as_slice() else {
+        let mut sent: BTreeMap<IpAddr, Vec<u16>> = BTreeMap::new();
+        for event in &events {
+            if let What::Sent { id, .. } = event.what {
+                sent.entry(event.host).or_default().push(id);
+            }
+        }
+        let series: Vec<Vec<u16>> = sent.into_values().collect();
+        let [first, second] = series.as_slice() else {
             panic!("{events:#?}");
         };
-        assert_ne!(one, other);
+        assert_eq!(first.len(), 4, "{events:#?}");
         assert_ne!(first, second, "{events:#?}");
     });
 }
 
-/// Each DNS-over-TLS server is a host of its own, at its own address.
+/// Each DNS-over-TLS server is a host of its own, at its own address: a query to each is served by each.
 #[test]
 fn two_dot_servers_are_two_hosts() {
     seed::each(ONE, |seed| {
+        let ca = certificates(0).0;
         let mut world = Topology::new().upstream(answers()).build(seed);
         let one = world.dot_server(answers(), certificates(0).1);
         let other = world.dot_server(answers(), certificates(0).1);
-        assert_ne!(one, other);
+        assert_ne!(one.ip(), other.ip());
+        world.client_direct(async move |client| {
+            let client = client.trusting(Trust::Roots(vec![ca]));
+            for server in [one, other] {
+                client
+                    .exchange(ask(), named(server), Carrier::Tls, &Options::default())
+                    .await?;
+            }
+            Ok(())
+        });
+        let events = world.run().expect("the run passes its checks");
+        assert_eq!(served_by(&events, one.ip()), 1, "{events:#?}");
+        assert_eq!(served_by(&events, other.ip()), 1, "{events:#?}");
     });
 }

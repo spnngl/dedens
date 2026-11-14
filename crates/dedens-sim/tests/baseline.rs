@@ -150,22 +150,7 @@ fn an_upstream_that_is_out_of_reach_ends_in_servfail_or_a_failure() {
         let events = ask_once(seed, answers(), |world| {
             world.fault(Duration::ZERO, Fault::Partition(LINK.0, LINK.1));
         });
-        let ends = ends(&events);
-        assert_eq!(ends.len(), 1, "{events:#?}");
-        assert!(
-            matches!(
-                ends[0],
-                What::Answered {
-                    rcode: Rcode::SERVFAIL,
-                    answers: 0,
-                    ..
-                } | What::Failed {
-                    failure: Failure::TimedOut { .. },
-                    ..
-                }
-            ),
-            "{events:#?}"
-        );
+        assert_servfail_or_timed_out(&events);
         // Nothing the resolver sent arrived.
         assert_eq!(served(&events), 0, "{events:#?}");
     });
@@ -213,6 +198,26 @@ fn got_the_records(events: &[Event]) -> bool {
             }
         )
     })
+}
+
+/// Asserts that the one query of `events` ended in an empty SERVFAIL, or timed out at the client.
+fn assert_servfail_or_timed_out(events: &[Event]) {
+    let ends = ends(events);
+    assert_eq!(ends.len(), 1, "{events:#?}");
+    assert!(
+        matches!(
+            ends[0],
+            What::Answered {
+                rcode: Rcode::SERVFAIL,
+                answers: 0,
+                ..
+            } | What::Failed {
+                failure: Failure::TimedOut { .. },
+                ..
+            }
+        ),
+        "{events:#?}"
+    );
 }
 
 /// How the queries of the clients ended.
@@ -629,29 +634,24 @@ fn the_cache_follows_the_clock() {
 fn two_clients_share_the_cache_and_ask_with_their_own_ids() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new().upstream(answers()).build(seed);
-        for _ in 0..2 {
+        for start in [Duration::ZERO, SECOND] {
+            // The second asks once the first has its answer.
             world.client(async move |stub| {
-                stub.ask(question("example.com", RecordType::A), Carrier::Udp)
+                tokio::time::sleep(start).await;
+                stub.expect(question("example.com", RecordType::A), Carrier::Udp)
                     .await?;
                 Ok(())
             });
         }
         let events = world.run().expect("the run passes its checks");
+        // Each client took its answer, so it came back with the client's own ID; the second came from the cache.
         let hosts: std::collections::BTreeSet<_> = events
             .iter()
             .filter(|event| matches!(event.what, What::Answered { .. }))
             .map(|event| event.host)
             .collect();
         assert_eq!(hosts.len(), 2, "{events:#?}");
-        let ids: std::collections::BTreeSet<_> = events
-            .iter()
-            .filter_map(|event| match event.what {
-                What::Sent { id, .. } if hosts.contains(&event.host) => Some((event.host, id)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ids.len(), 2, "{events:#?}");
-        assert!(served(&events) <= 2, "{events:#?}");
+        assert_eq!(served(&events), 1, "{events:#?}");
     });
 }
 
@@ -832,9 +832,14 @@ fn an_attacker_that_silences_the_server_leaves_the_forgery_alone() {
             None => Reaction::instead(Vec::new()),
         });
         let events = ask_once(seed, answers().attacked_by(attacker), |_| {});
-        // The server did not answer, and the resolver did not take the forgery for its answer.
-        assert_eq!(served(&events), 0, "{events:#?}");
-        assert!(!got_the_records(&events), "{events:#?}");
+        // Only the forgery came back, and the resolver did not take it for its answer: a silent server's end.
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.what, What::Injected { .. })),
+            "{events:#?}"
+        );
+        assert_servfail_or_timed_out(&events);
     });
 }
 
@@ -842,8 +847,7 @@ fn an_attacker_that_silences_the_server_leaves_the_forgery_alone() {
 fn a_silent_server_ends_in_servfail_or_a_failure() {
     seed::each(FEW, |seed| {
         let events = ask_once(seed, answers().silent(), |_| {});
-        assert_eq!(served(&events), 0, "{events:#?}");
-        assert!(!got_the_records(&events), "{events:#?}");
+        assert_servfail_or_timed_out(&events);
     });
 }
 
