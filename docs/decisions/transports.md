@@ -769,9 +769,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     anew). A resumed response can bring a renewed ticket, issued from the resumed key by the same formula.
   - Client (D98): `+dnscrypt-resume` (`Options::dnscrypt.resume`, off by default: a ticket links the queries of a
     client, the draft's unlinkability note) keeps the ticket of the last PQ response in the resolver's state and uses it
-    while it is for the certificate in use (same serial) and not expired (the lifetime from receipt, capped by the
-    certificate's end); a renewed ticket replaces it; a resumed query that gets no answer drops the ticket, so the retry
-    is a full query. A network change is not seen (no socket is kept: `dedens` is one process, and the exchange is
+    while it is for the certificate in use (the same client magic and end of validity, which the resolver binds the ticket
+    to; a serial can stay when a provider rotates its keys) and not expired (the
+    lifetime from receipt, on the clock of the exchanges, `Io::now`, capped by the certificate's end); a renewed ticket
+    replaces it; a resumed query that gets no answer drops the ticket, so the retry is a full query, as a ticket that
+    cannot be sealed under is dropped (one too large for a resumed query's packet to fit, which `dnscrypt-proxy` ignores
+    too, is never kept). The response says whether the query was resumed (`CertificateInfo::resumed`). A network change is not seen (no socket is kept: `dedens` is one process, and the exchange is
     over a fresh source port): the lifetime bounds a ticket's use. The certificate query is a TXT query padded with
     EDNS Padding to 3072 bytes (two classical and two PQ certificates, the draft's "Certificate Retrieval"), UDP first,
     TCP when the answer is truncated or missing; the entropy buffer of the exchange grew from 64 to 96 bytes for the

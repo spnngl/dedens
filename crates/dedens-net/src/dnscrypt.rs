@@ -26,14 +26,14 @@ use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use compio::BufResult;
 use compio::io::util::Splittable;
 use dedens_dnscrypt::{
-    Certificate, ClientNonce, ClientSession, EncryptQueryError, EncryptionSystem, MAX_PACKET_LEN,
-    Opened, ProviderKey, QueryContext, QueryPadding, ResponseError, Resumption, SecretKey,
-    SessionError, SystemPolicy, relay_query, select,
+    Certificate, ClientMagic, ClientNonce, ClientSession, EncryptQueryError, EncryptionSystem,
+    MAX_PACKET_LEN, Opened, ProviderKey, QueryContext, QueryPadding, ResponseError, Resumption,
+    SecretKey, SessionError, SystemPolicy, relay_query, select,
 };
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
@@ -165,13 +165,23 @@ struct State {
     ticket: Option<Ticket>,
 }
 
-/// A resumption ticket and what the client checks before using it: the certificate it was issued under and when it
-/// expires, in Unix seconds.
+/// A resumption ticket and what the client checks before using it: the certificate it was issued under, by the client
+/// magic and the end of validity the resolver binds the ticket to (draft "Resumption Tickets"; a serial may stay the
+/// same when a provider rotates its keys), and when it expires on the clock of the exchanges.
 #[derive(Debug)]
 struct Ticket {
     resumption: Resumption,
-    serial: u32,
-    expires: u64,
+    magic: ClientMagic,
+    valid_until: u32,
+    expires: Instant,
+}
+
+impl Ticket {
+    /// Whether the ticket was issued under `certificate`.
+    fn is_for(&self, certificate: &Certificate) -> bool {
+        let body = certificate.body();
+        body.client_magic == self.magic && body.validity.end() == self.valid_until
+    }
 }
 
 impl Resolver {
@@ -424,9 +434,8 @@ impl Resolver {
             QueryPadding::tcp(wire.len(), &mut entropy)
         };
         // A ticket in hand and asked for: the query is a resumed one, with no encapsulation.
-        let resumed = self.resumed(&certificate, options, wire, padding, nonce);
-        let (packet, context, resumed) = if let Some(sealed) = resumed {
-            let (packet, context) = sealed.map_err(DnsCryptError::from)?;
+        let resumed = self.resumed(io, &certificate, options, wire, padding, nonce);
+        let (packet, context, resumed) = if let Some((packet, context)) = resumed {
             (packet, context, true)
         } else {
             let session = if pq {
@@ -465,9 +474,15 @@ impl Resolver {
                     self.raise_floor();
                 }
                 if options.dnscrypt.resume {
-                    self.keep(&certificate, resumed, resumption);
+                    self.keep(io, &certificate, resumed, resumption);
                 }
-                Reply::Answer(message, info(&certificate))
+                Reply::Answer(
+                    message,
+                    CertificateInfo {
+                        resumed,
+                        ..info(&certificate)
+                    },
+                )
             }
             // A resolver drops the queries of a certificate it rotated, without a word (draft "Negative Cases"
             // case 1): silence over UDP, or a connection closed with no response, is all the sign there is, and
@@ -479,40 +494,50 @@ impl Resolver {
     }
 
     /// The query sealed under the ticket kept, if resuming is asked for and the ticket is of this certificate and
-    /// has not expired; a ticket that is no good is dropped.
-    fn resumed(
+    /// has not expired at the exchange's clock. A ticket that is no good, or that no query can be sealed under, is
+    /// dropped and the query is a full one.
+    fn resumed<N: Io>(
         &self,
+        io: &N,
         certificate: &Certificate,
         options: &Options,
         wire: &[u8],
         padding: QueryPadding,
         nonce: ClientNonce,
-    ) -> Option<Result<(Vec<u8>, QueryContext), EncryptQueryError>> {
+    ) -> Option<(Vec<u8>, QueryContext)> {
         if !options.dnscrypt.resume {
             return None;
         }
         let mut state = self.state.borrow_mut();
-        let usable = state.ticket.as_ref().is_some_and(|ticket| {
-            ticket.serial == certificate.body().serial && ticket.expires > unix_now()
-        });
-        if !usable {
-            state.ticket = None;
-            return None;
-        }
-        state
+        let sealed = state
             .ticket
             .as_ref()
-            .map(|ticket| ticket.resumption.encrypt_query(wire, padding, nonce))
+            .filter(|ticket| ticket.is_for(certificate) && io.now() < ticket.expires)
+            .and_then(|ticket| ticket.resumption.encrypt_query(wire, padding, nonce).ok());
+        if sealed.is_none() {
+            state.ticket = None;
+        }
+        sealed
     }
 
     /// Keeps the ticket of a response, which replaces the one in use; a resumed query answered with none leaves
     /// the one in use, which the resolver still accepts until it expires.
-    fn keep(&self, certificate: &Certificate, resumed: bool, resumption: Option<Resumption>) {
+    fn keep<N: Io>(
+        &self,
+        io: &N,
+        certificate: &Certificate,
+        resumed: bool,
+        resumption: Option<Resumption>,
+    ) {
         let mut state = self.state.borrow_mut();
         if let Some(resumption) = resumption {
-            state.ticket = Some(Ticket {
-                expires: resumption.expires_at(unix_now()),
-                serial: certificate.body().serial,
+            // The lifetime counts from receipt, cut at the end of the certificate, which is a date.
+            let now = unix_now();
+            let life = Duration::from_secs(resumption.expires_at(now).saturating_sub(now));
+            state.ticket = io.now().checked_add(life).map(|expires| Ticket {
+                expires,
+                magic: certificate.body().client_magic,
+                valid_until: certificate.body().validity.end(),
                 resumption,
             });
         } else if !resumed {
@@ -667,6 +692,7 @@ pub(crate) fn info(certificate: &Certificate) -> CertificateInfo {
         serial: body.serial,
         valid_from: body.validity.start(),
         valid_until: body.validity.end(),
+        resumed: false,
     }
 }
 

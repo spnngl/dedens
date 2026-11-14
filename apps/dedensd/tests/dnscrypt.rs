@@ -272,6 +272,7 @@ fn a_resumed_query_is_answered() {
     let upstream = Responder::start(&["a"]);
     let resolver = resolver("  systems: [pq]\n", "", &upstream.addr.to_string());
     let client = Client::new();
+    let mut resumed = Vec::new();
     for transport in [Transport::Udp, Transport::Tcp] {
         for _ in 0..3 {
             let response = ask_with(&client, &resolver.stamp, transport, |options| {
@@ -281,8 +282,14 @@ fn a_resumed_query_is_answered() {
             assert_eq!(response.transport, transport);
             assert_eq!(response.sends, 1, "no query was lost or dropped");
             assert_eq!(decode(&response.wire).rcode(), Rcode::NOERROR);
+            resumed.push(response.dnscrypt.expect("a certificate").resumed);
         }
     }
+    assert_eq!(
+        resumed,
+        [false, true, true, true, true, true],
+        "the ticket of the first answer serves the rest, over both transports"
+    );
 }
 
 /// Draft "Client Queries Over UDP": a response larger than the query is truncated, and the client asks again over
