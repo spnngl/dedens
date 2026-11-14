@@ -93,6 +93,13 @@ fn in_turn(ips: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
     all
 }
 
+/// The id of response `n` of a trace, counted from 1, from `server`: `example.com_A@192.0.2.1#2` (D177). Each is
+/// numbered, not only a server's second, so that an id does not hang on the servers asked before it.
+fn numbered(id: &Id, server: SocketAddr, n: usize) -> Id {
+    Id::try_from(format!("{}#{n}", id.at(server)))
+        .expect("an id, `#` and a number without `/`, `\\` or NUL stay an id")
+}
+
 /// `ips` on `port`.
 fn on(ips: Vec<IpAddr>, port: u16) -> Vec<SocketAddr> {
     ips.into_iter()
@@ -199,7 +206,8 @@ struct Tracer<'a> {
 
 impl Tracer<'_> {
     /// Follows `question` from the roots and returns the last response, each one put in `hops` when given, under
-    /// the id and its server; the name servers looked up on the way, `depth` deep, are not.
+    /// the id, its server and its number (see [`numbered`]); the name servers looked up on the way, `depth` deep,
+    /// are not.
     async fn walk(
         &self,
         question: &Question<'static>,
@@ -254,8 +262,9 @@ impl Tracer<'_> {
                     .await?;
                 let decoded = Message::decode(&response.wire)?;
                 if let Some((id, hops)) = &mut hops {
+                    let id = numbered(id, server, hops.len() + 1);
                     hops.push((
-                        Report::exchanged(id.at(server), server, &response, &decoded),
+                        Report::exchanged(id, server, &response, &decoded),
                         response.wire.clone(),
                     ));
                 }
