@@ -900,6 +900,47 @@ async fn a_tcp_query_through_the_relay_is_the_largest_packet() {
     assert_eq!(script.seen[0].packet_len, 4096);
 }
 
+/// D101, "Anonymized `DNSCrypt`": through a relay over TCP, a PQ query is the largest packet too, its X-Wing
+/// ciphertext leaving less room for the padding than a classical key does.
+#[compio::test]
+async fn a_pq_tcp_query_through_the_relay_is_the_largest_packet() {
+    let resolver = Resolver::start_pq().await;
+    let relay = LoopbackRelay::start(false).await;
+    let mut options = Options::default();
+    options.transport = Transport::Tcp;
+    let response = Client::new()
+        .exchange_dnscrypt_via(query(), &resolver.stamp, &[relay.stamp], &options)
+        .await
+        .expect("a response");
+    assert_eq!(response.dnscrypt.map(|info| info.es_version), Some(3));
+    let script = resolver.script();
+    assert_eq!(script.seen.len(), 1);
+    assert_eq!(script.seen[0].packet_len, 4096);
+}
+
+/// D101: a PQ query has no floor, so the floor that truncated responses raised to the largest packet leaves its
+/// queries, resumed or not, the room their ciphertext or ticket takes.
+#[compio::test]
+async fn pq_queries_fit_once_the_floor_is_the_largest_packet() {
+    let resolver = Resolver::start_pq().await;
+    let mut options = Options::default();
+    options.dnscrypt.resume = true;
+    let client = Client::new();
+    // Each truncated response doubles the floor, 256 bytes at first: 4096 after four.
+    for _ in 0..4 {
+        resolver.script().acts.push_back(Act::Truncate);
+        client
+            .exchange_dnscrypt(query(), &resolver.stamp, &options)
+            .await
+            .expect("a response over TCP");
+    }
+    let response = client
+        .exchange_dnscrypt(query(), &resolver.stamp, &options)
+        .await
+        .expect("a response");
+    assert_eq!(response.transport, Transport::Udp);
+}
+
 /// "Anonymized `DNSCrypt`": a truncated response through the relay is asked again over TCP to the relay, with the
 /// largest inner packet, and the next UDP queries are larger.
 #[compio::test]

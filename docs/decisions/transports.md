@@ -685,7 +685,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     response larger than the inner packet (the reference relay, `encrypted-dns-server`, `anonymized_dns.rs`). So the
     certificate query is padded with the EDNS padding option (RFC 7830) to 1200 bytes over UDP (room for both
     certificates), and over TCP, tried when UDP is silent or truncated, to 4096 bytes, the draft's largest; a sealed query
-    over TCP is padded to a 4096-byte packet (`QueryPadding::udp(len, RELAY_PACKET_LEN)`, 4028 bytes of plaintext),
+    over TCP is padded to a 4096-byte packet (4028 bytes of plaintext, 2940 for a PQ one: D101's ciphertext),
     over UDP as D98 does: the draft's "Relay Behavior" and `dnscrypt-proxy` (`minRelayedQuerySize`) pad to 4096 too, and a `dedensd`
     resolver reads a query so large whole (D49). A truncated
     answer raises the padding target and goes again over TCP as D98's does. A certificate response is accepted when

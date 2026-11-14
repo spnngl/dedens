@@ -32,8 +32,9 @@ use compio::BufResult;
 use compio::io::util::Splittable;
 use dedens_dnscrypt::{
     Certificate, ClientMagic, ClientNonce, ClientSession, EncryptQueryError, EncryptionSystem,
-    MAX_PACKET_LEN, Opened, ProviderKey, QueryContext, QueryPadding, ResponseError, Resumption,
-    SecretKey, SessionError, SystemPolicy, relay_query, select,
+    KEY_LEN, MAX_PACKET_LEN, Opened, ProviderKey, QUERY_OVERHEAD, QueryContext, QueryPadding,
+    ResponseError, Resumption, SecretKey, SessionError, SystemPolicy, XWING_CIPHERTEXT_LEN,
+    relay_query, select,
 };
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
@@ -60,8 +61,12 @@ const FIRST_FLOOR: usize = 256;
 
 /// The inner query a relay gets over TCP, certificate query or sealed packet: the relay asks the resolver over UDP and
 /// drops a response longer than it, so it is the largest a packet can be, 4096 bytes (D100): a sealed one holds 4028
-/// bytes of plaintext and 68 of overhead.
+/// bytes of plaintext and 68 of overhead, a PQ one 2940 and 1156 ([`PQ_QUERY_OVERHEAD`]).
 const RELAY_PACKET_LEN: usize = MAX_PACKET_LEN;
+
+/// The bytes of a full PQ query that are not its plaintext: the X-Wing ciphertext where a classical query has its
+/// key (D101).
+const PQ_QUERY_OVERHEAD: usize = QUERY_OVERHEAD - KEY_LEN + XWING_CIPHERTEXT_LEN;
 
 /// The length of a certificate query to a relay over UDP: the relay drops a response longer than the query, and the
 /// classical certificates a resolver serves make a response of about 400 bytes (draft "Anonymized `DNSCrypt`",
@@ -420,13 +425,9 @@ impl Resolver {
         let pq = certificate.body().system() == EncryptionSystem::XWing;
         let mut entropy = Entropy::from_io(io).map_err(ClientError::Random)?;
         let nonce = ClientNonce::random(&mut entropy);
+        // The padding of a classical or a resumed query, whose overhead is about a classical one's.
         let padding = if transport != Transport::Tcp {
-            if pq && !options.dnscrypt.resume {
-                // The ciphertext alone makes the packet longer than any response needs to be.
-                QueryPadding::udp(wire.len(), 0)
-            } else {
-                QueryPadding::udp(wire.len(), self.state.borrow().floor)
-            }
+            QueryPadding::udp(wire.len(), self.state.borrow().floor)
         } else if relay.is_some() {
             // A relay asks the resolver over UDP, and drops a response longer than the query: as large as is safe.
             QueryPadding::udp(wire.len(), RELAY_PACKET_LEN)
@@ -438,6 +439,15 @@ impl Resolver {
         let (packet, context, resumed) = if let Some((packet, context)) = resumed {
             (packet, context, true)
         } else {
+            let padding = match (pq, transport, relay) {
+                (false, ..) | (true, Transport::Tcp, None) => padding,
+                // The largest packet, which the ciphertext leaves less of to the plaintext.
+                (true, Transport::Tcp, Some(_)) => {
+                    QueryPadding::to(RELAY_PACKET_LEN - PQ_QUERY_OVERHEAD)
+                }
+                // No floor: the ciphertext alone makes the packet longer than any response needs to be (D101).
+                (true, ..) => QueryPadding::udp(wire.len(), 0),
+            };
             let session = if pq {
                 ClientSession::xwing(&certificate, &mut entropy)
             } else {
