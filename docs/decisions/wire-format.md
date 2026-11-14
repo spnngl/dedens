@@ -75,9 +75,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   demand. No hot path reads inside RDATA (the cache serves bytes, a forwarder checks then stores), so decode
   checks every RDATA (D9) and builds nothing; encode copies the bytes, except for the types whose names may be
   compressed (RFC 3597 §4), read and written again. Equality and hashing go through `RData`, so names in RDATA
-  compare without case (RFC 4343). Replaces D20: with decoding into reused vectors (`decode_reusing`), one
-  `Message` is as cheap as the view, and `ttl_offsets` gives the cache the TTL positions. Messages over
-  65535 bytes are refused. Gain: one message type instead of two, at the same measured speed
+  compare without case (RFC 4343), those of the opaque types of D11 too. Replaces D20: with decoding into reused
+  vectors (`decode_reusing`), one `Message` is as cheap as the view, and `ttl_offsets` gives the cache the TTL
+  positions. Messages over 65535 bytes are refused. Gain: one message type instead of two, at the same measured speed
   (`docs/benchmarks.md`); typed records were expected to explain the encode gap with Unbound and did not.
   Rejected: expanding compressed names at decode (one allocation per such record).
 - D59 The fixed wire layouts, the header and the fields after a question's or a record's name, are `zerocopy`
