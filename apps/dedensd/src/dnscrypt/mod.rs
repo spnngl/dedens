@@ -88,6 +88,16 @@ impl Decapsulations {
         })
     }
 
+    /// As [`Decapsulations::new`], the buckets picked under a fixed key: a test's networks share a bucket in every
+    /// run or in none, where a random key in a small table makes two of them share one now and then.
+    #[cfg(test)]
+    pub(crate) fn keyed(client: Budget, global: Budget) -> Self {
+        Self {
+            clients: Budgets::with_key(client, &[7; 16]).expect("a client budget in bounds"),
+            global: Budgets::with_key(global, &[7; 16]).expect("a global budget in bounds"),
+        }
+    }
+
     /// Whether the client at `from` may have a packet decapsulated at second `now`, by the budget that refuses it
     /// (`"client"` or `"global"`) if not. The network of `from` pays a unit first, then all clients: a refusal by
     /// the second gives the first back, so a client over the global budget does not spend its network's. `proven` is

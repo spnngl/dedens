@@ -745,13 +745,15 @@ mod tests {
                 burst,
                 table,
             };
-            // Two at once for a network, twelve for all, and nothing refilled within the test's second.
+            // Two at once for a network, twelve for all, and nothing refilled: the test reads the thread's clock,
+            // whose second may turn while it runs.
             let service = Arc::try_unwrap(pq_service())
                 .ok()
                 .expect("one owner")
-                .with_decapsulations(
-                    Decapsulations::new(budget(1, 2, 1 << 8), budget(1, 12, 1)).expect("budgets"),
-                );
+                .with_decapsulations(Decapsulations::keyed(
+                    budget(0, 2, 1 << 8),
+                    budget(0, 12, 1),
+                ));
             let keys = Keys::new(Arc::new(service), &thread);
             let set = Arc::clone(&keys.held.borrow().set);
             let mut entropy = Entropy::new().expect("entropy");
