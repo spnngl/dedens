@@ -300,7 +300,25 @@ impl Resolver {
         resolver
     }
 
+    /// A resolver as [`Resolver::start`]'s on TCP alone: its UDP port is closed, and refuses the datagrams.
+    async fn start_tcp_only() -> Self {
+        let signer = signer(1);
+        let secret = SecretKey::from_bytes([2; 32]);
+        let certificate = valid(&signer, &secret, 1);
+        let keys = vec![ResolverKey::new(&certificate, secret).expect("a key")];
+        Self::serve(signer, keys, vec![certificate], false).await
+    }
+
     async fn with(signer: SigningKey, keys: Vec<ResolverKey>, served: Vec<Certificate>) -> Self {
+        Self::serve(signer, keys, served, true).await
+    }
+
+    async fn serve(
+        signer: SigningKey,
+        keys: Vec<ResolverKey>,
+        served: Vec<Certificate>,
+        udp: bool,
+    ) -> Self {
         let (socket, listener) = loop {
             let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
             let addr = socket.local_addr().expect("an address");
@@ -337,7 +355,9 @@ impl Resolver {
             seen: Vec::new(),
         }));
         let shared = Rc::clone(&script);
+        let socket = udp.then_some(socket);
         compio::runtime::spawn(async move {
+            let Some(socket) = socket else { return };
             let mut buf = Vec::with_capacity(65535);
             loop {
                 buf.clear();
@@ -723,6 +743,15 @@ struct LoopbackRelay {
 
 impl LoopbackRelay {
     async fn start(mute: bool) -> Self {
+        Self::with(mute, true).await
+    }
+
+    /// A relay on TCP alone: its UDP port is closed, and refuses the datagrams.
+    async fn start_tcp_only() -> Self {
+        Self::with(false, false).await
+    }
+
+    async fn with(mute: bool, udp: bool) -> Self {
         let (socket, listener) = loop {
             let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
             let addr = socket.local_addr().expect("an address");
@@ -733,7 +762,9 @@ impl LoopbackRelay {
         let addr = socket.local_addr().expect("an address");
         let seen = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&seen);
+        let socket = udp.then_some(socket);
         compio::runtime::spawn(async move {
+            let Some(socket) = socket else { return };
             let mut buf = Vec::with_capacity(65535);
             loop {
                 buf.clear();
@@ -1030,6 +1061,48 @@ async fn a_relay_that_refuses_is_skipped_by_the_next_try() {
     for _ in 0..queries {
         client
             .exchange_dnscrypt_via(query(), &resolver.stamp, &[down, live.stamp], &options)
+            .await
+            .expect("a response");
+    }
+    assert_eq!(resolver.script().seen.len(), queries);
+}
+
+/// D98: a resolver reached direct that refuses the sealed query is the exchange's error at once, as there is no
+/// other way to it; its certificates came over TCP.
+#[compio::test]
+async fn a_resolver_that_refuses_the_query_is_an_error() {
+    let resolver = Resolver::start_tcp_only().await;
+    let error = Client::new()
+        .exchange_dnscrypt(query(), &resolver.stamp, &quick())
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(&error, ClientError::Udp(error) if error.kind() == io::ErrorKind::ConnectionRefused),
+        "{error:?}"
+    );
+    assert_eq!(resolver.script().fetched, (0, 1));
+}
+
+/// D100: a relay that refuses the sealed query costs a try too, though it passed the certificates' query (over TCP,
+/// its UDP port closed).
+#[compio::test]
+async fn a_relay_that_refuses_the_query_is_skipped_by_the_next_try() {
+    let resolver = Resolver::start().await;
+    let half = LoopbackRelay::start_tcp_only().await;
+    let live = LoopbackRelay::start(false).await;
+    let mut options = quick();
+    options.tries = NonZeroU8::new(3).expect("three");
+    let client = Client::new();
+    // The relay is picked at random until it fails: 16 queries miss it with a chance of 2^-16.
+    let queries = 16;
+    for _ in 0..queries {
+        client
+            .exchange_dnscrypt_via(
+                query(),
+                &resolver.stamp,
+                &[half.stamp, live.stamp],
+                &options,
+            )
             .await
             .expect("a response");
     }
