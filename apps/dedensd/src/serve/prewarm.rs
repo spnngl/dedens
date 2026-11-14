@@ -121,7 +121,7 @@ enum Outcome {
     Asked(u32),
     /// Asked, and the cache does not hold an answer: no answer, or one that is not kept; a bogus one is not either.
     Failed,
-    /// No upstream query left to ask with, or the allowance of validation spent: asked again at once.
+    /// No upstream query left to ask with, or the allowance of validation spent: asked again a second later.
     Busy,
 }
 

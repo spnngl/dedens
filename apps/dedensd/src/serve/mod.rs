@@ -492,7 +492,6 @@ pub(crate) async fn serve(
                 })
             }
             #[cfg(feature = "dnscrypt")]
-            #[cfg(feature = "dnscrypt")]
             Bound::Dnscrypt(udp_socket, tcp_listener) => {
                 let keys = keys
                     .clone()
