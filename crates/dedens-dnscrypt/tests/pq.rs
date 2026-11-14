@@ -5,7 +5,8 @@
 //! The vectors are `testdata/dnscrypt/draft-pq-vectors.json`, copied from the draft's "Generated Values" by
 //! script, see `testdata/dnscrypt/README.md`; the inputs are the draft's counting bytes. They also check the
 //! `x-wing` crate against the draft's X-Wing: the ciphertext and the key derived from the KEM's secret are the
-//! draft's only if the KEM's are.
+//! draft's only if the KEM's are. The X-Wing draft's own vectors (draft-connolly-cfrg-xwing-kem-10, Appendix C,
+//! `testdata/dnscrypt/xwing-vectors.json`) run against the crate and against this crate's key wrappers.
 
 use std::fmt::Write;
 use std::fs;
@@ -14,12 +15,16 @@ use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, CertificateError, ClientMagic, ClientNonce,
     ClientSession, EncryptionSystem, QueryContext, QueryError, QueryPadding, ResolverKey,
     ResolverPublicKey, ResponseError, Resumption, SigningKey, SystemPolicy, TicketKey, TicketKeys,
-    TicketOffer, Validity, XWingSecretKey, select,
+    TicketOffer, Validity, XWingPublicKey, XWingSecretKey, select,
 };
 use dedens_testkit::hex;
 use ring::digest::{SHA256, digest};
 use ring::signature::Ed25519KeyPair;
 use serde::Deserialize;
+use x_wing::{
+    Ciphertext, Decapsulate as _, DecapsulationKey, Decapsulator as _, Encapsulate as _,
+    EncapsulationKey, KeyExport as _,
+};
 
 use crate::util::{Replay, array, seq};
 
@@ -854,4 +859,47 @@ fn another_x_wing_key_does_not_match_the_certificate() {
         ResolverKey::new(&certificate(), XWingSecretKey::from_seed([9; 32])).err(),
         Some(CertificateError::KeyMismatch)
     );
+}
+
+/// One of the X-Wing draft's test vectors, in hex, as `testdata/dnscrypt/xwing-vectors.json` holds them.
+#[derive(Deserialize)]
+struct XWingVector {
+    seed: String,
+    sk: String,
+    pk: String,
+    eseed: String,
+    ct: String,
+    ss: String,
+}
+
+/// draft-connolly-cfrg-xwing-kem-10, Appendix C: for each vector the crate derives the key from the seed, encapsulates
+/// with the encapsulation seed to the draft's ciphertext and shared secret, and decapsulates the ciphertext to the same
+/// secret; this crate's key wrappers hold the draft's keys.
+#[test]
+fn the_x_wing_drafts_own_vectors_hold() {
+    let path = dedens_testkit::path("dnscrypt/xwing-vectors.json");
+    let vectors: Vec<XWingVector> =
+        serde_json::from_str(&fs::read_to_string(path).expect("the vectors"))
+            .expect("JSON vectors");
+    assert_eq!(vectors.len(), 3, "the draft has three");
+    for vector in &vectors {
+        assert_eq!(vector.sk, vector.seed, "the secret key is the seed");
+        let key = DecapsulationKey::from(array::<32>(&hex(&vector.seed)));
+        let pk = hex(&vector.pk);
+        assert_eq!(key.encapsulation_key().to_bytes().as_slice(), pk);
+
+        let public = EncapsulationKey::try_from(pk.as_slice()).expect("an encapsulation key");
+        let (ciphertext, secret) =
+            public.encapsulate_with_rng(&mut Replay::new(&hex(&vector.eseed)));
+        assert_eq!(ciphertext.to_vec(), hex(&vector.ct));
+        assert_eq!(secret.as_slice(), hex(&vector.ss));
+
+        let ciphertext = Ciphertext::from(array::<1120>(&hex(&vector.ct)));
+        assert_eq!(key.decapsulate(&ciphertext).as_slice(), hex(&vector.ss));
+
+        let wrapped = XWingSecretKey::from_seed(array(&hex(&vector.seed)));
+        assert_eq!(wrapped.public_key().as_bytes().as_slice(), pk);
+        let parsed = XWingPublicKey::from_bytes(&array(&pk)).expect("a key");
+        assert_eq!(parsed, wrapped.public_key());
+    }
 }
