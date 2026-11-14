@@ -39,8 +39,6 @@ exclude_re = [
   'upstream\.rs:\d+:\d+: replace (dnscrypt|exchange_dnscrypt)(<N>)? -> .* with Ok\(Default::default\(\)\)$',
   # The same for a relay of `relays` (D100): a build without the feature refuses one by name before it is read.
   'upstream\.rs:\d+:\d+: replace <impl TryFrom<String> for Relay>::try_from -> Result<Self, String> with Ok\(Default::default\(\)\)$',
-  # The certificates' query of a relay is padded by what is left of its length, always more than the bare query.
-  'dnscrypt\.rs:\d+:\d+: replace > with >= in Resolver::certificate_query$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
@@ -144,9 +142,9 @@ exclude_re = [
   # A certificate kept to the very `Instant` its hour ends, or an `Instant` equal to the one it was chosen at: equal
   # `Instant`s never happen (D98).
   'dnscrypt\.rs:\d+:\d+: replace < with <= in Resolver::kept$',
-  # A ticket that expires this very second, read from the system clock (`unix_now`): a test's two queries come
-  # within one second of each other, never at its end (D101).
-  'dnscrypt\.rs:\d+:\d+: replace > with >= in Resolver::resumed$',
+  # D101: the flag only names which of two bucket sets a query is charged to, TCP's or UDP's; inverted, the sets are
+  # the same two with the names swapped.
+  'serve/dnscrypt\.rs:\d+:\d+: replace == with != in Keys::open$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
