@@ -1098,6 +1098,7 @@ dependencies = [
  "getrandom 0.4.3",
  "metrics",
  "metrics-util",
+ "rand_core 0.10.1",
  "rcgen",
  "thiserror",
  "tokio",

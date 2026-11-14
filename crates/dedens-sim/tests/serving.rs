@@ -167,6 +167,7 @@ fn with_every_upstream_cut_off_the_query_ends_in_servfail() {
             Fault::Partition(Node::Resolver, Node::Upstream(0)),
         );
         world.client(async move |stub| {
+            let mut elapsed = Vec::new();
             for _ in 0..2 {
                 let outcome = stub
                     .ask(question("example.com", RecordType::A), Carrier::Udp)
@@ -175,11 +176,14 @@ fn with_every_upstream_cut_off_the_query_ends_in_servfail() {
                     return Err(format!("no answer: {outcome:?}").into());
                 };
                 assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+                elapsed.push(answer.elapsed);
             }
+            // The first waited out the forward stage, the second came from the cache.
+            assert!(elapsed[0] >= SECOND, "{elapsed:?}");
+            assert!(elapsed[1] < SECOND, "{elapsed:?}");
             Ok(())
         });
-        let events = world.run().expect("the run passes its checks");
-        assert_eq!(served(&events), 0, "{events:#?}");
+        world.run().expect("the run passes its checks");
     });
 }
 
@@ -555,6 +559,7 @@ fn a_faulty_run_replays_in_two_processes() {
 /// dropped, in silence; a resumption ticket is good for ten minutes, across a rotation too.
 #[cfg(feature = "dnscrypt")]
 mod dnscrypt {
+    use std::convert::Infallible;
     use std::net::SocketAddr;
     use std::num::NonZeroU8;
 
@@ -563,12 +568,13 @@ mod dnscrypt {
         Certificate, ClientNonce, ClientSession, EncryptionSystem, ProviderKey, QueryPadding,
         Resumption, SecretKey, SigningKey,
     };
-    use dedens_net::entropy::Entropy;
     use dedens_proto::edns::EdnsOption;
     use dedens_proto::rdata::RData;
     use dedens_proto::{Message, RecordType};
     use dedens_server::Forward;
     use dedens_sim::resolver::pipeline_forwarding;
+    use dedens_sim::seed::Rng;
+    use rand_core::{TryCryptoRng, TryRng};
     use tokio::time::{sleep, timeout};
     use turmoil::net::UdpSocket;
 
@@ -577,6 +583,36 @@ mod dnscrypt {
     const PROVIDER: &str = "2.dnscrypt-cert.sim.example";
     const SEED: [u8; 32] = [0x5d; 32];
     const HOUR: std::time::Duration = std::time::Duration::from_hours(1);
+    /// The stream of [`Drawn`], apart from the topology's: the resolver's 0, the clients' from 1, and the top ones.
+    const KEYS: u64 = 1 << 32;
+
+    /// The client's keys and nonces, drawn from the run's seed so that one seed replays one run (D133): a CSPRNG by
+    /// marker only, for tests.
+    struct Drawn(Rng);
+
+    impl TryRng for Drawn {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+            let mut word = [0; 4];
+            self.try_fill_bytes(&mut word)?;
+            Ok(u32::from_le_bytes(word))
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+            Ok(self.0.next_u64())
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+            for chunk in dst.chunks_mut(8) {
+                let word = self.0.next_u64().to_le_bytes();
+                chunk.copy_from_slice(word.get(..chunk.len()).unwrap_or_default());
+            }
+            Ok(())
+        }
+    }
+
+    impl TryCryptoRng for Drawn {}
 
     /// The certificates the resolver serves, asked in the clear over UDP, newest first by serial.
     async fn certificates(
@@ -632,11 +668,11 @@ mod dnscrypt {
         socket: &UdpSocket,
         resolver: SocketAddr,
         certificate: &Certificate,
+        rng: &mut Drawn,
     ) -> turmoil::Result<Option<Resumption>> {
-        let mut entropy = Entropy::new()?;
-        let session = ClientSession::xwing(certificate, &mut entropy).map_err(|_| "a session")?;
+        let session = ClientSession::xwing(certificate, rng).map_err(|_| "a session")?;
         let wire = Message::query(7, question("example.com", RecordType::A)).to_vec()?;
-        let nonce = ClientNonce::random(&mut entropy);
+        let nonce = ClientNonce::random(rng);
         let (packet, context) = session
             .encrypt_query(&wire, QueryPadding::udp(wire.len(), 0), nonce)
             .map_err(|_| "a query")?;
@@ -655,9 +691,10 @@ mod dnscrypt {
         socket: &UdpSocket,
         resolver: SocketAddr,
         resumption: &Resumption,
+        rng: &mut Drawn,
     ) -> turmoil::Result<Option<Option<Resumption>>> {
         let wire = Message::query(8, question("example.com", RecordType::A)).to_vec()?;
-        let nonce = ClientNonce::random(&mut Entropy::new()?);
+        let nonce = ClientNonce::random(rng);
         let (packet, context) = resumption
             .encrypt_query(&wire, QueryPadding::udp(wire.len(), 256), nonce)
             .map_err(|_| "a query")?;
@@ -697,46 +734,59 @@ mod dnscrypt {
             let provider = SigningKey::from_seed(&SEED).expect("a seed").provider_key();
             world.client_direct(async move |_| {
                 let socket = UdpSocket::bind("0.0.0.0:0").await?;
+                let mut rng = Drawn(Rng::new(seed, KEYS));
                 let found = certificates_padded(&socket, resolver, &provider).await?;
                 assert_eq!(found.len(), 3, "a certificate per system, PQ included");
                 let pq = newest(&found, EncryptionSystem::XWing).expect("a PQ certificate");
 
-                let first = ticket(&socket, resolver, pq).await?.expect("a ticket");
+                let first = ticket(&socket, resolver, pq, &mut rng)
+                    .await?
+                    .expect("a ticket");
                 assert_eq!(first.lifetime(), 600);
                 sleep(60 * SECOND).await;
-                let renewed = resumed(&socket, resolver, &first)
+                let renewed = resumed(&socket, resolver, &first, &mut rng)
                     .await?
                     .expect("resumed within its life");
                 assert!(renewed.is_none(), "no renewal early in its life");
                 sleep(300 * SECOND).await;
-                let renewed = resumed(&socket, resolver, &first)
+                let renewed = resumed(&socket, resolver, &first, &mut rng)
                     .await?
                     .expect("resumed within its life");
                 assert!(renewed.is_some(), "renewed near its end");
                 sleep(300 * SECOND).await;
                 assert!(
-                    resumed(&socket, resolver, &first).await?.is_none(),
+                    resumed(&socket, resolver, &first, &mut rng)
+                        .await?
+                        .is_none(),
                     "an expired ticket is dropped"
                 );
 
                 // Just before the rotation of the keys, 12 hours after the start.
                 sleep(std::time::Duration::from_secs(12 * 3600 - 1000)).await;
-                let old = ticket(&socket, resolver, pq).await?.expect("a ticket");
+                let old = ticket(&socket, resolver, pq, &mut rng)
+                    .await?
+                    .expect("a ticket");
                 sleep(400 * SECOND).await;
                 let found = certificates_padded(&socket, resolver, &provider).await?;
                 let new = newest(&found, EncryptionSystem::XWing).expect("a PQ certificate");
                 assert!(new.body().serial > pq.body().serial, "rotated");
                 assert!(
-                    resumed(&socket, resolver, &old).await?.is_some(),
+                    resumed(&socket, resolver, &old, &mut rng).await?.is_some(),
                     "the key before the rotation opens its tickets"
                 );
                 sleep(400 * SECOND).await;
                 assert!(
-                    resumed(&socket, resolver, &old).await?.is_none(),
+                    resumed(&socket, resolver, &old, &mut rng).await?.is_none(),
                     "the ticket has expired"
                 );
-                let fresh = ticket(&socket, resolver, new).await?.expect("a ticket");
-                assert!(resumed(&socket, resolver, &fresh).await?.is_some());
+                let fresh = ticket(&socket, resolver, new, &mut rng)
+                    .await?
+                    .expect("a ticket");
+                assert!(
+                    resumed(&socket, resolver, &fresh, &mut rng)
+                        .await?
+                        .is_some()
+                );
                 Ok(())
             });
             world.run().expect("the run passes its checks");
@@ -756,10 +806,11 @@ mod dnscrypt {
         resolver: SocketAddr,
         certificate: &Certificate,
         secret: &SecretKey,
+        rng: &mut Drawn,
     ) -> turmoil::Result<bool> {
         let session = ClientSession::new(certificate, secret).map_err(|_| "a key")?;
         let wire = Message::query(7, question("example.com", RecordType::A)).to_vec()?;
-        let nonce = ClientNonce::random(&mut Entropy::new()?);
+        let nonce = ClientNonce::random(rng);
         let (packet, context) = session
             .encrypt_query(&wire, QueryPadding::udp(wire.len(), 256), nonce)
             .map_err(|_| "a query")?;
@@ -799,7 +850,8 @@ mod dnscrypt {
             let provider = SigningKey::from_seed(&SEED).expect("a seed").provider_key();
             world.client_direct(async move |_| {
                 let socket = UdpSocket::bind("0.0.0.0:0").await?;
-                let secret = SecretKey::generate(&mut Entropy::new()?);
+                let mut rng = Drawn(Rng::new(seed, KEYS));
+                let secret = SecretKey::generate(&mut rng);
                 let found = certificates(&socket, resolver, &provider).await?;
                 assert_eq!(found.len(), 2, "a certificate per system");
                 for system in [
@@ -807,7 +859,7 @@ mod dnscrypt {
                     EncryptionSystem::XSalsa20Poly1305,
                 ] {
                     let certificate = newest(&found, system).expect("one per system");
-                    assert!(answered(&socket, resolver, certificate, &secret).await?);
+                    assert!(answered(&socket, resolver, certificate, &secret, &mut rng).await?);
                 }
                 let old = newest(&found, EncryptionSystem::XChaCha20Poly1305)
                     .expect("one per system")
@@ -823,11 +875,11 @@ mod dnscrypt {
                 let new = newest(&found, EncryptionSystem::XChaCha20Poly1305).expect("a new one");
                 assert!(new.body().serial > old.body().serial);
                 assert!(
-                    answered(&socket, resolver, &old, &secret).await?,
+                    answered(&socket, resolver, &old, &secret, &mut rng).await?,
                     "the old key"
                 );
                 assert!(
-                    answered(&socket, resolver, new, &secret).await?,
+                    answered(&socket, resolver, new, &secret, &mut rng).await?,
                     "the new key"
                 );
                 let new = new.clone();
@@ -839,11 +891,11 @@ mod dnscrypt {
                     "the ended certificate is not served"
                 );
                 assert!(
-                    !answered(&socket, resolver, &old, &secret).await?,
+                    !answered(&socket, resolver, &old, &secret, &mut rng).await?,
                     "an expired key"
                 );
                 assert!(
-                    answered(&socket, resolver, &new, &secret).await?,
+                    answered(&socket, resolver, &new, &secret, &mut rng).await?,
                     "a valid key"
                 );
                 Ok(())
