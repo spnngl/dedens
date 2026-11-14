@@ -19,6 +19,10 @@ set -euo pipefail
 base="${1:-HEAD}"
 mode="${2:-udp}"
 perf="${DEDENS_PERF:-}"
+case $mode in
+    udp | tcp | forward | forward-tcp | two-sockets) ;;
+    *) echo "unknown mode $mode: udp, tcp, forward, forward-tcp or two-sockets" >&2; exit 2 ;;
+esac
 apt-get update -qq >/dev/null
 apt-get install -y -qq dnsperf dnsutils git ${perf:+linux-perf} >/dev/null 2>&1
 if [[ -n $perf ]]; then
@@ -27,7 +31,8 @@ if [[ -n $perf ]]; then
     cargo install -q --locked rustfilt
     export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false
 fi
-git config --global --add safe.directory /src
+# The repository is the host user's; a worktree's git directory is outside /src.
+git config --global --add safe.directory '*'
 # No server outlives the script: a leftover one would answer the next run's queries.
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
 build() { # build <name>: /<name> into /<name>.bin, each in its own target directory (cargo would take one
