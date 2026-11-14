@@ -97,7 +97,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   and canonical form are `dedens-dnssec`'s. Rules:
   - Invalid RDATA is kept opaque with a violation (D9), so a type has one form: a DNSKEY protocol other than
     3 (RFC 4034 §2.1.2); an empty DS digest, DNSKEY key, RRSIG signature or NSEC3 hash, which no text could
-    write; a type bitmap that breaks RFC 4034 §4.1.2 (windows out of order, a window of 0 or over 32 bytes, a
+    write; an RRSIG signature over 65262 bytes, so that any signer fits beside it (D125: `signer` is public); a
+    type bitmap that breaks RFC 4034 §4.1.2 (windows out of order, a window of 0 or over 32 bytes, a
     trailing zero byte). `TypeBitmap` holds the checked wire bytes, so a set of types has one value. The
     protocol is not stored: it is 3.
   - The RRSIG signer and the NSEC next name are read with `Name::decode_uncompressed`: a pointer makes the

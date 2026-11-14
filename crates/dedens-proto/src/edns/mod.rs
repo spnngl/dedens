@@ -325,7 +325,9 @@ impl<'a> Edns<'a> {
     }
 
     /// Writes the OPT record after the message in `buf[..len]` and counts it in the header's ARCOUNT, returning
-    /// the new length: how a server adds its EDNS to a response copied from a cache.
+    /// the new length: how a server adds its EDNS to a response copied from a cache. `buf[..len]` must hold no OPT
+    /// record (as [`crate::Message::to_vec_without_edns`] writes it): the message is not read, and a second OPT would
+    /// break RFC 6891 §6.1.1.
     ///
     /// ```
     /// # use dedens_proto::{edns::Edns, Message, Question, RecordType, Name};
