@@ -70,8 +70,8 @@ enum Route {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Endpoint {
     server: Server,
-    /// The transport whatever the options say: given as `tls://`, `quic://` or `https://`, or Oblivious `DoH`, which
-    /// `+odoh-proxy` makes of an `https://` server (D79).
+    /// The transport whatever the options say: given as `tls://`, `quic://`, `https://` or `coap://`, or Oblivious
+    /// `DoH`, which `+odoh-proxy` makes of an `https://` server (D79).
     forced: Option<Transport>,
     /// The proxy of Oblivious `DoH`, `server` being the target.
     proxy: Option<Box<Server>>,
@@ -85,8 +85,9 @@ struct Endpoint {
 
 impl Endpoint {
     /// This server among several, as its reports name it: `1.1.1.1`, then `+tls`, `+quic`, `+https`, `+odoh` or
-    /// `+coap` when forced, `+dnscrypt` for a stamp, then the path of its `DoH` template other than `/dns-query`, or of its CoAP URI, each
-    /// `/`, `\` or NUL a `_`: `tls://`, `quic://`, `https://` and `coap://` to one address, and two paths, stay apart.
+    /// `+coap` when forced, `+dnscrypt` for a stamp, then the path of its `DoH` template other than `/dns-query`, or
+    /// of its CoAP URI, each `/`, `\` or NUL a `_`: `tls://`, `quic://`, `https://` and `coap://` to one address, and
+    /// two paths, stay apart.
     fn label(&self) -> String {
         let over = match self.forced {
             Some(Transport::Tls) => "+tls",
@@ -160,6 +161,7 @@ impl std::error::Error for Usage {}
 /// Runs `cli`; an error is one of the run as a whole, before any query or while printing, a [`Usage`] one among them.
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     let jobs = jobs(cli)?;
+    let trust = cli.trust().map_err(Usage)?;
     if let Some(dir) = &cli.save_wire {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("cannot create {}", dir.display()))
@@ -167,7 +169,6 @@ pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
     let format = cli.output.format();
     let mut out = anstream::AutoStream::new(io::stdout().lock(), cli.output.color());
-    let trust = cli.trust().map_err(Usage)?;
     let runtime = compio::runtime::Runtime::new().context("cannot start the runtime")?;
     let code = runtime.block_on(async {
         let client = Rc::new(Client::new().trusting(trust));
@@ -478,7 +479,8 @@ async fn certificates(
     id: Id,
 ) -> anyhow::Result<(Report, Vec<u8>)> {
     let Some(stamp) = &endpoint.dnscrypt else {
-        bail!(Usage(anyhow!("+dnscrypt-cert needs an sdns:// server")));
+        // `refuse_conflicts` refused `+dnscrypt-cert` with any other server before the run.
+        bail!("+dnscrypt-cert needs an sdns:// server");
     };
     let listing = client
         .dnscrypt_certificates_via(stamp, &endpoint.relays, options)

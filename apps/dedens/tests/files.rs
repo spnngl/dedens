@@ -268,6 +268,24 @@ fn a_save_wire_directory_that_cannot_be_made_is_a_usage_error() {
     assert_eq!(server.queries().len(), 0);
 }
 
+/// D33: a usage error the run finds, here a `--tls-ca` file that cannot be read, leaves no `--save-wire` directory.
+#[test]
+fn a_usage_error_makes_no_save_wire_directory() {
+    let parent = tempfile::tempdir().expect("a directory");
+    let dir = parent.path().join("wire");
+    dedens()
+        .args([
+            "--tls-ca=/nonexistent/ca.pem",
+            "@tls://127.0.0.1:1",
+            "example.com",
+        ])
+        .arg("--save-wire")
+        .arg(&dir)
+        .assert()
+        .code(2);
+    assert!(!dir.exists());
+}
+
 /// `--save-wire` never writes two responses to one file: two lookups with one id are refused before any query
 /// (D177), and two `DoH` servers at one address, apart by their path, have their own ids.
 #[test]

@@ -95,8 +95,8 @@ fn scheme(text: &str) -> (&str, Option<Transport>) {
 /// unless through an Oblivious `DoH` proxy, which pads inside its encryption (D79); for `https://` with TCP, TLS or
 /// QUIC, as HTTPS is HTTP/3, over QUIC; for CoAP, `coap://` or the option, with another scheme or transport, as it
 /// is over UDP, unprotected; for an `sdns://` stamp, `DNSCrypt`, with TLS, QUIC, HTTPS, Oblivious `DoH` or CoAP, which
-/// it goes with none of; for `dnscrypt_cert`, `dnscrypt_relay`, `dnscrypt_pq` or `dnscrypt_resume`, with a server that is no stamp (D98, D100,
-/// D101).
+/// it goes with none of; for `dnscrypt_cert`, `dnscrypt_relay`, `dnscrypt_pq` or `dnscrypt_resume`, with a server
+/// that is no stamp (D98, D100, D101).
 pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result<()> {
     let stamp = given.starts_with(STAMP_SCHEME);
     if stamp
@@ -142,7 +142,7 @@ pub(crate) fn refuse_conflicts(given: &str, options: &Options) -> anyhow::Result
 /// # Errors
 ///
 /// A [`Usage`] one for a mistake in `named` or `options`, `+doc-discover` without a CoAP server with no path among
-/// them (D95); otherwise, no server to read or no address for a host name.
+/// them (D95); otherwise, no server to read, no address for a host name or a transport not built in.
 pub(super) fn server(
     named: Option<&str>,
     conf: Option<&ResolvConf>,
@@ -161,11 +161,9 @@ pub(super) fn server(
     if given.starts_with(STAMP_SCHEME) {
         #[cfg(feature = "dnscrypt")]
         return stamped(given, options);
-        // Without the `dnscrypt` feature, a stamp is refused.
+        // A transport not built in, as CoAP and Oblivious DoH without theirs (D33).
         #[cfg(not(feature = "dnscrypt"))]
-        bail!(Usage(anyhow!(
-            "server {given}: a DNSCrypt stamp, built without the dnscrypt feature"
-        )));
+        bail!("server {given}: a DNSCrypt stamp, built without the dnscrypt feature");
     }
     let (text, forced) = scheme(given);
     let (text, name) = match text.rsplit_once('#') {
@@ -281,8 +279,8 @@ fn address(host: &str, port: u16, given: &str) -> anyhow::Result<SocketAddr> {
 ///
 /// # Errors
 ///
-/// A [`Usage`] one for text that is no stamp, a relay stamp, which names no server to ask, a relay that is no relay
-/// stamp or address, and a build without the `dnscrypt` feature.
+/// A [`Usage`] one for text that is no stamp, a relay stamp, which names no server to ask, and a relay that is no
+/// relay stamp or address.
 #[cfg(feature = "dnscrypt")]
 fn stamped(given: &str, options: &Options) -> anyhow::Result<Endpoint> {
     use dedens_net::stamp::{Relay, Stamp};
@@ -357,6 +355,14 @@ mod tests {
         set(&mut options);
         refuse_conflicts(text, &options)?;
         server(Some(text), None, None, &options)
+    }
+
+    /// D33: a stamp without the `dnscrypt` feature is a transport not built in, exit 10, not a usage error.
+    #[cfg(not(feature = "dnscrypt"))]
+    #[test]
+    fn a_stamp_without_dnscrypt_is_not_a_usage_error() {
+        let error = endpoint("sdns://AQ", |_| ()).unwrap_err();
+        assert!(!error.is::<Usage>(), "{error:#}");
     }
 
     /// The port of the server `text` names, with `set` applied to the options.
