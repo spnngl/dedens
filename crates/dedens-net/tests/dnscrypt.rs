@@ -3,12 +3,13 @@
 //! on the loopback address, built from `dedens-dnscrypt`'s own resolver half: the certificates it serves and the
 //! packets it gets are the test's to see and to script.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::io;
 use std::net::SocketAddr;
 use std::num::{NonZeroU8, NonZeroU16};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use compio::BufResult;
 use compio::net::{TcpListener, UdpSocket};
@@ -21,6 +22,7 @@ use dedens_net::client::{Client, ClientError};
 use dedens_net::dnscrypt::DnsCryptError;
 use dedens_net::entropy::Entropy;
 use dedens_net::exchange::Options;
+use dedens_net::io::{Compio, Io, TimedOut};
 use dedens_net::stamp::{DnsCrypt, Endpoint, Properties};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl};
@@ -95,6 +97,8 @@ struct Script {
     fetch_sizes: Vec<usize>,
     /// The keys of the tickets issued to the full queries of PQ certificates; none, none is issued.
     tickets: Option<TicketKeys>,
+    /// The lifetime of the tickets it issues, in seconds.
+    ticket_life: u32,
     seen: Vec<Seen>,
 }
 
@@ -246,7 +250,7 @@ fn handle(
         .tickets
         .as_ref()
         .filter(|_| !resumed)
-        .and_then(|tickets| tickets.issue(&context, at, 300, &mut entropy));
+        .and_then(|tickets| tickets.issue(&context, at, script.ticket_life, &mut entropy));
     Some(
         context
             .encrypt_response_with(&wire(&answer), ticket.as_ref(), carrier, &mut entropy)
@@ -329,6 +333,7 @@ impl Resolver {
             fetched_with_cookie: 0,
             fetch_sizes: Vec::new(),
             tickets: None,
+            ticket_life: 300,
             seen: Vec::new(),
         }));
         let shared = Rc::clone(&script);
@@ -1203,4 +1208,141 @@ async fn tickets_are_not_used_unless_asked_for() {
             .expect("a response");
     }
     assert!(resolver.script().seen.iter().all(|seen| !seen.resumed));
+}
+
+/// Compio on a clock that runs ahead of the real one by a skew the test sets: time passes with no wait.
+#[derive(Debug, Clone, Default)]
+struct Skewed(Rc<Cell<Duration>>);
+
+impl Io for Skewed {
+    type Udp = <Compio as Io>::Udp;
+    type Stream = <Compio as Io>::Stream;
+    type Listener = <Compio as Io>::Listener;
+    type Task = <Compio as Io>::Task;
+
+    fn now(&self) -> Instant {
+        Compio.now() + self.0.get()
+    }
+
+    fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
+        Compio.spawn(task)
+    }
+
+    fn detach(&self, task: impl Future<Output = ()> + 'static) {
+        Compio.detach(task);
+    }
+
+    async fn timeout_at<F: Future>(
+        &self,
+        deadline: Instant,
+        future: F,
+    ) -> Result<F::Output, TimedOut> {
+        let real = deadline
+            .checked_sub(self.0.get())
+            .unwrap_or_else(|| Compio.now());
+        Compio.timeout_at(real, future).await
+    }
+
+    fn random(&self, bytes: &mut [u8]) -> io::Result<()> {
+        Compio.random(bytes)
+    }
+
+    async fn udp_bind(&self, addr: SocketAddr) -> io::Result<Self::Udp> {
+        Compio.udp_bind(addr).await
+    }
+
+    async fn tcp_connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+        Compio.tcp_connect(addr).await
+    }
+}
+
+/// Whether the response of an exchange says the query was resumed.
+async fn resumed_with(client: &Client<Skewed>, resolver: &Resolver, options: &Options) -> bool {
+    let response = client
+        .exchange_dnscrypt(query(), &resolver.stamp, options)
+        .await
+        .expect("a response");
+    response.dnscrypt.expect("DNSCrypt information").resumed
+}
+
+/// D101: a ticket expires when its lifetime has run on the clock of the exchanges, from the response that brought it
+/// (S3 of the review of step 14): the exchange before is resumed, the exchange after is a full one, and the response
+/// says which it was.
+#[compio::test]
+async fn a_ticket_is_used_until_its_lifetime_has_run_on_the_exchanges_clock() {
+    let resolver = Resolver::start_pq().await;
+    let mut options = quick();
+    options.dnscrypt.resume = true;
+    let skew = Skewed::default();
+    let client = Client::with_io(skew.clone());
+    assert!(!resumed_with(&client, &resolver, &options).await);
+    assert!(resumed_with(&client, &resolver, &options).await);
+    skew.0.set(Duration::from_secs(290));
+    assert!(
+        resumed_with(&client, &resolver, &options).await,
+        "10 s left"
+    );
+    skew.0.set(Duration::from_secs(310));
+    assert!(!resumed_with(&client, &resolver, &options).await, "expired");
+    assert!(
+        resumed_with(&client, &resolver, &options).await,
+        "a new ticket"
+    );
+    let kinds: Vec<_> = resolver
+        .script()
+        .seen
+        .iter()
+        .map(|seen| seen.resumed)
+        .collect();
+    assert_eq!(kinds, [false, true, true, false, true]);
+}
+
+/// D101, "Resumption Tickets": the ticket is bound to the certificate by its client magic and the end of its validity,
+/// not by its serial (S2 of the review): the certificates are asked for again after an hour, and one of another magic
+/// ends the ticket, one of another serial and the same magic and validity keeps it.
+#[compio::test]
+async fn a_ticket_follows_the_client_magic_and_validity_of_its_certificate() {
+    for (magic, resumed) in [(1, true), (9, false)] {
+        let resolver = Resolver::start_pq().await;
+        resolver.script().ticket_life = 7200;
+        let mut options = quick();
+        options.dnscrypt.resume = true;
+        let skew = Skewed::default();
+        let client = Client::with_io(skew.clone());
+        assert!(!resumed_with(&client, &resolver, &options).await);
+        {
+            // The provider issues serial 2 for another key, with the magic and validity of serial 1 or not.
+            let mut script = resolver.script();
+            let first = script
+                .served
+                .iter()
+                .find(|certificate| certificate.body().serial == 1)
+                .expect("the PQ certificate")
+                .body()
+                .clone();
+            let secret = XWingSecretKey::from_seed([4; 32]);
+            let certificate = Certificate::sign(
+                &script.signer,
+                CertificateBody {
+                    resolver_key: ResolverPublicKey::XWing(secret.public_key()),
+                    client_magic: ClientMagic::try_from([magic; 8]).expect("a magic"),
+                    serial: 2,
+                    validity: first.validity,
+                    extensions: Vec::new(),
+                },
+            );
+            script
+                .keys
+                .push(ResolverKey::new(&certificate, secret).expect("a key"));
+            script.served.push(certificate);
+        }
+        skew.0.set(Duration::from_secs(3700));
+        assert_eq!(
+            resumed_with(&client, &resolver, &options).await,
+            resumed,
+            "magic {magic}"
+        );
+        let script = resolver.script();
+        assert_eq!(script.fetched.0, 2, "the certificates were asked for again");
+    }
 }

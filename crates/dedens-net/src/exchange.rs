@@ -139,6 +139,8 @@ pub struct CertificateInfo {
     pub valid_from: u32,
     /// The `<ts-end>`, in seconds since 1970.
     pub valid_until: u32,
+    /// Whether the query was resumed with a ticket, with no key agreement (D101); false for a listing.
+    pub resumed: bool,
 }
 
 /// The HTTP response a DNS response came in (RFC 8484 §4.2).
