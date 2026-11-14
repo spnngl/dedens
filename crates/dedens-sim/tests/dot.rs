@@ -95,7 +95,7 @@ fn ends(events: &[Event]) -> Vec<&What> {
 }
 
 /// The transports the resolver forwarded over.
-fn forwarded(events: &[Event]) -> Vec<Transport> {
+fn transports_forwarded(events: &[Event]) -> Vec<Transport> {
     events
         .iter()
         .filter_map(|event| match event.what {
@@ -110,7 +110,10 @@ fn ends_as_over_tcp(seed: Seed, fault: Fault) {
     let over_tls = run(seed, Topology::dot_upstream, fault);
     let over_tcp = run(seed, Topology::upstream, fault);
     assert_eq!(ends(&over_tls), ends(&over_tcp), "{}", fault.0);
-    let (tls, tcp) = (forwarded(&over_tls), forwarded(&over_tcp));
+    let (tls, tcp) = (
+        transports_forwarded(&over_tls),
+        transports_forwarded(&over_tcp),
+    );
     assert!(!tls.is_empty(), "{}", fault.0);
     assert!(
         tls.iter().all(|transport| *transport == Transport::Tls),

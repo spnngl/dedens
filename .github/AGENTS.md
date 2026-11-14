@@ -8,7 +8,5 @@ runs. `actionlint` and `zizmor` lint these files. `ci.yml`'s `gate` job is the o
 requires: no other workflow blocks a merge. Each opens with a comment saying what it runs and when; a new one does
 too.
 
-First release, by hand (D153): push `v0.1.0` (`git tag v0.1.0 && git push origin v0.1.0`); once the `image` job has
-pushed, set the `dedensd` package to public (GitHub: Packages, `dedensd`, Package settings, Change visibility: no API
-does it, and a package is private at its first push) and add a tag ruleset on `v*`; check the release's archives
-and packages against `SHA256SUMS` and `gh attestation verify`.
+Release (D153): `v0.1.0` is out and the `dedensd` package public; left by hand, a tag ruleset on `v*` (the only
+ruleset is `main`'s). Check a release's archives and packages against `SHA256SUMS` and `gh attestation verify`.
