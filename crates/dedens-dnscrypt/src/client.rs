@@ -146,7 +146,7 @@ impl ClientSession {
             return Err(SessionError::WrongSystem);
         };
         let (ciphertext, secret) = resolver_key.encapsulate(rng);
-        let context = pq::cert_context(&body.signed_bytes());
+        let context = pq::cert_context(certificate.minor_version(), &body.signed_bytes());
         Ok(Self {
             magic: body.client_magic,
             shared: pq::session_key(&context, body.client_magic, &secret, &ciphertext),

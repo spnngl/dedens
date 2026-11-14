@@ -19,7 +19,7 @@ const CERT_MAGIC: [u8; 4] = *b"DNSC";
 /// Length of an Ed25519 signature.
 const SIGNATURE_LEN: usize = 64;
 
-/// `<protocol-minor-version>`, the only one the draft defines.
+/// `<protocol-minor-version>` of the certificates this crate signs, the only one the draft defines.
 const MINOR_VERSION: [u8; 2] = [0, 0];
 
 /// The Anonymized `DNSCrypt` magic, `<anon-magic>`, whose first eight bytes a `<client-magic>` may not be.
@@ -290,14 +290,17 @@ impl fmt::Debug for SigningKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Certificate {
     body: CertificateBody,
+    /// `<protocol-minor-version>`: outside what the provider signs, but part of an X-Wing key derivation (draft
+    /// "PQ Key Derivation"), so a client and a resolver must agree on the one the certificate carries.
+    minor: [u8; 2],
     wire: Vec<u8>,
 }
 
 impl Certificate {
     /// Reads a certificate and checks its signature with `provider`.
     ///
-    /// A `<protocol-minor-version>` is read and not kept: the signature does not cover it, and this crate has
-    /// nothing to do with it.
+    /// The `<protocol-minor-version>` is kept ([`Certificate::minor_version`]): the signature does not cover it, and
+    /// the key derivation of an X-Wing certificate does.
     ///
     /// # Errors
     ///
@@ -315,7 +318,7 @@ impl Certificate {
         let system = EncryptionSystem::from_es_version(*es_version).ok_or(
             CertificateError::UnsupportedSystem(u16::from_be_bytes(*es_version)),
         )?;
-        let (_minor, rest) = rest
+        let (minor, rest) = rest
             .split_first_chunk::<2>()
             .ok_or(CertificateError::TooShort)?;
         let (signature, signed) = rest
@@ -345,6 +348,7 @@ impl Certificate {
         };
         Ok(Self {
             body,
+            minor: *minor,
             wire: bytes.to_vec(),
         })
     }
@@ -373,13 +377,23 @@ impl Certificate {
         wire.extend_from_slice(&MINOR_VERSION);
         wire.extend_from_slice(signature.as_ref());
         wire.extend_from_slice(&signed);
-        Self { body, wire }
+        Self {
+            body,
+            minor: MINOR_VERSION,
+            wire,
+        }
     }
 
     /// The fields of the certificate.
     #[must_use]
     pub const fn body(&self) -> &CertificateBody {
         &self.body
+    }
+
+    /// The `<protocol-minor-version>` the certificate carries: `00 00` for one signed by this crate.
+    #[must_use]
+    pub const fn minor_version(&self) -> [u8; 2] {
+        self.minor
     }
 
     /// The certificate as it is in a TXT record, from `<cert-magic>` on: 124 bytes without extensions, 1320 for
