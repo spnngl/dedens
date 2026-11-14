@@ -1,6 +1,7 @@
 //! Unknown and unsupported types: RDATA kept as bytes (RFC 3597 §4-5).
 
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use std::borrow::Cow;
 
 use super::{MAX_RDATA_LEN, RData};
@@ -14,10 +15,61 @@ use crate::wire::{Reader, Writer};
 ///
 /// The bytes never hold compression pointers: names in the types that may carry compressed ones are decompressed
 /// on decode (RFC 3597 §4), so the bytes keep their meaning outside the message they came from.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Equality and hashing read those names without case, as in typed RDATA (D28, RFC 4343); the other bytes, and
+/// all those of the other types, compare byte for byte (RFC 3597 §6).
+#[derive(Debug, Clone)]
 pub struct Opaque<'a> {
     rtype: RecordType,
     data: Cow<'a, [u8]>,
+}
+
+impl PartialEq for Opaque<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.rtype == other.rtype && self.parts().eq(other.parts())
+    }
+}
+
+impl Eq for Opaque<'_> {}
+
+impl Hash for Opaque<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.rtype.hash(state);
+        self.parts().for_each(|part| part.hash(state));
+    }
+}
+
+/// A piece of RDATA as equality reads it: a name, compared without case, or bytes.
+#[derive(PartialEq, Hash)]
+enum Part<'a> {
+    Name(Name<'a>),
+    Bytes(&'a [u8]),
+}
+
+impl Opaque<'_> {
+    /// The fields of a type of [`layout`] as names and bytes, then any bytes they leave; the others' bytes whole.
+    fn parts(&self) -> impl Iterator<Item = Part<'_>> {
+        let mut fields = layout(self.rtype).unwrap_or_default().iter();
+        let mut r = Reader::new(&self.data);
+        core::iter::from_fn(move || {
+            if r.is_empty() {
+                return None;
+            }
+            let mut start = r;
+            let part = match fields.next() {
+                Some(Field::Name) => Name::decode_uncompressed(&mut r).ok().map(Part::Name),
+                Some(&field) => read_field(field, &mut r)
+                    .and_then(|()| start.bytes(r.position() - start.position()))
+                    .ok()
+                    .map(Part::Bytes),
+                None => None,
+            };
+            Some(part.unwrap_or_else(|| {
+                r = start;
+                Part::Bytes(r.rest())
+            }))
+        })
+    }
 }
 
 /// The fields in order for the types made of names, 16-bit numbers and character-strings (MD MF MB MG MR MINFO
@@ -283,31 +335,36 @@ fn read_fields<'a>(
     mut copy: Option<&mut Vec<u8>>,
 ) -> Result<bool, DecodeError> {
     let mut packed = false;
-    for field in fields {
+    for &field in fields {
         let mut start = *r;
-        match field {
-            Field::Name => {
-                let name = name(r)?;
-                packed |= name.is_packed();
-                if let Some(out) = copy.as_deref_mut() {
-                    out.extend_from_slice(name.to_wire(&mut [0; MAX_NAME_LEN]));
-                }
-                continue;
+        if let Field::Name = field {
+            let name = name(r)?;
+            packed |= name.is_packed();
+            if let Some(out) = copy.as_deref_mut() {
+                out.extend_from_slice(name.to_wire(&mut [0; MAX_NAME_LEN]));
             }
-            Field::Bytes(n) => {
-                r.bytes(*n)?;
-            }
-            Field::CharacterString => {
-                let len = r.u8()?;
-                r.bytes(usize::from(len))?;
-            }
-            Field::Rest => {
-                r.rest();
-            }
+            continue;
         }
+        read_field(field, r)?;
         if let Some(out) = copy.as_deref_mut() {
             out.extend_from_slice(start.bytes(r.position() - start.position())?);
         }
     }
     Ok(packed)
+}
+
+/// Reads one field, a name uncompressed.
+fn read_field(field: Field, r: &mut Reader<'_>) -> Result<(), DecodeError> {
+    match field {
+        Field::Name => Name::decode_uncompressed(r).map(drop),
+        Field::Bytes(n) => r.bytes(n).map(drop),
+        Field::CharacterString => {
+            let len = r.u8()?;
+            r.bytes(usize::from(len)).map(drop)
+        }
+        Field::Rest => {
+            r.rest();
+            Ok(())
+        }
+    }
 }

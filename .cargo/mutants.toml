@@ -111,6 +111,7 @@ exclude_re = [
   'record\.rs:\d+:\d+: replace match guard RData::may_hold_compressed_names\(rtype\) with true in WireRdata<.a>::into_owned$',
   # A constant hash keeps every map and set right, only slower; no test can tell.
   'record\.rs:\d+:\d+: replace <impl Hash for WireRdata<._>>::hash with \(\)$',
+  'opaque\.rs:\d+:\d+: replace <impl Hash for Opaque<._>>::hash with \(\)$',
   # Without the `doc` feature only: not built under `all_features`, so no test sees a change.
   'client\.rs:\d+:\d+: replace discover -> Result<Vec<Vec<Box<\[u8\]>>>, ClientError> with ',
   # Configurations that go stale at the very `Instant` they are read or kept: equal `Instant`s never happen.

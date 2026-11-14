@@ -667,6 +667,26 @@ fn records_compare_names_in_rdata_without_case() {
     assert_eq!(lower, upper);
 }
 
+/// The names of the types kept opaque with their names expanded (D11) compare and hash without case too; their
+/// other bytes, as those of unknown types (RFC 3597 §6), byte for byte.
+#[test]
+fn opaque_records_compare_names_in_rdata_without_case() {
+    let record = |text: &str| text.parse::<Record<'static>>().expect(text);
+    let lower = record("a. 60 IN NAPTR 100 10 \"u\" \"E2U+sip\" \"!^.*$!sip:x@y!\" sip.example.");
+    let upper = record("a. 60 IN NAPTR 100 10 \"u\" \"E2U+sip\" \"!^.*$!sip:x@y!\" SIP.Example.");
+    assert!(matches!(lower.data(), RData::Opaque(_)));
+    assert_eq!(lower, upper);
+    assert_eq!(HashSet::from([lower.clone(), upper]).len(), 1);
+    let services =
+        record("a. 60 IN NAPTR 100 10 \"u\" \"E2U+SIP\" \"!^.*$!sip:x@y!\" sip.example.");
+    assert_ne!(lower, services, "character-strings keep their case");
+    assert_ne!(
+        record("a. 60 IN TYPE65280 \\# 1 41"),
+        record("a. 60 IN TYPE65280 \\# 1 61"),
+        "unknown types compare byte for byte"
+    );
+}
+
 #[test]
 fn invalid_rdata_reads_as_opaque_and_is_written_as_received() {
     // An A record with 3 bytes of RDATA (D9).
