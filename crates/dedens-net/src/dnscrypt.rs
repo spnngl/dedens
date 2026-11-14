@@ -478,6 +478,48 @@ impl Resolver {
         })
     }
 
+    /// The query sealed under the ticket kept, if resuming is asked for and the ticket is of this certificate and
+    /// has not expired; a ticket that is no good is dropped.
+    fn resumed(
+        &self,
+        certificate: &Certificate,
+        options: &Options,
+        wire: &[u8],
+        padding: QueryPadding,
+        nonce: ClientNonce,
+    ) -> Option<Result<(Vec<u8>, QueryContext), EncryptQueryError>> {
+        if !options.dnscrypt.resume {
+            return None;
+        }
+        let mut state = self.state.borrow_mut();
+        let usable = state.ticket.as_ref().is_some_and(|ticket| {
+            ticket.serial == certificate.body().serial && ticket.expires > unix_now()
+        });
+        if !usable {
+            state.ticket = None;
+            return None;
+        }
+        state
+            .ticket
+            .as_ref()
+            .map(|ticket| ticket.resumption.encrypt_query(wire, padding, nonce))
+    }
+
+    /// Keeps the ticket of a response, which replaces the one in use; a resumed query answered with none leaves
+    /// the one in use, which the resolver still accepts until it expires.
+    fn keep(&self, certificate: &Certificate, resumed: bool, resumption: Option<Resumption>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(resumption) = resumption {
+            state.ticket = Some(Ticket {
+                expires: resumption.expires_at(unix_now()),
+                serial: certificate.body().serial,
+                resumption,
+            });
+        } else if !resumed {
+            state.ticket = None;
+        }
+    }
+
     /// The response in `packet`, if it opens; one that does not authenticate makes the certificate stale.
     fn opened(&self, context: &QueryContext, packet: &[u8]) -> Option<Opened> {
         match context.open_response(packet) {

@@ -669,7 +669,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     XChaCha20" while reading the `0x0001` certificate, and then keeps the `0x0002` one, as serials are equal); a
     `dedensd` forwarding by stamp to Quad9 (`9.9.9.9:8443`, the stamp of `docs/providers/providers.yaml`) answered `example.com` over UDP
     in 41 ms and over TCP.
-- D100 (amends D98, D99, D102) The client and `dedensd` ask a DNSCrypt resolver through an Anonymized DNSCrypt relay
+- D100 (amends D98, D99, D102; amended by D101) The client and `dedensd` ask a DNSCrypt resolver through an Anonymized DNSCrypt relay
   (draft-denis-dprive-dnscrypt-11, "Anonymized DNSCrypt"), so that the resolver sees the relay's address, not the
   client's: `dedens @sdns://… +dnscrypt-relay=RELAY` and `relays: [RELAY, …]` in a forward stage, in the feature
   `dnscrypt` as D98 and D99 are. A RELAY is a relay stamp (`sdns://gQ…`, 0x81) or an address `ADDR[:port]` (443 unless
@@ -717,16 +717,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `apps/dedensd/tests/dnscrypt.rs` through `dedens_testkit::relay::Relay` (UDP and TCP, the counts it saw, the
     refusals); `fuzz/` parses a relay text in `parse_dns_stamp`, seeds for the command line and `relays`
     (`fuzz/seeds/dnscrypt.yaml`, D181).
-  - Not covered: relay chains (the draft allows one hop), and PQ (a later step).
+  - Not covered: relay chains (the draft allows one hop). PQ through a relay is D101's.
   - Checked live on 2026-11-13 (`dedens` built with `dnscrypt`): Quad9 (`9.9.9.9:8443`, the stamp of
     `docs/providers/providers.yaml`) through CryptoStorm's `anon-cs-fr` relay (`sdns://gRExNjMuMTcyLjM0LjU2OjQ0Mw`, from
     `v3/relays.md` of dnscrypt-resolvers), another operator, answered `example.com` over UDP in 14 ms and over TCP in
     24 ms, and `+dnscrypt-cert` listed both certificates through it; through `anon-cryptids-relay`
     (`sdns://gRE3NS4xMTkuMTQ0LjA6ODQ0Mw`) in 237 ms; with `9.9.9.9`, no relay, as the relay, exit 9 and no response.
-- D101 (amends D97, D98, D99) PQDNSCrypt, the draft's X-Wing system `0x0003` and its resumption tickets (draft-denis-dprive-dnscrypt
+- D101 (amends D97, D98, D99, D100) PQDNSCrypt, the draft's X-Wing system `0x0003` and its resumption tickets (draft-denis-dprive-dnscrypt
   revision 11, "Post-Quantum Key Exchange (PQDNSCrypt)"), in `dedens-dnscrypt`, the client of D98 and `dedensd` of D99.
   The system is off in `dedensd` unless the operator lists `pq` in `systems`; in the client it is chosen when a
-  resolver offers it. D97's "not here" for `0x0003` no longer holds; Anonymized DNSCrypt is still not here.
+  resolver offers it. D97's "not here" for `0x0003` no longer holds.
   - Crypto: the KEM is the `x-wing` crate (0.1.1, RustCrypto, on `ml-kem` 0.3 and `x25519-dalek` 3, `zeroize` feature,
     no default features); the KDF is `ring`'s HKDF-SHA256, the AEAD D97's XChaCha20-Poly1305 box. **Neither `x-wing` nor
     `ml-kem` has been independently audited** (both READMEs say so) and `x-wing` implements X-Wing draft 06, where the
@@ -807,8 +807,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and TCP, and with `--repeat 20 +dnscrypt-pq +dnscrypt-resume` the server logged 19 resumed queries accepted without
     decapsulation and one full one (p50 0.5 ms against 3.9 ms for 20 full queries, the server answering from its cache).
     `dedensd` with `systems: [xchacha20, pq]` served the same client over UDP and TCP, full and resumed.
-  - Not covered: Anonymized DNSCrypt of PQ (the draft's "PQ and Anonymized DNSCrypt": relays need no change, and
-    this client does not use relays yet), tickets surviving a `dedensd` restart (the ticket key is kept in
+  - Not covered: tickets surviving a `dedensd` restart (the ticket key is kept in
     memory, `docs/TODECIDE.md`), a decapsulation limit of its own, and the network-change rule of the
     ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
     the order a resumed query is checked are the places a mistake would matter.
