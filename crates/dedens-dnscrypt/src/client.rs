@@ -475,6 +475,9 @@ mod tests {
     /// is kept, the ticket is not. The largest ticket that fits is kept.
     #[test]
     fn a_ticket_too_large_for_a_resumed_query_is_ignored() {
+        // "PQResume" (8), the two-byte length and the draft's 130-byte ticket: the 140 bytes before the nonce of the
+        // 424-byte resumed query of the vectors (140 + 12 + 16 + 256).
+        assert_eq!(resumed_head_len(130), 140);
         let largest =
             MAX_PACKET_LEN - RESUMED_UDP_FLOOR - resumed_head_len(0) - NONCE_HALF_LEN - TAG_LEN;
         let kept = offering(largest).expect("a response");

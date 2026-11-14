@@ -1210,18 +1210,35 @@ async fn tickets_are_not_used_unless_asked_for() {
     assert!(resolver.script().seen.iter().all(|seen| !seen.resumed));
 }
 
-/// Compio on a clock that runs ahead of the real one by a skew the test sets: time passes with no wait.
-#[derive(Debug, Clone, Default)]
-struct Skewed(Rc<Cell<Duration>>);
+/// Compio on a clock that stands still until the test moves it: `now` is `start` plus the offset the test sets, so a
+/// ticket expires at an instant the test names.
+#[derive(Debug, Clone)]
+struct Stepped {
+    start: Instant,
+    offset: Rc<Cell<Duration>>,
+}
 
-impl Io for Skewed {
+impl Stepped {
+    fn new() -> Self {
+        Self {
+            start: Compio.now(),
+            offset: Rc::default(),
+        }
+    }
+
+    fn set(&self, offset: Duration) {
+        self.offset.set(offset);
+    }
+}
+
+impl Io for Stepped {
     type Udp = <Compio as Io>::Udp;
     type Stream = <Compio as Io>::Stream;
     type Listener = <Compio as Io>::Listener;
     type Task = <Compio as Io>::Task;
 
     fn now(&self) -> Instant {
-        Compio.now() + self.0.get()
+        self.start + self.offset.get()
     }
 
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
@@ -1237,10 +1254,8 @@ impl Io for Skewed {
         deadline: Instant,
         future: F,
     ) -> Result<F::Output, TimedOut> {
-        let real = deadline
-            .checked_sub(self.0.get())
-            .unwrap_or_else(|| Compio.now());
-        Compio.timeout_at(real, future).await
+        let left = deadline.saturating_duration_since(self.now());
+        Compio.timeout_at(Compio.now() + left, future).await
     }
 
     fn random(&self, bytes: &mut [u8]) -> io::Result<()> {
@@ -1257,7 +1272,7 @@ impl Io for Skewed {
 }
 
 /// Whether the response of an exchange says the query was resumed.
-async fn resumed_with(client: &Client<Skewed>, resolver: &Resolver, options: &Options) -> bool {
+async fn resumed_with(client: &Client<Stepped>, resolver: &Resolver, options: &Options) -> bool {
     let response = client
         .exchange_dnscrypt(query(), &resolver.stamp, options)
         .await
@@ -1266,27 +1281,30 @@ async fn resumed_with(client: &Client<Skewed>, resolver: &Resolver, options: &Op
 }
 
 /// D101: a ticket expires when its lifetime has run on the clock of the exchanges, from the response that brought it
-/// (S3 of the review of step 14): the exchange before is resumed, the exchange after is a full one, and the response
-/// says which it was.
+/// (S3 of the review of step 14), on a clock the test sets: a millisecond before it is resumed, at its end it is a full
+/// query, and the response says which it was.
 #[compio::test]
 async fn a_ticket_is_used_until_its_lifetime_has_run_on_the_exchanges_clock() {
     let resolver = Resolver::start_pq().await;
     let mut options = quick();
     options.dnscrypt.resume = true;
-    let skew = Skewed::default();
-    let client = Client::with_io(skew.clone());
+    let clock = Stepped::new();
+    let client = Client::with_io(clock.clone());
     assert!(!resumed_with(&client, &resolver, &options).await);
     assert!(resumed_with(&client, &resolver, &options).await);
-    skew.0.set(Duration::from_secs(290));
+    clock.set(Duration::from_millis(299_999));
     assert!(
         resumed_with(&client, &resolver, &options).await,
-        "10 s left"
+        "a millisecond left"
     );
-    skew.0.set(Duration::from_secs(310));
-    assert!(!resumed_with(&client, &resolver, &options).await, "expired");
+    clock.set(Duration::from_secs(300));
+    assert!(
+        !resumed_with(&client, &resolver, &options).await,
+        "expired at the instant its lifetime ends"
+    );
     assert!(
         resumed_with(&client, &resolver, &options).await,
-        "a new ticket"
+        "the new ticket"
     );
     let kinds: Vec<_> = resolver
         .script()
@@ -1307,8 +1325,8 @@ async fn a_ticket_follows_the_client_magic_and_validity_of_its_certificate() {
         resolver.script().ticket_life = 7200;
         let mut options = quick();
         options.dnscrypt.resume = true;
-        let skew = Skewed::default();
-        let client = Client::with_io(skew.clone());
+        let clock = Stepped::new();
+        let client = Client::with_io(clock.clone());
         assert!(!resumed_with(&client, &resolver, &options).await);
         {
             // The provider issues serial 2 for another key, with the magic and validity of serial 1 or not.
@@ -1336,7 +1354,7 @@ async fn a_ticket_follows_the_client_magic_and_validity_of_its_certificate() {
                 .push(ResolverKey::new(&certificate, secret).expect("a key"));
             script.served.push(certificate);
         }
-        skew.0.set(Duration::from_secs(3700));
+        clock.set(Duration::from_secs(3700));
         assert_eq!(
             resumed_with(&client, &resolver, &options).await,
             resumed,
