@@ -30,11 +30,10 @@ pub struct Relay {
 /// The response of the resolver the prefix of `packet` names, if there is one not longer than the inner packet.
 fn pass(packet: &[u8]) -> Option<Vec<u8>> {
     let (prefix, inner) = packet.split_at_checked(PREFIX_LEN)?;
-    assert_eq!(
-        &prefix[..10],
-        &MAGIC,
-        "the magic of an Anonymized DNSCrypt query"
-    );
+    // A packet without the magic is no Anonymized DNSCrypt query: dropped, as the reference relay does.
+    if prefix[..10] != MAGIC {
+        return None;
+    }
     let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&prefix[10..26]).ok()?);
     let target = SocketAddr::new(
         ip.to_canonical(),
@@ -117,5 +116,42 @@ impl Relay {
             self.seen.0.load(Ordering::SeqCst),
             self.seen.1.load(Ordering::SeqCst),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_packet_without_the_magic_is_dropped_and_the_relay_passes_the_next() {
+        let resolver = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        let SocketAddr::V4(at) = resolver.local_addr().expect("an address") else {
+            unreachable!("bound on IPv4");
+        };
+        let prefix = [
+            &MAGIC[..],
+            &at.ip().to_ipv6_mapped().octets(),
+            &at.port().to_be_bytes(),
+        ]
+        .concat();
+        let inner = [0x5a; 32];
+        let relay = Relay::start();
+        let client = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        let mut wrong = prefix.clone();
+        wrong[0] = 0;
+        client
+            .send_to(&[&wrong[..], &inner].concat(), relay.addr)
+            .expect("sent");
+        client
+            .send_to(&[&prefix[..], &inner].concat(), relay.addr)
+            .expect("sent");
+        resolver.set_read_timeout(Some(WAIT)).expect("a timeout");
+        let mut buf = [0; 64];
+        let (len, _) = resolver
+            .recv_from(&mut buf)
+            .expect("the second packet passed");
+        assert_eq!(&buf[..len], &inner);
+        assert_eq!(relay.seen(), (2, 0));
     }
 }
