@@ -44,8 +44,8 @@
 //! and proofs that verified, for the TTL they carry, never a bogus zone: whoever answers a DNSKEY question could
 //! make one for every validation (D92), so the next validation walks it again.
 //!
-//! What [`Verdict::Secure`] covers: every `RRset` of class IN in the answer and authority sections is authentic,
-//! what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
+//! What [`Verdict::Secure`] covers: every `RRset` of class IN in bailiwick (below) in the answer and authority
+//! sections is authentic, what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the
 //! additional section, records of another class, or the unsigned CNAME a DNAME synthesizes (RFC 6672 §5.3.3).
 //! Only the `RRsets` of the answer (the question's name, the names its CNAME and DNAME chain leads through) and,
 //! in the authority section, those at or above such a name are checked: others are out of bailiwick, neither
