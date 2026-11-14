@@ -1,9 +1,10 @@
 //! The hosts plugin (D54) on the example file of hosts(5) (Linux man-pages, `testdata/plugins/hosts.5`): A and AAAA
 //! records for its names (RFC 1035 §3.4.1, RFC 3596 §2.1), PTR records for the reverse names of its addresses
-//! (RFC 1035 §3.5, RFC 3596 §2.5), no data for other types (RFC 2308 §2.2).
+//! (RFC 1035 §3.5, RFC 3596 §2.5), one of them to ANY (RFC 8482 §4.1), no data for other types (RFC 2308 §2.2).
 
 use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::slice;
 
 use dedens_plugins::{Hosts, LineError, LineErrorKind};
 use dedens_proto::rdata::RData;
@@ -95,6 +96,29 @@ fn other_types_have_no_data_unless_falling_through() {
         assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NOERROR, 0));
         assert!(reply.header.flags.contains(Flags::AA));
         assert!(ask(&pipeline(true), "foo.example.org.", qtype, Class::IN).is_none());
+    }
+}
+
+/// RFC 8482 §4.1: ANY for a listed name is answered with its records of one type, the addresses first, never with no
+/// data, which would say the name has none; with `fallthrough` too, as the name has data.
+#[test]
+fn any_is_answered_with_one_rrset() {
+    let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    for (name, expected) in [
+        ("localhost.".to_owned(), RData::A(Ipv4Addr::LOCALHOST)),
+        ("ip6-loopback.".to_owned(), RData::Aaaa(Ipv6Addr::LOCALHOST)),
+        (
+            Name::reverse(ipv6).to_string(),
+            RData::Ptr("localhost.".parse().expect("a name")),
+        ),
+    ] {
+        for fallthrough in [false, true] {
+            let reply =
+                ask(&pipeline(fallthrough), &name, RecordType::ANY, Class::IN).expect("a reply");
+            assert_eq!(reply.rcode(), Rcode::NOERROR);
+            assert!(reply.header.flags.contains(Flags::AA), "{name}");
+            assert_eq!(data(&reply), slice::from_ref(&expected), "{name}");
+        }
     }
 }
 
