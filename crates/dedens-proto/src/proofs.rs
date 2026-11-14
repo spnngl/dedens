@@ -58,7 +58,7 @@ fn header_round_trip() {
 /// The OPT record appended to any message of up to 25 bytes in its buffer, as a server adds its EDNS to a response
 /// from the cache (RFC 6891 §6.1.2): it fits exactly when the buffer holds the header, the 11 bytes of the record and
 /// ARCOUNT can count one more; then ARCOUNT gains 1 and the record follows the message, the rest unchanged; else
-/// nothing changes.
+/// the message is unchanged, the bytes past it may not be.
 #[kani::proof]
 #[kani::unwind(27)]
 fn edns_appending() {

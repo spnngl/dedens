@@ -14,8 +14,9 @@ and decodes byte slices; sockets, timers and compio live in `dedens-net` and the
 - Verus proves `scan`, `unpack` and `append` in `src/name.rs` against the spec function `uncompressed` (D180):
   their `#[cfg_attr(verus_only, verus_spec(..))]` specifications, loop invariants and `proof!` hints are checked
   by `just verus` only, so a change to them, or to an item they use (`DecodeError`, `MAX_NAME_LEN`,
-  `HEADER_LEN`), runs `just verus`. `uncompressed` is trusted: it must stay RFC 1035 §4.1.4. An item Verus reads is marked
-  `#[cfg_attr(verus_only, verus_verify)]`; one with derives it cannot read, `verus_verify(external_derive)`.
+  `HEADER_LEN`), runs `just verus`. `uncompressed` is trusted: it must stay RFC 1035 §4.1.4. An item Verus
+  reads is marked `#[cfg_attr(verus_only, verus_verify)]`; one with derives it cannot read,
+  `verus_verify(external_derive)`.
 - The encoder's name table (`src/wire/name_table.rs`, D10, D112) compares a bounded number of names for each
   lookup, so that encoding a name costs O(L log L) in its length L, whatever the upstream's names. A change to how
   names are hashed or searched keeps `encode_64k` of `collisions`, `chains` and `flips` within 2x of `spread`.
