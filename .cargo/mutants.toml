@@ -148,6 +148,9 @@ exclude_re = [
   # D101: the flag only names which of two bucket sets a query is charged to, TCP's or UDP's; inverted, the sets are
   # the same two with the names swapped.
   'serve/dnscrypt\.rs:\d+:\d+: replace == with != in Keys::open$',
+  # D73: the DS records of a bucket grouped by digest type only spare digests; split into groups of one record (two at
+  # the change of type), a key with DS records of two types still finds one, at the cost the `trusted_keys_one_tag` bench shows.
+  'rrsig/trust\.rs:\d+:\d+: replace == with != in vouched$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
