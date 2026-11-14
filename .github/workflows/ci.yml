@@ -57,7 +57,7 @@ jobs:
           workspaces: |
             . -> target
             fuzz -> target
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: taplo@${{ env.TAPLO_VERSION }},typos@${{ env.TYPOS_VERSION }},cargo-shear@${{ env.CARGO_SHEAR_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
       - run: just check
@@ -130,7 +130,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.recipe }}
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-hack@${{ env.CARGO_HACK_VERSION }},cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - env:
@@ -158,7 +158,7 @@ jobs:
           just-version: "1.59.0"
       - run: just toolchains
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
       - name: Summarize coverage
