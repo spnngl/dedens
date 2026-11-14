@@ -216,8 +216,13 @@ impl Cli {
         }
         let coap_on = self.options.coap == Some(true);
         let discoverable = |server: &String| match server.strip_prefix("coap://") {
-            // `coap://HOST/` is the root path, no path at all (RFC 7252 §6.4), as the run reads it.
-            Some(host) => host.split_once('/').is_none_or(|(_, path)| path.is_empty()),
+            // `coap://HOST/` is the root path, no path at all (RFC 7252 §6.4), and `#NAME` no part of it, as the
+            // run reads them.
+            Some(host) => host
+                .rsplit_once('#')
+                .map_or(host, |(host, _)| host)
+                .split_once('/')
+                .is_none_or(|(_, path)| path.is_empty()),
             None => coap_on && !server.contains("://"),
         };
         if self.server.is_empty() {
