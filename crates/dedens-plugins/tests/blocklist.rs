@@ -2,7 +2,8 @@
 //! (`stevenblack.hosts`), of the Multi LIGHT domains of `hagezi/dns-blocklists` (`hagezi-light.txt`), of its Multi
 //! PRO in the wildcard format (`hagezi-pro-wildcard.txt`) and of its referral allowlist
 //! (`hagezi-referral-allow.txt`), each with a few lines of further down, and the `/etc/hosts` of Fedora's `setup`
-//! package (`fedora.hosts`, `src.fedoraproject.org/rpms/setup`, rawhide). Blocked answers carry the Extended DNS Error
+//! package (`fedora.hosts`, `src.fedoraproject.org/rpms/setup`, rawhide), and the example of hosts(5) (`hosts.5`,
+//! Linux man-pages). Blocked answers carry the Extended DNS Error
 //! Blocked (RFC 8914 §4.16). Texts that are no lists: the head of the Multi LIGHT in Adblock syntax
 //! (`hagezi-light.adblock`) and nginx's 404 page, as `dl-cdn.alpinelinux.org` serves it (`nginx-404.html`).
 
@@ -27,6 +28,7 @@ const REFERRAL: &str = include_str!("../../../testdata/plugins/hagezi-referral-a
 const ADBLOCK: &str = include_str!("../../../testdata/plugins/hagezi-light.adblock");
 const NGINX_404: &str = include_str!("../../../testdata/plugins/nginx-404.html");
 const FEDORA: &str = include_str!("../../../testdata/plugins/fedora.hosts");
+const HOSTS_5: &str = include_str!("../../../testdata/plugins/hosts.5");
 
 fn lists(text: &str) -> Lists {
     let mut lists = Lists::new();
@@ -126,6 +128,19 @@ fn the_entries_of_the_host_are_not_blocked() {
 fn names_starting_with_localhost_are_the_hosts() {
     assert_eq!(lists(FEDORA).names(List::Block), 0);
     assert_eq!(lists("0.0.0.0 LocalHost4.example\n").names(List::Block), 0);
+}
+
+/// D54: of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1` and `::1` count, not every loopback address: the
+/// example of hosts(5) gives its machine's own name `127.0.1.1`, as Debian does.
+#[test]
+fn hosts_lines_of_other_loopback_addresses_are_left_out() {
+    assert_eq!(lists(HOSTS_5).names(List::Block), 0);
+    let hosts = pipeline(HOSTS_5, Action::Nxdomain);
+    assert!(!blocked(&hosts, "thishost.example.org."));
+    assert!(blocked(
+        &pipeline("127.0.0.1 ads.example\n", Action::Nxdomain),
+        "ads.example."
+    ));
 }
 
 #[test]
