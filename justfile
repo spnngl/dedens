@@ -111,9 +111,10 @@ bench-unbound:
 # from the cache, forward or forward-tcp to a second dedensd without one, or two-sockets (the latency of a UDP port
 # beside a flooded one): just bench-dnsperf HEAD~1 tcp. `DEDENS_PERF=1` profiles the working tree's server instead
 # (D138), under perf: its report lands in target/profile/<mode>.txt; kernel names need `kernel.perf_event_paranoid` 1 and `kernel.kptr_restrict` 0 (run.sh).
+# The git directory is mounted at its own path too, as a worktree's `.git` names it.
 bench-dnsperf base="HEAD" mode="udp":
     mkdir -p target/profile
-    {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
+    git="$(git rev-parse --path-format=absolute --git-common-dir)" && {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$git:$git:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
         -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{ base }} {{ mode }}
 
 # Where a bench spends its time (D138): the bench target `bench` (`server`, `cache`, ...) built with symbols (the
