@@ -484,6 +484,9 @@ mod tests {
         assert_eq!(kept.resumption.expect("kept").ticket().len(), largest);
         let ignored = offering(largest + 1).expect("a response");
         assert!(ignored.resumption.is_none());
-        assert!(!ignored.message.is_empty());
+        assert!(
+            ignored.message.len() >= 12,
+            "the response is kept: a DNS header at least"
+        );
     }
 }
