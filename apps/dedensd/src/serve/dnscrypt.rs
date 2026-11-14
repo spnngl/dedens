@@ -41,11 +41,18 @@ const SHARED_MAX: usize = 1024;
 /// Queries by system and result.
 const QUERIES: &str = "dedensd_dnscrypt_queries_total";
 
+/// X-Wing queries dropped unopened, by the budget that was spent.
+const LIMITED: &str = "dedensd_dnscrypt_limited_total";
+
 /// Describes the metrics of this module.
 pub(crate) fn describe() {
     metrics::describe_counter!(
         QUERIES,
-        "DNSCrypt queries by encryption system and result: answered once a reply is sealed, dropped when the query does not open, is denied or was not answered. System none: no key pair opened it."
+        "DNSCrypt queries by encryption system and result: answered once a reply is sealed, dropped when the query does not open, is over a decapsulation budget, is denied or was not answered. System none: no key pair opened it."
+    );
+    metrics::describe_counter!(
+        LIMITED,
+        "DNSCrypt X-Wing queries dropped before their decapsulation: the client network or all clients were over their budget."
     );
 }
 
@@ -134,7 +141,22 @@ impl Keys {
         let tally = Tally::new(issued.system());
         let resolver = &issued.resolver;
         if issued.system() == EncryptionSystem::XWing {
-            // A new ciphertext each query: there is no shared key to keep.
+            // A new ciphertext each query: there is no shared key to keep, and each costs a decapsulation, 101 µs of a
+            // core, which any packet with the client magic asks for: it is paid out of a budget first (D101). A
+            // source on the rate limit's exempt list pays no network unit (D113).
+            let exempt = pipeline
+                .rate_limit()
+                .is_some_and(|limit| limit.exempts(from));
+            let proven = carrier == Carrier::Tcp;
+            if let Err(budget) =
+                self.service
+                    .decapsulations()
+                    .admit(from, proven, exempt, thread.now())
+            {
+                metrics::counter!(LIMITED, "budget" => budget).increment(1);
+                tracing::debug!(%from, budget, "DNSCrypt decapsulation budget spent: dropped");
+                return Open::Drop;
+            }
             return match resolver.decrypt_query(packet) {
                 Ok((query, context)) => Open::Query(
                     query,
@@ -466,11 +488,13 @@ async fn step<N: Io>(
 
 #[cfg(test)]
 mod tests {
-    use dedens_dnscrypt::{EncryptionSystem, SecretKey};
+    use dedens_dnscrypt::{ClientNonce, EncryptionSystem, QueryPadding, SecretKey};
     use dedens_net::io::Compio;
+    use dedens_server::Budget;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
     use super::*;
+    use crate::dnscrypt::Decapsulations;
     use crate::serve::tests::answering;
 
     /// A Unix time of 2026, so that certificates fit their 32 bits.
@@ -483,6 +507,59 @@ mod tests {
             .expect("a provider name");
         let systems = vec![EncryptionSystem::XChaCha20Poly1305];
         Arc::new(Service::new(&[7; 32], provider, systems, T0, &Compio).expect("a service"))
+    }
+
+    /// A service that offers `X-Wing` alone, on the provider key `[7; 32]`.
+    fn pq_service() -> Arc<Service> {
+        let provider = "2.dnscrypt-cert.test.example"
+            .parse()
+            .expect("a provider name");
+        let systems = vec![EncryptionSystem::XWing];
+        Arc::new(Service::new(&[7; 32], provider, systems, T0, &Compio).expect("a service"))
+    }
+
+    /// A full PQ query for `www.example A` as a client that fetched the certificate of `set` sends it: the packet,
+    /// the DNS query it carries and what opens its response.
+    fn pq_query(
+        service: &Service,
+        set: &KeySet,
+        entropy: &mut Entropy,
+    ) -> (Vec<u8>, Vec<u8>, dedens_dnscrypt::QueryContext) {
+        use dedens_dnscrypt::{Certificate, ClientSession, SigningKey};
+        use dedens_proto::rdata::RData;
+        use dedens_proto::{Message, Question, RecordType};
+
+        let certificates = Message::query(
+            7,
+            Question::new(service.provider().clone(), RecordType::TXT),
+        )
+        .to_vec()
+        .expect("encodes");
+        let answer = set
+            .certificates(&certificates, service.provider(), Carrier::Tcp)
+            .expect("an answer");
+        let provider_key = SigningKey::from_seed(&[7; 32])
+            .expect("a seed")
+            .provider_key();
+        let decoded = Message::decode(&answer).expect("a message").message;
+        let [record] = &decoded.answer[..] else {
+            panic!("one certificate")
+        };
+        let RData::Txt(txt) = record.data() else {
+            panic!("a TXT")
+        };
+        let certificate = Certificate::from_txt(&txt, &provider_key).expect("signed");
+        let wire = Message::query(
+            9,
+            Question::new("www.example".parse().expect("a name"), RecordType::A),
+        )
+        .to_vec()
+        .expect("encodes");
+        let session = ClientSession::xwing(&certificate, entropy).expect("a session");
+        let (packet, context) = session
+            .encrypt_query(&wire, QueryPadding::to(64), ClientNonce::random(entropy))
+            .expect("a query");
+        (packet, wire, context)
     }
 
     /// A key shared with the first key pair of `keys`, as a verified query leaves.
@@ -560,56 +637,12 @@ mod tests {
     /// ticket from half of the ticket's life on, not before.
     #[test]
     fn a_pq_reply_carries_a_ticket_and_a_resumed_query_renews_it_from_half_of_its_life() {
-        use dedens_dnscrypt::{Certificate, ClientNonce, ClientSession, QueryPadding, SigningKey};
-        use dedens_proto::rdata::RData;
-        use dedens_proto::{Message, Question, RecordType};
-
         let thread = answering();
-        let provider = "2.dnscrypt-cert.test.example"
-            .parse()
-            .expect("a provider name");
-        let systems = vec![EncryptionSystem::XWing];
-        let service =
-            Arc::new(Service::new(&[7; 32], provider, systems, T0, &Compio).expect("a service"));
+        let service = pq_service();
         let keys = Keys::new(Arc::clone(&service), &thread);
         let set = Arc::clone(&keys.held.borrow().set);
-
-        let certificates = Message::query(
-            7,
-            Question::new(service.provider().clone(), RecordType::TXT),
-        )
-        .to_vec()
-        .expect("encodes");
-        let answer = set
-            .certificates(&certificates, service.provider(), Carrier::Tcp)
-            .expect("an answer");
-        let provider_key = SigningKey::from_seed(&[7; 32])
-            .expect("a seed")
-            .provider_key();
-        let decoded = Message::decode(&answer).expect("a message").message;
-        let [record] = &decoded.answer[..] else {
-            panic!("one certificate")
-        };
-        let RData::Txt(txt) = record.data() else {
-            panic!("a TXT")
-        };
-        let certificate = Certificate::from_txt(&txt, &provider_key).expect("signed");
-
         let mut entropy = Entropy::new().expect("entropy");
-        let wire = Message::query(
-            9,
-            Question::new("www.example".parse().expect("a name"), RecordType::A),
-        )
-        .to_vec()
-        .expect("encodes");
-        let session = ClientSession::xwing(&certificate, &mut entropy).expect("a session");
-        let (packet, context) = session
-            .encrypt_query(
-                &wire,
-                QueryPadding::to(64),
-                ClientNonce::random(&mut entropy),
-            )
-            .expect("a query");
+        let (packet, wire, context) = pq_query(&service, &set, &mut entropy);
         let from: IpAddr = "127.0.0.1".parse().expect("an address");
         let Open::Query(_, reply) =
             keys.open(&thread, &thread.pipeline(), from, &packet, Carrier::Tcp)
@@ -646,6 +679,110 @@ mod tests {
         assert!(!renews(issued_at + half - 1));
         assert!(renews(issued_at + half));
         assert!(renews(issued_at + 2 * half - 1));
+    }
+
+    /// The counters `recorder` saw: name, label values and count. A snapshot reads them once: the next sees none.
+    fn counted(recorder: &DebuggingRecorder) -> Vec<(String, Vec<String>, u64)> {
+        let mut counted: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => Some((
+                    key.key().name().to_owned(),
+                    key.key()
+                        .labels()
+                        .map(|label| label.value().to_owned())
+                        .collect(),
+                    count,
+                )),
+                _ => None,
+            })
+            .collect();
+        counted.sort();
+        counted
+    }
+
+    /// D101: a flood of packets that carry the X-Wing client magic and a ciphertext that is junk is cut at the
+    /// budget of its network, and a flood from many networks at the global one, before any decapsulation; each packet
+    /// is counted dropped, opened or not; a network's flood leaves other networks and the proven connections of its
+    /// own their budgets; a source the rate limit exempts pays no network unit.
+    #[test]
+    fn a_flood_of_junk_ciphertexts_is_cut_before_the_decapsulation() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            let thread = answering();
+            let budget = |per_second, burst, table| Budget {
+                per_second,
+                burst,
+                table,
+            };
+            // Two at once for a network, twelve for all, and nothing refilled within the test's second.
+            let service = Arc::try_unwrap(pq_service())
+                .ok()
+                .expect("one owner")
+                .with_decapsulations(
+                    Decapsulations::new(budget(1, 2, 1 << 8), budget(1, 12, 1)).expect("budgets"),
+                );
+            let keys = Keys::new(Arc::new(service), &thread);
+            let set = Arc::clone(&keys.held.borrow().set);
+            let mut entropy = Entropy::new().expect("entropy");
+            let (genuine, _, _) = pq_query(&keys.service, &set, &mut entropy);
+            let mut junk = genuine.clone();
+            // A ciphertext that decapsulates to a key nobody has, as ML-KEM's implicit rejection returns for any bytes.
+            for byte in junk.iter_mut().skip(8).take(1120) {
+                *byte = !*byte;
+            }
+            let pipeline = thread.pipeline();
+            let opens = |from: &str, packet: &[u8], carrier| {
+                let from: IpAddr = from.parse().expect("an address");
+                matches!(
+                    keys.open(&thread, &pipeline, from, packet, carrier),
+                    Open::Query(..)
+                )
+            };
+            // One network's flood: two decapsulated and refused (the tag), the other four cut by its budget.
+            for _ in 0..6 {
+                assert!(!opens("10.0.1.1", &junk, Carrier::Tcp));
+            }
+            // The genuine query of the same network is cut too: the flood spent what it had.
+            assert!(!opens("10.0.1.99", &genuine, Carrier::Tcp));
+            // Another network has its own budget, and so has the unproven UDP source of the flooded network.
+            assert!(opens("10.0.2.1", &genuine, Carrier::Tcp));
+            assert!(opens("10.0.1.1", &genuine, Carrier::Udp));
+            // Loopback is exempt from the rate limit (D113): no network unit, however many.
+            for _ in 0..4 {
+                assert!(opens("127.0.0.1", &genuine, Carrier::Tcp));
+            }
+            // Four more networks take the last four units of all; the global budget cuts the next two.
+            for network in 3..=6 {
+                assert!(opens(&format!("10.0.{network}.1"), &genuine, Carrier::Tcp));
+            }
+            assert!(!opens("10.0.7.1", &genuine, Carrier::Tcp));
+            assert!(!opens("10.0.8.1", &genuine, Carrier::Tcp));
+        });
+        let counted = counted(&recorder);
+        let named = |name: &str| {
+            counted
+                .iter()
+                .filter(|(counter, ..)| counter == name)
+                .map(|(_, labels, count)| (labels.clone(), *count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            named(LIMITED),
+            [
+                (vec!["client".to_owned()], 5),
+                (vec!["global".to_owned()], 2)
+            ]
+        );
+        // None of the 19 packets is answered here: each is counted dropped, however far it got.
+        assert_eq!(
+            named(QUERIES),
+            [(vec!["xwing".to_owned(), "dropped".to_owned()], 19)]
+        );
     }
 
     /// D99, D91: a client the access check denies is silenced at accept, whichever action it sets; an allowed one is

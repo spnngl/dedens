@@ -784,9 +784,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     response to every full PQ query and renewed in the response to a resumed query whose ticket has less than half its
     life left. A PQ certificate goes in a UDP certificate answer only when the answer is not longer than the query,
     otherwise the answer holds the classical certificates with TC set, and over TCP every certificate is sent. A
-    packet is resumed when it starts with `PQResume`; the access check and the rate limit stand before any
-    decapsulation (D99, D91, D113), the only protection against decapsulation as a cost (`pq_decrypt_query` below).
-    Tally name `xwing`.
+    packet is resumed when it starts with `PQResume`; the access check stands before any decapsulation (D91), but
+    D113's rate limit does not (it is a pipeline stage, after the query is opened), so a full query pays a budget first
+    (the draft's "Resolvers SHOULD limit unauthenticated KEM work under load"): D117's `Budgets`, as the ODoH target's
+    (D94), one unit a decapsulation, 101 µs, shared by all threads (a table per thread would give a client the budget of
+    each thread its packets reach): a client network (a /24 or /48; a UDP source, which can be spoofed, has a bucket
+    apart from a TCP one) 250 a second, 500 at once, all clients 2500 a second, 5000 at once, a quarter of a core,
+    constants. A source on the rate limit's exempt list (D113) pays no network unit and the global one still. A packet
+    over a budget is dropped unopened and counted, `dedensd_dnscrypt_limited_total{budget}` (`client` or `global`) and
+    as `dropped` of system `xwing`, as a decapsulation that fails is; a resumed query (1.7 µs) and a classical one
+    (0.5 µs with a shared key) pay nothing. While an attacker spends the global budget with junk, honest full
+    queries are dropped too and clients ask again (a ticket in hand skips it): the cost of the bound. Tally name `xwing`.
   - Tests: `crates/dedens-dnscrypt/tests/pq.rs`, every vector of the draft's "PQ Test Vector Structure" from
     `testdata/dnscrypt/draft-pq-vectors.json` (the certificate, the full query, the ticket and the control field, the
     response, the resumed query and response) and negative cases 1 to 8; `dedens-net` (`tests/dnscrypt.rs`: PQ chosen,
@@ -810,6 +818,6 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     decapsulation and one full one (p50 0.5 ms against 3.9 ms for 20 full queries, the server answering from its cache).
     `dedensd` with `systems: [xchacha20, pq]` served the same client over UDP and TCP, full and resumed.
   - Not covered: tickets surviving a `dedensd` restart (the ticket key is kept in
-    memory, `docs/TODECIDE.md`), a decapsulation limit of its own, and the network-change rule of the
-    ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
+    memory, `docs/TODECIDE.md`), the decapsulation budgets as settings (`docs/TODECIDE.md`), and the network-change
+    rule of the ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
     the order a resumed query is checked are the places a mistake would matter.

@@ -265,6 +265,17 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - PQDNSCrypt ticket keys across a `dedensd` restart (D101): the ticket key is random and kept in memory, so a restart
   ends every ticket and each client falls back to a full query after one lost query. Default: as is; a key file
   or a derivation from the provider seed when a deployment's restarts or its decapsulation cost ask for it.
+- The PQDNSCrypt decapsulation budgets as settings (D101): a client network 250 a second (500 at once) and all clients 2500
+  (5000) are constants of `dedensd`, one unit a decapsulation. Default: as is; `dnscrypt.client_budget` and
+  `dnscrypt.budget` as `odoh`'s (D117) when a deployment's clients or its cores ask for other numbers.
+- Caching the expanded `X-Wing` key (D101): `x-wing` 0.1.1 keeps only the seed, so each decapsulation derives the ML-KEM key
+  again, about half of the 101 µs. Default: as is, D101 rejecting a combiner of our own; raise it with the crate's
+  maintainers, or take a cached form when a decapsulation's cost is what limits a deployment.
+- Dropping a ticket on a network change in a long-lived `dedensd` forwarder (D101; the draft's "Resumption Tickets" says
+  clients SHOULD, `dnscrypt-proxy` keeps a network epoch): `dedens` is one process with a fresh socket per query and a
+  ticket that lives 600 seconds at most, so a ticket never outlives a network; the forwarder of `dedensd` (D100, D99) keeps
+  its upstream's ticket across changes of its own route, which links its queries to one client for that time (they are
+  one forwarder's anyway). Default: as is; an epoch that drops the tickets when the route or the source address changes.
 - An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
   for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
