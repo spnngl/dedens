@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use std::fmt;
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, LazyLock};
 
 use dedens_proto::{MAX_LABELS, MAX_NAME_LEN, Name, TextErrorKind};
@@ -686,6 +686,15 @@ struct Scanned {
     skipped: usize,
 }
 
+/// The addresses of the hosts lines a blocklist reads (D54): not the rest of `127.0.0.0/8`, as `127.0.1.1` names
+/// the host itself (hosts(5)).
+const BLOCKING: [IpAddr; 4] = [
+    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+    IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    IpAddr::V4(Ipv4Addr::LOCALHOST),
+    IpAddr::V6(Ipv6Addr::LOCALHOST),
+];
+
 /// Calls `add` with each name of a line, read or not.
 fn read_line<'t>(
     line: usize,
@@ -695,7 +704,7 @@ fn read_line<'t>(
 ) -> Result<(), LineError> {
     let first = fields.next().unwrap_or_default();
     match first.parse::<IpAddr>() {
-        Ok(address) if address.is_unspecified() || address.is_loopback() => {}
+        Ok(address) if BLOCKING.contains(&address) => {}
         Ok(_) => return Ok(()),
         // An address with a zone (`fe80::1%lo0 localhost`), of the host's own entries.
         Err(_)
