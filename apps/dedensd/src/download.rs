@@ -252,13 +252,16 @@ impl Fetcher {
             .config()
             .https_only(url.starts_with("https://"))
             .build();
-        if copy.exists()
-            && let Ok(version) = fs::read_to_string(&tag)
-        {
+        let saved = copy
+            .exists()
+            .then(|| fs::read_to_string(&tag).ok())
+            .flatten();
+        if let Some(version) = &saved {
             request = request.header("If-None-Match", version.trim());
         }
         let mut response = request.call()?;
-        if response.status() == 304 {
+        // RFC 9110 §15.4.5: a 304 answers a conditional request only; to another, no copy is the latest one.
+        if saved.is_some() && response.status() == 304 {
             return Ok(None);
         }
         ensure!(response.status() == 200, "status {}", response.status());
@@ -480,6 +483,16 @@ mod tests {
             fs::read_to_string(copy(dir.path(), &urls[0])).unwrap(),
             text
         );
+    }
+
+    /// RFC 9110 §15.4.5: a 304 answers a conditional request only. To a request without `If-None-Match` (no copy
+    /// yet), it is a failure, retried, not a list unchanged that leaves the stage without it until the next refresh.
+    #[test]
+    fn a_not_modified_to_an_unconditional_request_is_a_failure() {
+        let addr = serve(|_| b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n".to_vec());
+        let dir = tempfile::tempdir().unwrap();
+        let fetched = Fetcher::new().fetch(&[url(addr, "list")], dir.path(), &mut Store::default());
+        assert!(fetched.failed && !fetched.changed, "{fetched:?}");
     }
 
     /// L16: each request waits for the other to arrive, so the lists are downloaded together or not at all (the
