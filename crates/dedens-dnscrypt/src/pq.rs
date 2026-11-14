@@ -88,12 +88,13 @@ fn hkdf(ikm: &[u8], salt: &[&[u8]], info: &[&[u8]]) -> Zeroizing<[u8; KEY_LEN]> 
 }
 
 /// `<cert-context>` up to the resolver key and the rest of the signed fields (draft "PQ Key Derivation"): a label,
-/// `<es-version>`, `<protocol-minor-version>`, then what the provider signed.
-pub(crate) fn cert_context(signed: &[u8]) -> Vec<u8> {
+/// `<es-version>`, the certificate's own `<protocol-minor-version>` (which the signature does not cover), then what the
+/// provider signed.
+pub(crate) fn cert_context(minor: [u8; 2], signed: &[u8]) -> Vec<u8> {
     let mut context = Vec::with_capacity(18 + signed.len());
     context.extend_from_slice(b"DNSCrypt-PQ-v1");
     context.extend_from_slice(&ES_VERSION);
-    context.extend_from_slice(&[0, 0]);
+    context.extend_from_slice(&minor);
     context.extend_from_slice(signed);
     context
 }

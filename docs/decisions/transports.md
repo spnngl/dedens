@@ -746,6 +746,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     certificate whose profile differs (`CertificateError::PqProfile`), as the draft's negative cases 1 and 2 ask. The
     es-version on the wire and the signed lengths are the one profile; `select` ranks `0x0003` over `0x0002` over
     `0x0001` under `SystemPolicy::Preferred` and keeps only `0x0003` under `SystemPolicy::Only(EncryptionSystem::XWing)`.
+    The `<protocol-minor-version>`, outside the signature, is kept (`Certificate::minor_version`, D97 dropped it) because the draft's `<cert-context>`
+    holds the certificate's own: client and resolver derive the key with the bytes the certificate carries (`00 01` works as `00 00`), as `dnscrypt-proxy` and `encrypted-dns-server` do.
   - Downgrade (draft "PQ Downgrade Protection"): a stamp has no flag for it (the stamps' properties name none), so the client's `Options::dnscrypt.pq` (`+dnscrypt-pq`) is the provisioned knowledge: it takes only a
     PQ certificate, and a resolver that offers none is an error, never a classical exchange. Without it the client
     prefers PQ when it is offered and falls back when it is not, as the draft lets a client with no knowledge do. A kept

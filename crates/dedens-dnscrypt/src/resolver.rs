@@ -89,7 +89,7 @@ impl ResolverKey {
             {
                 Kind::XWing(Box::new(PqCertificate {
                     key,
-                    context: pq::cert_context(&body.signed_bytes()),
+                    context: pq::cert_context(certificate.minor_version(), &body.signed_bytes()),
                     binding: Binding::of(body),
                     validity: body.validity,
                 }))

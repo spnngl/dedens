@@ -165,6 +165,41 @@ fn certificate_layout_and_signature() {
     assert_eq!(parsed.body().system(), EncryptionSystem::XWing);
 }
 
+/// "PQ Key Derivation": the `<protocol-minor-version>` is outside the signature but inside the `<cert-context>`, so
+/// a certificate that carries `00 01` is read with it on both sides: a client and a resolver that keep it agree, and
+/// one that assumed `00 00` would not open the other's packets.
+#[test]
+fn the_minor_version_of_the_certificate_is_in_the_key_derivation() {
+    let mut wire = certificate().as_bytes().to_vec();
+    wire[6..8].copy_from_slice(&[0, 1]);
+    let minor_one = parse(&wire).expect("the signature does not cover the minor version");
+    assert_eq!(minor_one.minor_version(), [0, 1]);
+    assert_eq!(minor_one.as_bytes(), wire);
+    assert_eq!(certificate().minor_version(), [0, 0]);
+
+    let resolver_one = ResolverKey::new(&minor_one, resolver_secret()).expect("the key");
+    let session = |certificate: &Certificate| {
+        ClientSession::xwing(certificate, &mut Replay::new(&seq(0x40, 64)))
+            .expect("a session")
+            .encrypt_query(
+                &hex(&draft().dns_query),
+                QueryPadding::to(64),
+                ClientNonce::from_bytes(array(&seq(0xb0, 12))),
+            )
+            .expect("a query")
+            .0
+    };
+    let sent = session(&minor_one);
+    let (plaintext, _) = resolver_one
+        .decrypt_query(&sent)
+        .expect("both sides at 00 01");
+    assert_eq!(plaintext, hex(&draft().dns_query));
+    // The same encapsulation under another minor version is another key.
+    assert_ne!(sent, query().0);
+    assert!(resolver().decrypt_query(&sent).is_err());
+    assert!(resolver_one.decrypt_query(&query().0).is_err());
+}
+
 /// "Full X-Wing Query": the client's encapsulation, the cert-context, the key derivation and the encryption give
 /// the draft's 1220 bytes, and the resolver reads them.
 #[test]
