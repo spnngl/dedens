@@ -1007,6 +1007,35 @@ async fn a_relay_that_fails_is_skipped_by_the_next_try() {
     assert_eq!(resolver.script().seen.len(), queries);
 }
 
+/// D100: a relay that is down, its port closed, refuses the packets: it costs a try, as a mute one does, not the
+/// exchange, and the queries get their responses by the other.
+#[compio::test]
+async fn a_relay_that_refuses_is_skipped_by_the_next_try() {
+    let resolver = Resolver::start().await;
+    let closed = {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+        socket.local_addr().expect("an address")
+    };
+    let down = dedens_net::stamp::Relay {
+        address: Endpoint {
+            ip: closed.ip(),
+            port: NonZeroU16::new(closed.port()),
+        },
+    };
+    let live = LoopbackRelay::start(false).await;
+    let mut options = quick();
+    options.tries = NonZeroU8::new(3).expect("three");
+    let client = Client::new();
+    let queries = 16;
+    for _ in 0..queries {
+        client
+            .exchange_dnscrypt_via(query(), &resolver.stamp, &[down, live.stamp], &options)
+            .await
+            .expect("a response");
+    }
+    assert_eq!(resolver.script().seen.len(), queries);
+}
+
 /// "Anonymized `DNSCrypt`": the same resolver asked direct and through a relay is two resolvers: the second query goes
 /// to the relay, not to the address the first one knew.
 #[compio::test]
