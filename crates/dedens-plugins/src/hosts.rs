@@ -13,7 +13,8 @@ use crate::text::{self, LineError, LineErrorKind};
 /// Answers for the names and addresses of a hosts file: A and AAAA records for its names, PTR records for the
 /// reverse names of its addresses (RFC 1035 §3.5, RFC 3596 §2.5), with AA set: the data is the server's own.
 ///
-/// A listed name asked for another type, or for a type it has no address of, has no data (NOERROR, no answer,
+/// ANY is answered with the records of one type of the name, A first, then AAAA, then PTR (RFC 8482 §4.1). A listed
+/// name asked for another type, or for a type it has no address of, has no data (NOERROR, no answer,
 /// RFC 2308 §2.2), unless `fallthrough` passes such queries to the next stage. Other names and classes go to the
 /// next stage.
 #[derive(Debug)]
@@ -158,6 +159,12 @@ impl Plugin for Hosts {
             RecordType::A => entry.a.as_ref(),
             RecordType::AAAA => entry.aaaa.as_ref(),
             RecordType::PTR => entry.ptr.as_ref(),
+            // One RRset of the name (RFC 8482 §4.1): no data would say it has none.
+            RecordType::ANY => entry
+                .a
+                .as_ref()
+                .or(entry.aaaa.as_ref())
+                .or(entry.ptr.as_ref()),
             _ => None,
         };
         if records.is_none() && self.fallthrough {

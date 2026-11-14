@@ -184,8 +184,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   OPT and sizing). A plugin may also refuse the response of a stage after it (D118). Files are read at start and
   on each reload (D55).
   - `hosts`: lines in the `/etc/hosts` format, inline then from a file; A, AAAA and the PTR of each address to
-    its first name, TTL 3600 unless set (as `CoreDNS`); a listed name asked another type has no data (RFC 2308
-    §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
+    its first name, TTL 3600 unless set (as `CoreDNS`); ANY gets one RRset of the name, A then AAAA then PTR
+    (RFC 8482 §4.1); a listed name asked another type has no data (RFC 2308 §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
   - `blocklist`: names, one a line or in the `/etc/hosts` format of published lists, blocking themselves and
     their subdomains; `action` NXDOMAIN (default), NODATA, REFUSED or the unspecified address, each with EDE 15
     Blocked (RFC 8914 §4.16), AA clear. Of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1`, `::1` count,
