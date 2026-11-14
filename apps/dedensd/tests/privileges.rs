@@ -2,9 +2,9 @@
 //! followed, a no-op when the process already is that user, and, started as root on Linux, ends up as the user with
 //! no capability left in any thread while it serves on :53 and reloads.
 //!
-//! The last test needs Linux and root, and is `#[ignore]`d: `sudo -E env "PATH=$PATH" cargo test -p dedensd --test
-//! tests -- --ignored privileges::` (`sudo` resets the PATH), or in a root container. It skips with a message
-//! anywhere else.
+//! The last tests need Linux and root, and are `#[ignore]`d: `cargo test -p dedensd --config
+//! "target.'cfg(all())'.runner = 'sudo'" --test tests -- --ignored privileges::`, or in a root container. They
+//! skip with a message anywhere else, and fail there when `DEDENS_PRIVILEGES_REQUIRED` is set.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt as _;
@@ -170,6 +170,22 @@ impl Drop for Work {
     }
 }
 
+/// Root on Linux and a user to drop to, or `None` once the test is said skipped. A skip fails where
+/// `DEDENS_PRIVILEGES_REQUIRED` is set, as by CI's root steps: a step that lost root would pass checking nothing.
+fn as_root() -> Option<(String, u32)> {
+    let why = match (running_as(), target()) {
+        (Some((0, _)), Some(user)) => return Some(user),
+        (Some((0, _)), None) => "needs a user `dedens` or `nobody`",
+        _ => "needs Linux and root",
+    };
+    assert!(
+        std::env::var_os("DEDENS_PRIVILEGES_REQUIRED").is_none(),
+        "{why}, and DEDENS_PRIVILEGES_REQUIRED is set"
+    );
+    eprintln!("skipped: {why}");
+    None
+}
+
 /// A user to drop to: `dedens` if the system has it, else `nobody`.
 fn target() -> Option<(String, u32)> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
@@ -187,11 +203,8 @@ fn target() -> Option<(String, u32)> {
 #[test]
 #[ignore = "needs Linux, root and a free 127.0.0.1:53"]
 fn root_drops_to_the_user_and_serves_on_port_53() {
-    let Some((0, _)) = running_as() else {
-        return eprintln!("skipped: needs Linux and root");
-    };
-    let Some((name, uid)) = target() else {
-        return eprintln!("skipped: needs a user `dedens` or `nobody`");
+    let Some((name, uid)) = as_root() else {
+        return;
     };
     let work =
         Work(std::env::temp_dir().join(format!("dedensd-privileges-{}", std::process::id())));
@@ -274,11 +287,8 @@ fn root_drops_to_the_user_and_serves_on_port_53() {
 fn a_configuration_the_user_cannot_read_ends_the_start() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let Some((0, _)) = running_as() else {
-        return eprintln!("skipped: needs Linux and root");
-    };
-    let Some((name, _)) = target() else {
-        return eprintln!("skipped: needs a user `dedens` or `nobody`");
+    let Some((name, _)) = as_root() else {
+        return;
     };
     let path = write_config(&config("127.0.0.1:53", &format!("user: {name}\n")));
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
