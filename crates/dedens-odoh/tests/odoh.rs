@@ -73,7 +73,7 @@ fn exchange(key: &TargetKey, query: &[u8], response: &[u8]) -> (Message, Message
     )
     .expect("encrypts");
     let plaintext = decrypt_response(&client, &response_message).expect("decrypts");
-    assert_eq!(plaintext.dns_message(), response);
+    assert_eq!(plaintext.into_dns_message(), response);
     (query_message, response_message)
 }
 
