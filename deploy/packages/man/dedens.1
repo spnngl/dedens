@@ -15,7 +15,7 @@ dig\*(Aqs syntax works too: `@server` is `\-\-server server`, `+opt` is `\-\-opt
 A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before it for DNS over TLS, QUIC or HTTPS, `coap://HOST/PATH` for DNS over CoAP, `sdns://…` for the `DNSCrypt` resolver of a DNS stamp (a build with the `dnscrypt` feature). Each query is asked of each, side by side. Default: the first `nameserver` of /etc/resolv.conf
 .TP
 \fB\-p\fR, \fB\-\-port\fR \fI<PORT>\fR
-The port of a server given without one, a stamp having its own. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53
+The port of a server given without one, a stamp having its own; with `+trace`, of every server asked, as dig. Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53
 .TP
 \fB\-\-tls\-ca\fR \fI<FILE>\fR
 Trust the certificate authorities of this PEM file over TLS, instead of the system\*(Aqs

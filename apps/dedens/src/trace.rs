@@ -31,13 +31,40 @@ type Hop = (Report, Vec<u8>);
 /// The responses of each hop, and the error that ended the trace early, if any.
 pub(crate) type Trail = (Vec<Hop>, Option<anyhow::Error>);
 
+/// Where a trace starts, and the port of the servers it finds on the way.
+#[derive(Debug)]
+pub(crate) struct Roots {
+    /// The root servers, asked first.
+    pub(crate) servers: Vec<SocketAddr>,
+    /// The port of the servers the referrals lead to: `-p`, as dig's, else 53.
+    pub(crate) port: u16,
+}
+
+impl Roots {
+    /// The root servers of the root hints on `port`, IPv4 and IPv6 in turn, with `port` for the others too.
+    pub(crate) fn hints(port: u16) -> Self {
+        let records =
+            ZoneReader::new(ROOT_HINTS.as_bytes(), Some(Name::root())).filter_map(|entry| {
+                match entry {
+                    Ok(ZoneEntry::Record(decoded)) => Some(decoded.record),
+                    _ => None,
+                }
+            });
+        let ips = in_turn(records.filter_map(|record| address(&record)));
+        Self {
+            servers: on(ips, port),
+            port,
+        }
+    }
+}
+
 /// Follows `question` from `roots` until an answer, NXDOMAIN, NODATA or an authoritative response.
 pub(crate) async fn trace(
     client: &Client,
     options: Options,
     question: Question<'static>,
     id: &Id,
-    roots: &[SocketAddr],
+    roots: &Roots,
 ) -> Trail {
     let tracer = Tracer {
         client,
@@ -53,29 +80,24 @@ pub(crate) async fn trace(
     (hops, end.err())
 }
 
-/// The addresses of the root servers, from the root hints, IPv4 and IPv6 in turn.
-pub(crate) fn root_hints() -> Vec<SocketAddr> {
-    let records =
-        ZoneReader::new(ROOT_HINTS.as_bytes(), Some(Name::root())).filter_map(
-            |entry| match entry {
-                Ok(ZoneEntry::Record(decoded)) => Some(decoded.record),
-                _ => None,
-            },
-        );
-    in_turn(records.filter_map(|record| address(&record)))
-}
-
-/// `ips` on port 53, IPv4 and IPv6 in turn, so that the first few tried hold both: either route may be missing.
-fn in_turn(ips: impl IntoIterator<Item = IpAddr>) -> Vec<SocketAddr> {
+/// `ips`, IPv4 and IPv6 in turn, so that the first few tried hold both: either route may be missing.
+fn in_turn(ips: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
     let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) = ips.into_iter().partition(IpAddr::is_ipv4);
     let (mut v4, mut v6) = (v4.into_iter(), v6.into_iter());
     let mut all = Vec::new();
     while let (a, b) = (v4.next(), v6.next())
         && (a.is_some() || b.is_some())
     {
-        all.extend(a.into_iter().chain(b).map(|ip| SocketAddr::new(ip, 53)));
+        all.extend(a.into_iter().chain(b));
     }
     all
+}
+
+/// `ips` on `port`.
+fn on(ips: Vec<IpAddr>, port: u16) -> Vec<SocketAddr> {
+    ips.into_iter()
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect()
 }
 
 /// The address an A or AAAA record holds.
@@ -115,7 +137,7 @@ enum Step {
     /// Down to the servers of `zone`: the addresses given as glue, else their names to look up.
     Referral {
         zone: Name<'static>,
-        glue: Vec<SocketAddr>,
+        glue: Vec<IpAddr>,
         names: Vec<Name<'static>>,
     },
 }
@@ -171,7 +193,7 @@ fn step(message: &Message<'_>, question: &Question<'_>, zone: &Name<'_>) -> anyh
 struct Tracer<'a> {
     client: &'a Client,
     options: Options,
-    roots: &'a [SocketAddr],
+    roots: &'a Roots,
     left: Cell<u16>,
 }
 
@@ -184,7 +206,7 @@ impl Tracer<'_> {
         depth: u8,
         mut hops: Option<(&Id, &mut Vec<Hop>)>,
     ) -> anyhow::Result<Vec<u8>> {
-        let (mut servers, mut zone) = (self.roots.to_vec(), Name::root());
+        let (mut servers, mut zone) = (self.roots.servers.clone(), Name::root());
         loop {
             let (wire, step) = self.hop(question, &servers, &zone, hops.as_mut()).await?;
             let Step::Referral {
@@ -196,10 +218,11 @@ impl Tracer<'_> {
                 return Ok(wire);
             };
             tracing::debug!(zone = %cut, servers = names.len(), glue = glue.len(), "referral");
-            servers = match glue {
+            let ips = match glue {
                 glue if glue.is_empty() => self.look_up(&names, &cut, depth).await?,
                 glue => glue,
             };
+            servers = on(ips, self.roots.port);
             zone = cut;
         }
     }
@@ -256,7 +279,7 @@ impl Tracer<'_> {
         names: &[Name<'static>],
         zone: &Name<'_>,
         depth: u8,
-    ) -> anyhow::Result<Vec<SocketAddr>> {
+    ) -> anyhow::Result<Vec<IpAddr>> {
         if depth >= MAX_DEPTH {
             bail!("name servers without glue more than {MAX_DEPTH} deep");
         }
@@ -301,7 +324,7 @@ mod tests {
 
     #[test]
     fn the_root_hints_hold_13_servers_ipv4_and_ipv6_in_turn() {
-        let roots = root_hints();
+        let roots = Roots::hints(53).servers;
         assert_eq!(roots.len(), 26);
         for (index, root) in roots.iter().enumerate() {
             assert_eq!(root.is_ipv4(), index % 2 == 0, "{root}");
@@ -310,6 +333,10 @@ mod tests {
             roots[0],
             "198.41.0.4:53".parse().expect("a.root-servers.net")
         );
+        // `-p` moves them all.
+        let moved = Roots::hints(5353);
+        assert!(moved.servers.iter().all(|root| root.port() == 5353));
+        assert_eq!(moved.servers.len(), 26);
     }
 
     /// `www.github.com` owns the addresses of `github.com`, its CNAME target; `github.com` owns them too, and no
@@ -405,7 +432,7 @@ mod tests {
     fn families_alternate() {
         let ips = ["192.0.2.1", "192.0.2.2", "2001:db8::1"]
             .map(|ip| ip.parse::<IpAddr>().expect("an address"));
-        let order: Vec<bool> = in_turn(ips).iter().map(SocketAddr::is_ipv4).collect();
+        let order: Vec<bool> = in_turn(ips).iter().map(IpAddr::is_ipv4).collect();
         assert_eq!(order, [true, false, true]);
     }
 }

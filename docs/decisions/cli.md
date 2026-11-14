@@ -99,8 +99,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
   validation (`+validate` is refused, D76), no CNAME following. Refused with `@server`, `-f`, `--repeat`,
   `--search` and any transport but UDP and TCP (`+tls`, `+quic`, `+https`, `+odoh-proxy`, `+coap`, `+dnscrypt-*`).
-  The human format counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS`
-  replaces the roots for tests.
+  The human format counts the additional records of a referral hop instead of listing them. `-p` is the port of
+  every server asked, roots, glue and name servers looked up, as dig's `-p` (default 53). `DEDENS_ROOTS`,
+  addresses with their ports, replaces the roots for tests; `-p` still moves the rest of the trace.
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
   privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
   measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
