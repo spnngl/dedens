@@ -321,7 +321,8 @@ impl<'a> Message<'a> {
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it does not fit.
+    /// [`EncodeError::BufferFull`] when it does not fit; [`EncodeError::OpcodeOutOfRange`] or
+    /// [`EncodeError::RcodeOutOfRange`] when the header's opcode or rcode does not fit in its four bits.
     pub fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodeError> {
         self.encode_into(buf, false, self.edns.as_ref())
             .map(|encoded| encoded.len)
@@ -337,18 +338,23 @@ impl<'a> Message<'a> {
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when the header, the questions and the OPT record do not fit.
+    /// [`EncodeError::BufferFull`] when the header, the questions and the OPT record do not fit; the header's
+    /// errors of [`Message::encode`].
     pub fn encode_truncated(&self, buf: &mut [u8]) -> Result<Encoded, EncodeError> {
         self.encode_into(buf, true, self.edns.as_ref())
     }
 
-    /// Writes the message with the OPT record of `edns`, in place of its own.
+    /// Writes the message with the OPT record of `edns`, in place of its own: without one, the rcode must fit
+    /// the header (RFC 6891 §6.1.3).
     fn encode_into(
         &self,
         buf: &mut [u8],
         may_truncate: bool,
         edns: Option<&Edns<'_>>,
     ) -> Result<Encoded, EncodeError> {
+        if edns.is_none() && self.edns.as_ref().is_some_and(|e| e.ext_rcode != 0) {
+            return Err(EncodeError::RcodeNeedsEdns);
+        }
         let mut w = Writer::new(buf);
         self.header.encode(Counts::default(), &mut w)?;
         for q in &self.questions {
@@ -431,7 +437,8 @@ impl<'a> Message<'a> {
     ///
     /// # Errors
     ///
-    /// [`EncodeError::BufferFull`] when it is longer than 65535 bytes.
+    /// [`EncodeError::BufferFull`] when it is longer than 65535 bytes; the header's errors of
+    /// [`Message::encode`].
     pub fn to_vec(&self) -> Result<Vec<u8>, EncodeError> {
         self.to_vec_with(self.edns.as_ref())
     }
@@ -441,7 +448,8 @@ impl<'a> Message<'a> {
     ///
     /// # Errors
     ///
-    /// As [`Message::to_vec`].
+    /// As [`Message::to_vec`], and [`EncodeError::RcodeNeedsEdns`] when the rcode is above 15: its upper 8 bits
+    /// are the OPT record's.
     pub fn to_vec_without_edns(&self) -> Result<Vec<u8>, EncodeError> {
         self.to_vec_with(None)
     }

@@ -81,6 +81,23 @@ fn s6_1_3_a_large_rcode_needs_edns() {
 }
 
 #[test]
+fn s6_1_3_a_large_rcode_is_not_written_without_its_opt_record() {
+    let mut message = Message::query(1, question());
+    message.set_rcode(Rcode::BADCOOKIE).unwrap();
+    assert_eq!(
+        message.to_vec_without_edns(),
+        Err(EncodeError::RcodeNeedsEdns),
+        "its upper 8 bits would be lost: BADCOOKIE (23) read as YXRRSET (7)"
+    );
+    message.set_rcode(Rcode::NXDOMAIN).unwrap();
+    let wire = message.to_vec_without_edns().unwrap();
+    assert_eq!(
+        Message::decode(&wire).unwrap().message.rcode(),
+        Rcode::NXDOMAIN
+    );
+}
+
+#[test]
 fn s6_1_1_one_opt_record_at_most() {
     let mut wire = opt_message(&[]);
     wire[11] = 2;
