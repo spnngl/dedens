@@ -24,6 +24,9 @@ const VERSION: u8 = 1;
 /// The length of a version 1 Server Cookie (RFC 9018 §4): version, reserved, timestamp and hash.
 const SERVER_LEN: usize = 16;
 
+/// The length of the secret of Server Cookies: 128 bits, as RFC 9018 §4.4 says.
+const SECRET_LEN: usize = 16;
+
 /// How old a Server Cookie may be, in seconds: RFC 9018 §4.3 says a period of 1 hour in the past.
 const MAX_AGE: i32 = 3600;
 
@@ -38,12 +41,12 @@ const MAX_AHEAD: i32 = 300;
     derive(serde::Deserialize),
     serde(try_from = "String")
 )]
-pub struct Secret([u8; 16]);
+pub struct Secret([u8; SECRET_LEN]);
 
 impl Secret {
     /// The secret made of `bytes`, which must come from a source of randomness, or the operator.
     #[must_use]
-    pub const fn new(bytes: [u8; 16]) -> Self {
+    pub const fn new(bytes: [u8; SECRET_LEN]) -> Self {
         Self(bytes)
     }
 }
@@ -70,10 +73,10 @@ impl FromStr for Secret {
 
     /// Reads 32 hexadecimal digits (RFC 9018 Appendix A writes its secrets so).
     fn from_str(text: &str) -> Result<Self, SecretError> {
-        if text.len() != 2 * SERVER_LEN || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if text.len() != 2 * SECRET_LEN || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(SecretError);
         }
-        let mut bytes = [0; 16];
+        let mut bytes = [0; SECRET_LEN];
         let (pairs, _) = text.as_bytes().as_chunks::<2>();
         for (byte, pair) in bytes.iter_mut().zip(pairs) {
             let pair = std::str::from_utf8(pair).map_err(|_| SecretError)?;
@@ -86,8 +89,11 @@ impl FromStr for Secret {
 impl TryFrom<String> for Secret {
     type Error = SecretError;
 
-    fn try_from(text: String) -> Result<Self, SecretError> {
-        text.parse()
+    /// Wipes `text` once read: it holds the secret too.
+    fn try_from(mut text: String) -> Result<Self, SecretError> {
+        let secret = text.parse();
+        text.zeroize();
+        secret
     }
 }
 
