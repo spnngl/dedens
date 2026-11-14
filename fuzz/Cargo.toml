@@ -9,7 +9,8 @@ publish = false
 cargo-fuzz = true
 
 # D101: the key exchange of the PQ system (ML-KEM-768, X25519) takes milliseconds unoptimized, and the smoke test
-# makes one for each packet a target tries: these crates are built optimized in the test profile too.
+# makes one for each packet a target tries, with the ciphers that seal it: these crates are built optimized in the
+# test profile too.
 [profile.dev.package.ml-kem]
 opt-level = 3
 
@@ -32,6 +33,18 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.x25519-dalek]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.universal-hash]
 opt-level = 3
 
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
