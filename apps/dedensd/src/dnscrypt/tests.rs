@@ -442,7 +442,7 @@ fn decapsulations_are_paid_from_the_network_then_from_all() {
         burst,
         table,
     };
-    let limits = Decapsulations::new(budget(1, 2, 1 << 8), budget(1, 3, 1)).expect("budgets");
+    let limits = Decapsulations::keyed(budget(1, 2, 1 << 8), budget(1, 3, 1));
     let here: IpAddr = "192.0.2.1".parse().expect("an address");
     let near: IpAddr = "192.0.2.77".parse().expect("an address");
     let other: IpAddr = "198.51.100.1".parse().expect("an address");
