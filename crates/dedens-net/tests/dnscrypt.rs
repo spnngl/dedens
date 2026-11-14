@@ -801,7 +801,7 @@ async fn a_tcp_query_through_the_relay_is_the_largest_packet() {
         sealed.prefix,
         prefix_for(resolver.stamp.address.socket_addr())
     );
-    assert_eq!(sealed.inner_len, 3908);
+    assert_eq!(sealed.inner_len, 4096);
     assert!(sealed.passed.is_some());
     let script = resolver.script();
     assert_eq!(script.seen.len(), 1);
@@ -810,7 +810,7 @@ async fn a_tcp_query_through_the_relay_is_the_largest_packet() {
         Carrier::Udp,
         "the relay asks over UDP"
     );
-    assert_eq!(script.seen[0].packet_len, 3908);
+    assert_eq!(script.seen[0].packet_len, 4096);
 }
 
 /// "Anonymized `DNSCrypt`": a truncated response through the relay is asked again over TCP to the relay, with the
@@ -839,7 +839,7 @@ async fn a_truncated_response_through_the_relay_is_asked_again_larger() {
         .collect();
     assert_eq!(sealed.len(), 3, "{sealed:?}");
     assert_eq!(sealed[0].0, Carrier::Udp);
-    assert_eq!(sealed[1], (Carrier::Tcp, 3908));
+    assert_eq!(sealed[1], (Carrier::Tcp, 4096));
     assert_eq!(sealed[2].0, Carrier::Udp);
     assert!(
         sealed[2].1 >= 512 && sealed[2].1 > sealed[0].1,
@@ -922,7 +922,7 @@ async fn certificates_through_the_relay_go_over_tcp_when_udp_fails() {
             .iter()
             .map(|relayed| (relayed.carrier, relayed.inner_len))
             .collect();
-        assert_eq!(seen, [(Carrier::Udp, 1200), (Carrier::Tcp, 3908)]);
+        assert_eq!(seen, [(Carrier::Udp, 1200), (Carrier::Tcp, 4096)]);
         assert_eq!(resolver.script().fetched, (2, 0), "the relay asks over UDP");
     }
 }

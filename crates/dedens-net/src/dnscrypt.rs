@@ -18,8 +18,9 @@
 //! with the resolver's address before it ([`dedens_dnscrypt::relay_query`]), and the resolver never sees the
 //! client's. A relay forwards over UDP whatever the client used, and drops a response larger than the query it
 //! forwarded: so the certificate query is padded to hold the response, and over TCP the inner query is
-//! as large as [`RELAY_PACKET_LEN`] says. One relay is picked at random for each query, but the one that failed the last: that is
-//! skipped until another fails, so that a relay that is down costs one try, not one in every few.
+//! as large as [`RELAY_PACKET_LEN`] says, 4096 bytes. One relay is picked at random for each query, but the one that
+//! failed the last: that is skipped until another fails, so that a relay that is down costs one try, not one in every
+//! few.
 
 use std::cell::RefCell;
 use std::io;
@@ -54,10 +55,9 @@ const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
 const FIRST_FLOOR: usize = 256;
 
 /// The inner query a relay gets over TCP, certificate query or sealed packet: the relay asks the resolver over UDP and
-/// drops a response longer than it, so it is large, but not 4096 bytes: `dedensd` on `io_uring` cuts a UDP query longer than
-/// 3952 bytes (D49), so the sealed packet is the largest of whole 64-byte blocks that fits, 3840 bytes of plaintext and
-/// 68 of overhead (D100).
-const RELAY_PACKET_LEN: usize = 3840 + 68;
+/// drops a response longer than it, so it is the largest a packet can be, 4096 bytes (D100): a sealed one holds 4028
+/// bytes of plaintext and 68 of overhead.
+const RELAY_PACKET_LEN: usize = MAX_PACKET_LEN;
 
 /// The length of a certificate query to a relay over UDP: the relay drops a response longer than the query, and the
 /// classical certificates a resolver serves make a response of about 400 bytes (draft "Anonymized `DNSCrypt`",
