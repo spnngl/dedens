@@ -335,8 +335,9 @@ impl Responder {
                         };
                         while let Ok((mut send, mut recv)) = connection.accept_bi().await {
                             let BufResult(read, bytes) = recv.read_to_end(Vec::new()).await;
-                            let (Ok(_), Some(query)) = (read, bytes.get(2..)) else {
-                                return;
+                            // A stream that is no query goes unanswered; the next is served.
+                            let (Ok(_), Some(query)) = (read, doq_query(&bytes)) else {
+                                continue;
                             };
                             if let Some(response) = upstream.reply(query, Transport::Quic) {
                                 let len =
@@ -677,6 +678,13 @@ fn canned_with(names: &[&str], wires: &[Vec<u8>]) -> Vec<Canned> {
         .collect()
 }
 
+/// The query a DNS-over-QUIC stream holds: the whole stream past its 2-byte length, which must count it (RFC 9250
+/// §4.2).
+fn doq_query(stream: &[u8]) -> Option<&[u8]> {
+    let (len, query) = stream.split_first_chunk()?;
+    (usize::from(u16::from_be_bytes(*len)) == query.len()).then_some(query)
+}
+
 /// Whether a datagram is a query: a header (RFC 1035 §4.1.1) of a message that is no response, with one question and
 /// no answer or authority record. A UDP port is reused as soon as it closes, so what a server gets may be meant for
 /// the socket before it: the packets a QUIC server keeps sending to the port of a client that has exited.
@@ -719,6 +727,18 @@ mod tests {
         // A server thread answering it would have panicked on the copy of the question.
         let upstream = Upstream::new(canned_with(&["a"], &[]));
         assert_eq!(upstream.answer(&wire[..end - 2], Transport::Udp), None);
+    }
+
+    #[test]
+    fn a_doq_stream_is_a_query_only_when_its_length_counts_it() {
+        let query = read("a");
+        let len = u16::try_from(query.len()).expect("a short query");
+        let stream = [&len.to_be_bytes()[..], &query].concat();
+        assert_eq!(doq_query(&stream), Some(&query[..]));
+        assert_eq!(doq_query(&stream[..stream.len() - 1]), None);
+        assert_eq!(doq_query(&[&stream[..], &[0]].concat()), None);
+        assert_eq!(doq_query(&[&[0, 0][..], &query].concat()), None);
+        assert_eq!(doq_query(&stream[..1]), None);
     }
 
     #[test]
