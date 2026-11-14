@@ -106,7 +106,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D97 [transports](transports.md) (amended by D101): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
 - D98 [transports](transports.md) (amended by D100, D101): DNSCrypt client: `dedens @sdns://…` and `dedens_net::dnscrypt`, an envelope over the UDP and TCP loop, certificates fetched over UDP then TCP and kept until they stop answering, a fresh key per query
 - D99 [transports](transports.md) (amended by D100, D101): DNSCrypt in `dedensd`: a `dnscrypt://` listener, keys rotated every 12 hours, shared keys cached per thread, and `sdns://` upstream servers
-- D100 [transports](transports.md): Anonymized DNSCrypt client side: `+dnscrypt-relay` and a forward stage's `relays`, a relay picked at random for each query and the failed one skipped once, certificates and queries padded for the relay's size rule, no fallback direct
+- D100 [transports](transports.md) (amended by D101): Anonymized DNSCrypt client side: `+dnscrypt-relay` and a forward stage's `relays`, a relay picked at random for each query and the failed one skipped once, certificates and queries padded for the relay's size rule, no fallback direct
 - D101 [transports](transports.md): PQDNSCrypt: the X-Wing system `0x0003` from the `x-wing` crate, PQ certificates, and resumption tickets, in the core, the client (`+dnscrypt-pq`, `+dnscrypt-resume`) and `dedensd` (`pq` in `systems`)
 - D102 [transports](transports.md) (amended by D98, D100): DNS stamps of DNSCrypt resolvers and relays: typed, canonical, written back byte for byte
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
