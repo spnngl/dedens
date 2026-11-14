@@ -431,3 +431,36 @@ fn keys_rotate_every_twelve_hours_and_certificates_last_a_day() {
         Some(u32::try_from(T0 + 86_400 + 86_400).expect("fits"))
     );
 }
+
+/// D101, D117: a network pays a unit before all clients do, and a refusal by the global budget gives the network's
+/// unit back; a refusal names its budget; an exempt source pays no network unit, and is still bound by the global
+/// budget; an unproven source and a proven one of a network have a bucket each; a later second refills.
+#[test]
+fn decapsulations_are_paid_from_the_network_then_from_all() {
+    let budget = |per_second, burst, table| Budget {
+        per_second,
+        burst,
+        table,
+    };
+    let limits = Decapsulations::new(budget(1, 2, 1 << 8), budget(1, 3, 1)).expect("budgets");
+    let here: IpAddr = "192.0.2.1".parse().expect("an address");
+    let near: IpAddr = "192.0.2.77".parse().expect("an address");
+    let other: IpAddr = "198.51.100.1".parse().expect("an address");
+
+    assert_eq!(limits.admit(here, true, false, 0), Ok(()));
+    assert_eq!(limits.admit(near, true, false, 0), Ok(()));
+    assert_eq!(limits.admit(here, true, false, 0), Err("client"));
+    // The unproven bucket of the network is another.
+    assert_eq!(limits.admit(here, false, false, 0), Ok(()));
+    // All three units of the global budget are spent: a network with a unit of its own is refused by it ...
+    assert_eq!(limits.admit(other, true, false, 0), Err("global"));
+    // ... which it was given back: a second later, with one unit refilled, the network has both of its units.
+    assert_eq!(limits.admit(other, true, false, 1), Ok(()));
+    assert_eq!(limits.admit(other, true, false, 1), Err("global"));
+    assert_eq!(limits.admit(other, true, false, 2), Ok(()));
+    assert_eq!(limits.admit(other, true, false, 3), Ok(()));
+    // An exempt source pays the global budget only, and the network it comes from keeps its units.
+    assert_eq!(limits.admit(other, true, true, 4), Ok(()));
+    assert_eq!(limits.admit(other, true, true, 4), Err("global"));
+    assert_eq!(limits.admit(other, true, false, 5), Ok(()));
+}

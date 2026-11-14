@@ -863,7 +863,9 @@ same time), so the numbers are an order of magnitude, not a ranking; the X25519 
 Post-quantum key agreement costs the client about 1.7 times an X25519 session and the resolver about five times, 100 µs of
 a core a query: a resolver at 10,000 full PQ queries a second spends a core on decapsulation. That is why the draft has
 tickets: a resumed query costs the resolver 1.7 µs, 60 times less, and the client 1.1 µs. A certificate is 1320 bytes, a
-full query 1220 and a resumed one 424. The resolver's access and rate limits stand in front of the decapsulation (D101).
+full query 1220 and a resumed one 424. `dedensd` bounds the decapsulations with D117's budgets, not D113's rate limit
+(a pipeline stage, after the opening): 250 a second for a client network, 2500 for all, 2.5 % and 25 % of a core at 101 µs
+(D101; the global one is a bound, no measure).
 
 ## DNSCrypt in `dedensd` (D99)
 

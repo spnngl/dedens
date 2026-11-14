@@ -3,7 +3,7 @@
 //! sent in the clear (draft-denis-dprive-dnscrypt-11, "Certificates", "Key Management"). Sans I/O but for the
 //! randomness: the loops that carry queries are `serve/dnscrypt.rs`'s.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,6 +21,7 @@ use dedens_net::stamp::{DEFAULT_PORT, DnsCrypt, Endpoint, ProviderName, Stamp};
 use dedens_proto::edns::Edns;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Opcode, Record, RecordType, Ttl};
+use dedens_server::{Budget, Budgets, Slot};
 
 use crate::config::{SECRET_LEN, address, provider, read_secret};
 
@@ -48,6 +49,77 @@ const CERTIFICATE_TTL: u32 = 600;
 /// How long a resumption ticket is good for, in seconds (D101): short, so that a recorded resumed query is of little
 /// use and the key before a rotation is kept briefly, and no longer than a client's burst of queries needs.
 pub(crate) const TICKET_LIFETIME: u32 = 600;
+
+/// What a client network, a /24 of IPv4 or a /48 of IPv6, may have decapsulated by default, a tenth of
+/// [`GLOBAL_DECAPSULATIONS`] (D101, D117): a unit is one `X-Wing` decapsulation, 101 µs of a core
+/// (`docs/benchmarks.md`), so 250 a second are 2.5% of one, and a client that resumes asks for one a session.
+const CLIENT_DECAPSULATIONS: Budget = Budget {
+    per_second: 250,
+    burst: 500,
+    table: 1 << 16,
+};
+
+/// What all clients together may have decapsulated by default, shared by all threads: 2500 a second, a quarter of a
+/// core, with 5000 at once (D101).
+const GLOBAL_DECAPSULATIONS: Budget = Budget {
+    per_second: 2_500,
+    burst: 5_000,
+    table: 1,
+};
+
+/// What bounds the decapsulations a resolver does for packets nobody has authenticated (D101; the draft's "Resolvers
+/// SHOULD limit unauthenticated KEM work under load"), shared by all threads (D117: one table per thread would give a
+/// client the budget of each thread its packets are spread over).
+pub(crate) struct Decapsulations {
+    clients: Budgets,
+    global: Budgets,
+}
+
+impl Decapsulations {
+    /// The budgets `client` for each network and `global` for all.
+    ///
+    /// # Errors
+    ///
+    /// A budget the table refuses: a burst above 2^30, or a table of no bucket or too many.
+    pub(crate) fn new(client: Budget, global: Budget) -> anyhow::Result<Self> {
+        Ok(Self {
+            clients: Budgets::new(client).context("`dnscrypt`: a client decapsulation budget")?,
+            global: Budgets::new(global).context("`dnscrypt`: the decapsulation budget")?,
+        })
+    }
+
+    /// Whether the client at `from` may have a packet decapsulated at second `now`, by the budget that refuses it
+    /// (`"client"` or `"global"`) if not. The network of `from` pays a unit first, then all clients: a refusal by
+    /// the second gives the first back, so a client over the global budget does not spend its network's. `proven` is
+    /// an address the client cannot have spoofed (a connection): an unproven one has a bucket of its own, so a flood
+    /// in a victim's name from UDP drains only the victim's unproven bucket (D113). `exempt` is a source on the rate
+    /// limit's exempt list: it pays no network unit.
+    ///
+    /// # Errors
+    ///
+    /// The name of the budget that is spent.
+    pub(crate) fn admit(
+        &self,
+        from: IpAddr,
+        proven: bool,
+        exempt: bool,
+        now: u32,
+    ) -> Result<(), &'static str> {
+        let network = (!exempt).then(|| Slot::new(from, proven));
+        if let Some(network) = network
+            && !self.clients.admit(network, now)
+        {
+            return Err("client");
+        }
+        if !self.global.admit(Slot::ONLY, now) {
+            if let Some(network) = network {
+                self.clients.refund(network);
+            }
+            return Err("global");
+        }
+        Ok(())
+    }
+}
 
 /// The settings of the `dnscrypt` section (D99): kept to tell a reload that changed them, which takes a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +164,8 @@ pub(crate) struct Service {
     /// Unix time when the service was made, which a thread's seconds since its start count from.
     epoch: u64,
     state: Mutex<Arc<KeySet>>,
+    /// What the `X-Wing` packets of unauthenticated clients may cost (D101).
+    decapsulations: Decapsulations,
 }
 
 impl Service {
@@ -124,7 +198,22 @@ impl Service {
             systems,
             epoch: unix,
             state: Mutex::new(Arc::new(first)),
+            decapsulations: Decapsulations::new(CLIENT_DECAPSULATIONS, GLOBAL_DECAPSULATIONS)?,
         })
+    }
+
+    /// The service with `decapsulations` instead of the default budgets.
+    #[cfg(test)]
+    pub(crate) fn with_decapsulations(self, decapsulations: Decapsulations) -> Self {
+        Self {
+            decapsulations,
+            ..self
+        }
+    }
+
+    /// What bounds the decapsulations.
+    pub(crate) const fn decapsulations(&self) -> &Decapsulations {
+        &self.decapsulations
     }
 
     /// The name certificates are asked under.
