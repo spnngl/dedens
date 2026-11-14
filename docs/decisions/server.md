@@ -821,7 +821,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`Response::cost`: the wire, 2 bytes a record, and the bits of the cuts). A larger response is answered and not
     stored (`NotCached::TooLarge`, found by `Response::build` before the lock), and the stored one under that key,
     its failure count and its hold go (an answer too large to store must not leave an older one to be served, nor
-    a hold to refuse it). It was refused only when it was larger than a whole shard, so one 60 KiB response could
+    a hold to refuse it; so do an answer of TTL 0, a negative one without SOA and one for a client subnet, which
+    outdate the stored one as much, RFC 8767 §4; a response refused as broken or as no answer to the query, which
+    may be forged, leaves it). It was refused only when it was larger than a whole shard, so one 60 KiB response could
     empty the small queue, a tenth of the shard, of the entries asked once. Unset, the limit is 8 KiB (about 450 A
     records), or a tenth of a shard's share of `capacity` less `SLOT_COST` when that is less: no default
     `capacity` is refused for it. Refused: a set value under the longest key (a failure record is a key and nothing

@@ -2,7 +2,9 @@
 //! bogus response is kept briefly (RFC 4035 §4.7), answers clients that check, and its data answers those that do
 //! not (RFC 4035 §3.2.2).
 
-use dedens_cache::{Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, StalePolicy};
+use dedens_cache::{
+    Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, NotCached, StalePolicy,
+};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Flags, Message, Query, Rcode, RecordType};
 use dedens_testkit::{captured, dns};
@@ -105,6 +107,35 @@ fn a_bogus_response_is_kept_for_the_bogus_ttl_never_stale() {
     assert_eq!(checked, Checked::Bogus(code));
     let (found, _) = lookup(&cache, &query, T0 + 61, StalePolicy::Always);
     assert!(!matches!(found, Lookup::Hit(_)), "{found:?}");
+}
+
+/// A bogus answer refused for its TTL 0 ends what both keys held: the client that checks and the one that does not
+/// have the same new answer (RFC 8767 §4, D116).
+#[test]
+fn a_bogus_answer_not_stored_ends_both_entries() {
+    let cache = small_cache();
+    store(&cache, false, Checked::Bogus(InfoCode::DNSSEC_BOGUS));
+    let zero = response(
+        "www.example",
+        RecordType::A,
+        Rcode::NOERROR,
+        vec![a("www.example", 0, 1)],
+        vec![],
+    );
+    let query = query_with(1, "www.example", RecordType::A, Flags::RD, true);
+    let refused = cache.insert_checked(
+        &Query::read(&query).expect("a query"),
+        &Message::decode(&zero).expect("a response"),
+        T0 + 1,
+        Checked::Bogus(InfoCode::DNSSEC_BOGUS),
+        0,
+    );
+    assert_eq!(refused, Err(NotCached::ZeroTtl));
+    for flags in [Flags::RD, Flags::RD | Flags::CD] {
+        let query = query_with(2, "www.example", RecordType::A, flags, true);
+        let (found, _) = lookup(&cache, &query, T0 + 1, StalePolicy::Never);
+        assert_eq!(found, Lookup::Miss, "{flags:?}");
+    }
 }
 
 #[test]
