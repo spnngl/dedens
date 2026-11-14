@@ -104,6 +104,40 @@ fn the_port_goes_to_every_server_of_the_trace() {
     assert_eq!((root.queries().len(), server.queries().len()), (1, 1));
 }
 
+/// Each hop has its own id, numbered (D177): a server asked in two hops, here one that refers to itself, has both
+/// its responses saved.
+#[test]
+fn save_wire_keeps_each_hop_of_a_server_asked_twice() {
+    let root = Responder::start_with(&[], &[referral_to("127.0.0.1")]);
+    let port = root.addr.port().to_string();
+    let dir = tempfile::tempdir().expect("a directory");
+    trace(
+        &[&root],
+        &[
+            "example.com",
+            "-p",
+            &port,
+            "--save-wire",
+            &dir.path().to_string_lossy(),
+        ],
+    )
+    .code(10)
+    .stderr(contains("a referral to example.com. from example.com."));
+    let mut saved: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("the directory")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    saved.sort();
+    let hop = |n| format!("example.com_A@127.0.0.1:{port}#{n}.bin");
+    assert_eq!(saved, [hop(1), hop(2)]);
+}
+
 /// A name server looked up for want of glue takes only the addresses its name owns, or the end of its CNAME chain:
 /// an answer to `hera.ns.cloudflare.com A` holding `example.com`'s addresses (the capture `a`, its question changed)
 /// gives none, after a referral to `example.com` without its glue.

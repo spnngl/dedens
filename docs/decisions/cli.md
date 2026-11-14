@@ -82,8 +82,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   example.com example.com` makes, are refused before any is asked: `two queries with id example.com_A`, exit 2 (D33),
   as D34 refuses them in a file. Rejected: asking the duplicate once, since the command line then says something
   other than what runs; numbering the files, since the id names the query. `servers disagree` names each server
-  by that part of its id: two paths at one address told apart. Tests: `apps/dedens/tests/files.rs`
-  (`save_wire_never_overwrites_a_response`), unit tests of `output.rs`.
+  by that part of its id: two paths at one address told apart. A `+trace` response (D40) adds `#n`, its place in
+  the trace from 1: `example.com_A@192.0.2.1#2`, since one server may be asked in two hops (a lame or
+  self-referring delegation, two name servers at one address). Every hop is numbered, not only a server's second,
+  so that an id does not hang on the servers asked before it; the number names a response of one query, not a
+  query. Tests: `apps/dedens/tests/files.rs` (`save_wire_never_overwrites_a_response`),
+  `apps/dedens/tests/trace.rs` (`save_wire_keeps_each_hop_of_a_server_asked_twice`), unit tests of `output.rs`.
 - D39 `--repeat N` (`+repeat=N`): each query is asked of each server N times in a row, not concurrently, so
   the round trips are the server's and not our queue's. The last response is printed, with a `latency` object
   when N > 1: `sent`, `errors` (left out when 0) and `min_us`/`p50_us`/`p90_us`/`p99_us`/`max_us`, nearest
@@ -91,9 +95,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   any answer came, else the last error's.
 - D40 (amended by D76) `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
   refreshes it) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
-  the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per response, until an answer, NXDOMAIN,
-  NODATA or an authoritative response. A referral that comes no closer, an error rcode or a lame response sends
-  the hop to the next address (RFC 1034 §5.3.3), three at most, IPv4 and IPv6 in turn so either route works.
+  the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per response, its id numbered (D177),
+  until an answer, NXDOMAIN, NODATA or an authoritative response. A referral that comes no closer, an error
+  rcode or a lame response sends the hop to the next address (RFC 1034 §5.3.3), three at most, IPv4 and IPv6 in
+  turn so either route works.
   Glue is an address record of a name server inside the answering server's zone (RFC 2181 §5.4.1), unlike dig;
   name servers without glue are looked up the same way, A then AAAA, at most 4 deep, those inside the referred
   zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
