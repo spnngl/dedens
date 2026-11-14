@@ -271,6 +271,10 @@ async fn connection<N: Io, C: Codec>(
         let Ok(Ok(message)) = thread.io.timeout_at(deadline, reader.message()).await else {
             break;
         };
+        // The writer gave up: a reply would have nowhere to go, and an upstream query would be asked for nothing.
+        if replies.sender.is_disconnected() {
+            break;
+        }
         let pipeline = thread.pipeline();
         let from = origin.peer.ip();
         let (query, context) = match codec.open(thread, from, message) {
@@ -680,6 +684,79 @@ mod tests {
             drop(replies);
             writing.await.expect("the writer ends");
             assert_eq!(batches.borrow().iter().sum::<usize>(), pushed);
+        });
+    }
+
+    /// A reader of the messages its channel brings: an end of the stream once they are read and the sender dropped.
+    struct Fed(flume::Receiver<Vec<u8>>);
+
+    impl dedens_net::tcp::Inbound for Fed {
+        async fn message(&mut self) -> std::io::Result<Vec<u8>> {
+            self.0
+                .recv_async()
+                .await
+                .map_err(|_| std::io::ErrorKind::UnexpectedEof.into())
+        }
+    }
+
+    /// A writer whose every write fails, as one to a client gone.
+    struct Broken;
+
+    impl dedens_net::tcp::Outbound for Broken {
+        fn write_all(&mut self, batch: Vec<u8>) -> impl Future<Output = BufResult<(), Vec<u8>>> {
+            std::future::ready(BufResult(Err(std::io::ErrorKind::BrokenPipe.into()), batch))
+        }
+
+        async fn close(&mut self) {}
+    }
+
+    /// RFC 7766 §6.2.3: once the writer gave up, a message read is not asked upstream, as its reply would have
+    /// nowhere to go, and the connection ends then, not after `TCP_IDLE`.
+    #[test]
+    fn a_connection_whose_writer_gave_up_asks_nothing_more() {
+        let text = "listen: ['127.0.0.1:53']\npipeline: [hosts, up]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        let config =
+            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
+                .expect("read");
+        let thread = Rc::new(Thread::new(
+            Arc::new(Current::new(config.pipeline)),
+            8,
+            Trust::default(),
+        ));
+        let query = |name: &str| {
+            let name = name.parse().expect("a name");
+            Message::query(1, Question::new(name, RecordType::A))
+                .to_vec()
+                .expect("a query fits")
+        };
+        Runtime::new().expect("a runtime").block_on(async {
+            let (messages, inbound) = flume::unbounded();
+            let serving = spawn({
+                let thread = Rc::clone(&thread);
+                async move {
+                    let origin =
+                        Origin::new(&udp_listener(), SocketAddr::from(([127, 0, 0, 1], 1)));
+                    connection(
+                        Fed(inbound),
+                        Broken,
+                        Transport::Tcp,
+                        &origin,
+                        &thread,
+                        &Rc::new(Plain),
+                    )
+                    .await;
+                }
+            });
+            // Answered at once: its write fails, and the writer gives up.
+            messages.send(query("www.example.")).expect("fed");
+            compio::time::sleep(Duration::from_millis(50)).await;
+            messages.send(query("example.com.")).expect("fed");
+            compio::time::timeout(Duration::from_secs(2), serving)
+                .await
+                .expect("the connection ends before its idle time")
+                .expect("no panic");
+            assert_eq!(thread.upstream.used.get(), 0, "asked upstream");
+            drop(messages);
         });
     }
 
