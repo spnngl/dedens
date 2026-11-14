@@ -51,7 +51,9 @@ fn clients_expecting_records(world: &mut World, carrier: Carrier) {
 
 /// Every message of the link takes 10 ms. A host restarting at the very instant a peer connects to it refuses the
 /// connection, which the client does not retry; the scripts that restart a host under a TCP connection keep clear
-/// of that instant with a link that never takes less.
+/// of that instant with a link that never takes less. A datagram in transit when its destination restarts reaches the
+/// new host: the scripts that restart a host under a query in flight make the link fast enough for the query to
+/// have arrived before the restart.
 fn steady(world: &mut World, a: Node, b: Node) {
     let at = Duration::ZERO;
     let ten = 10 * MS;
@@ -275,6 +277,9 @@ fn a_second_close_fails_the_exchange() {
 fn a_bounced_resolver_answers_the_clients_second_try() {
     seed::each(SEEDS, |seed| {
         let mut world = Topology::new().upstream(slow()).build(seed);
+        // The default links take up to 100 ms: a query still on its way at the bounce (seed 8662461762334067750:
+        // sent at 5 ms, bounced at 104 ms, arrived at 105 ms) reaches the new resolver, which answers it at once.
+        steady(&mut world, Node::Client(0), Node::Resolver);
         let at = world.pick(100 * MS, 800 * MS);
         world.fault(at, Fault::Bounce(Server::Resolver));
         let upstream = world.upstreams[0].ip();
