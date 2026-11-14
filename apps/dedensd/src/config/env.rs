@@ -32,7 +32,8 @@ pub(super) fn interpolate(
 ///   addresses, paths and URLs stay usable anywhere, in a number or in a quoted text.
 /// - Between quotes of the template, it is escaped for them.
 /// - Alone as a value (a whole scalar: after `key:`, `-`, `,` or `[` in a flow, before a `,`, a `]`, a `}`, a
-///   comment or the end of the line), it is written in single quotes.
+///   comment or the end of the line), it is written in single quotes; so is a plain value YAML reads as null (`~`,
+///   `null`, `Null`, `NULL`), which would otherwise read as no value.
 ///
 /// # Errors
 ///
@@ -58,7 +59,8 @@ fn written(name: &str, value: &str, before: &str, after: &str) -> anyhow::Result
         && !value.starts_with("...")
         && !value.ends_with(':')
         && !matches!(value, "-" | "?");
-    if plain {
+    let null = matches!(value, "~" | "null" | "Null" | "NULL");
+    if plain && !(null && alone(before, after)) {
         return Ok(value.to_owned());
     }
     if before.ends_with('\'') && after.starts_with('\'') {
@@ -172,6 +174,34 @@ mod tests {
         ] {
             let refused = interpolate(text, env).expect_err(text);
             assert_eq!(refused.to_string(), message);
+        }
+    }
+
+    /// D115: a value YAML reads as null is the text all the same: `user: ${USER}` with `USER=null` must not read as
+    /// no `user` (no privilege drop).
+    #[test]
+    fn a_value_that_reads_as_null_is_text() {
+        for value in ["~", "null", "Null", "NULL"] {
+            let env = |_: &str| Some(value.to_owned());
+            for template in ["k: ${V}\n", "k: [${V}]\n", "{k: ${V}}\n", "- ${V}\n"] {
+                let text = interpolate(template, env).unwrap();
+                let read = if template.starts_with('-') {
+                    serde_saphyr::from_str::<Vec<Option<String>>>(&text)
+                        .map(|mut v| v.pop().flatten())
+                } else if template.contains('[') {
+                    serde_saphyr::from_str::<BTreeMap<String, Vec<Option<String>>>>(&text)
+                        .map(|mut map| map.remove("k").and_then(|mut v| v.pop()).flatten())
+                } else {
+                    serde_saphyr::from_str::<BTreeMap<String, Option<String>>>(&text)
+                        .map(|mut map| map.remove("k").flatten())
+                };
+                assert_eq!(read.unwrap().as_deref(), Some(value), "{text}");
+            }
+            // Within a larger value, it is text already.
+            assert_eq!(
+                interpolate("k: a${V}", env).unwrap(),
+                format!("k: a{value}")
+            );
         }
     }
 
