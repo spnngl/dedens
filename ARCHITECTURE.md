@@ -27,7 +27,8 @@ Planned: `dedens-resolver`.
 
 ## Data flow
 
-- Client (`apps/dedens`): `Options::query` → `dedens-net` (Oblivious DoH through `Client::exchange_oblivious`, D79) →
+- Client (`apps/dedens`): `Options::query` → `dedens-net` (Oblivious DoH through `Client::exchange_oblivious`, D79;
+  DNSCrypt through `Client::exchange_dnscrypt_via`, D98; `+trace` hop by hop in `src/trace.rs`, D40) →
   `Message::decode` → with `+validate`, `src/validate.rs` over `dedens-dnssec` (D76) → `Report::exchanged` →
   `src/output.rs` (D37), with any `Violation` shown.
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in

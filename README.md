@@ -4,10 +4,11 @@ A DNS library, a dig-like CLI, `dedens`, and a server, `dedensd`, written in Rus
 released.
 
 - `dedens`: dig's arguments (`@server name type +opts`) and long flags, over UDP, TCP, TLS (`+tls`,
-  `tls://host#name`), QUIC (`+quic`, `quic://host#name`) and DoH over HTTP/3 (`+https`, `https://host/path`), and, built with the experimental `doc` feature, unprotected DoC
-  (`+coap`, `coap://host/path`, or `+doc-discover` to find the path in the server's `/.well-known/core`);
-  several servers, `--repeat`, `+trace`, `-x`; human, short, JSON and YAML output; YAML query files with
-  expectations (`dedens --help`).
+  `tls://host#name`), QUIC (`+quic`, `quic://host#name`) and DoH over HTTP/3 (`+https`, `https://host/path`);
+  built with the `dnscrypt` feature, DNSCrypt (`sdns://` stamps, `+dnscrypt-relay`); with `odoh`, Oblivious DoH
+  (`+odoh-proxy`); with the experimental `doc` feature, unprotected DoC (`+coap`, `coap://host/path`, or
+  `+doc-discover` to find the path in the server's `/.well-known/core`); several servers, `--repeat`, `+trace`,
+  `-x`; human, short, JSON and YAML output; YAML query files with expectations (`dedens --help`).
 - `dedensd`: a caching forwarder (serve-stale, prefetch) with hosts and blocklist stages, listening on UDP, TCP,
   TLS, QUIC and DoH over HTTP/3 (and `coap://` with the `doc` feature), asking upstreams over any of them but CoAP; one YAML file, reloaded on SIGHUP
   (example and keys in `apps/dedensd/src/config/mod.rs`). On Linux it needs kernel 6.0 or later for `io_uring`; on an

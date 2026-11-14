@@ -91,15 +91,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   any answer came, else the last error's.
 - D40 (amended by D76) `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
   refreshes it) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
-  the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per hop, until an answer, NXDOMAIN,
+  the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per response, until an answer, NXDOMAIN,
   NODATA or an authoritative response. A referral that comes no closer, an error rcode or a lame response sends
   the hop to the next address (RFC 1034 §5.3.3), three at most, IPv4 and IPv6 in turn so either route works.
   Glue is an address record of a name server inside the answering server's zone (RFC 2181 §5.4.1), unlike dig;
   name servers without glue are looked up the same way, A then AAAA, at most 4 deep, those inside the referred
   zone skipped (they lead back to the same referral). A trace makes 100 exchanges at most. No DNSSEC
-  validation (`+validate` is refused, D76), no CNAME following. Refused with `@server`, `-f`, `--repeat`, `--search`, `+tls` and `+quic`. The human format
-  counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS` replaces the roots
-  for tests.
+  validation (`+validate` is refused, D76), no CNAME following. Refused with `@server`, `-f`, `--repeat`,
+  `--search` and any transport but UDP and TCP (`+tls`, `+quic`, `+https`, `+odoh-proxy`, `+coap`, `+dnscrypt-*`).
+  The human format counts the additional records of a referral hop instead of listing them. `DEDENS_ROOTS`
+  replaces the roots for tests.
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
   privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
   measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
