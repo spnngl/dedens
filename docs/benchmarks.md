@@ -1127,6 +1127,30 @@ The `memmove` stands out: nearly a fifth of the front server's samples copying b
 unwinding stops at a libc leaf without CFI). Whether it is a reply buffer of D52 or D63, or the response copied out of the
 upstream socket, is not known; the report keeps no `perf.data` to ask.
 
+## UDP buffers of 4240 bytes (D49)
+
+The pool's buffers grew from 4096 to 16 + 128 + 4096 = 4240 bytes so that a query of 4096 bytes is read whole: 1.04 MiB a
+thread instead of 1.00. The receive path is the same, so the claim is that nothing moved.
+
+`just bench-dnsperf HEAD udp` and `DEDENS_ROUNDS=5 just bench-dnsperf HEAD udp` (base is the commit before, in a clone of
+the tree, as the worktree's `.git` is not visible in the container). Docker Desktop on an Apple M-series host (Linux 7.0.14
+arm64 VM, 10 CPUs, `io_uring`), `dedensd` on one core, dnsperf on six, 10 s a round; the host ran other builds, load average
+15-30. Seven rounds each, base alternating with tree, no query lost:
+
+| | Median | Range |
+|---|---|---|
+| base (4096-byte buffers) | 305.8k queries/s | 217.5k-345.4k |
+| tree (4240-byte buffers) | 312.8k queries/s | 248.8k-335.2k |
+
+The two ranges overlap throughout and the medians differ by 2%: noise, as the range inside one side is 40%. The VPS run
+(`just bench-dnsperf origin/main udp`, six vCPUs, quiet) is the one to read the 480k figure of D49 from.
+
+`cargo bench -p dedensd --bench udp` (D121) on macOS, where the pool is read by the poll driver, the executables of both
+trees alternating, load average 30-50 from other workers: 12 rounds, median queries/s at one query in flight 17.7k (base) and
+13.9k (tree), at 32 in flight 30.2k and 36.3k. The same bench with the base executable run against a copy of itself (12
+rounds) gave 16.4k and 14.9k at one in flight, 29.4k and 23.7k at 32: the gap between two identical executables is as
+large as the one between the trees, so the bench shows no change, and says nothing finer on a loaded laptop.
+
 ## Linker (D150, D166)
 
 lld, Rust's own (`.cargo/config.toml`), against the platform's linker, for `dedensd`. Paired rounds, the two
