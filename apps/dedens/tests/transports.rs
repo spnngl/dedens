@@ -395,8 +395,8 @@ fn coap_doc_discover_ends_at_the_timeout_of_the_query() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
-/// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a server
-/// over another transport, or a CoAP one with a path of its own, is a usage error (D33) before any query.
+/// D95: a query file names its own servers, so the run checks that `+doc-discover` has a CoAP one with no path: a
+/// server over another transport, or a CoAP one with a path of its own, is a usage error (D33) before any query.
 #[cfg(feature = "doc")]
 #[test]
 fn coap_doc_discover_in_a_query_file_needs_a_coap_server_with_no_path() {

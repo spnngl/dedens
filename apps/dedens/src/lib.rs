@@ -1,5 +1,5 @@
-//! `dedens`: a dig-like DNS client (D18, D32), a library the binary and `fuzz/` reach (D181): [`main`] runs the command,
-//! [`parse_args`] only reads its command line.
+//! `dedens`: a dig-like DNS client (D18, D32), a library the binary and `fuzz/` reach (D181): [`main`] runs the
+//! command, [`parse_args`] only reads its command line.
 //!
 //! Exit codes (D33): 0 a response came, whatever its rcode; 1 an expectation failed; 2 usage; 9 no reply; 10 any
 //! other error.
