@@ -195,21 +195,14 @@ impl Validation {
         }
     }
 
-    /// Records what is known of `name`: the one place a zone's outcome is written, and one that keeps nothing
-    /// indeterminate: a question the caller could not answer, or a limit, says nothing of the zone, and the
-    /// next attempt may do better. The key cache gets what [`Zone::lifetime`] lets it keep, never from a hit
-    /// of the cache itself (that would renew it). Returns the zone, as given.
+    /// Records what is known of `name`: the one place a zone's outcome is written. The validation keeps every
+    /// outcome, so that no rerun checks the zone again and spends the budget twice (D92); the key cache gets
+    /// what [`Zone::lifetime`] lets it keep, never from a hit of the cache itself (that would renew it), and
+    /// nothing failed: a question the caller could not answer, or a limit, says nothing of the zone, and the
+    /// next validation may do better. Returns the zone, as given.
     fn settle(&mut self, name: &Name<'static>, zone: Zone) -> Zone {
-        let indeterminate = matches!(
-            zone,
-            Zone::Apex(Settled::Unusable(Unusable::Failed(Failure::Indeterminate(
-                _
-            ))))
-        );
-        if !indeterminate {
-            self.zones.insert(name.clone(), zone.clone());
-            self.config.cache.put(name, &zone, self.at);
-        }
+        self.zones.insert(name.clone(), zone.clone());
+        self.config.cache.put(name, &zone, self.at);
         zone
     }
 
