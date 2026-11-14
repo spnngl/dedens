@@ -685,11 +685,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - What a relay does shapes the sizes. It forwards the inner packet over UDP whatever the client used, and drops a
     response larger than the inner packet (the reference relay, `encrypted-dns-server`, `anonymized_dns.rs`). So the
     certificate query is padded with the EDNS padding option (RFC 7830) to 1200 bytes over UDP (room for both
-    certificates), and over TCP, tried when UDP is silent or truncated, to 3908 bytes; a sealed query over TCP is
-    padded to a 3908-byte packet (`QueryPadding::udp(len, RELAY_PACKET_LEN)`), over UDP as D98 does. Not 4096, the draft's
-    largest, as the plan said: `dedensd` on `io_uring` cuts a UDP query over 3952 bytes (D49) and reads it as broken, so a
-    relay in front of a `dedensd` resolver would lose every TCP query (found by `dedensd`''s test on Linux CI); 3908 is 3840
-    bytes of plaintext, the largest of whole 64-byte blocks that fits, and a response above it is rare. A truncated
+    certificates), and over TCP, tried when UDP is silent or truncated, to 4096 bytes, the draft's largest; a sealed query
+    over TCP is padded to a 4096-byte packet (`QueryPadding::udp(len, RELAY_PACKET_LEN)`, 4028 bytes of plaintext),
+    over UDP as D98 does: the draft's "Relay Behavior" and `dnscrypt-proxy` (`minRelayedQuerySize`) pad to 4096 too, and a `dedensd`
+    resolver reads a query so large whole (D49). A truncated
     answer raises the padding target and goes again over TCP as D98's does. A certificate response is accepted when
     its ID, QR and question are those of the query (the relay checked the rest: a TXT for a name that starts
     `2.dnscrypt-cert.`, which a stamp with another provider name cannot pass: no relay can serve it, and the
