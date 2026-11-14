@@ -266,15 +266,17 @@ pub fn verify_any(
             return Err(SigError::TooManyFailures);
         }
         let mut candidates = keys.iter().filter(|key| key.matches(sig)).peekable();
+        let keyed = candidates.peek().is_some();
         let mut attempt = match Attempt::new(rrset, sig) {
             Ok(attempt) => attempt,
             Err(error) => {
-                failed += 1;
+                // An RRSIG without a key is no failure, whatever else is wrong with it (D73).
+                failed += usize::from(keyed);
                 note(error);
                 continue;
             }
         };
-        if candidates.peek().is_none() {
+        if !keyed {
             note(SigError::NoKey {
                 key_tag: sig.rrsig.key_tag,
             });

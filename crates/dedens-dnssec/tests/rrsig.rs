@@ -1032,6 +1032,28 @@ mod verification {
             verify_any(&forged(), &sigs, &zsk(), INCEPTION),
             Err(SigError::NoKey { key_tag: 1 })
         );
+        // Nor do they when their labels field is wrong too: the RRSIG that has a key still verifies.
+        let mut sets: Vec<RrSet<'static>> = (0..MAX_FAILED + 2)
+            .map(|_| {
+                rrsig_set(
+                    "ns1.example.",
+                    &Rrsig {
+                        key_tag: 1,
+                        labels: 9,
+                        ..rrsig(1, 2)
+                    },
+                    RFC4035_NS1_SIGNATURE,
+                )
+            })
+            .collect();
+        sets.push(rrsig_set(
+            "ns1.example.",
+            &rrsig(1, 2),
+            RFC4035_NS1_SIGNATURE,
+        ));
+        let sigs: Vec<Signature<'_>> = sets.iter().flat_map(Signature::all).collect();
+        let a = rrset("ns1.example.", 1, &[vec![192, 0, 2, 1]]);
+        assert!(verify_any(&a, &sigs, &zsk(), INCEPTION).is_ok());
     }
 
     // Denial of existence (D74).
