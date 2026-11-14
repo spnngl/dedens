@@ -592,6 +592,32 @@ mod tests {
         assert!(held.shared.is_empty(), "no shared key outlives a rotation");
     }
 
+    /// D101, "Key Management" (S4 of the review of step 14): a thread that gets no query still lets go of the key
+    /// sets it held, so the ticket keys and X-Wing seeds they own are erased when their time is out: `rotate` takes
+    /// the keys at each time `refresh` returns, and the last holder of a retired set is the thread.
+    #[test]
+    fn an_idle_thread_lets_go_of_retired_key_sets_on_time() {
+        let thread = answering();
+        let keys = Keys::new(pq_service(), &thread);
+        let first = Arc::downgrade(&keys.held.borrow().set);
+        let ticket_life = u64::from(TICKET_LIFETIME);
+
+        let due = keys.refresh(T0 + HALF_DAY, &thread.io);
+        assert!(first.upgrade().is_none(), "the rotated set is gone");
+        assert_eq!(
+            due,
+            T0 + HALF_DAY + ticket_life,
+            "the thread looks again when the previous ticket key is out"
+        );
+        let second = Arc::downgrade(&keys.held.borrow().set);
+
+        keys.refresh(T0 + HALF_DAY + ticket_life, &thread.io);
+        assert!(
+            second.upgrade().is_none(),
+            "the set with the previous ticket key is gone"
+        );
+    }
+
     /// D99, D48: the count of each query by system and result, described.
     #[test]
     fn queries_are_counted_by_system_and_result() {
