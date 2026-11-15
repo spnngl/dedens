@@ -1306,7 +1306,7 @@ async fn s5_2_a_restarted_server_costs_one_try() {
         .exchange(query(), named(relay.addr(), NAME), &options)
         .await
         .expect("a response");
-    relay.restart(second);
+    relay.restart(second).await;
     let asked = Instant::now();
     client
         .exchange(query(), named(relay.addr(), NAME), &options)

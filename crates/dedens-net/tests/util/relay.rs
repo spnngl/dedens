@@ -5,9 +5,14 @@
 use std::cell::Cell;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::Duration;
 
 use compio::BufResult;
 use compio::net::UdpSocket;
+
+/// The time the old server's last datagrams are given before a restart: well over the acknowledgment delay of
+/// RFC 9000 §18.2 (25 ms), on a loaded runner too.
+const SETTLE: Duration = Duration::from_millis(200);
 
 /// The relay, passing datagrams until the runtime ends.
 pub(crate) struct Relay {
@@ -65,8 +70,11 @@ impl Relay {
         self.addr
     }
 
-    /// From now on the relay passes to and from `server` only: the server at its address was restarted.
-    pub(crate) fn restart(&self, server: SocketAddr) {
+    /// From now on the relay passes to and from `server` only: the server at its address was restarted. A restart takes
+    /// longer than the old server's last datagrams after an answer (an acknowledgment, new stream credit) take to come
+    /// in, so they are let in first: one read at the start of the next try would put the close off by a try (D61).
+    pub(crate) async fn restart(&self, server: SocketAddr) {
+        compio::time::sleep(SETTLE).await;
         self.server.set(server);
     }
 }

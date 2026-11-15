@@ -75,19 +75,14 @@ pub(super) struct Closing {
 const CLOSE_GRACE: Duration = Duration::from_millis(100);
 
 /// Closes the connections of `endpoints` with their protocol's code for no error, `DOQ_NO_ERROR` (RFC 9250 §4.3) or
-/// `H3_NO_ERROR` (RFC 9114 §5.3, §8.1), and waits [`CLOSE_GRACE`] for the frames to go out if there were any: their
-/// clients open new connections at once instead of waiting out their idle timeout (D157). Queries in flight are
-/// lost, and asked again by their clients.
+/// `H3_NO_ERROR` (RFC 9114 §5.3, §8.1), and waits [`CLOSE_GRACE`] for the frames to go out: their clients open new
+/// connections at once instead of waiting out their idle timeout (D157). Queries in flight are lost, and asked again
+/// by their clients.
 pub(super) async fn close(endpoints: &[Closing]) {
-    let open = endpoints
-        .iter()
-        .any(|closing| closing.endpoint.open_connections() > 0);
     for Closing { endpoint, code } in endpoints {
         endpoint.close(*code, b"server stopped");
     }
-    if open {
-        compio::time::sleep(CLOSE_GRACE).await;
-    }
+    compio::time::sleep(CLOSE_GRACE).await;
 }
 
 /// The QUIC endpoint on `socket` with `config`: connections closed after [`TCP_IDLE`] without a packet (RFC 9250

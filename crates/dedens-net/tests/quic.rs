@@ -370,7 +370,7 @@ async fn s5_5_a_restarted_server_costs_one_try() {
     options.tries = NonZero::new(2).expect("two");
     let ask = || client.exchange(query(), named(relay.addr(), NAME), &options);
     ask().await.expect("a response");
-    relay.restart(second);
+    relay.restart(second).await;
     let asked = Instant::now();
     ask().await.expect("a response from the restarted server");
     let elapsed = asked.elapsed();
