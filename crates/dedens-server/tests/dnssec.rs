@@ -1087,4 +1087,199 @@ mod limits {
         assert_eq!(reply.rcode(), Rcode::NOERROR);
         assert!(!reply.header.flags.contains(Flags::AD));
     }
+
+    mod parking {
+        //! A query the allowance cannot admit now waits for it (D186): parked, asked again as the allowance refills,
+        //! given up once the wait ran out, its share's unit held while it waits and given back with it.
+
+        use std::net::{IpAddr, Ipv4Addr};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use dedens_cache::{Cache, Config};
+        use dedens_proto::edns::InfoCode;
+        use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
+        use dedens_server::{Forward, Parked, Pipeline, Stage, Step, Upstream, Validating};
+        use dedens_testkit::dnssec::Captures;
+
+        use super::{START, address, allowance, error, sharing, validating};
+        use crate::util::{client_query, decode, servers, validating_under};
+
+        /// The step of a query validated for `name`, from `from` at `now`.
+        fn step(pipeline: &Pipeline, from: IpAddr, name: &str, now: u32, out: &mut [u8]) -> Step {
+            let query = client_query(name, RecordType::A, Flags::NONE, true);
+            pipeline.query(&query, Transport::Udp, from, now, out)
+        }
+
+        fn parked(step: Step) -> Parked {
+            match step {
+                Step::Park(parked) => parked,
+                step => unreachable!("a parked query, not {step:?}"),
+            }
+        }
+
+        fn sent(step: Step) -> Box<Upstream> {
+            match step {
+                Step::Upstream(upstream) => upstream,
+                step => unreachable!("an upstream query, not {step:?}"),
+            }
+        }
+
+        /// The reply `step` comes to at `now`, upstream answering from the captures.
+        fn reply(
+            pipeline: &Pipeline,
+            mut step: Step,
+            now: u32,
+            out: &mut [u8],
+        ) -> Message<'static> {
+            let captures = Captures::new();
+            loop {
+                step = match step {
+                    Step::Upstream(upstream) => {
+                        let response = captures.answer(&upstream.request());
+                        pipeline.receive(upstream, response, now, out)
+                    }
+                    Step::Reply(len) => return decode(&out[..len]).into_owned(),
+                    step => unreachable!("a reply, not {step:?}"),
+                }
+            }
+        }
+
+        const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+        /// D186: a query that finds the allowance spent waits, asks nothing upstream, and is admitted and validated
+        /// once the allowance refills, at the next second.
+        #[test]
+        fn a_query_past_the_allowance_waits_and_is_validated_once_it_refills() {
+            // A burst a cold validation does not run into debt.
+            let pipeline = validating_under(validating(allowance(10)));
+            let mut out = vec![0; 65535];
+            // The units, held by queries in flight.
+            let first: Vec<_> = (0..10)
+                .map(|_| sent(step(&pipeline, LOCAL, "nlnetlabs.nl.", START, &mut out)))
+                .collect();
+            let waiting = parked(step(&pipeline, LOCAL, "cloudflare.com.", START, &mut out));
+            assert_eq!(waiting.wait(), Parked::WAIT);
+            let waiting = pipeline
+                .unpark(waiting, START)
+                .expect_err("spent this second");
+            let upstream = pipeline.unpark(waiting, START + 1).expect("refilled");
+            let reply = reply(&pipeline, Step::Upstream(upstream), START + 1, &mut out);
+            assert_eq!(reply.rcode(), Rcode::NOERROR);
+            assert!(reply.header.flags.contains(Flags::AD));
+            drop(first);
+        }
+
+        /// D186, D77: a query that waited too long is answered SERVFAIL with EDE 14 (Not Ready), as one shed at once.
+        #[test]
+        fn a_query_that_waited_too_long_is_shed() {
+            let pipeline = validating_under(validating(allowance(0)));
+            let mut out = vec![0; 65535];
+            let waiting = parked(step(&pipeline, LOCAL, "cloudflare.com.", START, &mut out));
+            let reply = reply(
+                &pipeline,
+                pipeline.shed(waiting, START + 2, &mut out),
+                START + 2,
+                &mut out,
+            );
+            assert_eq!((reply.header.id, reply.rcode()), (7, Rcode::SERVFAIL));
+            assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
+        }
+
+        /// D186, D117: a query waiting holds its unit of its network's share, so the network's queries past its share
+        /// are shed at once and take no place; given up, a query gives its unit back.
+        #[test]
+        fn a_network_over_its_share_is_shed_at_once_and_a_given_up_query_gives_its_unit_back() {
+            let validating = sharing(0);
+            let pipeline = validating_under(validating);
+            let mut out = vec![0; 65535];
+            let greedy = address("198.51.100.7");
+            let waiting: Vec<_> = (0..20)
+                .map(|_| parked(step(&pipeline, greedy, "cloudflare.com.", START, &mut out)))
+                .collect();
+            let Step::Reply(len) = step(&pipeline, greedy, "cloudflare.com.", START, &mut out)
+            else {
+                unreachable!("shed at once");
+            };
+            assert_eq!(error(&decode(&out[..len])), Some(InfoCode::NOT_READY));
+            // Another network still waits.
+            drop(parked(step(
+                &pipeline,
+                address("203.0.113.9"),
+                "cloudflare.com.",
+                START,
+                &mut out,
+            )));
+            for waiting in waiting {
+                drop(pipeline.shed(waiting, START, &mut out));
+            }
+            drop(parked(step(
+                &pipeline,
+                greedy,
+                "cloudflare.com.",
+                START,
+                &mut out,
+            )));
+        }
+
+        /// D186, D45: a query that has expired data in the cache stage waits as long as the client response timer, and
+        /// is then answered with the expired data (RFC 8767 §5).
+        #[test]
+        fn a_query_that_waited_too_long_is_answered_with_expired_data() {
+            let cache = Arc::new(Cache::new(Config::default()).expect("the default settings"));
+            let under = |validating: Validating| {
+                Pipeline::new(vec![
+                    Stage::Cache(Arc::clone(&cache)),
+                    Stage::Forward(
+                        Forward::new(servers())
+                            .expect("servers")
+                            .validating(validating),
+                    ),
+                ])
+            };
+            let mut out = vec![0; 65535];
+            let open = under(validating(allowance(1_000)));
+            let first = step(&open, LOCAL, "cloudflare.com.", START, &mut out);
+            let fresh = reply(&open, first, START, &mut out);
+            assert!(fresh.header.flags.contains(Flags::AD));
+            let ttl = fresh
+                .answer
+                .iter()
+                .map(|record| record.ttl.get())
+                .min()
+                .expect("an answer");
+            let expired = START + ttl + 1;
+            let spent = under(validating(allowance(0)));
+            let waiting = parked(step(&spent, LOCAL, "cloudflare.com.", expired, &mut out));
+            assert_eq!(waiting.wait(), Duration::from_millis(1800));
+            let reply = reply(
+                &spent,
+                spent.shed(waiting, expired, &mut out),
+                expired,
+                &mut out,
+            );
+            assert_eq!(reply.rcode(), Rcode::NOERROR);
+            assert_eq!(error(&reply), Some(InfoCode::STALE_ANSWER));
+        }
+
+        /// D186: a query admitted while others of its thread wait goes behind them, its unit of the allowance given
+        /// back; one not validated, which costs nothing, does not wait.
+        #[test]
+        fn a_query_admitted_while_others_wait_is_deferred() {
+            let pipeline = validating_under(validating(allowance(1)));
+            let mut out = vec![0; 65535];
+            let admitted = sent(step(&pipeline, LOCAL, "cloudflare.com.", START, &mut out));
+            let deferred = pipeline.defer(admitted).expect("a query to validate");
+            // The unit is back: the next is admitted.
+            let next = sent(step(&pipeline, LOCAL, "nlnetlabs.nl.", START, &mut out));
+            assert!(
+                pipeline.unpark(deferred, START).is_err(),
+                "the unit is taken"
+            );
+            drop(next);
+            let query = client_query("cloudflare.com.", RecordType::A, Flags::CD, true);
+            let unchecked = sent(pipeline.query(&query, Transport::Udp, LOCAL, START, &mut out));
+            assert!(pipeline.defer(unchecked).is_err());
+        }
+    }
 }

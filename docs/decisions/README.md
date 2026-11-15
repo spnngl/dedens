@@ -48,13 +48,13 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D38 [CLI](cli.md) (amended by D177): several `@servers`: each query asked of each
 - D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
 - D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
-- D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
+- D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185, D186): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
 - D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
 - D43 [server](server.md) (amended by D45, D46, D77, D96, D114, D124): cache stage in the pipeline, time passed in by the caller
 - D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
 - D45 [server](server.md) (amended by D77, D115): upstream timeout and the client response timer (RFC 8767)
 - D46 [server](server.md) (amended by D121): a query without RD gets fresh cached data or REFUSED, never goes upstream
-- D47 [server](server.md) (amended by D64, D90, D91, D113): `dedensd` limits per thread: upstream queries, TCP connections
+- D47 [server](server.md) (amended by D64, D90, D91, D113, D186): `dedensd` limits per thread: upstream queries, TCP connections
 - D48 [server](server.md) (amended by D123): several tasks answer on each UDP socket of a thread
 - D49 [server](server.md): UDP queries land in per-thread buffer pools, multishot on Linux, up to 4096 bytes read whole
 - D50 [server](server.md) (amended by D108): upstream UDP queries share a fixed socket pool per server
@@ -84,7 +84,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
 - D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
-- D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124, D184): a forward stage validates with `dnssec: validate`
+- D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124, D184, D186): a forward stage validates with `dnssec: validate`
 - D78 [transports](transports.md) (amended by D79): ODoH crypto in `dedens-odoh`, sans-IO, the one required suite
 - D79 [transports](transports.md) (amended by D94, D115, D117, D185): ODoH over HTTP/3: `dedens` asks through a proxy, `dedensd` is a target
 - D80 [transports](transports.md): CoAP is our own sans-IO codec, for DoC
@@ -123,7 +123,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D114 [server](server.md): checks on what answers carry: AD is ours alone
 - D115 [server](server.md) (amended by D120, D122): configuration bounded by what the server can bear
 - D116 [server](server.md) (amended by D118): the cache's memory, evictions and truncated hits
-- D117 [server](server.md): per-client budgets within the shared limits
+- D117 [server](server.md) (amended by D186): per-client budgets within the shared limits
 - D118 [server](server.md) (amended by D120): blocklist targets: CNAMEs to blocked names, one-label entries
 - D119 [server](server.md) (amended by D121): bounds on what a QUIC peer can make the server hold
 - D120 [server](server.md): lists parsed once, kept across reloads
@@ -182,3 +182,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D183 [performance and safety](performance-and-safety.md): `dedensd` against TelltaleDNS, Unbound and CoreDNS: one harness, one neutral upstream, fairness rules, void runs
 - D184 [server](server.md): `dedensd` asks plain servers over UDP with `0x20`, the response's question given back the client's case
 - D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread
+- D186 [server](server.md): a validating query past the global allowance waits for it on its thread, FIFO, 512 a thread, 1.8 s

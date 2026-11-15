@@ -53,10 +53,20 @@ pub(crate) struct Source {
     pub(crate) proven: bool,
 }
 
-/// A query admitted: the share it spends of the allowance, if any (D117).
+/// Who pays for a query's validation: the share of the allowance its network spends, none for an exempt source
+/// (D113, D117).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Admitted {
+pub(crate) struct Payer {
     share: Option<Slot>,
+}
+
+impl Payer {
+    /// The payer of a query from `source`, `exempt` from the shares or not.
+    pub(crate) fn new(source: Source, exempt: bool) -> Self {
+        Self {
+            share: (!exempt).then(|| Slot::new(source.address, source.proven)),
+        }
+    }
 }
 
 /// What the queries of all clients may cost a validating forward stage, in units (D77): a client's question
@@ -67,8 +77,9 @@ pub(crate) struct Admitted {
 /// A response from the cache costs none, a validation that finds the zone's keys in the validator's key cache
 /// (D86) two units.
 ///
-/// A token bucket: `burst` units, refilled `per_second`. A query that finds none left is answered SERVFAIL without
-/// being validated. A query started with one left may run into debt, as the bucket does not tell what a query will
+/// A token bucket: `burst` units, refilled `per_second`. A client's query that finds none left waits for one
+/// (D186, [`Parked`](crate::Parked)), and is answered SERVFAIL without being validated past its wait; a refresh is
+/// not made. A query started with one left may run into debt, as the bucket does not tell what a query will
 /// cost before it runs, but a query that finds the bucket in debt asks no more questions and is answered the same
 /// (D106): the work past the first debt is one validation step of each query running then, at most 130 units a
 /// step, and `per_query` bounds a query only to within the step that goes over it. The debt is kept down to
@@ -211,42 +222,61 @@ impl Validating {
         &self.metrics
     }
 
-    /// Whether a query to validate may start at second `now` (the clock of the cache, D43): its share has units
-    /// left, then the allowance has, and one of each is taken for the client's question. Counted when not (D77,
-    /// D117).
+    /// Whether a query to validate that `payer` pays for may start at second `now` (the clock of the cache, D43):
+    /// its share has units left, then the allowance has, and one of each is taken for the client's question.
     ///
-    /// The share is taken first, so that a client over it never touches the allowance of the others; its unit is
-    /// given back when the allowance refuses. A source on the rate limit's exempt list (D113), `exempt`, has no
-    /// share.
-    pub(crate) fn admit(&self, source: Source, exempt: bool, now: u32) -> Option<Admitted> {
-        let share = (!exempt).then(|| Slot::new(source.address, source.proven));
-        match self.shares.admit_within(share, &self.bucket, now) {
-            Ok(()) => Some(Admitted { share }),
-            Err(Spent::Network) => {
-                self.metrics.shed_share();
-                None
-            }
-            Err(Spent::Global) => {
-                self.metrics.shed();
-                None
-            }
+    /// The share is taken first, so that a client over it never touches the allowance of the others, and is
+    /// counted shed at once (D117). When the allowance refuses, the share's unit stays taken: the query waits for
+    /// the allowance ([`Validating::readmit`]) or is given up ([`Validating::give_up`]) (D186).
+    ///
+    /// # Errors
+    ///
+    /// The [`Spent`] budget, the share or the allowance.
+    pub(crate) fn admit(&self, payer: Payer, now: u32) -> Result<(), Spent> {
+        if let Some(share) = payer.share
+            && !self.shares.admit(share, now)
+        {
+            self.metrics.shed_share();
+            return Err(Spent::Network);
+        }
+        if self.bucket.admit(Slot::ONLY, now) {
+            Ok(())
+        } else {
+            Err(Spent::Global)
         }
     }
 
-    /// Takes `units` of work done for `admitted` from its share and from the allowance (D106).
-    fn charge(&self, admitted: Admitted, units: u32) {
-        if let Some(share) = admitted.share {
+    /// Whether the allowance has a unit at second `now` for a query that holds its share's unit already: one the
+    /// allowance refused, waiting (D186).
+    pub(crate) fn readmit(&self, now: u32) -> bool {
+        self.bucket.admit(Slot::ONLY, now)
+    }
+
+    /// Gives up a query the allowance refused: its share's unit is given back, and it is counted shed (D77, D186).
+    pub(crate) fn give_up(&self, payer: Payer) {
+        if let Some(share) = payer.share {
+            self.shares.refund(share);
+        }
+        self.metrics.shed();
+    }
+
+    /// Gives back the allowance's unit of an admitted query that waits behind others instead (D186): it holds its
+    /// share's unit as a query the allowance refused does.
+    pub(crate) fn defer(&self) {
+        self.bucket.refund(Slot::ONLY);
+    }
+
+    /// Takes `units` of work done for `payer` from its share and from the allowance (D106).
+    fn charge(&self, payer: Payer, units: u32) {
+        if let Some(share) = payer.share {
             self.shares.charge(share, units);
         }
         self.bucket.charge(Slot::ONLY, units);
     }
 
-    /// Counts and tells whether the share of `admitted` or the allowance owes units (D106).
-    fn shed(&self, admitted: Admitted) -> bool {
-        if admitted
-            .share
-            .is_some_and(|share| self.shares.in_debt(share))
-        {
+    /// Counts and tells whether the share of `payer` or the allowance owes units (D106).
+    fn shed(&self, payer: Payer) -> bool {
+        if payer.share.is_some_and(|share| self.shares.in_debt(share)) {
             self.metrics.shed_share();
             return true;
         }
@@ -321,7 +351,7 @@ pub(crate) struct Check {
     /// What the allowance was charged so far, in units.
     charged: u32,
     /// The share of the allowance the client spends (D117), charged with it.
-    admitted: Admitted,
+    payer: Payer,
 }
 
 impl Check {
@@ -330,7 +360,7 @@ impl Check {
         validating: &Validating,
         question: &Question<'_>,
         response: Decoded<'static>,
-        admitted: Admitted,
+        payer: Payer,
     ) -> Self {
         Self {
             validation: validating.start(question, &response.message),
@@ -345,7 +375,7 @@ impl Check {
             chases: 0,
             done: 0,
             charged: 0,
-            admitted,
+            payer,
         }
     }
 
@@ -371,13 +401,13 @@ impl Check {
     pub(crate) fn next(&mut self, validating: &Validating) -> Progress {
         let progress = self.advance();
         let spent = self.spent();
-        validating.charge(self.admitted, spent.saturating_sub(self.charged));
+        validating.charge(self.payer, spent.saturating_sub(self.charged));
         self.charged = spent;
         if matches!(progress, Progress::Ask) {
             if spent > validating.allowance.per_query {
                 return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
             }
-            if validating.shed(self.admitted) {
+            if validating.shed(self.payer) {
                 return Progress::Shed;
             }
         }
@@ -533,8 +563,8 @@ pub(crate) fn present(
 mod tests {
     use super::*;
 
-    /// D117: a query the allowance refuses gives back the unit it took of its share, so that the clients of a
-    /// network are not shed for the others' shed queries.
+    /// D117, D186: a query the allowance refuses holds the unit it took of its share while it waits, and gives it
+    /// back when given up, so that the clients of a network are not shed for the others' shed queries.
     #[test]
     fn a_query_the_allowance_refuses_keeps_its_unit_of_the_share() {
         let validating = Validating::new(
@@ -561,9 +591,15 @@ mod tests {
             address: IpAddr::from([192, 0, 2, 1]),
             proven: false,
         };
-        // The allowance holds nothing; the share's one unit is given back each time.
+        let payer = Payer::new(source, false);
+        // The allowance holds nothing; the share's one unit is held while waiting, and given back each time.
         assert!(
-            (0..10).all(|_| validating.admit(source, false, 0).is_none()),
+            (0..10).all(|_| {
+                let refused = validating.admit(payer, 0) == Err(Spent::Global);
+                let held = validating.admit(payer, 0) == Err(Spent::Network);
+                validating.give_up(payer);
+                refused && held
+            }),
             "the share is not drained by the shed"
         );
         let slot = Slot::new(source.address, source.proven);
@@ -594,7 +630,7 @@ mod tests {
                 &validating,
                 &question,
                 Decoded::default(),
-                Admitted { share: None },
+                Payer { share: None },
             );
             for chases in 1..=MAX_CHASES {
                 let next = hop(chases);

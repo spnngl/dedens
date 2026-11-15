@@ -11,6 +11,8 @@
 //!   `indeterminate`, `shed` (the allowance of D77 was spent, or in debt, D106: not validated, or not to the end)
 //!   or `shed_share` (the same for the client's network share of it, D117).
 //! - `dedens_validation_questions_total`: DS and DNSKEY questions sent upstream for validation, chased names too.
+//! - `dedens_validations_parked_total`: client queries that found the allowance of D77 spent and waited for it
+//!   (D186); those given up past their wait are counted `shed` too.
 //!
 //! Handles are taken once, when the forward stage's validator, the access lists, the rate limit or the cookies are
 //! built, from the recorder installed then.
@@ -185,6 +187,7 @@ pub(crate) struct Metrics {
     shed: metrics::Counter,
     shed_share: metrics::Counter,
     questions: metrics::Counter,
+    parked: metrics::Counter,
 }
 
 /// The counters of one validating forward stage: none without the `metrics` feature.
@@ -197,6 +200,7 @@ impl Metrics {
     pub(crate) fn new() -> Self {
         const VALIDATIONS: &str = "dedens_validations_total";
         const QUESTIONS: &str = "dedens_validation_questions_total";
+        const PARKED: &str = "dedens_validations_parked_total";
         metrics::describe_counter!(
             VALIDATIONS,
             "Responses validated, by verdict: secure, insecure, bogus, indeterminate, shed or shed_share."
@@ -204,6 +208,10 @@ impl Metrics {
         metrics::describe_counter!(
             QUESTIONS,
             "DS and DNSKEY questions sent upstream for validation."
+        );
+        metrics::describe_counter!(
+            PARKED,
+            "Client queries that waited for the validation allowance."
         );
         Self {
             secure: metrics::counter!(VALIDATIONS, "verdict" => "secure"),
@@ -213,6 +221,7 @@ impl Metrics {
             shed: metrics::counter!(VALIDATIONS, "verdict" => "shed"),
             shed_share: metrics::counter!(VALIDATIONS, "verdict" => "shed_share"),
             questions: metrics::counter!(QUESTIONS),
+            parked: metrics::counter!(PARKED),
         }
     }
 
@@ -236,6 +245,10 @@ impl Metrics {
 
     pub(crate) fn shed_share(&self) {
         self.shed_share.increment(1);
+    }
+
+    pub(crate) fn parked(&self) {
+        self.parked.increment(1);
     }
 }
 
@@ -268,4 +281,10 @@ impl Metrics {
         reason = "the same calls with and without the feature"
     )]
     pub(crate) const fn shed_share(&self) {}
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn parked(&self) {}
 }

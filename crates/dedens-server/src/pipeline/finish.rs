@@ -6,7 +6,7 @@ use dedens_cache::{Cache, Checked, Key, StalePolicy};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Decoded, Flags, Header, Message, Query, Rcode, Transport, Ttl};
 
-use super::{Pipeline, Purpose, Step};
+use super::{Pipeline, Purpose, Step, Upstream};
 use crate::cache::{self, Looked, Read};
 use crate::plugin::Answer;
 use crate::reply::Client;
@@ -16,8 +16,12 @@ use crate::validate::{Outcome, present};
 pub(super) enum Refused {
     /// The forward stage has no server, or the query no question.
     NoServer,
-    /// The allowance of the validating forward stage is spent (D77): SERVFAIL "not ready", nothing held.
+    /// The client's network spent its share of the validating forward stage's allowance (D117): SERVFAIL "not
+    /// ready", nothing held.
     Shed,
+    /// The allowance itself has no unit now (D77): the query, made and holding its share's unit, may wait for one
+    /// (D186) or be given up.
+    Busy(Box<Upstream>),
 }
 
 /// What a response is answered with, and where it goes, once known.

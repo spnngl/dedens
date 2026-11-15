@@ -444,7 +444,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   stretched or of another zone added to end a walk early. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124, D184) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124, D184, D186) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config/upstream.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -481,8 +481,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (EDE 5, validation ran, failure held as any). All the queries share a token bucket in `Validating` (clones share
   it; `Validating::allowing`; defaults `Allowance::serving(threads)`: `per_second` 10 000 for every two serving
   threads, one at least, `burst` two seconds of it): `Pipeline::query`, before the client's
-  question is sent, takes a unit if the bucket has one left, and the query that finds none is answered SERVFAIL
-  with EDE 14 (Not Ready) and nothing is asked, decoded or validated (`dedens_validations_total{verdict="shed"}`);
+  question is sent, takes a unit if the bucket has one left, and the query that finds none waits for one on its
+  thread (D186), then, still without one, is answered SERVFAIL with EDE 14 (Not Ready) and nothing is asked, decoded or validated (`dedens_validations_total{verdict="shed"}`);
   the work of the validations is charged to it as it runs, so it can go into debt (at most the in-flight queries'
   `per_query` each) and is refilled by the clock of `Validating` (a clock gone back refills nothing). Shed is not
   failed: nothing is held in the cache, or a flood would fail the names it asks for, and the client may ask

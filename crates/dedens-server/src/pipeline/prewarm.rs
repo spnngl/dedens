@@ -148,6 +148,11 @@ impl Pipeline {
                             upstream.purpose = Purpose::Prefetch;
                             Warmth::Upstream(upstream)
                         }
+                        // A refresh does not wait for the allowance (D186).
+                        Err(Refused::Busy(upstream)) => {
+                            self.give_up(&upstream);
+                            Warmth::Shed
+                        }
                         Err(Refused::Shed) => Warmth::Shed,
                         Err(Refused::NoServer) => Warmth::Unaskable,
                     };

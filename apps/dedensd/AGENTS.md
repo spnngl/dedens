@@ -17,6 +17,9 @@ belongs in `crates/dedens-server` and its sans-IO tests.
 - `serve/udp.rs`, `tcp.rs`, `dnscrypt.rs`, `upstream.rs`, `prewarm.rs` and `isolate.rs` take the clock, tasks, timers and sockets from the
   thread's `Io` (`thread.io`, `serve::pause`), `clippy.toml` denying the rest, so that `dedens-sim` runs them
   (D182); a change there gets its scenario in `crates/dedens-sim/tests/serving.rs`.
+- A transport turns a `Step::Upstream` of `Pipeline::query` into an `Ask` with `Ask::after`, or its query jumps the
+  line of those waiting for the validation allowance (D186), and hands a `Step::Park` to `upstream::answer`, which
+  waits.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in
   `docs/benchmarks.md`.
 - `src/lib.rs` is the crate, `src/main.rs` only calls `dedensd::main` (D181). A configuration setting naming a file

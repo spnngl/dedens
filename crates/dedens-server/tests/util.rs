@@ -74,6 +74,9 @@ pub(crate) struct Run {
 
 /// Runs `query` through `pipeline` as if it came over `transport`, the upstream servers answering in turn with
 /// `responses`, `None` for no response; once they are used up, no more responses come.
+///
+/// The helpers of this module give up a query that waits for the validation allowance at once, as a serving thread
+/// does once the wait ran out (D186).
 pub(crate) fn run(
     pipeline: &Pipeline,
     query: &[u8],
@@ -113,6 +116,7 @@ pub(crate) fn run_at(
                 requests.push(upstream.request().clone());
                 step = pipeline.receive(upstream, responses.next().flatten(), now, &mut out);
             }
+            Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
         }
     };
     Run {
@@ -227,6 +231,7 @@ pub(crate) fn run_captured_from(
                 assert!(requests.len() < 200, "the query asks for ever");
                 step = pipeline.receive(upstream, response, now, &mut out);
             }
+            Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
         }
     };
     Run {
@@ -256,6 +261,7 @@ pub(crate) fn run_together(
         Step::Upstream(upstream) | Step::Refresh(_, upstream) => waiting.push(upstream),
         Step::Reply(len) => replies.push(Some(out[..len].to_vec())),
         Step::Drop => replies.push(None),
+        Step::Park(_) => unreachable!("given up before"),
     };
     for _ in 0..queries {
         let step = pipeline.query(
@@ -265,6 +271,10 @@ pub(crate) fn run_together(
             now,
             &mut out,
         );
+        let step = match step {
+            Step::Park(parked) => pipeline.shed(parked, now, &mut out),
+            step => step,
+        };
         finish(step, &out, &mut waiting);
     }
     while !waiting.is_empty() {

@@ -41,7 +41,7 @@ use dedens_net::client::Client;
 use dedens_net::io::{Compio, Io, TimedOut, Udp as _};
 use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
-use dedens_server::{Pipeline, Step, Upstream};
+use dedens_server::{Parking, Pipeline, Step};
 use futures_util::future::{Either, join, select, select_all};
 use socket2::{Domain, Socket, Type};
 
@@ -52,6 +52,7 @@ use self::quic::{Closing, Service, quic_task};
 use self::tcp::tcp_task_with;
 use self::tcp::{TCP_BACKLOG, TCP_CONNECTIONS, tcp_task};
 use self::udp::{Outbox, UDP_BUFFER_LEN, UDP_BUFFERS, UDP_RECEIVE_BUFFER, udp};
+use self::upstream::Ask;
 use crate::config::Listen;
 #[cfg(feature = "odoh")]
 use crate::odoh;
@@ -140,6 +141,12 @@ fn socket(addr: SocketAddr, ty: Type) -> io::Result<Socket> {
 /// Upstream queries in flight per thread: past them, a UDP query is dropped and a TCP query answered SERVFAIL.
 const UPSTREAM_QUERIES: usize = 1024;
 
+/// Queries per thread that wait for the validation allowance (D186), each in a place of [`UPSTREAM_QUERIES`]: past
+/// them, the newest is shed. Half the upstream queries, so that half are left to the queries asking; a thread's part
+/// of the allowance, 5 000 units a second (D77), admits the line in under half a second at the 3 or 4 units a cold
+/// validation costs, well within the 1.8 s a query may wait ([`Parked::WAIT`](dedens_server::Parked::WAIT)).
+const PARKED: usize = 512;
+
 /// What the tasks of one thread share, on the runtime `N`.
 struct Thread<N: Io = Compio> {
     io: N,
@@ -161,6 +168,8 @@ struct Thread<N: Io = Compio> {
     pipeline: RefCell<(u64, Rc<sync::Arc<Pipeline>>)>,
     client: Client<N>,
     upstream: Slots,
+    /// The queries that wait for the validation allowance, in order (D186).
+    parking: Parking,
     connections: Slots,
     /// The HTTP/3 connections whose bytes are counted (D119).
     h3: Rc<Connections>,
@@ -204,6 +213,7 @@ impl<N: Io> Thread<N> {
             reloads,
             current,
             upstream: Slots::new(upstream_queries),
+            parking: Parking::new(PARKED),
             connections: Slots::new(TCP_CONNECTIONS),
             h3: Rc::default(),
             scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
@@ -707,7 +717,7 @@ enum Started {
     /// Answered, or dropped.
     Done,
     /// To ask upstream, in a place of the thread's upstream queries.
-    Upstream(Box<Upstream>, Slot),
+    Upstream(Ask, Slot),
 }
 
 /// Runs `query`, from the client at `from` over `transport`, through `pipeline`, handing `push` the reply made in the thread's
@@ -722,25 +732,27 @@ fn start<N: Io>(
     mut push: impl FnMut(&[u8]) -> bool,
 ) -> Option<Started> {
     let mut out = thread.scratch.borrow_mut();
-    let upstream = match pipeline.query(query, transport, from, thread.now(), &mut out) {
+    let now = thread.now();
+    let ask = match pipeline.query(query, transport, from, now, &mut out) {
         Step::Reply(len) => return push(&out[..len]).then_some(Started::Done),
         Step::Drop => return Some(Started::Done),
-        Step::Upstream(upstream) => upstream,
+        Step::Upstream(upstream) => Ask::after(thread, pipeline, upstream),
         Step::Refresh(len, upstream) => {
             if !push(&out[..len]) {
                 return None;
             }
-            upstream
+            Ask::Now(upstream)
         }
+        Step::Park(parked) => Ask::Parked(parked),
     };
     let Some(slot) = thread.upstream.take() else {
         tracing::debug!("too many upstream queries: SERVFAIL");
-        return match pipeline.abandon(&upstream, &mut out) {
+        return match ask.abandon(pipeline, now, &mut out) {
             Step::Reply(len) => push(&out[..len]).then_some(Started::Done),
             _ => Some(Started::Done),
         };
     };
-    Some(Started::Upstream(upstream, slot))
+    Some(Started::Upstream(ask, slot))
 }
 
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).

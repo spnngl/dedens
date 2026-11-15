@@ -19,13 +19,14 @@ use dedens_proto::{
 use self::finish::{Finish, Refused, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
 use crate::access::{Access, Denial};
+use crate::budget::Spent;
 use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
 use crate::forward::{self, Forward, Server, Via};
 use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
-use crate::validate::{Admitted, Check, Outcome, Progress, Source};
+use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
 
 /// A stage of the pipeline (D23).
 #[derive(Debug)]
@@ -73,6 +74,29 @@ pub enum Step {
     Upstream(Box<Upstream>),
     /// Send `out[..len]` to the client, then refresh the cache as for [`Step::Upstream`]: it ends without a reply.
     Refresh(usize, Box<Upstream>),
+    /// Wait for the validation allowance (D77, D186): hand the query to [`Pipeline::unpark`] at each new second
+    /// of the clock until it is admitted, and to [`Pipeline::shed`] once [`Parked::wait`] ran out first. A thread
+    /// keeps its parked queries in a [`Parking`](crate::Parking) line.
+    Park(Parked),
+}
+
+/// A client's query to validate that found the allowance spent (D186): made, holding its share's unit (D117), and
+/// not to be sent before [`Pipeline::unpark`] admits it.
+#[derive(Debug)]
+#[must_use]
+pub struct Parked(Box<Upstream>);
+
+impl Parked {
+    /// How long a query waits for the allowance without a client response timer: the timer's default (D45), as
+    /// RFC 8767 §5 advises it, just under the 2 s after which common stub resolvers ask again.
+    pub const WAIT: Duration = Duration::from_millis(1800);
+
+    /// How long after the client's query to give it up: the cache stage's client response timer when expired data
+    /// could answer then ([`Upstream::stale_after`]), else [`Parked::WAIT`].
+    #[must_use]
+    pub fn wait(&self) -> Duration {
+        self.0.stale_after.unwrap_or(Self::WAIT)
+    }
 }
 
 /// What an upstream query is for.
@@ -109,8 +133,8 @@ pub struct Upstream {
     stale_after: Option<Duration>,
     purpose: Purpose,
     /// Whether the response is validated (D77): the forward stage validates, and the client left it to us. The
-    /// admission says which share of the allowance the validation is charged to (D117).
-    validate: Option<Admitted>,
+    /// payer says which share of the allowance the validation is charged to (D117).
+    validate: Option<Payer>,
     /// The validation under way, while one of its questions is upstream.
     check: Option<Box<Check>>,
 }
@@ -392,12 +416,23 @@ impl Pipeline {
                 Stage::Cache(_) => {
                     match self.look(index, query, client, now, Read::Lookup(stale), out) {
                         Looked::Reply { len, refresh, .. } => {
-                            if refresh
-                                && let Ok(mut upstream) =
-                                    self.upstream(index, query, client, (source, now), Some(index))
-                            {
-                                upstream.purpose = Purpose::Prefetch;
-                                return Step::Refresh(len, upstream);
+                            if refresh {
+                                // A refresh does not wait: the client has its reply, and a flood should not
+                                // stand in the line of the clients waiting for theirs (D186).
+                                match self.upstream(
+                                    index,
+                                    query,
+                                    client,
+                                    (source, now),
+                                    Some(index),
+                                ) {
+                                    Ok(mut upstream) => {
+                                        upstream.purpose = Purpose::Prefetch;
+                                        return Step::Refresh(len, upstream);
+                                    }
+                                    Err(Refused::Busy(upstream)) => self.give_up(&upstream),
+                                    Err(Refused::NoServer | Refused::Shed) => {}
+                                }
                             }
                             return Step::Reply(len);
                         }
@@ -430,14 +465,15 @@ impl Pipeline {
                     return client.truncated(out).map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
-                    let mut upstream =
+                    let (mut upstream, busy) =
                         match self.upstream(index, query, client, (source, now), cache) {
-                            Ok(upstream) => upstream,
+                            Ok(upstream) => (upstream, false),
                             Err(Refused::NoServer) => return Step::Drop,
                             // Not shed in `receive`, nor held: a flood must not fail the names it asks for.
                             Err(Refused::Shed) => {
                                 return servfail(client, InfoCode::NOT_READY, out);
                             }
+                            Err(Refused::Busy(upstream)) => (upstream, true),
                         };
                     // The client response timer, only when expired data could answer once it runs out.
                     upstream.stale_after = cache
@@ -445,6 +481,9 @@ impl Pipeline {
                         .map(|cache| cache.config().stale_answer_after_ms)
                         .filter(|&ms| expired && ms > 0)
                         .map(|ms| Duration::from_millis(u64::from(ms)));
+                    if busy {
+                        return Step::Park(self.park(upstream));
+                    }
                     return Step::Upstream(upstream);
                 }
             }
@@ -453,8 +492,9 @@ impl Pipeline {
     }
 
     /// The upstream query of the first forward stage from `from` on, storing into the stage `cache`; none if
-    /// the stage has no server, or validates the query and finds the allowance spent at second `now`, the global
-    /// one or the share of the network of `source` (D77, D117), before any question is sent or response decoded.
+    /// the stage has no server, or validates the query and finds the share of the network of `source` spent at
+    /// second `now` (D117), before any question is sent or response decoded. When it is the allowance that is
+    /// spent (D77), the query is made, holding its share's unit, for the caller to park or give up (D186).
     fn upstream(
         &self,
         from: usize,
@@ -478,17 +518,24 @@ impl Pipeline {
         let validating = forward
             .validation()
             .filter(|_| !client.header.flags.contains(Flags::CD) && question.qclass == Class::IN);
+        let mut busy = false;
         let validate = match validating {
             Some(validating) => {
                 let exempt = self
                     .rate_limit
                     .as_ref()
                     .is_some_and(|limit| limit.exempts(source.address));
-                Some(validating.admit(source, exempt, now).ok_or(Refused::Shed)?)
+                let payer = Payer::new(source, exempt);
+                match validating.admit(payer, now) {
+                    Ok(()) => {}
+                    Err(Spent::Network) => return Err(Refused::Shed),
+                    Err(Spent::Global) => busy = true,
+                }
+                Some(payer)
             }
             None => None,
         };
-        Ok(Box::new(Upstream {
+        let upstream = Box::new(Upstream {
             query: query.wire().into(),
             transport: client.transport,
             cookie: client.cookie,
@@ -502,7 +549,92 @@ impl Pipeline {
             purpose: Purpose::Reply,
             validate,
             check: None,
-        }))
+        });
+        if busy {
+            return Err(Refused::Busy(upstream));
+        }
+        Ok(upstream)
+    }
+
+    /// The validation of the forward stage of `upstream`, if it validates it.
+    fn validating(&self, upstream: &Upstream) -> Option<(&Validating, Payer)> {
+        let payer = upstream.validate?;
+        match self.stages.get(upstream.forward) {
+            Some(Stage::Forward(forward)) => Some((forward.validation()?, payer)),
+            _ => None,
+        }
+    }
+
+    /// Parks `upstream`, which holds its share's unit and not the allowance's (D186).
+    fn park(&self, upstream: Box<Upstream>) -> Parked {
+        if let Some((validating, _)) = self.validating(&upstream) {
+            validating.metrics().parked();
+        }
+        Parked(upstream)
+    }
+
+    /// Gives up `upstream`, which the allowance refused: its share's unit back, counted shed (D77, D186).
+    fn give_up(&self, upstream: &Upstream) {
+        if let Some((validating, payer)) = self.validating(upstream) {
+            validating.give_up(payer);
+        }
+    }
+
+    /// Asks again, at second `now`, for the unit of the allowance `parked` waits for (D186): the query to send
+    /// once it has it, else `parked` back, to ask again at the next second, when the allowance is refilled. Nothing
+    /// is counted: a thread asks for the first query of its line only.
+    ///
+    /// `parked` comes from this pipeline.
+    ///
+    /// # Errors
+    ///
+    /// `parked`, while the allowance has no unit.
+    pub fn unpark(&self, parked: Parked, now: u32) -> Result<Box<Upstream>, Parked> {
+        match self.validating(&parked.0) {
+            Some((validating, _)) if !validating.readmit(now) => Err(parked),
+            _ => Ok(parked.0),
+        }
+    }
+
+    /// Gives up `parked` at second `now`, past [`Parked::wait`] or the places of its thread's line (D186): its
+    /// share's unit back, counted shed. The reply, written into `out` as [`Pipeline::query`] writes, is the expired
+    /// data of the cache stage when its client response timer allows it (D45, RFC 8767 §5), else SERVFAIL with EDE
+    /// 14 (Not Ready, RFC 8914 §4.15), as for a query shed at once (D77).
+    ///
+    /// `parked` comes from this pipeline.
+    pub fn shed(&self, parked: Parked, now: u32, out: &mut [u8]) -> Step {
+        let Parked(mut upstream) = parked;
+        self.give_up(&upstream);
+        if upstream.stale_after.is_some()
+            && let Some(len) = self.stale(&mut upstream, now, out)
+        {
+            return Step::Reply(len);
+        }
+        let Ok(query) = Query::read(&upstream.query) else {
+            return Step::Drop;
+        };
+        let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
+        servfail(&client, InfoCode::NOT_READY, out)
+    }
+
+    /// Parks `upstream`, admitted, behind the queries of its thread that wait for the allowance (D186), so that
+    /// they go first: the allowance's unit is given back. `upstream` back when it is not validated.
+    ///
+    /// `upstream` is the [`Step::Upstream`] of [`Pipeline::query`] of this pipeline: a client's own question, the
+    /// validation not started.
+    ///
+    /// # Errors
+    ///
+    /// `upstream`, when it is not validated.
+    pub fn defer(&self, upstream: Box<Upstream>) -> Result<Parked, Box<Upstream>> {
+        match self.validating(&upstream) {
+            Some((validating, _)) => {
+                validating.defer();
+                validating.metrics().parked();
+                Ok(Parked(upstream))
+            }
+            None => Err(upstream),
+        }
     }
 
     /// The answer to give instead of `response`, the response to `query`, by the first plugin before the stage
@@ -685,7 +817,7 @@ impl Pipeline {
                 }
                 check.answer(validating, decoded.as_ref().map(|decoded| &decoded.message));
                 Some(check)
-            } else if let Some(admitted) = upstream.validate {
+            } else if let Some(payer) = upstream.validate {
                 match (decoded, query.question()) {
                     // Reviewed before it is validated: a response refused is not worth the questions of the
                     // validation, and is not stored, which only a validated response is here (D118).
@@ -699,7 +831,7 @@ impl Pipeline {
                         validating,
                         question,
                         decoded.into_owned(),
-                        admitted,
+                        payer,
                     ))),
                     _ => None,
                 }

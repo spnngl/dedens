@@ -18,14 +18,14 @@ use compio::buf::{IntoInner, IoBuf, Slice};
 use dedens_net::io::{Datagram, Io, Udp};
 use dedens_proto::Transport;
 use dedens_proto::edns::DEFAULT_UDP_PAYLOAD;
-use dedens_server::{Pipeline, Step, Upstream};
+use dedens_server::{Pipeline, Step};
 use futures_util::future::{join, join_all};
 use futures_util::lock::Mutex;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{Stream, StreamExt};
 
 use super::isolate::{Listener, Origin};
-use super::upstream::answer;
+use super::upstream::{Ask, answer};
 use super::{ERROR_PAUSE, Thread, pause};
 
 /// Tasks answering on each UDP socket, taking turns at its datagrams: with the replies queued, 1, 2 and 4 serve
@@ -290,14 +290,16 @@ async fn udp_queries<N: Io, D: Datagram>(
         let stepped = listener
             .guard_async(
                 peer,
-                udp_step(outbox, &pipeline, datagram, peer, thread.now(), &mut out),
+                udp_step(outbox, thread, &pipeline, datagram, peer, &mut out),
             )
             .await;
-        let Some(Some(upstream)) = stepped else {
+        let Some(Some(ask)) = stepped else {
             continue;
         };
         let Some(slot) = thread.upstream.take() else {
             tracing::debug!(%peer, "too many upstream queries: dropped");
+            // Dropped, not answered: what the query holds is given back all the same.
+            let _ = ask.abandon(&pipeline, thread.now(), &mut out);
             continue;
         };
         let (outbox, thread) = (Rc::clone(outbox), Rc::clone(thread));
@@ -306,29 +308,36 @@ async fn udp_queries<N: Io, D: Datagram>(
                 let len = reply.len();
                 outbox.push(reply, len, peer).await;
             };
-            answer(&thread, &pipeline, upstream, Transport::Udp, deliver).await;
+            answer(&thread, &pipeline, ask, Transport::Udp, deliver).await;
             drop(slot);
         });
     }
 }
 
-/// The turn of one datagram at `now`, the cache's clock: the pipeline's first step, the reply it makes sent, and the
-/// upstream query it leaves, if any. The datagram's buffer goes back to the pool before the reply waits to be sent.
-async fn udp_step(
+/// The turn of one datagram on `thread`: the pipeline's first step, the reply it makes sent, and the upstream query
+/// it leaves, if any. The datagram's buffer goes back to the pool before the reply waits to be sent.
+async fn udp_step<N: Io>(
     outbox: &Outbox,
+    thread: &Thread<N>,
     pipeline: &Pipeline,
     datagram: impl Datagram,
     peer: SocketAddr,
-    now: u32,
     out: &mut Vec<u8>,
-) -> Option<Box<Upstream>> {
-    let step = pipeline.query(datagram.data(), Transport::Udp, peer.ip(), now, out);
+) -> Option<Ask> {
+    let step = pipeline.query(
+        datagram.data(),
+        Transport::Udp,
+        peer.ip(),
+        thread.now(),
+        out,
+    );
     drop(datagram);
     let (len, upstream) = match step {
         Step::Reply(len) => (Some(len), None),
         Step::Drop => (None, None),
-        Step::Upstream(upstream) => (None, Some(upstream)),
-        Step::Refresh(len, upstream) => (Some(len), Some(upstream)),
+        Step::Upstream(upstream) => (None, Some(Ask::after(thread, pipeline, upstream))),
+        Step::Refresh(len, upstream) => (Some(len), Some(Ask::Now(upstream))),
+        Step::Park(parked) => (None, Some(Ask::Parked(parked))),
     };
     if let Some(len) = len {
         outbox
