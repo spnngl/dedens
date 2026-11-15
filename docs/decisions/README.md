@@ -174,7 +174,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D175 [transports](transports.md): a DoQ response of an ID other than 0 closes the connection
 - D176 [scope](scope.md): an answer of RRSIGs to an RRSIG question is insecure, served without AD; a denial is proven
 - D177 [CLI](cli.md): each report its own id, the DoH or CoAP path or a trace's hop number in it; duplicates refused
-- D178 [performance and safety](performance-and-safety.md): the gate runs the tests under cargo-nextest, doctests by `cargo test --doc`
+- D178 [performance and safety](performance-and-safety.md): the gate and coverage run the tests under cargo-nextest, doctests by `cargo test --doc`
 - D179 [performance and safety](performance-and-safety.md): Kani proofs beside the code in four packages; the fast ones on each pull request
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
 - D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
