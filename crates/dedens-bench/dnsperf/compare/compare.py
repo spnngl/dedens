@@ -38,6 +38,8 @@ CHECK_QUERIES = 1000  # the check pass: the corpus's first lines, at CHECK_RATE
 CHECK_RATE = 2000
 SAMPLE = 20  # the answers compared with Knot's
 VOID_BUSY = 0.90
+# The wait for the last answers, in the seconds of a run that sent its whole corpus (0.01-0.22 s on the VPS, D183).
+DRAIN_S = 0.25
 VOID_SHARE = 0.01
 START_TIMEOUT = 120
 WRONG_FOR = 10
@@ -294,6 +296,7 @@ class Bench:
         (w / "knot").mkdir()
         if self.spec["corpus"]:
             self.corpus, self.result["corpora"] = corpora(w, self.mode, os.environ["DEDENS_TELLTALE_SRC"])
+            self.corpus_lines = len(self.corpus.read_text().splitlines())
         if not (w / "key.pem").exists():
             self.engine("run", "--rm", "-v", f"{w}:/w", *self.engine.user, self.engine.image, "openssl", "req",
                         "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "3650",
@@ -424,10 +427,13 @@ class Bench:
               "knot_busy": cpu["knot"] / (wall * 1e6 * self.count["knot"]),
               "loaded_mib": after["server"]["anon"] / 2**20, "peak_mib": after["server"]["peak"] / 2**20}
         others = r["completed"] - r["rcodes"].get(self.rcode, 0)
-        # dnsperf held to a rate spins between sends, so its CPU tells nothing: a rate it fell short of does.
+        # dnsperf held to a rate spins between sends, so its CPU tells nothing: a rate it fell short of does. A run
+        # that sent the whole corpus before its time was up counts the wait for its last answers in its seconds.
+        whole = not self.spec["cached"] and r["sent"] >= self.corpus_lines
+        sending = r["seconds"] - (DRAIN_S if whole else 0)
         reasons = [why for why, bad in [
             ("dnsperf busy", rate is None and r["loader_busy"] > VOID_BUSY),
-            ("rate missed", rate is not None and r["sent"] < (1 - VOID_SHARE) * rate * r["seconds"]),
+            ("rate missed", rate is not None and r["sent"] < (1 - VOID_SHARE) * rate * sending),
             ("Knot busy", r["knot_busy"] > VOID_BUSY),
             ("loss", r["lost"] >= VOID_SHARE * max(r["sent"], 1)),
             ("rcodes", others > VOID_SHARE * max(r["completed"], 1))] if bad]
