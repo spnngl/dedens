@@ -145,6 +145,7 @@ mod tests {
         let (Some(first), Some(second), Some(third)) = (first, second, third) else {
             panic!("three places of four");
         };
+        assert!(parking.waiting());
         let counts: [Arc<Count>; 3] = Default::default();
         assert!(turn(&first, &counts[0]));
         assert!(!turn(&second, &counts[1]) && !turn(&third, &counts[2]));
