@@ -72,7 +72,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (RFC 9000 §13.2.1), while one restarted at the same address knows nothing of the connection, sends nothing on it
   and its stateless reset is under another key (RFC 9000 §10.3), so the next try opens a new connection instead
   of waiting out the idle time (found by D185's tests, 2026-11-15). The try must have lasted three round trips and
-  the default acknowledgment delay (§18.2), so one begun near its deadline closes nothing; a server whose every
+  the default acknowledgment delay (§18.2), so one begun near its deadline closes nothing; a datagram of the old
+  server read as a try begins puts the close off to the next try; a server whose every
   stream outlasts the try is taken for silent too (a request waiting for stream credit sends nothing), and its
   requests go again on a new connection. Rejected: a stateless reset key kept across
   restarts, which would end such a connection at once: it needs a secret kept on disk, and the threads of D66

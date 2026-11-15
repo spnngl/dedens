@@ -117,8 +117,9 @@ impl Dialer {
 /// trips and the default acknowledgment delay (RFC 9000 §18.2): the requests on it go again on a new one, and the
 /// next query opens one, where the QUIC idle timeout would have left them for seconds.
 ///
-/// A request waiting for stream credit sends nothing, so a server whose every stream outlasts the try is taken for
-/// silent too: its requests go again on a new connection.
+/// A datagram the server sent before it stopped, read as the try begins, puts the close off to the next try. A request
+/// waiting for stream credit sends nothing, so a server whose every stream outlasts the try is taken for silent too:
+/// its requests go again on a new connection.
 pub(crate) struct Heard {
     connection: Connection,
     datagrams: u64,
