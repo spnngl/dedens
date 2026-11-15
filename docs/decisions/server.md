@@ -15,7 +15,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114, D185) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185, D186) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -91,7 +91,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   The client response timer of D45 runs only when the cache keeps expired data for the query
   (`Lookup::Expired`). A cache hit allocates nothing (`benches/server.rs`). The exchange checks a response with
   `Query::read`, and the pipeline decodes it once.
-- D47 (amends D42; amended by D64, D90, D91, D113) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
+- D47 (amends D42; amended by D64, D90, D91, D113, D186) `dedensd` limits, per thread (RFC 7766 §10, D42 had none): 1024 upstream queries in flight (past them a
   UDP query is dropped, a TCP one answered SERVFAIL), 256 TCP connections (past them a new one is closed at once);
   per connection, 64 queries in flight (reading waits; a bounded channel is the semaphore), 128 KiB of queued
   replies (reading waits), and 10 s for each write of the queued replies (a client that stops reading loses its
@@ -868,7 +868,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `tests/cache.rs` (`an_entry_over_max_entry_bytes_is_refused`, `max_entry_bytes_is_inclusive`,
   `max_entry_bytes_is_checked_against_the_other_bounds`, `an_unset_max_entry_bytes_follows_the_capacity`,
   `a_response_too_large_clears_what_was_held`, `a_stale_hit_leaves_room_only_for_a_query_with_edns`).
-- D117 (amends D77, D79, D94, D106; builds on D91, D113) Client budgets, from the audit (S3, S14): what one client can
+- D117 (amends D77, D79, D94, D106; builds on D91, D113; amended by D186) Client budgets, from the audit (S3, S14): what one client can
   spend of a shared limit is bounded before the shared limit is. Two places had one budget for all: the validation
   allowance (D77) and the ODoH target's decapsulations (D79).
   - One keyed table (`Budgets`, `dedens-server/src/budget.rs`) for both: a client's key is its network, a /24 of
@@ -883,8 +883,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     have a bucket of their own and a flood from spoofed UDP sources of a network does not shed them.
   - Validation (S3). `Pipeline::query` passes the source (address, proven bit) and its `now` (the cache's clock,
     D43, monotonic; the validator keeps reading the wall clock for signatures) to `Validating::admit`, which takes
-    one unit of the network's share, then one of the global allowance, and gives the first back if the second
-    refuses (`Budgets::admit_within`, which ODoH and DNSCrypt call too). `Check::next` charges both with what the validation spent (D106) and sheds when either is in debt:
+    one unit of the network's share, then one of the global allowance; if the second refuses, the query keeps the
+    first while it waits for the allowance and gives it back if shed (D186; ODoH and DNSCrypt, which do not wait,
+    call `Budgets::admit_within`, which gives it back at once). `Check::next` charges both with what the validation spent (D106) and sheds when either is in debt:
     SERVFAIL with EDE 14, nothing held, counted `verdict="shed_share"` for the share and `verdict="shed"` for
     the allowance. Cache hits, CD and classes other than IN cost neither, as before. A source on D113's
     `rrl.exempt` list has no share and still spends the allowance. `client_share: {rate, burst}` on the forward
@@ -1313,3 +1314,39 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`a_server_that_changes_the_case_is_dropped_unless_random_case_is_off`, a loopback server sending the
     captured case back), `crates/dedens-sim/tests/forged.rs` (`Flaw::Case`, the question in the other case and
     all else right, taken without `0x20` and dropped with it).
+- D186 (amends D41, D47, D77, D117; builds on D43, D45, D96, D106, D113, D182) A validating forward stage's query that
+  the global allowance (D77) refuses waits for it on its serving thread, then is shed as before if it still has none:
+  past the allowance the saturation runs of the comparison (D183, `dnssec` mode) were void, every query beyond it
+  answered SERVFAIL at once, where TelltaleDNS and Unbound queue and answer late.
+  - Step: `Pipeline::query` returns `Step::Park(Parked)`, the query's `Upstream` boxed as for `Step::Upstream`, its
+    share's unit kept (D117). The driver asks `Pipeline::unpark(parked, now)` again, which takes a unit of the
+    allowance alone and gives the `Upstream` to send, or gives up with `Pipeline::shed(parked, now, out)`, which
+    gives the share's unit back, counts `verdict="shed"` and writes the reply. The sans-IO core holds no queue and
+    no timer (D41): the bucket refills at each second of `now` (D106), so the driver knows when to ask.
+  - Wait: `Parked::wait()`, the cache stage's client response timer when it has one (D45: its stale data is then the
+    reply, RFC 8767 §5), else `Parked::WAIT`, 1800 ms, the same default: under the 2 s after which a stub asks
+    again, so the wait does not outlive the client's interest. Counted from the query's step.
+  - Line: `dedensd` keeps one line a thread (`dedens_server::Parking`, FIFO), at most `PARKED` (512) waiting,
+    each holding its place of the 1024 upstream queries (D47): half of them, so that half are left to queries
+    that ask; a thread's half of 10 000 units a second admits 512 cold validations (3 or 4 units each since D75's
+    shortcut) in under half a second, well within the wait. The newest past the line is shed at once. Only the
+    first of the line asks the allowance, as it comes first and then at each second of the thread's clock (one
+    timer of the thread's `Io`, D182, no polling); a query given up wakes the next. A query the allowance admits
+    while the line is not empty gives its unit back and goes behind it (`Pipeline::defer`): first come, first
+    served. Every transport goes through `serve::start` and `upstream::answer` (UDP's loop and DNSCrypt's step
+    too), so all wait the same way.
+  - Not parked: a network over its share (D117) is shed at once and takes no place (a flood of one network must
+    not fill the line of the others); a prefetch, a stale refresh (D43) and a prewarm (D96) refused by the
+    allowance are not made, as before: their client has its reply, and a place is a client's. The questions of
+    a validation under way still shed it when the allowance is in debt (D106): it already took its unit.
+  - Metrics: `dedens_validations_parked_total` counts the queries that waited; `verdict="shed"` stays the
+    queries shed, now past the line or the wait.
+  - Rejected: a queue in the pipeline (a timer and a waker in the sans-IO core, shared by every thread); a ready
+    time on the step (the bucket's second is the answer, and the line already orders who asks); waiting as long
+    as the upstream patience (D45, 3 s by default: past the stub's retry, the wait would answer a client that
+    left); parking a share's overflow (one network would then hold places of all).
+  - Tests: `crates/dedens-server/tests/dnssec.rs` (`limits::parking`), `crates/dedens-server/src/park.rs`,
+    `apps/dedensd/src/serve/upstream.rs` (`a_query_past_the_allowance_waits_and_is_asked_once_it_refills`,
+    `a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up`),
+    `crates/dedens-sim/tests/dnssec.rs` (`a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed`),
+    `a_query_that_waits_for_the_allowance_is_counted_parked` of `crates/dedens-server/tests/metrics.rs`.

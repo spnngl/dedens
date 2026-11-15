@@ -11,8 +11,9 @@ that `apps/dedensd` carries out with `dedens-net`. Measure a change to the rate 
 - Only a `Secure` verdict sets AD; the upstream's AD is never read. A secure response is cut by
   `dedens_dnssec::covered` to the records the verdict covers: the validator ignores the rest, so it must not come
   out under AD or be cached as secure (D77).
-- A query past the validator's `Allowance` or its network's `Budget` share is shed in `Pipeline::query`, before any
-  question (D117).
+- A query past its network's `Budget` share is shed in `Pipeline::query`, before any question (D117); one past the
+  validator's `Allowance` is `Step::Park`, holding its share's unit until `Pipeline::unpark` or `Pipeline::shed`
+  (D186).
 - A client the access lists deny is answered before any stage (D91); a valid Server Cookie skips the rate limit
   (D113).
 - A hit a `Plugin::reviewer` reviewed is marked with the pipeline's id (`Cache::mark`) and decoded once (D118).

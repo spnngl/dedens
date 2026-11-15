@@ -21,7 +21,7 @@ use dedens_net::entropy::Entropy;
 use dedens_net::io::{Datagram, Io, Udp as _};
 use dedens_net::tcp::frame;
 use dedens_proto::Transport;
-use dedens_server::{Pipeline, Upstream};
+use dedens_server::Pipeline;
 use futures_util::future::{join, join_all};
 use futures_util::lock::Mutex;
 use futures_util::{Stream, StreamExt};
@@ -29,7 +29,7 @@ use futures_util::{Stream, StreamExt};
 use super::isolate::{Listener, Origin};
 use super::tcp::{Codec, Opened};
 use super::udp::{Outbox, Receiving, UDP_RECEIVES, Warned, receive_failed, send_replies};
-use super::upstream::answer;
+use super::upstream::{Ask, answer};
 use super::{Slot, Started, Thread, pause, start};
 use crate::dnscrypt::{KeySet, Service, TICKET_LIFETIME};
 
@@ -453,7 +453,7 @@ async fn step<N: Io>(
     pipeline: &Pipeline,
     datagram: impl Datagram,
     peer: SocketAddr,
-) -> Option<(Box<Upstream>, Slot, Reply)> {
+) -> Option<(Ask, Slot, Reply)> {
     let opened = keys.open(thread, pipeline, peer.ip(), datagram.data(), Carrier::Udp);
     drop(datagram);
     let (query, reply) = match opened {

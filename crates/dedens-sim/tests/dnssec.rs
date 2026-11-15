@@ -26,7 +26,7 @@ use dedens_cache::Config;
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType};
-use dedens_server::{Allowance, Budget, Budgets, Forward, Validating};
+use dedens_server::{Allowance, Budget, Budgets, Forward, Parked, Validating};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node};
 use dedens_sim::resolver::{pipeline_forwarding, pipeline_validating, wall_clock};
@@ -994,6 +994,106 @@ fn a_client_over_its_share_is_shed_with_its_network_and_the_others_are_answered(
         assert!(
             run.served_for("nonexistent.debian.org", 0) > 1,
             "the other's was validated"
+        );
+    });
+}
+
+/// The allowance of the burst scenario: a burst of [`BURST`] units, refilled whole at each second.
+const BURST: u32 = 20;
+/// The queries of the burst: more than the allowance admits in [`Parked::WAIT`], the most a query waits.
+const FLOOD: usize = 100;
+
+/// A burst of queries above the allowance, through `dedensd`'s loop (D182, D186): what the bucket admits is answered
+/// at once, what it refuses waits for the next seconds and is answered late, and what still waits
+/// [`Parked::WAIT`] after its query is shed, SERVFAIL with Not Ready. The names' keys are cached first, so that each
+/// query of the burst costs a few units and asks only its own question, and its denial is not, so that none is a
+/// cache hit.
+#[test]
+fn a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed() {
+    seed::each(ONE, |seed| {
+        let spending = validating()
+            .allowing(Allowance {
+                per_second: 10 * BURST,
+                burst: BURST,
+                ..Allowance::default()
+            })
+            // One /24 for the burst's client: a share it never spends.
+            .sharing(
+                Budgets::with_key(
+                    Budget {
+                        per_second: 100_000,
+                        burst: 100_000,
+                        table: 1 << 20,
+                    },
+                    &TABLE_KEY,
+                )
+                .expect("a share in bounds"),
+            );
+        let mut world = Topology::new()
+            .upstream(captures())
+            .epoch(UNIX_EPOCH + captured_at())
+            .duration(Duration::from_secs(60))
+            .resolver(move |upstreams| {
+                let forward = Forward::new(upstreams.iter().cloned())
+                    .expect("an upstream server to forward to")
+                    .validating(spending.clone());
+                // The denial is not kept, so that each query of the burst is validated, nor answered expired.
+                let config = Config {
+                    min_ttl: 0,
+                    max_negative_ttl: 0,
+                    stale_answer_after_ms: 0,
+                    ..Config::default()
+                };
+                pipeline_forwarding(config, forward)
+            })
+            .dedensd()
+            .build(seed);
+        let seen_by = Rc::new(RefCell::new(Vec::new()));
+        let got = Rc::clone(&seen_by);
+        world.client(async move |mut stub| {
+            asks(&mut stub);
+            let keys = zone_of("debian.org");
+            ask(&mut stub, &keys, Carrier::Udp).await?;
+            // The allowance refilled.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let zone = zone_of("nonexistent.debian.org");
+            stub.rules.authentic = true;
+            // Over TCP: the signed denial is truncated over UDP, so asked again over TCP, and validated again.
+            let asked = (0..FLOOD).map(|_| stub.ask(question(zone.name, zone.qtype), Carrier::Tcp));
+            for outcome in futures_util::future::join_all(asked).await {
+                let answer = answer(outcome, zone.name)?;
+                got.borrow_mut()
+                    .push((seen(&answer.message), answer.elapsed));
+            }
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+        let seen_by = seen_by.take();
+        assert_eq!(seen_by.len(), FLOOD, "each query is answered");
+        let answered: Vec<Duration> = seen_by
+            .iter()
+            .filter(|(seen, _)| *seen == Seen::Secure)
+            .map(|&(_, elapsed)| elapsed)
+            .collect();
+        let shed: Vec<Duration> = seen_by
+            .iter()
+            .filter(|(seen, _)| *seen == Seen::Servfail(Some(InfoCode::NOT_READY)))
+            .map(|&(_, elapsed)| elapsed)
+            .collect();
+        assert_eq!(answered.len() + shed.len(), FLOOD, "{seen_by:?}");
+        // A burst at once, then one at each second the wait spans: one or two, and one more if the queries' arrival
+        // spans one.
+        let bursts = answered.len().div_ceil(BURST as usize);
+        assert!((2..=4).contains(&bursts), "{answered:?} {shed:?}");
+        let wait = Parked::WAIT;
+        assert!(
+            answered.iter().any(|&elapsed| elapsed > wait / 2),
+            "some waited a second: {answered:?}"
+        );
+        // The wait is the server's; the time of the network is the client's.
+        assert!(
+            !shed.is_empty() && shed.iter().all(|&elapsed| elapsed < wait + wait / 10),
+            "what waited too long is shed, within its bound: {shed:?}"
         );
     });
 }

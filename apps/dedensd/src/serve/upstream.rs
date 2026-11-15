@@ -6,6 +6,7 @@
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{ClientError, Server};
@@ -13,27 +14,81 @@ use dedens_net::exchange::{Options, Response};
 use dedens_net::io::Io;
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Transport};
-use dedens_server::{Pipeline, Step, Upstream, Via};
+use dedens_server::{Parked, Pipeline, Step, Upstream, Via};
 
-use super::Thread;
+use super::{Thread, pause};
 use crate::flights::{Entered, Flights, Key, Lead};
 
-/// Asks the upstream servers for `upstream`, from `pipeline`, in turn, each over its transport ([`target`]), with
+/// What a query asks upstream: now, or once the validation allowance admits it (D186).
+pub(super) enum Ask {
+    Now(Box<Upstream>),
+    Parked(Parked),
+}
+
+impl From<Box<Upstream>> for Ask {
+    fn from(upstream: Box<Upstream>) -> Self {
+        Self::Now(upstream)
+    }
+}
+
+impl Ask {
+    /// `upstream`, from `pipeline`, to ask now, unless queries of `thread` wait for the allowance: it goes behind
+    /// them then (D186).
+    pub(super) fn after<N: Io>(
+        thread: &Thread<N>,
+        pipeline: &Pipeline,
+        upstream: Box<Upstream>,
+    ) -> Self {
+        if !thread.parking.waiting() {
+            return Self::Now(upstream);
+        }
+        match pipeline.defer(upstream) {
+            Ok(parked) => Self::Parked(parked),
+            Err(upstream) => Self::Now(upstream),
+        }
+    }
+
+    /// The step of a query given up before it is asked, past the thread's upstream queries (D47): SERVFAIL, or the
+    /// expired data a query that waited may have (D186), written into `out`.
+    pub(super) fn abandon(self, pipeline: &Pipeline, now: u32, out: &mut [u8]) -> Step {
+        match self {
+            Self::Now(upstream) => pipeline.abandon(&upstream, out),
+            Self::Parked(parked) => pipeline.shed(parked, now, out),
+        }
+    }
+}
+
+/// Asks the upstream servers for `ask`, from `pipeline`, in turn, each over its transport ([`target`]), with
 /// the forward stage's timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
 /// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
-/// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch.
+/// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch. A query parked waits for
+/// the allowance first ([`wait`]), and is given up if it waits too long.
 pub(super) async fn answer<N: Io>(
     thread: &Thread<N>,
     pipeline: &Pipeline,
-    mut upstream: Box<Upstream>,
+    ask: impl Into<Ask>,
     transport: Transport,
     mut deliver: impl AsyncFnMut(Vec<u8>),
 ) {
+    // The client response timer runs from the query, the wait for the allowance included.
+    let since = thread.io.now();
+    let mut upstream = match ask.into() {
+        Ask::Now(upstream) => upstream,
+        Ask::Parked(parked) => match wait(thread, pipeline, parked, since).await {
+            Ok(upstream) => upstream,
+            Err(parked) => {
+                if let Some(reply) = given_up(thread, pipeline, parked, transport) {
+                    deliver(reply).await;
+                }
+                return;
+            }
+        },
+    };
     let mut options = Options::default();
     (options.timeout, options.tries) = upstream.patience();
     // A response without EDNS would be stored for clients asking for DNSSEC records (RFC 3225).
     options.edns_fallback = false;
-    let mut stale_at = upstream.stale_after().map(|after| thread.io.now() + after);
+    let mut stale_at = upstream.stale_after().map(|after| since + after);
     loop {
         // A copy: the stale reply below takes `upstream`.
         let server = upstream.server().clone();
@@ -93,7 +148,8 @@ pub(super) async fn answer<N: Io>(
                 Step::Reply(len) | Step::Refresh(len, _) => {
                     (copy_out(&out[..len], transport), None)
                 }
-                Step::Drop => (None, None),
+                // `receive` does not park: the query was admitted.
+                Step::Drop | Step::Park(_) => (None, None),
                 Step::Upstream(next) => (None, Some(next)),
             }
         };
@@ -114,6 +170,51 @@ pub(super) async fn answer<N: Io>(
             return;
         };
         upstream = next;
+    }
+}
+
+/// Waits in the line of `thread` for the allowance to admit `parked`, from `pipeline` (D186): the query to ask, or
+/// `parked` back to give up when [`Parked::wait`] after `since` passes first, or the line has no place left. Only
+/// the first of the line asks, once as it comes first and once a second after: the allowance refills at each second
+/// of the thread's clock.
+async fn wait<N: Io>(
+    thread: &Thread<N>,
+    pipeline: &Pipeline,
+    mut parked: Parked,
+    since: Instant,
+) -> Result<Box<Upstream>, Parked> {
+    let deadline = since + parked.wait();
+    let Some(place) = thread.parking.enter() else {
+        return Err(parked);
+    };
+    if thread.io.timeout_at(deadline, place.turn()).await.is_err() {
+        return Err(parked);
+    }
+    loop {
+        let now = thread.now();
+        parked = match pipeline.unpark(parked, now) {
+            Ok(upstream) => return Ok(upstream),
+            Err(parked) => parked,
+        };
+        let next = thread.started + Duration::from_secs(u64::from(now) + 1);
+        if next >= deadline {
+            return Err(parked);
+        }
+        pause(&thread.io, next.saturating_duration_since(thread.io.now())).await;
+    }
+}
+
+/// The reply to `parked`, from `pipeline`, given up (D186), copied out of the thread's buffer.
+fn given_up<N: Io>(
+    thread: &Thread<N>,
+    pipeline: &Pipeline,
+    parked: Parked,
+    transport: Transport,
+) -> Option<Vec<u8>> {
+    let mut out = thread.scratch.borrow_mut();
+    match pipeline.shed(parked, thread.now(), &mut out) {
+        Step::Reply(len) => copy_out(&out[..len], transport),
+        _ => None,
     }
 }
 
@@ -304,23 +405,29 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use std::task::Poll;
+    use std::time::{Duration, Instant};
 
     use compio::BufResult;
     use compio::net::UdpSocket;
     use compio::runtime::{Runtime, spawn};
+    use dedens_dnssec::{Limits, TrustAnchors, Validator};
+    use dedens_net::io::Compio;
     use dedens_net::tls::Trust;
+    use dedens_proto::edns::{EdnsOption, InfoCode};
     use dedens_proto::{Message, Rcode, RecordType, Transport};
-    use dedens_server::{Pipeline, Server, Step, Via};
+    use dedens_server::{
+        Allowance, Forward, Parked, Pipeline, Server, Stage, Step, Validating, Via,
+    };
     use dedens_testkit::dnssec::capture;
     use dedens_testkit::responder::Responder;
-    use futures_util::future::join;
+    use futures_util::future::{join, join_all};
 
-    use super::{answer, target};
+    use super::{Ask, answer, target};
     use crate::flights::Key;
     use crate::lists::Store;
     use crate::reload::Current;
-    use crate::serve::Thread;
     use crate::serve::tests::example_com_a;
+    use crate::serve::{PARKED, Thread};
 
     /// D42: a server that fails on our side, here a QUIC one at an unspecified address, which QUIC will not dial,
     /// gives the query up with SERVFAIL, the next server not asked; a server that does not answer passes the query
@@ -513,6 +620,162 @@ mod tests {
             }
         });
         assert_eq!(responder.asked(".", RecordType::DNSKEY), 0);
+    }
+
+    /// A thread whose pipeline forwards to `responder`, validating under `allowance`, its clock the capture's
+    /// epoch (every signature is then out of its dates: a query ends bogus at its first check, which is not what
+    /// these tests look at).
+    fn validating_thread(responder: &Responder, allowance: Allowance) -> Thread<Compio> {
+        let validating = Validating::new(
+            Validator::new(TrustAnchors::root(), Limits::default()),
+            Arc::new(|| 0),
+        )
+        .allowing(allowance);
+        let forward = Forward::new([responder.addr])
+            .expect("a server")
+            .validating(validating);
+        let pipeline = Pipeline::new(vec![Stage::Forward(forward)]);
+        Thread::new(Arc::new(Current::new(pipeline)), 1, Trust::default())
+    }
+
+    /// The first step of the client's query `id` for the capture `alg8_a` on `thread`.
+    fn step(thread: &Thread<Compio>, pipeline: &Pipeline, id: u16) -> Step {
+        let question = dedens_testkit::message(&capture("alg8_a"))
+            .questions
+            .swap_remove(0);
+        let query = Message::query(id, question).to_vec().expect("a query fits");
+        let mut out = vec![0; 65535];
+        let from = IpAddr::from([127, 0, 0, 1]);
+        pipeline.query(&query, Transport::Udp, from, thread.now(), &mut out)
+    }
+
+    /// The ask of `step`, the step of a query the allowance refused.
+    fn parked(step: Step) -> Ask {
+        let Step::Park(parked) = step else {
+            panic!("parked: {step:?}")
+        };
+        Ask::Parked(parked)
+    }
+
+    /// The ID, extended error and time of each reply `asks` get on `thread`, in the order they are sent.
+    async fn replies(
+        thread: &Thread<Compio>,
+        pipeline: &Pipeline,
+        asks: Vec<Ask>,
+    ) -> Vec<(u16, Option<InfoCode>, Duration)> {
+        let since = Instant::now();
+        let replies = RefCell::new(Vec::new());
+        let deliver = async |reply: Vec<u8>| {
+            let message = Message::decode(&reply).expect("decodes").message;
+            let ede =
+                message.edns.iter().flat_map(|edns| &edns.options).find_map(
+                    |option| match option {
+                        EdnsOption::Ede(ede) => Some(ede.code),
+                        _ => None,
+                    },
+                );
+            replies
+                .borrow_mut()
+                .push((message.header.id, ede, since.elapsed()));
+        };
+        join_all(
+            asks.into_iter()
+                .map(|ask| answer(thread, pipeline, ask, Transport::Udp, deliver)),
+        )
+        .await;
+        replies.take()
+    }
+
+    /// D186: a query the allowance refuses waits on its thread, and is asked once the allowance refills at the
+    /// next second of the thread's clock: its reply is the validation's, not Not Ready.
+    #[test]
+    fn a_query_past_the_allowance_waits_and_is_asked_once_it_refills() {
+        // Room for a validation's questions (D106).
+        const BURST: u16 = 10;
+        let responder = Responder::start(&["alg8_a", "root_dnskey"]);
+        let allowance = Allowance {
+            per_second: 100,
+            burst: BURST.into(),
+            ..Allowance::default()
+        };
+        let thread = validating_thread(&responder, allowance);
+        let pipeline = thread.pipeline();
+        // The burst, held in flight.
+        let held: Vec<Step> = (1..=BURST).map(|id| step(&thread, &pipeline, id)).collect();
+        assert!(held.iter().all(|step| matches!(step, Step::Upstream(_))));
+        let waiting = parked(step(&thread, &pipeline, BURST + 1));
+        let runtime = Runtime::new().expect("a runtime");
+        let replies = runtime.block_on(replies(&thread, &pipeline, vec![waiting]));
+        let [(id, ede, waited)] = replies[..] else {
+            panic!("one reply: {replies:?}")
+        };
+        assert_eq!(id, BURST + 1);
+        assert_ne!(ede, Some(InfoCode::NOT_READY), "validated, not shed");
+        assert!(waited < Parked::WAIT, "{waited:?}");
+        assert_eq!(responder.asked("nlnetlabs.nl.", RecordType::A), 1);
+    }
+
+    /// D186: a query the allowance admits while others of its thread wait goes behind them, its unit given back.
+    #[test]
+    fn a_query_admitted_while_others_wait_goes_behind_them() {
+        let responder = Responder::start(&["alg8_a", "root_dnskey"]);
+        let thread = validating_thread(&responder, Allowance::default());
+        let pipeline = thread.pipeline();
+        let Step::Upstream(upstream) = step(&thread, &pipeline, 1) else {
+            panic!("admitted")
+        };
+        assert!(matches!(
+            Ask::after(&thread, &pipeline, upstream),
+            Ask::Now(_)
+        ));
+        let waiting = thread.parking.enter().expect("a place");
+        let Step::Upstream(upstream) = step(&thread, &pipeline, 2) else {
+            panic!("admitted")
+        };
+        assert!(matches!(
+            Ask::after(&thread, &pipeline, upstream),
+            Ask::Parked(_)
+        ));
+        drop(waiting);
+    }
+
+    /// D186: the line of a thread holds [`PARKED`] queries, the newest past them shed at once; what still waits
+    /// once [`Parked::WAIT`] would pass is shed then. Shed is SERVFAIL with Not Ready, and nothing asked.
+    #[test]
+    fn a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up() {
+        let responder = Responder::start(&["alg8_a", "root_dnskey"]);
+        // One unit, never refilled.
+        let allowance = Allowance {
+            per_second: 0,
+            burst: 1,
+            ..Allowance::default()
+        };
+        let thread = validating_thread(&responder, allowance);
+        let pipeline = thread.pipeline();
+        assert!(matches!(step(&thread, &pipeline, 0), Step::Upstream(_)));
+        let last = u16::try_from(PARKED).expect("fits") + 1;
+        let asks = (1..=last)
+            .map(|id| parked(step(&thread, &pipeline, id)))
+            .collect();
+        let runtime = Runtime::new().expect("a runtime");
+        let replies = runtime.block_on(replies(&thread, &pipeline, asks));
+        assert_eq!(replies.len(), PARKED + 1);
+        let (id, ede, at) = replies[0];
+        assert_eq!(
+            (id, ede),
+            (last, Some(InfoCode::NOT_READY)),
+            "the newest first"
+        );
+        assert!(at < Parked::WAIT / 2, "at once: {at:?}");
+        for &(id, ede, at) in &replies[1..] {
+            assert_eq!(ede, Some(InfoCode::NOT_READY), "{id}");
+            // Given up at the last second of the thread's clock within its wait.
+            assert!(
+                at > Parked::WAIT.saturating_sub(Duration::from_secs(1)) && at < Parked::WAIT,
+                "{id} after {at:?}"
+            );
+        }
+        assert_eq!(responder.asked("nlnetlabs.nl.", RecordType::A), 0);
     }
 
     /// What `future` gives when polled once, with the task's waker.

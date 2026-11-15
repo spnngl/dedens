@@ -108,7 +108,7 @@ pub fn serve_query(data: &[u8]) {
                     "a denied client is refused"
                 );
             }
-            Step::Upstream(_) | Step::Refresh(..) => {
+            Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) => {
                 panic!("a denied client's query goes upstream")
             }
         }

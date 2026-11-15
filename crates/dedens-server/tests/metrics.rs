@@ -1,14 +1,14 @@
 //! The counters of the `metrics` feature (D30, D91, D113).
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, RecordType, Transport};
 use dedens_server::{
-    Access, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit, RateLimitConfig,
-    Secret, Secrets, Validating,
+    Access, Allowance, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit,
+    RateLimitConfig, Secret, Secrets, Step, Validating,
 };
 use dedens_testkit::dnssec::Captures;
 use dedens_testkit::query;
@@ -195,5 +195,61 @@ fn a_query_over_its_share_is_counted_as_shed_by_the_share() {
     assert_eq!(
         counted(&snapshotter, "dedens_validations_total", "verdict"),
         [("shed_share".to_owned(), 2)]
+    );
+}
+
+/// `dedens_validations_parked_total` counts the queries that waited for the allowance; one given up past its wait is
+/// counted `shed` too, and one admitted is not (D186).
+#[test]
+fn a_query_that_waits_for_the_allowance_is_counted_parked() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let validating = metrics::with_local_recorder(&recorder, || {
+        Validating::new(
+            Validator::new(TrustAnchors::root(), Limits::default()),
+            Arc::new(captured_at),
+        )
+        .allowing(Allowance {
+            burst: 0,
+            ..Allowance::default()
+        })
+    });
+    let pipeline = validating_under(validating);
+    let query = client_query("cloudflare.com.", RecordType::A, Flags::NONE, true);
+    let mut out = vec![0; 65535];
+    for _ in 0..3 {
+        let Step::Park(parked) = pipeline.query(
+            &query,
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        ) else {
+            unreachable!("a parked query");
+        };
+        drop(pipeline.shed(parked, 2, &mut out));
+    }
+    // One snapshot: taking one drains the counters.
+    let mut counted: Vec<_> = snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _, _, value)| {
+            let DebugValue::Counter(n) = value else {
+                return None;
+            };
+            let (_, key) = key.into_parts();
+            let verdict = key.labels().find(|l| l.key() == "verdict");
+            let name = format!("{}{{{}}}", key.name(), verdict.map_or("", |l| l.value()));
+            (n > 0).then_some((name, n))
+        })
+        .collect();
+    counted.sort();
+    assert_eq!(
+        counted,
+        [
+            ("dedens_validations_parked_total{}".to_owned(), 3),
+            ("dedens_validations_total{shed}".to_owned(), 3),
+        ]
     );
 }

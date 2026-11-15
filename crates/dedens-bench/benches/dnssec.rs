@@ -520,16 +520,22 @@ fn client_query() -> Vec<u8> {
 }
 
 /// What `dedensd` does for one uncached query of a validating forward stage: the captures answer each question
-/// the pipeline sends upstream, the client's and the validator's.
+/// the pipeline sends upstream, the client's and the validator's; a query the allowance refuses is given up as one
+/// past its wait (D186).
 fn serve(pipeline: &Pipeline, query: &[u8], out: &mut [u8]) -> Step {
     let mut step = pipeline.query(query, Transport::Udp, Ipv4Addr::LOCALHOST.into(), 0, out);
-    while let Step::Upstream(upstream) = step {
-        let request = upstream.request();
-        let question = request.questions.first().expect("a question");
-        let wire = WIRES.get(&(question.name.clone().into_owned(), question.qtype));
-        step = pipeline.receive(upstream, wire.map(Vec::as_slice), 0, out);
+    loop {
+        step = match step {
+            Step::Upstream(upstream) => {
+                let request = upstream.request();
+                let question = request.questions.first().expect("a question");
+                let wire = WIRES.get(&(question.name.clone().into_owned(), question.qtype));
+                pipeline.receive(upstream, wire.map(Vec::as_slice), 0, out)
+            }
+            Step::Park(parked) => pipeline.shed(parked, 0, out),
+            step => return step,
+        };
     }
-    step
 }
 
 /// An allowance no bench spends.
@@ -584,7 +590,8 @@ fn serve_warm(bencher: divan::Bencher<'_, '_>) {
     });
 }
 
-/// A query the spent allowance sheds (D77): SERVFAIL after the client's question, nothing validated.
+/// A query the spent allowance refuses (D77): parked, then given up as one past its wait (D186), SERVFAIL; nothing
+/// validated.
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn serve_shed(bencher: divan::Bencher<'_, '_>) {
     static PIPELINE: LazyLock<Pipeline> = LazyLock::new(|| {

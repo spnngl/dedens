@@ -16,7 +16,8 @@
 //!
 //! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
 //! are answered one after the other, in order), the shared flights of D86, the cap on connections and on
-//! upstream queries, the few reading tasks of `dedensd` (here one task answers each datagram, so none is ever
+//! upstream queries, the line of the queries that wait for the validation allowance (D186: a query parked is given
+//! up at once, as past its wait), the few reading tasks of `dedensd` (here one task answers each datagram, so none is ever
 //! waiting for a reader), compio's timers (tokio's, which turmoil advances, stand in) and threads.
 
 use std::cell::RefCell;
@@ -304,6 +305,13 @@ impl Shared {
                 upstream
             }
             Step::Upstream(upstream) => upstream,
+            // Given up at once: the line of D186 is left out.
+            Step::Park(parked) => {
+                if let Step::Reply(len) = self.pipeline.shed(parked, self.now(), out) {
+                    self.send(transport, &out[..len], false, &mut deliver).await;
+                }
+                return;
+            }
         };
         self.answer(upstream, transport, out, deliver).await;
     }
@@ -380,7 +388,8 @@ impl Shared {
                     self.send(transport, &out[..len], false, &mut deliver).await;
                     return;
                 }
-                Step::Drop => return,
+                // `receive` does not park: the query was admitted.
+                Step::Drop | Step::Park(_) => return,
                 Step::Upstream(next) => upstream = next,
             }
         }

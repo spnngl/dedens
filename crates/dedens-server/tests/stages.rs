@@ -1385,7 +1385,7 @@ mod upstream {
                     };
                     step = pipeline.receive(upstream, response, 0, &mut out);
                 }
-                Step::Drop | Step::Refresh(..) => unreachable!("a reply comes"),
+                Step::Drop | Step::Refresh(..) | Step::Park(_) => unreachable!("a reply comes"),
             }
         };
         assert_eq!(asked[..3], [servers()[0], servers()[0], servers()[1]]);
