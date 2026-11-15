@@ -256,10 +256,10 @@ pub(super) fn forward(
                 Stage::Forward(old) => old.validation().filter(|old| old.tag() == validating.tag()),
                 _ => None,
             });
-            let mut validating = kept.cloned().unwrap_or(validating);
-            if validating.allowance() != validation.allowance {
-                validating = validating.allowing(validation.allowance);
-            }
+            // The allowance follows the serving threads, fixed at start: a kept validator keeps it, and its bucket.
+            let mut validating = kept
+                .cloned()
+                .unwrap_or_else(|| validating.allowing(validation.allowance));
             // The shares are not part of what the keys were validated by: a reload that changes them keeps the
             // key cache and starts the shares' buckets again.
             let share = BudgetFile::over(validation.client_share, DEFAULT_SHARE);
