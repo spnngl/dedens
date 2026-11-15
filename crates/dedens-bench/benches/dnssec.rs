@@ -467,6 +467,26 @@ fn validate_warm(bencher: divan::Bencher<'_, '_>) {
     bencher.bench(|| validate(validator, black_box(&response)));
 }
 
+/// The shape of the comparison's `dnssec` mode (D183) in one validation: a name a wildcard answers, in a zone whose
+/// keys the validator has and the name not, so that each run is the first for its name. The capture
+/// `wildcard_answer` (`*.sidnlabs.nl` MX, ECDSA P-256 and NSEC3) after the keys of `sidnlabs.nl` are validated.
+#[divan::bench]
+fn validate_wildcard_name(bencher: divan::Bencher<'_, '_>) {
+    let keys = response("sidnlabs_nl_dnskey");
+    let response = response("wildcard_answer");
+    bencher
+        .with_inputs(|| {
+            let validator = Validator::new(TrustAnchors::root(), Limits::default());
+            let verdict = validate(&validator, &keys);
+            assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+            validator
+        })
+        .bench_local_refs(|validator| {
+            let verdict = validate(validator, black_box(&response));
+            assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+        });
+}
+
 /// The captures as the upstream of a pipeline sends them.
 static WIRES: LazyLock<HashMap<(Name<'static>, RecordType), Vec<u8>>> = LazyLock::new(|| {
     CAPTURES
