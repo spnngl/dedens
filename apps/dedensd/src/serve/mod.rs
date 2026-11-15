@@ -46,7 +46,6 @@ use futures_util::future::{Either, join, select, select_all};
 use socket2::{Domain, Socket, Type};
 
 use self::h3_budget::Connections;
-use self::http3::H3_UNI_STREAMS;
 use self::isolate::{BACKOFF, Backoff, Listener, supervise};
 use self::quic::{Closing, Service, quic_task};
 #[cfg(feature = "dnscrypt")]
@@ -474,27 +473,15 @@ pub(crate) async fn serve(
             }
             Bound::Quic(udp_socket) => {
                 let config = tls::quic_server_config(certificate()?).map_err(io::Error::other)?;
-                let service = Service::Quic;
-                quic_task(
-                    &thread,
-                    "quic",
-                    udp_socket,
-                    config,
-                    0,
-                    service,
-                    &mut endpoints,
-                )?
+                quic_task(&thread, udp_socket, config, Service::Quic, &mut endpoints)?
             }
             Bound::Https(udp_socket, path) => {
                 let config = tls::h3_server_config(certificate()?).map_err(io::Error::other)?;
-                let service = Service::Https(path);
                 quic_task(
                     &thread,
-                    "https",
                     udp_socket,
                     config,
-                    H3_UNI_STREAMS,
-                    service,
+                    Service::Https(path),
                     &mut endpoints,
                 )?
             }
@@ -547,13 +534,16 @@ async fn until_stopped(
     endpoints: &[Closing],
     stopping: &flume::Receiver<()>,
 ) -> io::Result<()> {
-    match select(pin!(first_end(tasks)), pin!(stopping.recv_async())).await {
-        Either::Left((ended, _)) => ended,
-        Either::Right(_) => {
-            quic::close(endpoints).await;
-            Ok(())
-        }
+    // The tasks are dropped at the end of the statement, which cancels the listeners before the close: the loop of a
+    // closed endpoint ends, which its supervisor would take for a failure. The connections' own tasks are detached,
+    // and send their close.
+    if let Either::Left((ended, _)) =
+        select(pin!(first_end(tasks)), pin!(stopping.recv_async())).await
+    {
+        return ended;
     }
+    quic::close(endpoints).await;
+    Ok(())
 }
 
 /// The tasks of a `DNSCrypt` listener: the UDP one, pushed to `tasks`, and the TCP one, returned (D99).
