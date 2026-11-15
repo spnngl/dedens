@@ -12,8 +12,9 @@
 # answers SERVFAIL, which the answer check must fail), DEDENS_CONFIGS ("lean shipped").
 # Each server starts afresh before it is measured, and fails the run unless it answers the check file's 1000
 # questions with the mode's rcode, none lost, and `dedens` gets Knot's answers to 20 of them. A run is void, out of
-# the medians, when dnsperf or Knot is busier than 90% of its cores, or 1% of its queries are lost or get another
-# rcode. Rounds alternate the servers' order.
+# the medians, when Knot or, at saturation, dnsperf is busier than 90% of its cores, when dnsperf held to a rate
+# sends 1% less, or when 1% of its queries are lost or get another rcode; a saturation run losing 1% is run again
+# 10% under what it answered, twice at most. Rounds alternate the servers' order.
 set -euo pipefail
 mode="${1:?usage: compare.sh <mode> [cores]}"
 cores="${2:-1}"

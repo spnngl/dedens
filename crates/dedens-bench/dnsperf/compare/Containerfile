@@ -17,9 +17,10 @@ RUN curl -fsSLO "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSIO
     && tar xzf "unbound-${UNBOUND_VERSION}.tar.gz" \
     && cd "unbound-${UNBOUND_VERSION}" && ./configure -q && make -s -j"$(nproc)" && make -s install
 
+# git: TelltaleDNS's bench.py records its checkout's commit (crosscheck).
 FROM docker.io/library/debian:trixie-slim
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dnsperf bind9-dnsutils python3 openssl \
-    libssl3t64 libexpat1 ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*
+    libssl3t64 libexpat1 ca-certificates git >/dev/null && rm -rf /var/lib/apt/lists/*
 COPY --from=unbound /usr/local /usr/local
 COPY --from=coredns /src/coredns /usr/local/bin/coredns
 RUN ldconfig && unbound -V >/dev/null && coredns -version >/dev/null

@@ -8,7 +8,8 @@ loader container on other cores. The standard library only: it runs on the host.
 
 A server is measured only after it answers right: every query of a check pass with the mode's rcode, nothing lost,
 and a sample of answers, asked by `dedens`, equal to Knot's (DNSSEC: with AD set). A server failing it fails the
-run, which writes its JSON and exits 1. A measured run is void, kept out of the medians, when Knot or, at
+run, which writes its JSON and exits 1. A saturation run losing 1% or more is run again 10% under the rate it
+answered, twice at most. A measured run is void, kept out of the medians, when Knot or, at
 saturation, dnsperf was over 90% busy (the upstream or the loader, not the server, was the limit), when dnsperf
 held to a rate sent 1% less, when 1% of queries or more were lost, or when over 1% of the answers had
 another rcode.
@@ -40,6 +41,7 @@ VOID_BUSY = 0.90
 VOID_SHARE = 0.01
 START_TIMEOUT = 120
 WRONG_FOR = 10
+SAT_RETRIES = 2
 RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
 
 # corpus: TelltaleDNS's; transport: dnsperf's -m; cached: primed by a pass, the server kept between runs, else
@@ -453,6 +455,11 @@ class Bench:
                 try:
                     self.check(session, name)
                     name, r = self.measure(session, name, "sat")
+                    # A server dropping queries at full load saturates lower: 10% under what it answered, twice.
+                    for _ in range(SAT_RETRIES):
+                        if r["void"] != ["loss"]:
+                            break
+                        name, r = self.measure(session, name, "sat", rate=r["qps"] * 0.9)
                     if not r["void"]:
                         name, _ = self.measure(session, name, "half", rate=r["qps"] / 2)
                 finally:
