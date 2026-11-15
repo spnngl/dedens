@@ -12,7 +12,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - A domain `dedensd` answers for (aardvark-dns gives NXDOMAIN to unknown names of its domain, never forwards them;
   CoreDNS for `cluster.local`): the hosts stage passes an unknown name to the next stage
   (`crates/dedens-plugins/src/hosts.rs:150-158`), so a private domain's misses go upstream. Default: a `zone:`
-  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage.
+  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage. TelltaleDNS also
+  answers any type from local records and zone files (`crates/telltale-policy/src/local.rs`): a `zone` plugin
+  reading a file with `ZoneReader` would give both; default: with the authoritative phase's zone loading.
 - A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio
@@ -75,6 +77,44 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `user:` is left out there too. Default: write the unit with the packaging phase, and the manifest with the Kubernetes
   one. Socket activation (`LISTEN_FDS`) would let the unit bind :53 and start `dedensd` unprivileged, with no `user:`
   and no `AmbientCapabilities`; default: with the unit.
+- The Prometheus exporter (D30) and health endpoints: the counters go nowhere. TelltaleDNS serves `/metrics`,
+  `/livez`, `/healthz` and `/readyz` on one HTTP listener (`crates/telltale/src/http.rs`, axum). Options:
+  `metrics-exporter-prometheus`'s own listener (hyper on tokio), or its recorder rendered by a small HTTP/1.1
+  listener of `dedensd` on a thread of its own, as D57's downloads. Default: the second, with `/metrics`, `/livez`, and
+  `/readyz` once every listener is bound; the entries waiting on the exporter follow it. Decided by `cargo tree` and a
+  bench of the recording on the hot path.
+- Conditional forwarding: a domain or reverse zone sent to its own servers (a home's `lan` to its router, a company's
+  domain over its VPN); TelltaleDNS picks the upstream group by longest suffix
+  (`crates/telltale-upstream/src/router.rs`). D23's router stage would branch by zone, not built. Options: the
+  router, or a `zones:` list on `forward` that passes other names on, so the pipeline stays a chain (one forward
+  stage per zone, the catch-all last). Default: `zones:` on `forward`; the router when a branch needs stages of its
+  own. Under `dnssec: validate` a private zone below a signed one needs a negative trust anchor.
+- Upstream choice and health (D41: servers asked in order, the next on a failure): a dead first server costs each
+  query its timeout. TelltaleDNS has failover, round robin, weighted, fastest, parallel and hedged groups
+  (`crates/telltale-upstream/src/group.rs`) and a breaker per server: 3 failures in a row, or over half of the last
+  50, skip it 10 s doubling to 5 min, then one probe (`health.rs`). Default: the breaker, the order kept; fastest
+  (smoothed RTT, as Unbound) or hedged when a bench with a slow upstream shows the need.
+- A query log: `dedensd` logs no query. TelltaleDNS, as Unbound, Knot and CoreDNS, writes dnstap: client and
+  forwarder messages over Frame Streams to a Unix socket or TCP, one query in `sample_every`, copied into a bounded
+  queue that drops the copy when full (`crates/telltale/src/dnstap.rs`). Options: dnstap, or JSON lines through
+  `tracing`. Default: dnstap, a queue per thread and a writer thread; views per device stay product.
+- Policy per client (a blocklist or upstream per network or device): D23's router by client CIDR would give it per
+  address. A client id beyond the address, from the DoH path (`/dns-query/{id}`) or the TLS SNI's first label, as
+  TelltaleDNS and NextDNS read it, has no place in the pipeline. Default: the router by CIDR first; ids when clients
+  behind NAT or roaming need them. Groups and schedules stay product.
+- PROXY protocol v2: the proxy D90 puts in front for rate limits over TCP, TLS, QUIC and HTTPS hides the client's
+  address, so the access lists (D91), RRL (D113) and the client shares (D117) see the proxy's. TelltaleDNS requires
+  v2 on each TCP stream of a listener marked for it (`crates/telltale-net/src/proxy.rs`). Default: the same, on TCP
+  and TLS listeners; datagrams later.
+- CPU and latency at a low rate (`docs/benchmarks.md`, "Against TelltaleDNS, Unbound and CoreDNS"): at the common
+  rate Unbound or TelltaleDNS spend 1.2 to 1.4 times less CPU a query in `udp`, `tcp`, `blocked` and 3-core
+  `forward`, Unbound answers 1-core `forward` in 0.13 ms against 0.21 (p99 0.85 against 1.69), and CoreDNS's 3-core
+  `miss` p99 is 10.5 ms against 20. `dedensd`'s batching pays at saturation only. Default: profile `dedensd` at the
+  common rate before any change; what decides is a cost of our own (a system call per query, a wake-up) above the
+  kernel's.
+- Memory: idle, `dedensd` holds 11 MiB against Unbound's 4; loaded, 160 MiB in 3-core `miss` against Unbound's 23 and
+  85 to 90 for the others (`docs/benchmarks.md`). The cache's 64 MiB capacity (D116) explains part. Default: account
+  for the rest (buffer rings, the upstream pool, the allocator) with a heap profile before changing a default.
 
 ## Cache
 
@@ -91,6 +131,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   could have been included". Authority records of a positive answer (the NS set) are such information in most
   resolvers' reading. Default: as is (a client that sees TC retries over TCP, and gets all of it); change both
   `encode_truncated` and the cache's cut together if a resolver is shown to prefer a cut without TC.
+- Persistence across restarts: a restart empties the cache. TelltaleDNS dumps it on shutdown and loads it on start,
+  each entry aged by the downtime, a dump of other routes ignored (`crates/telltale-cache/src/persist.rs`). D43
+  prefetches what is asked, D96 prewarms listed names. Default: none, a restart's misses costing one upstream
+  question each; revisit if a restart is measured to hurt.
 
 ## DNSSEC and experimental transports
 
@@ -228,7 +272,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   endpoints); an upstream fix (accept an empty buffer), then drop the note.
 - Blocking by answer address: an answer holding an address in a listed network (a blocklist of IPs, as HAProxy's
   `ip` match) becomes REFUSED or NXDOMAIN. Client lists are D91, with the longest-prefix tree to reuse. Default:
-  none; the blocklist stage judges names only.
+  none; the blocklist stage judges names only. Rebinding protection first if any: TelltaleDNS refuses private,
+  loopback and link-local addresses in answers for public names (`AnswerFilter`,
+  `crates/telltale-policy/src/clients.rs`).
 - Steering each datagram to the socket of the CPU that received it: `SO_INCOMING_CPU` on each thread's socket
   (the kernel's `SO_REUSEPORT` choice prefers it: `reuseport_select_sock_by_hash`) and threads pinned to their CPUs, or a
   `SO_REUSEPORT_CBPF` program. Default: wait for a benchmark between two machines; on loopback the sender's
@@ -306,9 +352,24 @@ Open questions, each with its proposed default. Once answered, record the outcom
   study the interfaces it must keep (`src/resolve/` of systemd); its upstreams change at run time, as reload
   (D55) does not.
 - Dynamic stage loading (D23): WASM or gRPC, as one stage type after a cache miss, or never. Against: Vector
-  dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds.
+  dropped its WASM transform; a Rust dylib needs an ABI workaround; gRPC costs milliseconds. Or a process speaking
+  DNS over a Unix socket as an upstream, which TelltaleDNS starts and restarts itself
+  (`crates/telltale-upstream/src/plugin.rs`): a `forward` server like any other.
 - A small typed rule language for matchers (D23), beyond declarative matchers.
-- crates.io publishing, a container image, dnsperf benchmarks against Unbound and CoreDNS.
+- crates.io publishing.
+- Blocklist formats beyond names and hosts lines (D56: AdBlock syntax "later, with need"); TelltaleDNS reads AdBlock
+  and regex lines too. A regex costs a match per query (TelltaleDNS compiles them into one `regex-automata` set);
+  hagezi and OISD publish a names form beside the AdBlock one. Default: AdBlock's domain rules only (`||name^`
+  blocked, `@@||name^` allowed, the rest skipped as unread downloaded lines) when a list a user needs has no names
+  form; no regex.
+- DNS64 (RFC 6147): AAAA made from the A answer for IPv6-only clients behind NAT64 (TelltaleDNS `dns64_for`,
+  `crates/telltale/src/pipeline.rs`). It needs the upstream's answer, as the `rewrite` plugin does. Default: with
+  that plugin.
+- Upstreams through a SOCKS5 proxy (Tor), as TelltaleDNS (`crates/telltale-upstream/src/proxy.rs`). Default: none;
+  ODoH (D79) and Anonymized DNSCrypt (D100) hide the client from the resolver without one.
+- Deployment beyond the image (D151, D153: x86_64 and aarch64): TelltaleDNS also ships `linux/arm/v7`, a Helm chart
+  and a compose file. Default: the Helm chart with the Kubernetes phase, a compose example when asked; no 32-bit
+  image, as no 32-bit target is tested.
 - A fuzz target for `dedensd`'s configuration reader (`apps/dedensd/src/config/`), which needs the reader in a
   library crate. Default: move the reader to `dedens-server` with the next change to the configuration.
 - Cross builds with the lld wrapper (D150): `lld-cc` calls the host `cc`, so a `--target` other than the host's

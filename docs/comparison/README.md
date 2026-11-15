@@ -25,3 +25,14 @@ How:
   [`../benchmarks.md`](../benchmarks.md), section "Against TelltaleDNS, Unbound and CoreDNS"; the JSON of each
   run in [`results/`](results/).
 - A newer version of either side outdates the cells: read again, and change the table above.
+
+## Gaps
+
+The gaps of `telltaledns.md` and the modes where another server wins are open questions in
+[`../TODECIDE.md`](../TODECIDE.md), or planned: DoH over HTTP/2 when compio releases tokio's I/O traits (D82), the
+recursive resolver and authoritative zones (D2). Left as they are:
+
+- A query rate per client over TCP, TLS, QUIC and HTTPS: the deployment's, in front of `dedensd` (D90).
+- Draining the queries in flight on shutdown: rejected by D157, a client asks again as for a lost packet.
+- 3-core `udp`, `forward` and `blocked`, where TelltaleDNS leads by 3 to 5%: under the 1.15 that is a gap, and the
+  kernel's loopback path is most of the cost for all three servers (`../benchmarks.md`, "What limits each").
