@@ -179,5 +179,6 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
 - D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
 - D182 [simulation tests](simulation-tests.md): `dedensd`'s UDP and TCP serving loop behind the `Io` seam, run on turmoil
+- D183 [performance and safety](performance-and-safety.md): `dedensd` against TelltaleDNS, Unbound and CoreDNS: one harness, one neutral upstream, fairness rules, void runs
 - D184 [server](server.md): `dedensd` asks plain servers over UDP with `0x20`, the response's question given back the client's case
 - D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread
