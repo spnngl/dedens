@@ -1,7 +1,7 @@
 //! Shared by the tests running `dedensd`: a running server with its configuration file (`server`), and DNS over
 //! UDP and TCP with the standard library.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::process::Command;
 use std::time::Duration;
@@ -43,7 +43,9 @@ pub(crate) fn validate(text: &str) -> (Option<i32>, String) {
     )
 }
 
-/// The reply over UDP to `query`.
+/// The reply over UDP to `query`. An interrupted receive is waited again: a compio runtime the test ran on this
+/// thread before (an `io_uring` one on Linux) may still deliver its completions' work to the thread, which breaks a
+/// receive with a timeout off with `EINTR`.
 pub(crate) fn ask_udp(server: SocketAddr, query: &[u8]) -> Message<'static> {
     let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
     socket
@@ -51,7 +53,12 @@ pub(crate) fn ask_udp(server: SocketAddr, query: &[u8]) -> Message<'static> {
         .expect("a timeout");
     socket.send_to(query, server).expect("sent");
     let mut buf = vec![0; 65535];
-    let len = socket.recv(&mut buf).expect("a reply");
+    let len = loop {
+        match socket.recv(&mut buf) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            received => break received.expect("a reply"),
+        }
+    };
     decode(&buf[..len])
 }
 
