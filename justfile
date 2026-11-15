@@ -146,14 +146,15 @@ profile bench filter="":
     samply record --save-only --output "$out" -- "$exe" --bench ${filter:+"$filter"}
     echo "profile written: open it with 'samply load $out'"
 
-# Line and region coverage of the tests (cargo-llvm-cov): a summary, not a gate.
+# Line and region coverage of the tests (cargo-llvm-cov) under nextest, as the gate runs them (D178): a summary,
+# not a gate. Doctests are not counted.
 cov:
     #!/usr/bin/env bash
     set -euo pipefail
     # The pinned stable's own cargo and rustc first: the llvm-tools component belongs to that toolchain.
     rustc="$(rustup which rustc)"
     export PATH="$(dirname "$rustc"):$PATH"
-    cargo llvm-cov --workspace --all-features --summary-only
+    cargo llvm-cov nextest --workspace --all-features --summary-only
 
 # Mutation testing (cargo-mutants, settings in .cargo/mutants.toml, needs cargo-nextest), outside the gate. `args`
 # go to cargo-mutants: `just mutants -p dedens-net`; add `--iterate` to test only what the last run did not catch.

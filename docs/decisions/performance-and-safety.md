@@ -210,9 +210,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   passes on a second try still failed once. `dedensd`'s test servers start one at a time under a file lock in the
   temporary directory, not a mutex, which held within one process only. Under cargo-mutants (D103) the same kill
   ends a mutant's hung test at 2 min, a failure, before the run's 240 s timeout. nextest builds through `cargo test
-  --no-run`, so the Privileges step's and `just sim-time`'s `cargo test` builds (D164) reuse its artifacts. The musl
-  suite (`rust:alpine` has no nextest), careful, loom and sim-time keep `cargo test`. Rejected: `cargo test`
-  alone (an abort ends its binary's other tests; slower).
+  --no-run`, so the Privileges step's and `just sim-time`'s `cargo test` builds (D164) reuse its artifacts. The
+  `coverage` job's `just cov` runs `cargo llvm-cov nextest` too: under `cargo test`, a test spawning a process
+  while another dropped a compio runtime with a receive in flight let the kernel write into freed memory (the child
+  holds the ring open; compio-driver frees the buffers on `close`), and `dedensd`'s whole test binary died on
+  `free(): corrupted unsorted chunks` or SIGSEGV, naming no test, in 3 of 176 runs. The numbers hold: dedens-proto's 95.41 % of regions either way, 97.45 % of
+  lines under `cargo test`, 97.49 % under nextest (2026-11-15). The musl suite (`rust:alpine`
+  has no nextest), careful, loom and sim-time keep `cargo test`. Rejected: `cargo test` alone (an abort ends its
+  binary's other tests; slower).
 - D179 (amends D145; builds on D103) Kani proves code outside dedens-proto's decoders too, beside it: a
   `#[cfg(kani)] mod proofs` in the module whose private items it reaches, `crates/dedens-proto/src/proofs.rs` for its
   public API. Each proof, its bound and its time (Apple M5, 2026-11-11): `zero_bytes` of the name table against its

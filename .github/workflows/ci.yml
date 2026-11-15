@@ -151,6 +151,8 @@ jobs:
     env:
       # renovate: datasource=crate depName=cargo-llvm-cov
       CARGO_LLVM_COV_VERSION: "0.9.1"
+      # renovate: datasource=crate depName=cargo-nextest
+      CARGO_NEXTEST_VERSION: "0.9.150"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -163,8 +165,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
-          tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
+          tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
       - name: Summarize coverage
+        env:
+          # `.config/nextest.toml`: every failure, not the first alone.
+          NEXTEST_PROFILE: ci
         run: |
           {
             echo '```'
