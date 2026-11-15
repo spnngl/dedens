@@ -539,9 +539,10 @@ impl Validation {
     }
 
     /// The TTL for which the response's own denial records, those the zone `apex` signed and its `keys` verify,
-    /// prove `name` absent, not under an opt-out span; and a name below one proven absent is too. A name that does
-    /// not exist is no zone cut: the walk needs not ask its DS (RFC 4035 §5.2, RFC 5155 §8.8, D75). `None` when
-    /// nothing is proven, for any reason: the walk then asks.
+    /// prove `name` absent, not under an opt-out span; or prove absent a name between it and `apex`, under which
+    /// nothing exists (RFC 4592 §2.2.2: a name with a descendant exists, if empty). A name that does not exist is no
+    /// zone cut: the walk needs not ask its DS (RFC 4035 §5.2, RFC 5155 §8.8, D75). `None` when nothing is proven,
+    /// for any reason: the walk then asks. Each name is tried once a validation.
     pub(super) fn absent(
         &mut self,
         name: &Name<'static>,
@@ -549,10 +550,14 @@ impl Validation {
         keys: &RrSet<'static>,
         keys_ttl: Ttl,
     ) -> Option<Ttl> {
-        let inherited = parent(name).and_then(|above| self.absent.get(&above).copied());
-        let ttl = inherited.or_else(|| self.prove_absent(name, apex, keys, keys_ttl))?;
+        if let Some(known) = self.absent.get(name) {
+            return *known;
+        }
+        let above = parent(name).filter(|above| above != apex && above.is_within(apex));
+        let inherited = above.and_then(|above| self.absent(&above, apex, keys, keys_ttl));
+        let ttl = inherited.or_else(|| self.prove_absent(name, apex, keys, keys_ttl));
         self.absent.insert(name.clone(), ttl);
-        Some(ttl)
+        ttl
     }
 
     /// The TTL for which the response's own denial records of the zone `apex` prove `name` absent, as

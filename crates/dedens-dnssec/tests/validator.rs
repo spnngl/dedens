@@ -1472,6 +1472,26 @@ fn a_name_the_response_proves_absent_is_no_cut() {
     assert!(secure(&verdict), "{verdict:?}");
     let cost = validation.cost();
     assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
+    // A name deeper under the same wildcard, as the zone would answer it: the RRSIG signs the wildcard, not the
+    // name, and the next closer name stays the absent `wildcard-test.sidnlabs.nl`, which the key cache keeps as no
+    // cut. That name being absent, `b.wildcard-test.sidnlabs.nl` is too, whatever its own hash: no question.
+    let mut deeper = response("wildcard_answer");
+    let owner = name("a.b.wildcard-test.sidnlabs.nl");
+    for question in &mut deeper.questions {
+        question.name = owner.clone();
+    }
+    for record in &mut deeper.answer {
+        record.name = owner.clone();
+    }
+    let question = deeper.questions.first().expect("a question").clone();
+    let mut validation = validator.start(&question, &deeper, u64::from(captured_at()));
+    let verdict = match validation.step() {
+        Next::Done(verdict) => verdict,
+        Next::Ask(ask) => panic!("asks {ask:?}"),
+    };
+    assert!(secure(&verdict), "{verdict:?}");
+    let cost = validation.cost();
+    assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
 }
 
 #[test]
