@@ -309,8 +309,8 @@ impl Shared {
     }
 
     /// Asks the upstream servers for `upstream` in turn, as `dedensd`'s `answer`: each with the forward stage's
-    /// timeout and tries, EDNS kept (a response without it would be stored for clients asking for DNSSEC
-    /// records, RFC 3225), until the pipeline has a reply or none. When the client response timer runs out first,
+    /// timeout and tries, `0x20` bits when [`Upstream::random_case`] (D184), EDNS kept (a response without it would
+    /// be stored for clients asking for DNSSEC records, RFC 3225), until the pipeline has a reply or none. When the client response timer runs out first,
     /// expired data goes out and resolution goes on (D45, RFC 8767 §5).
     async fn answer(
         &self,
@@ -332,7 +332,15 @@ impl Shared {
                     transport: carrier.into(),
                 },
             );
+            let bits = upstream
+                .random_case(carrier.into())
+                .then(|| self.client.random_case())
+                .transpose();
             let result = 'ask: {
+                options.random_case = match bits {
+                    Ok(bits) => bits,
+                    Err(error) => break 'ask Err(error),
+                };
                 let mut exchange =
                     pin!(
                         self.client

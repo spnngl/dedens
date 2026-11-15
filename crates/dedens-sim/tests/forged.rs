@@ -5,9 +5,9 @@
 //!
 //! The attacker is off-path as RFC 5452 models it: it sees each query, so knows its ID, but cannot spoof the
 //! source address (turmoil shares the server's socket with it) and never sends a response that matches the query
-//! in everything the resolver checks: ID, QR, opcode, question and cookie. Such a response is the one the defences
-//! cannot tell from the server's: a guess of the ID is the odds of RFC 5452 §7, and an exchange that has not
-//! yet seen a server cookie takes a response with none (RFC 7873 §5.3). Each forgery here breaks one of the checks,
+//! in everything the resolver checks: ID, QR, opcode, question in the case sent (`0x20`, D184) and cookie. Such a
+//! response is the one the defences cannot tell from the server's: a guess of the ID is the odds of RFC 5452 §7,
+//! and an exchange that has not yet seen a server cookie takes a response with none (RFC 7873 §5.3). Each forgery here breaks one of the checks,
 //! and carries data the oracle refuses (`6.6.6.6`).
 //!
 //! Left to other tests, which this family cites rather than repeats:
@@ -71,6 +71,9 @@ enum Flaw {
     Id,
     /// The right ID, another question.
     Question,
+    /// The right ID, the question with each letter in the other case: what `0x20` adds to the ID's odds
+    /// (draft-vixie-dnsext-dns0x20 §4, D184).
+    Case,
     /// The right ID, QR clear: a query.
     Query,
     /// The right ID, another opcode.
@@ -82,7 +85,13 @@ enum Flaw {
 }
 
 /// The flaws any query allows.
-const PLAIN: [Flaw; 4] = [Flaw::Id, Flaw::Question, Flaw::Query, Flaw::Opcode];
+const PLAIN: [Flaw; 5] = [
+    Flaw::Id,
+    Flaw::Question,
+    Flaw::Case,
+    Flaw::Query,
+    Flaw::Opcode,
+];
 
 fn decode(wire: &[u8]) -> Message<'static> {
     Message::decode(wire)
@@ -138,6 +147,21 @@ fn forge(genuine: &[u8], query: &Message<'_>, flaw: Flaw, guess: u16) -> Vec<u8>
             };
         }
         Flaw::Question => message.questions = vec![question("example.net", asked.qtype)],
+        Flaw::Case => {
+            let swapped: String = asked
+                .name
+                .to_string()
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            message.questions = vec![question(&swapped, asked.qtype)];
+        }
         Flaw::Query => message.header.flags = message.header.flags.without(Flags::QR),
         Flaw::Opcode => message.header.opcode = Opcode::NOTIFY,
         Flaw::ClientCookie => {
@@ -269,6 +293,7 @@ fn flood(seed: Seed) -> Attacker {
                 0 => Flaw::Question,
                 1 => Flaw::Query,
                 2 => Flaw::Opcode,
+                3 => Flaw::Case,
                 _ => Flaw::Id,
             };
             injections.push(Injection {

@@ -51,7 +51,8 @@ pub(super) async fn answer<N: Io>(
                 key,
                 upstream.request(),
                 (&server.via, target),
-                &options
+                &options,
+                upstream.random_case(options.transport),
             ));
             if let Some(at) = stale_at {
                 // A reborrow: the exchange goes on after the timer.
@@ -128,13 +129,15 @@ enum Fetched<'a> {
     Shared(Option<Arc<[u8]>>),
 }
 
-/// Sends `request` to `target`, unless a query of the same `key` is in flight: then waits for its response.
+/// Sends `request` to `target`, with `0x20` bits from the thread's randomness when `random_case` (D184), unless a
+/// query of the same `key` is in flight: then waits for its response, which came back in the case of the question.
 async fn fetch<'a, N: Io>(
     thread: &'a Thread<N>,
     key: Option<Key>,
     request: Message<'static>,
     (via, target): (&Via, Server),
     options: &Options,
+    random_case: bool,
 ) -> Fetched<'a> {
     let flights: &Flights = thread.current.flights();
     let mut lead = None;
@@ -144,6 +147,14 @@ async fn fetch<'a, N: Io>(
             Entered::Shared(response) => return Fetched::Shared(response),
         }
     }
+    let mut options = *options;
+    if random_case {
+        match thread.client.random_case() {
+            Ok(bits) => options.random_case = Some(bits),
+            Err(error) => return Fetched::Own(Err(error), lead),
+        }
+    }
+    let options = &options;
     let result = match via {
         Via::Dnscrypt { stamp, relays } => {
             exchange_dnscrypt(thread, request, (stamp, relays), options).await
@@ -319,60 +330,118 @@ mod tests {
         let (query, response) = example_com_a();
         let runtime = Runtime::new().expect("a runtime");
         runtime.block_on(async {
-            let responder = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
-            let next = responder.local_addr().expect("its address");
-            let asked = Rc::new(Cell::new(0));
-            let counted = Rc::clone(&asked);
-            spawn(async move {
-                loop {
-                    let BufResult(received, request) =
-                        responder.recv_from(Vec::with_capacity(512)).await;
-                    let Ok((_, peer)) = received else { return };
-                    counted.set(counted.get() + 1);
-                    let mut reply = response.clone();
-                    reply[..2].copy_from_slice(&request[..2]);
-                    if responder.send_to(reply, peer).await.0.is_err() {
-                        return;
-                    }
-                }
-            })
-            .detach();
+            let (next, asked) = respond(response, true).await;
             for (first, rcode, asked_next) in [
                 ("quic://0.0.0.0", Rcode::SERVFAIL, 0),
                 ("192.0.2.1", Rcode::NOERROR, 1),
             ] {
                 asked.set(0);
-                let text = format!(
-                    "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{first}', '{next}']\n    timeout_ms: 200\n    tries: 1\n"
-                );
-                let config = crate::config::read(
-                    &text,
-                    |_| None,
-                    &Pipeline::default(),
-                    &mut Store::default(),
-                )
-                .expect("read");
-                let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
-                let pipeline = thread.pipeline();
-                let mut out = vec![0; 65535];
-                let from = IpAddr::from([127, 0, 0, 1]);
-                let Step::Upstream(upstream) =
-                    pipeline.query(&query, Transport::Udp, from, thread.now(), &mut out)
-                else {
-                    panic!("asked upstream")
-                };
-                let mut replies = Vec::new();
-                answer(&thread, &pipeline, upstream, Transport::Udp, async |reply| {
-                    replies.push(reply);
-                })
-                .await;
-                let [reply] = &replies[..] else {
-                    panic!("one reply after {first}: {replies:?}")
-                };
-                let reply = Message::decode(reply).expect("decodes").message;
+                let stage = format!("servers: ['{first}', '{next}']");
+                let reply = forward(&stage, &query).await;
                 assert_eq!((reply.rcode(), asked.get()), (rcode, asked_next), "{first}");
             }
         });
+    }
+
+    /// D184: a server that sends the question back in a case of its own, here the captured one, is taken for a
+    /// forger and its responses dropped, the query failing once the server's time is up, unless the stage turns
+    /// `0x20` off; the client gets its question back in its own case either way.
+    #[test]
+    fn a_server_that_changes_the_case_is_dropped_unless_random_case_is_off() {
+        let (mut query, response) = example_com_a();
+        // The client's own case, upper, which the captured response does not have.
+        let name = Message::decode(&query).expect("decodes").message.questions[0]
+            .name
+            .wire_len();
+        query[12..12 + name].make_ascii_uppercase();
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            let (server, asked) = respond(response, false).await;
+            for (random_case, rcode) in [(true, Rcode::SERVFAIL), (false, Rcode::NOERROR)] {
+                asked.set(0);
+                let stage = format!("servers: ['{server}']\n    random_case: {random_case}");
+                let reply = forward(&stage, &query).await;
+                assert_eq!((reply.rcode(), asked.get()), (rcode, 1), "{random_case}");
+                let client = Message::decode(&query).expect("decodes").message;
+                let [got] = &reply.questions[..] else {
+                    panic!("one question")
+                };
+                let [asked] = &client.questions[..] else {
+                    panic!("one question")
+                };
+                assert!(got.name.labels().eq(asked.name.labels()), "{random_case}");
+            }
+        });
+    }
+
+    /// A UDP server answering each query with `response`, its ID that of the query and, when `echo`, its question's
+    /// name in the query's case: its address and the count of queries it got.
+    async fn respond(response: Vec<u8>, echo: bool) -> (std::net::SocketAddr, Rc<Cell<usize>>) {
+        let responder = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+        let addr = responder.local_addr().expect("its address");
+        let name = Message::decode(&response)
+            .expect("decodes")
+            .message
+            .questions[0]
+            .name
+            .wire_len();
+        let asked = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&asked);
+        spawn(async move {
+            loop {
+                let BufResult(received, request) =
+                    responder.recv_from(Vec::with_capacity(512)).await;
+                let Ok((_, peer)) = received else { return };
+                counted.set(counted.get() + 1);
+                let mut reply = response.clone();
+                reply[..2].copy_from_slice(&request[..2]);
+                if echo {
+                    reply[12..12 + name].copy_from_slice(&request[12..12 + name]);
+                }
+                if responder.send_to(reply, peer).await.0.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+        (addr, asked)
+    }
+
+    /// The reply of a forward stage configured by `stage`, its lines after `type`, to the UDP client's `query`.
+    async fn forward(stage: &str, query: &[u8]) -> Message<'static> {
+        let text = format!(
+            "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    {stage}\n    timeout_ms: 200\n    tries: 1\n"
+        );
+        let config =
+            crate::config::read(&text, |_| None, &Pipeline::default(), &mut Store::default())
+                .expect("read");
+        let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
+        let pipeline = thread.pipeline();
+        let mut out = vec![0; 65535];
+        let from = IpAddr::from([127, 0, 0, 1]);
+        let Step::Upstream(upstream) =
+            pipeline.query(query, Transport::Udp, from, thread.now(), &mut out)
+        else {
+            panic!("asked upstream")
+        };
+        let mut replies = Vec::new();
+        answer(
+            &thread,
+            &pipeline,
+            upstream,
+            Transport::Udp,
+            async |reply| {
+                replies.push(reply);
+            },
+        )
+        .await;
+        let [reply] = &replies[..] else {
+            panic!("one reply: {replies:?}")
+        };
+        Message::decode(reply)
+            .expect("decodes")
+            .message
+            .into_owned()
     }
 
     /// D86: a flight whose lead fails on our side, here a QUIC server at an unspecified address, lets its follower

@@ -68,6 +68,7 @@
 //!     servers: ["tls://9.9.9.9#dns.quad9.net", "149.112.112.112:53"]
 //!     timeout_ms: 3000                 # per try, up to 30000
 //!     tries: 2                         # per server, up to 5
+//!     random_case: true                # 0x20 to plain servers over UDP (default); false if one breaks it (D184)
 //!     dnssec: validate                 # off (default) or validate (D77)
 //!     trust_anchors: /etc/dedensd/anchors.zone   # DS or DNSKEY records; default: the root's, bundled
 //!     insecure: [corp.example]         # names not validated, with what is below them (RFC 7646)
@@ -389,6 +390,7 @@ fn stages(
                 odoh_proxy,
                 timeout_ms,
                 tries,
+                random_case,
                 dnssec,
                 trust_anchors,
                 insecure,
@@ -400,14 +402,17 @@ fn stages(
                     insecure,
                     client_share,
                 };
-                Stage::Forward(forward(
-                    name,
-                    (servers, relays, odoh_proxy),
-                    timeout_ms,
-                    tries,
-                    validation,
-                    previous,
-                )?)
+                Stage::Forward(
+                    forward(
+                        name,
+                        (servers, relays, odoh_proxy),
+                        timeout_ms,
+                        tries,
+                        validation,
+                        previous,
+                    )?
+                    .with_random_case(random_case.unwrap_or(true)),
+                )
             }
             StageFile::Hosts {
                 entries,

@@ -103,4 +103,13 @@ impl Client {
         self.io.resume_panic();
         response
     }
+
+    /// Random bits for [`Options::random_case`], from the host's `rng` as the IDs (D184).
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Random`] as the real client ends.
+    pub fn random_case(&self) -> Result<[u8; 32], ClientError> {
+        self.inner.random_case()
+    }
 }

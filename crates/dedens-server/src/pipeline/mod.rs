@@ -21,7 +21,7 @@ pub use self::prewarm::{Warm, Warmth};
 use crate::access::{Access, Denial};
 use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
-use crate::forward::{self, Forward, Server};
+use crate::forward::{self, Forward, Server, Via};
 use crate::plugin::{Answer, Plugin};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
@@ -103,6 +103,8 @@ pub struct Upstream {
     cache: Option<usize>,
     /// The forward stage's timeout and tries.
     patience: (Duration, NonZeroU8),
+    /// The forward stage's [`Forward::with_random_case`].
+    random_case: bool,
     /// The client response timer (RFC 8767 §5), while the client waits and the cache stage has one.
     stale_after: Option<Duration>,
     purpose: Purpose,
@@ -495,6 +497,7 @@ impl Pipeline {
             next: 1,
             cache,
             patience: forward.patience(),
+            random_case: forward.random_case(),
             stale_after: None,
             purpose: Purpose::Reply,
             validate,
@@ -793,6 +796,15 @@ impl Upstream {
     #[must_use]
     pub const fn patience(&self) -> (Duration, NonZeroU8) {
         self.patience
+    }
+
+    /// Whether [`Upstream::request`] goes with random bits for `0x20` when sent over `transport`, the one the server is
+    /// asked over (D184): the forward stage's [`Forward::with_random_case`], for a plain server over UDP, which an
+    /// off-path attacker can answer in its place. A connection, TLS, QUIC, HTTPS, Oblivious `DoH` and `DNSCrypt`
+    /// stop such an attacker without it.
+    #[must_use]
+    pub fn random_case(&self, transport: Transport) -> bool {
+        self.random_case && self.server.via == Via::Plain && transport == Transport::Udp
     }
 
     /// How long after the client's query to call [`Pipeline::stale`], resolution going on: the client response
