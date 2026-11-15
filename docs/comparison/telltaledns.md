@@ -42,7 +42,7 @@ it, their code does not do it; "partial": what is missing follows.
 | SOCKS5, HTTP CONNECT | no | `crates/telltale-upstream/src/proxy.rs` (UPS-010 P1) |
 | exec or Unix-socket plugin | no | `crates/telltale-upstream/src/plugin.rs` (UPS-011 P1); WASM spec only (P2) |
 | Presets catalog | `docs/providers/providers.yaml`, for the CLI (D67) | `crates/telltale-upstream/src/presets.rs` (UPS-004 P0) |
-| Response matching against forgery | address, ID, question, response checked against the question (`crates/dedens-net/src/exchange.rs`, D27, D111); `0x20` in the library, off in `dedensd` | ID and question (`crates/telltale-upstream/src/upstream.rs`); `0x20` only in the recursor, which spec `04-upstreams.md` gives UDP upstreams |
+| Response matching against forgery | address, ID, question, response checked against the question (`crates/dedens-net/src/exchange.rs`, D27, D111); `0x20` in the library, on in `dedensd` for plain servers over UDP (D184) | ID and question (`crates/telltale-upstream/src/upstream.rs`); `0x20` only in the recursor, which spec `04-upstreams.md` gives UDP upstreams |
 | TC to TCP; EDNS kept on timeout (RFC 8906) | `crates/dedens-net/src/exchange.rs` | TC to TCP (`crates/telltale-upstream/src/upstream.rs`); no EDNS fallback |
 
 ## Cache

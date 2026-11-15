@@ -1491,3 +1491,19 @@ Soak, MiB: VmHWM, RSS at 10 and 30 minutes, at the end of the load (60), 20 s la
 - Against the plan's verdict rule (queries/s 0.90 and p99 within 25 % of the fastest in every cell, peak RSS within
   25 % of the lowest): `ng` fails the speed, every crate fails the RSS (+63 % to +94 % over `ng`). The choice is step 04's.
 - One session on one shared host; a ratio below 1.1 between two builds is not a difference.
+
+
+## `0x20` (D184)
+
+`DEDENS_ROUNDS=<n> just bench-dnsperf 0373ffe0 forward` on an Apple M-series host (Docker, Linux arm64 VM), base and
+tree alternating, every query NOERROR, none lost: the front `dedensd` forwards each query over UDP to a second one
+answering from its cache, so each upstream query now draws 32 bytes for `0x20`, copies the question's name and writes
+it back into the response.
+
+| Run | base (0373ffe0), k/s | tree, k/s |
+|---|---|---|
+| 4 rounds | 108.9, 122.8, 127.0, 127.9 | 99.3, 127.4, 122.9, 112.3 |
+| 8 rounds | 152.7, 143.6, 126.5, 146.5, 152.2, 79.1, 74.6, 77.6 | 147.2, 146.6, 135.0, 147.5, 83.0, 74.1, 77.2, 79.8 |
+
+- The tree won 6 of 12 paired rounds; the host's rate halved from the fifth round of the second run, for both.
+  Within the noise, as expected of a draw from the IDs' buffer and a name copied twice against some 7 µs a query.

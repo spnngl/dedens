@@ -1274,3 +1274,41 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: a plugin of D54 (it needs the cache and the upstream, which a plugin has not); asking only when an
     entry has expired (the first client after it waits); counting prewarm lookups as hits; one task per thread
     (every thread asking each name).
+
+
+- D184 (amends D27, D31, D77; builds on D50, D86, D111, D114, D133) `dedensd` asks a plain server over UDP with
+  `0x20` (draft-vixie-dnsext-dns0x20 §5.1): each letter of the question goes in a random case, which the response's
+  question must repeat, else the response is dropped as one of another ID is (D27) and the wait goes on (§5.5).
+  An off-path forger guessed the ID and the socket, 16 + 8 bits (D50); it now guesses one bit more per letter
+  (`example.com`: 10). Cookies (RFC 7873) win more, but only with a server that sends one.
+  - Where: `Upstream::random_case`, a plain server over UDP alone. A connection is beyond an off-path forger,
+    and TLS, QUIC, HTTPS, Oblivious DoH (D185) and DNSCrypt authenticate the server: there the bits would buy nothing and a server that
+    lowercases the question would cost a timeout.
+  - Bits: `Client::random_case`, 32 bytes from the randomness the IDs come from (D27, D114), one draw a server
+    asked; the exchange owns no randomness (D31). The simulator's client draws them from its host's `rng`, as its
+    IDs, so a run stays one per seed (D133), and its upstream copies the question as asked.
+  - Case: the exchange checks the echo byte for byte (D31), then writes the question's name back in the case it
+    was given before it hands the response out (§5.4), so the names compressed against it, the answer's owners as a
+    rule, read in that case too: the client's in the reply and the cache, the validator's for its questions. A
+    flight's follower (D86) gets the lead's bytes in that case, never the lead's random one. A name the server
+    writes in full keeps the server's case, the random one if it copied it there: RFC 4343 compares names in any
+    case and the cache keys them so; Unbound lowercases the question alone too (`pkt_dname_tolower`).
+    `Pipeline::receive` still checks the question in any case (D111): the case sent is the transport's.
+  - A server that does not copy the case: each try times out, then the next server is asked, then SERVFAIL;
+    `random_case: false` in the forward stage (on by default) asks it in the client's case. Per stage, not per
+    server: a server is an address and a way (`Via`), and a stage of its own takes one that answers otherwise.
+    Rejected: a fallback as Unbound's (`use-caps-for-id`, off by default; on a mismatch it asks every server
+    again without `0x20` and takes the answer when all agree, `iq->caps_fallback` in `iterator/iterator.c`, with a
+    `caps-exempt` list), the draft's §6.4: a forger that sends a mismatch would turn it on, and it holds a state a
+    question; the resolvers a forwarder asks copy the question (§6.1), and a mismatch is more likely a forgery.
+    Rejected too: off by default, as the library (D27): the lowercasing servers of §6.2 are authoritative ones a
+    recursive resolver asks, not the resolvers `dedensd` forwards to.
+  - Cost: a 32-byte draw from the IDs' buffer, a copy of the question's name and its write back, a query; forwarding
+    over UDP under `just bench-dnsperf` within the noise, the tree winning 6 of 12 paired rounds (`docs/benchmarks.md`,
+    "`0x20`").
+  - Tests: `crates/dedens-net/tests/exchange.rs` (`random_case_gives_the_response_back_in_the_case_asked`, the
+    answer's owner compressed against the question), `crates/dedens-server/tests/stages.rs`
+    (`random_case_is_for_a_plain_server_over_udp`), `apps/dedensd/src/serve/upstream.rs`
+    (`a_server_that_changes_the_case_is_dropped_unless_random_case_is_off`, a loopback server sending the
+    captured case back), `crates/dedens-sim/tests/forged.rs` (`Flaw::Case`, the question in the other case and
+    all else right, taken without `0x20` and dropped with it).

@@ -420,7 +420,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
-- D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124) A forward stage validates with `dnssec: validate` (default
+- D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124, D184) A forward stage validates with `dnssec: validate` (default
   `off`; `off` is read for the boolean YAML makes of it); `trust_anchors: FILE` (zone text of DS or DNSKEY records, else
   the bundled root) and `insecure: [names]` (negative anchors, RFC 7646) only with it, else the configuration is refused.
   One `Validator` per stage, built by `config/upstream.rs` at each read; a reload keeps the one of a stage whose validation is
@@ -443,7 +443,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   validator ignores and the RRSIGs that sign nothing are dropped (RFC 4035 §3.2.3); the CNAME a DNAME makes stays.
   Every TTL is capped at the verdict's. `Incomplete`: the answer of
   `next` is validated apart, at most 8 names a query (`MAX_CHASES`, as `dedens`; `next` is the upstream's, not 0x20 entropy, and
-  dedensd sends no 0x20); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
+  the case of `dedensd`'s 0x20 is gone from a response before the validator reads it, D184); the chain's answer is then delivered insecure, AD clear, cached at most as long as the
   incomplete part, whatever the second verdict, but bogus and indeterminate end it, and a ninth name is
   indeterminate. All the questions of a query, the chase included, are at most 64 (`MAX_QUESTIONS`; the
   validator's `Limits` bound each validation separately): past it the verdict is indeterminate.
