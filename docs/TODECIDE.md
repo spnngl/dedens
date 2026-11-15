@@ -224,21 +224,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   without SOA, TTL 0) is validated again on each query; up to 64 questions hold one upstream slot until a verdict;
   no deadline per query; the dead server is skipped for one query only. Default: as is; a per-query deadline if a
   deployment shows the need.
-- Validating forwarder (D77, D117): the global allowance has no knob in the configuration (`Allowance` defaults;
-  `client_share` is the network's), and a unit weighs the same for every algorithm (a P-384 check takes 12 times a
-  P-256 one). Default: fixed; `dnssec_allowance:` keys when a deployment hits the default, units weighted by algorithm
-  when one signs with P-384 to burn the bucket's CPU. The comparison hit it (D183, `docs/benchmarks.md` "Against
-  TelltaleDNS, Unbound and CoreDNS"): on Haswell a unit costs about 100 µs, not D77's 10 µs (a P-256 check about
-  80 µs), so 10 000 units a second is one core: at 3 cores `dedensd` validated about 1300 names a second and
-  answered the rest SERVFAIL, two cores idle. Proposed: `per_second` scaled by the serving threads.
-- Validator (D75, D86): a name of a zone not yet known to have no cut below costs a DS question per label down to
-  the owner, each verified, even when the answer's own denial proves there is no cut: a wildcard answer's NSEC3
-  covering the next closer name proves that name absent, and an absent name owns no NS. Unique names under a
-  wildcard (the comparison's `dnssec` mode) cost 1.34 DS questions and about six P-256 checks each (by the time in
-  P-256 code, 530 µs a query against Unbound's 165 µs for its two), 57% of the CPU in `Validation::cut`, where
-  Unbound asks nothing more than the name (D183). Default: the walk to the owner, until the comparison's step 03;
-  proposed: a verified denial in the response that proves a name on the walk absent ends the walk at that zone,
-  kept in the key cache as no cut.
+- Validating forwarder (D77, D117): the global allowance, scaled by the serving threads, has no knob in the
+  configuration (`Allowance::serving`; `client_share` is the network's), and a unit weighs the same for every
+  algorithm (a P-384 check takes 12 times a P-256 one). Default: by the threads; `dnssec_allowance:` keys when a
+  deployment hits the default, units weighted by algorithm when one signs with P-384 to burn the bucket's CPU.
 - Validating forwarder (D117): a network's share does not reserve units for warm validations (2 units), so an
   attacker's cold validations from the same network shed that network's other unproven queries; and spoofed UDP
   sources can drain the share of a network they do not hold (proven clients have their own), or spread over networks
