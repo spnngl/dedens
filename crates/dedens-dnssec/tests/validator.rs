@@ -1492,6 +1492,24 @@ fn a_name_the_response_proves_absent_is_no_cut() {
     assert!(secure(&verdict), "{verdict:?}");
     let cost = validation.cost();
     assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
+    // The walk reads the denial records the zone signed and leaves another zone's, here the root's real NSEC of
+    // `jm.`, which the zone's keys could not verify: the proof holds all the same, and no question is asked. The
+    // verdict then finds the NSEC in no zone of the answer, and the response bogus (RFC 4035 §5.5).
+    let mut beside = response("wildcard_answer");
+    beside.authority.extend(response("jm_ds").authority.into_iter().filter(|record| {
+        matches!(record.data(), RData::Nsec(_))
+            || matches!(record.data(), RData::Rrsig(rrsig) if rrsig.type_covered == RecordType::NSEC)
+    }));
+    let validator = Script::validator();
+    let keys = script.run(&validator, &response("sidnlabs_nl_dnskey"), captured_at());
+    assert!(secure(&keys), "{keys:?}");
+    let question = beside.questions.first().expect("a question").clone();
+    let mut validation = validator.start(&question, &beside, u64::from(captured_at()));
+    let verdict = match validation.step() {
+        Next::Done(verdict) => verdict,
+        Next::Ask(ask) => panic!("asks {ask:?}"),
+    };
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
 }
 
 #[test]

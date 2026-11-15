@@ -553,7 +553,8 @@ impl Validation {
         if let Some(known) = self.absent.get(name) {
             return *known;
         }
-        let above = parent(name).filter(|above| above != apex && above.is_within(apex));
+        // The walk asks of a name below `apex`, so its parent is `apex` or below it.
+        let above = parent(name).filter(|above| above != apex);
         let inherited = above.and_then(|above| self.absent(&above, apex, keys, keys_ttl));
         let ttl = inherited.or_else(|| self.prove_absent(name, apex, keys, keys_ttl));
         self.absent.insert(name.clone(), ttl);
