@@ -1,0 +1,51 @@
+# TelltaleDNS for compare.sh as shipped: its defaults, query log, metrics, API and statistics on, with what the
+# bench needs: the addresses (the API and metrics on loopback), Knot as the one upstream, blocked names answered
+# NXDOMAIN as the other servers do, no update check. Rendered by compare.py: `@NAME@` is a value, a `#@tag ` line
+# is kept, uncommented, when the run has that tag.
+config_version = 1
+
+[node]
+workers = 0
+data_dir = "/w/data"
+
+[[listen]]
+proto = "udp"
+addr = "127.0.0.1:5301"
+
+[[listen]]
+proto = "tcp"
+addr = "127.0.0.1:5301"
+
+[[listen]]
+proto = "dot"
+addr = "127.0.0.1:8531"
+tls = { cert = "/w/cert.pem", key = "/w/key.pem" }
+
+[[upstream]]
+name = "knot"
+url = "@UPSTREAM_PROTO@://127.0.0.1:5300"
+
+[[upstream_group]]
+name = "default"
+members = ["knot"]
+
+[[group]]
+name = "default"
+block_mode = "nxdomain"
+
+[dnssec]
+mode = "@DNSSEC@"
+trust_anchors_file = "/w/anchors.zone"
+
+[updates]
+check = false
+
+[api]
+listen = "127.0.0.1:8053"
+
+[telemetry.metrics]
+listen = "127.0.0.1:9153"
+
+#@blocked [[list]]
+#@blocked name = "blocked"
+#@blocked path = "/w/lists/blocklist.txt"

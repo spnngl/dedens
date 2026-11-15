@@ -1,0 +1,19 @@
+# CoreDNS for compare.sh as shipped: the Corefile Kubernetes deploys (kubeadm's), its kubernetes plugin left out,
+# its health, ready and metrics addresses on loopback; Knot as the upstream. CoreDNS has no default Corefile of its
+# own, and the most common one is this. The plain and DoT listeners share one server block.
+dns://.:5301 tls://.:8531 {
+    tls /w/cert.pem /w/key.pem
+    errors
+    health 127.0.0.1:8080 {
+        lameduck 5s
+    }
+    ready 127.0.0.1:8181
+    prometheus 127.0.0.1:9153
+    forward . 127.0.0.1:5300 {
+        max_concurrent 1000
+    }
+    cache 30
+    loop
+    reload
+    loadbalance
+}

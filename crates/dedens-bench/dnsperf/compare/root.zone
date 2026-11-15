@@ -1,0 +1,9 @@
+; The upstream of every server compared (compare.sh): a root zone whose wildcard answers any name, as the stub
+; upstream of TelltaleDNS's bench does, so that no query of the corpora fails upstream. Signed by Knot for `dnssec`.
+$ORIGIN .
+$TTL 3600
+@         SOA   ns.bench. hostmaster.bench. 1 3600 900 604800 3600
+@         NS    ns.bench.
+ns.bench. A     127.0.0.1
+*         A     198.18.0.1
+*         AAAA  2001:2::1

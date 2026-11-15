@@ -1,0 +1,8 @@
+# The server `broken` of compare.sh (`DEDENS_SERVERS="dedensd broken"`): CoreDNS answering SERVFAIL to every
+# query, fast, to show that the answer check fails the run.
+dns://.:5301 tls://.:8531 {
+    tls /w/cert.pem /w/key.pem
+    template ANY ANY {
+        rcode SERVFAIL
+    }
+}

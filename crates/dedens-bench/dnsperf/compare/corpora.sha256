@@ -1,0 +1,7 @@
+# The corpora compare.py generates with TelltaleDNS's bench/corpus.py at the version compare.sh pins, and the 1M
+# names of `blocked` (the first million names of the pinned list, as corpus.blocked_names reads them). A version
+# raised changes them: regenerate with their `bench/corpus.py cache-hot miss-heavy blocked --lists <dir>`.
+a37b6310ecd5bb644b00e6bd5ed4e893a2428807b3f2831755db508237e4fe12  blocklist.txt
+fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f  cache-hot.txt
+68766cd575bce6cc7db488adf96c16d4a338760d9e351627354613ab59082881  miss-heavy.txt
+175849826dfed50733b1e58d1e37c75e5672ddc9bde86d6ddd3cdee8d429dfde  blocked.txt
