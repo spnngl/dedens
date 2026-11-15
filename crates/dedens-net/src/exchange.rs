@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 
 use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
 use dedens_proto::{
-    EncodeError, Flags, Message, Name, Query, Question, Rcode, Transport, Violation,
+    EncodeError, Flags, HEADER_LEN, MAX_NAME_LEN, Message, Name, Query, Question, Rcode, Transport,
+    Violation,
 };
 
 use crate::doh::Method;
@@ -50,7 +51,8 @@ pub struct Options {
     /// OPT record, nor for a response without the question (D114). Default: on.
     pub edns_fallback: bool,
     /// Random bits for `0x20` (draft-vixie-dnsext-dns0x20): when set, the case of each letter of the question
-    /// names follows these bits, and a response must repeat the names in the same case. Default: off.
+    /// names follows these bits, and a response must repeat the names in the same case. [`Response::wire`] has the
+    /// question back in the case given (D184). Default: off.
     pub random_case: Option<[u8; 32]>,
     /// Whether [`Client::exchange`](crate::client::Client::exchange) adds a client cookie to a query with EDNS
     /// and none of its own (RFC 7873 §5.1). Default: on.
@@ -107,7 +109,8 @@ pub enum Progress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Response {
-    /// The response, as received.
+    /// The response, as received; with [`Options::random_case`], its question's name in the case of the query given,
+    /// so that the names compressed against it read in that case too (D184).
     pub wire: Vec<u8>,
     /// The last query sent, the one this answers.
     pub query: Vec<u8>,
@@ -214,6 +217,8 @@ pub struct Exchange {
     options: Options,
     query: Message<'static>,
     wire: Vec<u8>,
+    /// With [`Options::random_case`], the name of the question in the case given, written back over the response's.
+    given: Option<Box<[u8]>>,
     transport: Transport,
     sent_at: Instant,
     deadline: Instant,
@@ -248,7 +253,13 @@ impl Exchange {
         if streamed(options.transport) {
             query.header.id = 0;
         }
+        let mut given = None;
         if let Some(bits) = &options.random_case {
+            let mut buf = [0; MAX_NAME_LEN];
+            given = query
+                .questions
+                .first()
+                .map(|question| Box::from(question.name.to_wire(&mut buf)));
             for question in &mut query.questions {
                 question.name = random_case(&question.name, bits);
             }
@@ -261,6 +272,7 @@ impl Exchange {
             options,
             query,
             wire,
+            given,
             sent_at: now,
             sends: 1,
             timeouts: 0,
@@ -383,6 +395,10 @@ impl Exchange {
             };
             debug!(server = %self.server, ?transport, "BADCOOKIE: asking again with the server cookie");
             return self.send_changed(transport, now);
+        }
+        let mut bytes = bytes;
+        if let Some(given) = &self.given {
+            give_case(&mut bytes, given);
         }
         Progress::Done(Ok(Response {
             wire: bytes,
@@ -596,6 +612,17 @@ fn same_question(got: &Question<'_>, sent: &Question<'_>, exact: bool) -> bool {
         } else {
             got.name == sent.name
         }
+}
+
+/// Writes `given`, the question's name in the case the caller gave, over the question of `wire`, the response that
+/// repeated it in the random case: an uncompressed name at the start of the question section (RFC 1035 §4.1.2), the
+/// same one in any case (D184).
+fn give_case(wire: &mut [u8], given: &[u8]) {
+    if let Some(name) = wire.get_mut(HEADER_LEN..HEADER_LEN + given.len())
+        && name.eq_ignore_ascii_case(given)
+    {
+        name.copy_from_slice(given);
+    }
 }
 
 /// `name` with the case of its letters from `bits`, one bit a letter in order.

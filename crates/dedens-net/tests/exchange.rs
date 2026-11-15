@@ -13,11 +13,13 @@
 //! - RFC 8906 §3 and §8: a server that does not answer may have dropped the packet; a timeout is no sign that it does
 //!   not know EDNS, so every try keeps the query as it was.
 
+use std::net::Ipv4Addr;
 use std::num::NonZeroU8;
 
 use dedens_net::exchange::{Failure, Options, Progress};
 use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
-use dedens_proto::{Class, Flags, Message, Rcode, RecordType, Transport};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl};
 use proptest::prelude::*;
 
 use crate::util::{
@@ -292,6 +294,39 @@ fn random_case_sets_the_case_and_requires_it_back() {
     let mut echoed = response(&query, Rcode::NOERROR);
     echoed.questions[0].name = sent.questions[0].name.clone();
     expect_response(udp(exchange, &wire(&echoed), now));
+}
+
+/// D184: the response comes back with its question in the case of the query given, not the random one, and so do the
+/// names compressed against it: an answer's owner, a pointer to the question.
+#[test]
+fn random_case_gives_the_response_back_in_the_case_asked() {
+    let now = t0();
+    let mut query = query();
+    query.questions[0].name = name("Example.com.");
+    let mut options = Options::default();
+    options.random_case = Some([0b1010_0101; 32]);
+    let exchange = start(&query, options, now);
+    let random = crate::util::sent(&exchange).questions[0].name.clone();
+    assert_eq!(random.to_string(), "ExAmpLe.COm.");
+    let mut echoed = response(&query, Rcode::NOERROR);
+    echoed.questions[0].name = random.clone();
+    echoed.answer.push(Record::new(
+        random,
+        Class::IN,
+        Ttl::from_wire(300),
+        &RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+    ));
+    let bytes = wire(&echoed);
+    assert_eq!(
+        &bytes[bytes.len() - 27..bytes.len() - 25],
+        [0xC0, 12],
+        "a pointer to the question"
+    );
+    let got = expect_response(udp(exchange, &bytes, now));
+    let got = Message::decode(&got.wire).expect("a message").message;
+    for name in [&got.questions[0].name, &got.answer[0].name] {
+        assert!(name.labels().eq(query.questions[0].name.labels()), "{name}");
+    }
 }
 
 proptest! {

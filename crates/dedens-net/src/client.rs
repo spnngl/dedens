@@ -690,6 +690,15 @@ impl<N: Io> Client<N> {
         }
     }
 
+    /// Random bits for [`Options::random_case`], from the randomness the IDs come from (D184).
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Random`]: no randomness.
+    pub fn random_case(&self) -> Result<[u8; 32], ClientError> {
+        self.draw()
+    }
+
     /// The next `LEN` random bytes.
     fn draw<const LEN: usize>(&self) -> Result<[u8; LEN], ClientError> {
         self.random.borrow_mut().take(&self.io)
@@ -971,7 +980,15 @@ async fn discover(
 
 #[cfg(test)]
 mod tests {
-    use super::{Compio, RANDOM_BATCH, Random};
+    use super::{Client, Compio, RANDOM_BATCH, Random};
+
+    /// D184: each query's `0x20` bits are fresh ones.
+    #[test]
+    fn random_case_bits_differ_from_query_to_query() {
+        let client = Client::with_io(Compio);
+        let first = client.random_case().expect("randomness");
+        assert_ne!(first, client.random_case().expect("randomness"));
+    }
 
     /// Takes across a refill come whole, and fresh bytes are not the zeros the batch starts with.
     #[test]
