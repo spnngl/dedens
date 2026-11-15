@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
+use std::string::FromUtf8Error;
 use std::time::SystemTime;
 
 use anyhow::{Context, anyhow};
@@ -166,16 +167,18 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// The copy cannot be read: [`io::ErrorKind::NotFound`] when there is none yet.
-    pub(crate) fn saved(&mut self, copy: &Path, url: &str) -> io::Result<Names> {
+    /// [`Unsaved::Io`] when the copy cannot be read, [`io::ErrorKind::NotFound`] when there is none yet;
+    /// [`Unsaved::NotText`] when it is not UTF-8.
+    pub(crate) fn saved(&mut self, copy: &Path, url: &str) -> Result<Names, Unsaved> {
         let mut file = File::open(copy)?;
         let stamp = Stamp::of(&file)?;
         let source = Source::Copy(copy.to_owned());
         if let Some(names) = self.reuse(&source, stamp) {
             return Ok(names);
         }
-        let mut text = String::new();
-        file.read_to_string(&mut text)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let text = String::from_utf8(bytes).map_err(Unsaved::NotText)?;
         let names = Names::downloaded(&text);
         tracing::info!(kind = "saved copy", url, names = names.len(), "list parsed");
         Ok(self.insert(source, Some(stamp), names))
@@ -243,6 +246,21 @@ impl Store {
             },
         );
         names
+    }
+}
+
+/// Why a saved copy gives no names.
+#[derive(Debug)]
+pub(crate) enum Unsaved {
+    /// It cannot be read.
+    Io(io::Error),
+    /// It is not UTF-8, so not a list: the downloader saves only text.
+    NotText(FromUtf8Error),
+}
+
+impl From<io::Error> for Unsaved {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
     }
 }
 
@@ -404,7 +422,10 @@ mod tests {
         // A superuser reads it all the same.
         if File::open(&copy).is_err() {
             let error = store.saved(&copy, "http://list").unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(
+                matches!(&error, Unsaved::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+                "{error:?}"
+            );
         }
     }
 
@@ -414,7 +435,20 @@ mod tests {
         let error = Store::default()
             .saved(&dir.path().join("a.list"), "http://list")
             .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            matches!(&error, Unsaved::Io(e) if e.kind() == io::ErrorKind::NotFound),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_copy_not_in_utf8_is_not_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("a.list");
+        // A DNS response, saved in its place.
+        fs::write(&copy, dedens_testkit::captured("a")).unwrap();
+        let error = Store::default().saved(&copy, "http://list").unwrap_err();
+        assert!(matches!(error, Unsaved::NotText(_)), "{error:?}");
     }
 
     #[test]
