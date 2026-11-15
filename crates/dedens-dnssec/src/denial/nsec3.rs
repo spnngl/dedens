@@ -207,19 +207,19 @@ pub(super) fn prove(
     Err(Unproven::WildcardNotDenied)
 }
 
-/// RFC 5155 §8.8: an NSEC3 covers the next closer name, so the wildcard was the closest match. Under an opt-out
-/// span the next closer name may exist as an insecure delegation, and the proof says so (RFC 5155 §9.2).
-pub(super) fn prove_wildcard_answer(
+/// RFC 5155 §8.8: an NSEC3 covers `name`, which does not exist. Under an opt-out span `name` may exist as an
+/// insecure delegation, and the proof says so (RFC 5155 §9.2).
+pub(super) fn prove_absent(
     chain: &Chain<'_>,
-    next_closer: &Name<'_>,
+    name: &Name<'_>,
     budget: &mut Budget,
 ) -> Result<Proof, Unproven> {
-    let hash = chain.hash(next_closer, budget)?;
+    let hash = chain.hash(name, budget)?;
     if chain.matching(&hash).is_some() {
         return Err(Unproven::CloserNameExists);
     }
     let covering = chain.covering(&hash).ok_or(Unproven::NotCovered)?;
-    Ok(Proof::new(Fact::WildcardAnswer, covering.ttl).with_opt_out(covering.opt_out))
+    Ok(Proof::new(Fact::Absent, covering.ttl).with_opt_out(covering.opt_out))
 }
 
 #[cfg(test)]

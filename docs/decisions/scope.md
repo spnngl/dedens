@@ -310,8 +310,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D74 (amends D69; amended by D106) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3
   records the caller verified, each signed by the zone's `apex` (step 06 checks; this trusts them and the module docs list
   what it owes). `prove` answers a question that got a name error, no data or a referral, `prove_wildcard_answer` one
-  that got a wildcard expansion (the RRSIG's label count gives the next closer name); the result is a `Fact`
-  (`NameError { compact }`, `NoData`, `WildcardNoData`, `WildcardAnswer`, `InsecureDelegation`) with the TTL of the
+  that got a wildcard expansion (the RRSIG's label count gives the next closer name), `prove_absent` that a name
+  does not exist, not even as an empty non-terminal (the no-closer half of a wildcard answer, which the validator's
+  walk also reads, D75); the result is a `Fact` (`NameError { compact }`, `NoData`, `WildcardNoData`,
+  `WildcardAnswer`, `Absent`, `InsecureDelegation`) with the TTL of the
   proof, the least of the records used (RFC 9077 §3), or an `Unproven` reason: the caller picks the verdict, as for
   `Budget` (D71). A DS question's `NoData` is the parent's: an NSEC or NSEC3 with SOA is the child's and proves
   nothing of the delegation (`FromChildApex`, RFC 4035 §5.2, RFC 6840 §4.4), and NS without DS and SOA, or an
@@ -329,13 +331,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `NameError { compact: true }` for any type, so 06 and 08 tell it from an NXDOMAIN (the response is NOERROR,
   §3.3); NXNAME is never a question to answer, `NxnameQuery` carries EDE 30 (§3.5). A proof over a next closer
   name that an opt-out NSEC3 covers is `Proof::opt_out` (RFC 5155 §9.2: the name may be an unsigned delegation, so
-  no AD; Unbound does the same): set for a name error, wildcard no data and wildcard answer, never for a name the
+  no AD; Unbound does the same): set for a name error, wildcard no data, wildcard answer and absent name, never for a name the
   records match. A DS question whose next closer name is in an opt-out span is an `InsecureDelegation` even when the
   response also proves the wildcard absent. Tests: RFC 4035 Appendix B (the Appendix A zone, in `testdata/zones/`),
   RFC 5155 Appendix B, RFC 6840 §4, RFC 9276, RFC 9824, and every negative capture of `testdata/dnssec/`; the proptests
   check that against a whole NSEC or NSEC3 chain each name or hash is matched or covered by exactly one record. Fuzz
-  target `denial`: any records and question through `prove` and `prove_wildcard_answer` under every ancestor of the
-  name as the apex.
+  target `denial`: any records and question through `prove`, `prove_wildcard_answer` and `prove_absent` under every
+  ancestor of the name as the apex.
 - D75 (amends D69; amended by D86, D106, D176) The validator is `dedens_dnssec::Validator`, sans-IO:
   `Validator::new(TrustAnchors, Limits)` (shared, `Clone`, `Send + Sync`) and `start(question, response, now) ->
   Validation` for the final answer to a question, `start_referral` for a referral. The caller drives a `Validation`:
@@ -382,7 +384,22 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   nothing) and a forged signer cannot turn bogus into insecure. Signatures are grouped by owner and type
   covered once per response, and the first bogus `RRset` ends the check, so junk costs no more than its size. It
   costs one DS question per label below the last zone, which the key cache (D86) pays once; an IPv6 reverse name
-  of 34 labels (a real capture, `ip6_ptr`) takes about 40 questions and 80 signature checks. A DS RRset is verified by the parent's keys and then
+  of 34 labels (a real capture, `ip6_ptr`) takes about 40 questions and 80 signature checks. But a name the
+  response's own denial proves absent is no cut, nor any name below it, and its DS is not asked: before the DS
+  question of a label, the NSEC and NSEC3 records of the response's authority section signed by the parent's apex
+  are verified with the parent's keys and handed to `prove_absent` (D74); a proof that does not hold, or an opt-out
+  span (the name may be an unsigned delegation, RFC 5155 §9.2), asks the DS as before. A wildcard answer carries
+  such a proof of its next closer name (RFC 4035 §5.3.4), so a name under a wildcard costs no DS question once its
+  zone's keys are known: the comparison's `dnssec` shape (unique names under the root's wildcard) went from one DS
+  question per name (1.34 counted) and about six signature checks to none and two (D183). Sound because the walk
+  came down through the labels above, each proven no cut or settled as the apex, so a name in the parent's zone
+  that does not exist owns no NS, and an NSEC never covers a name below a delegation or DNAME (RFC 6840 §4.1); the
+  records are verified with the same keys and window as any record of the zone, so an attacker gets nothing a
+  replayed, still-valid denial of the zone would not give it (RFC 8198 makes the same bet, Unbound walks to the
+  signer and asks no DS at all), and a forged or foreign denial fails its signature or comes from another zone
+  and is not read (then the verdict makes it bogus). The proof only shortcuts to no cut, never to insecure, and it
+  is settled and kept in the key cache as any no-cut name, with the least of the proof's and the evidence's TTL
+  (D86). Each denial `RRset` of the response is checked once though the walk and the verdict both read it. A DS RRset is verified by the parent's keys and then
   vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
   delegation (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). A DS question at a
   name that is a CNAME (or below a DNAME, or a wildcard CNAME) gets the CNAME: if it verifies, the name is no cut.
@@ -421,7 +438,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   agreeing: 8.8.8.8 answers SERVFAIL (EDE 12) for the DS of `wildcard-test.internet.nl`, whose proof `delv` and
   1.1.1.1 and 9.9.9.9 (`ad`) accept, as the validator does (RFC 4035 §3.1.3.4). Tests: `tests/validator.rs`, a scripted caller that
   answers from the captures at `captured_at`: every capture with the verdict of its README, forged referrals,
-  signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation. Fuzz target
+  signers, rcodes, authority records, CNAME and DNAME hops, DS denials, mixed-case names, truncation, a denial
+  stretched or of another zone added to end a walk early. Fuzz target
   `validate`: any bytes as the response, its questions answered from the captured chains, whole, cut or with a bit
   flipped; seeded by the captures.
 - D77 (amends D41, D43, D45; builds on D75; amended by D86, D90, D93, D106, D114, D117, D124, D184) A forward stage validates with `dnssec: validate` (default

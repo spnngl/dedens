@@ -149,9 +149,9 @@ pub fn rrsig_verify(data: &[u8]) {
 }
 
 /// The NSEC and NSEC3 records of a message, or of a zone file, as the proof of denial of existence of a question
-/// the message asks, or of a name the records are about: `prove` and `prove_wildcard_answer` under every ancestor
-/// of the name as the apex, so that records of any zone, shape and parameters reach every path. Whatever the
-/// records, the functions answer, and a proof lasts as long as one of the records does (RFC 9077 §3).
+/// the message asks, or of a name the records are about: `prove`, `prove_wildcard_answer` and `prove_absent` under
+/// every ancestor of the name as the apex, so that records of any zone, shape and parameters reach every path.
+/// Whatever the records, the functions answer, and a proof lasts as long as one of the records does (RFC 9077 §3).
 ///
 /// # Panics
 ///
@@ -219,6 +219,13 @@ pub fn denial(data: &[u8]) {
                 &apex,
                 &question.name,
                 labels,
+                &records,
+                MaxIterations::default(),
+                &mut Budget::default(),
+            ),
+            denial::prove_absent(
+                &apex,
+                &question.name,
                 &records,
                 MaxIterations::default(),
                 &mut Budget::default(),

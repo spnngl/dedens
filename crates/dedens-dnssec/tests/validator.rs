@@ -1421,15 +1421,13 @@ fn the_depth_is_counted_from_the_anchor_whatever_the_order() {
 // What the walk asks, and what a response may hold besides its answer.
 
 #[test]
-fn the_walk_asks_the_ds_of_an_empty_non_terminal_a_cname_and_a_wildcard() {
+fn the_walk_asks_the_ds_of_an_empty_non_terminal_and_a_cname() {
     // The DS of a name that has none is answered as the name is: no data at an empty non-terminal, the CNAME at
-    // a CNAME's owner, the wildcard's no data at a name a wildcard matches (RFC 4035 §3.1.4.1, RFC 6840 §4.3).
+    // a CNAME's owner (RFC 4035 §3.1.4.1, RFC 6840 §4.3).
     let script = Script::new();
     for (id, ask) in [
         ("ent_nsec", "_tcp.nlnetlabs.nl. DS"),
         ("cname_cross_zone", "www.icann.org. DS"),
-        ("wildcard_answer", "wildcard-test.sidnlabs.nl. DS"),
-        ("wildcard_answer_nsec", "wildcard-test.internet.nl. DS"),
     ] {
         let (verdict, asked) =
             Script::drive(&Script::validator(), &response(id), captured_at(), |ask| {
@@ -1440,6 +1438,99 @@ fn the_walk_asks_the_ds_of_an_empty_non_terminal_a_cname_and_a_wildcard() {
             asked.iter().any(|a| a == ask),
             "{id} did not ask {ask}: {asked:?}"
         );
+    }
+}
+
+#[test]
+fn a_name_the_response_proves_absent_is_no_cut() {
+    // A wildcard answer proves its next closer name absent (RFC 4035 §5.3.4, RFC 5155 §8.8), and a name that does
+    // not exist is no zone cut: the walk asks no DS of it, nor of a name below it (D75).
+    let script = Script::new();
+    for (id, unasked) in [
+        ("wildcard_answer", "wildcard-test.sidnlabs.nl. DS"),
+        ("wildcard_answer_nsec", "wildcard-test.internet.nl. DS"),
+    ] {
+        let (verdict, asked) =
+            Script::drive(&Script::validator(), &response(id), captured_at(), |ask| {
+                script.answer(ask)
+            });
+        assert!(secure(&verdict), "{id}: {verdict:?}");
+        assert!(!asked.iter().any(|a| a == unasked), "{id}: {asked:?}");
+    }
+    // With the zone's keys known, the answer costs its two signatures, the answer's and the NSEC3's, each checked
+    // once though both the walk and the verdict read the NSEC3, and no question.
+    let validator = Script::validator();
+    let keys = script.run(&validator, &response("sidnlabs_nl_dnskey"), captured_at());
+    assert!(secure(&keys), "{keys:?}");
+    let wildcard = response("wildcard_answer");
+    let question = wildcard.questions.first().expect("a question").clone();
+    let mut validation = validator.start(&question, &wildcard, u64::from(captured_at()));
+    let verdict = match validation.step() {
+        Next::Done(verdict) => verdict,
+        Next::Ask(ask) => panic!("asks {ask:?}"),
+    };
+    assert!(secure(&verdict), "{verdict:?}");
+    let cost = validation.cost();
+    assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
+}
+
+#[test]
+fn an_opt_out_span_ends_no_walk() {
+    // The next closer name of `wildcard-test.ph` is covered by an opt-out span: it may be an unsigned delegation
+    // (RFC 5155 §9.2), so the walk asks its DS, and the answer is insecure.
+    let script = Script::new();
+    let (verdict, asked) = Script::drive(
+        &Script::validator(),
+        &response("wildcard_answer_optout"),
+        captured_at(),
+        |ask| script.answer(ask),
+    );
+    assert!(
+        matches!(
+            verdict,
+            Verdict::Insecure {
+                reason: InsecureReason::OptOut
+            }
+        ),
+        "{verdict:?}"
+    );
+    assert!(
+        asked.iter().any(|a| a == "wildcard-test.ph. DS"),
+        "{asked:?}"
+    );
+}
+
+#[test]
+fn a_denial_the_zone_did_not_sign_ends_no_walk() {
+    // An attacker adds to the answer of `nlnetlabs.nl` a denial meant to end the walk above the signed zone `nl`,
+    // so that its keys and DS are not asked: the root's real NSEC of `jm.` stretched to `nm.`, over `nl.`, whose
+    // signature no longer fits; the NSEC3 of `sidnlabs.nl`, real but of another zone. The walk asks the DS of
+    // each zone as without them, and the forged NSEC makes the response bogus (RFC 4035 §5.5).
+    let script = Script::new();
+    let stretched: Vec<Record<'static>> = response("jm_ds")
+        .authority
+        .into_iter()
+        .filter_map(|mut record| match record.data() {
+            RData::Nsec(nsec) => {
+                record.rdata = WireRdata::new(&RData::Nsec(Nsec {
+                    next: name("nm"),
+                    types: nsec.types.clone().into_owned(),
+                }));
+                Some(record)
+            }
+            RData::Rrsig(rrsig) if rrsig.type_covered == RecordType::NSEC => Some(record),
+            _ => None,
+        })
+        .collect();
+    let other_zone: Vec<Record<'static>> = response("wildcard_answer").authority;
+    for (added, ask) in [(stretched, "nl. DS"), (other_zone, "nlnetlabs.nl. DS")] {
+        let mut forged = response("alg8_a");
+        forged.authority.extend(added);
+        let (verdict, asked) = Script::drive(&Script::validator(), &forged, captured_at(), |ask| {
+            script.answer(ask)
+        });
+        assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+        assert!(asked.iter().any(|a| a == ask), "{ask}: {asked:?}");
     }
 }
 

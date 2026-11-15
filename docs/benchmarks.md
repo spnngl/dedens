@@ -964,6 +964,28 @@ nothing measurable. The absolute figures are those of a slow state of the machin
 table above (4.6 µs warm); that table is the figure of a quiet machine and is not redone. `serve_warm` did the same:
 both builds showed the two modes.
 
+`validate_wildcard_name`: the captured `wildcard_answer` (`wildcard-test.sidnlabs.nl` MX, a wildcard expansion
+under `sidnlabs.nl`, ECDSAP256SHA256, one NSEC3 proving the next closer name absent) by a validator whose key cache
+holds the chain (`sidnlabs_nl_dnskey` validated first, out of the timing), each sample a fresh validator: the shape
+of the comparison's `dnssec` mode, a name never seen under a wildcard of a zone whose keys are known. Before D75's
+shortcut, the walk asked the DS of `wildcard-test.sidnlabs.nl` and checked its denial (SOA and three NSEC3, each
+signed); after, the answer's own NSEC3 proves the name absent and no cut: two checks, no question. The builds before
+and after, copied out of `cargo bench --no-run`, alternated three rounds each in one session (2026-11-15, the
+machine busy with other builds). µs:
+
+| Measure | Before | After |
+|---|---|---|
+| `validate_wildcard_name` fastest, 3 rounds | 178.2-179.2 | 59.5-60.4 |
+| `validate_wildcard_name` median, 3 rounds | 188-446 | 60.7-69.0 |
+| `validate_cold` t=1 fastest, 2 rounds | 109.3, 111.0 | 107.4, 111.4 |
+| `validate_warm` t=1 fastest, 2 rounds | 4.67, 13.2 | 13.2, 4.58 |
+
+A third of the time, the two signatures of the answer and the NSEC3 at about 27 µs each (D71's table) and the rest
+little; the medians of the build before swing with the machine, its fastest samples do not. `validate_cold` and
+`validate_warm` (`alg8_a`, no denial in the answer) do not move: the shortcut reads the authority section only when
+it holds a denial. On the VPS's Haswell a P-256 check is about 80 µs, so the name goes from about 530 µs of checks to
+160.
+
 ## DNSSEC cost limits (D77)
 
 `benches/dnssec.rs`, `serve_cold`, `serve_warm` and `serve_shed`: one uncached client query of the captured `alg8_a`

@@ -2,8 +2,9 @@
 //! (RFC 4035 §5.4, RFC 5155 §8, RFC 6840 §4, RFC 9824).
 //!
 //! Pure set logic, no signatures and no I/O. [`prove`] answers a question that got a name error, no data, or a
-//! referral; [`prove_wildcard_answer`] answers one that got a wildcard expansion. Both return the [`Fact`] proven
-//! and the TTL the proof may be cached for, or why nothing is proven.
+//! referral; [`prove_wildcard_answer`] answers one that got a wildcard expansion; [`prove_absent`] says whether a
+//! name is not in the zone. Each returns the [`Fact`] proven and the TTL the proof may be cached for, or why nothing
+//! is proven.
 //!
 //! What the caller owes, as this module trusts it:
 //!
@@ -54,6 +55,9 @@ pub enum Fact {
     /// The name does not exist, so the wildcard the answer was expanded from is the closest match
     /// (RFC 4035 §5.3.4, RFC 5155 §8.8).
     WildcardAnswer,
+    /// The name does not exist, not even as an empty non-terminal: no record of any type is at it, nor a
+    /// delegation (RFC 4035 §5.4, RFC 5155 §8.8). [`prove_absent`] proves it, and says nothing of wildcards.
+    Absent,
     /// The name is a delegation with no DS: the child zone is insecure, by an NSEC or NSEC3 for the name, or an
     /// opt-out NSEC3 over it (RFC 4035 §5.2, RFC 5155 §8.6, §8.9, RFC 6840 §4.4).
     InsecureDelegation,
@@ -152,8 +156,9 @@ pub enum Unproven {
     /// The RRSIG's label count leaves no label for a wildcard to have replaced (RFC 4035 §5.3.4).
     #[error("the answer is not a wildcard expansion")]
     NotExpanded,
-    /// The name that a wildcard should not have been bypassed for exists (RFC 5155 §8.8).
-    #[error("a name closer than the wildcard exists")]
+    /// The name that a wildcard should not have been bypassed for, or the one asked absent, exists (RFC 5155
+    /// §8.8).
+    #[error("the name exists")]
     CloserNameExists,
 }
 
@@ -294,8 +299,35 @@ pub fn prove_wildcard_answer(
     }
     // The name one label below the wildcard's parent: the one that, existing, would have been the answer.
     let next_closer = names::suffix(qname, labels + 1)?;
+    let proof = prove_absent(apex, &next_closer, records, max, budget)?;
+    Ok(Proof {
+        fact: Fact::WildcardAnswer,
+        ..proof
+    })
+}
+
+/// What `records` prove about `name`: [`Fact::Absent`] when it does not exist in the zone `apex`, not even as an
+/// empty non-terminal (RFC 4035 §5.4, RFC 5155 §8.8, the proof of a wildcard answer's next closer name). Under an
+/// opt-out span the name may still be an insecure delegation: [`Proof::opt_out`] says so (RFC 5155 §9.2).
+///
+/// The caller owes that no name between `apex` and `name` is a zone cut: the records of `apex` say nothing below
+/// one (RFC 6840 §4.1).
+///
+/// # Errors
+///
+/// [`Unproven`] with the reason the records prove nothing; [`Unproven::OutsideZone`] for `name` not below `apex`.
+pub fn prove_absent(
+    apex: &Name<'_>,
+    name: &Name<'_>,
+    records: &[Record<'_>],
+    max: MaxIterations,
+    budget: &mut Budget,
+) -> Result<Proof, Unproven> {
+    if name == apex || !name.is_within(apex) {
+        return Err(Unproven::OutsideZone);
+    }
     match Evidence::of(apex, records, max)? {
-        Evidence::Nsec(links) => nsec::prove_wildcard_answer(&links, &next_closer),
-        Evidence::Nsec3(chain) => nsec3::prove_wildcard_answer(&chain, &next_closer, budget),
+        Evidence::Nsec(links) => nsec::prove_absent(&links, name),
+        Evidence::Nsec3(chain) => nsec3::prove_absent(&chain, name, budget),
     }
 }

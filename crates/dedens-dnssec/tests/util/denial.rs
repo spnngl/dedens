@@ -54,6 +54,21 @@ pub(crate) fn prove_wildcard(
     )
 }
 
+/// Asks for the proof that `qname` does not exist in the zone `apex`.
+pub(crate) fn prove_absent(
+    apex: &str,
+    qname: &str,
+    records: &[Record<'static>],
+) -> Result<Proof, Unproven> {
+    denial::prove_absent(
+        &name(apex),
+        &name(qname),
+        records,
+        MaxIterations::default(),
+        &mut Budget::default(),
+    )
+}
+
 /// An NSEC record of the example zone, `owner` to `next`, with the types of `types`.
 pub(crate) fn nsec(owner: &str, next: &str, types: &[RecordType]) -> Record<'static> {
     let data = Nsec {
