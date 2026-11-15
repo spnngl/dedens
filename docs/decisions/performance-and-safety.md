@@ -287,3 +287,30 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   and ODoH: a crate of half a binary); a library of the parser modules alone (the same reach, each item it holds
   made `pub` for the binary); a `fuzz` feature gating the two entries (a feature `just hack` builds in every
   combination, for two functions).
+- D183 (builds on D14, D138) `dedensd` is measured against TelltaleDNS, Unbound and CoreDNS by one harness,
+  `just bench-compare <mode> [cores]` (`crates/dedens-bench/dnsperf/compare.sh`, its measuring half `compare.py`),
+  on Linux, its numbers in `docs/benchmarks.md` ("Against TelltaleDNS, Unbound and CoreDNS") with each run's JSON
+  in `docs/comparison/results/`. Fairness rules:
+  - Same work: every server forwards to one neutral upstream, Knot DNS serving a root zone of one wildcard (signed
+    with ECDSA P-256 and NSEC3 without iterations for `dnssec`), so no server recurses or reaches the Internet; the
+    queries are TelltaleDNS's own corpora (`bench/corpus.py` at its tag, hashes in `compare/corpora.sha256`), the
+    blocklist the first million names of a pinned HaGeZi list.
+  - Same versions for a session: each the last tag, built from source by the script (the working tree's
+    `dedensd`), raised by hand before a run, never between runs; the JSON records them, the host and the configs'
+    hashes.
+  - Same machine share: each server alone in its container on its own cores (threads set to that count),
+    dnsperf and Knot on others, host networking; `taskset` where rootless podman has no `cpuset`, which the JSON
+    names.
+  - Two configurations each: shipped (as its project ships it) and lean (what the others lack turned off:
+    logs, metrics, APIs), so neither a default nor a tuning decides alone.
+  - Right answers first: a server fails the run unless it answers the check pass with the mode's rcode, nothing
+    lost, and a sample equal to Knot's (DNSSEC: AD set); a server answering SERVFAIL (`broken`) must fail it.
+  - A run is void when something other than the server limits it: Knot or, at saturation, dnsperf over 90% busy, a
+    held rate 1% short, 1% lost or of another rcode; a saturation run losing 1% is rerun 10% lower, twice at most.
+  - Rounds alternate the servers' order; medians of the valid runs, with their range; latency and CPU a query
+    compared at one common rate (half the slowest median), and at half each server's own. An A/A run (each server
+    twice) gives the spread under which a difference is noise.
+  Rejected: TelltaleDNS's `bench/run.sh` (one target, its own corpora and a fixed rate; kept as `crosscheck`);
+  public resolvers or recursion as upstream (the Internet's latency and its changes measured, not the servers);
+  one tuned configuration each (who tunes decides the outcome); a single run per server (±30% between sessions,
+  `crates/dedens-bench/AGENTS.md`).
