@@ -1,0 +1,2261 @@
+{
+ "mode": "tcp",
+ "time": "2026-11-15T11:02:49Z",
+ "versions": {
+  "telltale": "0.6.0",
+  "unbound": "1.26.2",
+  "coredns": "1.15.0",
+  "knot": "3.6.2"
+ },
+ "host": {
+  "kernel": "6.12.0-211.74.2.el10_2.x86_64",
+  "cpu": "Intel Core Processor (Haswell, no TSX)",
+  "cores": 6
+ },
+ "engine": "podman version 5.8.2",
+ "pinning": "taskset",
+ "servers": [
+  "dedensd",
+  "telltale",
+  "unbound",
+  "coredns"
+ ],
+ "config_names": [
+  "lean",
+  "shipped"
+ ],
+ "cpus": {
+  "server": "0-2",
+  "knot": "5",
+  "loader": "3-4"
+ },
+ "rounds": 5,
+ "duration_s": 10,
+ "outstanding": 500,
+ "configs": {
+  "coredns-shipped.Corefile": "97a543189d7ccb18d85f0fdb70cd78fe4b5332c2cffe69e9d9582724255825c5",
+  "coredns-lean.Corefile": "24ed91880f50eb793ef2eb67049c8fd4ed9de243064def0ede20f0cedcaabd6d",
+  "dedensd.yaml": "b97733207dba7564e87bded48c6c783b6dfff9438292e3160641a3af03ffccb4",
+  "telltale-lean.toml": "ca5d1f38a7aa449d1da970406528cb1446e75760510986ee04cfad9432d50cc1",
+  "telltale-shipped.toml": "8bee35474a6ebfa723ba1980759cb6671b21b68b30634160b2feab2cfec456de",
+  "unbound.conf": "b890b86396b1e4229b1368991695a4fad3383336c994a0c59439cf370b1194fa"
+ },
+ "corpora": {
+  "cache-hot.txt": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f"
+ },
+ "starts": [
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 6.569195,
+   "idle_mib": 17.07421875,
+   "driver": "io_uring"
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 9.654584,
+   "idle_mib": 38.78515625
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 10.339824,
+   "idle_mib": 33.1796875
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 17.220913,
+   "idle_mib": 5.22265625
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 38.851238,
+   "idle_mib": 12.609375
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 35.101645,
+   "idle_mib": 10.59765625
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 33.578326,
+   "idle_mib": 10.578125
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 34.987269,
+   "idle_mib": 10.5625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 16.930597,
+   "idle_mib": 5.23046875
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 11.611954,
+   "idle_mib": 30.5078125
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 9.500085,
+   "idle_mib": 32.625
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 9.439775,
+   "idle_mib": 17.08203125,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 8.044319,
+   "idle_mib": 17.078125,
+   "driver": "io_uring"
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 11.912481,
+   "idle_mib": 36.28515625
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 10.620585,
+   "idle_mib": 33.02734375
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 19.096713,
+   "idle_mib": 5.19921875
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 39.826325,
+   "idle_mib": 10.56640625
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 37.465598,
+   "idle_mib": 12.65234375
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 33.031356,
+   "idle_mib": 10.6328125
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 39.121392,
+   "idle_mib": 10.58984375
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 19.191483,
+   "idle_mib": 5.23828125
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 12.864999,
+   "idle_mib": 33.31640625
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 8.740841,
+   "idle_mib": 32.25390625
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 8.202682,
+   "idle_mib": 17.0703125,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 7.142731,
+   "idle_mib": 17.07421875,
+   "driver": "io_uring"
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 12.557127,
+   "idle_mib": 41.5234375
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 11.679385,
+   "idle_mib": 34.5625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 15.456012,
+   "idle_mib": 5.1953125
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 41.705193,
+   "idle_mib": 10.58984375
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 34.876612,
+   "idle_mib": 10.61328125
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "start_ms": 9.386734,
+   "idle_mib": 17.0625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "start_ms": 10.307065,
+   "idle_mib": 32.1796875
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "start_ms": 9.344641,
+   "idle_mib": 32.67578125
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "start_ms": 16.779104,
+   "idle_mib": 5.1953125
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "start_ms": 37.270085,
+   "idle_mib": 10.6171875
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "start_ms": 47.477879,
+   "idle_mib": 10.6328125
+  }
+ ],
+ "checks": [
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  },
+  {
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {}
+  }
+ ],
+ "runs": [
+  {
+   "sent": 5664226,
+   "completed": 5664226,
+   "lost": 0,
+   "qps": 566395.922752,
+   "seconds": 10.000471,
+   "avg_ms": 0.28800000000000003,
+   "rcodes": {
+    "NOERROR": 5664226
+   },
+   "p99_ms": 1.599,
+   "p99.9_ms": 4.607,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 3.016156311559602,
+   "loader_busy": 0.841113225399688,
+   "knot_busy": 0.00033661313154431297,
+   "loaded_mib": 22.8359375,
+   "peak_mib": 29.265625,
+   "void": []
+  },
+  {
+   "sent": 2831520,
+   "completed": 2831520,
+   "lost": 0,
+   "qps": 283149.366711,
+   "seconds": 10.000093,
+   "avg_ms": 0.41100000000000003,
+   "rcodes": {
+    "NOERROR": 2831520
+   },
+   "p99_ms": 2.751,
+   "p99.9_ms": 6.527,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "half",
+   "rate": 283197.961376,
+   "server_cpu_us_per_query": 5.046037817144149,
+   "loader_busy": 0.8233197038311239,
+   "knot_busy": 0.00026738971590809505,
+   "loaded_mib": 22.9609375,
+   "peak_mib": 29.69140625,
+   "void": []
+  },
+  {
+   "sent": 1466059,
+   "completed": 1466059,
+   "lost": 0,
+   "qps": 146535.650809,
+   "seconds": 10.004794,
+   "avg_ms": 3.144,
+   "rcodes": {
+    "NOERROR": 1466059
+   },
+   "p99_ms": 14.335,
+   "p99.9_ms": 21.503,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 12.014461218818616,
+   "loader_busy": 0.5397426777940628,
+   "knot_busy": 0.00035205575087828586,
+   "loaded_mib": 48.47265625,
+   "peak_mib": 66.296875,
+   "void": []
+  },
+  {
+   "sent": 732670,
+   "completed": 732670,
+   "lost": 0,
+   "qps": 73266.333276,
+   "seconds": 10.000091,
+   "avg_ms": 0.7060000000000001,
+   "rcodes": {
+    "NOERROR": 732670
+   },
+   "p99_ms": 4.863,
+   "p99.9_ms": 12.286999999999999,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "half",
+   "rate": 73267.8254045,
+   "server_cpu_us_per_query": 20.084085604706075,
+   "loader_busy": 0.7546146595391772,
+   "knot_busy": 0.00022600860297127706,
+   "loaded_mib": 48.3359375,
+   "peak_mib": 66.296875,
+   "void": []
+  },
+  {
+   "sent": 1388015,
+   "completed": 1388015,
+   "lost": 0,
+   "qps": 138759.816551,
+   "seconds": 10.003004,
+   "avg_ms": 3.378,
+   "rcodes": {
+    "NOERROR": 1388015
+   },
+   "p99_ms": 16.127,
+   "p99.9_ms": 21.503,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 13.24455211218899,
+   "loader_busy": 0.5007664156511037,
+   "knot_busy": 0.0003200644387662869,
+   "loaded_mib": 46.26953125,
+   "peak_mib": 77.39453125,
+   "void": []
+  },
+  {
+   "sent": 693790,
+   "completed": 693790,
+   "lost": 0,
+   "qps": 69378.777988,
+   "seconds": 10.000032,
+   "avg_ms": 0.8130000000000001,
+   "rcodes": {
+    "NOERROR": 693790
+   },
+   "p99_ms": 4.991,
+   "p99.9_ms": 12.031,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "half",
+   "rate": 69379.9082755,
+   "server_cpu_us_per_query": 21.228717623488375,
+   "loader_busy": 0.7506674559298895,
+   "knot_busy": 0.00036417386294843534,
+   "loaded_mib": 46.0390625,
+   "peak_mib": 80.51171875,
+   "void": []
+  },
+  {
+   "sent": 1011607,
+   "completed": 1011607,
+   "lost": 0,
+   "qps": 100747.514294,
+   "seconds": 10.041012,
+   "avg_ms": 1.565,
+   "rcodes": {
+    "NOERROR": 1011607
+   },
+   "p99_ms": 9.215,
+   "p99.9_ms": 16.895,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.416248602471118,
+   "loader_busy": 0.4919393847820507,
+   "knot_busy": 0.00029470739584689645,
+   "loaded_mib": 11.62890625,
+   "peak_mib": 13.19921875,
+   "void": []
+  },
+  {
+   "sent": 503730,
+   "completed": 503730,
+   "lost": 0,
+   "qps": 50251.231217,
+   "seconds": 10.024232,
+   "avg_ms": 0.914,
+   "rcodes": {
+    "NOERROR": 503730
+   },
+   "p99_ms": 6.015000000000001,
+   "p99.9_ms": 19.455,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "half",
+   "rate": 50373.757147,
+   "server_cpu_us_per_query": 15.09082246441546,
+   "loader_busy": 0.6228888065894608,
+   "knot_busy": 0.00024413106068377934,
+   "loaded_mib": 11.62890625,
+   "peak_mib": 13.19921875,
+   "void": []
+  },
+  {
+   "sent": 1044227,
+   "completed": 1044227,
+   "lost": 0,
+   "qps": 104357.945895,
+   "seconds": 10.006205,
+   "avg_ms": 4.637,
+   "rcodes": {
+    "NOERROR": 1044227
+   },
+   "p99_ms": 23.039,
+   "p99.9_ms": 31.743000000000002,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 19.440853377665967,
+   "loader_busy": 0.5534853256676626,
+   "knot_busy": 0.00031669707825508184,
+   "loaded_mib": 26.87890625,
+   "peak_mib": 31.046875,
+   "void": []
+  },
+  {
+   "sent": 520946,
+   "completed": 520946,
+   "lost": 0,
+   "qps": 52093.308086,
+   "seconds": 10.000248,
+   "avg_ms": 0.898,
+   "rcodes": {
+    "NOERROR": 520946
+   },
+   "p99_ms": 11.007,
+   "p99.9_ms": 29.183,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "half",
+   "rate": 52178.9729475,
+   "server_cpu_us_per_query": 27.203854142271943,
+   "loader_busy": 0.7921061104256246,
+   "knot_busy": 0.0002304804507157107,
+   "loaded_mib": 26.7890625,
+   "peak_mib": 31.046875,
+   "void": []
+  },
+  {
+   "sent": 827284,
+   "completed": 827284,
+   "lost": 0,
+   "qps": 82679.519868,
+   "seconds": 10.005912,
+   "avg_ms": 5.881,
+   "rcodes": {
+    "NOERROR": 827284
+   },
+   "p99_ms": 24.063000000000002,
+   "p99.9_ms": 36.863,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 25.538442662979097,
+   "loader_busy": 0.5196272295618948,
+   "knot_busy": 0.020915886900994534,
+   "loaded_mib": 27.6015625,
+   "peak_mib": 30.359375,
+   "void": []
+  },
+  {
+   "sent": 411417,
+   "completed": 411417,
+   "lost": 0,
+   "qps": 41140.922437,
+   "seconds": 10.000189,
+   "avg_ms": 0.937,
+   "rcodes": {
+    "NOERROR": 411417
+   },
+   "p99_ms": 13.566999999999998,
+   "p99.9_ms": 45.055,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "half",
+   "rate": 41339.759934,
+   "server_cpu_us_per_query": 35.88962293731178,
+   "loader_busy": 0.7911662890293285,
+   "knot_busy": 0.01075709061669066,
+   "loaded_mib": 27.140625,
+   "peak_mib": 30.8984375,
+   "void": []
+  },
+  {
+   "sent": 868515,
+   "completed": 868515,
+   "lost": 0,
+   "qps": 86775.137879,
+   "seconds": 10.0088,
+   "avg_ms": 5.625,
+   "rcodes": {
+    "NOERROR": 868515
+   },
+   "p99_ms": 22.526999999999997,
+   "p99.9_ms": 31.743000000000002,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 24.855776814447648,
+   "loader_busy": 0.5454025058159427,
+   "knot_busy": 0.021920015676041377,
+   "loaded_mib": 26.6640625,
+   "peak_mib": 30.43359375,
+   "void": []
+  },
+  {
+   "sent": 433855,
+   "completed": 433855,
+   "lost": 0,
+   "qps": 43385.096519,
+   "seconds": 10.000093,
+   "avg_ms": 0.713,
+   "rcodes": {
+    "NOERROR": 433855
+   },
+   "p99_ms": 7.935,
+   "p99.9_ms": 16.383000000000003,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "half",
+   "rate": 43387.5689395,
+   "server_cpu_us_per_query": 34.56064583789515,
+   "loader_busy": 0.8112008819718524,
+   "knot_busy": 0.011026019016543938,
+   "loaded_mib": 26.45703125,
+   "peak_mib": 30.43359375,
+   "void": []
+  },
+  {
+   "sent": 1028333,
+   "completed": 1028333,
+   "lost": 0,
+   "qps": 102763.277103,
+   "seconds": 10.006814,
+   "avg_ms": 4.704,
+   "rcodes": {
+    "NOERROR": 1028333
+   },
+   "p99_ms": 23.039,
+   "p99.9_ms": 32.254999999999995,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 19.91524243605914,
+   "loader_busy": 0.5494983485070662,
+   "knot_busy": 0.000378416782689846,
+   "loaded_mib": 27.0703125,
+   "peak_mib": 31.19140625,
+   "void": []
+  },
+  {
+   "sent": 513810,
+   "completed": 513810,
+   "lost": 0,
+   "qps": 51380.445091,
+   "seconds": 10.000108,
+   "avg_ms": 0.86,
+   "rcodes": {
+    "NOERROR": 513810
+   },
+   "p99_ms": 10.495000000000001,
+   "p99.9_ms": 26.110999999999997,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "half",
+   "rate": 51381.6385515,
+   "server_cpu_us_per_query": 27.33416827231856,
+   "loader_busy": 0.7672163733615408,
+   "knot_busy": 0.00030599501538468565,
+   "loaded_mib": 25.2421875,
+   "peak_mib": 31.19140625,
+   "void": []
+  },
+  {
+   "sent": 1067325,
+   "completed": 1067325,
+   "lost": 0,
+   "qps": 106303.088673,
+   "seconds": 10.040395,
+   "avg_ms": 2.121,
+   "rcodes": {
+    "NOERROR": 1067325
+   },
+   "p99_ms": 9.727,
+   "p99.9_ms": 16.895,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 10.648526924788607,
+   "loader_busy": 0.4801028909109531,
+   "knot_busy": 0.0003419377380347551,
+   "loaded_mib": 11.3828125,
+   "peak_mib": 12.94140625,
+   "void": []
+  },
+  {
+   "sent": 531510,
+   "completed": 531510,
+   "lost": 0,
+   "qps": 53016.047651,
+   "seconds": 10.025455,
+   "avg_ms": 0.7969999999999999,
+   "rcodes": {
+    "NOERROR": 531510
+   },
+   "p99_ms": 4.863,
+   "p99.9_ms": 22.526999999999997,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "half",
+   "rate": 53151.5443365,
+   "server_cpu_us_per_query": 14.017113506801378,
+   "loader_busy": 0.6097087620566248,
+   "knot_busy": 0.00035999386955570134,
+   "loaded_mib": 11.37890625,
+   "peak_mib": 12.94140625,
+   "void": []
+  },
+  {
+   "sent": 1384435,
+   "completed": 1384435,
+   "lost": 0,
+   "qps": 138378.199328,
+   "seconds": 10.004719,
+   "avg_ms": 3.368,
+   "rcodes": {
+    "NOERROR": 1384435
+   },
+   "p99_ms": 15.871,
+   "p99.9_ms": 22.526999999999997,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 13.370447872236689,
+   "loader_busy": 0.49639209810773505,
+   "knot_busy": 0.0002566623273926846,
+   "loaded_mib": 45.125,
+   "peak_mib": 76.453125,
+   "void": []
+  },
+  {
+   "sent": 691890,
+   "completed": 691890,
+   "lost": 0,
+   "qps": 69188.716326,
+   "seconds": 10.000041,
+   "avg_ms": 0.735,
+   "rcodes": {
+    "NOERROR": 691890
+   },
+   "p99_ms": 4.351,
+   "p99.9_ms": 13.823,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "half",
+   "rate": 69189.099664,
+   "server_cpu_us_per_query": 20.88484585700039,
+   "loader_busy": 0.7553843611639794,
+   "knot_busy": 0.00022872689367186254,
+   "loaded_mib": 45.5625,
+   "peak_mib": 76.9140625,
+   "void": []
+  },
+  {
+   "sent": 1514299,
+   "completed": 1514299,
+   "lost": 0,
+   "qps": 151391.159002,
+   "seconds": 10.002559,
+   "avg_ms": 3.041,
+   "rcodes": {
+    "NOERROR": 1514299
+   },
+   "p99_ms": 14.591,
+   "p99.9_ms": 19.455,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.700399987056718,
+   "loader_busy": 0.5239105346693677,
+   "knot_busy": 0.0003316669852104303,
+   "loaded_mib": 42.3515625,
+   "peak_mib": 62.12890625,
+   "void": []
+  },
+  {
+   "sent": 756950,
+   "completed": 756950,
+   "lost": 0,
+   "qps": 75694.364167,
+   "seconds": 10.000084,
+   "avg_ms": 0.674,
+   "rcodes": {
+    "NOERROR": 756950
+   },
+   "p99_ms": 3.9029999999999996,
+   "p99.9_ms": 6.783,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "half",
+   "rate": 75695.579501,
+   "server_cpu_us_per_query": 18.993440782086005,
+   "loader_busy": 0.7478652701538341,
+   "knot_busy": 0.0003020988674697628,
+   "loaded_mib": 42.234375,
+   "peak_mib": 62.12890625,
+   "void": []
+  },
+  {
+   "sent": 5701601,
+   "completed": 5701601,
+   "lost": 0,
+   "qps": 570137.864623,
+   "seconds": 10.00039,
+   "avg_ms": 0.273,
+   "rcodes": {
+    "NOERROR": 5701601
+   },
+   "p99_ms": 1.055,
+   "p99.9_ms": 3.839,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 2.9869068354660384,
+   "loader_busy": 0.8349105276693406,
+   "knot_busy": 0.0004333397085511769,
+   "loaded_mib": 23.88671875,
+   "peak_mib": 30.6640625,
+   "void": []
+  },
+  {
+   "sent": 2850680,
+   "completed": 2850680,
+   "lost": 0,
+   "qps": 285064.294164,
+   "seconds": 10.00013,
+   "avg_ms": 0.378,
+   "rcodes": {
+    "NOERROR": 2850680
+   },
+   "p99_ms": 1.727,
+   "p99.9_ms": 3.6470000000000002,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "half",
+   "rate": 285068.9323115,
+   "server_cpu_us_per_query": 3.726215850253273,
+   "loader_busy": 0.8931762188142358,
+   "knot_busy": 0.00040516362957535745,
+   "loaded_mib": 23.9375,
+   "peak_mib": 30.6640625,
+   "void": []
+  },
+  {
+   "sent": 5691565,
+   "completed": 5691565,
+   "lost": 0,
+   "qps": 569132.937896,
+   "seconds": 10.000414,
+   "avg_ms": 0.29,
+   "rcodes": {
+    "NOERROR": 5691565
+   },
+   "p99_ms": 1.2149999999999999,
+   "p99.9_ms": 4.863,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 3.027680962968885,
+   "loader_busy": 0.8386241666375674,
+   "knot_busy": 0.00035513683387920417,
+   "loaded_mib": 23.3203125,
+   "peak_mib": 30.6953125,
+   "void": []
+  },
+  {
+   "sent": 2842390,
+   "completed": 2842390,
+   "lost": 0,
+   "qps": 284235.333364,
+   "seconds": 10.000129,
+   "avg_ms": 0.36000000000000004,
+   "rcodes": {
+    "NOERROR": 2842390
+   },
+   "p99_ms": 1.7910000000000001,
+   "p99.9_ms": 4.863,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "half",
+   "rate": 284566.468948,
+   "server_cpu_us_per_query": 5.525520424713005,
+   "loader_busy": 0.8420348382478542,
+   "knot_busy": 0.00034835503756261996,
+   "loaded_mib": 23.109375,
+   "peak_mib": 30.6953125,
+   "void": []
+  },
+  {
+   "sent": 1492848,
+   "completed": 1492848,
+   "lost": 0,
+   "qps": 149182.043409,
+   "seconds": 10.006888,
+   "avg_ms": 3.093,
+   "rcodes": {
+    "NOERROR": 1492848
+   },
+   "p99_ms": 14.591,
+   "p99.9_ms": 20.479,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.775234987085089,
+   "loader_busy": 0.5326497163188428,
+   "knot_busy": 0.0003092577849918592,
+   "loaded_mib": 46.5078125,
+   "peak_mib": 62.3828125,
+   "void": []
+  },
+  {
+   "sent": 745910,
+   "completed": 745910,
+   "lost": 0,
+   "qps": 74589.38141,
+   "seconds": 10.000217,
+   "avg_ms": 0.753,
+   "rcodes": {
+    "NOERROR": 745910
+   },
+   "p99_ms": 4.863,
+   "p99.9_ms": 16.127,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "half",
+   "rate": 74591.0217045,
+   "server_cpu_us_per_query": 19.210727835797883,
+   "loader_busy": 0.7369557793329448,
+   "knot_busy": 0.0002580221840227244,
+   "loaded_mib": 46.375,
+   "peak_mib": 62.3828125,
+   "void": []
+  },
+  {
+   "sent": 1304059,
+   "completed": 1304059,
+   "lost": 0,
+   "qps": 130363.922817,
+   "seconds": 10.00322,
+   "avg_ms": 3.584,
+   "rcodes": {
+    "NOERROR": 1304059
+   },
+   "p99_ms": 17.407,
+   "p99.9_ms": 25.087000000000003,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 14.193963616676854,
+   "loader_busy": 0.5082724576812918,
+   "knot_busy": 0.000351841536328162,
+   "loaded_mib": 46.2421875,
+   "peak_mib": 74.2890625,
+   "void": []
+  },
+  {
+   "sent": 651810,
+   "completed": 651810,
+   "lost": 0,
+   "qps": 65180.615434,
+   "seconds": 10.000059,
+   "avg_ms": 0.6579999999999999,
+   "rcodes": {
+    "NOERROR": 651810
+   },
+   "p99_ms": 4.223,
+   "p99.9_ms": 10.751,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "half",
+   "rate": 65181.9614085,
+   "server_cpu_us_per_query": 21.72098924533223,
+   "loader_busy": 0.7638252640870907,
+   "knot_busy": 0.0003674849656081976,
+   "loaded_mib": 46.2578125,
+   "peak_mib": 77.41796875,
+   "void": []
+  },
+  {
+   "sent": 953850,
+   "completed": 953850,
+   "lost": 0,
+   "qps": 94999.189292,
+   "seconds": 10.040612,
+   "avg_ms": 1.554,
+   "rcodes": {
+    "NOERROR": 953850
+   },
+   "p99_ms": 7.8069999999999995,
+   "p99.9_ms": 20.479,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.906360538868794,
+   "loader_busy": 0.49469653158075905,
+   "knot_busy": 0.000332027824361564,
+   "loaded_mib": 11.5546875,
+   "peak_mib": 13.10546875,
+   "void": []
+  },
+  {
+   "sent": 474968,
+   "completed": 474968,
+   "lost": 0,
+   "qps": 47307.362398,
+   "seconds": 10.040044,
+   "avg_ms": 0.593,
+   "rcodes": {
+    "NOERROR": 474968
+   },
+   "p99_ms": 4.863,
+   "p99.9_ms": 11.775,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "half",
+   "rate": 47499.594646,
+   "server_cpu_us_per_query": 14.718545249364167,
+   "loader_busy": 0.6262785398950628,
+   "knot_busy": 0.0003519550336766607,
+   "loaded_mib": 11.55078125,
+   "peak_mib": 13.10546875,
+   "void": []
+  },
+  {
+   "sent": 1056294,
+   "completed": 1056294,
+   "lost": 0,
+   "qps": 105573.931456,
+   "seconds": 10.005254,
+   "avg_ms": 4.549,
+   "rcodes": {
+    "NOERROR": 1056294
+   },
+   "p99_ms": 22.015,
+   "p99.9_ms": 32.766999999999996,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 19.388186432943858,
+   "loader_busy": 0.5542101559644351,
+   "knot_busy": 0.00038828340350552745,
+   "loaded_mib": 26.578125,
+   "peak_mib": 31.6953125,
+   "void": []
+  },
+  {
+   "sent": 527347,
+   "completed": 527347,
+   "lost": 0,
+   "qps": 52734.030278,
+   "seconds": 10.000127,
+   "avg_ms": 1.035,
+   "rcodes": {
+    "NOERROR": 527347
+   },
+   "p99_ms": 11.007,
+   "p99.9_ms": 33.791000000000004,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "half",
+   "rate": 52786.965728,
+   "server_cpu_us_per_query": 27.044957115523555,
+   "loader_busy": 0.7682517785250421,
+   "knot_busy": 0.0002578846908877861,
+   "loaded_mib": 26.765625,
+   "peak_mib": 31.75390625,
+   "void": []
+  },
+  {
+   "sent": 852138,
+   "completed": 852138,
+   "lost": 0,
+   "qps": 85162.617267,
+   "seconds": 10.00601,
+   "avg_ms": 5.759,
+   "rcodes": {
+    "NOERROR": 852138
+   },
+   "p99_ms": 24.575,
+   "p99.9_ms": 34.815,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 25.12912110479758,
+   "loader_busy": 0.5403651894598284,
+   "knot_busy": 0.02063523263881357,
+   "loaded_mib": 27.1796875,
+   "peak_mib": 31.21875,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42580.378326,
+   "seconds": 10.000146,
+   "avg_ms": 0.674,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 9.215,
+   "p99.9_ms": 23.551,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "half",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 34.9272656818769,
+   "loader_busy": 0.8054414528336344,
+   "knot_busy": 0.010739789885765088,
+   "loaded_mib": 25.96875,
+   "peak_mib": 31.36328125,
+   "void": []
+  },
+  {
+   "sent": 838117,
+   "completed": 838117,
+   "lost": 0,
+   "qps": 83758.203635,
+   "seconds": 10.006387,
+   "avg_ms": 5.835,
+   "rcodes": {
+    "NOERROR": 838117
+   },
+   "p99_ms": 25.087000000000003,
+   "p99.9_ms": 44.031,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 24.782004183186835,
+   "loader_busy": 0.5219810988043935,
+   "knot_busy": 0.020755676305416092,
+   "loaded_mib": 27.3984375,
+   "peak_mib": 31.55078125,
+   "void": []
+  },
+  {
+   "sent": 418790,
+   "completed": 418790,
+   "lost": 0,
+   "qps": 41878.438829,
+   "seconds": 10.000134,
+   "avg_ms": 0.579,
+   "rcodes": {
+    "NOERROR": 418790
+   },
+   "p99_ms": 6.911,
+   "p99.9_ms": 18.431,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "half",
+   "rate": 41879.1018175,
+   "server_cpu_us_per_query": 35.03576971751952,
+   "loader_busy": 0.8096475144311785,
+   "knot_busy": 0.010558360642184695,
+   "loaded_mib": 26.47265625,
+   "peak_mib": 31.55078125,
+   "void": []
+  },
+  {
+   "sent": 1051147,
+   "completed": 1051147,
+   "lost": 0,
+   "qps": 105075.716909,
+   "seconds": 10.00371,
+   "avg_ms": 4.590000000000001,
+   "rcodes": {
+    "NOERROR": 1051147
+   },
+   "p99_ms": 23.039,
+   "p99.9_ms": 31.743000000000002,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 19.514692997268696,
+   "loader_busy": 0.5613370364233508,
+   "knot_busy": 0.0002975144584315726,
+   "loaded_mib": 26.63671875,
+   "peak_mib": 31.6875,
+   "void": []
+  },
+  {
+   "sent": 524769,
+   "completed": 524769,
+   "lost": 0,
+   "qps": 52460.941382,
+   "seconds": 10.003042,
+   "avg_ms": 0.726,
+   "rcodes": {
+    "NOERROR": 524769
+   },
+   "p99_ms": 8.063,
+   "p99.9_ms": 20.991,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "half",
+   "rate": 52537.8584545,
+   "server_cpu_us_per_query": 27.445314033412796,
+   "loader_busy": 0.7963452230746996,
+   "knot_busy": 0.0002245489546355655,
+   "loaded_mib": 26.63671875,
+   "peak_mib": 31.6875,
+   "void": []
+  },
+  {
+   "sent": 1083441,
+   "completed": 1083441,
+   "lost": 0,
+   "qps": 107889.894334,
+   "seconds": 10.042099,
+   "avg_ms": 1.671,
+   "rcodes": {
+    "NOERROR": 1083441
+   },
+   "p99_ms": 9.471,
+   "p99.9_ms": 25.599,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.116535187425988,
+   "loader_busy": 0.4730565036958326,
+   "knot_busy": 0.00033830549231998725,
+   "loaded_mib": 11.43359375,
+   "peak_mib": 12.99609375,
+   "void": []
+  },
+  {
+   "sent": 539059,
+   "completed": 539059,
+   "lost": 0,
+   "qps": 53692.467074,
+   "seconds": 10.039751,
+   "avg_ms": 0.939,
+   "rcodes": {
+    "NOERROR": 539059
+   },
+   "p99_ms": 6.527,
+   "p99.9_ms": 24.063000000000002,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "half",
+   "rate": 53944.947167,
+   "server_cpu_us_per_query": 14.796495374346778,
+   "loader_busy": 0.6039564456635936,
+   "knot_busy": 0.00029995573297236956,
+   "loaded_mib": 11.43359375,
+   "peak_mib": 12.99609375,
+   "void": []
+  },
+  {
+   "sent": 1359770,
+   "completed": 1359770,
+   "lost": 0,
+   "qps": 135921.58477,
+   "seconds": 10.004077,
+   "avg_ms": 3.4459999999999997,
+   "rcodes": {
+    "NOERROR": 1359770
+   },
+   "p99_ms": 16.895,
+   "p99.9_ms": 22.526999999999997,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 13.58995418342808,
+   "loader_busy": 0.5060412342027053,
+   "knot_busy": 0.00027056069524920514,
+   "loaded_mib": 46.66015625,
+   "peak_mib": 70.22265625,
+   "void": []
+  },
+  {
+   "sent": 678930,
+   "completed": 678930,
+   "lost": 0,
+   "qps": 67892.422914,
+   "seconds": 10.000085,
+   "avg_ms": 0.825,
+   "rcodes": {
+    "NOERROR": 678930
+   },
+   "p99_ms": 6.015000000000001,
+   "p99.9_ms": 18.943,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "half",
+   "rate": 67960.792385,
+   "server_cpu_us_per_query": 20.854824503262485,
+   "loader_busy": 0.7703211759614442,
+   "knot_busy": 0.0002618652638848091,
+   "loaded_mib": 48.0,
+   "peak_mib": 75.77734375,
+   "void": []
+  },
+  {
+   "sent": 1492801,
+   "completed": 1492801,
+   "lost": 0,
+   "qps": 149252.383832,
+   "seconds": 10.001857,
+   "avg_ms": 3.159,
+   "rcodes": {
+    "NOERROR": 1492801
+   },
+   "p99_ms": 15.103,
+   "p99.9_ms": 22.526999999999997,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.91810830780526,
+   "loader_busy": 0.5385132377415611,
+   "knot_busy": 0.0002536489076562196,
+   "loaded_mib": 41.4140625,
+   "peak_mib": 61.94921875,
+   "void": []
+  },
+  {
+   "sent": 746260,
+   "completed": 746260,
+   "lost": 0,
+   "qps": 74624.60452,
+   "seconds": 10.000187,
+   "avg_ms": 0.732,
+   "rcodes": {
+    "NOERROR": 746260
+   },
+   "p99_ms": 5.119000000000001,
+   "p99.9_ms": 18.431,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "half",
+   "rate": 74626.191916,
+   "server_cpu_us_per_query": 19.362570685819957,
+   "loader_busy": 0.7374995464798597,
+   "knot_busy": 0.0003046014950229382,
+   "loaded_mib": 41.359375,
+   "peak_mib": 61.94921875,
+   "void": []
+  },
+  {
+   "sent": 5868946,
+   "completed": 5868946,
+   "lost": 0,
+   "qps": 586886.442278,
+   "seconds": 10.000139,
+   "avg_ms": 0.27,
+   "rcodes": {
+    "NOERROR": 5868946
+   },
+   "p99_ms": 1.439,
+   "p99.9_ms": 4.607,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 2.862154805990718,
+   "loader_busy": 0.8380449764862976,
+   "knot_busy": 0.0003617632555637764,
+   "loaded_mib": 23.3828125,
+   "peak_mib": 29.26953125,
+   "void": []
+  },
+  {
+   "sent": 2934430,
+   "completed": 2934430,
+   "lost": 0,
+   "qps": 293440.623131,
+   "seconds": 10.000081,
+   "avg_ms": 0.399,
+   "rcodes": {
+    "NOERROR": 2934430
+   },
+   "p99_ms": 2.047,
+   "p99.9_ms": 4.607,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "half",
+   "rate": 293443.221139,
+   "server_cpu_us_per_query": 4.542434476201511,
+   "loader_busy": 0.7512088110320762,
+   "knot_busy": 0.00037098604020211547,
+   "loaded_mib": 23.46875,
+   "peak_mib": 29.63671875,
+   "void": []
+  },
+  {
+   "sent": 6178492,
+   "completed": 6178492,
+   "lost": 0,
+   "qps": 617838.758525,
+   "seconds": 10.000169,
+   "avg_ms": 0.24000000000000002,
+   "rcodes": {
+    "NOERROR": 6178492
+   },
+   "p99_ms": 0.8630000000000001,
+   "p99.9_ms": 3.007,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 2.847012992814428,
+   "loader_busy": 0.8628476823439251,
+   "knot_busy": 0.0002963909139019946,
+   "loaded_mib": 23.7890625,
+   "peak_mib": 33.25,
+   "void": []
+  },
+  {
+   "sent": 3089190,
+   "completed": 3089190,
+   "lost": 0,
+   "qps": 308915.849058,
+   "seconds": 10.000102,
+   "avg_ms": 0.38,
+   "rcodes": {
+    "NOERROR": 3089190
+   },
+   "p99_ms": 2.367,
+   "p99.9_ms": 5.503,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "half",
+   "rate": 308919.3792625,
+   "server_cpu_us_per_query": 4.552701193516747,
+   "loader_busy": 0.7833213514968086,
+   "knot_busy": 0.00029397835305353684,
+   "loaded_mib": 23.84375,
+   "peak_mib": 33.25,
+   "void": []
+  },
+  {
+   "sent": 1524134,
+   "completed": 1524134,
+   "lost": 0,
+   "qps": 152375.732719,
+   "seconds": 10.002472,
+   "avg_ms": 3.045,
+   "rcodes": {
+    "NOERROR": 1524134
+   },
+   "p99_ms": 14.335,
+   "p99.9_ms": 19.455,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.773645230668695,
+   "loader_busy": 0.543777617201328,
+   "knot_busy": 0.00025675601008379737,
+   "loaded_mib": 47.796875,
+   "peak_mib": 68.27734375,
+   "void": []
+  },
+  {
+   "sent": 761870,
+   "completed": 761870,
+   "lost": 0,
+   "qps": 76186.283849,
+   "seconds": 10.000094,
+   "avg_ms": 0.7060000000000001,
+   "rcodes": {
+    "NOERROR": 761870
+   },
+   "p99_ms": 3.839,
+   "p99.9_ms": 8.447,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "half",
+   "rate": 76187.8663595,
+   "server_cpu_us_per_query": 19.06355939989762,
+   "loader_busy": 0.7626419321983491,
+   "knot_busy": 0.0003338368561699622,
+   "loaded_mib": 47.6875,
+   "peak_mib": 68.27734375,
+   "void": []
+  },
+  {
+   "sent": 1408391,
+   "completed": 1408391,
+   "lost": 0,
+   "qps": 140790.653936,
+   "seconds": 10.003441,
+   "avg_ms": 3.316,
+   "rcodes": {
+    "NOERROR": 1408391
+   },
+   "p99_ms": 15.871,
+   "p99.9_ms": 21.503,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 13.121343433748157,
+   "loader_busy": 0.5035774693905004,
+   "knot_busy": 0.0002784809452703453,
+   "loaded_mib": 42.078125,
+   "peak_mib": 73.89453125,
+   "void": []
+  },
+  {
+   "sent": 703950,
+   "completed": 703950,
+   "lost": 0,
+   "qps": 70394.394608,
+   "seconds": 10.000086,
+   "avg_ms": 0.709,
+   "rcodes": {
+    "NOERROR": 703950
+   },
+   "p99_ms": 4.351,
+   "p99.9_ms": 9.727,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "half",
+   "rate": 70395.326968,
+   "server_cpu_us_per_query": 20.717099225797288,
+   "loader_busy": 0.7645086989923954,
+   "knot_busy": 0.0002478068319370678,
+   "loaded_mib": 42.03515625,
+   "peak_mib": 73.89453125,
+   "void": []
+  },
+  {
+   "sent": 978860,
+   "completed": 978860,
+   "lost": 0,
+   "qps": 97486.374107,
+   "seconds": 10.040993,
+   "avg_ms": 1.7260000000000002,
+   "rcodes": {
+    "NOERROR": 978860
+   },
+   "p99_ms": 9.983,
+   "p99.9_ms": 19.455,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 11.749423819545186,
+   "loader_busy": 0.5002862973670892,
+   "knot_busy": 0.0002615676526383163,
+   "loaded_mib": 11.37109375,
+   "peak_mib": 12.921875,
+   "void": []
+  },
+  {
+   "sent": 487408,
+   "completed": 487408,
+   "lost": 0,
+   "qps": 48546.613546,
+   "seconds": 10.04,
+   "avg_ms": 0.731,
+   "rcodes": {
+    "NOERROR": 487408
+   },
+   "p99_ms": 3.711,
+   "p99.9_ms": 9.983,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "half",
+   "rate": 48743.1870535,
+   "server_cpu_us_per_query": 15.30910243574172,
+   "loader_busy": 0.6647781574125106,
+   "knot_busy": 0.00027838227861395865,
+   "loaded_mib": 11.37109375,
+   "peak_mib": 12.921875,
+   "void": []
+  },
+  {
+   "sent": 1056907,
+   "completed": 1056907,
+   "lost": 0,
+   "qps": 105601.097469,
+   "seconds": 10.008485,
+   "avg_ms": 4.513999999999999,
+   "rcodes": {
+    "NOERROR": 1056907
+   },
+   "p99_ms": 22.015,
+   "p99.9_ms": 30.207,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 19.489335390909513,
+   "loader_busy": 0.5449762368214534,
+   "knot_busy": 0.00033616736763758764,
+   "loaded_mib": 24.875,
+   "peak_mib": 29.9765625,
+   "void": []
+  },
+  {
+   "sent": 527919,
+   "completed": 527919,
+   "lost": 0,
+   "qps": 52791.678275,
+   "seconds": 10.000042,
+   "avg_ms": 0.8720000000000001,
+   "rcodes": {
+    "NOERROR": 527919
+   },
+   "p99_ms": 8.447,
+   "p99.9_ms": 22.526999999999997,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "half",
+   "rate": 52800.5487345,
+   "server_cpu_us_per_query": 27.205495540035496,
+   "loader_busy": 0.7775559733500673,
+   "knot_busy": 0.0003296475865809349,
+   "loaded_mib": 24.5390625,
+   "peak_mib": 29.9765625,
+   "void": []
+  },
+  {
+   "sent": 863959,
+   "completed": 863959,
+   "lost": 0,
+   "qps": 86341.45308,
+   "seconds": 10.006306,
+   "avg_ms": 5.647,
+   "rcodes": {
+    "NOERROR": 863959
+   },
+   "p99_ms": 24.063000000000002,
+   "p99.9_ms": 33.791000000000004,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 24.926991905865904,
+   "loader_busy": 0.5469455304771554,
+   "knot_busy": 0.021325726195396577,
+   "loaded_mib": 25.25390625,
+   "peak_mib": 28.61328125,
+   "void": []
+  },
+  {
+   "sent": 431700,
+   "completed": 431700,
+   "lost": 0,
+   "qps": 43169.42153,
+   "seconds": 10.000134,
+   "avg_ms": 0.665,
+   "rcodes": {
+    "NOERROR": 431700
+   },
+   "p99_ms": 7.8069999999999995,
+   "p99.9_ms": 18.431,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "half",
+   "rate": 43170.72654,
+   "server_cpu_us_per_query": 34.63012971971276,
+   "loader_busy": 0.8130772464053264,
+   "knot_busy": 0.011852703485611347,
+   "loaded_mib": 25.08203125,
+   "peak_mib": 28.61328125,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42580.459228,
+   "seconds": 10.000127,
+   "avg_ms": 0.241,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 2.431,
+   "p99.9_ms": 3.263,
+   "version": "2.14.0",
+   "label": "dedensd",
+   "server": "dedensd",
+   "template": "dedensd.yaml",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 20.7459383293018,
+   "loader_busy": 0.7676442380870855,
+   "knot_busy": 0.0003788267976330483,
+   "loaded_mib": 24.5625,
+   "peak_mib": 29.17578125,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42580.79987,
+   "seconds": 10.000047,
+   "avg_ms": 0.40499999999999997,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 3.455,
+   "p99.9_ms": 10.495000000000001,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-lean.toml",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 23.40968272234095,
+   "loader_busy": 0.7755310873271237,
+   "knot_busy": 0.0003121412306670829,
+   "loaded_mib": 45.03125,
+   "peak_mib": 59.9765625,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42580.650839,
+   "seconds": 10.000082,
+   "avg_ms": 0.379,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 2.943,
+   "p99.9_ms": 6.655,
+   "version": "2.14.0",
+   "label": "telltale",
+   "server": "telltale",
+   "template": "telltale-shipped.toml",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 25.934301683849604,
+   "loader_busy": 0.7950464815210053,
+   "knot_busy": 0.00031546448693439873,
+   "loaded_mib": 44.0390625,
+   "peak_mib": 72.8203125,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42482.521267,
+   "seconds": 10.023181,
+   "avg_ms": 0.6669999999999999,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 4.351,
+   "p99.9_ms": 26.110999999999997,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound.conf",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 15.34733096921162,
+   "loader_busy": 0.6426760826637907,
+   "knot_busy": 0.00025716487481893083,
+   "loaded_mib": 11.69140625,
+   "peak_mib": 12.99609375,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42579.952533,
+   "seconds": 10.000246,
+   "avg_ms": 0.47800000000000004,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 4.734999999999999,
+   "p99.9_ms": 20.991,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-lean.Corefile",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 32.245999389399024,
+   "loader_busy": 0.7867886449466235,
+   "knot_busy": 0.0003930051247711133,
+   "loaded_mib": 24.23828125,
+   "peak_mib": 27.99609375,
+   "void": []
+  },
+  {
+   "sent": 425810,
+   "completed": 425810,
+   "lost": 0,
+   "qps": 42580.531614,
+   "seconds": 10.00011,
+   "avg_ms": 0.661,
+   "rcodes": {
+    "NOERROR": 425810
+   },
+   "p99_ms": 7.423,
+   "p99.9_ms": 20.991,
+   "version": "2.14.0",
+   "label": "coredns",
+   "server": "coredns",
+   "template": "coredns-shipped.Corefile",
+   "kind": "common",
+   "rate": 42581.3086335,
+   "server_cpu_us_per_query": 34.954958784434375,
+   "loader_busy": 0.7998200340643928,
+   "knot_busy": 0.01148794273970601,
+   "loaded_mib": 26.4140625,
+   "peak_mib": 30.77734375,
+   "void": []
+  }
+ ],
+ "common_rate": 42581.3086335
+}
