@@ -29,10 +29,14 @@ impl Relay {
             let mut buf = Vec::with_capacity(65_535);
             loop {
                 let BufResult(received, datagram) = inbound.recv_from(buf).await;
-                let (_, from) = received.expect("a datagram");
-                heard.set(Some(from));
-                let BufResult(_, datagram) = out.send_to(datagram, to.get()).await;
-                buf = datagram;
+                // An error skips the datagram, as a lost one: a panic in this detached task would go unseen.
+                buf = match received {
+                    Ok((_, from)) => {
+                        heard.set(Some(from));
+                        out.send_to(datagram, to.get()).await.1
+                    }
+                    Err(_) => datagram,
+                };
                 buf.clear();
             }
         })
@@ -42,10 +46,9 @@ impl Relay {
             let mut buf = Vec::with_capacity(65_535);
             loop {
                 let BufResult(received, datagram) = back.recv_from(buf).await;
-                let (_, from) = received.expect("a datagram");
-                buf = match client.get() {
+                buf = match (received, client.get()) {
                     // Only the current server is heard: the one before is gone.
-                    Some(client) if from == from_server.get() => {
+                    (Ok((_, from)), Some(client)) if from == from_server.get() => {
                         front.send_to(datagram, client).await.1
                     }
                     _ => datagram,

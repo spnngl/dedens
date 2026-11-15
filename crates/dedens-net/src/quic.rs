@@ -136,6 +136,7 @@ impl QuicPool {
                         && !matches!(error, QuicError::Framing | QuicError::MessageId(_))
                         && connection.close_reason().is_some() =>
                 {
+                    heard = None;
                     let (fresh, _) = self.connection(&server).await?;
                     ask(&fresh, &framed).await
                 }

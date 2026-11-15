@@ -201,6 +201,7 @@ impl Http3Pool {
                     // The server refuses this connection's requests from now on, as it said or by closing: the
                     // retry, and the requests behind it, take another.
                     open.going_away.set(true);
+                    heard = None;
                     let (fresh, _) = self.connection(&server).await?;
                     ask(&fresh, request, limit).await
                 }
