@@ -21,6 +21,7 @@ How:
   has, "partial" says what is missing, "no" means neither code nor spec.
 - RFC rows follow [`../rfc/coverage.md`](../rfc/coverage.md), which holds dedens's status per RFC.
 - Features only. Throughput and latency against TelltaleDNS, Unbound and CoreDNS, measured by `just bench-compare`
-  ([`compare.sh`](../../crates/dedens-bench/dnsperf/compare.sh)), are to come in
-  [`../benchmarks.md`](../benchmarks.md), section "Against TelltaleDNS, Unbound and CoreDNS".
+  ([`compare.sh`](../../crates/dedens-bench/dnsperf/compare.sh), D183), are in
+  [`../benchmarks.md`](../benchmarks.md), section "Against TelltaleDNS, Unbound and CoreDNS"; the JSON of each
+  run in [`results/`](results/).
 - A newer version of either side outdates the cells: read again, and change the table above.

@@ -193,7 +193,7 @@ it, their code does not do it; "partial": what is missing follows.
 | `unsafe` | none (D15) | 43 blocks in `crates/telltale-net/src/sys.rs`, tested to stay there (NFR-003 P0) |
 | Test data | real captures and RFC zones (`testdata/`, D161) | synthetic |
 | Interoperability | ODoH against `odoh-rs`, by hand (`tests/interop`, D79) | no; end-to-end scripts against itself (`deploy/dnssec-e2e.sh` and others) |
-| Benchmarks | divan and dnsperf (`docs/benchmarks.md`) | dnsperf and h2load (`bench/`), `docs/v1-gate.md` |
+| Benchmarks | divan and dnsperf (`docs/benchmarks.md`); both servers under one harness (D183, "Against TelltaleDNS, Unbound and CoreDNS") | dnsperf and h2load (`bench/`), `docs/v1-gate.md` |
 
 ## RFCs
 
@@ -308,18 +308,21 @@ dedens lacks:
 1. A Prometheus exporter and health endpoints: counters exist, nothing exports them (D30).
 2. DoH over HTTP/2: most DoH clients (browsers, OSes) ask HTTP/2, dedens serves HTTP/3 only (D84).
 3. Conditional forwarding: a domain or reverse zone sent to its own servers.
-4. Server choice and upstream health: in order only, no breaker, no fastest or parallel.
-5. Local records beyond A, AAAA, PTR, and authoritative local zones from the zone parser dedens already has.
-6. A recursive resolver (planned `dedens-resolver`).
-7. A query log: dnstap, or JSON lines.
-8. Per-client policy: groups, client ids from DoH paths or SNI.
-9. A per-client query rate over TCP, TLS, QUIC and HTTPS (RRL covers UDP and DoC).
-10. Blocklist formats: AdBlock syntax and regex.
-11. Graceful drain on shutdown (D157 closes the QUIC connections and exits, the queries in flight dropped).
-12. Cache persistence and popularity prefetch.
-13. Rewrites, DNS64, special-use names, response address filtering against rebinding.
-14. PROXY protocol v2, upstream proxies (SOCKS5), exec plugins.
-15. An arm/v7 image, a Helm chart, a compose file.
+4. Cold DNSSEC validation as fast: on names never seen `dedensd` asks a DS a label down to the name and
+   checks three times the signatures, and sheds past about 1300 validations a second (`docs/benchmarks.md`,
+   D183; `docs/TODECIDE.md`).
+5. Server choice and upstream health: in order only, no breaker, no fastest or parallel.
+6. Local records beyond A, AAAA, PTR, and authoritative local zones from the zone parser dedens already has.
+7. A recursive resolver (planned `dedens-resolver`).
+8. A query log: dnstap, or JSON lines.
+9. Per-client policy: groups, client ids from DoH paths or SNI.
+10. A per-client query rate over TCP, TLS, QUIC and HTTPS (RRL covers UDP and DoC).
+11. Blocklist formats: AdBlock syntax and regex.
+12. Graceful drain on shutdown (D157 closes the QUIC connections and exits, the queries in flight dropped).
+13. Cache persistence and popularity prefetch.
+14. Rewrites, DNS64, special-use names, response address filtering against rebinding.
+15. PROXY protocol v2, upstream proxies (SOCKS5), exec plugins.
+16. An arm/v7 image, a Helm chart, a compose file.
 
 TelltaleDNS lacks:
 
