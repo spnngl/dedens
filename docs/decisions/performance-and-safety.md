@@ -306,7 +306,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Right answers first: a server fails the run unless it answers the check pass with the mode's rcode, nothing
     lost, and a sample equal to Knot's (DNSSEC: AD set); a server answering SERVFAIL (`broken`) must fail it.
   - A run is void when something other than the server limits it: Knot or, at saturation, dnsperf over 90% busy, a
-    held rate 1% short, 1% lost or of another rcode; a saturation run losing 1% is rerun 10% lower, twice at most.
+    held rate 1% short (a run that sent its whole corpus, in the modes from a cold cache, less 0.25 s for its last
+    answers: dnsperf counts that wait), 1% lost or of another rcode; a saturation run losing 1% is rerun 10% lower, twice at most.
   - Rounds alternate the servers' order; medians of the valid runs, with their range; latency and CPU a query
     compared at one common rate (half the slowest median), and at half each server's own. An A/A run (each server
     twice) gives the spread under which a difference is noise.
