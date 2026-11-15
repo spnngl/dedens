@@ -405,7 +405,7 @@ fn target(server: &Server, client: Transport) -> (Target, Carrier) {
             };
             (target, Carrier::Tls)
         }
-        Via::Quic(_) | Via::Https { .. } | Via::Dnscrypt { .. } => panic!(
+        Via::Quic(_) | Via::Https { .. } | Via::Dnscrypt { .. } | Via::Odoh { .. } => panic!(
             "the driver forwards over plain DNS and TLS only, not {:?} (D133)",
             server.via
         ),

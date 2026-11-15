@@ -1,6 +1,7 @@
 //! Serving Oblivious `DoH` (RFC 9230 §8) as a target on the HTTP/3 listener (D79): the configurations at their
 //! well-known path, queries opened and answered through the pipeline, the statuses of §4.3, a key from a file; and as
-//! a proxy (§4, D94): queries forwarded to the targets listed, the `Proxy-Status` of each failure (RFC 9209).
+//! a proxy (§4, D94): queries forwarded to the targets listed, the `Proxy-Status` of each failure (RFC 9209); and as a
+//! client of a forward stage (§4, D185): its queries asked of a target through a proxy.
 use std::net::{SocketAddr, UdpSocket};
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +42,30 @@ fn serving_trusting(
     odoh: &str,
     upstream: SocketAddr,
 ) -> Server {
+    serving_on(certificates, trusted, odoh, upstream, None)
+}
+
+/// A target as [`serving`] makes, at `addr` where a target served before: one restarted.
+fn serving_at(certificates: &Certificates, addr: SocketAddr, upstream: SocketAddr) -> Server {
+    let mut server = serving_on(
+        certificates,
+        certificates,
+        "odoh: {}\n",
+        upstream,
+        Some(addr),
+    );
+    server.addr = addr;
+    server
+}
+
+/// As [`serving_trusting`], at `addr` if set, else at a free port.
+fn serving_on(
+    certificates: &Certificates,
+    trusted: &Certificates,
+    odoh: &str,
+    upstream: SocketAddr,
+    addr: Option<SocketAddr>,
+) -> Server {
     let config = write_config("");
     let (certificate, key, authority) = (
         config.with_extension("crt.pem"),
@@ -50,7 +75,8 @@ fn serving_trusting(
     std::fs::write(&certificate, &certificates.server_pem).expect("the certificate written");
     crate::util::write_key(&key, &certificates.key_pem);
     std::fs::write(&authority, &trusted.ca_pem).expect("the authority written");
-    Server::configured(|listen| {
+    Server::configured(|free| {
+        let listen = addr.map_or_else(|| free.to_owned(), |addr| addr.to_string());
         format!(
             "listen: ['https://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\nupstream_ca: '{}'\n{odoh}pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
             certificate.display(),
@@ -809,4 +835,105 @@ fn s4_1_a_target_that_is_not_trusted_is_a_tls_error() {
     let got = through(&proxy, &ca, &forwarding(&host, "/dns-query"), b"a query");
     assert_eq!(got.status, StatusCode::BAD_GATEWAY);
     assert_eq!(proxy_status(&got), "dedensd; error=tls_protocol_error");
+}
+
+/// A `dedensd` answering over UDP and TCP whose forward stage asks `servers`, the `https://` ones through the Oblivious
+/// `DoH` proxy at `proxy`, both trusted under `certificates` (D185).
+fn forwarding_through(
+    certificates: &Certificates,
+    servers: &[String],
+    proxy: SocketAddr,
+) -> Server {
+    let authority = write_config("").with_extension("ca.pem");
+    std::fs::write(&authority, &certificates.ca_pem).expect("the authority written");
+    let servers = servers
+        .iter()
+        .map(|server| format!("'{server}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Server::configured(|listen| {
+        format!(
+            "listen: ['{listen}']\nupstream_ca: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: [{servers}]\n    odoh_proxy: 'https://{proxy}#{NAME}'\n    timeout_ms: 2000\n    tries: 1\n",
+            authority.display()
+        )
+    })
+}
+
+/// D185: a forward stage asks its `https://` server as an Oblivious `DoH` target through its proxy, and the answer
+/// is the upstream's; the configurations fetched for the first query serve the second.
+#[test]
+fn d185_a_forward_stage_asks_a_target_through_a_proxy() {
+    let response = captured("a");
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let target = serving(&ca, "odoh: {}\n", upstream.addr);
+    let listed = format!("127.0.0.1:{}", target.addr.port());
+    let proxy = serving(
+        &ca,
+        &proxy_section(std::slice::from_ref(&listed)),
+        upstream.addr,
+    );
+    let forwarder = forwarding_through(&ca, &[format!("https://{listed}")], proxy.addr);
+    for id in [1, 2] {
+        let reply = crate::util::ask_udp(forwarder.addr, &query_for("a", id));
+        assert_eq!(
+            (reply.rcode(), &reply.answer),
+            (Rcode::NOERROR, &decode(&response).answer)
+        );
+    }
+    assert_eq!(upstream.queries().len(), 2);
+}
+
+/// D185, D41: a proxy that refuses the connection fails the target, and the stage asks its next server; with no
+/// other server the query fails.
+#[test]
+fn d185_a_proxy_down_fails_over_to_the_next_server() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let target = serving(&ca, "odoh: {}\n", upstream.addr);
+    let listed = format!("https://127.0.0.1:{}", target.addr.port());
+    let down = refusing(&ca);
+    let both = forwarding_through(&ca, &[listed.clone(), upstream.addr.to_string()], down);
+    let reply = crate::util::ask_udp(both.addr, &query_for("a", 1));
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert_eq!(upstream.queries().len(), 1);
+    let alone = forwarding_through(&ca, &[listed], down);
+    let reply = crate::util::ask_udp(alone.addr, &query_for("a", 2));
+    assert_eq!(reply.rcode(), Rcode::SERVFAIL);
+    assert_eq!(upstream.queries().len(), 1);
+}
+
+/// D185, RFC 9230 §4.3, D79: a target restarted without a key file serves under a new key at the same address and
+/// answers the query under the kept configurations 401; the forwarder fetches them again and is answered. Until the
+/// connections to the stopped target are closed for idleness (D27), the proxy's and the forwarder's, the queries fail.
+#[test]
+#[cfg(unix)]
+fn d185_a_target_restarted_with_another_key_is_asked_again() {
+    /// Longer than the idle timeout of a client's connections, 10 s, with room for the queries that fail before.
+    const PATIENCE: Duration = Duration::from_secs(25);
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let mut first = serving(&ca, "odoh: {}\n", upstream.addr);
+    let addr = first.addr;
+    let listed = format!("127.0.0.1:{}", addr.port());
+    let proxy = serving(
+        &ca,
+        &proxy_section(std::slice::from_ref(&listed)),
+        upstream.addr,
+    );
+    let forwarder = forwarding_through(&ca, &[format!("https://{listed}")], proxy.addr);
+    let reply = crate::util::ask_udp(forwarder.addr, &query_for("a", 1));
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    let before = configs(addr, &ca);
+    first.signal("TERM");
+    assert!(first.exited().is_some(), "the first target stops");
+    let second = serving_at(&ca, addr, upstream.addr);
+    assert_ne!(configs(second.addr, &ca), before);
+    let deadline = Instant::now() + PATIENCE;
+    let answered = (2..u16::MAX)
+        .take_while(|_| Instant::now() < deadline)
+        .any(|id| {
+            crate::util::ask_udp(forwarder.addr, &query_for("a", id)).rcode() == Rcode::NOERROR
+        });
+    assert!(answered, "answered under the new key within {PATIENCE:?}");
 }

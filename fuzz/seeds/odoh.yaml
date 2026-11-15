@@ -1,0 +1,12 @@
+# A dedensd that serves Oblivious DoH as a target, and forwards as a client to a target through a proxy (D79, D185).
+listen: ['https://127.0.0.1:8443']
+tls:
+  certificate: /etc/dedensd/server.crt
+  key: /etc/dedensd/server.key
+odoh: {}
+pipeline: [up]
+stages:
+  up:
+    type: forward
+    servers: ['https://192.0.2.1/dns-query#odoh.example', '192.0.2.2:53']
+    odoh_proxy: 'https://192.0.2.9:8443/proxy#proxy.example'

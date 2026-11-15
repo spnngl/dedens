@@ -125,26 +125,29 @@ Open questions, each with its proposed default. Once answered, record the outcom
   dropped with their idle connection, when a target in use needs it or a rotating name grows the pool.
 - Trust per hop in the CLI (D79, D94): `--tls-ca` and `--tls-insecure` apply to the proxy and the target alike, so
   `dedens +odoh-proxy=https://PROXY @https://TARGET` against a proxy with a private certificate needs the target's
-  configurations pinned (`+odoh-config`) or a CA that signs both. Default: one trust for all; a `--tls-ca` for the
+  configurations pinned (`+odoh-config`) or a CA that signs both. `dedensd`'s `upstream_ca` does the same for a
+  stage's `odoh_proxy` and its targets (D185), with no pinning. Default: one trust for all; a `--tls-ca` for the
   proxy only (or one `+odoh-proxy` option carrying it) when a deployment with a private proxy needs the target's
   configurations fetched.
 - ODoH configurations discovery (D79): fetched from `/.well-known/odohconfigs` of the target, straight to it, so the
   target sees the client's address, and the query that follows may be linked to it by timing; `dedens` keeps them an
-  hour at least (a longer-lived `dedensd` client fetches rarely) and warns when the target forbids keeping them, but
-  a one-shot `dedens` fetches each run: `+odoh-config=FILE` is its way out. Alternatives: through the proxy (needs a
-  proxy that relays GET), from the target's SVCB record (RFC 9460; the ODoH SVCB parameters are not in an RFC), a
-  fetch at a random time apart from the query. Default: well-known, direct.
+  hour at least and warns when the target forbids keeping them, but a one-shot `dedens` fetches each run:
+  `+odoh-config=FILE` is its way out. `dedensd` as a client (D185) fetches on the first query of each thread and
+  then at most once an hour a thread, with no pinned file. Alternatives: through the proxy (needs a proxy that
+  relays GET), from the target's SVCB record (RFC 9460; the ODoH SVCB parameters are not in an RFC), a fetch at a
+  random time apart from the query (a timer task for each thread of `dedensd`). Default: well-known, direct.
 - ODoH target limits (D117): a target sees the proxy's address, not the client's (D91), so every client of a proxy
   spends one network budget. Default: raised by the operator who fronts the target with a busy proxy, or the proxy in
   `rrl.exempt`; a per-client budget carried in the request, if proxies ever authenticate their clients. Open too: a
   per-connection limit, a connection opened for each request being as cheap for the client as a request on one; and
   the QUIC and TLS handshakes of each connection, which no budget bounds before the request.
 - ODoH proxy URI templates (D79): RFC 9230 §4.1 gives the proxy as a URI Template (RFC 6570) with `targethost` and
-  `targetpath` variables; `+odoh-proxy` takes a plain URI and appends the two as a query. Default: plain URIs only,
+  `targetpath` variables; `+odoh-proxy` and a forward stage's `odoh_proxy` (D185) take a plain URI and append the two
+  as a query. Default: plain URIs only,
   one that already holds the variables is refused; the two simple expansions when a proxy in use needs one.
 - ODoH over HTTP/2 (D79): `odoh-relay.edgecompute.app` speaks HTTP/3, but it refuses one target (403 for
-  `doh.tiarap.org`) and other public proxies may speak HTTP/2 only. Default: HTTP/3 only (D83); HTTP/2 (D62)
-  when a proxy in use needs it.
+  `doh.tiarap.org`) and other public proxies may speak HTTP/2 only. Default: HTTP/3 only (D83), for `dedens` and
+  `dedensd`'s `odoh_proxy` (D185); HTTP/2 (D62) when a proxy in use needs it.
 - A mix of NSEC and NSEC3 records in one response (D74 uses the NSEC3 and ignores the NSEC; RFC 5155 §8.2 does not say).
   Default: as D74; bogus if a zone shows it.
 - CoAP (D80): non-confirmable requests by the client (RFC 7252 §4.3) and server-side Block1 reassembly (a DoC query

@@ -15,7 +15,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -28,7 +28,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   read, DO is clear and the payload 512.
   Over UDP it fits the client's payload, 512 to 1232 bytes, 512 without EDNS, truncated as D10; over TCP it comes
   whole. The forward stage asks its servers in order, the next on no response, one undecodable or breaking a rule,
-  or TC. An upstream response is usable only with RCODE NOERROR, NXDOMAIN or YXDOMAIN (RFC 6672 §2.2). Any other
+  or TC; an Oblivious DoH target is one server, and its proxy's failure or a response that does not open is no
+  response (D185). An upstream response is usable only with RCODE NOERROR, NXDOMAIN or YXDOMAIN (RFC 6672 §2.2). Any other
   RCODE — SERVFAIL, REFUSED, NOTIMP, FORMERR, the update codes, and the extended codes from the upstream's own OPT
   (BADVERS, BADCOOKIE, …) — sends the query to the next server (RFC 1035 §7.3). None of them speaks about the
   client's query. After the last, SERVFAIL. Upstream gets the client's question, RD set,
@@ -339,13 +340,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`urls` of `Downloads`): two downloads of one URL would save one copy at once.
   - No draining on SIGTERM, by design: an in-flight download is dropped with the process, and its saved copy and
     `ETag` stay consistent as both are replaced atomically (D64).
-- D65 (amends D42, D44; amended by D84) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
+- D65 (amends D42, D44; amended by D84, D185) Each upstream server of a forward stage has its own transport, written as in the CLI (D60,
   D61): `IP[:PORT]` over the client's (UDP for a query over UDP, TCP for one over a connection), `tls://` over TLS
   and `quic://` over QUIC, port 853 unless set, `#NAME` for the name the certificate must hold, else the address
   (RFC 8310 §8.1). An address only: a host name would need resolving before `dedensd` can resolve. One stage
   can mix transports, the first server over TLS and the next plain. Upstream certificates are checked against
   the OS trust store, or the PEM file of a top-level `upstream_ca`, which a reload cannot change (each thread's
-  `dedens_net::Client` holds it; changing it logs that it takes a restart). `dedens-server` only carries the
+  `dedens_net::Client` holds it; changing it logs that it takes a restart), and checks an Oblivious DoH proxy and
+  target alike (D185). `dedens-server` only carries the
   transport and name (`Server`, `Via`), staying sans-IO. Rejected: transport settings per stage (`transport:
   tls`, `tls_name`), which cannot mix servers.
 - D66 (amends D42, D44; amended by D115, D122) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind

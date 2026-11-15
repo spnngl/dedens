@@ -1,5 +1,6 @@
 //! Forward stages: the upstream servers over UDP and TCP, TLS (RFC 7858 §3.1), QUIC (RFC 9250 §4.1.1) or HTTP/3
-//! (RFC 8484 §3) (D65, D84), how long they are waited for (D115), and DNSSEC validation (D77, D86).
+//! (RFC 8484 §3) (D65, D84), `DNSCrypt` (D99, D100) or Oblivious `DoH` through a proxy (RFC 9230, D185), how long
+//! they are waited for (D115), and DNSSEC validation (D77, D86).
 
 use std::fs;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -21,8 +22,9 @@ use super::{MAX_TIMEOUT_MS, MAX_TRIES, unix_seconds};
 
 /// An upstream server (D65, D84): an IP address, on port 53 unless `:PORT` follows (an IPv6 address then in
 /// brackets); behind `tls://` or `quic://`, asked over TLS or QUIC, on port 853 unless set; behind `https://`, asked
-/// over HTTP/3 at `/PATH` (`/dns-query` unless set), on port 443 unless set; and `#NAME` after it for the name its
-/// certificate must hold, else its address. An `sdns://` stamp is a `DNSCrypt` server (D99, the `dnscrypt` feature).
+/// over HTTP/3 at `/PATH` (`/dns-query` unless set), on port 443 unless set (an Oblivious `DoH` target in a stage
+/// with `odoh_proxy`, D185); and `#NAME` after it for the name its certificate must hold, else its address. An
+/// `sdns://` stamp is a `DNSCrypt` server (D99, the `dnscrypt` feature).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub(super) struct Server(dedens_server::Server);
@@ -157,28 +159,76 @@ impl TryFrom<String> for Relay {
     }
 }
 
+/// The Oblivious `DoH` proxy of a forward stage (D185): an `https://IP[:PORT][/PATH][#NAME]` server, read as an
+/// upstream one is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "String")]
+pub(super) struct OdohProxy(Arc<dedens_server::OdohProxy>);
+
+#[cfg(feature = "odoh")]
+impl TryFrom<String> for OdohProxy {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let Server(server) = Server::try_from(text.clone())?;
+        match server.via {
+            Via::Https { name, path } => Ok(Self(Arc::new(dedens_server::OdohProxy {
+                addr: server.addr,
+                name,
+                path,
+            }))),
+            _ => Err(format!(
+                "`{text}`: an Oblivious DoH proxy is an `https://` server"
+            )),
+        }
+    }
+}
+
+/// Without the `odoh` feature a proxy is refused (D185).
+#[cfg(not(feature = "odoh"))]
+impl TryFrom<String> for OdohProxy {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        Err(format!(
+            "`{text}`: an Oblivious DoH proxy needs a dedensd built with the odoh feature"
+        ))
+    }
+}
+
 /// The forward stage `name` of `servers`, with the timeout and tries it sets, validating as `validation` says; with the
 /// validator of `previous` when a forward stage of it validated the same way, so that a reload keeps the keys it
-/// cached (D86). The `DNSCrypt` servers are asked through `relays` (D100).
+/// cached (D86). The `DNSCrypt` servers are asked through `relays` (D100), the `https://` ones, Oblivious `DoH`
+/// targets then, through `odoh_proxy` (D185).
 ///
 /// # Errors
 ///
-/// A stage without a server, `relays` with no `sdns://` server, a `timeout_ms` above [`MAX_TIMEOUT_MS`] or `tries`
-/// above [`MAX_TRIES`].
+/// A stage without a server, `relays` with no `sdns://` server, `odoh_proxy` with no `https://` server, a
+/// `timeout_ms` above [`MAX_TIMEOUT_MS`] or `tries` above [`MAX_TRIES`].
 pub(super) fn forward(
     name: &str,
-    (servers, relays): (Vec<Server>, Vec<Relay>),
+    (servers, relays, odoh_proxy): (Vec<Server>, Vec<Relay>, Option<OdohProxy>),
     timeout_ms: Option<NonZeroU32>,
     tries: Option<NonZeroU8>,
     validation: Validation,
     previous: &Pipeline,
 ) -> anyhow::Result<Forward> {
     let relays: Arc<[Arc<str>]> = relays.into_iter().map(|relay| relay.0).collect();
-    let mut stamped = false;
+    let (mut stamped, mut targets) = (false, false);
     let servers = servers.into_iter().map(|Server(mut server)| {
         if let Via::Dnscrypt { relays: held, .. } = &mut server.via {
             held.clone_from(&relays);
             stamped = true;
+        }
+        if let Some(OdohProxy(proxy)) = &odoh_proxy
+            && let Via::Https { name, path } = &server.via
+        {
+            server.via = Via::Odoh {
+                name: name.clone(),
+                path: Arc::clone(path),
+                proxy: Arc::clone(proxy),
+            };
+            targets = true;
         }
         server
     });
@@ -186,6 +236,10 @@ pub(super) fn forward(
     ensure!(
         relays.is_empty() || stamped,
         "stage `{name}`: `relays` needs an `sdns://` server to ask through them"
+    );
+    ensure!(
+        odoh_proxy.is_none() || targets,
+        "stage `{name}`: `odoh_proxy` needs an `https://` server to ask through it"
     );
     let mut forward =
         Forward::new(servers).with_context(|| format!("stage `{name}` has no server"))?;
@@ -401,6 +455,62 @@ mod tests {
             let message = error(&text("'192.0.2.1'", "'192.0.2.9'"));
             assert!(message.contains("dnscrypt feature"), "{message}");
             let _ = both;
+        }
+    }
+
+    /// D185: `odoh_proxy` is an `https://` server; every `https://` server of the stage is an Oblivious `DoH` target
+    /// asked through it and the others as before; another scheme, a text that is no server and `odoh_proxy` with no
+    /// `https://` server are refused, and so is any without the `odoh` feature.
+    #[test]
+    fn an_odoh_proxy_makes_the_https_servers_of_the_stage_targets() {
+        let text = |servers: &str, proxy: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: [{servers}]\n    odoh_proxy: {proxy}\n"
+            )
+        };
+        let both = "'https://192.0.2.1#odoh.example', '192.0.2.2'";
+        #[cfg(feature = "odoh")]
+        {
+            let config = read(
+                &text(both, "'https://192.0.2.9:8443/proxy#proxy.example'"),
+                env,
+                &Pipeline::default(),
+            )
+            .unwrap();
+            let [Stage::Forward(forward)] = config.pipeline.stages() else {
+                panic!("a forward stage")
+            };
+            let held = format!("{forward:?}");
+            assert_eq!(held.matches("Odoh {").count(), 1, "{held}");
+            assert!(
+                held.contains(
+                    "name: Some(\"odoh.example\"), path: \"/dns-query\", proxy: OdohProxy { addr: 192.0.2.9:8443, name: Some(\"proxy.example\"), path: \"/proxy\" }"
+                ),
+                "{held}"
+            );
+            assert!(held.contains("Plain"), "{held}");
+            for (servers, proxy, needle) in [
+                (
+                    "'192.0.2.1'",
+                    "'https://192.0.2.9'",
+                    "needs an `https://` server",
+                ),
+                (both, "'tls://192.0.2.9'", "is an `https://` server"),
+                (both, "'https://proxy.example'", "proxy.example"),
+                (
+                    both,
+                    "'https://192.0.2.9/p?targethost=a'",
+                    "192.0.2.9/p?targethost",
+                ),
+            ] {
+                let message = error(&text(servers, proxy));
+                assert!(message.contains(needle), "{needle}: {message}");
+            }
+        }
+        #[cfg(not(feature = "odoh"))]
+        {
+            let message = error(&text(both, "'https://192.0.2.9'"));
+            assert!(message.contains("odoh feature"), "{message}");
         }
     }
 

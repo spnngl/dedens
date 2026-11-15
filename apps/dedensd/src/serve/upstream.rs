@@ -1,8 +1,9 @@
-//! A query asked upstream (D42): each server in turn over its transport (D65, D84), a question in flight shared
-//! with the queries asking it (D86), expired data once the client response timer runs out (RFC 8767 §5).
+//! A query asked upstream (D42): each server in turn over its transport (D65, D84, D99, D185), a question in flight
+//! shared with the queries asking it (D86), expired data once the client response timer runs out (RFC 8767 §5).
 
 #![deny(clippy::disallowed_methods)]
 
+use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -147,6 +148,9 @@ async fn fetch<'a, N: Io>(
         Via::Dnscrypt { stamp, relays } => {
             exchange_dnscrypt(thread, request, (stamp, relays), options).await
         }
+        Via::Odoh { proxy, .. } => {
+            exchange_oblivious(thread, request, target, proxy, options).await
+        }
         _ => thread.client.exchange(request, target, options).await,
     };
     Fetched::Own(result, lead)
@@ -193,30 +197,72 @@ async fn exchange_dnscrypt<N: Io>(
     Err(ClientError::NotBuilt("DNSCrypt"))
 }
 
+/// Asks the Oblivious `DoH` `target` through `proxy` (D185): the target's configurations are the thread client's,
+/// fetched from the target and kept as D79 says.
+#[cfg(feature = "odoh")]
+async fn exchange_oblivious<N: Io>(
+    thread: &Thread<N>,
+    request: Message<'static>,
+    target: Server,
+    proxy: &dedens_server::OdohProxy,
+    options: &Options,
+) -> Result<Response, ClientError> {
+    let proxy = peer(proxy.addr, proxy.name.as_deref(), Some(&proxy.path));
+    thread
+        .client
+        .exchange_oblivious(request, target, Some(proxy), options)
+        .await
+}
+
+/// Without the `odoh` feature no configuration holds such a server (D185).
+#[cfg(not(feature = "odoh"))]
+#[expect(
+    clippy::unused_async,
+    reason = "the same call as the one built with the feature"
+)]
+async fn exchange_oblivious<N: Io>(
+    _thread: &Thread<N>,
+    _request: Message<'static>,
+    _target: Server,
+    _proxy: &dedens_server::OdohProxy,
+    _options: &Options,
+) -> Result<Response, ClientError> {
+    Err(ClientError::NotBuilt("Oblivious DoH"))
+}
+
 /// The server to ask for `server`, and the transport: its own, else UDP for a client over UDP and TCP for a client
-/// over a connection (D65); the URI template of an HTTPS one is at its path (D84); a `DNSCrypt` one is asked over the client's, as a plain one (D99). A name and a path were checked when
-/// the configuration was read.
+/// over a connection (D65); the URI template of an HTTPS one, or an Oblivious `DoH` target, is at its path (D84,
+/// D185); a `DNSCrypt` one is asked over the client's, as a plain one (D99). A name and a path were checked when the
+/// configuration was read.
 fn target(server: &dedens_server::Server, client: Transport) -> (Server, Transport) {
-    let (transport, name) = match &server.via {
-        Via::Plain | Via::Dnscrypt { .. } if client == Transport::Udp => (Transport::Udp, None),
-        Via::Plain | Via::Dnscrypt { .. } => (Transport::Tcp, None),
-        Via::Tls(name) => (Transport::Tls, name.as_deref()),
-        Via::Quic(name) => (Transport::Quic, name.as_deref()),
-        Via::Https { name, .. } => (Transport::Https, name.as_deref()),
+    let (transport, name, path) = match &server.via {
+        Via::Plain | Via::Dnscrypt { .. } if client == Transport::Udp => {
+            (Transport::Udp, None, None)
+        }
+        Via::Plain | Via::Dnscrypt { .. } => (Transport::Tcp, None, None),
+        Via::Tls(name) => (Transport::Tls, name.as_deref(), None),
+        Via::Quic(name) => (Transport::Quic, name.as_deref(), None),
+        Via::Https { name, path } => (Transport::Https, name.as_deref(), Some(&**path)),
+        Via::Odoh { name, path, .. } => (Transport::Odoh, name.as_deref(), Some(&**path)),
     };
+    (peer(server.addr, name, path), transport)
+}
+
+/// The server at `addr`, its certificate holding `name`, its URI template at `path` if it is an HTTPS one.
+fn peer(addr: SocketAddr, name: Option<&str>, path: Option<&str>) -> Server {
     let name = name
         .and_then(|name| ServerName::try_from(name).ok())
         .map(|name| name.to_owned());
-    let mut target = Server {
-        addr: server.addr,
+    let mut peer = Server {
+        addr,
         name,
         doh: None,
         docpath: Vec::new(),
     };
-    if let Via::Https { path, .. } = &server.via {
-        target.doh = target.template_at(path).ok();
+    if let Some(path) = path {
+        peer.doh = peer.template_at(path).ok();
     }
-    (target, transport)
+    peer
 }
 
 /// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length but
