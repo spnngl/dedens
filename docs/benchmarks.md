@@ -473,9 +473,6 @@ The queries waiting on a TCP connection in a `BTreeMap` rather than a `HashMap` 
 four alternating rounds under load average 12-15, medians 196077 (`BTreeMap`) and 194622 (`HashMap`) queries/s, the
 rounds over 2x apart: no difference that shows.
 
-`just bench-dnsperf <base> forward` and `forward-tcp` on the VPS run when the serving loop goes behind the seam too
-(left out of D134).
-
 ### Build and binary (D134)
 
 `cargo build --release -p dedensd -p dedens --timings` from a clean target directory, before and after, on the same

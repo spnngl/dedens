@@ -200,7 +200,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   DNSSEC record types print as their mnemonic and parse from it or from `TYPEn` (RFC 3597); algorithm,
   digest and NSEC3 hash numbers (`SecAlgorithm`, `DigestType`, `Nsec3HashAlgorithm`) print as their IANA
   mnemonic and parse from it or from the bare number, which zone text writes. Open questions this phase
-  leaves: [`TODECIDE.md`](../TODECIDE.md). Steps: `plan/4-dnssec-experimental/`.
+  leaves: [`TODECIDE.md`](../TODECIDE.md).
 - D71 (amends D69; amended by D73, D106) DNSSEC crypto is `dedens_dnssec::crypto` on `ring`, which is already in the lock
   through rustls, and `data-encoding` for test and bench data. Policy, after RFC 9904 §3 and RFC 6840 §5.2: validated
   are RSASHA1 and its NSEC3 alias (5, 7), RSASHA256 (8), RSASHA512 (10), ECDSAP256SHA256 (13),
