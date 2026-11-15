@@ -10,7 +10,7 @@ mod forward {
 
     use dedens_proto::edns::{ClientSubnet, Cookie, Edns, EdnsOption};
     use dedens_proto::{Flags, Message, Transport};
-    use dedens_server::{Forward, Pipeline, Server, Stage, Step, Via};
+    use dedens_server::{Forward, OdohProxy, Pipeline, Server, Stage, Step, Via};
     use dedens_testkit::{captured, dns, query};
 
     use crate::util::{decode, forwarder, run, wire};
@@ -71,7 +71,8 @@ mod forward {
         assert!(Forward::new(Vec::<SocketAddr>::new()).is_none());
     }
 
-    /// D65: each server is asked over its own transport, handed to the caller as configured, and printed so.
+    /// D65: each server is asked over its own transport, handed to the caller as configured, and printed so; an
+    /// Oblivious `DoH` target as the `https://` server it is written as, its proxy apart (D185).
     #[test]
     fn servers_go_upstream_as_configured() {
         let addr: SocketAddr = "192.0.2.1:853".parse().expect("an address");
@@ -114,6 +115,24 @@ mod forward {
         };
         assert_eq!(
             https.to_string(),
+            "https://192.0.2.1:443/dns-query#dns.example"
+        );
+        let proxy = OdohProxy {
+            addr: "192.0.2.9:8443".parse().expect("an address"),
+            name: None,
+            path: "/proxy".into(),
+        };
+        assert_eq!(proxy.to_string(), "https://192.0.2.9:8443/proxy");
+        let odoh = Server {
+            via: Via::Odoh {
+                name: Some("dns.example".into()),
+                path: "/dns-query".into(),
+                proxy: Arc::new(proxy),
+            },
+            ..https
+        };
+        assert_eq!(
+            odoh.to_string(),
             "https://192.0.2.1:443/dns-query#dns.example"
         );
         let dnscrypt = Server {

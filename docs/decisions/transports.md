@@ -173,8 +173,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `parse_odoh_message`, `odoh_decrypt` (seeded with a valid odoh-go query and response). A query encrypted here was answered by `odoh.cloudflare-dns.com` and its
     response decrypted (2026-11-01, one-off, not a test). Bench: `docs/benchmarks.md`.
 
-- D79 (amends D69, D78, D83; amended by D94, D115, D117) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
-  through a proxy, `dedensd` serves as a target. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
+- D79 (amends D69, D78, D83; amended by D94, D115, D117, D185) ODoH over HTTP/3 (RFC 9230 §3, §4), `odoh` feature, off by default: `dedens` asks a target
+  through a proxy, `dedensd` serves as a target, and asks one through a proxy as a forward stage's server since D185. `dedens-proto::Transport::Odoh` is the transport, reported `ODoH`.
   - Messages: a client sends the encrypted query by POST to the proxy (RFC 9230 §4.1: media type
     `application/oblivious-dns-message` as content type and accept, `targethost` and `targetpath` in the query of the
     proxy's URI, which `+odoh-proxy=URI` gives as a plain `https://HOST[:PORT][/PATH][#NAME]`); `targetpath` keeps `/`
@@ -234,7 +234,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     went bad fails no reload. `odoh` without an `https://` listener is an error. Metrics: `dedensd_doh_queries_total`
     gains status 401 and counts no configurations GET (not a `DoH` query). The unauthenticated decapsulation per
     POST is bounded since D117.
-  - Not here: HTTP/2. The proxy role is D94's.
+  - Not here: HTTP/2. The proxy role is D94's, `dedensd` as a client D185's.
   - Checked live (2026-11-01, `dedens @https://TARGET/PATH +odoh-proxy=PROXY example.com A`, the targets and
     relays of `DNSCrypt/dnscrypt-resolvers` `v3/odoh-servers.md` and `odoh-relays.md`): every target below answers
     HTTP/3 and serves, at `/.well-known/odohconfigs`, one config of version 1 with the one suite of D78 (no other
@@ -263,6 +263,52 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     headers and configurations, a loopback target direct and through a loopback proxy, the 401 refetch, and the
     ignored live one), `tests/interop/odoh.py` (by hand: `odoh-rs` against `dedensd`),
     `apps/dedensd/tests/odoh.rs` (the real `dedensd` as target), `apps/dedens/tests/odoh.rs` (the command).
+
+- D185 (amends D41, D65, D79; builds on D84, D94, D100, D117) `dedensd` asks Oblivious DoH targets too (RFC 9230 §4,
+  feature `odoh`), so that the upstream that reads its queries never sees its address: a forward stage's
+  `odoh_proxy: https://IP[:PORT][/PATH][#NAME]` (port 443, path `/dns-query` unless set, an address only, as D84's
+  servers) makes every `https://` server of the stage a target asked through that proxy; the others are asked as
+  before. The same split as the CLI's `@https://TARGET +odoh-proxy=PROXY` (D79) and the stage's `relays` (D100).
+  Refused: `odoh_proxy` with no `https://` server in the stage (a setting that does nothing is a mistake), a proxy
+  that is not `https://`, and any `odoh_proxy` in a build without the feature. Rejected: an `odoh://` scheme (no such
+  URI scheme; the CLI writes the target as an `https://` server), a proxy for each server (one list for the stage is
+  what an operator keeps, as D100 found), and for now several proxies drawn per query as D100's relays (one proxy
+  until a deployment needs a second; a down proxy fails over to the stage's next server meanwhile).
+  - Held: `Via::Odoh { name, path, proxy }` in `dedens-server` beside `Via::Https`, `proxy` an `OdohProxy { addr,
+    name, path }` shared by the stage's targets; the crate stays free of `dedens-net`. A target prints as the
+    `https://` server it is written as; the proxy is the stage's, as relays are. `apps/dedensd/src/serve/upstream.rs`
+    makes both `dedens_net::client::Server`s and calls the thread client's `Client::exchange_oblivious` (D79): no
+    new client code.
+  - Configurations: D79's, unchanged: fetched by GET from the target's `/.well-known/odohconfigs`, straight to the
+    target and not through the proxy (proxies relay POSTs of oblivious messages only, D94), on the first query of
+    each thread, and kept per thread client between an hour and a day; a 401 under kept ones fetches them again once
+    and asks again (a key the target changed); a response that does not decrypt, or a proxy's error (a
+    `Proxy-Status` with `error`, RFC 9209), ends the try. What it leaks: the target sees `dedensd`'s address at each
+    fetch, at most once an hour a thread (N threads, N fetches), and may link the query that follows by timing; never
+    a query. Rejected: a pinned file of configurations as the CLI's `+odoh-config` (the CLI needs it because it
+    fetches each run; a long-running `dedensd` fetches rarely, and a pinned key breaks at the target's next rotation
+    until a reload), and configurations shared by the threads (a lock on the query path for a fetch an hour).
+  - Connections: the thread client's HTTP/3 pool (D84), one connection to the proxy and one to the target (the
+    fetches) per thread, closed after 10 s idle. A proxy or target that went away without closing them (a restart)
+    leaves them silent until that idle timeout: the queries through them fail meanwhile, then the next one connects
+    again (`d185_a_target_restarted_with_another_key_is_asked_again`).
+  - Tries and failover: the stage's `timeout_ms` and `tries` per server, as for any server; a failed target (the
+    proxy down, a proxy error, a 401 after the refetch, a response that does not open) sends the query to the next
+    server, then SERVFAIL (D41). No fallback straight to the target: asking it without the proxy hands it the address
+    the proxy hides (as D100). Trust: the proxy's certificate and the target's are both checked against
+    `upstream_ca`, else the system's roots (D65); the proxy never sees the query, the target never the address.
+  - Messages: the query is ID 0, D41's (our EDNS with DO, none of the client's options), and is not padded with EDNS
+    (`dedens-net` pads TLS, QUIC and HTTPS only): the padding is the encryption's, to blocks of 128 bytes for a
+    query and 468 for a response (RFC 9230 §11 points to RFC 8467's sizes, D78). A response is at most
+    `odoh::MAX_BODY` (a DNS message's cap and a kilobyte, D79). D111's checks apply as to any server.
+  - Budgets: none added. An ODoH upstream query costs a thread an HPKE seal and an open (51.6 µs and about 1 µs,
+    `docs/benchmarks.md`, D78), only on a cache miss and under D47's limit of upstream queries; the shared path gains
+    one `match` arm, so no new bench. Logs: the target is logged as its server (`https://IP:PORT/PATH#NAME`) as any
+    upstream; `dedens-net` logs the ODoH response and the refetch at debug.
+  - Tests: `apps/dedensd/src/config/upstream.rs` (the syntax and its refusals, with and without the feature),
+    `crates/dedens-server/tests/stages.rs` (the printed forms), `apps/dedensd/tests/odoh.rs` (`d185_*`: a `dedensd`
+    forwarding through a `dedensd` proxy to a `dedensd` target, a refused proxy failing over to the next server and
+    else SERVFAIL, a target restarted with a new key answered after the refetch), `fuzz/seeds/odoh.yaml` (D181).
 
 - D80 (amends D69) CoAP is our own sans-IO codec, `dedens_net::coap` (RFC 7252, RFC 7959, RFC 8132), for DoC (RFC 9953):
   no crate of CoAP is pulled in, since DoC needs a small part of it and the rest would carry its own socket, clock

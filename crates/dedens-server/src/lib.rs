@@ -36,7 +36,7 @@ mod validate;
 pub use access::{Access, Denial, Network, NetworkError};
 pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot, Spent};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
-pub use forward::{Forward, Server, Via};
+pub use forward::{Forward, OdohProxy, Server, Via};
 pub use pipeline::{Pipeline, Stage, Step, Upstream, Warm, Warmth};
 pub use plugin::{Answer, Plugin, Records, Reviewer};
 pub use rrl::{Admission, MAX_BURST, Rate, RateLimit, RateLimitConfig, RateLimitError};

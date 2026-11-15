@@ -386,6 +386,7 @@ fn stages(
             StageFile::Forward {
                 servers,
                 relays,
+                odoh_proxy,
                 timeout_ms,
                 tries,
                 dnssec,
@@ -401,7 +402,7 @@ fn stages(
                 };
                 Stage::Forward(forward(
                     name,
-                    (servers, relays),
+                    (servers, relays, odoh_proxy),
                     timeout_ms,
                     tries,
                     validation,

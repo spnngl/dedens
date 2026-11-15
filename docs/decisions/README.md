@@ -48,7 +48,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D38 [CLI](cli.md) (amended by D177): several `@servers`: each query asked of each
 - D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
 - D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
-- D41 [server](server.md) (amended by D43, D46, D77, D111, D114): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
+- D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
 - D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
 - D43 [server](server.md) (amended by D45, D46, D77, D96, D114, D124): cache stage in the pipeline, time passed in by the caller
 - D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
@@ -72,7 +72,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D62 [transports](transports.md) (amended by D82, D83): DoH waits for compio's tokio I/O traits; no adapter of our own
 - D63 [server](server.md) (amended by D123): one 65535-byte reply buffer per thread, replies copied out
 - D64 [server](server.md) (amended by D104, D107, D121): TCP reply queues bounded in bytes; reloads rebuild from the text last loaded
-- D65 [server](server.md) (amended by D84): each upstream of a forward stage has its own transport
+- D65 [server](server.md) (amended by D84, D185): each upstream of a forward stage has its own transport
 - D66 [server](server.md) (amended by D115, D122): `dedensd` answers over TLS and QUIC
 - D67 [CLI](cli.md): public resolvers in `docs/providers/providers.yaml`, measured
 - D68 [transports](transports.md): tries exhausted after cookie-dropped responses fail as `Forged`
@@ -86,7 +86,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
 - D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124): a forward stage validates with `dnssec: validate`
 - D78 [transports](transports.md) (amended by D79): ODoH crypto in `dedens-odoh`, sans-IO, the one required suite
-- D79 [transports](transports.md) (amended by D94, D115, D117): ODoH over HTTP/3: `dedens` asks through a proxy, `dedensd` is a target
+- D79 [transports](transports.md) (amended by D94, D115, D117, D185): ODoH over HTTP/3: `dedens` asks through a proxy, `dedensd` is a target
 - D80 [transports](transports.md): CoAP is our own sans-IO codec, for DoC
 - D81 [transports](transports.md) (amended by D95, D105, D109): DoC client and server behind the `doc` feature
 - D82 [transports](transports.md): DoH over HTTP/3 first, on compio's `h3`
@@ -179,3 +179,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
 - D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
 - D182 [simulation tests](simulation-tests.md): `dedensd`'s UDP and TCP serving loop behind the `Io` seam, run on turmoil
+- D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread

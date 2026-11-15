@@ -128,6 +128,38 @@ pub enum Via {
         /// drawn for each query; none when the resolver is asked direct (D100).
         relays: Arc<[Arc<str>]>,
     },
+    /// An Oblivious `DoH` target (RFC 9230), asked over HTTP/3 through `proxy`, so that it never sees our address; the
+    /// certificates of both checked as over TLS (D185).
+    Odoh {
+        /// The name the target's certificate must hold, else its address; the `targethost` the proxy is given.
+        name: Option<Arc<str>>,
+        /// The target's path, the `targetpath` the proxy is given, starting with `/`.
+        path: Arc<str>,
+        /// The proxy the queries go through.
+        proxy: Arc<OdohProxy>,
+    },
+}
+
+/// An Oblivious `DoH` proxy (RFC 9230 §4.1), an HTTPS server over HTTP/3 (D185).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OdohProxy {
+    /// Its address.
+    pub addr: SocketAddr,
+    /// The name its certificate must hold, else its address.
+    pub name: Option<Arc<str>>,
+    /// The path of its URI, starting with `/`; the target's `targethost` and `targetpath` are added as its query.
+    pub path: Arc<str>,
+}
+
+/// As written in `dedensd`'s configuration: `https://IP:PORT/PATH#NAME`.
+impl fmt::Display for OdohProxy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "https://{}{}", self.addr, self.path)?;
+        match &self.name {
+            Some(name) => write!(f, "#{name}"),
+            None => Ok(()),
+        }
+    }
 }
 
 impl From<SocketAddr> for Server {
@@ -140,7 +172,8 @@ impl From<SocketAddr> for Server {
 }
 
 /// As written in `dedensd`'s configuration: `IP:PORT`, `tls://IP:PORT#NAME`, `quic://IP:PORT`,
-/// `https://IP:PORT/PATH#NAME`, the `sdns://` stamp of a `DNSCrypt` server.
+/// `https://IP:PORT/PATH#NAME` (an Oblivious `DoH` target's too: its stage names the proxy), the `sdns://` stamp of a
+/// `DNSCrypt` server.
 impl fmt::Display for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (scheme, name, path) = match &self.via {
@@ -148,7 +181,9 @@ impl fmt::Display for Server {
             Via::Plain => ("", None, ""),
             Via::Tls(name) => ("tls://", name.as_deref(), ""),
             Via::Quic(name) => ("quic://", name.as_deref(), ""),
-            Via::Https { name, path } => ("https://", name.as_deref(), &**path),
+            Via::Https { name, path } | Via::Odoh { name, path, .. } => {
+                ("https://", name.as_deref(), &**path)
+            }
         };
         write!(f, "{scheme}{}{path}", self.addr)?;
         match name {
