@@ -20,6 +20,7 @@ How:
 - A requirement is not proof: each claim was read in their code and tests. "spec only" marks what only their spec
   has, "partial" says what is missing, "no" means neither code nor spec.
 - RFC rows follow [`../rfc/coverage.md`](../rfc/coverage.md), which holds dedens's status per RFC.
-- Features only. Throughput and latency against TelltaleDNS, Unbound and CoreDNS are to come in
+- Features only. Throughput and latency against TelltaleDNS, Unbound and CoreDNS, measured by `just bench-compare`
+  ([`compare.sh`](../../crates/dedens-bench/dnsperf/compare.sh)), are to come in
   [`../benchmarks.md`](../benchmarks.md), section "Against TelltaleDNS, Unbound and CoreDNS".
 - A newer version of either side outdates the cells: read again, and change the table above.
