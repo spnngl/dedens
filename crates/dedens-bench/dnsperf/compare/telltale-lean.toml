@@ -1,0 +1,64 @@
+# TelltaleDNS for compare.sh, lean: telltale-shipped.toml with the query log, metrics, API, statistics and
+# client identification off. Rendered by compare.py as telltale-shipped.toml is.
+config_version = 1
+
+[node]
+workers = 0
+data_dir = "/w/data"
+
+[[listen]]
+proto = "udp"
+addr = "127.0.0.1:5301"
+
+[[listen]]
+proto = "tcp"
+addr = "127.0.0.1:5301"
+
+[[listen]]
+proto = "dot"
+addr = "127.0.0.1:8531"
+tls = { cert = "/w/cert.pem", key = "/w/key.pem" }
+
+[[upstream]]
+name = "knot"
+url = "@UPSTREAM_PROTO@://127.0.0.1:5300"
+
+[[upstream_group]]
+name = "default"
+members = ["knot"]
+
+[[group]]
+name = "default"
+block_mode = "nxdomain"
+
+[dnssec]
+mode = "@DNSSEC@"
+trust_anchors_file = "/w/anchors.zone"
+
+[updates]
+check = false
+
+[api]
+enabled = false
+
+[telemetry.qlog]
+enabled = false
+
+[telemetry.metrics]
+enabled = false
+
+[telemetry.anomaly]
+enabled = false
+
+[slo]
+enabled = false
+
+[identify]
+enabled = false
+
+[clients]
+neighbor_table = false
+
+#@blocked [[list]]
+#@blocked name = "blocked"
+#@blocked path = "/w/lists/blocklist.txt"

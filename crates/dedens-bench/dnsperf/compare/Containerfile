@@ -1,0 +1,25 @@
+# The image of compare.sh: dnsperf, dig, openssl and python for the loader, and Unbound and CoreDNS built at the
+# versions compare.sh pins, as each ships them (Unbound's default `configure`, CoreDNS's `make`). Every container
+# of the comparison but Knot's runs it; dedensd and TelltaleDNS are static, mounted from target/compare/bin.
+ARG COREDNS_GO
+FROM docker.io/library/golang:${COREDNS_GO}-trixie AS coredns
+ARG COREDNS_VERSION
+RUN git clone -q --depth 1 --branch "v${COREDNS_VERSION}" https://github.com/coredns/coredns /src \
+    && make -C /src
+
+FROM docker.io/library/debian:trixie-slim AS unbound
+ARG UNBOUND_VERSION
+ARG UNBOUND_SHA256
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl \
+    libssl-dev libexpat1-dev >/dev/null
+RUN curl -fsSLO "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSION}.tar.gz" \
+    && echo "${UNBOUND_SHA256}  unbound-${UNBOUND_VERSION}.tar.gz" | sha256sum -c - \
+    && tar xzf "unbound-${UNBOUND_VERSION}.tar.gz" \
+    && cd "unbound-${UNBOUND_VERSION}" && ./configure -q && make -s -j"$(nproc)" && make -s install
+
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dnsperf bind9-dnsutils python3 openssl \
+    libssl3t64 libexpat1 ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*
+COPY --from=unbound /usr/local /usr/local
+COPY --from=coredns /src/coredns /usr/local/bin/coredns
+RUN ldconfig && unbound -V >/dev/null && coredns -version >/dev/null

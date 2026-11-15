@@ -117,6 +117,11 @@ bench-dnsperf base="HEAD" mode="udp":
     git="$(git rev-parse --path-format=absolute --git-common-dir)" && {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -e DEDENS_BACK_CPU -e DEDENS_LOAD_CPUS -e DEDENS_ROUNDS -e DEDENS_PERF -v "$(pwd):/src:ro" -v "$git:$git:ro" -v "$(pwd)/target/profile:/profile" -v dedens-dnsperf-cargo:/usr/local/cargo/registry \
         -v dedens-dnsperf-target:/target rust:1 bash /src/crates/dedens-bench/dnsperf/run.sh {{ base }} {{ mode }}
 
+# dedensd against TelltaleDNS, Unbound and CoreDNS on Linux, each in its own container on `cores` cores, all
+# forwarding to one Knot DNS, under dnsperf, in `mode` (udp, tcp, dot, forward, forward-tcp, miss, dnssec, blocked,
+# crosscheck): just bench-compare udp 3. Its knobs, its checks and what makes a run void: the header of compare.sh.
+bench-compare mode cores="1":
+    DEDENS_CONTAINER={{ container }} bash crates/dedens-bench/dnsperf/compare.sh {{ mode }} {{ cores }}
 # Where a bench spends its time (D138): the bench target `bench` (`server`, `cache`, ...) built with symbols (the
 # bench profile keeps line tables), run under samply with divan's `filter`, a substring of the path (`just profile
 # server hit::`), sampled, never instrumented, five seconds a function (`DIVAN_MIN_TIME`). Writes target/profile/<bench>[-<filter>].json.gz and says how to open it. Local, on macOS

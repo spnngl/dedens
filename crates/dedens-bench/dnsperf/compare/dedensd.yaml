@@ -1,0 +1,22 @@
+# dedensd for compare.sh, shipped and lean alike: deploy/dedensd.yaml (the image's) with the bench's addresses and
+# Knot as the upstream. It logs nothing per query and keeps no statistics: lean has nothing to turn off. Rendered by
+# compare.py: `@NAME@` is a value, a `#@tag ` line is kept, uncommented, when the run has that tag (`!` negates).
+listen: ["127.0.0.1:5301", "tls://127.0.0.1:8531"]
+tls:
+  certificate: /w/cert.pem
+  key: /w/key.pem
+downloads:
+  dir: /w/data
+#@!blocked pipeline: [cache, upstream]
+#@blocked pipeline: [blocked, cache, upstream]
+stages:
+#@blocked   blocked:
+#@blocked     type: blocklist
+#@blocked     file: /w/lists/blocklist.txt
+  cache:
+    type: cache
+  upstream:
+    type: forward
+    servers: ["127.0.0.1:5300"]
+    dnssec: @DNSSEC@
+#@dnssec     trust_anchors: /w/anchors.zone

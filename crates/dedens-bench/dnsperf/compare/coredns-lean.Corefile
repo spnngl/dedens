@@ -1,0 +1,11 @@
+# CoreDNS for compare.sh, lean: the cache and forward plugins alone, the cache keeping answers up to their TTL as
+# the other servers do (the shipped Corefile caps it at 30 s) and room for the 10,000 names of the cache-hot corpus
+# (its default holds 9,984 answers), EDNS at 1232 bytes as the other servers send.
+dns://.:5301 tls://.:8531 {
+    tls /w/cert.pem /w/key.pem
+    bufsize 1232
+    forward . 127.0.0.1:5300
+    cache {
+        success 65536
+    }
+}
