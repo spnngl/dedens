@@ -14,7 +14,9 @@ mod nsec3 {
     use dedens_testkit::dnssec::{Rr, Rrsig, b64, canonical_name, dnskey_rdata, signed_data};
     use dedens_testkit::zone;
 
-    use crate::util::denial::{nsec3_salted, nsec3_typed, nsec3_with, pick, prove, prove_wildcard};
+    use crate::util::denial::{
+        nsec3_salted, nsec3_typed, nsec3_with, pick, prove, prove_absent, prove_wildcard,
+    };
     use crate::util::name;
 
     const SALT: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
@@ -281,6 +283,32 @@ mod nsec3 {
             prove_wildcard(APEX, "a.x.w.example.", 2, &nsec3s(&[X_W])),
             Err(Unproven::CloserNameExists)
         );
+    }
+
+    /// B.4's record of `ns2` proves `z.w.example.` absent, but over an opt-out span: the name may be an unsigned
+    /// delegation (RFC 5155 §9.2), which the validator's walk then asks the DS of (D75). Derived: without the flag
+    /// the name is absent. A name that matches exists.
+    #[test]
+    fn b4_absent_name_and_opt_out() {
+        let records = nsec3s(&[NS2]);
+        assert_eq!(
+            prove_absent(APEX, "z.w.example.", &records),
+            Ok(proof(Fact::Absent))
+        );
+        let records: Vec<_> = records
+            .iter()
+            .map(|r| nsec3_with(r, Nsec3HashAlgorithm::SHA1, 0, ITERATIONS))
+            .collect();
+        assert_eq!(
+            prove_absent(APEX, "z.w.example.", &records),
+            Ok(matched(Fact::Absent))
+        );
+        assert_eq!(
+            prove_absent(APEX, "x.w.example.", &nsec3s(&[X_W])),
+            Err(Unproven::CloserNameExists)
+        );
+        // B.3's `c.example.`, the unsigned delegation, is covered by an opt-out span only.
+        assert!(prove_absent(APEX, "c.example.", &nsec3s(&[A, EXAMPLE])).is_ok_and(|p| p.opt_out));
     }
 
     /// B.5: `w.example.` is the closest encloser, `*.w.example.` exists with MX only.

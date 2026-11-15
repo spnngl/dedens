@@ -66,6 +66,15 @@ struct Evidence {
     limit: Ttl,
 }
 
+/// Where the denial records come from.
+#[derive(Clone, Copy)]
+enum Proofs<'s> {
+    /// The authority section of the response validated, whose checks [`Validation`] keeps.
+    Response,
+    /// The authority section of a response of the walk, a DS one.
+    Walk(&'s Section),
+}
+
 /// The evidence of each zone a response has been checked in, once, and which zone each proof is of.
 ///
 /// A response may hold proofs of two zones (a wildcard answer of one, a no data of the zone a CNAME led to): each
@@ -79,15 +88,6 @@ struct Evidences {
 }
 
 impl Evidences {
-    /// The proofs of a response that holds a single zone's: all of them are `apex`'s.
-    fn only(apex: &Name<'static>) -> Self {
-        Self {
-            known: Vec::new(),
-            zones: vec![apex.clone()],
-            fallback: apex.clone(),
-        }
-    }
-
     /// Whether the `RRset` `set` of `authority` is a proof of the zone `apex`.
     fn owns(&self, apex: &Name<'static>, set: &RrSet<'static>, authority: &Section) -> bool {
         let signers: Vec<Name<'static>> = authority
@@ -103,6 +103,14 @@ impl Evidences {
             .unwrap_or(&self.fallback);
         owner == apex
     }
+}
+
+/// Whether an RRSIG of `set` names `apex` as its signer: the zone a set claims, which the zone's keys then check.
+fn signed_by(set: &RrSet<'static>, section: &Section, apex: &Name<'static>) -> bool {
+    section
+        .signatures(set)
+        .iter()
+        .any(|sig| &sig.rrsig().signer == apex)
 }
 
 /// The zone that holds the data of `name` and `rtype`: for a DS, the parent's.
@@ -170,7 +178,8 @@ fn secure_keys(zone: &Located) -> Result<(Arc<RrSet<'static>>, Ttl), Unusable> {
 impl Validation {
     /// The verdict on the response, or the response of another question it needs.
     ///
-    /// Every question is asked before any signature is checked, so a rerun after an answer does no work twice.
+    /// Every question is asked before any signature is checked but those of the response's own denial records,
+    /// which the walk reads and the validation keeps, so a rerun after an answer does no work twice.
     pub(super) fn judge(&mut self) -> Result<Verdict, Need> {
         let response = Arc::clone(&self.response);
         let question = self.question.clone();
@@ -308,7 +317,7 @@ impl Validation {
         let mut verdict = Verdict::Secure { ttl: Ttl::MAX };
         // Bogus outranks every other verdict, so the first one is the last word and the rest costs nothing.
         for item in &items {
-            verdict = verdict.worse(self.item_verdict(item, authority, &mut evidences));
+            verdict = verdict.worse(self.item_verdict(item, &mut evidences));
             if matches!(verdict, Verdict::Bogus { .. }) {
                 return Ok(verdict);
             }
@@ -320,7 +329,7 @@ impl Validation {
             if denial_zone.as_ref().is_some_and(|d| d.apex == zone.apex) {
                 continue;
             }
-            let checked = self.denial_verdict(authority, zone, None, rcode, &mut evidences);
+            let checked = self.denial_verdict(zone, None, rcode, &mut evidences);
             verdict = verdict.worse(checked);
             if matches!(verdict, Verdict::Bogus { .. }) {
                 return Ok(verdict);
@@ -329,7 +338,6 @@ impl Validation {
         if let Some(zone) = denial_zone {
             let asked = Question::new(chain.end.clone(), question.qtype);
             verdict = verdict.worse(self.denial_verdict(
-                authority,
                 &zone,
                 needs_denial.then_some(&asked),
                 rcode,
@@ -346,12 +354,7 @@ impl Validation {
     }
 
     /// The verdict on one `RRset` (RFC 4035 §5.3), a wildcard expansion included (§5.3.4).
-    fn item_verdict(
-        &mut self,
-        item: &Item<'_>,
-        authority: &Section,
-        evidences: &mut Evidences,
-    ) -> Verdict {
+    fn item_verdict(&mut self, item: &Item<'_>, evidences: &mut Evidences) -> Verdict {
         let (keys, keys_ttl) = match secure_keys(&item.zone) {
             Ok(secure) => secure,
             Err(unusable) => return unusable.into(),
@@ -364,7 +367,7 @@ impl Validation {
         let Some(encloser) = wildcard else {
             return Verdict::Secure { ttl };
         };
-        let evidence = match self.evidence_in(evidences, apex, &keys, keys_ttl, authority) {
+        let evidence = match self.evidence_in(evidences, apex, &keys, keys_ttl) {
             Ok(evidence) => evidence,
             Err(unusable) => return unusable.into(),
         };
@@ -460,7 +463,7 @@ impl Validation {
         let Some(encloser) = wildcard else {
             return Ok(ttl);
         };
-        let evidence = self.evidence(apex, keys, keys_ttl, authority, &Evidences::only(apex))?;
+        let evidence = self.evidence(apex, keys, keys_ttl, Proofs::Walk(authority), |_, _| true)?;
         self.no_closer(set, &encloser, apex, &evidence, ttl)
     }
 
@@ -469,7 +472,6 @@ impl Validation {
     /// none.
     fn denial_verdict(
         &mut self,
-        authority: &Section,
         zone: &Located,
         asked: Option<&Question<'static>>,
         rcode: Rcode,
@@ -479,7 +481,7 @@ impl Validation {
             Ok(secure) => secure,
             Err(unusable) => return unusable.into(),
         };
-        let evidence = match self.evidence_in(evidences, &zone.apex, &keys, keys_ttl, authority) {
+        let evidence = match self.evidence_in(evidences, &zone.apex, &keys, keys_ttl) {
             Ok(evidence) => evidence,
             Err(unusable) => return unusable.into(),
         };
@@ -517,51 +519,96 @@ impl Validation {
         Verdict::Secure { ttl: proof.ttl }
     }
 
-    /// The evidence of the zone `apex`, checked once for a response.
+    /// The evidence of the zone `apex` in the response's authority section, checked once for a response.
     fn evidence_in(
         &mut self,
         evidences: &mut Evidences,
         apex: &Name<'static>,
         keys: &RrSet<'static>,
         keys_ttl: Ttl,
-        authority: &Section,
     ) -> Result<Arc<Evidence>, Unusable> {
         if let Some((_, known)) = evidences.known.iter().find(|(name, _)| name == apex) {
             return known.clone();
         }
+        let owns = |set: &RrSet<'static>, authority: &Section| evidences.owns(apex, set, authority);
         let evidence = self
-            .evidence(apex, keys, keys_ttl, authority, evidences)
+            .evidence(apex, keys, keys_ttl, Proofs::Response, owns)
             .map(Arc::new);
         evidences.known.push((apex.clone(), evidence.clone()));
         evidence
     }
 
-    /// The NSEC, NSEC3 and SOA `RRsets` of `authority`, all of which `keys` of the zone `apex` must verify
-    /// (RFC 4035 §5.5): an unsigned or forged one among them makes the response bogus, not just the proof
-    /// lesser. Only these reach [`denial`], which trusts its records (D74). Of a SOA only the limits of its TTL
-    /// and MINIMUM are kept (RFC 9077 §3.4).
+    /// The TTL for which the response's own denial records, those the zone `apex` signed and its `keys` verify,
+    /// prove `name` absent, not under an opt-out span; and a name below one proven absent is too. A name that does
+    /// not exist is no zone cut: the walk needs not ask its DS (RFC 4035 §5.2, RFC 5155 §8.8, D75). `None` when
+    /// nothing is proven, for any reason: the walk then asks.
+    pub(super) fn absent(
+        &mut self,
+        name: &Name<'static>,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Option<Ttl> {
+        let inherited = parent(name).and_then(|above| self.absent.get(&above).copied());
+        let ttl = inherited.or_else(|| self.prove_absent(name, apex, keys, keys_ttl))?;
+        self.absent.insert(name.clone(), ttl);
+        Some(ttl)
+    }
+
+    /// The TTL for which the response's own denial records of the zone `apex` prove `name` absent, as
+    /// [`Validation::absent`] says.
+    fn prove_absent(
+        &mut self,
+        name: &Name<'static>,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Option<Ttl> {
+        if !self.parsed.authority.has_denial() {
+            return None;
+        }
+        let signed = |set: &RrSet<'static>, authority: &Section| signed_by(set, authority, apex);
+        let evidence = self
+            .evidence(apex, keys, keys_ttl, Proofs::Response, signed)
+            .ok()?;
+        let max = self.config.limits.iterations;
+        let proof = denial::prove_absent(apex, name, &evidence.records, max, &mut self.budget)
+            .ok()
+            .filter(|proof| !proof.opt_out)?;
+        Some(proof.ttl.min(evidence.limit))
+    }
+
+    /// The NSEC, NSEC3 and SOA `RRsets` of an authority section that `owns` gives the zone `apex`, all of which
+    /// `keys` of the zone must verify (RFC 4035 §5.5): an unsigned or forged one among them makes the response
+    /// bogus, not just the proof lesser. Only these reach [`denial`], which trusts its records (D74). Of a SOA
+    /// only the limits of its TTL and MINIMUM are kept (RFC 9077 §3.4).
     fn evidence(
         &mut self,
         apex: &Name<'static>,
         keys: &RrSet<'static>,
         keys_ttl: Ttl,
-        authority: &Section,
-        scope: &Evidences,
+        proofs: Proofs<'_>,
+        owns: impl Fn(&RrSet<'static>, &Section) -> bool,
     ) -> Result<Evidence, Unusable> {
+        let parsed = Arc::clone(&self.parsed);
+        let authority = match proofs {
+            Proofs::Response => &parsed.authority,
+            Proofs::Walk(authority) => authority,
+        };
         let mut records = Vec::new();
         let mut limit = keys_ttl.min(DENIAL_TTL_CAP);
-        let proofs = authority
+        let sets = authority
             .sets
             .iter()
-            .filter(|set| is_denial(set.rtype()) && scope.owns(apex, set, authority));
-        for set in proofs {
-            let (ttl, wildcard) = self.authentic(set, authority, apex, keys, keys_ttl)?;
-            if wildcard.is_some() {
-                return Err(Unusable::Failed(Failure::bogus(
-                    InfoCode::DNSSEC_BOGUS,
-                    format!("{} {} is a wildcard expansion", set.owner(), set.rtype()),
-                )));
-            }
+            .enumerate()
+            .filter(|(_, set)| is_denial(set.rtype()) && owns(set, authority));
+        for (index, set) in sets {
+            let ttl = match proofs {
+                Proofs::Response => {
+                    self.kept_denial_set(index, set, authority, apex, keys, keys_ttl)
+                }
+                Proofs::Walk(_) => self.denial_set(set, authority, apex, keys, keys_ttl),
+            }?;
             limit = limit.min(ttl);
             if set.rtype() == RecordType::SOA {
                 if let Some(RData::Soa(soa)) = set.rdatas().first().map(|rdata| rdata.data()) {
@@ -577,6 +624,44 @@ impl Validation {
             }
         }
         Ok(Evidence { records, limit })
+    }
+
+    /// [`Validation::denial_set`] for the set at `index` of the response's authority section, checked once.
+    fn kept_denial_set(
+        &mut self,
+        index: usize,
+        set: &RrSet<'static>,
+        authority: &Section,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Result<Ttl, Unusable> {
+        let key = (index, apex.clone());
+        if let Some(known) = self.checked.get(&key) {
+            return known.clone();
+        }
+        let checked = self.denial_set(set, authority, apex, keys, keys_ttl);
+        self.checked.insert(key, checked.clone());
+        checked
+    }
+
+    /// The TTL of an NSEC, NSEC3 or SOA `RRset` that `keys` of the zone `apex` verify, as no wildcard expansion.
+    fn denial_set(
+        &mut self,
+        set: &RrSet<'static>,
+        authority: &Section,
+        apex: &Name<'static>,
+        keys: &RrSet<'static>,
+        keys_ttl: Ttl,
+    ) -> Result<Ttl, Unusable> {
+        let (ttl, wildcard) = self.authentic(set, authority, apex, keys, keys_ttl)?;
+        if wildcard.is_some() {
+            return Err(Unusable::Failed(Failure::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                format!("{} {} is a wildcard expansion", set.owner(), set.rtype()),
+            )));
+        }
+        Ok(ttl)
     }
 
     /// What `evidence` proves about `question` in the zone `apex` (RFC 4035 §5.4, RFC 5155 §8, RFC 9077 §3.4).
@@ -606,7 +691,7 @@ impl Validation {
         authority: &Section,
         question: &Question<'_>,
     ) -> Result<Proof, Unusable> {
-        let evidence = self.evidence(apex, keys, keys_ttl, authority, &Evidences::only(apex))?;
+        let evidence = self.evidence(apex, keys, keys_ttl, Proofs::Walk(authority), |_, _| true)?;
         self.prove(apex, question, &evidence)
     }
 }

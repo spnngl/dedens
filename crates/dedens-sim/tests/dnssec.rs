@@ -493,7 +493,8 @@ enum Silence {
 /// Questions of the chain the server never answers: SERVFAIL with an extended error, never the answer without AD
 /// that an absent DS would make an insecure one (RFC 4035 §5.2, D77: unanswered is indeterminate, not insecure).
 /// Of a signed zone, of an unsigned one (the DS that would prove it so is the response lost), of one the validator
-/// cannot check, and of a denial.
+/// cannot check, and of a denial. The denied name's own DS is not asked: its response proves it absent, so no cut
+/// (D75), and its verdict needs only the DS and keys of its zone.
 #[test]
 fn a_chain_question_nobody_answers_ends_in_servfail_with_an_ede_never_insecure() {
     const NAMES: [&str; 4] = [
@@ -516,9 +517,16 @@ fn a_chain_question_nobody_answers_ends_in_servfail_with_an_ede_never_insecure()
                 }
             });
             // A SERVFAIL is judged as a bare one: no AD, no answer.
-            all_ask(seed, answers, &NAMES, |_| {
-                Seen::Servfail(Some(InfoCode::NO_REACHABLE_AUTHORITY))
-            });
+            let expect: fn(Zone) -> Seen = match silence {
+                Silence::ZoneDs => |zone| match zone.name {
+                    "nonexistent.nlnetlabs.nl" => Seen::Secure,
+                    _ => Seen::Servfail(Some(InfoCode::NO_REACHABLE_AUTHORITY)),
+                },
+                Silence::Ds | Silence::Dnskey => {
+                    |_| Seen::Servfail(Some(InfoCode::NO_REACHABLE_AUTHORITY))
+                }
+            };
+            all_ask(seed, answers, &NAMES, expect);
         }
     });
 }

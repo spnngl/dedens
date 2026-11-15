@@ -293,7 +293,8 @@ impl Validation {
     }
 
     /// The cut at a name below its trust anchor: the DS `RRset` or the proof of its absence, from the zone of
-    /// the parent name.
+    /// the parent name; no cut, without a question, for a name the response's own denial proves absent
+    /// ([`Validation::absent`]).
     fn below_anchor(&mut self, name: &Name<'static>, keys: bool) -> Result<Cut, Need> {
         let Some(parent) = parent(name) else {
             return Ok(Cut::Unusable(Unusable::Failed(Failure::bogus(
@@ -306,6 +307,9 @@ impl Validation {
             Settled::Secure { keys, ttl } => (keys, ttl),
             Settled::Unusable(unusable) => return Ok(Cut::Beneath(unusable)),
         };
+        if let Some(ttl) = self.absent(name, &apex, &parent_keys, keys_ttl) {
+            return Ok(Cut::Inside { apex, ttl });
+        }
         let message = match self.fetch(name, RecordType::DS)? {
             Ok(message) => message,
             Err(failure) => return Ok(Cut::Unusable(Unusable::Failed(failure))),

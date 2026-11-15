@@ -85,23 +85,20 @@ pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof
     Ok(Proof::new(Fact::NameError { compact: false }, ttl))
 }
 
-/// RFC 4035 §5.3.4: an NSEC covers the next closer name, so the wildcard was the closest match.
-pub(super) fn prove_wildcard_answer(
-    links: &[Link<'_>],
-    next_closer: &Name<'_>,
-) -> Result<Proof, Unproven> {
-    if links.iter().any(|l| l.owner == next_closer) {
+/// RFC 4035 §5.3.4, §5.4: an NSEC covers `name`, which does not exist, not even as an empty non-terminal.
+pub(super) fn prove_absent(links: &[Link<'_>], name: &Name<'_>) -> Result<Proof, Unproven> {
+    if links.iter().any(|l| l.owner == name) {
         return Err(Unproven::CloserNameExists);
     }
     let covering = links
         .iter()
-        .find(|l| l.covers(next_closer))
+        .find(|l| l.covers(name))
         .ok_or(Unproven::NotCovered)?;
-    // The next name is below the next closer name: that is an empty non-terminal, which exists.
-    if covering.next.is_within(next_closer) {
+    // The next name is below `name`: that is an empty non-terminal, which exists.
+    if covering.next.is_within(name) {
         return Err(Unproven::CloserNameExists);
     }
-    Ok(Proof::new(Fact::WildcardAnswer, covering.ttl))
+    Ok(Proof::new(Fact::Absent, covering.ttl))
 }
 
 #[cfg(test)]

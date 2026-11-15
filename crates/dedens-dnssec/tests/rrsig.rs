@@ -598,7 +598,7 @@ mod verification {
     use dedens_testkit::dnssec::{RFC4035_NS1_SIGNATURE, RFC4035_ZSK, Rrsig, dnskey_rdata};
     use dedens_testkit::zone;
 
-    use crate::util::denial::{nsec, pick, prove, prove_wildcard};
+    use crate::util::denial::{nsec, pick, prove, prove_absent, prove_wildcard};
     use crate::util::{check, name, rrset, rrset_in, rrsig_set};
 
     // 2004-04-09T18:36:19Z and 2004-05-09T18:36:19Z.
@@ -1240,6 +1240,41 @@ mod verification {
         assert_eq!(
             prove_wildcard(APEX, "a.z.w.example.", 4, &records),
             Err(Unproven::NotExpanded)
+        );
+    }
+
+    /// B.6's NSEC proves `z.w.example.` absent, which the validator's walk takes for no zone cut (D75). No NSEC
+    /// proves a delegation absent, nor a name below one: an attacker cannot pass a denial off as the end of a
+    /// walk that has a DS to find (B.4's `a.example.`, signed) or an unsigned zone (B.5's `b.example.`).
+    #[test]
+    fn b6_absent_name_and_no_absent_delegation() {
+        assert_eq!(
+            prove_absent(APEX, "z.w.example.", &nsecs(&["x.y.w.example."])),
+            Ok(proof(Fact::Absent))
+        );
+        // An empty non-terminal exists.
+        assert_eq!(
+            prove_absent(APEX, "y.w.example.", &nsecs(&["x.w.example."])),
+            Err(Unproven::CloserNameExists)
+        );
+        for (delegation, below) in [
+            ("a.example.", "x.a.example."),
+            ("b.example.", "x.b.example."),
+        ] {
+            let records = nsecs(&[delegation]);
+            assert_eq!(
+                prove_absent(APEX, delegation, &records),
+                Err(Unproven::CloserNameExists)
+            );
+            // Between the owner and the next name in canonical order, but below the cut: not the zone's.
+            assert_eq!(
+                prove_absent(APEX, below, &records),
+                Err(Unproven::NotCovered)
+            );
+        }
+        assert_eq!(
+            prove_absent(APEX, APEX, &nsecs(&["x.y.w.example."])),
+            Err(Unproven::OutsideZone)
         );
     }
 
