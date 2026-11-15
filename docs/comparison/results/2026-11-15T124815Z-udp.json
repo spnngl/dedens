@@ -1,0 +1,44 @@
+{
+ "mode": "udp",
+ "time": "2026-11-15T12:48:15Z",
+ "versions": {
+  "telltale": "0.6.0",
+  "unbound": "1.26.2",
+  "coredns": "1.15.0",
+  "knot": "3.6.2"
+ },
+ "host": {
+  "kernel": "6.12.0-211.74.2.el10_2.x86_64",
+  "cpu": "Intel Core Processor (Haswell, no TSX)",
+  "cores": 6
+ },
+ "engine": "podman version 5.8.2",
+ "pinning": "taskset",
+ "servers": [
+  "broken",
+  "dedensd"
+ ],
+ "config_names": [
+  "lean",
+  "shipped"
+ ],
+ "cpus": {
+  "server": "0-0",
+  "knot": "5",
+  "loader": "1-4"
+ },
+ "rounds": 1,
+ "duration_s": 10,
+ "outstanding": 500,
+ "configs": {
+  "broken.Corefile": "46df4db01adfee79dce9b8ff934c3ccbbf2eae5ba607f13a9818f2ccfe260ae5",
+  "dedensd.yaml": "b97733207dba7564e87bded48c6c783b6dfff9438292e3160641a3af03ffccb4"
+ },
+ "corpora": {
+  "cache-hot.txt": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f"
+ },
+ "starts": [],
+ "checks": [],
+ "runs": [],
+ "failed": "broken broken.Corefile: rcode SERVFAIL for 10 s, not NOERROR\nmaxprocs: Leaving GOMAXPROCS=1: CPU quota undefined\n.:5301\ntls://.:8531\nCoreDNS-1.15.0\nlinux/amd64, go1.27.3, a6fde3f\n"
+}
