@@ -6,7 +6,7 @@
 //! - `dedensd` over real sockets on loopback: forwarding over UDP and TCP to a responder that answers captured bytes,
 //!   several queries on one TCP connection (RFC 7766 §6.2.1), SERVFAIL when upstream stays silent, a start that fails
 //!   on a taken address with its text events coloured as `NO_COLOR` and `CLICOLOR_FORCE` say (D169), SIGTERM and
-//!   SIGINT ending it, `validate` reading a configuration file without binding, and expired data answering a client
+//!   SIGINT ending it, its QUIC connections closed first, `validate` reading a configuration file without binding, and expired data answering a client
 //!   kept waiting while resolution goes on (RFC 8767 §5).
 
 use std::io::Write;
@@ -509,6 +509,29 @@ fn sigterm_and_sigint_end_the_server() {
         let status = server.exited().expect("exited");
         assert!(status.success(), "{signal}: {status}");
     }
+}
+
+/// D157, RFC 9250 §4.3: a server stopped by SIGTERM closes its QUIC connections with `DOQ_NO_ERROR`, 0, before it
+/// ends: its clients open new ones at once instead of waiting for their idle timeout.
+#[cfg(unix)]
+#[test]
+fn sigterm_closes_the_quic_connections() {
+    let upstream = Responder::start(&["a"]);
+    let ca = certificates();
+    let (mut server, ..) = listening(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        server.signal("TERM");
+        let closed = compio::time::timeout(Duration::from_secs(5), connection.closed())
+            .await
+            .expect("closed by the server");
+        assert!(
+            matches!(&closed, ConnectionError::ApplicationClosed(close) if close.error_code == VarInt::from_u32(0)),
+            "{closed:?}"
+        );
+    });
+    let status = server.exited().expect("exited");
+    assert!(status.success(), "{status}");
 }
 
 #[test]

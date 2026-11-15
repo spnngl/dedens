@@ -28,6 +28,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::error::ErrorKind;
@@ -148,11 +149,11 @@ pub fn main() -> anyhow::Result<()> {
     .context("cannot handle SIGHUP")?;
     log::notices(&listen, &services);
     let threads = sockets.len();
-    let (ended, end) = stop_on_signal().context("cannot handle SIGTERM")?;
+    let (ending, end) = stop_on_signal().context("cannot handle SIGTERM")?;
     let (listening, listened) = mpsc::channel();
     for (index, sockets) in sockets.into_iter().enumerate() {
-        let (current, ended) = (Arc::clone(&current), ended.clone());
-        let listening = listening.clone();
+        let (current, ending, listening) =
+            (Arc::clone(&current), ending.clone(), listening.clone());
         let (trust, presented) = (config.trust.clone(), presented.clone());
         let services = services.clone();
         let serving = move || {
@@ -165,6 +166,7 @@ pub fn main() -> anyhow::Result<()> {
                     services,
                     index == 0,
                     listening,
+                    ending.stopping.clone(),
                 );
                 // Never dropped, not even when `serving` panics: dropping a runtime frees what its ring's
                 // operations in flight still point to, which the kernel may write after (D107). The process
@@ -172,21 +174,21 @@ pub fn main() -> anyhow::Result<()> {
                 serve::runtime().and_then(|runtime| ManuallyDrop::new(runtime).block_on(serving))
             }));
             // A panic here is the runtime's, or a driver's: tasks and listeners catch their own (D121).
-            let _ = ended.send(served.unwrap_or_else(|payload| Err(isolate::fatal(&*payload))));
+            ending.served(served.unwrap_or_else(|payload| Err(isolate::fatal(&*payload))));
         };
         thread::Builder::new()
             .name(format!("dedensd-{index}"))
             .spawn(serving)
             .context("cannot start a thread")?;
     }
-    drop((ended, listening));
+    drop((ending, listening));
     // Announced once every thread has its sockets; a thread that failed to start never sends, and `end` has why.
     // `listened` ends once each thread has sent or failed.
     let drivers: Vec<_> = listened.iter().collect();
     if drivers.len() == threads {
         announce(&path.to_string(), &listen, &drivers);
     }
-    // Threads serve until one fails to start or panics; each sends before ending.
+    // Threads serve until one fails to start or panics, which it sends, or until the signal's thread sends the stop.
     match end.recv()? {
         Ok(()) => Ok(()),
         // Logged as the rest of what the server says, not only printed: its log is where it is looked for (D121).
@@ -281,16 +283,17 @@ fn keygen(provider_name: &str, address: &str) -> anyhow::Result<()> {
 }
 
 /// Ends the server on SIGTERM or SIGINT (D157), as `docker stop`, systemd and Ctrl-C ask: at once, since nothing is
-/// to flush (the cache lives in memory, a list and its `ETag` are replaced atomically, D64). Needed as PID 1 of the
-/// image, where the kernel drops a signal that has no handler. The thread starts after root is dropped (D122).
-///
-/// The channel the server's end comes on: from a serving thread, or from the signal.
+/// to flush (the cache lives in memory, a list and its `ETag` are replaced atomically, D64), once the serving threads
+/// have closed their QUIC connections, [`CLOSING`] at most. Needed as PID 1 of the image, where the kernel drops a
+/// signal that has no handler. The thread starts after root is dropped (D122).
 ///
 /// # Errors
 ///
 /// A handler the OS refuses.
-fn stop_on_signal() -> io::Result<Ending> {
+fn stop_on_signal() -> io::Result<(Ending, mpsc::Receiver<io::Result<()>>)> {
     let (ended, end) = mpsc::channel();
+    let (stop, stopping) = flume::bounded(0);
+    let (closed, all_closed) = mpsc::channel();
     #[cfg(unix)]
     {
         use signal_hook::consts::{SIGINT, SIGTERM};
@@ -306,15 +309,52 @@ fn stop_on_signal() -> io::Result<Ending> {
                         "SIGINT"
                     };
                     tracing::info!(signal, "dedensd ends: stopped");
+                    drop(stop);
+                    // Disconnected once each serving thread has closed, as nothing sends on it.
+                    let _ = all_closed.recv_timeout(CLOSING);
                     let _ = ended.send(Ok(()));
                 }
             })?;
     }
-    Ok((ended, end))
+    #[cfg(not(unix))]
+    {
+        // No signal: the server is never stopped, and `stopping` must not disconnect.
+        std::mem::forget(stop);
+        drop(all_closed);
+    }
+    let ending = Ending {
+        ended,
+        stopping,
+        closed,
+    };
+    Ok((ending, end))
 }
 
-/// The two ends of [`stop_on_signal`]'s channel.
-type Ending = (mpsc::Sender<io::Result<()>>, mpsc::Receiver<io::Result<()>>);
+/// The most a stopped server waits for its threads to close their QUIC connections (D157).
+const CLOSING: Duration = Duration::from_secs(1);
+
+/// A serving thread's ends of [`stop_on_signal`]'s channels; the receiver of the server's end is [`main`]'s.
+#[derive(Clone)]
+struct Ending {
+    /// Where the server's end comes: a serving thread's failure, or the signal once the threads have closed.
+    ended: mpsc::Sender<io::Result<()>>,
+    /// Disconnected by the signal: the serving thread then closes its QUIC connections.
+    stopping: flume::Receiver<()>,
+    /// Held by the serving thread until it has closed them.
+    closed: mpsc::Sender<()>,
+}
+
+impl Ending {
+    /// The thread's serving ended as `served` says: a failure ends the server; a stop is the signal's, whose thread
+    /// ends the server once each serving thread dropped its `Ending`.
+    fn served(self, served: io::Result<()>) {
+        let Self { ended, closed, .. } = self;
+        if let Err(error) = served {
+            let _ = ended.send(Err(error));
+        }
+        drop(closed);
+    }
+}
 
 /// The text of the configuration file `file`.
 ///
