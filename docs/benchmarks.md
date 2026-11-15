@@ -441,18 +441,19 @@ one after another over one connection.
 - One query at a time DoH3 is 8% slower than DoQ (QPACK and HTTP framing on top of the same QUIC stream); with 32
   at once 0.47x (GET) and 0.61x (POST) of DoQ's rate, the one thread running both ends. A GET builds a URI with the
   query in base64url and its server parses it; POST sends the query as a body.
-- The silent-try close (D61, D83) reads the reused connection's received datagrams before each request, a lock of
-  the connection's state. Three rounds alternating `origin/main` (7dc4be80) and the change, the same bench binaries,
-  on an Apple M5 (10 cores) under load (load average 3 to 9, other agents' builds running), medians in queries/s:
+- The silent-try close (D61, D83) reads the reused connection's received datagrams and the clock before each
+  request, a lock of the connection's state. Three rounds alternating `origin/main` (7dc4be80) and the change, the
+  same bench binaries, on an Apple M5 (10 cores) under load (load average 3 to 9, other agents' builds running),
+  medians in queries/s:
 
   | Transport | in flight | before | after |
   |---|---|---|---|
-  | DoQ | 1 | 9799 | 9729 |
-  | DoQ | 32 | 211366 | 210735 |
-  | DoH3, GET | 1 | 9105 | 9175 |
-  | DoH3, GET | 32 | 98709 | 99253 |
-  | DoH3, POST | 1 | 9284 | 9343 |
-  | DoH3, POST | 32 | 118486 | 118485 |
+  | DoQ | 1 | 9750 | 9746 |
+  | DoQ | 32 | 214280 | 212807 |
+  | DoH3, GET | 1 | 9049 | 9039 |
+  | DoH3, GET | 32 | 100636 | 100140 |
+  | DoH3, POST | 1 | 9247 | 9250 |
+  | DoH3, POST | 32 | 121088 | 120621 |
 
   Within 1% each way, under the spread between rounds (up to 5%): no cost to measure.
 
