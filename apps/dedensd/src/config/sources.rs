@@ -20,7 +20,7 @@ use super::limits::BudgetFile;
 use super::upstream::{Dnssec, Insecure, Relay, Server};
 use super::{DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES};
 use crate::download;
-use crate::lists::Store;
+use crate::lists::{Store, Unsaved};
 
 /// A stage, as written: its settings under its `type`.
 #[derive(Debug, Deserialize)]
@@ -467,21 +467,23 @@ fn side(
     }
     for Url(url) in &sources.urls {
         let copy = download::copy(dir, url);
+        let not_a_list = |error: &dyn std::fmt::Display| {
+            tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
+        };
         match store.saved(&copy, &download::redacted(url)) {
             Ok(saved) => match saved.check(tlds) {
                 Ok(_) => names.push(saved),
-                Err(error) => {
-                    tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
-                }
+                Err(error) => not_a_list(&error),
             },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(Unsaved::NotText(error)) => not_a_list(&error),
+            Err(Unsaved::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 tracing::info!(
                     stage,
                     url = download::redacted(url),
                     "list not downloaded yet"
                 );
             }
-            Err(error) => {
+            Err(Unsaved::Io(error)) => {
                 return Err(error).with_context(|| format!("reading `{}`", copy.display()));
             }
         }
@@ -657,7 +659,8 @@ mod tests {
         );
     }
 
-    /// D115: a downloaded list not fetched yet is empty, and a saved copy that does not read stops the start.
+    /// D115: a downloaded list not fetched yet is empty, a saved copy that is not a list, text or not, is left out,
+    /// and a saved copy that does not read stops the start.
     #[cfg(unix)]
     #[test]
     fn an_unreadable_saved_list_refuses_the_start() {
@@ -674,6 +677,9 @@ mod tests {
         let copy = download::copy(dir.path(), url);
         std::fs::write(&copy, "not a list: ?\n").unwrap();
         assert!(read(&text, env, &Pipeline::default()).is_ok(), "no list");
+        // A DNS response, saved in its place: not UTF-8.
+        std::fs::write(&copy, dedens_testkit::captured("a")).unwrap();
+        assert!(read(&text, env, &Pipeline::default()).is_ok(), "no text");
         std::fs::remove_file(&copy).unwrap();
         std::fs::create_dir(&copy).unwrap();
         let refused = error(&text);
