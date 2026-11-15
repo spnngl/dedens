@@ -512,7 +512,8 @@ fn sigterm_and_sigint_end_the_server() {
 }
 
 /// D157, RFC 9250 §4.3: a server stopped by SIGTERM closes its QUIC connections with `DOQ_NO_ERROR`, 0, before it
-/// ends: its clients open new ones at once instead of waiting for their idle timeout.
+/// ends: its clients open new ones at once instead of waiting for their idle timeout. Its listeners are cancelled
+/// first, so none is taken for a failure.
 #[cfg(unix)]
 #[test]
 fn sigterm_closes_the_quic_connections() {
@@ -521,6 +522,15 @@ fn sigterm_closes_the_quic_connections() {
     let (mut server, ..) = listening(&ca, upstream.addr);
     Runtime::new().expect("a runtime").block_on(async {
         let connection = pinging(server.addr, &ca, 1 << 20).await;
+        // A reply: the handshake is over on both sides, so the close is the application's (RFC 9000 §10.2.3).
+        let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
+        send.write_all(framed(&query_for("a", 0)))
+            .await
+            .0
+            .expect("the query sent");
+        send.finish().expect("finished");
+        let reply = compio::time::timeout(Duration::from_secs(10), read_message(&mut recv)).await;
+        reply.expect("within 10 s").expect("a reply");
         server.signal("TERM");
         let closed = compio::time::timeout(Duration::from_secs(5), connection.closed())
             .await
@@ -532,6 +542,11 @@ fn sigterm_closes_the_quic_connections() {
     });
     let status = server.exited().expect("exited");
     assert!(status.success(), "{status}");
+    let stderr = server.stderr();
+    assert!(
+        !stderr.iter().any(|line| line.contains("listener ended")),
+        "{stderr:#?}"
+    );
 }
 
 #[test]

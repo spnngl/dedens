@@ -26,34 +26,34 @@ use dedens_proto::edns::OptionCode;
 use dedens_proto::{Query, Transport};
 use socket2::Socket;
 
-use super::http3::requests;
+use super::http3::{H3_UNI_STREAMS, requests};
 use super::isolate::{Listener, Origin};
 use super::tcp::{TCP_PENDING, TCP_WRITE};
 use super::upstream::answer;
 use super::{Slot, Started, TCP_IDLE, Thread, local, start, supervised};
 
-/// Serves the QUIC endpoint on `udp_socket` as `service`, as the listener `scheme`, and pushes the endpoint to
-/// `endpoints`, for [`close`] to end. A restarted loop takes the same endpoint: `wait_incoming` ends only once the
-/// endpoint is closed, which only [`close`] does, at the end of the process, so the loop does not end by itself, and
+/// Serves the QUIC endpoint on `udp_socket` as `service`, as the listener `quic` or `https`, and pushes the endpoint
+/// to `endpoints`, for [`close`] to end. A restarted loop takes the same endpoint: `wait_incoming` ends only once the
+/// endpoint is closed, which only [`close`] does, once the loop is cancelled, so the loop does not end by itself, and
 /// a panic leaves the endpoint as it was.
 pub(super) fn quic_task(
     thread: &Rc<Thread>,
-    scheme: &str,
     udp_socket: Socket,
     config: ServerConfig,
-    uni_streams: u32,
     service: Service,
     endpoints: &mut Vec<Closing>,
 ) -> io::Result<JoinHandle<()>> {
+    let (scheme, uni_streams, code) = match service {
+        Service::Quic => ("quic", 0, VarInt::from_u32(DOQ_NO_ERROR)),
+        Service::Https(_) => {
+            let code = VarInt::from_u64(H3_NO_ERROR).unwrap_or(VarInt::MAX);
+            ("https", H3_UNI_STREAMS, code)
+        }
+    };
     let name = Listener::new(scheme, local(&udp_socket));
     let serving = endpoint(udp_socket, config, uni_streams)?;
-    endpoints.push(Closing {
-        endpoint: serving.clone(),
-        code: match service {
-            Service::Quic => VarInt::from_u32(DOQ_NO_ERROR),
-            Service::Https(_) => VarInt::from_u64(H3_NO_ERROR).unwrap_or(VarInt::MAX),
-        },
-    });
+    let endpoint = serving.clone();
+    endpoints.push(Closing { endpoint, code });
     let service = Rc::new(service);
     Ok(supervised(name, thread, move |name, thread| {
         quic(
@@ -75,7 +75,7 @@ pub(super) struct Closing {
 const CLOSE_GRACE: Duration = Duration::from_millis(100);
 
 /// Closes the connections of `endpoints` with their protocol's code for no error, `DOQ_NO_ERROR` (RFC 9250 §4.3) or
-/// `H3_NO_ERROR` (RFC 9114 §5.2, §8.1), and waits [`CLOSE_GRACE`] for the frames to go out if there were any: their
+/// `H3_NO_ERROR` (RFC 9114 §5.3, §8.1), and waits [`CLOSE_GRACE`] for the frames to go out if there were any: their
 /// clients open new connections at once instead of waiting out their idle timeout (D157). Queries in flight are
 /// lost, and asked again by their clients.
 pub(super) async fn close(endpoints: &[Closing]) {
@@ -92,7 +92,7 @@ pub(super) async fn close(endpoints: &[Closing]) {
 
 /// The QUIC endpoint on `socket` with `config`: connections closed after [`TCP_IDLE`] without a packet (RFC 9250
 /// §5.5.1), with [`TCP_PENDING`] queries in flight at most, and `uni_streams` the client may open: none for DNS over
-/// QUIC (§4.2), [`H3_UNI_STREAMS`](super::http3::H3_UNI_STREAMS) for HTTP/3 (RFC 9114 §6.2). No DATAGRAM frame is read (D107): the receive buffer
+/// QUIC (§4.2), [`H3_UNI_STREAMS`] for HTTP/3 (RFC 9114 §6.2). No DATAGRAM frame is read (D107): the receive buffer
 /// is off, so quinn advertises no `max_datagram_frame_size` (RFC 9221 §3) and closes the connection on a DATAGRAM
 /// frame from the peer. A peer may send [`RECEIVE_WINDOW`] bytes on the connection and [`STREAM_RECEIVE_WINDOW`] on a
 /// stream before the reader returns credit (D119).

@@ -173,11 +173,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   seccomp on, io_uring when the sysctl allows it, a reload downloads an 87,809-name list into `/var/cache/dedensd` and
   answers a listed name NXDOMAIN with EDE 15; `systemd-analyze security` 1.7 OK.
 - D157 (builds on D55, D64, D121, D122, D153) `dedensd` ends on SIGTERM or SIGINT, as `docker stop`, systemd and
-  Ctrl-C ask: it logs `dedensd ends: stopped` with the signal and exits with success at once. Nothing is to flush: the
-  cache lives in memory, a list and its `ETag` are replaced atomically (D64), a query in flight is dropped as a lost
-  packet. Each serving thread first closes its QUIC connections, DoQ with `DOQ_NO_ERROR` (RFC 9250 §4.3), HTTP/3
-  with `H3_NO_ERROR` (RFC 9114 §8.1), and waits 100 ms for the close to go out; the process waits for the threads 1 s
-  at most. Without it a client's pooled connection stays silent, its queries timing out, until its QUIC idle timeout
+  Ctrl-C ask: it logs `dedensd ends: stopped` with the signal and exits with success once its QUIC connections are
+  closed. Nothing else is to flush: the cache lives in memory, a list and its `ETag` are replaced atomically (D64), a
+  query in flight is dropped as a lost packet. Each serving thread cancels its listeners, closes its QUIC
+  connections, DoQ with `DOQ_NO_ERROR` (RFC 9250 §4.3), HTTP/3 with `H3_NO_ERROR` (RFC 9114 §5.3, §8.1), and waits
+  100 ms for the close to go out; the process waits for the threads 1 s at most, a second signal meanwhile ignored. Without it a client's pooled connection stays silent, its queries timing out, until its QUIC idle timeout
   (a restart behind an ODoH proxy cost 11 s, D185); TCP needs nothing, as the kernel resets its connections. As PID
   1 of the image (D153) the kernel drops a signal without a handler, so a stop waited out the grace period, 10 to 30
   s, then SIGKILL. The handler is `signal-hook`'s, as SIGHUP's (D55), on a thread started after root is dropped
