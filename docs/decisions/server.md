@@ -888,8 +888,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     SERVFAIL with EDE 14, nothing held, counted `verdict="shed_share"` for the share and `verdict="shed"` for
     the allowance. Cache hits, CD and classes other than IN cost neither, as before. A source on D113's
     `rrl.exempt` list has no share and still spends the allowance. `client_share: {rate, burst}` on the forward
-    stage, default 1000 and 2000, a tenth of the allowance, so that ten networks at their share spend all of it
-    and no one network can: 2000 units are about 160 cold validations (`docs/benchmarks.md`). A reload keeps the
+    stage, default 1000 and 2000, a tenth of the allowance of a server of one or two threads (D77 scales it by the
+    threads, not the share), so that ten networks at their share spend all of it there and no one network can:
+    2000 units are about 160 cold validations (`docs/benchmarks.md`). A reload keeps the
     key cache and restarts the shares only when the setting changed.
   - ODoH (S14). Before `dedens_odoh::Message::parse` and the HPKE open, `odoh::Service::open` takes one unit of the
     client network's budget (`odoh.client_budget`, default 1000 and 2000: 3.5% of a core at 34.6 µs a

@@ -9,6 +9,7 @@
 
 use std::fmt;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use dedens_dnssec::{Cost, MAX_CHASES, Next, Validation, Validator, Verdict, covered};
@@ -29,9 +30,13 @@ const MAX_QUESTIONS: u16 = 64;
 /// signature check of the slowest key (`docs/benchmarks.md`).
 const BLOCKS_PER_UNIT: u32 = 4096;
 
+/// Units of [`Allowance::per_second`] for every two serving threads (D77): about a core of the VPS's Haswell on
+/// P-256 checks, where a unit takes about 90 µs all told (`docs/benchmarks.md`).
+const PER_TWO_THREADS: u32 = 10_000;
+
 /// What a client network may spend of the [`Allowance`] by default, a /24 of IPv4 or a /48 of IPv6 (D117): a tenth
-/// of its rate and burst, so that ten networks spending it together spend it all, over a table of 65 536 buckets,
-/// 512 KiB.
+/// of the rate and burst of a server of one or two threads, so that ten networks spending it together spend it
+/// all there, over a table of 65 536 buckets, 512 KiB.
 pub const DEFAULT_SHARE: Budget = Budget {
     per_second: 1_000,
     burst: 2_000,
@@ -56,8 +61,9 @@ pub(crate) struct Admitted {
 
 /// What the queries of all clients may cost a validating forward stage, in units (D77): a client's question
 /// upstream, a question of the validator's, a signature verification, or 4096 SHA-1 blocks of NSEC3 hashing (a
-/// hash of a short name with no salt is one block per iteration, D106). A unit takes about 10
-/// µs of a core on the checks of the common algorithms and up to 340 µs on a P-384 one (`docs/benchmarks.md`).
+/// hash of a short name with no salt is one block per iteration, D106). A unit takes 10 to 30 µs of a recent core
+/// on the checks of the common algorithms, about 90 µs of a Haswell one on P-256, and up to 340 µs of a recent
+/// core on a P-384 one (`docs/benchmarks.md`).
 /// A response from the cache costs none, a validation that finds the zone's keys in the validator's key cache
 /// (D86) two units.
 ///
@@ -84,14 +90,27 @@ pub struct Allowance {
     pub per_query: u32,
 }
 
-impl Default for Allowance {
-    /// A tenth of a core on the common algorithms, a few cores on P-384 alone, and two seconds of burst.
-    fn default() -> Self {
+impl Allowance {
+    /// The allowance of a server of `threads` serving threads, one per core by default (D42):
+    /// 10 000 units a second for every two threads, one at least, and two seconds of burst. On P-256
+    /// that is half the cores of a Haswell server, all of a one-thread one, and less of a recent one, so that a
+    /// flood of names to validate leaves the cache the other half to answer from; P-384 alone takes them all.
+    #[must_use]
+    pub fn serving(threads: NonZeroUsize) -> Self {
+        let pairs = u32::try_from(threads.get().div_ceil(2)).unwrap_or(u32::MAX);
+        let per_second = PER_TWO_THREADS.saturating_mul(pairs);
         Self {
-            per_second: 10_000,
-            burst: 20_000,
+            per_second,
+            burst: per_second.saturating_mul(2),
             per_query: 256,
         }
+    }
+}
+
+impl Default for Allowance {
+    /// The allowance of a server of one serving thread.
+    fn default() -> Self {
+        Self::serving(NonZeroUsize::MIN)
     }
 }
 
@@ -153,6 +172,12 @@ impl Validating {
     pub fn sharing(mut self, shares: Budgets) -> Self {
         self.shares = Arc::new(shares);
         self
+    }
+
+    /// The allowance of all clients.
+    #[must_use]
+    pub const fn allowance(&self) -> Allowance {
+        self.allowance
     }
 
     /// The settings of the shares of the client networks.
@@ -605,5 +630,19 @@ mod tests {
         cost.verifications = 5;
         cost.nsec3_blocks = BLOCKS_PER_UNIT + 1;
         assert_eq!(work(cost), 7);
+    }
+
+    /// D77: the allowance grows by [`PER_TWO_THREADS`] for every two serving threads, a one-thread server having
+    /// the units of a two-thread one, with two seconds of burst.
+    #[test]
+    fn the_allowance_grows_with_the_serving_threads() {
+        let per_second = |threads| {
+            let allowance = Allowance::serving(NonZeroUsize::new(threads).expect("nonzero"));
+            assert_eq!(allowance.burst, 2 * allowance.per_second, "{threads}");
+            allowance.per_second
+        };
+        let units: Vec<_> = [1, 2, 3, 6, 1024].into_iter().map(per_second).collect();
+        assert_eq!(units, [10_000, 10_000, 20_000, 30_000, 5_120_000]);
+        assert_eq!(Allowance::default(), Allowance::serving(NonZeroUsize::MIN));
     }
 }
