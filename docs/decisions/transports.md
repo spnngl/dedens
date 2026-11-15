@@ -9,12 +9,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
-- D27 (amended by D50, D53, D108, D114) Client behaviour:
+- D27 (amended by D50, D53, D108, D114, D184) Client behaviour:
   - UDP: a pool of sockets per server (D50); a random ID from `getrandom`, drawn 256 bytes at a time: a call costs
     846 ns on macOS, 14 ns on Linux (vDSO).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
     on, as hickory and Unbound do; miekg/dns fails on a wrong ID and CoreDNS checks the ID only. `0x20` case
-    randomization of the question is an option, off by default as in Unbound.
+    randomization of the question is an option, off by default as in Unbound; `dedensd` turns it on (D184).
   - dig's defaults: 3 tries, 5 s each. TC over UDP is retried over TCP. EDNS is dropped once on FORMERR or
     NOTIMP to an EDNS query (RFC 6891 §7), never on a timeout (RFC 8906); `+noednsneg` turns it off. A query
     changed by a fallback goes with another ID, so a late response to the query before cannot end the exchange
@@ -33,9 +33,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     response read on its connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
     that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
     the source address of a cookie, costs that try, not the exchange.
-- D31 (amended by D68, D114) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
+- D31 (amended by D68, D114, D184) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
   cookie in it, and owns no randomness or secret (D114: the IDs of changed queries come from the caller too); `0x20`
-  takes its random bits as an option, which also turns on the exact-case match, so a randomized question is never matched loosely. Each step consumes the `Exchange`
+  takes its random bits as an option, which also turns on the exact-case match, so a randomized question is never matched loosely, and gives
+  the response its question back in the case given (D184). Each step consumes the `Exchange`
   and returns `Send`, `Wait` or `Done`: a finished exchange cannot be fed. Only timeouts spend tries, and tries lost to a socket error or a slow connection; the TC,
   EDNS and cookie fallbacks each happen a bounded number of times. Stricter than dig: FORMERR and NOTIMP
   alone may leave the question out (D114); once a server has sent a cookie, a response without one is dropped, even

@@ -34,11 +34,11 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D24 [server](server.md) (narrowed by D44): configuration: merged directory of TOML, YAML or JSON; errors, not warnings
 - D25 [presentation format](presentation-format.md): zone text: own lexer, BIND TTL units, `\#` for every type
 - D26 [transports](transports.md) (amended by D133, D134): `dedens-net`: sans-IO client core, a thin compio layer moves bytes
-- D27 [transports](transports.md) (amended by D50, D53, D108, D114): client behaviour: UDP socket pool, random IDs, matching, fallbacks
+- D27 [transports](transports.md) (amended by D50, D53, D108, D114, D184): client behaviour: UDP socket pool, random IDs, matching, fallbacks
 - D28 [wire format](wire-format.md): `Record` keeps RDATA as checked wire bytes with its type
 - D29 [presentation format](presentation-format.md): a quoted string ends on its line, as in BIND
 - D30 [observability](observability.md): metrics and tracing facades behind each library's Cargo features
-- D31 [transports](transports.md) (amended by D68, D114): sans-IO exchange takes the whole query, owns no randomness or secret
+- D31 [transports](transports.md) (amended by D68, D114, D184): sans-IO exchange takes the whole query, owns no randomness or secret
 - D32 [CLI](cli.md) (amended by D76, D169): CLI arguments: a pre-pass turns dig tokens into long flags
 - D33 [CLI](cli.md): exit codes of `dedens`
 - D34 [CLI](cli.md) (amended by D76): query file schema
@@ -84,7 +84,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
 - D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
-- D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124): a forward stage validates with `dnssec: validate`
+- D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124, D184): a forward stage validates with `dnssec: validate`
 - D78 [transports](transports.md) (amended by D79): ODoH crypto in `dedens-odoh`, sans-IO, the one required suite
 - D79 [transports](transports.md) (amended by D94, D115, D117, D185): ODoH over HTTP/3: `dedens` asks through a proxy, `dedensd` is a target
 - D80 [transports](transports.md): CoAP is our own sans-IO codec, for DoC
@@ -179,4 +179,5 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
 - D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
 - D182 [simulation tests](simulation-tests.md): `dedensd`'s UDP and TCP serving loop behind the `Io` seam, run on turmoil
+- D184 [server](server.md): `dedensd` asks plain servers over UDP with `0x20`, the response's question given back the client's case
 - D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread
