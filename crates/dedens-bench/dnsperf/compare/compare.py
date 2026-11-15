@@ -8,9 +8,10 @@ loader container on other cores. The standard library only: it runs on the host.
 
 A server is measured only after it answers right: every query of a check pass with the mode's rcode, nothing lost,
 and a sample of answers, asked by `dedens`, equal to Knot's (DNSSEC: with AD set). A server failing it fails the
-run, which writes its JSON and exits 1. A measured run is void, kept out of the medians, when dnsperf or Knot was
-over 90% busy (the loader or the upstream, not the server, was the limit), when 1% of queries or more were lost,
-or when over 1% of the answers had another rcode.
+run, which writes its JSON and exits 1. A measured run is void, kept out of the medians, when Knot or, at
+saturation, dnsperf was over 90% busy (the upstream or the loader, not the server, was the limit), when dnsperf
+held to a rate sent 1% less, when 1% of queries or more were lost, or when over 1% of the answers had
+another rcode.
 """
 
 import hashlib
@@ -229,6 +230,7 @@ def parse_dnsperf(out):
         "completed": int(num(r"Queries completed:\s+(\d+)")),
         "lost": int(num(r"Queries lost:\s+(\d+)")),
         "qps": num(r"Queries per second:\s+([\d.]+)"),
+        "seconds": num(r"Run time \(s\):\s+([\d.]+)"),
         "avg_ms": num(r"Average Latency \(s\):\s+([\d.]+)") * 1000,
     }
     m = re.search(r"Response codes:\s+(.*)", out)
@@ -420,8 +422,11 @@ class Bench:
               "knot_busy": cpu["knot"] / (wall * 1e6 * self.count["knot"]),
               "loaded_mib": after["server"]["anon"] / 2**20, "peak_mib": after["server"]["peak"] / 2**20}
         others = r["completed"] - r["rcodes"].get(self.rcode, 0)
+        # dnsperf held to a rate spins between sends, so its CPU tells nothing: a rate it fell short of does.
         reasons = [why for why, bad in [
-            ("dnsperf busy", r["loader_busy"] > VOID_BUSY), ("Knot busy", r["knot_busy"] > VOID_BUSY),
+            ("dnsperf busy", rate is None and r["loader_busy"] > VOID_BUSY),
+            ("rate missed", rate is not None and r["sent"] < (1 - VOID_SHARE) * rate * r["seconds"]),
+            ("Knot busy", r["knot_busy"] > VOID_BUSY),
             ("loss", r["lost"] >= VOID_SHARE * max(r["sent"], 1)),
             ("rcodes", others > VOID_SHARE * max(r["completed"], 1))] if bad]
         r["void"] = reasons
