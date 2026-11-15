@@ -13,7 +13,7 @@ use compio::rustls::pki_types::ServerName;
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_net::doh::DEFAULT_PATH;
 use dedens_proto::Name;
-use dedens_server::{Budgets, DEFAULT_SHARE, Forward, Pipeline, Stage, Validating, Via};
+use dedens_server::{Allowance, Budgets, DEFAULT_SHARE, Forward, Pipeline, Stage, Validating, Via};
 use serde::Deserialize;
 
 use super::limits::BudgetFile;
@@ -257,6 +257,9 @@ pub(super) fn forward(
                 _ => None,
             });
             let mut validating = kept.cloned().unwrap_or(validating);
+            if validating.allowance() != validation.allowance {
+                validating = validating.allowing(validation.allowance);
+            }
             // The shares are not part of what the keys were validated by: a reload that changes them keeps the
             // key cache and starts the shares' buckets again.
             let share = BudgetFile::over(validation.client_share, DEFAULT_SHARE);
@@ -307,6 +310,8 @@ pub(super) struct Validation {
     pub(super) trust_anchors: Option<PathBuf>,
     pub(super) insecure: Vec<Insecure>,
     pub(super) client_share: Option<BudgetFile>,
+    /// What validation may cost, set by the serving threads (D77).
+    pub(super) allowance: Allowance,
 }
 
 /// Whether a forward stage validates (D77): `off` or `validate`. The YAML reader takes an unquoted `off` for the
@@ -373,6 +378,8 @@ fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::config::tests::*;
 
@@ -595,6 +602,25 @@ mod tests {
         }
         let message = error(&format!("{MINIMAL}    client_share: {{rate: 1}}\n"));
         assert!(message.contains("need `dnssec: validate`"), "{message}");
+    }
+
+    /// D77: the validation allowance is that of the serving threads.
+    #[test]
+    fn the_allowance_is_the_serving_threads_one() {
+        let config = read(
+            &format!("{MINIMAL}    dnssec: validate\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .unwrap();
+        let Some(Stage::Forward(forward)) = config.pipeline.stages().first() else {
+            unreachable!("a forward stage");
+        };
+        let threads = NonZeroUsize::new(config.threads).expect("a thread");
+        assert_eq!(
+            forward.validation().expect("validating").allowance(),
+            Allowance::serving(threads)
+        );
     }
 
     /// D86: the keys a validator cached stay valid across a reload while its trust anchors and negative anchors

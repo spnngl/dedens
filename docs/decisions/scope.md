@@ -471,11 +471,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   validator's `Limits` bound each validation separately): past it the verdict is indeterminate.
   Cost (`validate.rs`, `Allowance`): D75 bounds one validation, but a client can send many cheap queries that each
   walk a chain, and a chase starts a validation for each name (up to 9 × 128 signature checks). A unit is a question
-  upstream (the client's too), a signature check, or 4096 NSEC3 hashes (`Validation::cost`): about 10 µs on the
-  common algorithms, 340 µs on a P-384 one, the worst a unit stands for (`benches/dnssec.rs`, `benchmarks.md`). One
+  upstream (the client's too), a signature check, or 4096 NSEC3 hashes (`Validation::cost`): 10 to 30 µs of a recent
+  core on the common algorithms, 340 µs on a P-384 one, the worst a unit stands for (`benches/dnssec.rs`,
+  `benchmarks.md`); about 90 µs all told on the VPS's Haswell, where a P-256 check is 80 µs (the comparison's
+  `dnssec` mode, D183). One
   query costs at most `Allowance::per_query` (256), the sum over its chase: past it the verdict is indeterminate
   (EDE 5, validation ran, failure held as any). All the queries share a token bucket in `Validating` (clones share
-  it; `Validating::allowing`; defaults: `per_second` 10 000, `burst` 20 000): `Pipeline::query`, before the client's
+  it; `Validating::allowing`; defaults `Allowance::serving(threads)`: `per_second` 10 000 for every two serving
+  threads, one at least, `burst` two seconds of it): `Pipeline::query`, before the client's
   question is sent, takes a unit if the bucket has one left, and the query that finds none is answered SERVFAIL
   with EDE 14 (Not Ready) and nothing is asked, decoded or validated (`dedens_validations_total{verdict="shed"}`);
   the work of the validations is charged to it as it runs, so it can go into debt (at most the in-flight queries'
@@ -484,7 +487,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   again; a refresh that finds the bucket empty is not made, the reply stands. EDE 14, not 22/23 (those claim an
   upstream or network failure, none was tried, and a client's resolver retries elsewhere and moves the flood), nor
   5/6 (no DNSSEC verdict was reached). Each client network has a share of it too (D117); the bucket
-  here is the global one. A hit in the cache stage costs no unit, a client with CD
+  here is the global one. Why that rate: the bucket keeps a flood of names to validate from taking the cores the
+  cache answers on, as the threads validate where they serve (D42). A fixed 10 000 a second, priced at 10 µs a
+  unit, was meant as a tenth of a core and was one core of the Haswell: at three cores `dedensd` validated about
+  1300 names a second and shed the rest with two cores idle. Scaled by the threads, on P-256 it is half the cores
+  of a Haswell server (all of a one-thread one, which can spare none) and less of a recent core, the other half
+  left to the cache. P-384 alone still takes them all, as a unit weighs the same for every algorithm, and one
+  network can spend only its share (D117). Rejected: a unit priced per algorithm (it changes what the validator's
+  `Budget` counts, D71, for the one algorithm few zones use); a `dnssec_allowance` setting (no deployment needs
+  another rate yet). A hit in the cache stage costs no unit, a client with CD
   none; a warm validation (D86) two. Measured: `serve_shed` 0.11 µs, `serve_warm` 6.2 µs, `serve_cold` 110 µs, no
   slower from 1 to 8 threads (`benchmarks.md`). Tests: `tests/dnssec.rs` of `dedens-server`, `a_validation_reports_what_it_cost`
   in `dedens-dnssec/tests/validator.rs`. `Insecure`: AD clear, cached as it came, for at most `max_insecure_ttl` (D93). `Bogus`: SERVFAIL with the EDE code

@@ -102,7 +102,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, ensure};
 use dedens_net::tls::{Presented, Trust};
 use dedens_proto::Question;
-use dedens_server::{Pipeline, Stage};
+use dedens_server::{Allowance, Pipeline, Stage};
 use serde::Deserialize;
 
 use self::access::{AccessFile, AccessSource};
@@ -305,7 +305,14 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         cookies: file.cookies,
     };
     let mut downloads = Downloads::new(file.downloads)?;
-    let (mut built, warmed) = stages(&file.pipeline, file.stages, previous, &mut downloads, store)?;
+    let allowance = Allowance::serving(NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN));
+    let (mut built, warmed) = stages(
+        &file.pipeline,
+        file.stages,
+        (previous, allowance),
+        &mut downloads,
+        store,
+    )?;
     // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
     // validator, or none, does not stand behind them (D77).
     flush(&mut built, previous)?;
@@ -350,8 +357,8 @@ const MAX_TRIES: u8 = 5;
 /// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
 const MAX_THREADS: usize = 1024;
 
-/// The stages of `order`, built from `defined` after those of `previous`, and the questions their cache stage keeps
-/// answered (D96).
+/// The stages of `order`, built from `defined` after those of `previous`, a validating forward stage bound to
+/// `allowance` (D77), and the questions their cache stage keeps answered (D96).
 ///
 /// # Errors
 ///
@@ -359,7 +366,7 @@ const MAX_THREADS: usize = 1024;
 fn stages(
     order: &[String],
     mut defined: BTreeMap<String, StageFile>,
-    previous: &Pipeline,
+    (previous, allowance): (&Pipeline, Allowance),
     downloads: &mut Downloads,
     store: &mut Store,
 ) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {
@@ -401,6 +408,7 @@ fn stages(
                     trust_anchors,
                     insecure,
                     client_share,
+                    allowance,
                 };
                 Stage::Forward(
                     forward(
