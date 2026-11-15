@@ -389,7 +389,8 @@ async fn a_server_slower_than_a_try_keeps_its_connection() {
     let (addr, seen) = quic_server(&certificates, Serve::Silent).await;
     let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
     let mut options = quic();
-    options.timeout = Duration::from_millis(300);
+    // Long enough for a handshake on a loaded machine: one cut short would open a second connection.
+    options.timeout = Duration::from_secs(1);
     options.tries = NonZero::new(3).expect("three");
     let error = client.exchange(query(), named(addr, NAME), &options).await;
     assert!(error.is_err(), "{error:?}");

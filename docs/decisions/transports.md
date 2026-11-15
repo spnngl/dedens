@@ -71,7 +71,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   began closes the connection with `DOQ_NO_ERROR` (`dial::Heard`): a live server acknowledges within a round trip
   (RFC 9000 §13.2.1), while one restarted at the same address knows nothing of the connection, sends nothing on it
   and its stateless reset is under another key (RFC 9000 §10.3), so the next try opens a new connection instead
-  of waiting out the idle time (found by D185's tests, 2026-11-15). Rejected: a stateless reset key kept across
+  of waiting out the idle time (found by D185's tests, 2026-11-15). The try must have lasted three round trips and
+  the default acknowledgment delay (§18.2), so one begun near its deadline closes nothing; a server whose every
+  stream outlasts the try is taken for silent too (a request waiting for stream credit sends nothing), and its
+  requests go again on a new connection. Rejected: a stateless reset key kept across
   restarts, which would end such a connection at once: it needs a secret kept on disk, and the threads of D66
   share their port, so one key among them lets a peer have a token for another thread's connection, which
   RFC 9000 §10.3.2 and §21.11 forbid. A query given up is cancelled with STOP_SENDING and RESET_STREAM (§4.3.1). A

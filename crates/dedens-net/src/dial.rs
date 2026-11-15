@@ -8,7 +8,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::quic::crypto::rustls::QuicClientConfig;
 use compio::quic::{ClientConfig, Connection, Endpoint, IdleTimeout, TransportConfig, VarInt};
@@ -113,14 +113,20 @@ impl Dialer {
 /// What a reused connection had heard when a request on it began (D61, D83). A live server acknowledges what it gets
 /// within a round trip and its acknowledgment delay (RFC 9000 §13.2.1), answer or not; a server restarted at the
 /// same address knows nothing of the connection and sends nothing on it, its stateless reset being under another key
-/// (RFC 9000 §10.3). So a try that timed out without a datagram on the connection closes it: the requests on it go
-/// again on a new one, and the next query opens one, where the QUIC idle timeout would have left them for seconds.
+/// (RFC 9000 §10.3). So a try that timed out without a datagram on the connection closes it, if it lasted three round
+/// trips and the default acknowledgment delay (RFC 9000 §18.2): the requests on it go again on a new one, and the
+/// next query opens one, where the QUIC idle timeout would have left them for seconds.
 ///
-/// A try shorter than the round trip would close each connection it reuses; a try is seconds long (D27).
+/// A request waiting for stream credit sends nothing, so a server whose every stream outlasts the try is taken for
+/// silent too: its requests go again on a new connection.
 pub(crate) struct Heard {
     connection: Connection,
     datagrams: u64,
+    since: Instant,
 }
+
+/// The acknowledgment delay a peer states by default (RFC 9000 §18.2, `max_ack_delay`).
+const ACK_DELAY: Duration = Duration::from_millis(25);
 
 impl Heard {
     /// What `connection` has heard so far.
@@ -128,12 +134,21 @@ impl Heard {
         Self {
             connection: connection.clone(),
             datagrams: connection.stats().udp_rx.datagrams,
+            since: Instant::now(),
         }
     }
 
-    /// Closes the connection with `code`, the protocol's "no error", if no datagram came on it since.
+    /// Closes the connection with `code`, the protocol's "no error", if no datagram came on it since, for long enough
+    /// that a live server would have acknowledged.
     pub(crate) fn close_if_silent(&self, code: VarInt) {
-        if self.connection.stats().udp_rx.datagrams == self.datagrams {
+        let long_enough = self
+            .connection
+            .rtt()
+            .saturating_mul(3)
+            .saturating_add(ACK_DELAY);
+        if self.since.elapsed() >= long_enough
+            && self.connection.stats().udp_rx.datagrams == self.datagrams
+        {
             self.connection.close(code, b"server silent");
         }
     }
