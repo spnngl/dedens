@@ -1522,3 +1522,186 @@ it back into the response.
 
 - The tree won 6 of 12 paired rounds; the host's rate halved from the fifth round of the second run, for both.
   Within the noise, as expected of a draw from the IDs' buffer and a name copied twice against some 7 µs a query.
+
+## Against TelltaleDNS, Unbound and CoreDNS (D183)
+
+`DEDENS_CONTAINER=podman DEDENS_ROUNDS=5 bash crates/dedens-bench/dnsperf/compare.sh <mode> <cores>` (`just
+bench-compare`), every mode at 1 and 3 server cores, then an A/A run, a broken server and TelltaleDNS's own smoke
+bench. The JSON of each run is in [`comparison/results/`](comparison/results/); the method is D183's, the features
+[`comparison/`](comparison/README.md)'s.
+
+Host: a VPS with six vCPUs (Intel Haswell, shared with other tenants), 11 GiB, AlmaLinux 10.2, Linux
+6.12.0-211.74.2.el10_2.x86_64, podman 5.8.2 rootless, host networking, `kernel.io_uring_disabled` 0 for the runs and
+2 after. Rootless podman has no `cpuset` controller: each container pins its process with `taskset` (the JSON's
+`pinning`). Servers on cores 0 (1 core) or 0-2 (3 cores), dnsperf on the cores up to 4, Knot on 5.
+
+| Server | Version | Lean / shipped |
+|---|---|---|
+| `dedensd` | `main` at 7dc4be80 | one file: cache, forward, DNSSEC validation in `dnssec` |
+| TelltaleDNS | 0.6.0 (940f136b), built from source | a thread per core; shipped adds its metrics and API listeners |
+| Unbound | 1.26.2 | `num-threads` = cores, its defaults otherwise; one file |
+| CoreDNS | 1.15.0 (Go 1.27.3) | `cache` and `forward`; shipped is kubeadm's Corefile (`cache 30`, `errors`, `prometheus`, `loadbalance`, ...); no validator, no blocklist |
+| Knot DNS (upstream) | 3.6.2 | a wildcard root zone, signed (ECDSA P-256, NSEC3) for `dnssec` |
+
+dnsperf `-c 8 -q 500`, 10 s runs; the cache-hot corpus (200 000 lines, 10 000 names), miss-heavy (500 000 unique
+names under the root's wildcard) and blocked corpora are TelltaleDNS's `bench/corpus.py` output, the blocklist the
+first million names of HaGeZi's TIF. Each table: per server the median of its valid saturation runs and their range,
+latency and CPU per query at the common rate (half the slowest server's median), latency at half its own rate,
+memory idle and loaded (the cgroup's anonymous memory), time to the first answer.
+
+Saturation, thousands of queries a second, lean configurations: median (range) of the valid runs, and the void
+ones (rules in D183). `dnssec` is the miss-heavy corpus against the signed zone, validated; CoreDNS has no
+validator and no blocklist.
+
+| Mode | `dedensd` | TelltaleDNS | Unbound | CoreDNS |
+|---|---|---|---|---|
+| 1 core: `udp` | 85.4 (81.2–86.3) | 77.1 (76.5–79.3) | 72.2 (67.9–80.1), 2 void | 24.9 (24.4–25.4) |
+| `tcp` | 486.8 (481.3–496.6) | 62.4 (61.9–62.8) | 43.2 (41.3–44.9) | 36.1 (33.9–36.9) |
+| `dot` | 392.1 (386.0–399.9) | 67.1 (64.9–70.5) | 26.5 (25.4–28.8) | 38.9 (38.0–39.8) |
+| `forward` | 67.9 (63.0–69.9) | 48.1 (45.6–50.2), 1 void | 52.6 (50.3–55.8) | 22.0 (21.3–22.8) |
+| `forward-tcp` | 291.2 (271.0–301.5) | 54.9 (49.8–55.2) | 37.2 (34.7–39.4), 1 void | 32.8 (31.0–33.7) |
+| `miss` | 16.2 (16.1–16.6) | 6.7 (6.5–6.9) | 8.3 (8.3–8.4), 5 void | 6.7 (6.4–7.2), 5 void |
+| `dnssec` | all 5 void (SERVFAIL) | 1.6 (1.5–1.6) | 3.1 (3.0–3.2), 5 void | – |
+| `blocked` | 87.5 (85.5–89.9) | 58.3 (56.9–59.5) | 66.5 (64.6–67.9) | – |
+| 3 cores: `udp` | 137.7 (97.8–141.8) | 141.9 (130.7–146.3) | 137.2 (109.4–144.1) | 52.9 (45.5–53.5) |
+| `tcp` | 570.1 (566.4–617.8) | 149.3 (146.5–152.4) | 100.7 (95.0–107.9) | 105.1 (102.8–105.6) |
+| `dot` | 257.9 (241.3–274.3) | 143.8 (128.9–147.2) | 59.6 (41.6–76.3) | 105.4 (97.6–108.7) |
+| `forward` | 105.0 (102.2–124.4) | 110.6 (99.0–117.2) | 102.4 (100.0–108.2) | 48.7 (46.5–49.7) |
+| `forward-tcp` | 390.8 (376.1–466.3) | 120.9 (114.2–128.6) | 119.9 (55.9–141.3) | 83.7 (77.0–89.5) |
+| `miss` | 43.4 (34.4–48.1) | 22.6 (20.7–23.9), 1 void | 25.5 (21.5–26.9), 2 void | 25.7 (24.0–26.7), 1 void |
+| `dnssec` | all 6 void (SERVFAIL) | 5.0 (5.0–5.1), 1 void | 8.2 (7.0–10.1), 4 void | – |
+| `blocked` | 134.7 (119.4–150.6) | 141.0 (137.3–152.6) | 125.6 (97.7–144.8), 1 void | – |
+
+At the common rate (thousands a second), average / p99 latency in ms and CPU µs a query, lean:
+
+| Mode | Rate | `dedensd` | TelltaleDNS | Unbound | CoreDNS |
+|---|---|---|---|---|---|
+| 1 core: `udp` | 10.9 | 0.10 / 0.61, 19 | 0.10 / 0.77, 16 | 0.08 / 0.44, 17 | 0.21 / 1.66, 45 |
+| `tcp` | 14.8 | 0.09 / 0.48, 23 | 0.13 / 1.34, 24 | 0.57 / 0.99, 16 | 0.32 / 4.86, 38 |
+| `dot` | 13.2 | 0.12 / 0.75, 26 | 0.12 / 0.94, 27 | 0.16 / 1.44, 33 | 0.20 / 1.89, 36 |
+| `forward` | 10.1 | 0.21 / 1.69, 26 | 0.25 / 1.73, 24 | 0.13 / 0.85, 22 | 0.33 / 4.03, 49 |
+| `forward-tcp` | 13.8 | 0.39 / 6.53, 24 | 0.35 / 6.66, 24 | 0.64 / 2.43, 20 | 0.35 / 5.63, 39 |
+| `miss` | 3.0 | 0.42 / 1.38, 76 | 0.53 / 1.21, 95 | 0.49 / 1.05, 96 | 0.63 / 1.95, 132 |
+| `dnssec` | 0.8 | 8.28 / 102.40, 815 | 1.74 / 3.39, 503 | 0.80 / 1.66, 311 | – |
+| `blocked` | 27.4 | 0.17 / 2.05, 17 | 0.37 / 3.01, 21 | 0.38 / 3.97, 14 | – |
+| 3 cores: `udp` | 21.4 | 0.15 / 2.11, 24 | 0.24 / 2.30, 19 | 0.23 / 3.01, 20 | 1.07 / 14.34, 55 |
+| `tcp` | 42.6 | 0.24 / 2.43, 21 | 0.40 / 3.46, 23 | 0.67 / 4.35, 15 | 0.48 / 4.73, 32 |
+| `dot` | 29.8 | 0.40 / 2.75, 32 | 0.52 / 3.07, 33 | 1.85 / 29.18, 37 | 0.50 / 3.71, 43 |
+| `forward` | 18.7 | 0.28 / 2.69, 32 | 0.28 / 2.56, 27 | 0.18 / 2.11, 25 | 0.48 / 6.91, 66 |
+| `forward-tcp` | 35.8 | 0.49 / 3.90, 20 | 0.46 / 4.35, 29 | 0.60 / 4.73, 21 | 0.36 / 3.39, 36 |
+| `miss` | 10.8 | 0.77 / 19.97, 72 | 0.94 / 24.06, 106 | 0.70 / 17.92, 85 | 0.67 / 10.50, 119 |
+| `dnssec` | 2.5 | void: 45% SERVFAIL | 1.14 / 6.66, 546 | 0.60 / 2.49, 304 | – |
+| `blocked` | 62.8 | 0.36 / 2.81, 17 | 0.44 / 3.14, 22 | 0.40 / 2.94, 15 | – |
+
+Memory (MiB, the cgroup's anonymous memory idle, then loaded after the runs) and the time to a first answer:
+
+| Run | `dedensd` | TelltaleDNS | Unbound | CoreDNS |
+|---|---|---|---|---|
+| 1 core `udp` | 11 / 36, 8 ms | 25 / 32, 14 ms | 4 / 10, 20 ms | 10 / 25, 47 ms |
+| 3 cores `miss` | 17 / 160 | 38 / 90 | 5 / 23 | 11 / 85 |
+| 1 core `blocked` | 69 / 40, 878 ms | 97 / 46, 7216 ms | 419 / 419, 3227 ms | – |
+| 3 cores `blocked` | 69 / 49, 875 ms | 113 / 64, 3596 ms | 420 / 420, 3116 ms | – |
+
+Shipped configurations (the JSON has their tables): TelltaleDNS at 0.86 to 0.99 of its lean rate, CoreDNS at 0.77
+to 0.92; `dedensd` and Unbound have one configuration. Every table's numbers are in the JSON with the half-rate
+latencies and memory peaks.
+
+### Spread and void runs
+
+- A/A (`udp`, 1 core, lean, each server twice in one session): medians 87.9k and 87.8k for `dedensd` (0.1%),
+  77.8k and 79.2k for TelltaleDNS (1.8%), 76.1k and 76.0k for Unbound (0.1%), 25.8k and 25.9k for CoreDNS (0.6%);
+  one void run of 88. One server's runs spread up to 12% (Unbound 71.7k to 80.5k): a gap under 1.15 between two
+  servers is not one. The A/A session's `udp` medians are 3-6% above the series' own, three hours earlier.
+- Void runs, by the rules of D183: Unbound and CoreDNS lose about 1% of their queries at saturation in most runs
+  of `miss` (5 of 16 each at 1 core) and in Unbound's `dnssec`, and are measured at 90% of that rate instead;
+  `dedensd`'s every `dnssec` saturation run is void, its answers SERVFAIL past its validation allowance (below).
+- `broken` (a CoreDNS forwarding to nowhere) exits 1: "rcode SERVFAIL for 10 s, not NOERROR". TelltaleDNS's own
+  smoke bench against `dedensd` (`crosscheck`): cache-hot 85 624 queries/s, p50 2.2 ms and p99 4.2 ms at saturation,
+  p50 48 µs at half; miss-heavy at its fixed 2000 a second, p50 343 µs, p99 655 µs, none lost.
+- dnsperf, at 1 core on four cores, is at most 49% busy in a saturation run, so the servers are measured. At 3
+  cores it has two cores, busy 82-86% while `dedensd` serves TCP and DoT: those two rates are a floor. Knot is
+  at most 36% busy (3-core `miss`).
+
+### What limits each
+
+One server at a time at 1 core, between the two sessions (07:40 to 08:30 UTC; `dot` at 12:55): the split of the server's core from
+`/proc/stat` at saturation, `strace -f -c` at a fixed rate, and `perf record -e cpu-clock:u -F 999 --call-graph
+dwarf` from a `rust:1` image with Debian's `linux-perf` (user space only: `perf_event_paranoid` stayed 2). Each
+server rebuilt with symbols for it (`dedensd` and TelltaleDNS `strip = false`, CoreDNS without `-s -w`; Unbound's
+OpenSSL has none). Knot's `mod-stats` counted the questions each server asked for 5000 cold queries.
+
+- `udp`, from the cache: the kernel's loopback path. At saturation the core is user 13%, system 48%, softirq 38%
+  for `dedensd` (82k/s), 22/43/34 for TelltaleDNS (79k/s), 12/42/34 for Unbound (78k/s): sending and receiving a
+  datagram costs more than answering it, so the three stay within 20% of one another. For 300 000 queries (the
+  priming pass included) `dedensd` made 57 500 `io_uring_enter` calls, TelltaleDNS 253 000 `sendmsg` and 88 000
+  `recvmmsg`, Unbound 224 000 `sendto` and 247 000 `recvfrom`.
+- CoreDNS, every mode: Go's runtime, 46% of its core in user space at `udp` saturation. Its profile is led by
+  goroutine stack growth (`runtime.step` 9.1%, `runtime.pcvalue` 8.6%, `getStackMap` 4.0%, `adjustframe`: a
+  goroutine per query outgrows its first stack and is copied) and the garbage collector; `miekg/dns` packing is
+  under 2%.
+- `tcp` and `dot`: `dedensd` writes the replies of a connection together (D53) and reads what a connection has
+  queued at once, so the kernel's cost is paid per batch, not per query: 183 000 `io_uring_enter` for 300 000
+  queries, the core user 41%, system 32%, softirq 26% at 504k/s. TelltaleDNS made 409 000 `recvfrom` and 197 000
+  `sendto`, Unbound 444 000 `recvfrom` and 177 000 `writev` (softirq 48% of its core), CoreDNS 370 000 `read` and
+  180 000 `write`: two reads and a write per query. At the common rate, CPU per query is alike (16 to 38 µs);
+  the gap is at saturation only, where many queries wait on each connection.
+- `dot` the same, one TLS record per batch: `dedensd` made 83 000 `io_uring_enter` for 300 000 queries and its CPU
+  falls from 25 µs a query at 13 000/s to 2.2 µs at saturation (361k/s, user 53% of the core). TelltaleDNS
+  writes each reply with its own `writev` (256 000), CoreDNS 239 000 `write` and 151 000 `read`. Unbound reads
+  each query with its own `read` (290 000 for 283 000 queries) and writes every second one (145 000), its core
+  user 21%, system 40%, softirq 39% at 28k/s: the 2.5× behind TelltaleDNS is its system calls and records, not
+  its crypto (`libcrypto` and `libssl` 15% of its user-space samples, a fifth of its core).
+- `forward` and `forward-tcp`: a single pass over the cache-hot corpus from a cold start, so 10 000 names go
+  upstream and 190 000 hit the cache; the rates follow `udp` and `tcp`. `dedensd`'s `forward-tcp` run takes under
+  a second.
+- `miss`: every query goes upstream. TelltaleDNS and Unbound open a socket for each upstream question (a random
+  source port): for 25 000 queries TelltaleDNS made 24 900 `socket`, `bind`, `connect` and `close` and 49 800
+  `epoll_ctl`, Unbound 27 000 `socket` and 54 000 `fcntl`; system time is 50% of TelltaleDNS's core at saturation.
+  `dedensd` sends through its pool of 256 connected sockets (D50, 256 `connect` for 30 000 queries), and at
+  saturation `io_uring` batches the rest: 38 µs of CPU a query at 16.5k/s against 85 µs at 3300/s. CoreDNS keeps
+  its upstream sockets too, and pays its runtime. All four ask Knot exactly one question a query.
+- `blocked`, memory and start: `dedensd` keeps a keyed 64-bit hash of each name (D58), Unbound a `local-zone` per
+  name in its tree, from a million-line `include` (6 times the memory, 3 times the start); TelltaleDNS parses the
+  list into its own set. The answer itself costs about what a cache hit does.
+- Losses: Unbound and CoreDNS lose about 1% of a saturation run (CoreDNS 1390 queries in every mode) with 10-12% of
+  their core idle, so their saturation run is retried at 90% of its rate (D183); the cause is not known.
+
+### `dnssec`: `dedensd` sheds what it cannot validate
+
+In `dnssec` every query is a new name under the signed wildcard, so each one is validated cold. `dedensd`'s
+saturation runs are void, every one: past about 1300 validations a second it answers the rest SERVFAIL (EDE 14,
+not ready): 12 700 to 12 900 NOERROR in each 10 s run at 1 core whatever the rate offered (3000 to 7000 a
+second), 1300 to 1460 a second at 3 cores, and at the 3-core common rate of 2478 a second 1351 NOERROR and 1127
+SERVFAIL a second. Two causes, one on the other:
+
+- The validation allowance (D77): 10 000 units a second, `burst` 20 000, one unit per question upstream and per
+  signature checked, not configurable and not scaled by the serving threads. D77 priced a unit at 10 µs from the
+  M5's 27 µs P-256 check; on this Haswell a check takes about 80 µs and a cold query here costs about 8 units, so
+  the allowance is one core's validations: at 3 cores two stay idle while the rest is shed. Loopback is exempt from
+  the client shares (D117), so the global allowance alone sheds.
+- The cost of each cold query. Knot counted, per client query, one `A` for every server, plus 1.34 `DS` for
+  `dedensd`, 2.0 `DNSKEY` for TelltaleDNS (hickory's validator), nothing more for Unbound. `dedensd` walks the chain
+  of trust down to the owner name, one `DS` question per label below the last zone it knows (D75); its key cache
+  (D86) keeps "no cut here" per name, which a corpus of unique names never hits. Under `perf` (1 core, saturation)
+  76% of `dedensd`'s samples are in P-256 (`ring`'s `ecp_nistz256`), 57% under `Validation::cut` (the walk) and
+  14% under the answer's own evidence: about 530 µs of signature checks a query, six to seven checks, against
+  TelltaleDNS's 245 µs (47% of its samples) and Unbound's 165 µs (66% in `libcrypto`), which validates the
+  wildcard answer and its NSEC3 against the root's cached keys only. TelltaleDNS's two `DNSKEY` questions a query,
+each on a new socket, and its checks put it at half Unbound's rate.
+
+The 1-core common rate's tail (p99 102 ms) is the cold start, not the driver: the run starts `dedensd` with an
+empty key cache, its first queries each ask more (the `DS` of each top-level name until the key cache knows it),
+and at 790 a second the core falls behind for a while. A second run of 7900 other names on the same server: p99
+9 ms on `io_uring`, 4.7 ms on `poll`, against 109 and 72 ms for the cold run; at 1100 a second the cold p99 is
+540 and 606 ms, the warm one 22 and 38 ms (runs outside the harness, not in the JSON).
+
+Neither is fixed here (step 03 of the comparison): [`TODECIDE.md`](TODECIDE.md) proposes to scale the allowance
+by the serving threads, and to end the walk where the response's verified denial proves the next name absent (a
+name that does not exist owns no NS, so no cut lies below it), which leaves the wildcard answer's two checks.
+
+### Not counted
+
+- A first session (03:37 to 07:38 UTC, 4 h) measured `dedensd` on `poll`: podman's default seccomp filter refuses
+  `io_uring`, and `dedensd` only logs its fallback (D107). Its numbers are not kept: `udp` at 1 core gave 72k
+  queries/s at 31 µs a query at the common rate where `io_uring` gives 85k and 19 µs; the harness now runs every container without the
+  filter and fails a `dedensd` that is not on `io_uring` (D183).
