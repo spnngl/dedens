@@ -262,7 +262,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (`--check-toolchain`) fails on any other. Rejected: Creusot (its creusot-std is LGPL, which `deny.toml` refuses;
   opam and Why3 to install; a specification for each call outside the crate), Flux (a prototype without releases,
   a git dependency without a licence), Aeneas with Charon (proofs written by hand in Lean, broken by each change of
-  the Rust, and no one to own them; Charon alone checks nothing), MIRAI (unmaintained since 2025-03; its
+  the Rust, and no one to own them; Charon alone checks nothing; the way back is Kani's `-Z lean`, which writes the
+  LLBC Aeneas reads with no second toolchain), MIRAI (unmaintained since 2025-03; its
   nightly-2025-01-10 cannot build edition 2024), Kani on whole messages (D179).
 - D181 (builds on D141, D154, D170; amended by D182) The parsers of outside data in the two binaries are fuzzed through a library
   target of each app: `src/lib.rs` holds the crate `src/main.rs` held, and `src/main.rs` keeps the allocator of a

@@ -21,6 +21,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   submission queue is full and drops the `AsyncCancel`: a multishot receive dropped by a listener's restart
   (`supervise`, `apps/dedensd/src/serve/isolate.rs`) then stays armed beside its replacement and takes datagrams
   nobody reads. Default: a compio change that retries the cancel after the next submit, proposed upstream.
+- compio's buffer ring (D49) publishes its tail without a release store (`compio-driver`
+  `sys/buffer_pool/iour.rs`: an `unsync` `AtomicU16`, which ignores orderings). The kernel reads the tail with acquire,
+  so on arm64 it may see a new tail before the entry's address, length and id, and fill a buffer a task still reads:
+  a reply to the wrong question, or compio's panic "Buffer should not be in use". Never seen. A fix is written
+  (compio `e0e0ae5e`, branch `fix/buffer-ring-release`). Default: propose it upstream, take it with the release.
 - A TCP reply's write deadline (D47) runs from the moment the queue was last empty (`write`,
   `apps/dedensd/src/serve/tcp.rs`): a fast reader under sustained pipelined load never empties it, and is closed
   `TCP_WRITE` (10 s) after its burst began. Default: start the deadline again after each completed write, so it
@@ -307,11 +312,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   effective and ambient capabilities once bound, as D122's drop ends with none.
 - IPv6 in the packaged `dedensd.yaml` (D156): `127.0.0.1:53` only, since a host without IPv6 has no `[::1]` and the
   start fails. Default: as is. Alternative: `dedensd` skipping a loopback address the host lacks, with a warning.
-- A SIGSEGV of the `rfc8484` test binary (D107): once, in the coverage job of 2026-11-06 (run 42254972560, glibc
-  x86_64, instrumented), while its tests ran; the rerun passed, and 300 runs on the VPS, with and without coverage and
-  on `io_uring`, did not crash. Suspect: the tests' client runtimes, dropped with QUIC operations in flight, which
-  `dedensd` never does (D107), though compio 0.12.5 closes the ring before freeing them. Default: as is, watched.
-  Alternative: hunt it, the test in a loop on runners with core dumps uploaded, or under AddressSanitizer.
+- Crashes of test binaries in the coverage job (glibc x86_64, instrumented), each gone on rerun: a SIGSEGV of
+  `rfc8484` (D107; run 42254972560, 2026-11-06; 300 runs on the VPS, with and without coverage and on `io_uring`, did
+  not crash), and `free(): corrupted unsorted chunks` (SIGABRT) of `dedensd`'s `tests`, twice (run 43624984047,
+  2026-11-14, and PR #64's first run), each time after `access::networks::a_network_that_is_no_network_stops_the_start`.
+  `cargo llvm-cov` runs a binary's tests as threads of one process, so the culprit is any test in flight. `dedensd`
+  has no `unsafe`: suspects are native code and io_uring, and the tests' client runtimes, dropped with QUIC operations
+  in flight, which `dedensd` never does (D107). Default: hunt it, the coverage job on `cargo llvm-cov nextest` (one
+  process per test names it), then that test under AddressSanitizer.
 - DNS stamps of the other kinds (D102): `dedens_net::stamp` reads the DNSCrypt (0x01) and relay (0x81) kinds and
   refuses plain DNS (0x00), DoH (0x02), DoT (0x03), DoQ (0x04) and Oblivious DoH (0x05, 0x85) by name. The encrypted
   kinds name servers of transports we have (certificate hashes, host names with ports, bootstrap addresses, a DoH
