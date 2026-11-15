@@ -593,6 +593,29 @@ mod h3_frames {
         });
     }
 
+    /// §5.2, D157: a server stopped by SIGTERM closes its connections with `H3_NO_ERROR` before it ends: its clients
+    /// open new ones at once instead of waiting for their idle timeout.
+    #[cfg(unix)]
+    #[test]
+    fn s5_2_a_stopped_server_closes_its_connections() {
+        let upstream = Responder::start(&["a"]);
+        let ca = certificates();
+        let mut server = serving(&ca, &upstream);
+        Runtime::new().expect("a runtime").block_on(async {
+            let keep_alive = Some(Duration::from_secs(1));
+            let (connection, _driver, mut requests) =
+                h3_connected(server.addr, &ca, keep_alive).await;
+            post(&mut requests, server.addr, &query_for("a", 0))
+                .await
+                .expect("an answer");
+            server.signal("TERM");
+            let code = closed(&connection, Duration::from_secs(5)).await;
+            assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+        });
+        let status = server.exited().expect("exited");
+        assert!(status.success(), "{status}");
+    }
+
     /// §5.1: a connection waiting for a response is not idle: an upstream that answers past the idle time still has
     /// its answer sent.
     #[test]

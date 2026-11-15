@@ -28,6 +28,7 @@ mod upstream;
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, mpsc};
 use std::time::{Duration, Instant};
@@ -41,13 +42,13 @@ use dedens_net::io::{Compio, Io, TimedOut, Udp as _};
 use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
 use dedens_server::{Pipeline, Step, Upstream};
-use futures_util::future::{join, select_all};
+use futures_util::future::{Either, join, select, select_all};
 use socket2::{Domain, Socket, Type};
 
 use self::h3_budget::Connections;
 use self::http3::H3_UNI_STREAMS;
 use self::isolate::{BACKOFF, Backoff, Listener, supervise};
-use self::quic::{Service, quic_task};
+use self::quic::{Closing, Service, quic_task};
 #[cfg(feature = "dnscrypt")]
 use self::tcp::tcp_task_with;
 use self::tcp::{TCP_BACKLOG, TCP_CONNECTIONS, tcp_task};
@@ -403,8 +404,8 @@ fn runtime_on(driver: Option<DriverType>) -> io::Result<Runtime> {
 
 /// Answers on `sockets` with the pipeline of `current`, upstream servers over TLS and QUIC checked against `trust`,
 /// presenting `presented` over TLS and QUIC and serving as the Oblivious `DoH` target (and proxy) `odoh` over
-/// HTTP/3, until the end
-/// of the process. `listening` gets the runtime's driver once the sockets are taken by the runtime: on macOS a
+/// HTTP/3, until `stopping` disconnects: the server is stopped, and its QUIC connections are closed before the end
+/// (D157). `listening` gets the runtime's driver once the sockets are taken by the runtime: on macOS a
 /// datagram that arrived before carries none of the control data `compio-quic` reads, and it panics (D89), so the
 /// process announces itself only then, and with the driver, which falls back from `io_uring` to `poll` silently (D107).
 ///
@@ -412,6 +413,10 @@ fn runtime_on(driver: Option<DriverType>) -> io::Result<Runtime> {
 ///
 /// A socket the runtime cannot take, no certificate for a TLS or QUIC socket, or a task serving one ended: its
 /// supervisor panicked (D121).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a serving thread is given, each once"
+)]
 pub(crate) async fn serve(
     sockets: Sockets,
     current: Arc<Current>,
@@ -420,6 +425,7 @@ pub(crate) async fn serve(
     services: Services,
     prewarms: bool,
     listening: mpsc::Sender<DriverType>,
+    stopping: flume::Receiver<()>,
 ) -> io::Result<()> {
     let Services {
         #[cfg(feature = "odoh")]
@@ -444,7 +450,7 @@ pub(crate) async fn serve(
             .clone()
             .ok_or_else(|| io::Error::other("no certificate to present"))
     };
-    let mut tasks = Vec::new();
+    let (mut tasks, mut endpoints) = (Vec::new(), Vec::new());
     for bound in sockets {
         let task = match bound {
             Bound::Plain(udp_socket, tcp_listener) => {
@@ -468,7 +474,16 @@ pub(crate) async fn serve(
             }
             Bound::Quic(udp_socket) => {
                 let config = tls::quic_server_config(certificate()?).map_err(io::Error::other)?;
-                quic_task(&thread, "quic", udp_socket, config, 0, Service::Quic)?
+                let service = Service::Quic;
+                quic_task(
+                    &thread,
+                    "quic",
+                    udp_socket,
+                    config,
+                    0,
+                    service,
+                    &mut endpoints,
+                )?
             }
             Bound::Https(udp_socket, path) => {
                 let config = tls::h3_server_config(certificate()?).map_err(io::Error::other)?;
@@ -480,6 +495,7 @@ pub(crate) async fn serve(
                     config,
                     H3_UNI_STREAMS,
                     service,
+                    &mut endpoints,
                 )?
             }
             #[cfg(feature = "doc")]
@@ -517,7 +533,27 @@ pub(crate) async fn serve(
     // The receiver is gone only if another thread failed first.
     let _ = listening.send(Runtime::with_current(Runtime::driver_type));
     drop(listening);
-    first_end(tasks).await
+    until_stopped(tasks, &endpoints, &stopping).await
+}
+
+/// Waits for the first of `tasks` to end, as [`first_end`], or for `stopping` to disconnect: the server is stopped,
+/// and the QUIC connections of `endpoints` are closed before the thread ends (D157).
+///
+/// # Errors
+///
+/// A task that ended.
+async fn until_stopped(
+    tasks: Vec<JoinHandle<()>>,
+    endpoints: &[Closing],
+    stopping: &flume::Receiver<()>,
+) -> io::Result<()> {
+    match select(pin!(first_end(tasks)), pin!(stopping.recv_async())).await {
+        Either::Left((ended, _)) => ended,
+        Either::Right(_) => {
+            quic::close(endpoints).await;
+            Ok(())
+        }
+    }
 }
 
 /// The tasks of a `DNSCrypt` listener: the UDP one, pushed to `tasks`, and the TCP one, returned (D99).

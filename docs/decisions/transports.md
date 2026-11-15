@@ -298,9 +298,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fetches each run; a long-running `dedensd` fetches rarely, and a pinned key breaks at the target's next rotation
     until a reload), and configurations shared by the threads (a lock on the query path for a fetch an hour).
   - Connections: the thread client's HTTP/3 pool (D84), one connection to the proxy and one to the target (the
-    fetches) per thread, closed after 10 s idle. A proxy or target that went away without closing them (a restart)
-    leaves them silent until that idle timeout: the queries through them fail meanwhile, then the next one connects
-    again (`d185_a_target_restarted_with_another_key_is_asked_again`).
+    fetches) per thread, closed after 10 s idle. A stopped `dedensd` closes its QUIC connections (D157), so the next
+    query connects again (`d185_a_target_restarted_with_another_key_is_asked_again`); one that went away without
+    closing them (killed) costs each pool on the way one silent try, after which the pool closes the connection (D61,
+    D83; `d185_a_target_killed_and_restarted_is_asked_again`).
   - Tries and failover: the stage's `timeout_ms` and `tries` per server, as for any server; a failed target (the
     proxy down, a proxy error, a 401 after the refetch, a response that does not open) sends the query to the next
     server, then SERVFAIL (D41). No fallback straight to the target: asking it without the proxy hands it the address

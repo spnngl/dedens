@@ -154,7 +154,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D154 [scope](scope.md): musl binaries use mimalloc in secure mode
 - D155 [scope](scope.md): `deny.toml` ignored RUSTSEC-2026-0441, `pin-utils` through `loom`, until `loom` 0.7.3
 - D156 [scope](scope.md) (amended by D158): the release holds deb and rpm packages, by nfpm
-- D157 [scope](scope.md): `dedensd` exits with success at once on SIGTERM or SIGINT
+- D157 [scope](scope.md): `dedensd` exits with success on SIGTERM or SIGINT once its QUIC connections are closed
 - D158 [scope](scope.md): each shipped binary carries its crates' licences, by cargo-about; the packages, man pages
 - D159 [wire format](wire-format.md) (amended by D162): RDATA and EDNS option files named after their type, not RFC
 - D160 [scope](scope.md) (amended by D161): each public item at one path: private modules, root re-exports

@@ -903,14 +903,38 @@ fn d185_a_proxy_down_fails_over_to_the_next_server() {
     assert_eq!(upstream.queries().len(), 1);
 }
 
-/// D185, RFC 9230 §4.3, D79: a target restarted without a key file serves under a new key at the same address and
-/// answers the query under the kept configurations 401; the forwarder fetches them again and is answered. Until the
-/// connections to the stopped target are closed for idleness (D27), the proxy's and the forwarder's, the queries fail.
+/// D185, RFC 9230 §4.3, D79, D157: a target restarted without a key file serves under a new key at the same address
+/// and answers the query under the kept configurations 401; the forwarder fetches them again and is answered. The
+/// stopped target closed its connections, so the proxy opens a new one at once and the first query is answered.
 #[test]
 #[cfg(unix)]
 fn d185_a_target_restarted_with_another_key_is_asked_again() {
-    /// Longer than the idle timeout of a client's connections, 10 s, with room for the queries that fail before.
-    const PATIENCE: Duration = Duration::from_secs(25);
+    restarted_target("TERM", Duration::from_secs(5), |forwarder| {
+        let reply = crate::util::ask_udp(forwarder, &query_for("a", 2));
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+    });
+}
+
+/// D185, D83: a target killed leaves the connections to it open, and silent: the request that hears nothing back on
+/// one closes it, long before the QUIC idle timeout (10 s). The first query fails at the proxy (1 s), the second at
+/// the forwarder's fetch of the new configurations (2 s), and the third is answered: some 3 s, where waiting out the
+/// idle timeout took 11.
+#[test]
+#[cfg(unix)]
+fn d185_a_target_killed_and_restarted_is_asked_again() {
+    restarted_target("KILL", Duration::from_secs(8), |forwarder| {
+        let answered = [2, 3, 4].into_iter().any(|id| {
+            crate::util::ask_udp(forwarder, &query_for("a", id)).rcode() == Rcode::NOERROR
+        });
+        assert!(answered, "answered by the third query at the latest");
+    });
+}
+
+/// A forwarder asks a target through a proxy, the target ends on `signal` and starts again at its address under
+/// another key, and `asked` puts queries to the forwarder, done within `patience`: room for the queries that fail
+/// (the forwarder's try is 2 s, the proxy's 1 s) and a loaded machine, under the idle timeout of a client's
+/// connections, 10 s, which a dead connection would wait out.
+fn restarted_target(signal: &str, patience: Duration, asked: impl FnOnce(SocketAddr)) {
     let upstream = Responder::start(&["a"]);
     let ca = certificates();
     let mut first = serving(&ca, "odoh: {}\n", upstream.addr);
@@ -925,15 +949,12 @@ fn d185_a_target_restarted_with_another_key_is_asked_again() {
     let reply = crate::util::ask_udp(forwarder.addr, &query_for("a", 1));
     assert_eq!(reply.rcode(), Rcode::NOERROR);
     let before = configs(addr, &ca);
-    first.signal("TERM");
+    first.signal(signal);
     assert!(first.exited().is_some(), "the first target stops");
     let second = serving_at(&ca, addr, upstream.addr);
     assert_ne!(configs(second.addr, &ca), before);
-    let deadline = Instant::now() + PATIENCE;
-    let answered = (2..u16::MAX)
-        .take_while(|_| Instant::now() < deadline)
-        .any(|id| {
-            crate::util::ask_udp(forwarder.addr, &query_for("a", id)).rcode() == Rcode::NOERROR
-        });
-    assert!(answered, "answered under the new key within {PATIENCE:?}");
+    let restarted = Instant::now();
+    asked(forwarder.addr);
+    let elapsed = restarted.elapsed();
+    assert!(elapsed < patience, "answered after {elapsed:?}");
 }

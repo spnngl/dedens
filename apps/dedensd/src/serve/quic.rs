@@ -5,6 +5,7 @@ use std::io;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use compio::BufResult;
 use compio::io::AsyncWriteExt;
@@ -14,9 +15,10 @@ use compio::quic::{
     VarInt,
 };
 use compio::runtime::JoinHandle;
+use dedens_net::http3::H3_NO_ERROR;
 use dedens_net::io::Compio;
 use dedens_net::quic::{
-    DOQ_PROTOCOL_ERROR, QuicError, RECEIVE_WINDOW, STREAM_RECEIVE_WINDOW,
+    DOQ_NO_ERROR, DOQ_PROTOCOL_ERROR, QuicError, RECEIVE_WINDOW, STREAM_RECEIVE_WINDOW,
     read_message as read_stream,
 };
 use dedens_net::tcp::frame;
@@ -30,9 +32,10 @@ use super::tcp::{TCP_PENDING, TCP_WRITE};
 use super::upstream::answer;
 use super::{Slot, Started, TCP_IDLE, Thread, local, start, supervised};
 
-/// Serves the QUIC endpoint on `udp_socket` as `service`, as the listener `scheme`. A restarted loop takes the same
-/// endpoint: `wait_incoming` ends only once the endpoint is closed, which nothing here does, so the loop does not
-/// end by itself, and a panic leaves the endpoint as it was.
+/// Serves the QUIC endpoint on `udp_socket` as `service`, as the listener `scheme`, and pushes the endpoint to
+/// `endpoints`, for [`close`] to end. A restarted loop takes the same endpoint: `wait_incoming` ends only once the
+/// endpoint is closed, which only [`close`] does, at the end of the process, so the loop does not end by itself, and
+/// a panic leaves the endpoint as it was.
 pub(super) fn quic_task(
     thread: &Rc<Thread>,
     scheme: &str,
@@ -40,9 +43,17 @@ pub(super) fn quic_task(
     config: ServerConfig,
     uni_streams: u32,
     service: Service,
+    endpoints: &mut Vec<Closing>,
 ) -> io::Result<JoinHandle<()>> {
     let name = Listener::new(scheme, local(&udp_socket));
     let serving = endpoint(udp_socket, config, uni_streams)?;
+    endpoints.push(Closing {
+        endpoint: serving.clone(),
+        code: match service {
+            Service::Quic => VarInt::from_u32(DOQ_NO_ERROR),
+            Service::Https(_) => VarInt::from_u64(H3_NO_ERROR).unwrap_or(VarInt::MAX),
+        },
+    });
     let service = Rc::new(service);
     Ok(supervised(name, thread, move |name, thread| {
         quic(
@@ -52,6 +63,31 @@ pub(super) fn quic_task(
             Rc::clone(thread),
         )
     }))
+}
+
+/// A QUIC endpoint, and the code its protocol closes a connection with when there is no error to signal.
+pub(super) struct Closing {
+    endpoint: Endpoint,
+    code: VarInt,
+}
+
+/// How long a stopped server gives its `CONNECTION_CLOSE` frames to go out (D157): a moment, as they leave at once.
+const CLOSE_GRACE: Duration = Duration::from_millis(100);
+
+/// Closes the connections of `endpoints` with their protocol's code for no error, `DOQ_NO_ERROR` (RFC 9250 §4.3) or
+/// `H3_NO_ERROR` (RFC 9114 §5.2, §8.1), and waits [`CLOSE_GRACE`] for the frames to go out if there were any: their
+/// clients open new connections at once instead of waiting out their idle timeout (D157). Queries in flight are
+/// lost, and asked again by their clients.
+pub(super) async fn close(endpoints: &[Closing]) {
+    let open = endpoints
+        .iter()
+        .any(|closing| closing.endpoint.open_connections() > 0);
+    for Closing { endpoint, code } in endpoints {
+        endpoint.close(*code, b"server stopped");
+    }
+    if open {
+        compio::time::sleep(CLOSE_GRACE).await;
+    }
 }
 
 /// The QUIC endpoint on `socket` with `config`: connections closed after [`TCP_IDLE`] without a packet (RFC 9250

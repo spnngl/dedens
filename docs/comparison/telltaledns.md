@@ -150,7 +150,7 @@ it, their code does not do it; "partial": what is missing follows.
 |---|---|---|
 | Configuration | one YAML file, `${VAR}`, bounded (`apps/dedensd/src/config/mod.rs`, D44, D115) | layered TOML, env overrides, JSON Schema (`crates/telltale-config/src/schema.rs`, OPS-005 P0) |
 | Reload | SIGHUP, queries in flight finish on the old pipeline (`apps/dedensd/src/reload.rs`, D55); loom-checked (D135) | SIGHUP, API (`crates/telltale/src/server.rs`, OPS-009 P0); no test of zero loss |
-| Shutdown | exits at once on SIGTERM (D157) | drains (`crates/telltale/tests/shutdown_drain.rs`, OPS-007 P0) |
+| Shutdown | closes its QUIC connections on SIGTERM, then exits (D157) | drains (`crates/telltale/tests/shutdown_drain.rs`, OPS-007 P0) |
 | Privileges | drops root once bound (`apps/dedensd/src/privileges/unix.rs`, D122) | no drop in code; the image and unit run unprivileged, compose as root |
 | Sandbox | systemd hardening (`deploy/packages/dedensd.service`, D156) | systemd and Helm (`deploy/systemd/telltale.service`) |
 | Panic | one task ends, the listener restarts (`apps/dedensd/src/serve/isolate.rs`, D121) | `panic = "abort"`: the process ends |
@@ -315,7 +315,7 @@ dedens lacks:
 8. Per-client policy: groups, client ids from DoH paths or SNI.
 9. A per-client query rate over TCP, TLS, QUIC and HTTPS (RRL covers UDP and DoC).
 10. Blocklist formats: AdBlock syntax and regex.
-11. Graceful drain on shutdown (D157 exits at once).
+11. Graceful drain on shutdown (D157 closes the QUIC connections and exits, the queries in flight dropped).
 12. Cache persistence and popularity prefetch.
 13. Rewrites, DNS64, special-use names, response address filtering against rebinding.
 14. PROXY protocol v2, upstream proxies (SOCKS5), exec plugins.
