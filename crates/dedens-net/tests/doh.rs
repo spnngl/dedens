@@ -34,6 +34,7 @@ use http::header::{ACCEPT, AGE, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DAT
 use http::{Response, StatusCode, Version};
 
 use crate::util::loopback::answer;
+use crate::util::relay::Relay;
 use crate::util::{query, sent, start, t0};
 
 /// The server of the RFC's examples.
@@ -1286,6 +1287,37 @@ async fn s5_2_a_closed_connection_is_opened_again() {
         compio::time::sleep(Duration::from_millis(300)).await;
     }
     assert_eq!(seen.connections.get(), 2);
+}
+
+/// D83: a server restarted at the same address knows nothing of the connection and sends nothing on it (its
+/// stateless reset is under another key, RFC 9000 §10.3): the try that hears nothing back on the reused connection
+/// closes it, and the next try opens another, long before the QUIC idle timeout (10 s) would.
+#[compio::test]
+async fn s5_2_a_restarted_server_costs_one_try() {
+    let certificates = certificates();
+    let (first, _) = h3_server(&certificates, Serve::Answer).await;
+    let (second, seen) = h3_server(&certificates, Serve::Answer).await;
+    let relay = Relay::start(first).await;
+    let client = trusting(certificates);
+    let mut options = https(Method::Get);
+    options.timeout = Duration::from_secs(2);
+    options.tries = NonZero::new(2).expect("two");
+    client
+        .exchange(query(), named(relay.addr(), NAME), &options)
+        .await
+        .expect("a response");
+    relay.restart(second);
+    let asked = Instant::now();
+    client
+        .exchange(query(), named(relay.addr(), NAME), &options)
+        .await
+        .expect("a response from the restarted server");
+    let elapsed = asked.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "answered after {elapsed:?}"
+    );
+    assert_eq!(seen.connections.get(), 1);
 }
 
 /// RFC 8310 §6.6: the strict profile holds over HTTP/3: a certificate for another name is not trusted.

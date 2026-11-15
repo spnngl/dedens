@@ -1,5 +1,6 @@
 //! What the QUIC transports share: the endpoints a client sends from, the connections it opens for one ALPN
-//! protocol, and the slot each server's connection sits in (D61, D83).
+//! protocol, the slot each server's connection sits in, and the check that finds a reused connection's server gone
+//! (D61, D83).
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
@@ -106,6 +107,35 @@ impl Dialer {
             .datagram_receive_buffer_size(None);
         config.transport_config(Arc::new(transport));
         Ok(self.config.get_or_init(|| config).clone())
+    }
+}
+
+/// What a reused connection had heard when a request on it began (D61, D83). A live server acknowledges what it gets
+/// within a round trip and its acknowledgment delay (RFC 9000 §13.2.1), answer or not; a server restarted at the
+/// same address knows nothing of the connection and sends nothing on it, its stateless reset being under another key
+/// (RFC 9000 §10.3). So a try that timed out without a datagram on the connection closes it: the requests on it go
+/// again on a new one, and the next query opens one, where the QUIC idle timeout would have left them for seconds.
+///
+/// A try shorter than the round trip would close each connection it reuses; a try is seconds long (D27).
+pub(crate) struct Heard {
+    connection: Connection,
+    datagrams: u64,
+}
+
+impl Heard {
+    /// What `connection` has heard so far.
+    pub(crate) fn so_far(connection: &Connection) -> Self {
+        Self {
+            connection: connection.clone(),
+            datagrams: connection.stats().udp_rx.datagrams,
+        }
+    }
+
+    /// Closes the connection with `code`, the protocol's "no error", if no datagram came on it since.
+    pub(crate) fn close_if_silent(&self, code: VarInt) {
+        if self.connection.stats().udp_rx.datagrams == self.datagrams {
+            self.connection.close(code, b"server silent");
+        }
     }
 }
 

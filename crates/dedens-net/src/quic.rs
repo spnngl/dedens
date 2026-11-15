@@ -12,9 +12,12 @@ use compio::io::AsyncWriteExt as _;
 use compio::quic::{ConnectError, Connection, ConnectionError, RecvStream, SendStream, VarInt};
 use compio::rustls::pki_types::ServerName;
 
-use crate::dial::{Dialer, Peer, Slots};
+use crate::dial::{Dialer, Heard, Peer, Slots};
 use crate::tcp::frame;
 use crate::tls::{self, Trust};
+
+/// `DOQ_NO_ERROR`: the connection closes with no error to signal (RFC 9250 §4.3).
+pub const DOQ_NO_ERROR: u32 = 0x0;
 
 /// `DOQ_PROTOCOL_ERROR`: the peer broke the protocol, and the connection is closed (RFC 9250 §4.3, §4.3.3).
 pub const DOQ_PROTOCOL_ERROR: u32 = 0x2;
@@ -104,7 +107,8 @@ impl QuicPool {
     /// A reused connection found closed once the query fails, as one the server dropped while idle (RFC 9250
     /// §4.4), is replaced once and the query sent again (D27). A response not framed, or with an ID other than 0,
     /// closes the connection with `DOQ_PROTOCOL_ERROR` (RFC 9250 §4.3.3, D109, D175): the query is not sent again,
-    /// and the next one opens a new connection.
+    /// and the next one opens a new connection. A reused connection on which nothing came in for the whole of a query
+    /// that timed out is closed with `DOQ_NO_ERROR`, its server taken for gone, so the next query opens another (D61).
     ///
     /// # Errors
     ///
@@ -119,8 +123,12 @@ impl QuicPool {
     ) -> Result<Vec<u8>, QuicError> {
         let framed = frame(wire).ok_or(QuicError::BadLength(wire.len()))?;
         let server = (addr, name);
+        let mut heard = None;
         let asked = async {
             let (connection, reused) = self.connection(&server).await?;
+            if reused {
+                heard = Some(Heard::so_far(&connection));
+            }
             match ask(&connection, &framed).await {
                 // A protocol error is the server's, and closes the connection here: not one found closed.
                 Err(error)
@@ -134,9 +142,13 @@ impl QuicPool {
                 asked => asked,
             }
         };
-        compio::time::timeout_at(deadline, asked)
-            .await
-            .unwrap_or(Err(QuicError::TimedOut))
+        let asked = compio::time::timeout_at(deadline, asked).await;
+        asked.unwrap_or_else(|_| {
+            if let Some(heard) = heard {
+                heard.close_if_silent(VarInt::from_u32(DOQ_NO_ERROR));
+            }
+            Err(QuicError::TimedOut)
+        })
     }
 
     /// The open connection to `server`, reused, or a new one.

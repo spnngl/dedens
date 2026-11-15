@@ -9,15 +9,15 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 use compio::bytes::{Buf, Bytes};
-use compio::quic::Connection;
 use compio::quic::h3::client::{self, RequestStream, SendRequest};
 use compio::quic::h3::error::{Code, ConnectionError, StreamError};
 use compio::quic::h3::{self, BidiStream, OpenStreams};
+use compio::quic::{Connection, VarInt};
 use compio::rustls::pki_types::ServerName;
 use dedens_proto::MAX_MESSAGE_LEN;
 use http::{Request, Response, StatusCode, Version};
 
-use crate::dial::{Dialer, Peer, Slots};
+use crate::dial::{Dialer, Heard, Peer, Slots};
 use crate::doh::{self, DohError, Method, Template};
 use crate::exchange::Http;
 use crate::quic::QuicError;
@@ -29,6 +29,9 @@ const SERVER_STREAMS: u32 = 16;
 
 /// `H3_EXCESSIVE_LOAD`: the peer's load on the connection is more than it will bear (RFC 9114 §8.1, §10.5).
 pub const H3_EXCESSIVE_LOAD: u64 = Code::H3_EXCESSIVE_LOAD.value();
+
+/// `H3_NO_ERROR`: the connection closes with no error to signal (RFC 9114 §8.1).
+pub const H3_NO_ERROR: u64 = Code::H3_NO_ERROR.value();
 
 /// The header section of a request a server reads, at most: a GET's URI of up to 65535 bytes and room for its other
 /// fields (RFC 9114 §4.2.2, §7.2.4.1).
@@ -118,7 +121,8 @@ impl Http3Pool {
     ///
     /// A request that did not go through because the server is closing the connection (`GOAWAY`, a rejected
     /// request, RFC 9114 §4.1.1, §5.2), or because it closed while idle, is sent again once on a new connection
-    /// (D27).
+    /// (D27). A reused connection on which nothing came in for the whole of a request that timed out is closed with
+    /// `H3_NO_ERROR`, its server taken for gone, so the next request opens another (D83).
     ///
     /// # Errors
     ///
@@ -186,8 +190,12 @@ impl Http3Pool {
         deadline: Instant,
     ) -> Result<(Response<()>, Vec<u8>), Http3Error> {
         let server = (addr, name);
+        let mut heard = None;
         let asked = async {
             let (open, reused) = self.connection(&server).await?;
+            if reused {
+                heard = Some(Heard::so_far(&open.connection));
+            }
             match ask(&open, request, limit).await {
                 Err(error) if reused && open.dropped(&error) => {
                     // The server refuses this connection's requests from now on, as it said or by closing: the
@@ -199,9 +207,13 @@ impl Http3Pool {
                 asked => asked,
             }
         };
-        compio::time::timeout_at(deadline, asked)
-            .await
-            .unwrap_or(Err(Http3Error::TimedOut))
+        let asked = compio::time::timeout_at(deadline, asked).await;
+        asked.unwrap_or_else(|_| {
+            if let Some(heard) = heard {
+                heard.close_if_silent(VarInt::from_u64(H3_NO_ERROR).unwrap_or(VarInt::MAX));
+            }
+            Err(Http3Error::TimedOut)
+        })
     }
 
     /// The open connection to `server`, reused, or a new one.
