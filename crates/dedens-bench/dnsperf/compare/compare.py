@@ -114,13 +114,20 @@ class Engine:
             raise RuntimeError(f"{self.name} {' '.join(args)}: {p.stderr.strip()}")
         return p.stdout
 
+    def logs(self, name):
+        """What container `name` wrote, both streams: the engine gives each back on its own."""
+        p = subprocess.run([self.name, "logs", name], check=False, capture_output=True, text=True)
+        return p.stdout + p.stderr
+
     def start(self, role, command, image=None, entrypoint=None):
         """Starts container dedens-compare-<role> on the cores of its role, writing /w/start as it execs."""
         name = f"dedens-compare-{role}"
         self(*self.rm, name, check=False)
         cpus = self.cpus[role]
+        # The engines' default seccomp filters refuse io_uring, so dedensd would serve on its poll fallback (D107):
+        # off for every container alike.
         args = ["run", "-d", "--name", name, "--network", "host", "--security-opt", "label=disable",
-                "-v", f"{self.work}:/w", *self.user]
+                "--security-opt", "seccomp=unconfined", "-v", f"{self.work}:/w", *self.user]
         stamp = ["sh", "-c", 'date +%s%N >/w/start; exec "$@"', "sh"]
         if self.pinning == "cpuset":
             args += ["--cpuset-cpus", cpus]
@@ -314,11 +321,11 @@ class Bench:
                 break
             time.sleep(0.1)
         else:
-            raise SystemExit("Knot does not answer: " + self.engine("logs", self.knot, check=False))
+            raise SystemExit("Knot does not answer: " + self.engine.logs(self.knot))
         # The key-signing key of the signed root: the trust anchor of every validator.
         anchors = [ln for ln in self.engine(*dig, ".", "DNSKEY").splitlines() if re.search(r"\sDNSKEY\s+257 3 ", ln)]
         if "dnssec" in self.tags and not anchors:
-            raise SystemExit("Knot serves no key-signing key: " + self.engine("logs", self.knot, check=False))
+            raise SystemExit("Knot serves no key-signing key: " + self.engine.logs(self.knot))
         (w / "anchors.zone").write_text("".join(ln + "\n" for ln in anchors))
         upstream = self.spec.get("upstream", "udp")
         values = {"DNSSEC": "validate" if "dnssec" in self.tags else "off", "CORES": str(self.count["server"]),
@@ -345,12 +352,17 @@ class Bench:
         try:
             answered = first_answer(names, self.rcode)
         except Fail as e:
-            raise Fail(f"{label} {template}: {e}\n" + self.engine("logs", name, check=False)[-3000:]) from e
+            raise Fail(f"{label} {template}: {e}\n" + self.engine.logs(name)[-3000:]) from e
         started = int((self.work / "start").read_text())
         time.sleep(1)
         mem = self.engine.cgroup(name)
         start = {"label": label, "server": server, "template": template, "start_ms": (answered - started) / 1e6,
                  "idle_mib": mem["anon"] / 2**20}
+        if server == "dedensd":  # measured as it ships on Linux: on io_uring, never its poll fallback (D107)
+            found = re.search(r'"driver":"(\w+)"', self.engine.logs(name))
+            start["driver"] = found[1] if found else None
+            if start["driver"] != "io_uring":
+                raise Fail(f"{label}: serves on {start['driver']}, not io_uring: kernel.io_uring_disabled?")
         self.result["starts"].append(start)
         if self.spec["cached"]:
             self.dnsperf(self.corpus, once=True)  # primes the cache
@@ -384,7 +396,7 @@ class Bench:
         self.result["checks"].append({"label": label, "server": server, "template": template, "rcodes": r["rcodes"],
                                       "lost": r["lost"], "sample_wrong": {q: str(a) for q, a in wrong.items()}})
         if not ok or wrong:
-            logs = self.engine("logs", name, check=False)[-2000:]
+            logs = self.engine.logs(name)[-2000:]
             raise Fail(f"{label} {template} answers wrong: rcodes {r['rcodes']}, {r['lost']} lost of "
                        f"{r['sent']}, expected {self.rcode} for all {CHECK_QUERIES}; sample differs from Knot's on "
                        f"{sorted(wrong)[:5]}\n{logs}")

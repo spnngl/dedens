@@ -300,7 +300,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     hashes.
   - Same machine share: each server alone in its container on its own cores (threads set to that count),
     dnsperf and Knot on others, host networking; `taskset` where rootless podman has no `cpuset`, which the JSON
-    names.
+    names. No seccomp filter in any container: the engines' default one refuses `io_uring`, and `dedensd` is
+    measured on it as it ships on Linux, a start on its `poll` fallback (D107) failing the run.
   - Two configurations each: shipped (as its project ships it) and lean (what the others lack turned off:
     logs, metrics, APIs), so neither a default nor a tuning decides alone.
   - Right answers first: a server fails the run unless it answers the check pass with the mode's rcode, nothing

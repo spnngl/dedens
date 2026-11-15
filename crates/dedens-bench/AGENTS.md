@@ -18,6 +18,9 @@ per core), as macOS runs `poll` on one thread.
 - TelltaleDNS sets AD only when DO is set, so the DNSSEC sample asks with both.
 - Rootless podman without a delegated `cpuset` controller pins with `taskset` inside each container instead; the
   JSON's `pinning` says which.
+- The engines' default seccomp filters refuse `io_uring`, and dedensd then serves on `poll` and only logs it
+  (D107): every container runs with `seccomp=unconfined`, and a dedensd not on `io_uring` fails the run. The first
+  session of step 02 measured `poll` for it unawares.
 
 The allocator experiment (D152) is not in the tree: check out the tag `alloc-experiment-2026-11-06` for `dnsperf/alloc.sh`,
 `dnsperf/alloc-vps/` and the `alloc-*` features, and `alloc-security-2026-11-06` for `alloc-probe/`; each has its AGENTS.md.
