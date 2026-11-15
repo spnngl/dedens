@@ -113,3 +113,30 @@ impl Client {
         self.inner.random_case()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::rc::Rc;
+
+    use super::Client;
+    use crate::seed::{Rng, Seed};
+    use crate::trace::Trace;
+
+    /// The client of `seed`.
+    fn client(seed: u64) -> Client {
+        let rng = Rc::new(RefCell::new(Rng::new(Seed(seed), 1)));
+        Client::new(rng, IpAddr::V4(Ipv4Addr::LOCALHOST), Trace::new())
+    }
+
+    /// D184, D133: each query's `0x20` bits are fresh ones, the same for the same seed.
+    #[test]
+    fn random_case_bits_are_fresh_and_the_seeds() {
+        let (one, again) = (client(1), client(1));
+        let first = one.random_case().expect("bits");
+        assert_eq!(first, again.random_case().expect("bits"));
+        assert_ne!(first, one.random_case().expect("bits"));
+        assert_ne!(first, client(2).random_case().expect("bits"));
+    }
+}
