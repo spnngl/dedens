@@ -387,11 +387,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   of 34 labels (a real capture, `ip6_ptr`) takes about 40 questions and 80 signature checks. But a name the
   response's own denial proves absent is no cut, nor any name below it, and its DS is not asked: before the DS
   question of a label, the NSEC and NSEC3 records of the response's authority section signed by the parent's apex
-  are verified with the parent's keys and handed to `prove_absent` (D74); a proof that does not hold, or an opt-out
-  span (the name may be an unsigned delegation, RFC 5155 §9.2), asks the DS as before. A wildcard answer carries
-  such a proof of its next closer name (RFC 4035 §5.3.4), so a name under a wildcard costs no DS question once its
-  zone's keys are known: the comparison's `dnssec` shape (unique names under the root's wildcard) went from one DS
-  question per name (1.34 counted) and about six signature checks to none and two (D183). Sound because the walk
+  are verified with the parent's keys and handed to `prove_absent` (D74), for the label and each name between it
+  and the apex (the key cache may hold those as no cut from an earlier response, and nothing exists below a name
+  that does not, RFC 4592 §2.2.2); a proof that does not hold, or an opt-out span (the name may be an unsigned
+  delegation, RFC 5155 §9.2), asks the DS as before. A wildcard answer carries such a proof of its next closer
+  name (RFC 4035 §5.3.4), so a name under a wildcard costs no DS question once its zone's keys are known: the
+  comparison's `dnssec` shape (unique names under the root's wildcard) went from 1.34 DS questions a name and about
+  six signature checks to none and two (D183, `benchmarks.md`). Sound because the walk
   came down through the labels above, each proven no cut or settled as the apex, so a name in the parent's zone
   that does not exist owns no NS, and an NSEC never covers a name below a delegation or DNAME (RFC 6840 §4.1); the
   records are verified with the same keys and window as any record of the zone, so an attacker gets nothing a
@@ -399,8 +401,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   signer and asks no DS at all), and a forged or foreign denial fails its signature or comes from another zone
   and is not read (then the verdict makes it bogus). The proof only shortcuts to no cut, never to insecure, and it
   is settled and kept in the key cache as any no-cut name, with the least of the proof's and the evidence's TTL
-  (D86). Each denial `RRset` of the response is checked once though the walk and the verdict both read it. A DS RRset is verified by the parent's keys and then
-  vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
+  (D86). Each denial `RRset` of the response is checked once though the walk and the verdict both read it. A DS
+  RRset is verified by the parent's keys and then vouches for the DNSKEY RRset (`trusted_keys`); no DS is the parent's NSEC or NSEC3 proof (D74): an insecure
   delegation (insecure, `UnsignedDelegation`), or no cut (the name is in the parent's zone). A DS question at a
   name that is a CNAME (or below a DNAME, or a wildcard CNAME) gets the CNAME: if it verifies, the name is no cut.
   Data below an insecure zone, at or below a negative anchor (D72, RFC 7646 §2, nothing asked), or with no anchor

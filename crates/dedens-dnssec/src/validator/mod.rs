@@ -281,9 +281,9 @@ pub struct Validation {
     /// copied from the key cache by `zone_of`), read by `zone_of` only. The limit on depth is checked before it
     /// is read, and its outcome never written.
     zones: HashMap<Name<'static>, Zone>,
-    /// The names the response's own denial records prove absent, and for how long: the walk takes them for no
-    /// zone cut, and the names below them too (`Validation::absent`).
-    absent: HashMap<Name<'static>, Ttl>,
+    /// Whether the response's own denial records prove a name absent, and for how long, of each name tried: the
+    /// walk takes those for no zone cut, and the names below them too (`Validation::absent`).
+    absent: HashMap<Name<'static>, Option<Ttl>>,
     /// The checks of the NSEC, NSEC3 and SOA `RRsets` of the response's authority section, by the index of the
     /// set in it and the zone whose keys checked it: the walk reads them as well as the verdict, and no
     /// signature is verified twice (D92).
