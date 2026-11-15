@@ -256,12 +256,12 @@ fn answer(outcome: Result<Outcome, CheckError>, name: &str) -> Result<Answer, St
 struct Run(Vec<Event>);
 
 impl Run {
-    /// The distinct questions the upstream server answered.
+    /// The distinct questions the upstream server answered, in any case: each query has its own (`0x20`, D184).
     fn questions(&self) -> BTreeSet<String> {
         self.0
             .iter()
             .filter_map(|event| match &event.what {
-                What::Served { question, .. } => Some(format!("{question:?}")),
+                What::Served { question, .. } => Some(format!("{question:?}").to_ascii_lowercase()),
                 _ => None,
             })
             .collect()
@@ -414,7 +414,11 @@ fn dropping(lose: impl Fn(&Question<'static>) -> bool + 'static) -> Answers {
 fn losing_first(types: &'static [RecordType]) -> Answers {
     let seen = Rc::new(RefCell::new(HashSet::new()));
     captures().faulty(move |question, _| {
-        if types.contains(&question.qtype) && seen.borrow_mut().insert(format!("{question:?}")) {
+        if types.contains(&question.qtype)
+            && seen
+                .borrow_mut()
+                .insert(format!("{question:?}").to_ascii_lowercase())
+        {
             Verdict::Drop
         } else {
             Verdict::Answer
@@ -716,7 +720,7 @@ fn the_costliest_zone_is_validated_within_the_limits_of_a_query() {
                     question,
                     transport,
                     ..
-                } => Some(format!("{question:?} {transport:?}")),
+                } => Some(format!("{question:?} {transport:?}").to_ascii_lowercase()),
                 _ => None,
             })
             .collect();

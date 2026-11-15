@@ -59,6 +59,7 @@
 "forward"
 "servers"
 "tries"
+"random_case"
 "dnssec"
 "validate"
 "trust_anchors"

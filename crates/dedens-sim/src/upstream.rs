@@ -24,7 +24,7 @@ use compio::io::BufReader;
 use compio::io::util::Splittable as _;
 use dedens_net::tcp::{Inbound, Outbound};
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
-use dedens_proto::{Flags, Message, Question, Rcode, Transport};
+use dedens_proto::{Flags, HEADER_LEN, MAX_NAME_LEN, Message, Question, Rcode, Transport};
 pub(crate) use dedens_testkit::captured;
 use tokio::task::JoinSet;
 use turmoil::net::{TcpStream, UdpSocket};
@@ -329,6 +329,14 @@ impl Answers {
             None => refusal(&query)?,
         };
         reply.get_mut(..2)?.copy_from_slice(wire.get(..2)?);
+        // The question as asked, in its case: a server copies it (RFC 1035 §4.1.1), which `0x20` relies on (D184).
+        let mut buf = [0; MAX_NAME_LEN];
+        let name = asked.name.to_wire(&mut buf);
+        if let Some(echo) = reply.get_mut(HEADER_LEN..HEADER_LEN + name.len())
+            && echo.eq_ignore_ascii_case(name)
+        {
+            echo.copy_from_slice(name);
+        }
         Some((reply, asked))
     }
 

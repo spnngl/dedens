@@ -19,6 +19,7 @@ pub struct Forward {
     servers: Box<[Server]>,
     timeout: Duration,
     tries: NonZeroU8,
+    random_case: bool,
     validation: Option<Validating>,
 }
 
@@ -28,8 +29,8 @@ impl Forward {
     /// How many queries a server is sent before the next is asked, by default.
     pub const TRIES: NonZeroU8 = NonZeroU8::new(2).expect("two is not zero");
 
-    /// Forwards to `servers`, tried in order, each [`Forward::TRIES`] times waiting [`Forward::TIMEOUT`]; `None`
-    /// without any.
+    /// Forwards to `servers`, tried in order, each [`Forward::TRIES`] times waiting [`Forward::TIMEOUT`], with `0x20`
+    /// ([`Forward::with_random_case`]); `None` without any.
     #[must_use]
     pub fn new(servers: impl IntoIterator<Item = impl Into<Server>>) -> Option<Self> {
         let servers: Box<[Server]> = servers.into_iter().map(Into::into).collect();
@@ -37,6 +38,7 @@ impl Forward {
             servers,
             timeout: Self::TIMEOUT,
             tries: Self::TRIES,
+            random_case: true,
             validation: None,
         })
     }
@@ -52,6 +54,14 @@ impl Forward {
     #[must_use]
     pub const fn with_tries(mut self, tries: NonZeroU8) -> Self {
         self.tries = tries;
+        self
+    }
+
+    /// Whether a query to a plain server over UDP goes with the case of its question's letters at random, which the
+    /// response must repeat (draft-vixie-dnsext-dns0x20, D184). On by default.
+    #[must_use]
+    pub const fn with_random_case(mut self, random_case: bool) -> Self {
+        self.random_case = random_case;
         self
     }
 
@@ -84,6 +94,11 @@ impl Forward {
     /// How long each query waits, and how many each server is sent.
     pub(crate) const fn patience(&self) -> (Duration, NonZeroU8) {
         (self.timeout, self.tries)
+    }
+
+    /// Whether [`Forward::with_random_case`] is on.
+    pub(crate) const fn random_case(&self) -> bool {
+        self.random_case
     }
 
     /// The servers, in the order they are asked; the first always exists.

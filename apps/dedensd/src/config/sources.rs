@@ -31,6 +31,9 @@ pub(super) enum StageFile {
     Cache(CacheFile),
     /// Upstream servers, asked in order, each `tries` times waiting `timeout_ms` for a response.
     ///
+    /// `random_case: false` sends the question to a plain server over UDP in the client's case: on by default, its
+    /// letters go in a random case that the response must repeat, else it is dropped as forged (`0x20`, D184).
+    ///
     /// `dnssec: validate` (D77) validates what they answer: AD is set for authentic answers only, a bogus one is
     /// SERVFAIL with an extended error. `trust_anchors` is a file of DS or DNSKEY records in zone file format, the
     /// root's bundled ones unless set; `insecure` lists names answered as they are, with their subdomains (RFC 7646).
@@ -47,6 +50,7 @@ pub(super) enum StageFile {
         odoh_proxy: Option<OdohProxy>,
         timeout_ms: Option<NonZeroU32>,
         tries: Option<NonZeroU8>,
+        random_case: Option<bool>,
         #[serde(default)]
         dnssec: Dnssec,
         trust_anchors: Option<PathBuf>,

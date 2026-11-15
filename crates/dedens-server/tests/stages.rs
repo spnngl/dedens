@@ -66,6 +66,38 @@ mod forward {
         assert_ne!(upstream.questions[0].name.to_string(), upper);
     }
 
+    /// D184: `0x20` goes to a plain server over UDP, unless the stage turns it off; never over a connection, TLS,
+    /// QUIC, HTTPS or `DNSCrypt`, where no off-path attacker answers.
+    #[test]
+    fn random_case_is_for_a_plain_server_over_udp() {
+        let plain: SocketAddr = "192.0.2.1:53".parse().expect("an address");
+        let tls = Server {
+            addr: plain,
+            via: Via::Tls(None),
+        };
+        let asked = |forward: Forward| {
+            let pipeline = Pipeline::new(vec![Stage::Forward(forward)]);
+            let mut out = vec![0; 65535];
+            let Step::Upstream(first) = pipeline.query(
+                &wire(&query("a", 7)),
+                Transport::Udp,
+                Ipv4Addr::LOCALHOST.into(),
+                0,
+                &mut out,
+            ) else {
+                unreachable!("a forwarder sends the query upstream");
+            };
+            [Transport::Udp, Transport::Tcp].map(|transport| first.random_case(transport))
+        };
+        let forward = Forward::new([plain]).expect("a server");
+        assert_eq!(asked(forward.clone()), [true, false]);
+        assert_eq!(asked(forward.with_random_case(false)), [false, false]);
+        assert_eq!(
+            asked(Forward::new([tls]).expect("a server")),
+            [false, false]
+        );
+    }
+
     #[test]
     fn a_forward_stage_has_a_server() {
         assert!(Forward::new(Vec::<SocketAddr>::new()).is_none());
