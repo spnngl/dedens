@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::num::NonZero;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::AsyncWriteExt;
@@ -21,6 +21,7 @@ use dedens_proto::{Message, Transport};
 use dedens_testkit::certificates::{Certificates, NAME, certificates, named};
 
 use crate::util::loopback::answer;
+use crate::util::relay::Relay;
 use crate::util::{query, sent, start, t0};
 
 /// The ID of the responses of [`Serve::NonZeroId`], where RFC 9250 §4.2.1 asks for 0.
@@ -352,6 +353,48 @@ async fn s5_5_a_closed_reused_connection_is_replaced_once() {
     ask().await.expect("a response");
     ask().await.expect("a response on a new connection");
     assert_eq!(seen.connections.get(), 2);
+}
+
+/// RFC 9250 §5.5, D61: a server restarted at the same address knows nothing of the connection and sends nothing on it
+/// (its stateless reset is under another key, RFC 9000 §10.3): the try that hears nothing back on the reused
+/// connection closes it, and the next try opens another, long before the QUIC idle timeout (10 s) would.
+#[compio::test]
+async fn s5_5_a_restarted_server_costs_one_try() {
+    let certificates = certificates();
+    let (first, _) = quic_server(&certificates, Serve::Framed).await;
+    let (second, seen) = quic_server(&certificates, Serve::Framed).await;
+    let relay = Relay::start(first).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let mut options = quic();
+    options.timeout = Duration::from_secs(2);
+    options.tries = NonZero::new(2).expect("two");
+    let ask = || client.exchange(query(), named(relay.addr(), NAME), &options);
+    ask().await.expect("a response");
+    relay.restart(second);
+    let asked = Instant::now();
+    ask().await.expect("a response from the restarted server");
+    let elapsed = asked.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "answered after {elapsed:?}"
+    );
+    assert_eq!(seen.connections.get(), 1);
+}
+
+/// RFC 9250 §4.3.1, D61: a server that answers late is still heard on the connection, its acknowledgments coming in
+/// meanwhile: the try that times out leaves the connection open for the next one.
+#[compio::test]
+async fn a_server_slower_than_a_try_keeps_its_connection() {
+    let certificates = certificates();
+    let (addr, seen) = quic_server(&certificates, Serve::Silent).await;
+    let client = Client::new().trusting(Trust::Roots(vec![certificates.ca]));
+    let mut options = quic();
+    options.timeout = Duration::from_millis(300);
+    options.tries = NonZero::new(3).expect("three");
+    let error = client.exchange(query(), named(addr, NAME), &options).await;
+    assert!(error.is_err(), "{error:?}");
+    assert_eq!(seen.connections.get(), 1);
+    assert_eq!(seen.streams.borrow().len(), 3);
 }
 
 /// D27: a connection found closed on its first query is not a reused one that went stale: the query is not asked

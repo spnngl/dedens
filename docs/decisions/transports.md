@@ -67,7 +67,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   opening another. Each query goes alone on its own bidirectional stream, behind its length, with ID 0
   (§4.2.1) and no cookie, since QUIC checks the client's address itself. The connection closes after D27's idle
   time (§4.4) and is opened again on the next query; a query on a reused connection found closed goes again once
-  on a new one, as D27's TCP. A query given up is cancelled with STOP_SENDING and RESET_STREAM (§4.3.1). A
+  on a new one, as D27's TCP. A try that times out on a reused connection with no datagram from the server since it
+  began closes the connection with `DOQ_NO_ERROR` (`dial::Heard`): a live server acknowledges within a round trip
+  (RFC 9000 §13.2.1), while one restarted at the same address knows nothing of the connection, sends nothing on it
+  and its stateless reset is under another key (RFC 9000 §10.3), so the next try opens a new connection instead
+  of waiting out the idle time (found by D185's tests, 2026-11-15). Rejected: a stateless reset key kept across
+  restarts, which would end such a connection at once: it needs a secret kept on disk, and the threads of D66
+  share their port, so one key among them lets a peer have a token for another thread's connection, which
+  RFC 9000 §10.3.2 and §21.11 forbid. A query given up is cancelled with STOP_SENDING and RESET_STREAM (§4.3.1). A
   response is read up to its 2 + 65535 bytes, a longer stream being a protocol error; the server may open no
   stream (§4.3.3), the client allowing none.
   - TLS 1.3 only (RFC 9001 §4.2), ALPN `doq`, the same trust as D60 (strict profile). No 0-RTT, early data off: a query waits for
@@ -113,7 +120,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   QUIC connection with ALPN `h3`, TLS 1.3 and the trust of D60 (RFC 8484 §3, strict profile).
   - One connection per server and certificate name, opened on first use and shared by concurrent queries, one
     request stream each. It is opened again after a GOAWAY or a close; a request a reused connection refused
-    (GOAWAY, `H3_REQUEST_REJECTED`, closed) goes once more on a new one, as D61. The endpoints and dialing are
+    (GOAWAY, `H3_REQUEST_REJECTED`, closed) goes once more on a new one, as D61; a reused connection silent for a
+    whole try is closed with `H3_NO_ERROR`, as D61. The endpoints and dialing are
     `dial.rs`, shared with DoQ; HTTP/3 lets the server open 16 unidirectional streams (control, QPACK), DoQ none.
   - No retry of its own: D27's rules for stream transports, ID 0, timeouts as QUIC. A status other than 2xx, a
     wrong content type or a body that is no DNS message is an error of the exchange, not a response (D82).

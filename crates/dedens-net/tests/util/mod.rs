@@ -2,6 +2,7 @@
 
 pub(crate) mod coap_capture;
 pub(crate) mod loopback;
+pub(crate) mod relay;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
