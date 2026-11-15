@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 /// Runs `dedens` on the process's command line: its exit code (D33). Exits at once, code 2, on a usage error of the
 /// command line itself.
-#[must_use]
+#[must_use = "the exit code is the run's result, for the process to return"]
 pub fn main() -> ExitCode {
     let cli = args::Cli::parse_dig(std::env::args_os());
     diagnostics(&cli);
