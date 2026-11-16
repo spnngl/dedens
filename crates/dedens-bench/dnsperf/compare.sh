@@ -8,8 +8,8 @@
 # `bench/run.sh smoke --target` against dedensd, once). `cores` (1): the server's cores, 0 to cores-1; Knot on
 # the last core, dnsperf on those between, unless DEDENS_SERVER_CPUS, DEDENS_KNOT_CPUS or DEDENS_LOAD_CPUS say.
 # DEDENS_CONTAINER: the engine (docker; podman). DEDENS_ROUNDS (2), DEDENS_DURATION (10, seconds a run),
-# DEDENS_SERVERS ("dedensd telltale unbound coredns"; a name twice for an A/A run, `broken` for the CoreDNS that
-# answers SERVFAIL, which the answer check must fail), DEDENS_CONFIGS ("lean shipped").
+# DEDENS_SERVERS ("dedensd telltale unbound coredns"; a name twice for an A/A run, `dedensd-8mib` for dedensd on an
+# 8 MiB cache, `broken` for the CoreDNS that answers SERVFAIL, which the answer check must fail), DEDENS_CONFIGS ("lean shipped").
 # Each server starts afresh before it is measured, and fails the run unless it answers the check file's 1000
 # questions with the mode's rcode, none lost, and `dedens` gets Knot's answers to 20 of them. A run is void, out of
 # the medians, when Knot or, at saturation, dnsperf is busier than 90% of its cores, when dnsperf held to a rate

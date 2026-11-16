@@ -67,6 +67,12 @@ SERVERS = {
         "configs": {"lean": "dedensd.yaml", "shipped": "dedensd.yaml"},
         "command": ["/w/bin/dedensd", "--config", "{conf}"],
     },
+    # dedensd with an 8 MiB cache, Unbound's order of size (4 MiB of messages, 4 of RRsets) against its default
+    # 64 MiB (D116): what the memory columns owe to the cache. `file+tag`: the file rendered with that tag too.
+    "dedensd-8mib": {
+        "configs": {"lean": "dedensd.yaml+cache8mib", "shipped": "dedensd.yaml+cache8mib"},
+        "command": ["/w/bin/dedensd", "--config", "{conf}"],
+    },
     "telltale": {
         "configs": {"lean": "telltale-lean.toml", "shipped": "telltale-shipped.toml"},
         "command": ["/w/bin/telltale", "run", "-c", "{conf}"],
@@ -332,7 +338,8 @@ class Bench:
                   "TCP_UPSTREAM": "yes" if upstream == "tcp" else "no", "UPSTREAM_PROTO": upstream}
         for server in set(self.servers):
             for template in set(SERVERS[server]["configs"].values()):
-                text = render(template, values, self.tags)
+                source, *extra = template.split("+")
+                text = render(source, values, self.tags | set(extra))
                 (w / "conf" / template).write_text(text)
                 self.result["configs"][template] = hashlib.sha256(text.encode()).hexdigest()
 
@@ -358,7 +365,7 @@ class Bench:
         mem = self.engine.cgroup(name)
         start = {"label": label, "server": server, "template": template, "start_ms": (answered - started) / 1e6,
                  "idle_mib": mem["anon"] / 2**20}
-        if server == "dedensd":  # measured as it ships on Linux: on io_uring, never its poll fallback (D107)
+        if server.startswith("dedensd"):  # measured as it ships on Linux: on io_uring, never its poll fallback (D107)
             found = re.search(r'"driver":"(\w+)"', self.engine.logs(name))
             start["driver"] = found[1] if found else None
             if start["driver"] != "io_uring":
