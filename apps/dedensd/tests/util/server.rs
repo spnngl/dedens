@@ -99,6 +99,11 @@ impl Server {
     /// under a file lock: nextest runs each test in a process of its own. One that cannot bind, its port taken
     /// meanwhile by another socket, exits and is started again on another port.
     pub(crate) fn configured(text: impl Fn(&str) -> String) -> Self {
+        Self::configured_with(&[], text)
+    }
+
+    /// [`Server::configured`], with the variables `env` added to the server's environment.
+    pub(crate) fn configured_with(env: &[(&str, &str)], text: impl Fn(&str) -> String) -> Self {
         let one = std::fs::File::create(std::env::temp_dir().join("dedensd-tests-starting.lock"))
             .expect("the lock file");
         one.lock().expect("the lock taken");
@@ -109,6 +114,7 @@ impl Server {
             let mut child = Command::new(env!("CARGO_BIN_EXE_dedensd"))
                 .arg("--config")
                 .arg(&config)
+                .envs(env.iter().copied())
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("dedensd starts");
