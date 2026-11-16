@@ -1148,6 +1148,7 @@ dependencies = [
  "metrics-util",
  "mimalloc",
  "nix",
+ "pin-project-lite",
  "serde",
  "serde-saphyr",
  "serde_json",

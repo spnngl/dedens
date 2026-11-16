@@ -27,6 +27,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 metrics.workspace = true
+pin-project-lite.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
 socket2.workspace = true
