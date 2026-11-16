@@ -1614,9 +1614,9 @@ memory idle and loaded (the cgroup's anonymous memory), time to the first answer
 
 Saturation, thousands of queries a second, lean configurations: median (range) of the valid runs, and the void
 ones (rules in D183). `dnssec` is the miss-heavy corpus against the signed zone, validated; CoreDNS has no
-validator and no blocklist. The `dnssec` rows here and below are a later run of the three servers, 3 rounds,
-`dedensd` with D75's walk shortcut, D77's allowance by the threads and D186's wait for it (`2026-11-15T202244Z` and
-`203007Z`; the runs before them are beside them).
+validator and no blocklist. The `dnssec` rows here and below are a later run of the three servers, 2 rounds,
+`dedensd` at c9c7be7a: D75's walk shortcut, D77's allowance by the threads, D186's wait for it and D86's memo of
+the signatures verified (`2026-11-16T211358Z` and `211917Z`; the runs before them are beside them).
 
 | Mode | `dedensd` | TelltaleDNS | Unbound | CoreDNS |
 |---|---|---|---|---|
@@ -1626,7 +1626,7 @@ validator and no blocklist. The `dnssec` rows here and below are a later run of 
 | `forward` | 67.9 (63.0–69.9) | 48.1 (45.6–50.2), 1 void | 52.6 (50.3–55.8) | 22.0 (21.3–22.8) |
 | `forward-tcp` | 291.2 (271.0–301.5) | 54.9 (49.8–55.2) | 37.2 (34.7–39.4), 1 void | 32.8 (31.0–33.7) |
 | `miss` | 16.2 (16.1–16.6) | 6.7 (6.5–6.9) | 8.3 (8.3–8.4), 5 void | 6.7 (6.4–7.2), 5 void |
-| `dnssec` | 2.8 (2.8–2.8) | 1.5 (1.5–1.5) | 3.0 (3.0–3.0), 3 void | – |
+| `dnssec` | 5.6 (5.6–5.6) | 1.5 (1.5–1.6) | 3.1 (3.1–3.1), 2 void | – |
 | `blocked` | 87.5 (85.5–89.9) | 58.3 (56.9–59.5) | 66.5 (64.6–67.9) | – |
 | 3 cores: `udp` | 137.7 (97.8–141.8) | 141.9 (130.7–146.3) | 137.2 (109.4–144.1) | 52.9 (45.5–53.5) |
 | `tcp` | 570.1 (566.4–617.8) | 149.3 (146.5–152.4) | 100.7 (95.0–107.9) | 105.1 (102.8–105.6) |
@@ -1634,7 +1634,7 @@ validator and no blocklist. The `dnssec` rows here and below are a later run of 
 | `forward` | 105.0 (102.2–124.4) | 110.6 (99.0–117.2) | 102.4 (100.0–108.2) | 48.7 (46.5–49.7) |
 | `forward-tcp` | 390.8 (376.1–466.3) | 120.9 (114.2–128.6) | 119.9 (55.9–141.3) | 83.7 (77.0–89.5) |
 | `miss` | 43.4 (34.4–48.1) | 22.6 (20.7–23.9), 1 void | 25.5 (21.5–26.9), 2 void | 25.7 (24.0–26.7), 1 void |
-| `dnssec` | 5.5 (5.5–5.5) | 4.8 (4.8–4.9), 1 void | 8.4 (7.0–9.7), 4 void | – |
+| `dnssec` | 11.1 (11.0–11.2) | 4.8 (4.8–4.8) | 5.9 (5.9–5.9), 3 void | – |
 | `blocked` | 134.7 (119.4–150.6) | 141.0 (137.3–152.6) | 125.6 (97.7–144.8), 1 void | – |
 
 At the common rate (thousands a second), average / p99 latency in ms and CPU µs a query, lean:
@@ -1647,7 +1647,7 @@ At the common rate (thousands a second), average / p99 latency in ms and CPU µs
 | `forward` | 10.1 | 0.21 / 1.69, 26 | 0.25 / 1.73, 24 | 0.13 / 0.85, 22 | 0.33 / 4.03, 49 |
 | `forward-tcp` | 13.8 | 0.39 / 6.53, 24 | 0.35 / 6.66, 24 | 0.64 / 2.43, 20 | 0.35 / 5.63, 39 |
 | `miss` | 3.0 | 0.42 / 1.38, 76 | 0.53 / 1.21, 95 | 0.49 / 1.05, 96 | 0.63 / 1.95, 132 |
-| `dnssec` | 0.7 | 1.16 / 2.56, 378 | 1.80 / 3.58, 524 | 0.87 / 1.82, 316 | – |
+| `dnssec` | 0.8 | 0.69 / 1.89, 180 | 1.76 / 3.52, 515 | 0.89 / 2.24, 311 | – |
 | `blocked` | 27.4 | 0.17 / 2.05, 17 | 0.37 / 3.01, 21 | 0.38 / 3.97, 14 | – |
 | 3 cores: `udp` | 21.4 | 0.15 / 2.11, 24 | 0.24 / 2.30, 19 | 0.23 / 3.01, 20 | 1.07 / 14.34, 55 |
 | `tcp` | 42.6 | 0.24 / 2.43, 21 | 0.40 / 3.46, 23 | 0.67 / 4.35, 15 | 0.48 / 4.73, 32 |
@@ -1655,7 +1655,7 @@ At the common rate (thousands a second), average / p99 latency in ms and CPU µs
 | `forward` | 18.7 | 0.28 / 2.69, 32 | 0.28 / 2.56, 27 | 0.18 / 2.11, 25 | 0.48 / 6.91, 66 |
 | `forward-tcp` | 35.8 | 0.49 / 3.90, 20 | 0.46 / 4.35, 29 | 0.60 / 4.73, 21 | 0.36 / 3.39, 36 |
 | `miss` | 10.8 | 0.77 / 19.97, 72 | 0.94 / 24.06, 106 | 0.70 / 17.92, 85 | 0.67 / 10.50, 119 |
-| `dnssec` | 2.4 | 0.83 / 3.39, 364 | 1.14 / 4.09, 568 | 0.60 / 1.66, 310 | – |
+| `dnssec` | 2.4 | 0.43 / 2.11, 188 | 1.23 / 6.02, 566 | 0.64 / 2.81, 327 | – |
 | `blocked` | 62.8 | 0.36 / 2.81, 17 | 0.44 / 3.14, 22 | 0.40 / 2.94, 15 | – |
 
 Memory (MiB, the cgroup's anonymous memory idle, then loaded after the runs) and the time to a first answer:
@@ -1666,6 +1666,8 @@ Memory (MiB, the cgroup's anonymous memory idle, then loaded after the runs) and
 | 3 cores `miss` | 17 / 160 | 38 / 90 | 5 / 23 | 11 / 85 |
 | 1 core `blocked` | 69 / 40, 878 ms | 97 / 46, 7216 ms | 419 / 419, 3227 ms | – |
 | 3 cores `blocked` | 69 / 49, 875 ms | 113 / 64, 3596 ms | 420 / 420, 3116 ms | – |
+
+What the 160 MiB of 3-core `miss` hold, and `dedensd` with an 8 MiB cache: "Where the memory goes", below.
 
 Shipped configurations (the JSON has their tables): TelltaleDNS at 0.86 to 0.99 of its lean rate, CoreDNS at 0.77
 to 0.92; `dedensd` and Unbound have one configuration. Every table's numbers are in the JSON with the half-rate
@@ -1762,7 +1764,8 @@ Unbound and wakes as often: no cost of its own, a system call or a wake-up a que
   (`listen_dnsport.c` sets `TCP_NODELAY` for TLS and HTTP/2 only), so a reply waits for the ACK of the previous
   one and leaves from dnsperf's core: 0.57 ms a query against 0.09. A `dedensd` without `TCP_NODELAY` spent the same
   21.9 µs (21.0-22.8) with latency up to 0.69 ms: RFC 7766 §10's no-delay stays.
-- `forward`: the gap is the 5% of names that go upstream from a cold server, run once. 3.5-5.4% of `dedensd`'s
+- `forward`: from a cold server, run once, 5% of the names go upstream; the gap is mostly in the other 95%
+  ("First and second pass", below). 3.5-5.4% of `dedensd`'s
   samples are `clear_page_erms`, the kernel zeroing the transparent huge pages `mimalloc` first touches for tasks
   (the upstream sockets' receive tasks, the queries'); neither `MIMALLOC_PURGE_DELAY=-1` (28.4) nor
   `MIMALLOC_ALLOW_THP=0` (31.5) moves it past the base's spread (30.2). The upstream query's task was 23 KiB, its 8
@@ -1771,6 +1774,70 @@ Unbound and wakes as often: no cost of its own, a system call or a wake-up a que
   gain only is past the spread. Latency at 1 core stays 0.22-0.25 / 1.1-1.4 ms against Unbound's 0.12-0.13 /
   0.64-0.82, not explained.
 - `dnssec`: below, the memo of signatures verified (D86).
+
+First and second pass (`forward`, 2026-11-16, `main` at c9c7be7a against Unbound, three rounds alternating): each
+server started cold, then the corpus sent twice at the common rate with no restart, Knot counting the questions it
+gets (`mod-stats`). The first pass is the table's run; in the second every name is in the cache and none goes
+upstream. Median (range) of the CPU a query, avg / p99 ms, and Knot's questions:
+
+| Run | Pass | `dedensd` µs/query, ms | Unbound | Knot: `dedensd` / Unbound |
+|---|---|---|---|---|
+| 1 core, 10 139/s, 8501 distinct questions | first | 26.8 (25.0-27.6), 0.17 / 0.94 | 23.0 (22.3-24.1), 0.12 / 0.82 | 8524 (8521-8534) / 8501, 1.003 |
+| | second | 20.2 (19.5-20.4), 0.11 / 0.38 | 16.8 (16.4-19.3), 0.10 / 0.43 | 0 / 0 |
+| 3 cores, 18 723/s, 9539 distinct | first | 28.4 (27.8-29.1), 0.28 / 2.82 | 26.0 (24.9-26.6), 0.14 / 1.89 | 9653 (9629-9674) / 9544 (9542-9544), 1.011 |
+| | second | 25.3 (25.1-28.3), 0.16 / 2.18 | 21.6 (21.5-23.6), 0.15 / 1.95 | 0 / 0 |
+
+- The gap is on the cache hits: 1.20× at 1 core and 1.17× at 3 in the second pass, where nothing goes upstream,
+  against 1.17× and 1.09× in the first. What the first pass adds over the second, the 5% upstream, is alike: 6.6
+  µs a query for `dedensd` and 6.2 for Unbound at 1 core, 3.1 and 4.4 at 3. At the harness's common rate, 2.4
+  times higher at 1 core, a hit costs the two the same (`dedensd-8mib` table below: 16.9 and 16.6 µs): the cost is
+  per wake-up, paid at a low rate (`TODECIDE.md`, "CPU and latency ... at a low rate").
+- Unbound asks Knot once per distinct question, coalescing the identical ones in flight (its mesh); `dedensd` asks
+  0.3% more at 1 core and 1.1% at 3, the duplicates a thread sends while the first is in flight. Coalescing would
+  save no more than that.
+
+### Where the memory goes
+
+3-core `miss` loaded (`main` at c9c7be7a, 2026-11-16): one saturation pass of the corpus from a cold start, two
+rounds alternating; the cgroup's `memory.stat`, `smaps_rollup`, and `mimalloc`'s statistics at exit
+(`MIMALLOC_SHOW_STATS=1`). Each cause is taken out once: transparent huge pages (`MIMALLOC_ALLOW_THP=0`), the
+upstream receive buffers (a build reading 4 KiB instead of 64 KiB, for this only: it truncates larger answers),
+the cache (8 MiB instead of 64). Anonymous MiB, the huge pages' share in brackets:
+
+| `dedensd`, 3 cores | THP as shipped | `MIMALLOC_ALLOW_THP=0` |
+|---|---|---|
+| 64 MiB cache, 64 KiB receive buffers | 168 (98) | 103 (101-104), (0) |
+| 64 MiB cache, 4 KiB receive buffers | 115 (113-117), (54-60) | 83 (83-83) |
+| 8 MiB cache, 64 KiB receive buffers | 100 (68) | 41 |
+| Unbound | 26 (26-26) | |
+
+- Huge pages, 65 MiB: `mimalloc` commits 175-179 MiB at its peak either way; with THP the kernel backs a whole 2
+  MiB page under memory never touched, without it only what is.
+- The upstream receive buffers (D50), 20 MiB without THP and 53 with: each of the 256 pool sockets of a thread
+  holds its own 64 KiB buffer, 48 MiB for three threads, most of it never written but resident under THP. In
+  `udp` (from the cache, the pool idle after priming) `dedensd` holds 91 MiB loaded at 3 cores, 29 without THP, 30
+  with 4 KiB buffers and 18 with both.
+- The cache, 58 MiB without THP (103 to 41): its 64 MiB filled by the 450 000 new names.
+- The rest, about 25 MiB (83 less the cache), is Unbound's 26. Outside the anonymous memory `dedensd` holds 3 MiB
+  of socket buffers and 2 of slab.
+
+`dedensd` with an 8 MiB cache, Unbound's order of size (`DEDENS_SERVERS="dedensd dedensd-8mib unbound"`, lean, 2
+rounds, `2026-11-16T203527Z` to `205800Z`): saturation (k q/s), CPU µs a query at the common rate, MiB idle /
+loaded, for `dedensd`, `dedensd-8mib` and Unbound:
+
+| Run | Saturation | CPU at the common rate | MiB |
+|---|---|---|---|
+| 1 core `udp` | 82.5 / 85.0 / 71.9, 1 void | 16.0 / 14.9 / – | 11 / 36, 11 / 36, 4 / 10 |
+| 1 core `forward` | 67.1 / 67.7 / 48.9 | 16.9 / 18.0 / 16.6 | 11 / 36, 11 / 36, 4 / 10 |
+| 1 core `miss` | 16.3 / 16.1 / 8.1, 3 void | 76.9 / 75.4 / 94.0 | 11 / 64, 11 / 42, 4 / 14 |
+| 3 cores `udp` | 147.5 / 136.5 / 139.4 | 17.9 / 17.8 / 14.4 | 19 / 90, 19 / 90, 5 / 12 |
+| 3 cores `forward` | 132.2 / 113.9 / 107.6 | 21.5 / 19.4 / 20.2 | 19 / 90, 19 / 89, 5 / 12 |
+| 3 cores `miss` | 48.7 / 40.2 / 27.5 | 67.7 / 70.5 / 91.2 | 19 / 149, 19 / 97, 5 / 23 |
+
+The cache's size shows where the cache fills, `miss`: 64 to 42 MiB at 1 core, 149 to 97 at 3. Elsewhere the two
+hold the same, and at 3 cores that is the receive buffers under THP. The rates are within the runs' spread but
+3-core `miss`, 1.21× lower with the full 8 MiB cache evicting (ranges 44.6-52.9 and 39.5-40.9), not measured
+further.
 
 ### `dnssec`: `dedensd` validates what its allowance admits
 
@@ -1829,8 +1896,11 @@ tree alternating with Unbound, 2026-11-16):
 | 1 core, 746/s | 1.04 / 2.56, 373 (367-377) | 0.61 / 1.66, 179 (176-194) | 0.75 / 1.79, 315 (310-318) |
 | 3 cores, 2376/s | 0.75 / 3.33, 373 (371-376) | 0.43 / 1.54, 185 (184-186) | 0.58 / 1.82, 315 (306-322) |
 
-The allowance's units fall with the checks (a check the memo holds is not charged, D77), so its saturation rate is
-no longer the one above.
+The allowance's units fall with the checks (a check the memo holds is not charged, D77). With the memo
+(`2026-11-16T211358Z` and `211917Z`, 2 rounds) `dedensd` saturates at 5588 a second (5587-5589) at 1 core and 11 111
+(10 990-11 232) at 3, twice its rate before, no run void, 44 and 112 MiB loaded; Unbound at 3095 and 5869, void 2
+of 7 and 3 of 6 (its 3-core range was 7.0k to 9.7k the day before), TelltaleDNS at 1547 and 4807. At the common
+rate: 0.69 / 1.89 ms at 180 µs at 1 core, 0.43 / 2.11 ms at 188 µs at 3, against Unbound's 311 and 327 µs.
 
 ### Not counted
 
