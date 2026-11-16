@@ -9,6 +9,8 @@ mod dnscrypt;
 mod doh;
 mod end_to_end;
 mod flights;
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+mod huge_pages;
 mod listeners;
 mod lists;
 #[cfg(feature = "odoh")]
