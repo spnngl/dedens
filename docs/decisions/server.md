@@ -1088,7 +1088,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     when it panics. Each listener runs under `supervise`: it starts again after 10 ms, doubling to 5 s, from 10 ms
     after a minute of service (a crash loop pays the pause, a rare panic does not), logged and counted by
     `dedensd_listener_restarts_total{listener}`. Sockets and endpoints are kept, so a restart rebinds nothing: bind
-    errors stay start errors. Unwinding stays (no `panic = "abort"`).
+    errors stay start errors. Unwinding stays (no `panic = "abort"`). The catch is a future of its own (`Marked`,
+    `futures-util`'s `catch_unwind`), not an `async fn`: two nested ones held a spawned task three times, a forwarded
+    query's 23 KiB for 8, moved and allocated whole on each spawn (`docs/benchmarks.md`, "Where the time goes at the
+    common rate").
   - Runtime or driver panic (`poll_with` on `EBADR`: completions lost): the process logs it and exits 1, for systemd or
     Kubernetes. A new runtime on the same sockets is rejected: D107 keeps the old ring, whose in-flight receives would
     take datagrams of sockets still in their `SO_REUSEPORT` group, a share of queries lost with no sign.

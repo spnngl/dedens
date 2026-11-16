@@ -861,6 +861,7 @@ dependencies = [
  "metrics",
  "mimalloc",
  "nix",
+ "pin-project-lite",
  "serde",
  "serde-saphyr",
  "signal-hook",

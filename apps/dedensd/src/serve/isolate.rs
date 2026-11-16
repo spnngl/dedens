@@ -11,11 +11,12 @@
 
 use std::any::Any;
 use std::cell::Cell;
-use std::future::{Future, poll_fn};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::panic::{self, AssertUnwindSafe, PanicHookInfo, catch_unwind};
-use std::pin::pin;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use std::{fmt, io, thread};
 
@@ -135,14 +136,29 @@ fn caught_now<T>(step: impl FnOnce() -> T) -> Result<T, Box<dyn Any + Send>> {
 
 /// Polls `task` under a catch (see [`caught_now`] for why this is unwind safe), marking the thread only while it
 /// polls: the other tasks of the thread run in between.
-async fn caught<T>(task: impl Future<Output = T>) -> Result<T, Box<dyn Any + Send>> {
-    let mut task = pin!(task);
-    AssertUnwindSafe(poll_fn(move |cx| {
+fn caught<T>(
+    task: impl Future<Output = T>,
+) -> impl Future<Output = Result<T, Box<dyn Any + Send>>> {
+    AssertUnwindSafe(Marked { task }).catch_unwind()
+}
+
+pin_project_lite::pin_project! {
+    /// `task`, the thread marked as under a catch while it polls. A future of its own, not an `async fn` around
+    /// `pin!(task)`: an `async fn` keeps its argument beside what it moves it into, and with [`Origin::run`]'s a
+    /// spawned query's task held its future three times, 23 KiB moved and allocated for 8 (D121).
+    struct Marked<F> {
+        #[pin]
+        task: F,
+    }
+}
+
+impl<F: Future> Future for Marked<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let _caught = Caught::enter();
-        task.as_mut().poll(cx)
-    }))
-    .catch_unwind()
-    .await
+        self.project().task.poll(cx)
+    }
 }
 
 /// What the listener a task serves is: named by its scheme and address, `udp://127.0.0.1:53`, the `listener` label;
@@ -276,10 +292,13 @@ impl Origin {
         io.spawn(self.clone().run(task))
     }
 
-    async fn run(self, task: impl Future<Output = ()> + 'static) {
-        if let Err(payload) = caught(task).await {
-            self.listener.panicked(Some(self.peer), &*payload);
-        }
+    /// A combinator, not an `async fn`, for [`Marked`]'s reason.
+    fn run(self, task: impl Future<Output = ()> + 'static) -> impl Future<Output = ()> + 'static {
+        caught(task).map(move |caught| {
+            if let Err(payload) = caught {
+                self.listener.panicked(Some(self.peer), &*payload);
+            }
+        })
     }
 }
 
@@ -515,6 +534,31 @@ pub(super) mod tests {
         assert_eq!(listener.admit(ms(999)), None);
         assert_eq!(listener.admit(ms(1000)), Some(2));
         assert_eq!(listener.admit(ms(2500)), Some(0));
+    }
+
+    /// D121: a task is held once, not beside copies of itself (a query's was 23 KiB for 8), and the thread is under
+    /// a catch while it polls, only then.
+    #[test]
+    fn a_task_is_held_once_and_polled_under_a_catch() {
+        let under = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&under);
+        let held = [7_u8; 4096];
+        let task = async move {
+            std::future::ready(()).await;
+            flag.set(CAUGHT.get() && std::hint::black_box(held)[0] == 7);
+        };
+        let alone = size_of_val(&task);
+        let run = Origin::new(&listener(), PEER).run(task);
+        assert!(
+            size_of_val(&run) < alone + 256,
+            "{} bytes for a task of {alone}",
+            size_of_val(&run)
+        );
+        compio::runtime::Runtime::new()
+            .expect("a runtime")
+            .block_on(run);
+        assert!(under.get());
+        assert!(!CAUGHT.get());
     }
 
     #[test]

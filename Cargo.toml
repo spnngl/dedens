@@ -99,7 +99,7 @@ nix = { version = "0.32.0", default-features = false, features = [
 poly1305 = { version = "0.9.1", default-features = false, features = [
   "zeroize",
 ] }
-# D182: `Compio::timeout_at`'s future, polled in place; futures-util depends on it already.
+# D182: `Compio::timeout_at`'s future, polled in place, and D121's catch of a task; futures-util depends on it already.
 pin-project-lite = "0.2.17"
 predicates = "3.1.4"
 # D91: the longest-prefix tree of the client access lists.
