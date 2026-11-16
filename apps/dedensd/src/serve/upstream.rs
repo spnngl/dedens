@@ -769,9 +769,12 @@ mod tests {
         assert!(at < Parked::WAIT / 2, "at once: {at:?}");
         for &(id, ede, at) in &replies[1..] {
             assert_eq!(ede, Some(InfoCode::NOT_READY), "{id}");
-            // Given up at the last second of the thread's clock within its wait.
+            // Given up at the last second of the thread's clock within its wait, or, when the line has not reached
+            // it by then, at its deadline: its wait runs from its own start, after `replies`' clock started, and the
+            // timer fires a little late on a loaded machine (1.80000025 s seen).
             assert!(
-                at > Parked::WAIT.saturating_sub(Duration::from_secs(1)) && at < Parked::WAIT,
+                at > Parked::WAIT.saturating_sub(Duration::from_secs(1))
+                    && at <= Parked::WAIT + Duration::from_millis(100),
                 "{id} after {at:?}"
             );
         }
