@@ -106,12 +106,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   address, so the access lists (D91), RRL (D113) and the client shares (D117) see the proxy's. TelltaleDNS requires
   v2 on each TCP stream of a listener marked for it (`crates/telltale-net/src/proxy.rs`). Default: the same, on TCP
   and TLS listeners; datagrams later.
-- CPU and latency at a low rate (`docs/benchmarks.md`, "Against TelltaleDNS, Unbound and CoreDNS"): at the common
-  rate Unbound or TelltaleDNS spend 1.2 to 1.4 times less CPU a query in `udp`, `tcp`, `blocked` and 3-core
-  `forward`, Unbound answers 1-core `forward` in 0.13 ms against 0.21 (p99 0.85 against 1.69), and CoreDNS's 3-core
-  `miss` p99 is 10.5 ms against 20. `dedensd`'s batching pays at saturation only. Default: profile `dedensd` at the
-  common rate before any change; what decides is a cost of our own (a system call per query, a wake-up) above the
-  kernel's.
+- CPU and latency of `forward` at a low rate (`docs/benchmarks.md`, "Where the time goes at the common rate"): the
+  profile found no system call or wake-up a query of our own; `tcp`'s gap is the kernel's and `dnssec`'s was the
+  memo (D86). Left: 3-core `forward` spends 1.3 times Unbound's CPU (28.5 µs against 22.9, the 5% of names sent
+  upstream by a cold server, page faults of fresh memory among them), and 1-core `forward` answers in 0.22 ms
+  against 0.13 (p99 1.2 against 0.7), though `miss`, every name upstream, costs less than Unbound's. Default: run
+  the corpus a second time on the same server, to split the cold start's cost (fresh memory, the cache growing) from
+  the answer's, before any change.
 - Memory: idle, `dedensd` holds 11 MiB against Unbound's 4; loaded, 160 MiB in 3-core `miss` against Unbound's 23 and
   85 to 90 for the others (`docs/benchmarks.md`). The cache's 64 MiB capacity (D116) explains part. Default: account
   for the rest (buffer rings, the upstream pool, the allocator) with a heap profile before changing a default.
