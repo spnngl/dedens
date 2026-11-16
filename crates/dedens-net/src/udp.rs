@@ -353,11 +353,40 @@ mod tests {
     /// The receives a [`Refusing`] socket fails before it waits forever.
     const FAILS: usize = 4;
 
-    /// A socket whose receives fail at once, [`FAILS`] times, as after ICMP port unreachables.
-    #[derive(Debug, Default)]
+    /// A socket whose receives fail at once, [`FAILS`] times, with `ConnectionRefused` as after ICMP port
+    /// unreachables, or with `WouldBlock` as after a wake with nothing there.
+    #[derive(Debug)]
     struct Refusing {
         /// When each receive came.
         receives: RefCell<Vec<Instant>>,
+        error: io::ErrorKind,
+    }
+
+    impl Refusing {
+        fn failing(error: io::ErrorKind) -> Self {
+            Self {
+                receives: RefCell::default(),
+                error,
+            }
+        }
+
+        /// Waits up to a second for its [`FAILS`] receives.
+        async fn failed(&self) {
+            for _ in 0..100 {
+                if self.receives.borrow().len() == FAILS {
+                    break;
+                }
+                let _ = Refused
+                    .timeout_at(Refused.now() + Duration::from_millis(10), pending::<()>())
+                    .await;
+            }
+        }
+    }
+
+    impl Default for Refusing {
+        fn default() -> Self {
+            Self::failing(io::ErrorKind::ConnectionRefused)
+        }
     }
 
     impl Udp for Refusing {
@@ -382,7 +411,7 @@ mod tests {
 
         fn try_recv(&self, _: &mut [u8]) -> io::Result<usize> {
             self.receives.borrow_mut().push(Compio.now());
-            Err(io::ErrorKind::ConnectionRefused.into())
+            Err(self.error.into())
         }
 
         fn send<B: IoBuf>(&self, buffer: B) -> impl Future<Output = BufResult<usize, B>> {
@@ -458,14 +487,7 @@ mod tests {
             Rc::default(),
             Rc::default(),
         ));
-        for _ in 0..100 {
-            if socket.receives.borrow().len() == FAILS {
-                break;
-            }
-            let _ = Refused
-                .timeout_at(Refused.now() + Duration::from_millis(10), pending::<()>())
-                .await;
-        }
+        socket.failed().await;
         let receives = socket.receives.borrow();
         assert_eq!(receives.len(), FAILS);
         // The first error, then each one after it.
@@ -477,6 +499,30 @@ mod tests {
             gaps.iter().all(|&gap| gap >= Duration::from_millis(10)),
             "{gaps:?}"
         );
+    }
+
+    /// A wake with nothing there is no error: a query that sent keeps waiting.
+    #[compio::test]
+    async fn a_wake_with_nothing_there_fails_no_query() {
+        let socket = Rc::new(Refusing::failing(io::ErrorKind::WouldBlock));
+        let waiting = Rc::new(RefCell::new(Waiting::default()));
+        let token = waiting.borrow_mut().add(1);
+        if let Some(waiter) = waiting.borrow_mut().waiter(token) {
+            waiter.sent = true;
+        }
+        let _receiving = Refused.spawn(receive(
+            Refused,
+            Rc::clone(&socket),
+            Rc::clone(&waiting),
+            Rc::default(),
+        ));
+        socket.failed().await;
+        assert_eq!(socket.receives.borrow().len(), FAILS);
+        let error = waiting
+            .borrow_mut()
+            .waiter(token)
+            .map(|waiter| waiter.error);
+        assert_eq!(error, Some(None));
     }
 
     /// A query dropped stops waiting: the socket keeps no waiter of it, which would hold its datagrams forever.
