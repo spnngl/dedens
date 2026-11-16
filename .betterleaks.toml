@@ -1,0 +1,10 @@
+# The default rules, but for the archive of RFCs and drafts: the IETF's text, whose keys are published test vectors
+# (the X-Wing draft's private key, flagged since betterleaks 1.10).
+
+title = "dedens"
+prefilter = '''
+matchesAny(attributes["path"], [`^docs/rfc/archive/`])
+'''
+
+[extend]
+useDefault = true
