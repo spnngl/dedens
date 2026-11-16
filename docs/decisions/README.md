@@ -57,7 +57,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D47 [server](server.md) (amended by D64, D90, D91, D113, D186): `dedensd` limits per thread: upstream queries, TCP connections
 - D48 [server](server.md) (amended by D123): several tasks answer on each UDP socket of a thread
 - D49 [server](server.md): UDP queries land in per-thread buffer pools, multishot on Linux, up to 4096 bytes read whole
-- D50 [server](server.md) (amended by D108): upstream UDP queries share a fixed socket pool per server
+- D50 [server](server.md) (amended by D108): upstream UDP queries share a fixed socket pool per server and one receive buffer
 - D51 [server](server.md) (amended by D107, D123): io_uring runs completion work cooperatively; older kernels use poll
 - D52 [server](server.md) (superseded by D63): TCP replies after upstream reuse kept 65535-byte buffers
 - D53 [server](server.md): upstream TCP writer sends queued queries in one write

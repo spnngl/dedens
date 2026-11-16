@@ -773,6 +773,7 @@ dependencies = [
  "idna",
  "pin-project-lite",
  "rand_core 0.10.1",
+ "rustix",
  "rustls-platform-verifier",
  "thiserror",
  "tracing",

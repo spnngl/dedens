@@ -231,6 +231,19 @@ impl Udp for SimUdp {
         }
     }
 
+    async fn readable(&self) -> io::Result<()> {
+        self.socket.readable().await
+    }
+
+    /// A receive glitch takes the datagram and fails, as `recv` does.
+    fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        let len = self.socket.try_recv(buffer)?;
+        if Glitches::take(&self.glitches.receives) {
+            return Err(io::ErrorKind::ConnectionRefused.into());
+        }
+        Ok(len)
+    }
+
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
         if Glitches::take(&self.glitches.sends) {
             return BufResult(Err(io::ErrorKind::NetworkUnreachable.into()), buffer);

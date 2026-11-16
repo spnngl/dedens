@@ -22,11 +22,13 @@ use std::time::Instant;
 
 use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
+use compio::driver::ToSharedFd;
 use compio::driver::op::RecvFromMultiResult;
 use compio::io::util::Splittable;
 use compio::io::{AsyncRead, AsyncWrite};
 use compio::net::{TcpListener, TcpStream, UdpSocket};
 use compio::runtime::JoinHandle;
+use compio::runtime::fd::PollFd;
 
 use crate::exchange::Exchange;
 use crate::tcp::Outbound;
@@ -143,6 +145,23 @@ pub trait Udp: Debug + 'static {
 
     /// Receives one datagram of the connected peer into `buffer`, which keeps what a longer one would not fit.
     async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B>;
+
+    /// Waits until a datagram of the connected peer, or an error, is there for [`Udp::try_recv`]: it holds no
+    /// buffer while it waits, so many sockets can share one (D50). It may wake with nothing there.
+    ///
+    /// # Errors
+    ///
+    /// The socket cannot be waited on.
+    async fn readable(&self) -> io::Result<()>;
+
+    /// Receives one datagram of the connected peer into `buffer` without waiting; what a longer one would not fit
+    /// is lost.
+    ///
+    /// # Errors
+    ///
+    /// `WouldBlock` when none is there, or the error the socket holds, as `ConnectionRefused` after an ICMP port
+    /// unreachable.
+    fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize>;
 
     /// Sends `buffer` as one datagram to the connected peer.
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B>;
@@ -275,6 +294,21 @@ impl Udp for UdpSocket {
     #[inline]
     async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
         Self::recv(self, buffer).await
+    }
+
+    /// Polls the socket once (`IORING_OP_POLL_ADD` on `io_uring`).
+    #[inline]
+    async fn readable(&self) -> io::Result<()> {
+        PollFd::from_shared_fd(self.to_shared_fd())?
+            .read_ready()
+            .await
+    }
+
+    /// One `recv` with `MSG_DONTWAIT`: the socket stays blocking for the runtime's other operations on it.
+    #[inline]
+    fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        let (len, _) = rustix::net::recv(self, buffer, rustix::net::RecvFlags::DONTWAIT)?;
+        Ok(len)
     }
 
     #[inline]

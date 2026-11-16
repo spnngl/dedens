@@ -1001,6 +1001,7 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "rand_core 0.10.1",
+ "rustix",
  "rustls-platform-verifier",
  "thiserror",
  "tracing",

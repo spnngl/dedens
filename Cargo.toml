@@ -122,6 +122,11 @@ salsa20 = { version = "0.11.0", default-features = false, features = [
 ] }
 # D60: the OS trust store for DNS over TLS, as ureq's for the list downloads.
 rustls-platform-verifier = "0.7.1"
+# D50: the upstream UDP pool's receive without waiting, into the buffer its sockets share; compio already builds it.
+rustix = { version = "1.1.6", default-features = false, features = [
+  "net",
+  "std",
+] }
 # D36: query files and the JSON and YAML output (D37).
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "2.0.0", default-features = false, features = [

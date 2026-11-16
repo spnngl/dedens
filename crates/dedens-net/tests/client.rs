@@ -329,6 +329,14 @@ impl Udp for FailingSocket {
         self.socket.recv(buffer).await
     }
 
+    async fn readable(&self) -> io::Result<()> {
+        Udp::readable(&self.socket).await
+    }
+
+    fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        Udp::try_recv(&self.socket, buffer)
+    }
+
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
         if self.failed.replace(true) {
             self.socket.send(buffer).await
