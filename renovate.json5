@@ -2,6 +2,8 @@
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
     // The shared preset at HEAD of main.
     "extends": ["github>spnngl/.github:renovate.default.json5"],
+    // The app of .github/workflows/fuzz-lock.yml commits fuzz/Cargo.lock to Renovate's branches: they stay Renovate's.
+    "gitIgnoredAuthors": ["charts-auto[bot]@users.noreply.github.com"],
     "customManagers": [
         {
             "customType": "regex",

@@ -1,0 +1,55 @@
+name: fuzz-lock
+
+# On each push of Renovate to its branches: commits `fuzz/Cargo.lock` when the bump changed what it resolves.
+# `fuzz/` is a workspace of its own, so Renovate updates only `Cargo.lock`, and `just check --locked` then refuses
+# the stale fuzz lock file. The push uses an app's token, as one of GITHUB_TOKEN would start no checks on the new
+# commit; Renovate ignores the app's commits (`gitIgnoredAuthors` in renovate.json5).
+on:
+  push:
+    branches:
+      - renovate/**
+
+# One run per branch: a newer push replaces the running one. The app's own push runs it again, finding nothing to
+# commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The app's token writes; GITHUB_TOKEN only reads.
+permissions: {}
+
+jobs:
+  lock:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Resolves the fuzz workspace against the bumped crates; the toolchain of rust-toolchain.toml.
+      - name: Resolve
+        run: cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+      - id: changed
+        run: |
+          if git diff --quiet -- fuzz/Cargo.lock; then echo "changed=false"; else echo "changed=true"; fi >> "$GITHUB_OUTPUT"
+      - id: app
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Commit and push
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+          BRANCH: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${SLUG}[bot]@users.noreply.github.com"
+          git commit --quiet -m "chore(deps): update the fuzz lock file" -- fuzz/Cargo.lock
+          git push "https://x-access-token:$TOKEN@github.com/$REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
