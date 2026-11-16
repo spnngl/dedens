@@ -1732,6 +1732,46 @@ OpenSSL has none). Knot's `mod-stats` counted the questions each server asked fo
 - Losses: Unbound and CoreDNS lose about 1% of a saturation run (CoreDNS 1390 queries in every mode) with 10-12% of
   their core idle, so their saturation run is retried at 90% of its rate (D183); the cause is not known.
 
+### Where the time goes at the common rate
+
+The gaps of the table above at a fixed rate, 2026-11-16, `main` at 21806bba against Unbound: three rounds
+alternating unless said, the server's CPU from its cgroup, `strace -f -c` and the voluntary context switches of
+each thread (`/proc/<pid>/task`) per query, `perf record -e cpu-clock --call-graph dwarf` with the kernel's symbols
+(`perf_event_paranoid` 1 for the session, back to 2 after). Per query, `dedensd` makes fewer system calls than
+Unbound and wakes as often: no cost of its own, a system call or a wake-up a query, stands above the kernel's.
+
+| Mode at the common rate | `dedensd` µs/query | Unbound | `dedensd`'s calls a query | Unbound's |
+|---|---|---|---|---|
+| 1 core `udp`, 10 887/s (2 rounds) | 18.8, 23.9 | 17.6, 19.3 | 0.86 `io_uring_enter` | `sendto` 1, `recvfrom` 1 |
+| 3 cores `udp`, 21 371/s (1 round) | 25.5 | 22.2 | 1.07 | `sendto` 1, `recvfrom` 1.14 |
+| 1 core `tcp`, 14 808/s | 22.0 (21.9-23.5) | 16.7 (16.4-17.8) | 0.51 | `writev` 1, `recvfrom` 2 |
+| 1 core `forward`, 10 139/s | 27.0 (24.4-28.4) | 21.6 (21.5-23.3) | 0.54 | `sendto` 1.1, `recvfrom` 1.1, a socket 0.11 |
+| 3 cores `forward`, 18 723/s | 28.5 (27.8-32.9) | 22.9 (22.7-24.0) | 1.33 | `sendto` 1.06, `recvfrom` 1.14, a socket 0.06 |
+| 1 core `miss`, 3032/s | 69.1 (67.1-75.1) | 94.5 (86.9-99.7) | – | – |
+| 3 cores `miss`, 10 800/s | 77.9 (76.2-79.4) | 87.5 (84.7-94.8) | – | – |
+
+- `udp`: both spend about half their samples in the kernel (`dedensd` 48%, Unbound 54%), 11% of them in
+  `_raw_spin_unlock_irqrestore` waking dnsperf's thread on its core (the hypervisor's interrupt). `dedensd`'s own
+  are spread: `memcpy` 3.4%, `send_replies` 3.3%, `udp_queries` 2.7%, the cache's `Shard::get` 1.7%,
+  `Outbox::push` 1.2%. 0.27 to 0.42 voluntary switches a query against Unbound's 0.39 to 0.63. At 3 cores the
+  kernel's `SO_REUSEPORT` hash loads the threads unevenly (13.9, 4.3 and 7.3 µs a query each).
+- `tcp`: Unbound's 1.3× is the kernel's. The server's user time is alike (11-14% of the cores against 10-13%), its
+  system time 26-28% against 16-19% and softirq 14-16% against 1-2%: `tcp_sendmsg` is 50% of `dedensd`'s samples
+  with what it calls, 30% of them delivering the segment to dnsperf's socket in the same softirq, against 12% for
+  Unbound. Both send two segments a query (`Tcp.OutSegs`). Unbound leaves Nagle on for plain TCP
+  (`listen_dnsport.c` sets `TCP_NODELAY` for TLS and HTTP/2 only), so a reply waits for the ACK of the previous
+  one and leaves from dnsperf's core: 0.57 ms a query against 0.09. A `dedensd` without `TCP_NODELAY` spent the same
+  21.9 µs (21.0-22.8) with latency up to 0.69 ms: RFC 7766 §10's no-delay stays.
+- `forward`: the gap is the 5% of names that go upstream from a cold server, run once. 3.5-5.4% of `dedensd`'s
+  samples are `clear_page_erms`, the kernel zeroing the transparent huge pages `mimalloc` first touches for tasks
+  (the upstream sockets' receive tasks, the queries'); neither `MIMALLOC_PURGE_DELAY=-1` (28.4) nor
+  `MIMALLOC_ALLOW_THP=0` (31.5) moves it past the base's spread (30.2). The upstream query's task was 23 KiB, its 8
+  KiB future held three times by D121's catch; held once (D121), 1 core `forward` spends 23.6 µs (23.0-23.7)
+  against 27.0, 3 cores 29.5 (29.4-30.7) against 28.5, `miss` 68.1 and 74.7 against 69.1 and 77.9: the 1-core
+  gain only is past the spread. Latency at 1 core stays 0.22-0.25 / 1.1-1.4 ms against Unbound's 0.12-0.13 /
+  0.64-0.82, not explained.
+- `dnssec`: below, the memo of signatures verified (D86).
+
 ### `dnssec`: `dedensd` validates what its allowance admits
 
 In `dnssec` every query is a new name under the signed wildcard, so each one is validated cold. The first run (5
@@ -1781,8 +1821,8 @@ under `Validation::cut` and the wildcard answer's; Unbound's `EVP_DigestVerifyFi
 1.2 checks at 99 µs (`openssl speed ecdsap256`): its checks are slower than `ring`'s, and fewer. Unbound keeps an
 `RRset`'s security with the `RRset` in its cache and verifies an identical one no more (`rrset_check_sec_status`),
 and every name of this mode is answered by the same wildcard `RRset` and the same NSEC3. D86's memo of signatures
-verified does that for `dedensd` (commit f5e4a8ce, three rounds of base and tree alternating with Unbound,
-2026-11-16):
+verified does that for `dedensd` (`perf(dnssec): keep a memo of the signatures verified`, three rounds of base and
+tree alternating with Unbound, 2026-11-16):
 
 | Common rate | Base: avg / p99 ms, µs/query | Memo | Unbound |
 |---|---|---|---|
