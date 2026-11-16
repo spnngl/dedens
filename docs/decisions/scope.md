@@ -632,6 +632,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   to send, or is cancelled, frees the others to ask; one whose server did not answer hands the others that
   failure, as theirs. The validator crate is unchanged. Tests: `flights.rs` unit tests, `tests/flights.rs` of
   `dedensd`: 8 clients make one DNSKEY question of the root, not 8.
+  Signatures verified (`rrsig/memo.rs`): the `Validator` also keeps, behind its own `Mutex`, the SHA-256 digests of
+  the signature checks that succeeded, each over the algorithm, the key, the signature and the signed data, as many
+  as `Limits::signatures` (`usize`, default 4096, 0 turns it off; two generations of half: an entry not asked about
+  for a generation goes). A check the memo holds
+  costs no verification of the budget and no crypto; the time window, the key's trust and the rest of the walk are
+  judged as before, so an entry needs no TTL and a change of anchors is a new memo. The comparison's `dnssec` mode
+  (D183) asks a new name under a wildcard each time, and each validation checked the same NSEC3 `RRset` again and
+  the wildcard's signature over the same data: P-256 checks were half its CPU, about 2.3 a query against Unbound's
+  1.2, which keeps an `RRset`'s security with the `RRset` and does not verify an identical one again
+  (`val_utils.c` `rrset_check_sec_status`). A memo of digests is that without a cache of `RRsets`: the response
+  cache keeps answers, not their parts. A forged signature is never a hit: only a check that succeeded is kept, by
+  a digest of all it read.
   Tests: `tests/validator.rs`, a warm validation asks none, the entry holds for its TTL and not a second more, a
   clock gone back, an answer nobody gave, an exhausted budget and a forged DS are not kept, a bogus zone is held 60 s
   and not renewed (superseded by D92), a DNSKEY answer that proves nothing, or that `start` was given, is never

@@ -16,7 +16,7 @@ use super::verdict::{Delegation, Failure, InsecureReason, Unusable, Verdict};
 use super::{Mode, Need, Validation};
 use crate::crypto;
 use crate::denial::{self, Fact, Proof, Unproven};
-use crate::rrsig::{Key, RrSet, verify_any};
+use crate::rrsig::{Key, RrSet};
 
 /// The longest a negative response is relied on: three hours (RFC 9077 §3.4, RFC 2308 §5).
 const DENIAL_TTL_CAP: Ttl = Ttl::from_wire(3 * 60 * 60);
@@ -408,7 +408,7 @@ impl Validation {
                 ),
             )));
         }
-        match verify_any(set, &sigs, &Key::all(keys), self.now, &mut self.budget) {
+        match self.verify(set, &sigs, &Key::all(keys)) {
             Ok(verified) => Ok((verified.ttl.min(keys_ttl), verified.wildcard)),
             Err(error) => Err(Unusable::Failed(sig_failure(&error, set))),
         }

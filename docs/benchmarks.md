@@ -986,6 +986,26 @@ little; the medians of the build before swing with the machine, its fastest samp
 it holds a denial. On the VPS's Haswell a P-256 check is about 80 µs, so the name goes from about 530 µs of checks to
 160.
 
+### The memo of signatures verified
+
+D86's memo keeps the digest of each check that succeeded. `validate_wildcard_name_again`: as
+`validate_wildcard_name`, but the validator validated `wildcard_answer` first (out of the timing) and the sample is
+`a.b.wildcard-test.sidnlabs.nl` under the same wildcard, as the comparison's `dnssec` mode asks name after name: the
+signed data are the same, the wildcard's `RRset` and the NSEC3's. Base `21806bba` and the tree alternated two
+rounds in one session (2026-11-16, M5), µs, medians:
+
+| Measure | Before | After |
+|---|---|---|
+| `validate_wildcard_name_again` | 63.8, 64.0 | 8.9, 13.7 |
+| `validate_wildcard_name` | 66.5, 63.3 | 63.5, 67.2 |
+| `validate_warm` t=1 | 5.0, 5.1 | 1.8, 1.9 |
+| `validate_warm` t=8 | 14.2, 8.0 | 6.7, 7.1 |
+| `validate_cold` t=1 | 109.2, 113.3 | 108.7, 115.3 |
+
+A validation that finds both checks in the memo costs the digests and the walk; `validate_warm` (one check of
+`alg8_a`'s answer, held) falls by its RSA check. A name never seen and a cold validator do not move: the digests do
+not show beside checks of 27 to 80 µs each.
+
 ## DNSSEC cost limits (D77)
 
 `benches/dnssec.rs`, `serve_cold`, `serve_warm` and `serve_shed`: one uncached client query of the captured `alg8_a`
@@ -1754,6 +1774,23 @@ runs lost 23, 43 and 278 queries of 56 000 (under D183's 1%, cause not known: no
 shed one is answered). At the common rate and at half its own nothing waits: 1.16 / 2.56 ms at 378 µs at 1 core,
 0.83 / 3.39 ms at 364 µs at 3 cores, as before within the runs' spread. Memory loaded 56 to 58 MiB at 1 core and
 123 to 136 MiB at 3 cores, as before (56 and 118 to 128).
+
+Where the time went at the common rate (`perf` at 746 a second, 1 core, `main` at 21806bba): `ring`'s P-256 was half
+of `dedensd`'s samples, about 2.3 checks a query at 81 µs each on this Haswell (`verify_signature/p256`), the NSEC3's
+under `Validation::cut` and the wildcard answer's; Unbound's `EVP_DigestVerifyFinal` was 37% of its samples, about
+1.2 checks at 99 µs (`openssl speed ecdsap256`): its checks are slower than `ring`'s, and fewer. Unbound keeps an
+`RRset`'s security with the `RRset` in its cache and verifies an identical one no more (`rrset_check_sec_status`),
+and every name of this mode is answered by the same wildcard `RRset` and the same NSEC3. D86's memo of signatures
+verified does that for `dedensd` (commit f5e4a8ce, three rounds of base and tree alternating with Unbound,
+2026-11-16):
+
+| Common rate | Base: avg / p99 ms, µs/query | Memo | Unbound |
+|---|---|---|---|
+| 1 core, 746/s | 1.04 / 2.56, 373 (367-377) | 0.61 / 1.66, 179 (176-194) | 0.75 / 1.79, 315 (310-318) |
+| 3 cores, 2376/s | 0.75 / 3.33, 373 (371-376) | 0.43 / 1.54, 185 (184-186) | 0.58 / 1.82, 315 (306-322) |
+
+The allowance's units fall with the checks (a check the memo holds is not charged, D77), so its saturation rate is
+no longer the one above.
 
 ### Not counted
 

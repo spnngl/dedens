@@ -526,6 +526,29 @@ fn a_changed_record_is_bogus() {
 }
 
 #[test]
+fn a_signature_verified_before_still_answers_for_its_window_and_its_data() {
+    // The memo of signatures verified (D86) holds that a signature verified over its data, nothing more: the
+    // validator that found `alg8_a` secure finds it expired 90 days later, and a changed record bogus.
+    let script = Script::new();
+    let validator = Script::validator();
+    let first = script.run(&validator, &response("alg8_a"), captured_at());
+    assert!(secure(&first), "{first:?}");
+    let later = script.run(&validator, &response("alg8_a"), captured_at() + 90 * DAY);
+    assert!(bogus(&later, InfoCode::SIGNATURE_EXPIRED), "{later:?}");
+    let mut changed = response("alg8_a");
+    let record = changed
+        .answer
+        .iter_mut()
+        .find(|record| record.rtype() == RecordType::A)
+        .expect("an A record");
+    record.rdata = WireRdata::new(&RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    let verdict = script.run(&validator, &changed, captured_at());
+    assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+    let again = script.run(&validator, &response("alg8_a"), captured_at());
+    assert_eq!(again, first);
+}
+
+#[test]
 fn a_stripped_signature_is_bogus() {
     let script = Script::new();
     let mut response = response("alg8_a");
@@ -1474,7 +1497,8 @@ fn a_name_the_response_proves_absent_is_no_cut() {
     assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
     // A name deeper under the same wildcard, as the zone would answer it: the RRSIG signs the wildcard, not the
     // name, and the next closer name stays the absent `wildcard-test.sidnlabs.nl`, which the key cache keeps as no
-    // cut. That name being absent, `b.wildcard-test.sidnlabs.nl` is too, whatever its own hash: no question.
+    // cut. That name being absent, `b.wildcard-test.sidnlabs.nl` is too, whatever its own hash: no question. The
+    // signed data are the same, the wildcard's and the NSEC3's, and the memo holds both checks (D86): none is paid.
     let mut deeper = response("wildcard_answer");
     let owner = name("a.b.wildcard-test.sidnlabs.nl");
     for question in &mut deeper.questions {
@@ -1491,7 +1515,7 @@ fn a_name_the_response_proves_absent_is_no_cut() {
     };
     assert!(secure(&verdict), "{verdict:?}");
     let cost = validation.cost();
-    assert_eq!((cost.questions, cost.verifications), (0, 2), "{cost:?}");
+    assert_eq!((cost.questions, cost.verifications), (0, 0), "{cost:?}");
     // The walk reads the denial records the zone signed and leaves another zone's, here the root's real NSEC of
     // `jm.`, which the zone's keys could not verify: the proof holds all the same, and no question is asked. The
     // verdict then finds the NSEC in no zone of the answer, and the response bogus (RFC 4035 §5.5).
@@ -1837,7 +1861,8 @@ fn a_bogus_zone_is_never_kept() {
 #[test]
 fn the_cost_limits_still_bound_a_validation_under_a_bogus_zone() {
     // Each validation under a zone that is bogus to everyone repeats the failed walk (D92): its DS and its
-    // DNSKEY, one signature check, the same every time and far from the limits of one validation.
+    // DNSKEY, and checks the DS's signature, which the first verified: the memo holds it (D86), so no check is
+    // paid, the same every time and far from the limits of one validation.
     let (script, validator) = cached();
     // The first fills the cache with the keys of `cz`, which the others find.
     drive_capture(&script, &validator, "bogus_expired", captured_at());
@@ -1853,7 +1878,7 @@ fn the_cost_limits_still_bound_a_validation_under_a_bogus_zone() {
         };
         assert!(bogus(&verdict, InfoCode::DNSKEY_MISSING), "{verdict:?}");
         let cost = validation.cost();
-        assert_eq!((cost.questions, cost.verifications), (2, 1), "{cost:?}");
+        assert_eq!((cost.questions, cost.verifications), (2, 0), "{cost:?}");
         assert!(cost.questions < Limits::default().questions, "{cost:?}");
     }
 }

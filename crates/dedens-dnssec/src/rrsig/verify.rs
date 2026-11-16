@@ -6,6 +6,7 @@ use dedens_proto::{Name, RecordType, Ttl};
 
 use super::canonical;
 use super::error::SigError;
+use super::memo::Memo;
 use super::rrset::{Key, RrSet, Signature};
 use crate::crypto::{self, Budget, VerifyError};
 
@@ -106,7 +107,8 @@ impl<'s, 'k> Attempt<'s, 'k> {
 
     /// The checks that need the key, then the signature (RFC 4035 §5.3.1 to §5.3.3): the DNSKEY is the signer's,
     /// of the RRSIG's algorithm and key tag; it is not revoked (RFC 5011 §7) and has the zone key bit; `now` is
-    /// in the window (RFC 1982 arithmetic, no clock skew). Then one verification is spent from `budget`.
+    /// in the window (RFC 1982 arithmetic, no clock skew). Then one verification is spent from `budget`, unless
+    /// `memo` holds it: a check that succeeded before is not done again, nor paid for.
     fn check(
         &mut self,
         rrset: &RrSet<'_>,
@@ -114,6 +116,7 @@ impl<'s, 'k> Attempt<'s, 'k> {
         key: &Key<'_>,
         now: u32,
         budget: &mut Budget,
+        memo: Option<&Memo>,
     ) -> Result<Verified, SigError> {
         let rrsig = &self.sig.rrsig;
         let key_tag = rrsig.key_tag;
@@ -141,23 +144,31 @@ impl<'s, 'k> Attempt<'s, 'k> {
                 expiration: rrsig.expiration,
             });
         }
-        budget.spend_verification()?;
         let data = self
             .data
             .get_or_insert_with(|| signed_data(rrset, canonical, self.sig, &self.owner));
-        crypto::verify(
-            rrsig.algorithm,
-            key.dnskey.public_key(),
-            data,
-            rrsig.signature(),
-        )
-        .map_err(|error| match error {
-            VerifyError::BadSignature => SigError::BadSignature { key_tag },
-            // A key no signature can use is no key (D71): the signature is disregarded.
-            VerifyError::UnusableKey | VerifyError::UnsupportedAlgorithm(_) => {
-                SigError::NoKey { key_tag }
+        let (public_key, signature) = (key.dnskey.public_key(), rrsig.signature());
+        let memo = memo.map(|memo| {
+            (
+                memo,
+                Memo::digest(rrsig.algorithm, public_key, signature, data),
+            )
+        });
+        if !memo.is_some_and(|(memo, digest)| memo.holds(&digest)) {
+            budget.spend_verification()?;
+            crypto::verify(rrsig.algorithm, public_key, data, signature).map_err(|error| {
+                match error {
+                    VerifyError::BadSignature => SigError::BadSignature { key_tag },
+                    // A key no signature can use is no key (D71): the signature is disregarded.
+                    VerifyError::UnusableKey | VerifyError::UnsupportedAlgorithm(_) => {
+                        SigError::NoKey { key_tag }
+                    }
+                }
+            })?;
+            if let Some((memo, digest)) = memo {
+                memo.insert(digest);
             }
-        })?;
+        }
         let seconds = [
             rrset.ttl().get(),
             self.sig.ttl.get(),
@@ -221,7 +232,7 @@ pub fn verify(
     budget: &mut Budget,
 ) -> Result<Verified, SigError> {
     let mut attempt = Attempt::new(rrset, sig)?;
-    attempt.check(rrset, &rrset.canonical_rdatas(), key, now, budget)
+    attempt.check(rrset, &rrset.canonical_rdatas(), key, now, budget, None)
 }
 
 /// Authenticates `rrset` by the first of `sigs` and `keys` that verify: each RRSIG that covers it, against each
@@ -249,6 +260,18 @@ pub fn verify_any(
     keys: &[Key<'_>],
     now: u32,
     budget: &mut Budget,
+) -> Result<Verified, SigError> {
+    verify_any_with(rrset, sigs, keys, now, budget, None)
+}
+
+/// [`verify_any`], each check looked up in `memo` first and kept there once it succeeds (D86).
+pub(crate) fn verify_any_with(
+    rrset: &RrSet<'_>,
+    sigs: &[Signature<'_>],
+    keys: &[Key<'_>],
+    now: u32,
+    budget: &mut Budget,
+    memo: Option<&Memo>,
 ) -> Result<Verified, SigError> {
     let canonical = OnceCell::new();
     let mut worst = SigError::NoSignature;
@@ -287,7 +310,7 @@ pub fn verify_any(
                 return Err(SigError::TooManyFailures);
             }
             let canonical = canonical.get_or_init(|| rrset.canonical_rdatas());
-            match attempt.check(rrset, canonical, key, now, budget) {
+            match attempt.check(rrset, canonical, key, now, budget, memo) {
                 Ok(verified) => return Ok(verified),
                 Err(error @ SigError::BudgetExhausted(_)) => return Err(error),
                 Err(error) => {

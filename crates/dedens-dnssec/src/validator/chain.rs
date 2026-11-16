@@ -11,7 +11,7 @@ use super::section::{Section, dname_of, synthesized};
 use super::verdict::{Failure, InsecureReason, Unusable};
 use super::{Need, Validation};
 use crate::denial::Fact;
-use crate::rrsig::{Key, RrSet, SigError, trusted_keys, verify_any};
+use crate::rrsig::{Key, RrSet, SigError, Signature, Verified, trusted_keys, verify_any_with};
 
 /// What is known of a zone: its keys, or why it has none that count.
 ///
@@ -182,6 +182,18 @@ impl Validation {
         })
     }
 
+    /// [`verify_any`](crate::rrsig::verify_any) at the validation's time and on its budget, with the validator's
+    /// memo of signatures verified (D86): every `RRset` the validator authenticates goes through here.
+    pub(super) fn verify(
+        &mut self,
+        rrset: &RrSet<'_>,
+        sigs: &[Signature<'_>],
+        keys: &[Key<'_>],
+    ) -> Result<Verified, SigError> {
+        let memo = self.config.memo.as_ref();
+        verify_any_with(rrset, sigs, keys, self.now, &mut self.budget, memo)
+    }
+
     fn position(&self, name: &Name<'_>) -> Position {
         let anchors = &self.config.anchors;
         if anchors.negative(name) {
@@ -342,7 +354,7 @@ impl Validation {
             .find_map(|section| section.find(name, RecordType::DS).map(|ds| (section, ds)));
         if let Some((section, ds)) = found {
             let sigs = section.signatures(ds);
-            return match verify_any(ds, &sigs, &Key::all(keys), self.now, &mut self.budget) {
+            return match self.verify(ds, &sigs, &Key::all(keys)) {
                 Ok(verified) if verified.wildcard.is_none() => Cut::Signed {
                     ds: ds.clone(),
                     ttl: verified.ttl.min(keys_ttl),
@@ -448,7 +460,7 @@ impl Validation {
                 .map(|key| RData::Dnskey(key.clone())),
         );
         if let Some(trusted) = trusted {
-            match verify_any(keys, &sigs, &Key::all(&trusted), self.now, &mut self.budget) {
+            match self.verify(keys, &sigs, &Key::all(&trusted)) {
                 Ok(verified) => return Ok(secure(keys, verified.ttl)),
                 Err(error) => errors.push(error),
             }
