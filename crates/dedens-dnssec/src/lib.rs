@@ -42,7 +42,9 @@
 //! the validator's, shared by all its validations, which is why anchors and limits are fixed for a validator:
 //! change them by building another, and its cache starts empty. What goes in is only what the data decided: keys
 //! and proofs that verified, for the TTL they carry, never a bogus zone: whoever answers a DNSKEY question could
-//! make one for every validation (D92), so the next validation walks it again.
+//! make one for every validation (D92), so the next validation walks it again. Every signature check goes through
+//! `Validation::verify`, which first asks the validator's memo of the checks that succeeded (`rrsig/memo.rs`,
+//! D86): the same signature by the same key over the same data is verified once.
 //!
 //! What [`Verdict::Secure`] covers: every `RRset` of class IN in bailiwick (below) in the answer and authority
 //! sections is authentic, what the response lacks is proven absent, and the rcode agrees (RFC 4035 §3.2.3, §5). It does not cover the

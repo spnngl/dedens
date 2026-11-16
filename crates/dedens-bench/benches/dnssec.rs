@@ -487,6 +487,36 @@ fn validate_wildcard_name(bencher: divan::Bencher<'_, '_>) {
         });
 }
 
+/// The comparison's `dnssec` mode as it runs: [`validate_wildcard_name`] for a name its validator has not seen,
+/// after it validated another under the same wildcard, `a.b.wildcard-test.sidnlabs.nl` as the zone would answer it.
+/// The signed data are the same, the wildcard's and the NSEC3's: the memo of signatures verified holds both (D86).
+#[divan::bench]
+fn validate_wildcard_name_again(bencher: divan::Bencher<'_, '_>) {
+    let keys = response("sidnlabs_nl_dnskey");
+    let first = response("wildcard_answer");
+    let mut deeper = first.clone();
+    let owner: Name<'static> = "a.b.wildcard-test.sidnlabs.nl".parse().expect("a name");
+    for question in &mut deeper.questions {
+        question.name = owner.clone();
+    }
+    for record in &mut deeper.answer {
+        record.name = owner.clone();
+    }
+    bencher
+        .with_inputs(|| {
+            let validator = Validator::new(TrustAnchors::root(), Limits::default());
+            for response in [&keys, &first] {
+                let verdict = validate(&validator, response);
+                assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+            }
+            validator
+        })
+        .bench_local_refs(|validator| {
+            let verdict = validate(validator, black_box(&deeper));
+            assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+        });
+}
+
 /// The captures as the upstream of a pipeline sends them.
 static WIRES: LazyLock<HashMap<(Name<'static>, RecordType), Vec<u8>>> = LazyLock::new(|| {
     CAPTURES

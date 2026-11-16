@@ -92,7 +92,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D82 [transports](transports.md): DoH over HTTP/3 first, on compio's `h3`
 - D83 [transports](transports.md) (amended by D79, D109, D119): the client asks DoH over HTTP/3
 - D84 [server](server.md) (amended by D94): `dedensd` serves DoH over HTTP/3 and forwards to DoH upstreams
-- D86 [scope](scope.md) (amended by D92): the key cache keeps what validations learn of zones
+- D86 [scope](scope.md) (amended by D92): the key cache keeps what validations learn of zones, and a memo the signatures verified
 - D87 [server](server.md) (amended by D88): published blocklists in `docs/blocklists/blocklists.yaml`
 - D88 [server](server.md): the blocklist file is parsed: durations, status
 - D89 [CLI](cli.md): loopback test servers count queries; no test frees a port

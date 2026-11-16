@@ -664,10 +664,12 @@ mod limits {
     /// The second the queries start at, far from 0 so that a clock gone back can be tried.
     const START: u32 = 1_000_000;
 
-    /// Validation with no key cache, so that each query walks the chain from the root: each costs the same.
+    /// Validation with no key cache and no memo of signatures, so that each query walks the chain from the root and
+    /// checks each signature: each costs the same.
     fn validating(allowance: Allowance) -> Validating {
         let limits = Limits {
             key_cache: 0,
+            signatures: 0,
             ..Limits::default()
         };
         Validating::new(
@@ -770,10 +772,15 @@ mod limits {
 
     /// A validator that has the keys of `www.icann.org.` and of the name its CNAME goes on at already, so that a query
     /// for it takes no question upstream but the client's and the chasing of the chain: the step that validates the
-    /// first response costs a verification and the question that chases, two units or a few more.
+    /// first response costs a verification and the question that chases, two units or a few more. No memo of
+    /// signatures: with one, the verification of the same answer again would cost nothing (D86).
     fn keyed() -> Validating {
+        let limits = Limits {
+            signatures: 0,
+            ..Limits::default()
+        };
         let keyed = Validating::new(
-            Validator::new(TrustAnchors::root(), Limits::default()),
+            Validator::new(TrustAnchors::root(), limits),
             Arc::new(captured_at),
         );
         let (questions, reply) = ask(&validating_under(keyed.clone()), "www.icann.org.", START);

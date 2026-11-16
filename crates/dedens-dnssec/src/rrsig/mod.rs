@@ -4,11 +4,14 @@
 
 mod canonical;
 mod error;
+mod memo;
 mod rrset;
 mod trust;
 mod verify;
 
 pub use error::SigError;
+pub(crate) use memo::Memo;
 pub use rrset::{Key, RrSet, Signature};
 pub use trust::trusted_keys;
+pub(crate) use verify::verify_any_with;
 pub use verify::{MAX_FAILED, Verified, verify, verify_any};

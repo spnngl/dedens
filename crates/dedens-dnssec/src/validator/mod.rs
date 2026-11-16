@@ -22,6 +22,7 @@ pub use self::verdict::{Delegation, InsecureReason, MAX_CHASES, Verdict};
 use crate::anchor::TrustAnchors;
 use crate::crypto::{Budget, Verifications};
 use crate::denial::MaxIterations;
+use crate::rrsig::Memo;
 
 /// What one validation may do before it gives up, so that no response makes the validator loop or work for
 /// long (RFC 9276 §3.2, CVE-2023-50387).
@@ -51,6 +52,9 @@ pub struct Limits {
     /// keys and half for names and insecure zones, so that neither can push out the other. A set of keys of more
     /// than 16 KiB is never kept.
     pub key_cache_bytes: usize,
+    /// Signature checks that succeeded the validator keeps, a SHA-256 digest each, so that it does not verify the
+    /// same signature over the same data again: 4096 (D86). 0 turns the memo off.
+    pub signatures: usize,
 }
 
 impl Default for Limits {
@@ -62,6 +66,7 @@ impl Default for Limits {
             iterations: MaxIterations::default(),
             key_cache: 4096,
             key_cache_bytes: 4 << 20,
+            signatures: 4096,
         }
     }
 }
@@ -71,11 +76,13 @@ struct Config {
     anchors: TrustAnchors,
     limits: Limits,
     cache: KeyCache,
+    /// The signatures verified, as many as `limits.signatures`; none when that is 0.
+    memo: Option<Memo>,
 }
 
-/// The judge of responses of a validating resolver (RFC 4035 §5): the trust anchors, the limits and the cache of
-/// keys, which validations share. Clones of a validator share them, and a validator with other anchors or limits
-/// is a new one, with a new cache (D86).
+/// The judge of responses of a validating resolver (RFC 4035 §5): the trust anchors, the limits, the cache of keys
+/// and the memo of signatures verified, which validations share. Clones of a validator share them, and a validator
+/// with other anchors or limits is a new one, with a new cache and memo (D86).
 #[derive(Debug, Clone)]
 pub struct Validator {
     config: Arc<Config>,
@@ -86,11 +93,13 @@ impl Validator {
     #[must_use]
     pub fn new(anchors: TrustAnchors, limits: Limits) -> Self {
         let cache = KeyCache::new(limits.key_cache, limits.key_cache_bytes);
+        let memo = Memo::new(limits.signatures);
         Self {
             config: Arc::new(Config {
                 anchors,
                 limits,
                 cache,
+                memo,
             }),
         }
     }
