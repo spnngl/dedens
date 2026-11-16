@@ -1839,6 +1839,29 @@ hold the same, and at 3 cores that is the receive buffers under THP. The rates a
 3-core `miss`, 1.21× lower with the full 8 MiB cache evicting (ranges 44.6-52.9 and 39.5-40.9), not measured
 further.
 
+### One receive buffer per pool (D50)
+
+The upstream pool's sockets now wait for readiness and receive into one 64 KiB buffer of the pool's, Unbound's
+`outnet->udp_buff`, instead of each holding its own. `main` at c9c7be7a against `perf/unbound-2` on the VPS, the
+median of 3 (memory) or 4 (CPU) runs alternating, ranges in brackets. Memory: anonymous MiB after the 3-core
+`miss` corpus from cold at saturation, shipped and with `MIMALLOC_ALLOW_THP=0`. CPU: µs a query and average /
+p99 ms on the first pass from cold at the common rate, every query of `miss` and 5% of `forward` going upstream:
+
+| Run | `main` | one buffer |
+|---|---|---|
+| 3 cores `miss`, MiB | 170 (167-171) | 105 (104-107) |
+| 3 cores `miss`, MiB, no THP | 103 (102-103) | 88 (87-89) |
+| 1 core `miss` at 3032/s | 70.2 (68.5-71.6), 0.51 / 1.52 | 66.4 (65.9-74.5), 0.49 / 1.10 |
+| 3 cores `miss` at 10 800/s | 76.8 (71.7-79.7), 0.48 / 8.32 | 76.2 (74.0-80.5), 0.47 / 4.06 |
+| 1 core `forward` at 10 139/s | 26.2 (25.9-27.5), 0.21 / 1.50 | 26.2 (23.8-28.9), 0.21 / 1.25 |
+| 3 cores `forward` at 18 723/s | 31.1 (29.2-33.1), 0.47 / 5.09 | 29.5 (28.0-32.3), 0.28 / 2.56 |
+
+The loaded memory falls 65 MiB, 1.6×, the buffers' share under THP (53) and some of what THP rounded up near
+them; 14 without THP, of the 20 the 4 KiB build saved. The readiness wait and the `recv` call per datagram cost
+nothing the runs can see. `cargo bench -p dedens-net --bench pools` on the M5 (kqueue, 4 rounds alternating, the
+first under load): UDP 1 in flight 28801 → 28207, 32 in flight 91174 → 88217 queries a second, medians, within
+the rounds' spread (27921-29776, 83076-97149).
+
 ### `dnssec`: `dedensd` validates what its allowance admits
 
 In `dnssec` every query is a new name under the signed wildcard, so each one is validated cold. The first run (5

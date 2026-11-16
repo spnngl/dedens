@@ -129,8 +129,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   ID, which the socket's task receives for every query on it. An off-path attacker guesses the ID and the
   socket: 16 + 8 bits (RFC 5452 §9.2), against about 32 with a socket per query; cookies (RFC 7873) and `0x20`
   stay the way to win more. Matching stays D27's: a datagram goes to each query waiting for its ID (four kept for
-  each, D108), and the exchange drops those of another question. A datagram is received whole, up to 65535 bytes, into
-  one buffer per socket, whatever size the queries advertised. A socket error goes to the queries that sent on
+  each, D108), and the exchange drops those of another question. A datagram is received whole, up to 65535 bytes, whatever
+  size the queries advertised, into one buffer per pool, so per serving thread, as Unbound's `outnet->udp_buff`: a
+  socket waits for readiness, holding no buffer, then receives without waiting and hands the bytes over before the
+  next await. One buffer per socket held 256 × 64 KiB a thread: the 3-core `miss` run's loaded memory falls 170 →
+  105 MiB with transparent huge pages, 103 → 88 without; the readiness wait and the `recv` call per datagram, where
+  one `io_uring` receive did both, cost no CPU or latency the runs see (`docs/benchmarks.md`, "One receive buffer
+  per pool"). A socket error goes to the queries that sent on
   it, each counting it as a lost try, as does a send refused for an earlier datagram's ICMP error (another send
   error ends the exchange); errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured

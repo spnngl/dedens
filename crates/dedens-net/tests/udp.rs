@@ -123,6 +123,35 @@ async fn a_short_response_after_a_long_one_comes_out_whole() {
     }
 }
 
+/// The sockets of a pool receive into one buffer (D50): a short response on one after a long one on another comes
+/// out whole, and each to its own query.
+#[compio::test]
+async fn sockets_sharing_the_buffer_each_get_their_own_datagram() {
+    let options = |id| match id {
+        1 => vec![EdnsOption::Padding(400)],
+        _ => Vec::new(),
+    };
+    let server = udp_responder(move |query| Some(answer(query, options(id(query))))).await;
+    let pool = UdpPool::new(2);
+    let (mut long, mut short) = (
+        pool.query(server, 0, 1).await.expect("a socket"),
+        pool.query(server, 1, 2).await.expect("a socket"),
+    );
+    assert_ne!(long.local_addr(), short.local_addr());
+    let (one, two) = (query_with_id(1), query_with_id(2));
+    long.send(&one).await.expect("sent");
+    let first = long.recv(soon()).await.expect("received");
+    short.send(&two).await.expect("sent");
+    let second = short.recv(soon()).await.expect("received");
+    assert_eq!(
+        (first, second),
+        (
+            Some(answer(&one, options(1))),
+            Some(answer(&two, options(2)))
+        )
+    );
+}
+
 /// RFC 6891 §6.2.3: a datagram comes whole, whatever size the queries on the socket advertised.
 #[compio::test]
 async fn a_large_datagram_comes_whole() {

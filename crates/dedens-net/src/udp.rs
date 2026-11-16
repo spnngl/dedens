@@ -5,7 +5,7 @@
 //! an error. A query takes a socket the caller picks at random and waits for the datagrams carrying its ID; the
 //! socket's task receives for every query on it. The ID and the socket are what an off-path attacker must guess:
 //! 16 bits and the log2 of the pool size (RFC 5452 §9.2). Retries go over the same socket, so a late response to
-//! an earlier try still counts.
+//! an earlier try still counts. The sockets wait for readiness and receive into one buffer of the pool's (D50).
 //!
 //! Generic over [`Io`] (D134): time, tasks and sockets come from it.
 
@@ -34,10 +34,18 @@ pub struct UdpPool<N: Io = Compio> {
     io: N,
     size: usize,
     servers: RefCell<HashMap<SocketAddr, Sockets<N>>>,
+    scratch: Scratch,
 }
 
 /// The sockets of one server, by index; `None` until first used.
 type Sockets<N> = Box<[Option<Rc<Mux<N>>>]>;
+
+/// The buffer every socket of a pool receives into, a datagram at a time, before its bytes go to the queries
+/// waiting for them (D50). A pool lives on one thread and no receive holds it across an await, so one serves all.
+type Scratch = Rc<RefCell<Box<[u8]>>>;
+
+/// The largest UDP payload: a query may advertise any size (RFC 6891 §6.2.3), and a datagram is received whole.
+const MAX_DATAGRAM: usize = 65535;
 
 impl UdpPool {
     /// A pool of `size` sockets per server on compio, none open yet.
@@ -55,6 +63,7 @@ impl<N: Io> UdpPool<N> {
             io,
             size: size.max(1),
             servers: RefCell::default(),
+            scratch: Rc::new(RefCell::new(vec![0; MAX_DATAGRAM].into_boxed_slice())),
         }
     }
 
@@ -74,7 +83,8 @@ impl<N: Io> UdpPool<N> {
         let mux = if let Some(mux) = open {
             mux
         } else {
-            let mux = Rc::new(Mux::connect(self.io.clone(), server).await?);
+            let mux =
+                Rc::new(Mux::connect(self.io.clone(), server, Rc::clone(&self.scratch)).await?);
             // Another query may have opened it meanwhile: the first stays.
             let mut servers = self.servers.borrow_mut();
             let sockets = servers
@@ -101,13 +111,18 @@ struct Mux<N: Io> {
 
 impl<N: Io> Mux<N> {
     /// Opens a socket on port 0 of the unspecified address of `server`'s family, connected to `server`, and starts
-    /// its task.
-    async fn connect(io: N, server: SocketAddr) -> io::Result<Self> {
+    /// its task, receiving into `scratch`.
+    async fn connect(io: N, server: SocketAddr, scratch: Scratch) -> io::Result<Self> {
         let socket = io.udp_bind(unspecified(server)).await?;
         socket.connect(server).await?;
         let local = socket.local_addr()?;
         let (socket, waiting) = (Rc::new(socket), Rc::<RefCell<Waiting>>::default());
-        let receiving = io.spawn(receive(io.clone(), Rc::clone(&socket), Rc::clone(&waiting)));
+        let receiving = io.spawn(receive(
+            io.clone(),
+            Rc::clone(&socket),
+            Rc::clone(&waiting),
+            scratch,
+        ));
         Ok(Self {
             io,
             socket,
@@ -126,25 +141,34 @@ pub(crate) fn unspecified(addr: SocketAddr) -> SocketAddr {
     }
 }
 
-/// Receives the datagrams of `socket` for the queries `waiting`, each whole: a query may advertise any UDP payload
-/// size (RFC 6891 §6.2.3), and one buffer of the largest serves them all.
-async fn receive<N: Io>(io: N, socket: Rc<N::Udp>, waiting: Rc<RefCell<Waiting>>) {
-    /// The largest UDP payload.
-    const MAX_DATAGRAM: usize = 65535;
+/// Receives the datagrams of `socket` for the queries `waiting`, each whole into `scratch`, which it borrows only
+/// between waking and handing the bytes over: a socket waiting holds no buffer (D50).
+async fn receive<N: Io>(
+    io: N,
+    socket: Rc<N::Udp>,
+    waiting: Rc<RefCell<Waiting>>,
+    scratch: Scratch,
+) {
     /// The pause after an error that follows an error, so one that keeps coming does not spin.
     const PAUSE: Duration = Duration::from_millis(10);
-    let mut buf = Vec::with_capacity(MAX_DATAGRAM);
     let mut failed = false;
     loop {
-        // A receive fills the buffer from its start: what it does not overwrite is stale.
-        buf.clear();
-        let BufResult(received, back) = socket.recv(buf).await;
-        buf = back;
+        let received = socket.readable().await.and_then(|()| {
+            let mut buf = scratch.borrow_mut();
+            let len = socket.try_recv(&mut buf)?;
+            waiting
+                .borrow_mut()
+                .deliver(buf.get(..len).unwrap_or_default());
+            Ok(())
+        });
         match received {
-            Ok(len) => {
-                failed = false;
-                waiting.borrow_mut().deliver(&buf[..len]);
-            }
+            Ok(()) => failed = false,
+            // Woken with nothing there.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
             Err(error) => {
                 waiting.borrow_mut().fail(error.kind());
                 if failed {
@@ -345,12 +369,20 @@ mod tests {
             ready(Err(io::ErrorKind::Unsupported.into()))
         }
 
-        async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
+        fn recv<B: IoBufMut>(&self, _: B) -> impl Future<Output = BufResult<usize, B>> {
+            pending()
+        }
+
+        async fn readable(&self) -> io::Result<()> {
             if self.receives.borrow().len() == FAILS {
                 return pending().await;
             }
+            Ok(())
+        }
+
+        fn try_recv(&self, _: &mut [u8]) -> io::Result<usize> {
             self.receives.borrow_mut().push(Compio.now());
-            BufResult(Err(io::ErrorKind::ConnectionRefused.into()), buffer)
+            Err(io::ErrorKind::ConnectionRefused.into())
         }
 
         fn send<B: IoBuf>(&self, buffer: B) -> impl Future<Output = BufResult<usize, B>> {
@@ -420,7 +452,12 @@ mod tests {
     #[compio::test]
     async fn an_error_after_an_error_pauses_the_receiving() {
         let socket = Rc::new(Refusing::default());
-        let _receiving = Refused.spawn(receive(Refused, Rc::clone(&socket), Rc::default()));
+        let _receiving = Refused.spawn(receive(
+            Refused,
+            Rc::clone(&socket),
+            Rc::default(),
+            Rc::default(),
+        ));
         for _ in 0..100 {
             if socket.receives.borrow().len() == FAILS {
                 break;

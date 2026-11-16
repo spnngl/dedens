@@ -21,6 +21,7 @@ http.workspace = true
 pin-project-lite.workspace = true
 idna = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
+rustix.workspace = true
 rustls-platform-verifier.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
