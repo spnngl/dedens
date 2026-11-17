@@ -901,6 +901,7 @@ dependencies = [
  "dedens-net",
  "dedens-odoh",
  "dedens-proto",
+ "dedens-roots",
  "dedens-scenario",
  "dedens-testkit",
  "idna",
@@ -927,6 +928,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-roots",
  "dedens-server",
  "dedens-testkit",
  "divan",
@@ -1049,6 +1051,17 @@ dependencies = [
 [[package]]
 name = "dedens-repo"
 version = "0.1.0"
+
+[[package]]
+name = "dedens-roots"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "dedens-proto",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dedens-scenario"

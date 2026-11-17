@@ -7,14 +7,10 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::{anyhow, bail};
 use dedens_net::client::Client;
 use dedens_proto::rdata::RData;
-use dedens_proto::{
-    Flags, Message, Name, Question, Rcode, Record, RecordType, ZoneEntry, ZoneReader,
-};
+use dedens_proto::{Flags, Message, Name, Question, Rcode, Record, RecordType};
+use dedens_roots::{RootHints, Server};
 use dedens_scenario::{Id, Options, Report};
 use tracing::Instrument;
-
-/// IANA's root hints, <https://www.internic.net/domain/named.root>; `just root-hints` refreshes them.
-const ROOT_HINTS: &str = include_str!("named.root");
 
 /// Name servers without glue whose address is looked up, one inside the other, at most.
 const MAX_DEPTH: u8 = 4;
@@ -43,14 +39,8 @@ pub(crate) struct Roots {
 impl Roots {
     /// The root servers of the root hints on `port`, IPv4 and IPv6 in turn, with `port` for the others too.
     pub(crate) fn hints(port: u16) -> Self {
-        let records =
-            ZoneReader::new(ROOT_HINTS.as_bytes(), Some(Name::root())).filter_map(|entry| {
-                match entry {
-                    Ok(ZoneEntry::Record(decoded)) => Some(decoded.record),
-                    _ => None,
-                }
-            });
-        let ips = in_turn(records.filter_map(|record| address(&record)));
+        let servers = RootHints::bundled().servers().iter();
+        let ips = in_turn(servers.flat_map(Server::addresses));
         Self {
             servers: on(ips, port),
             port,

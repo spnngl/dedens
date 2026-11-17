@@ -18,6 +18,7 @@ compio.workspace = true
 dedens-dnssec.workspace = true
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-proto.workspace = true
+dedens-roots.workspace = true
 dedens-scenario = { workspace = true, features = ["clap"] }
 idna.workspace = true
 serde-saphyr.workspace = true

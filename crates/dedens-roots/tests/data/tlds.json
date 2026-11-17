@@ -1,0 +1,679 @@
+{
+  "meta": {
+    "generated": "2026-11-16T23:49:03+00:00",
+    "source": "https://www.iana.org/domains/root/db",
+    "schema": "https://data.iana.org/TLD/v1/tlds-schema.json",
+    "specversion": 1
+  },
+  "domains": [
+    {
+      "name": "arpa",
+      "status": "active",
+      "type": "special-use",
+      "script_code": "Latn",
+      "annotations": {},
+      "manager": {
+        "organization": "Internet Architecture Board (IAB)",
+        "address": {
+          "address_lines": [
+            "c/o IETF Administration LLC",
+            "1000 N. West St.",
+            "Suite 1200"
+          ],
+          "city": "Wilmington",
+          "state": "DE",
+          "postal_code": "19801",
+          "country": "United States of America (the)",
+          "country_iso": "US"
+        },
+        "last_updated": "2022-10-07"
+      },
+      "contacts": {
+        "admin": {
+          "name": "Internet Architecture Board (IAB)",
+          "organization": "Internet Architecture Board (IAB)",
+          "address": {
+            "address_lines": [
+              "c/o IETF Administration LLC",
+              "1000 N. West St.",
+              "Suite 1200"
+            ],
+            "city": "Wilmington",
+            "state": "DE",
+            "postal_code": "19801",
+            "country": "United States of America (the)",
+            "country_iso": "US"
+          },
+          "phone": "+1 510 492 4080",
+          "fax": "+1 510 492 4001",
+          "last_updated": "2020-07-15"
+        },
+        "tech": {
+          "name": "Internet Assigned Numbers Authority (IANA)",
+          "organization": "Internet Corporation for Assigned Names and Numbers (ICANN)",
+          "address": {
+            "address_lines": [
+              "12025 Waterfront Drive",
+              "Suite 300"
+            ],
+            "city": "Los Angeles",
+            "state": "CA",
+            "postal_code": "90094",
+            "country": "United States of America (the)",
+            "country_iso": "US"
+          },
+          "phone": "+1 310 301 5800",
+          "fax": "+1 310 823-8649",
+          "last_updated": "2014-09-30"
+        }
+      },
+      "nameservers": [
+        {
+          "name": "a.ns.arpa",
+          "ipv4": [
+            "198.41.0.4"
+          ],
+          "ipv6": [
+            "2001:503:ba3e::2:30"
+          ]
+        },
+        {
+          "name": "b.ns.arpa",
+          "ipv4": [
+            "170.247.170.2"
+          ],
+          "ipv6": [
+            "2801:1b8:10::b"
+          ]
+        },
+        {
+          "name": "c.ns.arpa",
+          "ipv4": [
+            "192.33.4.12"
+          ],
+          "ipv6": [
+            "2001:500:2::c"
+          ]
+        },
+        {
+          "name": "d.ns.arpa",
+          "ipv4": [
+            "199.7.91.13"
+          ],
+          "ipv6": [
+            "2001:500:2d::d"
+          ]
+        },
+        {
+          "name": "e.ns.arpa",
+          "ipv4": [
+            "192.203.230.10"
+          ],
+          "ipv6": [
+            "2001:500:a8::e"
+          ]
+        },
+        {
+          "name": "f.ns.arpa",
+          "ipv4": [
+            "192.5.5.241"
+          ],
+          "ipv6": [
+            "2001:500:2f::f"
+          ]
+        },
+        {
+          "name": "g.ns.arpa",
+          "ipv4": [
+            "192.112.36.4"
+          ],
+          "ipv6": [
+            "2001:500:12::d0d"
+          ]
+        },
+        {
+          "name": "h.ns.arpa",
+          "ipv4": [
+            "198.97.190.53"
+          ],
+          "ipv6": [
+            "2001:500:1::53"
+          ]
+        },
+        {
+          "name": "i.ns.arpa",
+          "ipv4": [
+            "192.36.148.17"
+          ],
+          "ipv6": [
+            "2001:7fe::53"
+          ]
+        },
+        {
+          "name": "k.ns.arpa",
+          "ipv4": [
+            "193.0.14.129"
+          ],
+          "ipv6": [
+            "2001:7fd::1"
+          ]
+        },
+        {
+          "name": "l.ns.arpa",
+          "ipv4": [
+            "199.7.83.42"
+          ],
+          "ipv6": [
+            "2001:500:9f::42"
+          ]
+        },
+        {
+          "name": "m.ns.arpa",
+          "ipv4": [
+            "202.12.27.33"
+          ],
+          "ipv6": [
+            "2001:dc3::35"
+          ]
+        }
+      ],
+      "ds_records": [
+        {
+          "key_tag": 42581,
+          "algorithm": 8,
+          "digest_type": 2,
+          "digest": "f28391c1ed4dc0f151edd251a3103dce0b9a5a251acf6e24073771d71f3c40f9"
+        }
+      ],
+      "rdap_base_urls": [],
+      "whois_server": "whois.iana.org",
+      "registration_url": "https://www.iana.org/domains/arpa",
+      "purpose": "Supports infrastructure identifier spaces",
+      "remarks": "The .arpa top-level domain is the “Address and Routing Parameter Area” domain and is designated to be used exclusively for Internet-infrastructure purposes. IANA administers the domain in cooperation with the Internet technical community through the guidance of the Internet Architecture Board.\r\n\r\nFor further information, see [Management Guidelines & Operational Requirements for the Address and Routing Parameter Area Domain (\"arpa\")](https://www.iana.org/go/rfc3172) (RFC 3172).",
+      "events": {
+        "delegation": null,
+        "revocation": null
+      },
+      "last_updated": "2023-11-27"
+    },
+    {
+      "name": "com",
+      "status": "active",
+      "type": "generic",
+      "script_code": "Latn",
+      "annotations": {
+        "delegation_round": "pre-icann"
+      },
+      "manager": {
+        "organization": "VeriSign Global Registry Services",
+        "address": {
+          "address_lines": [
+            "12061 Bluemont Way"
+          ],
+          "city": "Reston",
+          "state": "VA",
+          "postal_code": "20190",
+          "country": "United States of America (the)",
+          "country_iso": "US"
+        },
+        "last_updated": "2019-08-14"
+      },
+      "contacts": {
+        "admin": {
+          "name": "Registry Customer Service",
+          "organization": "VeriSign Global Registry Services",
+          "address": {
+            "address_lines": [
+              "12061 Bluemont Way"
+            ],
+            "city": "Reston",
+            "state": "VA",
+            "postal_code": "20190",
+            "country": "United States of America (the)",
+            "country_iso": "US"
+          },
+          "phone": "+1 703 925-6999",
+          "fax": "+1 703 948 3978",
+          "last_updated": "2012-02-15"
+        },
+        "tech": {
+          "name": "Registry Customer Service",
+          "organization": "VeriSign Global Registry Services",
+          "address": {
+            "address_lines": [
+              "12061 Bluemont Way"
+            ],
+            "city": "Reston",
+            "state": "VA",
+            "postal_code": "20190",
+            "country": "United States of America (the)",
+            "country_iso": "US"
+          },
+          "phone": "+1 703 925-6999",
+          "fax": "+1 703 948 3978",
+          "last_updated": "2012-02-15"
+        }
+      },
+      "nameservers": [
+        {
+          "name": "a.gtld-servers.net",
+          "ipv4": [
+            "192.5.6.30"
+          ],
+          "ipv6": [
+            "2001:503:a83e::2:30"
+          ]
+        },
+        {
+          "name": "b.gtld-servers.net",
+          "ipv4": [
+            "192.33.14.30"
+          ],
+          "ipv6": [
+            "2001:503:231d::2:30"
+          ]
+        },
+        {
+          "name": "c.gtld-servers.net",
+          "ipv4": [
+            "192.26.92.30"
+          ],
+          "ipv6": [
+            "2001:503:83eb::30"
+          ]
+        },
+        {
+          "name": "d.gtld-servers.net",
+          "ipv4": [
+            "192.31.80.30"
+          ],
+          "ipv6": [
+            "2001:500:856e::30"
+          ]
+        },
+        {
+          "name": "e.gtld-servers.net",
+          "ipv4": [
+            "192.12.94.30"
+          ],
+          "ipv6": [
+            "2001:502:1ca1::30"
+          ]
+        },
+        {
+          "name": "f.gtld-servers.net",
+          "ipv4": [
+            "192.35.51.30"
+          ],
+          "ipv6": [
+            "2001:503:d414::30"
+          ]
+        },
+        {
+          "name": "g.gtld-servers.net",
+          "ipv4": [
+            "192.42.93.30"
+          ],
+          "ipv6": [
+            "2001:503:eea3::30"
+          ]
+        },
+        {
+          "name": "h.gtld-servers.net",
+          "ipv4": [
+            "192.54.112.30"
+          ],
+          "ipv6": [
+            "2001:502:8cc::30"
+          ]
+        },
+        {
+          "name": "i.gtld-servers.net",
+          "ipv4": [
+            "192.43.172.30"
+          ],
+          "ipv6": [
+            "2001:503:39c1::30"
+          ]
+        },
+        {
+          "name": "j.gtld-servers.net",
+          "ipv4": [
+            "192.48.79.30"
+          ],
+          "ipv6": [
+            "2001:502:7094::30"
+          ]
+        },
+        {
+          "name": "k.gtld-servers.net",
+          "ipv4": [
+            "192.52.178.30"
+          ],
+          "ipv6": [
+            "2001:503:d2d::30"
+          ]
+        },
+        {
+          "name": "l.gtld-servers.net",
+          "ipv4": [
+            "192.41.162.30"
+          ],
+          "ipv6": [
+            "2001:500:d937::30"
+          ]
+        },
+        {
+          "name": "m.gtld-servers.net",
+          "ipv4": [
+            "192.55.83.30"
+          ],
+          "ipv6": [
+            "2001:501:b1f9::30"
+          ]
+        }
+      ],
+      "ds_records": [
+        {
+          "key_tag": 19718,
+          "algorithm": 13,
+          "digest_type": 2,
+          "digest": "8acbb0cd28f41250a80a491389424d341522d946b0da0c0291f2d3d771d7805a"
+        }
+      ],
+      "rdap_base_urls": [
+        "https://rdap.verisign.com/com/v1/"
+      ],
+      "whois_server": "whois.verisign-grs.com",
+      "registration_url": "http://www.verisigninc.com",
+      "events": {
+        "delegation": null,
+        "revocation": null
+      },
+      "last_updated": "2026-03-10"
+    },
+    {
+      "name": "fr",
+      "status": "active",
+      "type": "country-code",
+      "script_code": "Latn",
+      "annotations": {},
+      "manager": {
+        "organization": "Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)",
+        "address": {
+          "address_lines": [
+            "7, avenue du 8 mai 1945"
+          ],
+          "city": "Guyancourt",
+          "state": null,
+          "postal_code": "78280",
+          "country": "France",
+          "country_iso": "FR"
+        },
+        "last_updated": "2024-03-12"
+      },
+      "contacts": {
+        "admin": {
+          "name": "TLD Admin Contact",
+          "organization": "Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)",
+          "address": {
+            "address_lines": [
+              "7, avenue du 8 mai 1945"
+            ],
+            "city": "Guyancourt",
+            "state": null,
+            "postal_code": "78280",
+            "country": "France",
+            "country_iso": "FR"
+          },
+          "phone": "+33 1 39 30 83 05",
+          "fax": "+33 1 39 30 83 01",
+          "last_updated": "2024-03-12"
+        },
+        "tech": {
+          "name": "TLD Technical Contact",
+          "organization": "Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)",
+          "address": {
+            "address_lines": [
+              "7, avenue du 8 mai 1945"
+            ],
+            "city": "Guyancourt",
+            "state": null,
+            "postal_code": "78280",
+            "country": "France",
+            "country_iso": "FR"
+          },
+          "phone": "+33 1 39 30 83 00",
+          "fax": "+33 1 39 30 83 01",
+          "last_updated": "2024-03-12"
+        }
+      },
+      "nameservers": [
+        {
+          "name": "d.nic.fr",
+          "ipv4": [
+            "194.0.9.1"
+          ],
+          "ipv6": [
+            "2001:678:c::1"
+          ]
+        },
+        {
+          "name": "f.ext.nic.fr",
+          "ipv4": [
+            "194.146.106.46"
+          ],
+          "ipv6": [
+            "2001:67c:1010:11::53"
+          ]
+        },
+        {
+          "name": "g.ext.nic.fr",
+          "ipv4": [
+            "194.0.36.1"
+          ],
+          "ipv6": [
+            "2001:678:4c::1"
+          ]
+        }
+      ],
+      "ds_records": [
+        {
+          "key_tag": 65381,
+          "algorithm": 13,
+          "digest_type": 2,
+          "digest": "8163abf45792942cf4ee38cca31f6a6832fcdc6d402338fc687827690c4132f6"
+        }
+      ],
+      "rdap_base_urls": [
+        "https://rdap.nic.fr/"
+      ],
+      "whois_server": "whois.nic.fr",
+      "registration_url": "https://www.nic.fr",
+      "events": {
+        "delegation": null,
+        "revocation": null
+      },
+      "last_updated": "2025-07-31"
+    },
+    {
+      "name": "onion",
+      "status": "reserved",
+      "type": "special-use",
+      "script_code": "Latn",
+      "annotations": {},
+      "manager": null,
+      "contacts": null,
+      "nameservers": [],
+      "ds_records": [],
+      "rdap_base_urls": [],
+      "whois_server": null,
+      "registration_url": null,
+      "purpose": "Used to access devices over the Tor network",
+      "remarks": "Used to access devices over the Tor network.\r\n\r\nFor further information, see [The \".onion\" Special-Use Domain Name](https://www.iana.org/go/rfc7686) (RFC 7686).",
+      "events": {
+        "delegation": null,
+        "revocation": null
+      },
+      "last_updated": null
+    },
+    {
+      "name": "xn--0zwm56d",
+      "ulabel": "测试",
+      "status": "retired",
+      "type": "test",
+      "script_code": "Hani",
+      "annotations": {
+        "language_code": "zh",
+        "transliteration": "ceshi",
+        "translation": "test"
+      },
+      "manager": null,
+      "contacts": null,
+      "nameservers": [],
+      "ds_records": [],
+      "rdap_base_urls": [],
+      "whois_server": null,
+      "registration_url": null,
+      "events": {
+        "delegation": "2007-10-09",
+        "revocation": "2013-10-31"
+      },
+      "last_updated": "2020-04-02"
+    },
+    {
+      "name": "xn--p1ai",
+      "ulabel": "рф",
+      "status": "active",
+      "type": "country-code",
+      "script_code": "Cyrl",
+      "iso3166_code": "RU",
+      "annotations": {
+        "language_code": "ru",
+        "transliteration": "rf"
+      },
+      "manager": {
+        "organization": "Coordination Center for TLD RU",
+        "address": {
+          "address_lines": [
+            "8 Marta street 1, bld 12"
+          ],
+          "city": "Moscow",
+          "state": null,
+          "postal_code": "127083",
+          "country": "Russian Federation (the)",
+          "country_iso": "RU"
+        },
+        "last_updated": "2022-04-02"
+      },
+      "contacts": {
+        "admin": {
+          "name": ".xn--p1ai domain Administrative group",
+          "organization": "Coordination Center for TLD RU",
+          "address": {
+            "address_lines": [
+              "8 Marta street 1, bld 12"
+            ],
+            "city": "Moscow",
+            "state": null,
+            "postal_code": "127083",
+            "country": "Russian Federation (the)",
+            "country_iso": "RU"
+          },
+          "phone": "+7 495 730 29 71",
+          "fax": "+7 495 730 29 68",
+          "last_updated": "2016-08-02"
+        },
+        "tech": {
+          "name": "Technical Center of Internet",
+          "organization": "Technical Center of Internet",
+          "address": {
+            "address_lines": [
+              "8 Marta street 1, bld 12"
+            ],
+            "city": "Moscow",
+            "state": null,
+            "postal_code": "127083",
+            "country": "Russian Federation (the)",
+            "country_iso": "RU"
+          },
+          "phone": "+7 495 730 29 69",
+          "fax": "+7 495 730 29 68",
+          "last_updated": "2019-09-11"
+        }
+      },
+      "nameservers": [
+        {
+          "name": "a.dns.ripn.net",
+          "ipv4": [
+            "193.232.128.6"
+          ],
+          "ipv6": [
+            "2001:678:17:0:193:232:128:6"
+          ]
+        },
+        {
+          "name": "b.dns.ripn.net",
+          "ipv4": [
+            "194.85.252.62"
+          ],
+          "ipv6": [
+            "2001:678:16:0:194:85:252:62"
+          ]
+        },
+        {
+          "name": "c.tld-servers.ru",
+          "ipv4": [
+            "194.190.122.17"
+          ],
+          "ipv6": [
+            "2a09:bd00:1:0:194:190:122:17"
+          ]
+        },
+        {
+          "name": "d.dns.ripn.net",
+          "ipv4": [
+            "194.190.124.17"
+          ],
+          "ipv6": [
+            "2001:678:18:0:194:190:124:17"
+          ]
+        },
+        {
+          "name": "e.dns.ripn.net",
+          "ipv4": [
+            "193.232.142.17"
+          ],
+          "ipv6": [
+            "2001:678:15:0:193:232:142:17"
+          ]
+        },
+        {
+          "name": "f.dns.ripn.net",
+          "ipv4": [
+            "193.232.156.17"
+          ],
+          "ipv6": [
+            "2001:678:14:0:193:232:156:17"
+          ]
+        }
+      ],
+      "ds_records": [
+        {
+          "key_tag": 60491,
+          "algorithm": 8,
+          "digest_type": 2,
+          "digest": "87f1f8c82ec00047c43ac499a73cc9beb4fc1503e8558f086dcfb614405f7f21"
+        }
+      ],
+      "rdap_base_urls": [],
+      "whois_server": "whois.tcinet.ru",
+      "registration_url": "http://cctld.ru/en",
+      "events": {
+        "delegation": "2010-05-12",
+        "revocation": null
+      },
+      "last_updated": "2026-08-21"
+    }
+  ]
+}

@@ -706,3 +706,22 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   proven: a name error's proof holds for every type, and a no data of RRSIG at a signed name fails, its bitmap
   having RRSIG. Rejected: verifying each RRSIG by the set it covers, which the response does not hold; insecure
   whatever the response holds, which took a forged name error or empty answer without a proof.
+- D126 (amends D40) IANA's root hints and TLD list are `dedens-roots`, sans-IO: `RootHints`, the root servers of
+  `named.root` with their A and AAAA records (the configured list a resolver primes from, RFC 8109 §2, RFC 1034
+  §5.3.3's SBELT), and `Tlds`, each TLD of `tlds.json` (schema version 1) with its type, status, name servers and
+  their glue, DS records, and IANA's purpose for a special-use name; nothing else of the file (managers, contacts,
+  dates, RDAP and WHOIS servers). Both are bundled, compiled in as IANA's files that `just roots` writes, `tlds.json`
+  cut by `jq` to the members read (2.9 MB to 0.9 MB); a fresh copy, which the caller downloads, reads into the same
+  type (`RootHints::read`, `Tlds::read`), so one reader serves both. The CLI takes the bundled copies only (`+trace`
+  starts from `RootHints::bundled`); `dedensd` is to download fresh ones. `tlds.json` is read by `serde_json`, members
+  not read ignored, an unknown status or type refused (it would change what a TLD is); a copy is refused when it
+  holds fewer TLDs than half the bundled list (cut short: the root zone does not halve between releases), a TLD
+  twice, or a server name or DS digest that is not one. Root hints are refused without a root server with an
+  address, or with a record other than an NS at the root, an A or an AAAA. The DS records of `tlds.json` are hints:
+  the file is not signed, only HTTPS vouches for it, so a validator takes a TLD's DS from the root zone's signed DS
+  `RRset`, never from the list. The list is read once into a table sorted by TLD, a lookup a binary search on the
+  name's last label, ASCII case ignored (D7): reading the bundled list takes 1.9 ms and keeps 1.6 MB (28 170
+  allocations), a lookup 33-38 ns (`benches/roots.rs`, `docs/benchmarks.md`). Rejected: generating Rust static tables
+  from the list, measured with a scratch generator: nothing to read at start and the same lookups, for a build step,
+  a second form of the list and a second type, borrowed from statics, beside the one a fresh copy reads into; 1.9 ms
+  once per process does not pay for them.

@@ -1,7 +1,7 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 126-132, 148, 149 and 173 were never
+number, and gets its line below; a number is never reused (85, 127-132, 148, 149 and 173 were never
 assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
@@ -47,7 +47,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D37 [CLI](cli.md) (amended by D76): `--format human|short|json|yaml`, each response printed when ready
 - D38 [CLI](cli.md) (amended by D177): several `@servers`: each query asked of each
 - D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
-- D40 [CLI](cli.md) (amended by D76): `+trace` walks the referrals down from the root servers
+- D40 [CLI](cli.md) (amended by D76, D126): `+trace` walks the referrals down from the root servers
 - D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185, D186): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
 - D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
 - D43 [server](server.md) (amended by D45, D46, D77, D96, D114, D124): cache stage in the pipeline, time passed in by the caller
@@ -132,6 +132,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D123 [server](server.md): UDP replies sent at once when none is in flight, else queued for one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
+- D126 [scope](scope.md): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`
 - D134 [simulation tests](simulation-tests.md) (amended by D182): the client's compio layer behind an `Io` seam, for simulation
 - D135 [server](server.md): loom checks the reload wake-up and the query flights

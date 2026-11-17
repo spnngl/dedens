@@ -93,8 +93,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   when N > 1: `sent`, `errors` (left out when 0) and `min_us`/`p50_us`/`p90_us`/`p99_us`/`max_us`, nearest
   rank over the answered round trips; the human format shows them in milliseconds on one line. Exit code 0 when
   any answer came, else the last error's.
-- D40 (amended by D76) `+trace`: each query asked from the root servers (IANA's `named.root`, bundled; `just root-hints`
-  refreshes it) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
+- D40 (amended by D76, D126) `+trace`: each query asked from the root servers (IANA's `named.root`, bundled by
+  `dedens-roots`, D126) without RD, down the referrals (RFC 1034 §4.3.2: NOERROR, no answer, no AA, NS and no SOA in
   the authority section, a SOA being NODATA per RFC 2308 §2.2), one report per response, its id numbered (D177),
   until an answer, NXDOMAIN, NODATA or an authoritative response. A referral that comes no closer, an error
   rcode or a lame response sends the hop to the next address (RFC 1034 §5.3.3), three at most, IPv4 and IPv6 in

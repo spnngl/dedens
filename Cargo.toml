@@ -47,6 +47,7 @@ dedens-net = { path = "crates/dedens-net" }
 dedens-odoh = { path = "crates/dedens-odoh" }
 dedens-plugins = { path = "crates/dedens-plugins" }
 dedens-proto = { path = "crates/dedens-proto" }
+dedens-roots = { path = "crates/dedens-roots" }
 dedens-scenario = { path = "crates/dedens-scenario" }
 dedens-server = { path = "crates/dedens-server" }
 dedens-testkit = { path = "crates/dedens-testkit" }
