@@ -778,12 +778,11 @@ pub(crate) mod tests {
         };
         assert_eq!(changed | Fetched::default(), changed);
         assert_eq!(Fetched::default() | failed, failed);
-        assert_eq!(
-            changed | failed,
-            Fetched {
-                changed: true,
-                failed: true
-            }
-        );
+        let both = Fetched {
+            changed: true,
+            failed: true,
+        };
+        assert_eq!(changed | failed, both);
+        assert_eq!(both | both, both);
     }
 }
