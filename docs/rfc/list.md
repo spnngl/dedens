@@ -53,6 +53,8 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 4509](https://datatracker.ietf.org/doc/html/rfc4509):** Use of SHA-256 in DNSSEC Delegation Signer (DS) Resource Records
 * **[RFC 5011](https://datatracker.ietf.org/doc/html/rfc5011):** Automated Updates of DNSSEC Trust Anchors
 * **[RFC 5155](https://datatracker.ietf.org/doc/html/rfc5155):** DNSSEC Hashed Authenticated Denial of Existence (NSEC3)
+* **[RFC 5280](https://datatracker.ietf.org/doc/html/rfc5280):** Internet X.509 Public Key Infrastructure Certificate and CRL Profile (the certificates signing `root-anchors.xml`, RFC 9718 §3.2)
+* **[RFC 5652](https://datatracker.ietf.org/doc/html/rfc5652):** Cryptographic Message Syntax (CMS) (the signature of `root-anchors.xml`, RFC 9718 §3.2)
 * **[RFC 5702](https://datatracker.ietf.org/doc/html/rfc5702):** Use of SHA-2 Algorithms with RSA in DNSKEY and RRSIG Resource Records for DNSSEC
 * **[RFC 6605](https://datatracker.ietf.org/doc/html/rfc6605):** Elliptic Curve Digital Signature Algorithm (DSA) for DNSSEC
 * **[RFC 6840](https://datatracker.ietf.org/doc/html/rfc6840):** Clarifications and Implementation Notes for DNSSEC
