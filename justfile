@@ -635,8 +635,11 @@ roots:
     jq '.domains |= map(select(.name | IN("arpa", "com", "fr", "onion", "xn--0zwm56d", "xn--p1ai")))' "$tmp" \
         > crates/dedens-roots/tests/data/tlds.json
 
-# Capture IANA's RDAP answers that `dedens +tld` is tested and fuzzed on (D129), as received: `<tld>.json` for
-# `https://rdap.iana.org/domain/<tld>` (RFC 9082 §3.1.3), a 404 for a special-use name and for no TLD at all.
+# Capture the RDAP answers that `dedens +tld` (D129) and `+rdap` (D130) are tested and fuzzed on, as received:
+# `<tld>.json` for `https://rdap.iana.org/domain/<tld>` (RFC 9082 §3.1.3), a 404 for a special-use name and for no
+# TLD at all; IANA's bootstrap file `dns.json` (RFC 9224 §4); `<name>.json` from its TLD's server found there, each
+# of the HTTP status `+rdap`'s tests expect: Verisign's (com), Nominet's (uk, RFC 9537 redactions by empty value),
+# Public Interest Registry's (org, a redaction by removal, a 400 for a name under a domain).
 rdap-capture:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -645,6 +648,21 @@ rdap-capture:
             -w '%{http_code}' "https://rdap.iana.org/domain/$tld")"
         case "$status" in 200|404) ;; *) echo "$tld: HTTP $status" >&2; exit 1 ;; esac
     done
+    curl -fsS --retry 3 -o testdata/rdap/dns.json https://data.iana.org/rdap/dns.json
+    while read -r name expected; do
+        base="$(jq -r --arg tld "${name##*.}" \
+            '.services[] | select(.[0] | index($tld)) | .[1][] | select(startswith("https://"))' testdata/rdap/dns.json)"
+        status="$(curl -sS --retry 3 -H 'accept: application/rdap+json' -o "testdata/rdap/$name.json" \
+            -w '%{http_code}' "${base}domain/$name")"
+        [ "$status" = "$expected" ] || { echo "$name: HTTP $status, not $expected" >&2; exit 1; }
+    done <<'EOF'
+    example.com 200
+    dedens-no-such-name.com 404
+    bbc.co.uk 200
+    www.bbc.co.uk 404
+    wikipedia.org 200
+    www.wikipedia.org 400
+    EOF
 
 # Refresh the bundled root trust anchors (D72): the `KeyDigest` entries of IANA's root-anchors.xml valid now (RFC
 # 9718 §2.2: `validFrom` passed, `validUntil` absent or ahead), as DS zone text. No XML parser in Rust: the file is
