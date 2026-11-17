@@ -442,6 +442,14 @@ mod tests {
         assert_eq!(at, "1742934302\n");
         let fetched = refresh.fetch(&client, &used, dir.path(), captured_at());
         assert!(!fetched.changed && !fetched.failed);
+        // A saved file that is not the pair's, its signing time the same, is written again.
+        fs::write(dir.path().join(ANCHORS), "<TrustAnchor/>").unwrap();
+        let fetched = refresh.fetch(&client, &used, dir.path(), captured_at());
+        assert!(fetched.changed && !fetched.failed);
+        assert_eq!(
+            fs::read(dir.path().join(ANCHORS)).unwrap(),
+            captured("root-anchors.xml")
+        );
         fs::write(dir.path().join(SIGNED_AT), "1742934303\n").unwrap();
         let fetched = refresh.fetch(&client, &used, dir.path(), captured_at());
         assert!(!fetched.changed && fetched.failed);
@@ -481,5 +489,67 @@ mod tests {
             fs::read_to_string(dir.path().join(TLDS_TAG)).unwrap(),
             "\"v1\""
         );
+    }
+
+    /// The age of the anchors in use counts from their source's last word: a failed refresh leaves it growing from
+    /// when the saved copy was written, one that succeeds sets it back.
+    #[test]
+    fn the_age_of_a_copy_counts_from_its_last_confirmation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let age = || {
+            snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .find_map(|(key, _, _, value)| match value {
+                    DebugValue::Gauge(age) if key.key().name() == AGE => Some(age.into_inner()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (xml, p7s) = (captured("root-anchors.xml"), captured("root-anchors.p7s"));
+        let up = Arc::new(AtomicBool::new(false));
+        let serving = Arc::clone(&up);
+        let addr = download::tests::serve(move |path| {
+            if !serving.load(Ordering::Relaxed) {
+                return b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec();
+            }
+            download::tests::ok("", if path.ends_with("p7s") { &p7s } else { &xml })
+        });
+        let used = Used {
+            tlds: None,
+            anchors: Some((
+                format!("http://{addr}/root-anchors.xml"),
+                format!("http://{addr}/root-anchors.p7s"),
+            )),
+        };
+        let dir = pair(Some("1742934302\n"));
+        let day = Duration::from_hours(24);
+        File::options()
+            .write(true)
+            .open(dir.path().join(SIGNED_AT))
+            .unwrap()
+            .set_modified(SystemTime::now() - day)
+            .unwrap();
+        let client = Fetcher::new();
+        let mut refresh = Refresh::default();
+        metrics::with_local_recorder(&recorder, || {
+            let fetched = refresh.fetch(&client, &used, dir.path(), captured_at());
+            assert!(fetched.failed);
+        });
+        assert!(age() >= day.as_secs_f64(), "{}", age());
+        up.store(true, Ordering::Relaxed);
+        metrics::with_local_recorder(&recorder, || {
+            let fetched = refresh.fetch(&client, &used, dir.path(), captured_at());
+            assert!(!fetched.failed);
+        });
+        assert!(age() < 60.0, "{}", age());
     }
 }

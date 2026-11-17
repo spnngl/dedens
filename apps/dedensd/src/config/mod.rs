@@ -892,11 +892,11 @@ mod tests {
         ] {
             let text = format!("{start}{roots}{stages}");
             let downloads = read(&text, env, &Pipeline::default()).unwrap().downloads;
+            let written = (tlds_url.is_some() || anchors.is_some()).then_some(dir.path());
             let expected = crate::roots::Used {
                 tlds: tlds_url,
                 anchors,
             };
-            let written = (!expected.is_empty()).then_some(dir.path());
             assert_eq!(downloads.roots, expected, "{text}");
             assert_eq!(downloads.written_dir(), written, "{text}");
         }
@@ -909,6 +909,10 @@ mod tests {
             (
                 "roots: maybe\n",
                 "`roots` is `off` or a mapping, not `maybe`",
+            ),
+            (
+                "roots: [a]\n",
+                "expected `off` or a mapping of `tlds` and `anchors`",
             ),
             (
                 "roots:\n  anchors: 'https://example.net/a.json'\n",
