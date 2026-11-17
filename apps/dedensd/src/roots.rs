@@ -394,6 +394,8 @@ mod tests {
         let mut held = Held::default();
         fs::create_dir(dir.path().join(TLDS)).unwrap();
         assert!(held.tlds(dir.path()).is_err());
+        // Not a directory: an error other than not found.
+        assert!(held.tlds(&dir.path().join(SIGNATURE)).is_err());
     }
 
     /// No saved list, or one that does not read, is the bundled one; a saved one is read once while unchanged.

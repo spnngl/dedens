@@ -1,6 +1,10 @@
 //! The `roots` settings (D128): where IANA's TLD list and the root's trust anchors are fetched from, or `off`.
 
-use serde::Deserialize;
+use std::fmt;
+
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 use super::sources::Url;
 
@@ -11,8 +15,7 @@ const TLDS: &str = "https://data.iana.org/TLD/v1/tlds.json";
 const ANCHORS: &str = "https://data.iana.org/root-anchors/root-anchors.xml";
 
 /// The `roots` settings, as written: `off`, or the URLs of the files, each IANA's unless set.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "RootsText")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RootsFile {
     /// The bundled copies only, nothing fetched.
     Off,
@@ -30,32 +33,49 @@ pub(crate) struct RootUrls {
     anchors: Url,
 }
 
-/// `roots` as YAML gives it: `off` reads as a boolean unless quoted.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum RootsText {
-    Flag(bool),
-    Name(String),
-    Urls(RootUrls),
+impl<'de> Deserialize<'de> for RootsFile {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(RootsVisitor)
+    }
 }
 
-impl TryFrom<RootsText> for RootsFile {
-    type Error = String;
+/// `roots` as YAML gives it: `off` may read as a boolean, the URLs as a mapping read with its own errors.
+struct RootsVisitor;
 
-    fn try_from(text: RootsText) -> Result<Self, String> {
-        match text {
-            RootsText::Flag(false) => Ok(Self::Off),
-            RootsText::Name(name) if name == "off" => Ok(Self::Off),
-            RootsText::Flag(true) => Err("`roots` is `off` or a mapping, not `true`".to_owned()),
-            RootsText::Name(name) => Err(format!("`roots` is `off` or a mapping, not `{name}`")),
-            RootsText::Urls(urls) if urls.anchors.as_str().strip_suffix(".xml").is_none() => {
-                Err(format!(
-                    "`roots`: `anchors` is the URL of an `.xml` file, its signature beside it as `.p7s`, not `{}`",
-                    crate::download::redacted(urls.anchors.as_str())
-                ))
-            }
-            RootsText::Urls(urls) => Ok(Self::Fetched(urls)),
+impl<'de> Visitor<'de> for RootsVisitor {
+    type Value = RootsFile;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("`off` or a mapping of `tlds` and `anchors`")
+    }
+
+    fn visit_bool<E: de::Error>(self, on: bool) -> Result<RootsFile, E> {
+        if on {
+            Err(E::custom("`roots` is `off` or a mapping, not `true`"))
+        } else {
+            Ok(RootsFile::Off)
         }
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<RootsFile, E> {
+        if text == "off" {
+            Ok(RootsFile::Off)
+        } else {
+            Err(E::custom(format!(
+                "`roots` is `off` or a mapping, not `{text}`"
+            )))
+        }
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<RootsFile, A::Error> {
+        let urls = RootUrls::deserialize(MapAccessDeserializer::new(map))?;
+        if urls.anchors.as_str().strip_suffix(".xml").is_none() {
+            return Err(de::Error::custom(format!(
+                "`roots`: `anchors` is the URL of an `.xml` file, its signature beside it as `.p7s`, not `{}`",
+                crate::download::redacted(urls.anchors.as_str())
+            )));
+        }
+        Ok(RootsFile::Fetched(urls))
     }
 }
 

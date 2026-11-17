@@ -117,12 +117,24 @@ pub(crate) enum Outcome {
 type Saved = (PathBuf, Names);
 
 /// What [`Fetcher::fetch`] found in all its lists.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Fetched {
     /// A saved copy was replaced by a new version.
     pub(crate) changed: bool,
     /// A download failed, its previous copy kept.
     pub(crate) failed: bool,
+}
+
+/// What two fetches found together: a change in either, a failure in either.
+impl std::ops::BitOr for Fetched {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            changed: self.changed | other.changed,
+            failed: self.failed | other.failed,
+        }
+    }
 }
 
 impl Fetcher {
@@ -750,5 +762,28 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(fs::read_to_string(&copy).unwrap(), "b.example\n");
         assert!(!tag(&copy).exists(), "the tag of the previous copy is gone");
+    }
+
+    /// A change or a failure in either of two fetches is one of both: the reload thread joins the lists' and the
+    /// root files' (D128).
+    #[test]
+    fn fetches_join_their_changes_and_failures() {
+        let changed = Fetched {
+            changed: true,
+            failed: false,
+        };
+        let failed = Fetched {
+            changed: false,
+            failed: true,
+        };
+        assert_eq!(changed | Fetched::default(), changed);
+        assert_eq!(Fetched::default() | failed, failed);
+        assert_eq!(
+            changed | failed,
+            Fetched {
+                changed: true,
+                failed: true
+            }
+        );
     }
 }

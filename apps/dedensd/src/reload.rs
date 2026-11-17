@@ -214,16 +214,13 @@ pub(crate) fn control(
                     Duration::MAX
                 } else {
                     let fetched = guarded("list download", || {
-                        let mut fetched = client.fetch(&downloads.urls, &downloads.dir, &mut store);
-                        let root = refresh.fetch(
-                            &client,
-                            &downloads.roots,
-                            &downloads.dir,
-                            unix_seconds(),
-                        );
-                        fetched.changed |= root.changed;
-                        fetched.failed |= root.failed;
-                        fetched
+                        client.fetch(&downloads.urls, &downloads.dir, &mut store)
+                            | refresh.fetch(
+                                &client,
+                                &downloads.roots,
+                                &downloads.dir,
+                                unix_seconds(),
+                            )
                     })
                     // A panic may have come after a list was saved: reload, which costs little when nothing changed.
                     .unwrap_or(Fetched {

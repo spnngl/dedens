@@ -846,4 +846,85 @@ mod tests {
             assert!(read(text).is_err(), "{text}");
         }
     }
+
+    /// D128: only the root files a stage uses are fetched, and only then is the downloads directory written.
+    #[test]
+    fn roots_fetch_what_the_stages_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = format!(
+            "listen: ['127.0.0.1:53']\ndownloads:\n  dir: '{}'\n",
+            dir.path().display()
+        );
+        let tlds = "pipeline: [tlds, up]\nstages:\n  tlds:\n    type: tlds\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        let validating = "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n";
+        let plain =
+            "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        let iana = "https://data.iana.org";
+        let ours = "roots:\n  tlds: 'https://example.net/t.json'\n  anchors: 'https://example.net/a.xml'\n";
+        let pair = |xml: String, p7s: String| (None, Some((xml, p7s)));
+        for (roots, stages, (tlds_url, anchors)) in [
+            ("", tlds, (Some(format!("{iana}/TLD/v1/tlds.json")), None)),
+            (
+                "",
+                validating,
+                pair(
+                    format!("{iana}/root-anchors/root-anchors.xml"),
+                    format!("{iana}/root-anchors/root-anchors.p7s"),
+                ),
+            ),
+            ("", plain, (None, None)),
+            ("roots: off\n", tlds, (None, None)),
+            ("roots: false\n", validating, (None, None)),
+            ("roots: 'off'\n", validating, (None, None)),
+            (
+                ours,
+                validating,
+                pair(
+                    "https://example.net/a.xml".to_owned(),
+                    "https://example.net/a.p7s".to_owned(),
+                ),
+            ),
+            (
+                ours,
+                tlds,
+                (Some("https://example.net/t.json".to_owned()), None),
+            ),
+        ] {
+            let text = format!("{start}{roots}{stages}");
+            let downloads = read(&text, env, &Pipeline::default()).unwrap().downloads;
+            let expected = crate::roots::Used {
+                tlds: tlds_url,
+                anchors,
+            };
+            let written = (!expected.is_empty()).then_some(dir.path());
+            assert_eq!(downloads.roots, expected, "{text}");
+            assert_eq!(downloads.written_dir(), written, "{text}");
+        }
+    }
+
+    #[test]
+    fn roots_mistakes_are_errors() {
+        for (roots, expected) in [
+            ("roots: true\n", "`roots` is `off` or a mapping, not `true`"),
+            (
+                "roots: maybe\n",
+                "`roots` is `off` or a mapping, not `maybe`",
+            ),
+            (
+                "roots:\n  anchors: 'https://example.net/a.json'\n",
+                "`anchors` is the URL of an `.xml` file",
+            ),
+            (
+                "roots:\n  tlds: 'ftp://example.net/t.json'\n",
+                "is not an http:// or https:// URL at line 2",
+            ),
+            (
+                "roots:\n  hints: 'https://example.net/h'\n",
+                "unknown field `hints`",
+            ),
+        ] {
+            let message = error(&format!("{roots}{MINIMAL}"));
+            assert!(message.contains(expected), "{roots}: {message}");
+        }
+    }
 }

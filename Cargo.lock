@@ -1061,6 +1061,7 @@ dependencies = [
  "dedens-server",
  "dedens-testkit",
  "metrics",
+ "metrics-util",
  "serde",
  "thiserror",
 ]
