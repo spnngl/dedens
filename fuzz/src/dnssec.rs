@@ -298,22 +298,24 @@ pub fn parse_root_anchors(data: &[u8]) {
         .trim()
         .parse()
         .expect("Unix time in seconds");
-    if let Ok(anchors) = TrustAnchors::from_xml(data, now)
+    if let Ok(anchors) = TrustAnchors::from_unverified_xml(data, now)
         && let Some((_, anchor)) = anchors.closest(&Name::root())
     {
         assert!(!anchor.ds().is_empty(), "a root anchor from XML without DS");
     }
-    let expected = TrustAnchors::from_xml(ROOT_ANCHORS_XML, now).expect("the captured XML");
-    if let Ok(anchors) = TrustAnchors::verified(ROOT_ANCHORS_XML, data, now) {
+    let expected =
+        TrustAnchors::from_unverified_xml(ROOT_ANCHORS_XML, now).expect("the captured XML");
+    if let Ok(signed) = TrustAnchors::verified(ROOT_ANCHORS_XML, data, now, None) {
         assert_eq!(
-            anchors, expected,
+            signed.anchors, expected,
             "a signature that holds changed the anchors"
         );
     }
     if let Ok(ca) = std::str::from_utf8(data)
-        && let Ok(anchors) = TrustAnchors::verified_by(ROOT_ANCHORS_XML, ROOT_ANCHORS_P7S, ca, now)
+        && let Ok(signed) =
+            TrustAnchors::verified_by(ROOT_ANCHORS_XML, ROOT_ANCHORS_P7S, ca, now, None)
     {
-        assert_eq!(anchors, expected, "a CA bundle changed the anchors");
+        assert_eq!(signed.anchors, expected, "a CA bundle changed the anchors");
     }
 }
 

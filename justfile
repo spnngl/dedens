@@ -623,8 +623,8 @@ rfc-archive:
 # the crate reads (the order of the domains kept, the managers, contacts and dates dropped); the test copy, a few
 # entries in full, from the same download. For `dedens-dnssec` (D72, D127): `root-anchors.xml` and its `.p7s`, checked
 # against ICANN's CA bundled in `src/icannbundle.pem` (RFC 9718 §3.2), then the DS records of its `KeyDigest` entries
-# valid now in `src/root.ds`; the pair goes to `testdata/dnssec` with the
-# time of the run. A changed CA bundle stops the recipe before it writes anything: it is the trust root, replaced by
+# valid now in `src/root.ds` and its signing time in `src/root.signed_at`, the earliest `verified` accepts; the pair
+# goes to `testdata/dnssec` with the time of the run. A changed CA bundle stops the recipe before it writes anything: it is the trust root, replaced by
 # hand once checked out of band (D127).
 roots:
     #!/usr/bin/env bash
@@ -648,7 +648,7 @@ roots:
         echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's signed root-anchors.xml valid on $(date -u +%Y-%m-%d)."
         echo "; Source: $anchors/root-anchors.xml. Written by \`just roots\`, never by hand."
         cargo run -q -p dedens-dnssec --features fetch-anchors --example root_anchors -- \
-            "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s"
+            "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s" "$tmp/root.signed_at"
     } > "$tmp/root.ds"
     cp "$tmp/named.root" "$src/named.root"
     jq -c '{meta, domains: [.domains[] | {name, status, type, nameservers, ds_records}
@@ -657,8 +657,10 @@ roots:
         > crates/dedens-roots/tests/data/tlds.json
     cp "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s" testdata/dnssec/
     echo "$now" > testdata/dnssec/root-anchors.captured_at
-    mv "$tmp/root.ds" "$dnssec/root.ds"
-    chmod 644 "$dnssec/root.ds"
+    for file in root.ds root.signed_at; do
+        mv "$tmp/$file" "$dnssec/$file"
+        chmod 644 "$dnssec/$file"
+    done
     cat "$dnssec/root.ds"
 
 # Capture the RDAP answers that `dedens +tld` (D129) and `+rdap` (D130) are tested and fuzzed on, as received:

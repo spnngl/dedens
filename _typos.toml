@@ -27,6 +27,8 @@ extend-ignore-re = [
   'sdns://[A-Za-z0-9_-]+',
   '\("fo", "(Zm8=|cpng)"\)',
   '(?s)//\s*spellchecker:off.*?//\s*spellchecker:on',
+  # SHA-256 certificate fingerprints, colon-separated hex (D127).
+  '\b[0-9A-F]{2}(:[0-9A-F]{2}){31}\b',
 ]
 
 [default.extend-identifiers]

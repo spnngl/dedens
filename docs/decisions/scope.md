@@ -261,21 +261,40 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
 - D127 (amends D72) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
   is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
-  signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem` (ICANN
-  Root CA, and Root CA v2 valid to 2045). Behind the feature `fetch-anchors` of `dedens-dnssec`:
-  `TrustAnchors::verified(xml, p7s, now)`, `verified_by(.., ca_pem, ..)` for an operator's CA (as
-  `unbound-anchor -c`), and `from_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The
-  signature holds as `unbound-anchor` checks it: a detached `SignedData` of `id-data`, each `SignerInfo` named by
-  issuer and serial number, its signed attributes present (content type, message digest of the XML) and signed
-  with RSA PKCS #1 v1.5 and SHA-2; the signer's certificate, in the `SignedData`, has the e-mail address
-  `dnssec@iana.org` (`P7SIGNER`) and, if it has key usage, digital signature; a bundled CA of its issuer's name
-  signed it; both certificates valid at `now`. No intermediate CA and no key-identifier signer: ICANN's chain has
-  neither, so no test could show them right. The XML reader reads that schema only (elements, attributes, text,
-  comments), refuses a DOCTYPE, CDATA and entities, takes a time zone of `Z` or `±hh:mm`, keeps the entries
-  valid at `now` (§4.1.1) and drops one whose `PublicKey` and `Flags` do not match its digest or key tag
-  (§4.1.2); the awk of the `root-anchors` recipe is gone, and the recipe folded into `just roots` (D126), which
-  runs the crate's example `root_anchors` over the downloaded pair, captures it to `testdata/dnssec/` and stops
-  when the CA bundle changed (a trust root is replaced by hand, checked out of band). Tests `tests/signed_anchors.rs`, fuzz target `parse_root_anchors`.
+  signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem`.
+  That bundle, ICANN Root CA (to 2029-12-18) and Root CA v2 (2025-03-20 to 2045-03-20), was checked out of band:
+  its base64 is line for line unbound's embedded `ICANN_UPDATE_CA` (`unbound-anchor.c`), SHA-256 fingerprints
+  `AE:E8:99:06:D7:CC:60:C5:E1:51:F3:BB:92:3A:BF:8A:1B:28:DC:85:5D:5E:21:27:CB:52:4E:AD:4A:AD:60:3D` and
+  `D8:EE:E1:B7:42:08:B8:16:3E:1C:2B:99:0F:82:DD:9F:75:22:36:BA:13:0C:92:93:9E:77:28:EA:46:4E:BF:C3`. ICANN's
+  signer chains to ICANN Root CA: after 2029-12-18, until ICANN signs from v2, every pair is refused and the
+  bundled `root.ds` is what stays. Behind the feature `fetch-anchors` of `dedens-dnssec`:
+  `TrustAnchors::verified(xml, p7s, now, last_signed_at)`, `verified_by(.., ca_pem, ..)` for an operator's CA
+  (as `unbound-anchor -c`), both giving `SignedAnchors` (anchors and signing time), and
+  `from_unverified_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The signature holds as
+  `unbound-anchor` checks it, and more: a detached `SignedData` of `id-data`, each `SignerInfo` named by issuer and
+  serial number, its digest one the `SignedData` lists, its signed attributes present (content type, message
+  digest of the XML, signing time, each once with one value) and signed with RSA PKCS #1 v1.5 (RSA-PSS refused)
+  and SHA-2; the signer's certificate, in the `SignedData`, has the e-mail address `dnssec@iana.org`
+  (`P7SIGNER`), key usage with digital signature (as unbound: without key usage the signer is refused), extended
+  key usage with e-mail protection if any, no CA basic constraint, no critical extension but those three, the same
+  signature algorithm outside and inside; a bundled CA of its issuer's name signed it; both certificates valid at
+  `now`. The CA is trusted as bundled: neither its basic constraints nor its self-signature are checked. No
+  intermediate CA and no key-identifier signer: ICANN's chain has neither, so no test could show them right. The
+  signed attributes are verified as re-encoded: `der` decodes DER only, so they are the bytes received; a CA
+  bundle with text before a certificate is refused. Rollback: a pair signed before `last_signed_at`, the
+  `signed_at` the caller last accepted (`dedensd` is to keep it), or before the pair `root.ds` was read from
+  (`src/root.signed_at`, written by `just roots`), is refused, so an attacker on the path cannot serve an older
+  pair listing a since-retired key. Residual: a stateless caller (the CLI, the recipe) only has the bundled floor,
+  and any pair ICANN signed after it and the signer's certificate valid now is accepted; the signing time is
+  ICANN's claim, not a timestamp. Sizes are bounded before parsing, the XML to 64 KiB and the `.p7s` to 16 KiB (IANA's
+  are 1 861 and 2 523 bytes): `der` sorts each SET OF it decodes by insertion, quadratic (3.1 s for 128 KiB). The
+  XML reader reads that schema only (elements, attributes, text, comments), refuses a DOCTYPE, CDATA and entities,
+  and a `Zone` other than the root; takes a time zone of `Z` or `±hh:mm`; keeps the entries valid at `now`
+  (§4.1.1); drops one whose `PublicKey` and `Flags` do not match its digest or key tag (§4.1.2), and one whose
+  `Flags` are not a zone key's or are revoked (RFC 4034 §2.1.1, RFC 5011 §2.1). The awk of the `root-anchors`
+  recipe is gone, and the recipe folded into `just roots` (D126), which runs the crate's example `root_anchors`
+  over the downloaded pair, captures it to `testdata/dnssec/` and stops when the CA bundle changed (a trust root
+  is replaced by hand, checked out of band). Tests `tests/signed_anchors.rs`, fuzz target `parse_root_anchors`.
   Parsing is RustCrypto's `cms` 0.2 and `x509-cert` 0.2 (with `der`, `der_derive`, `spki`, `const-oid`,
   `flagset`, `base64ct`, `pem-rfc7468`: 9 crates new to the lock, Apache-2.0 OR MIT but `flagset`'s Apache-2.0,
   no duplicate; `cargo deny` passes), the cryptography `ring`'s, already linked; behind the feature, so
@@ -284,7 +303,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `x509-parser` (in the lock through rcgen, but no CMS, and `nom`, `time`, `oid-registry`), the `rsa` crate
   (`ring` verifies RSA), OpenSSL (a C build), an XML crate (one schema of seven elements), x509-cert's
   `load_pem_chain` (it panics on an empty bundle), checking the CMS against the CA fetched beside it (the
-  same-site objection of D72 again). Anchor rollover (RFC 5011) is the recursive resolver's (TODECIDE).
+  same-site objection of D72 again), verifying the received signed-attribute bytes by walking the DER by hand
+  (a second parser of outside data, for bytes `der` already gives back). Anchor rollover (RFC 5011) is the
+  recursive resolver's (TODECIDE).
 - D73 (amends D71) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
   and denial are 05 and 06. `RrSet::group` builds `RRset`s from a section (owner, class, type; RFC 2181 §5.2:
   TTL the minimum); `Signature` and `Key` borrow the RRSIG and DNSKEY records of an `RRset`, a DNSKEY whose
