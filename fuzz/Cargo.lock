@@ -827,7 +827,9 @@ name = "dedens-plugins"
 version = "0.1.0"
 dependencies = [
  "dedens-proto",
+ "dedens-roots",
  "dedens-server",
+ "metrics",
  "serde",
  "thiserror",
 ]
@@ -896,6 +898,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-roots",
  "dedens-server",
  "flume",
  "futures-util",

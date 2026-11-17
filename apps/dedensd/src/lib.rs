@@ -19,6 +19,7 @@ mod log;
 mod odoh;
 mod privileges;
 mod reload;
+mod roots;
 mod serve;
 mod sync;
 

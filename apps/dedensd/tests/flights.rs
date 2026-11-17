@@ -16,7 +16,7 @@ const CLIENTS: u16 = 8;
 /// A forwarder with no cache stage, validating: every query reaches the validator.
 fn validating(listen: &str, upstream: &str) -> String {
     format!(
-        "listen: ['{listen}']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 5000\n    tries: 1\n    dnssec: validate\n"
+        "listen: ['{listen}']\nroots: off\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 5000\n    tries: 1\n    dnssec: validate\n"
     )
 }
 

@@ -44,8 +44,13 @@
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
-//! pipeline: [hosts, ads, cache, upstream]
+//! roots:                            # IANA's files, kept in `downloads.dir`, fetched every `refresh_minutes` (D128); `off`: the bundled ones
+//!   tlds: https://data.iana.org/TLD/v1/tlds.json                     # for a tlds stage; IANA's by default
+//!   anchors: https://data.iana.org/root-anchors/root-anchors.xml     # signature beside it, .p7s; for dnssec without trust_anchors
+//! pipeline: [hosts, tlds, ads, cache, upstream]
 //! stages:
+//!   tlds:
+//!     type: tlds                     # special-use TLDs per their RFCs, NXDOMAIN for TLDs not in the root zone (D128)
 //!   ads:
 //!     type: blocklist
 //!     file: /etc/dedensd/blocklist.hosts
@@ -88,6 +93,7 @@ mod env;
 mod keys;
 mod limits;
 mod listen;
+mod roots;
 #[cfg(any(feature = "odoh", feature = "dnscrypt"))]
 mod secret;
 mod sources;
@@ -101,7 +107,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, ensure};
 use dedens_net::tls::{Presented, Trust};
-use dedens_proto::Question;
+use dedens_plugins::TopLevel;
+use dedens_proto::{Question, Ttl};
 use dedens_server::{Allowance, Pipeline, Stage};
 use serde::Deserialize;
 
@@ -120,6 +127,7 @@ pub(crate) use self::listen::Listen;
 #[cfg(feature = "dnscrypt")]
 pub(crate) use self::listen::address;
 use self::listen::{TlsFile, presented};
+use self::roots::RootsFile;
 #[cfg(all(test, feature = "odoh"))]
 pub(crate) use self::secret::KEY_FILE_MAX;
 #[cfg(any(feature = "odoh", feature = "dnscrypt"))]
@@ -128,7 +136,7 @@ pub(crate) use self::sources::Downloads;
 use self::sources::{
     CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
 };
-use self::upstream::{Validation, forward};
+use self::upstream::{Dnssec, Validation, forward};
 use crate::lists::Store;
 use crate::privileges::{Account, Identity};
 
@@ -154,6 +162,9 @@ struct File {
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
+    /// Where IANA's TLD list and the root's trust anchors are fetched from, kept with the downloads, or `off` (D128).
+    #[serde(default)]
+    roots: RootsFile,
     /// A PEM file of the certificate authorities upstream servers over TLS and QUIC are checked against,
     /// instead of the system's (D65).
     upstream_ca: Option<PathBuf>,
@@ -170,7 +181,7 @@ struct File {
 }
 
 /// Seconds since the Unix epoch, 0 with a clock before it.
-fn unix_seconds() -> u64 {
+pub(crate) fn unix_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
         |error| {
             // Time 0 fails closed for signatures: none is valid yet. Cookies stamped 0 stay good; they prove
@@ -213,10 +224,11 @@ pub(crate) struct Config {
 ///
 /// A variable without a value, YAML that does not fit the model (an unknown field, a duplicate name), a stage
 /// listed but not defined, defined but not listed, listed twice or after a forward stage, which never passes a
-/// query on; a second cache stage, which would never be filled; a hosts or blocklist stage after a cache stage,
+/// query on; a second cache stage, which would never be filled; a hosts, blocklist or tlds stage after a cache stage,
 /// whose answers a reload keeps; `refresh_minutes` above a year; `threads` above 1024, or above 1 off Linux; `timeout_ms`
 /// above 30 s or `tries` above 5 on a forward stage; a TLS key file others can access ([`keys::guard_key`]); a variable
-/// that is neither plain nor alone as a value (`env::written`); a saved list that cannot be read (`sources::lists`); settings
+/// that is neither plain nor alone as a value (`env::written`); a saved list or root file that cannot be read
+/// (`sources::lists`, `crate::roots`); settings
 /// a stage refuses; an `access` network that is malformed or has bits set past its length, an unknown `action`;
 /// `rrl` settings out of bounds, a cookie `secret` that is not 32 hexadecimal digits, `accept` without a `secret`;
 /// a `group` without a `user`, a `user` off Linux (D122).
@@ -242,7 +254,9 @@ pub(crate) fn read_without_files(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
 ) -> anyhow::Result<()> {
-    let file = parse(text, env)?;
+    let mut file = parse(text, env)?;
+    // The saved root files are files too.
+    file.roots = RootsFile::Off;
     if !file.names_files() {
         build(file, &Pipeline::default(), &mut Store::default())?;
     }
@@ -304,7 +318,7 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         rrl: file.rrl,
         cookies: file.cookies,
     };
-    let mut downloads = Downloads::new(file.downloads)?;
+    let mut downloads = Downloads::new(file.downloads, file.roots)?;
     let allowance = Allowance::serving(NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN));
     let (mut built, warmed) = stages(
         &file.pipeline,
@@ -404,6 +418,12 @@ fn stages(
                 client_share,
             } => {
                 let validation = Validation {
+                    // Read before `dnssec` and `trust_anchors` move in.
+                    root: if matches!(dnssec, Dnssec::Validate) && trust_anchors.is_none() {
+                        downloads.root_anchors()?
+                    } else {
+                        None
+                    },
                     dnssec,
                     trust_anchors,
                     insecure,
@@ -445,6 +465,10 @@ fn stages(
                     (&mut *downloads, store),
                 )?
             }
+            StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
+                downloads.tlds(store)?,
+                Ttl::from_wire(PLUGIN_TTL),
+            ))),
         });
     }
     if let Some(name) = defined.keys().next() {
@@ -476,7 +500,7 @@ const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
 /// # Errors
 ///
 /// Any stage after a forward stage, which answers every query; a second cache stage, which would never be
-/// filled; a hosts or blocklist stage after a cache stage, whose answers a reload keeps (D64).
+/// filled; a hosts, blocklist or tlds stage after a cache stage, whose answers a reload keeps (D64).
 fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> {
     if let Some(Stage::Forward(_)) = built.last() {
         bail!("stage `{name}` comes after a forward stage, which answers every query");
@@ -486,9 +510,11 @@ fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> 
         StageFile::Cache(_) if cached => {
             bail!("stage `{name}` is a second cache stage, which upstream answers would never fill")
         }
-        StageFile::Hosts { .. } | StageFile::Blocklist { .. } if cached => bail!(
-            "stage `{name}` comes after a cache stage, whose answers, kept across reloads, would bypass it"
-        ),
+        StageFile::Hosts { .. } | StageFile::Blocklist { .. } | StageFile::Tlds {} if cached => {
+            bail!(
+                "stage `{name}` comes after a cache stage, whose answers, kept across reloads, would bypass it"
+            )
+        }
         _ => Ok(()),
     }
 }

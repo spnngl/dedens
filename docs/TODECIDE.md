@@ -15,6 +15,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage. TelltaleDNS also
   answers any type from local records and zone files (`crates/telltale-policy/src/local.rs`): a `zone` plugin
   reading a file with `ZoneReader` would give both; default: with the authoritative phase's zone loading.
+- Private names past the `tlds` stage: RFC 6761 §6.2 asks caching servers for an option to resolve `test` names
+  upstream, and a network may delegate an `internal` zone to its own servers; the stage answers them NXDOMAIN
+  (`internal` with DO excepted), so only a stage before it (hosts) or no `tlds` stage reaches them
+  (D128). Default: a `pass:` list of names on the `tlds` stage, sent on as the absent TLDs with DO are.
 - A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
   it needs a probe of the endpoint (a watchdog sending itself an Initial) or a compio change. Default: a compio

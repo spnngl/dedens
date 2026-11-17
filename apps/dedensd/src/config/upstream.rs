@@ -251,7 +251,11 @@ pub(super) fn forward(
             "stage `{name}`: `trust_anchors`, `insecure` and `client_share` need `dnssec: validate`"
         ),
         Dnssec::Validate => {
-            let validating = validating(validation.trust_anchors.as_deref(), validation.insecure)?;
+            let validating = validating(
+                validation.trust_anchors.as_deref(),
+                validation.root,
+                validation.insecure,
+            )?;
             let kept = previous.stages().iter().find_map(|stage| match stage {
                 Stage::Forward(old) => old.validation().filter(|old| old.tag() == validating.tag()),
                 _ => None,
@@ -308,6 +312,9 @@ impl TryFrom<String> for Insecure {
 pub(super) struct Validation {
     pub(super) dnssec: Dnssec,
     pub(super) trust_anchors: Option<PathBuf>,
+    /// The root's anchors from IANA's signed copy, and when it was signed, unless they are the bundled ones (D128):
+    /// those validated by without `trust_anchors`.
+    pub(super) root: Option<(TrustAnchors, u64)>,
     pub(super) insecure: Vec<Insecure>,
     pub(super) client_share: Option<BudgetFile>,
     /// What validation may cost, set by the serving threads (D77).
@@ -345,17 +352,27 @@ impl TryFrom<DnssecText> for Dnssec {
     }
 }
 
-/// The validator of a forward stage: the anchors of `trust_anchors`, the root's unless set, and a negative anchor
-/// for each name of `insecure` (RFC 7646), checked against the clock of the system (D77).
+/// The validator of a forward stage: the anchors of `trust_anchors`, the root's unless set, `root` or the bundled
+/// ones, and a negative anchor for each name of `insecure` (RFC 7646), checked against the clock of the system (D77).
+/// Other anchors make another tag: a reload starts a fresh validator, and no key proven under the old anchors stays
+/// trusted (D128).
 ///
 /// # Errors
 ///
 /// A `trust_anchors` file that does not read or holds no anchor.
-fn validating(trust_anchors: Option<&Path>, insecure: Vec<Insecure>) -> anyhow::Result<Validating> {
+fn validating(
+    trust_anchors: Option<&Path>,
+    root: Option<(TrustAnchors, u64)>,
+    insecure: Vec<Insecure>,
+) -> anyhow::Result<Validating> {
     let mut tag = String::from("validate");
-    let mut anchors = match trust_anchors {
-        None => TrustAnchors::root(),
-        Some(path) => {
+    let mut anchors = match (trust_anchors, root) {
+        (None, None) => TrustAnchors::root(),
+        (None, Some((anchors, signed_at))) => {
+            tag = format!("{tag}\nroot anchors signed at {signed_at}");
+            anchors
+        }
+        (Some(path), _) => {
             let text = fs::read_to_string(path)
                 .with_context(|| format!("`trust_anchors`: cannot read {}", path.display()))?;
             tag.push_str("\nanchors ");
@@ -565,6 +582,23 @@ mod tests {
         ] {
             assert!(server(refused).is_err(), "{refused}");
         }
+    }
+
+    /// D128: root anchors from a fresh signed copy that are not the bundled ones make another tag, as does each
+    /// signing: a reload starts a fresh validator, and no key proven under the old anchors stays trusted.
+    #[test]
+    fn fresh_root_anchors_start_a_fresh_validator() {
+        // KSK-2010's DS, valid until 2019-01-11 in IANA's `root-anchors.xml` (testdata/dnssec).
+        let ksk_2010 = TrustAnchors::read(
+            ". IN DS 19036 8 2 49AAC11D7B6F6446702E54A1607371607A1A41855200FD2CE1CDDE32F24E8FB5",
+        )
+        .unwrap();
+        let tag = |root: Option<(TrustAnchors, u64)>| {
+            validating(None, root, Vec::new()).unwrap().tag().to_owned()
+        };
+        let bundled = tag(None);
+        assert_ne!(tag(Some((ksk_2010.clone(), 1))), bundled);
+        assert_ne!(tag(Some((ksk_2010.clone(), 1))), tag(Some((ksk_2010, 2))));
     }
 
     /// D117: a client network's share of the validation allowance is the default's unless `client_share` says; a

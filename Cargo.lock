@@ -1178,6 +1178,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-roots",
  "dedens-scenario",
  "dedens-server",
  "dedens-testkit",

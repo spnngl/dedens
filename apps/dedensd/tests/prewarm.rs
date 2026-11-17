@@ -145,7 +145,7 @@ fn a_question_the_allowance_sheds_is_asked_again() {
     let at = upstream.addr.to_string();
     let _server = Server::configured(|listen| {
         format!(
-            "listen: ['{listen}']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    prewarm:\n      entries: [nlnetlabs.nl]\n      types: [A]\n  up:\n    type: forward\n    servers: ['{at}']\n    timeout_ms: 1000\n    tries: 1\n    dnssec: validate\n    client_share: {{rate: 1, burst: 1}}\n"
+            "listen: ['{listen}']\nroots: off\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    prewarm:\n      entries: [nlnetlabs.nl]\n      types: [A]\n  up:\n    type: forward\n    servers: ['{at}']\n    timeout_ms: 1000\n    tries: 1\n    dnssec: validate\n    client_share: {{rate: 1, burst: 1}}\n"
         )
     });
     until("both questions asked", || {

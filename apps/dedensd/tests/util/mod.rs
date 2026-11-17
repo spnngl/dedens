@@ -1,5 +1,5 @@
-//! Shared by the tests running `dedensd`: a running server with its configuration file (`server`), and DNS over
-//! UDP and TCP with the standard library.
+//! Shared by the tests running `dedensd`: a running server with its configuration file (`server`), DNS over
+//! UDP and TCP with the standard library, and a loopback HTTP server of files (`http`).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -9,10 +9,12 @@ use std::time::Duration;
 use dedens_net::tcp::frame;
 use dedens_proto::Message;
 
+mod http;
 mod server;
 
 /// A reply decoded as a capture is: without a broken rule.
 pub(crate) use dedens_testkit::message as decode;
+pub(crate) use http::Files;
 pub(crate) use server::{Server, config, write_config, write_key};
 
 /// The query, under `id`, that the captured response `case` answers, as sent.

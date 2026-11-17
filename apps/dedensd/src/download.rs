@@ -88,7 +88,7 @@ fn redact_urls(message: &str) -> String {
 }
 
 /// `error` as logged: with each URL it quotes redacted.
-fn failure(error: &anyhow::Error) -> String {
+pub(crate) fn failure(error: &anyhow::Error) -> String {
     redact_urls(&format!("{error:#}"))
 }
 
@@ -102,9 +102,9 @@ pub(crate) struct Fetcher {
     max_len: u64,
 }
 
-/// What the download of one list found.
+/// What the download of one list, or root file, found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// The saved copy was replaced by a new version.
     Changed,
     /// The saved copy is the latest version.
@@ -244,24 +244,44 @@ impl Fetcher {
     /// reads as a list.
     fn one(&self, url: &str, dir: &Path) -> anyhow::Result<Option<(Read, Names)>> {
         let copy = copy(dir, url);
-        let tag = tag(&copy);
-        // A redirect never takes an `https://` list to `http://`, where anyone on the path could change it.
+        let Some((body, version)) = self.get(url, saved_tag(&copy).as_deref(), self.max_len)?
+        else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(body)?;
+        // Block or allow, a list reads the same way; one-label names are for the lists that take them (D118).
+        let names = Names::downloaded(&text);
+        let read = names.check(Tlds::Allow)?;
+        fs::create_dir_all(dir).with_context(|| format!("creating `{}`", dir.display()))?;
+        save(&copy, &text, version.as_deref())?;
+        Ok(Some((read, names)))
+    }
+
+    /// The body at `url`, at most `limit` bytes, and its version tag; `None` when `version`, the tag of the copy
+    /// held, is still the latest.
+    ///
+    /// # Errors
+    ///
+    /// The request failing, a status but 200 (or 304 to a conditional request), a body over `limit`.
+    pub(crate) fn get(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        limit: u64,
+    ) -> anyhow::Result<Option<(Vec<u8>, Option<String>)>> {
+        // A redirect never takes an `https://` file to `http://`, where anyone on the path could change it.
         let mut request = self
             .agent
             .get(url)
             .config()
             .https_only(url.starts_with("https://"))
             .build();
-        let saved = copy
-            .exists()
-            .then(|| fs::read_to_string(&tag).ok())
-            .flatten();
-        if let Some(version) = &saved {
+        if let Some(version) = version {
             request = request.header("If-None-Match", version.trim());
         }
         let mut response = request.call()?;
         // RFC 9110 §15.4.5: a 304 answers a conditional request only; to another, no copy is the latest one.
-        if saved.is_some() && response.status() == 304 {
+        if version.is_some() && response.status() == 304 {
             return Ok(None);
         }
         ensure!(response.status() == 200, "status {}", response.status());
@@ -270,18 +290,20 @@ impl Fetcher {
             .get("etag")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let text = response
+        let body = response
             .body_mut()
             .with_config()
-            .limit(self.max_len)
-            .read_to_string()?;
-        // Block or allow, a list reads the same way; one-label names are for the lists that take them (D118).
-        let names = Names::downloaded(&text);
-        let read = names.check(Tlds::Allow)?;
-        fs::create_dir_all(dir).with_context(|| format!("creating `{}`", dir.display()))?;
-        save(&copy, &text, version.as_deref())?;
-        Ok(Some((read, names)))
+            .limit(limit)
+            .read_to_vec()?;
+        Ok(Some((body, version)))
     }
+}
+
+/// The version tag of the saved copy `copy`, if both are there.
+pub(crate) fn saved_tag(copy: &Path) -> Option<String> {
+    copy.exists()
+        .then(|| fs::read_to_string(tag(copy)).ok())
+        .flatten()
 }
 
 /// Saves `text` as the copy `copy`, then `version` as its tag, so that they never disagree, even across a crash:
@@ -291,14 +313,18 @@ impl Fetcher {
 /// # Errors
 ///
 /// The old tag or the copy not replaced; the previous copy is then kept, without a tag.
-fn save(copy: &Path, text: &str, version: Option<&str>) -> anyhow::Result<()> {
-    save_with(copy, text, version, replace)
+pub(crate) fn save(
+    copy: &Path,
+    text: impl AsRef<[u8]>,
+    version: Option<&str>,
+) -> anyhow::Result<()> {
+    save_with(copy, text, version, |tag, version| replace(tag, version))
 }
 
 /// [`save`], writing the tag with `write_tag`.
 fn save_with(
     copy: &Path,
-    text: &str,
+    text: impl AsRef<[u8]>,
     version: Option<&str>,
     write_tag: impl FnOnce(&Path, &str) -> io::Result<()>,
 ) -> anyhow::Result<()> {
@@ -323,7 +349,7 @@ fn save_with(
 /// starts with the file name of `path`, so a file or symlink another user left in the directory is neither written
 /// through nor reused, and a leftover is known by [`sweep`]; it is removed when the write fails. Its mode is `0o666`
 /// less the umask, as a file created in the usual way.
-fn replace(path: &Path, contents: &str) -> io::Result<()> {
+pub(crate) fn replace(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut prefix = path.file_name().unwrap_or_default().to_owned();
     prefix.push(".");
@@ -332,16 +358,16 @@ fn replace(path: &Path, contents: &str) -> io::Result<()> {
     #[cfg(unix)]
     builder.permissions(fs::Permissions::from_mode(0o666));
     let mut part = builder.tempfile_in(dir)?;
-    part.write_all(contents.as_bytes())?;
+    part.write_all(contents.as_ref())?;
     part.as_file().sync_all()?;
     part.persist(path).map_err(|error| error.error)?;
     sync_dir(dir)
 }
 
-/// Removes from `dir` the `.part` files of the copies and tags of `urls` that a killed process left (D104): once at
-/// start, while only the thread of the downloads writes there. The `.part` file of an old version, a copy's name
-/// and `.part`, is one too.
-pub(crate) fn sweep(urls: &[String], dir: &Path) {
+/// Removes from `dir` the `.part` files of the copies and tags of `urls`, and of the files named `also`, that a
+/// killed process left (D104): once at start, while only the thread of the downloads writes there. The `.part` file
+/// of an old version, a copy's name and `.part`, is one too.
+pub(crate) fn sweep(urls: &[String], also: &[&str], dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -352,6 +378,7 @@ pub(crate) fn sweep(urls: &[String], dir: &Path) {
             [tag(&copy), copy]
         })
         .filter_map(|file| Some(format!("{}.", file.file_name()?.to_string_lossy())))
+        .chain(also.iter().map(|name| format!("{name}.")))
         .collect();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -378,7 +405,7 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::{SocketAddr, TcpListener};
     use std::sync::atomic::AtomicUsize;
@@ -388,7 +415,7 @@ mod tests {
 
     /// A loopback HTTP/1.1 server, a thread to each connection: `respond` takes the request target and returns the
     /// whole response.
-    fn serve(respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) -> SocketAddr {
+    pub(crate) fn serve(respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) -> SocketAddr {
         serve_head(move |target, _| respond(target))
     }
 
@@ -423,7 +450,7 @@ mod tests {
     }
 
     /// A 200 response of `body`, with `headers` (each ending in CRLF) added.
-    fn ok(headers: &str, body: &[u8]) -> Vec<u8> {
+    pub(crate) fn ok(headers: &str, body: &[u8]) -> Vec<u8> {
         let mut response = format!(
             "HTTP/1.1 200 OK\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -661,8 +688,8 @@ mod tests {
         assert_eq!(mode(&path), mode(&usual));
     }
 
-    /// D104: the leftovers of a killed download beside the copies and tags of the lists in use are removed, and
-    /// nothing else.
+    /// D104: the leftovers of a killed download beside the copies and tags of the lists in use, and beside the root
+    /// files (D128), are removed, and nothing else.
     #[test]
     fn leftover_part_files_of_known_copies_are_swept() {
         let dir = tempfile::tempdir().unwrap();
@@ -678,6 +705,7 @@ mod tests {
             format!("{name}.Ab12Cd.part"),
             format!("{tag_name}.Ef34Gh.part"),
             format!("{name}.part"),
+            "tlds.json.Ij56Kl.part".to_owned(),
         ];
         let kept = [
             name.clone(),
@@ -688,11 +716,11 @@ mod tests {
         for file in leftovers.iter().chain(&kept) {
             fs::write(dir.path().join(file), "x").unwrap();
         }
-        sweep(&urls, dir.path());
+        sweep(&urls, &["tlds.json"], dir.path());
         assert!(leftovers.iter().all(|file| !dir.path().join(file).exists()));
         assert!(kept.iter().all(|file| dir.path().join(file).exists()));
         // A directory that is not there is no error.
-        sweep(&urls, &dir.path().join("missing"));
+        sweep(&urls, &[], &dir.path().join("missing"));
     }
 
     /// L13: nothing but the copy stays, nor is a `.part` file left when the rename fails.
