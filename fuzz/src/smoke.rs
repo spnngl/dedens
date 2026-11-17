@@ -47,6 +47,15 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         "root.ds".into(),
         include_bytes!("../../crates/dedens-dnssec/src/root.ds").to_vec(),
     ));
+    // IANA's root hints and a few entries of its TLD list, as `just roots` captured them (D126).
+    seeds.push((
+        "named.root".into(),
+        include_bytes!("../../crates/dedens-roots/src/named.root").to_vec(),
+    ));
+    seeds.push((
+        "tlds.json".into(),
+        include_bytes!("../../crates/dedens-roots/tests/data/tlds.json").to_vec(),
+    ));
     seeds.sort();
     seeds
 }
