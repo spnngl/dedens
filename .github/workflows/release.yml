@@ -256,7 +256,7 @@ jobs:
           - os: ubuntu-26.04-arm
             arch: aarch64
     runs-on: ${{ matrix.os }}
-    container: docker.io/library/almalinux:10@sha256:166e0a04bb27f55bcd65f3e891dcfe702846800e0600adaeef480c794e44107d
+    container: docker.io/library/almalinux:10@sha256:ccf217024b3d5e268cc208d1edb384a1edee6359370cf6ea1ecbc42254e57375
     timeout-minutes: 15
     permissions: {}
     steps:
