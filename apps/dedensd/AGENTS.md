@@ -21,6 +21,8 @@ belongs in `crates/dedens-server` and its sans-IO tests.
   line of those waiting for the validation allowance (D186), and hands a `Step::Park` to `upstream::answer`, which
   waits.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in
-  `docs/benchmarks.md`.
-- `src/lib.rs` is the crate, `src/main.rs` only calls `dedensd::main` (D181). A configuration setting naming a file
+  `docs/benchmarks.md`. It builds on glibc, with the system allocator: measure a change to the allocator or its
+  settings with `just bench-compare`, which runs the `Containerfile`'s musl binary.
+- `src/lib.rs` is the crate; `src/main.rs` holds the musl build's allocator and its huge-page flag (D154), then calls
+  `dedensd::main` (D181). A configuration setting naming a file
   to read goes in `names_files` (`src/config/`), or `fuzz/`'s `read_config` opens the paths its inputs name.
