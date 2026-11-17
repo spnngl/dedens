@@ -1,9 +1,11 @@
 [files]
-# Fetched as published: `just rfc-archive`, `just root-hints`.
+# Fetched as published: `just rfc-archive`, `just roots`.
 # Records of captured responses, as published.
 extend-exclude = [
   "docs/rfc/archive/",
-  "apps/dedens/src/named.root",
+  "crates/dedens-roots/src/named.root",
+  "crates/dedens-roots/src/tlds.json",
+  "crates/dedens-roots/tests/data/tlds.json",
   "apps/dedensd/tests/end_to_end.yaml",
   # RFC 5155 appendix A, as published.
   "testdata/zones/rfc5155_appendix_a.zone",

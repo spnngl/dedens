@@ -25,6 +25,7 @@ dedens-net.workspace = true
 dedens-odoh.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
+dedens-roots.workspace = true
 dedens-server.workspace = true
 divan.workspace = true
 http.workspace = true
@@ -86,6 +87,10 @@ harness = false
 name = "rrl"
 harness = false
 
+[[bench]]
+name = "roots"
+harness = false
+
 # D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14).
 [package.metadata.cargo-shear]
 ignored = [
@@ -96,6 +101,7 @@ ignored = [
   "dedens-odoh",
   "dedens-plugins",
   "dedens-proto",
+  "dedens-roots",
   "dedens-server",
   "divan",
   "domain",

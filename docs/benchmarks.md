@@ -1058,6 +1058,21 @@ and reads the response through `Exchange`, copying the request in.
 | `permits`, IPv4-mapped IPv6 in the table | 5.4 |
 | `denied_query` | 42 |
 
+## Root hints and TLD list (D126)
+
+`benches/roots.rs`, medians of one run: reading the bundled `named.root` and `tlds.json` (1603 TLDs, cut by
+`just roots` to 0.9 MB), and `Tlds::get` in the table read. Reading the list keeps 1.6 MB in 28 170 allocations.
+
+| Measure | Median |
+|---|---|
+| `read_hints` | 12.6 µs |
+| `read_tlds` | 1.9 ms |
+| `get`, `fr.` / `WWW.EXAMPLE.FR.` / `example.nosuchtld.` | 33 / 38 / 37 ns |
+
+The rejected alternative, measured once with a scratch generator (not in the tree): the list written by `jq` as
+Rust static tables (addresses kept as strings), the same binary search over them. Nothing is read at start; `get`
+runs in 28 / 41 / 41 ns (medians, at the timer's precision of 41 ns): the same as from the table read.
+
 ## Rate limiting and Server Cookies (D113)
 
 `benches/rrl.rs`: `Pipeline::query` over UDP from `198.51.100.7` (not loopback, which the limit skips) for the cached

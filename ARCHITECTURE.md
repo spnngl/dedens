@@ -9,6 +9,7 @@
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response | none (sans-IO), time passed in |
+| `crates/dedens-roots` | IANA's root hints and TLD list (D126): bundled, and read from a fresh copy | none (sans-IO) |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69, D78): configurations, message encryption | none (sans-IO) |
 | `crates/dedens-dnscrypt` | DNSCrypt (draft-denis-dprive-dnscrypt), experimental (D97, D101): certificates, query and response encryption for both classical systems and the X-Wing one (PQDNSCrypt, with resumption tickets) | none (sans-IO), time and randomness passed in |
 | `crates/dedens-net` | UDP, TCP, TLS, QUIC, HTTP/3 (DoH, D83) and CoAP (DoC, D81) transports on compio over sans-IO cores; the client's pools and `dedensd`'s serving loop behind the `Io` seam (D134, D182); Oblivious DoH, `odoh` feature (D79); DNS stamps (D102) and the DNSCrypt client over them (D98), `dnscrypt` feature; `resolv.conf` | sockets, timers |

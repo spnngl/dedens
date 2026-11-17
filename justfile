@@ -346,19 +346,20 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
 # of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
 # packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the example of its config module, in
-# fuzz/target/seeds/configs (D181).
+# fuzz/target/seeds/configs (D181); the root hints and the test copy of the TLD list in fuzz/target/seeds/roots (D126).
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots
+    cp crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json fuzz/target/seeds/roots/
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/stamps/$." or die; print $out $_' fuzz/seeds/stamps.txt
@@ -618,9 +619,21 @@ rfc-archive:
     grep -oE "https://[^ )]+\.txt" docs/rfc/list.md | sort -u | while read -r url; do \
         curl -fsSL --retry 3 -o "docs/rfc/archive/$(basename "$url" | tr '[:upper:]' '[:lower:]')" "$url"; done
 
-# Refresh IANA's root hints, bundled for `dedens +trace`.
-root-hints:
-    curl -fsSL --retry 3 -o apps/dedens/src/named.root https://www.internic.net/domain/named.root
+# Refresh what `dedens-roots` bundles (D126): IANA's root hints, and its TLD list cut to the members the crate reads
+# (the order of the domains kept, the managers, contacts and dates dropped); the test copy, a few entries in full, from
+# the same download.
+roots:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src=crates/dedens-roots/src
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    curl -fsSL --retry 3 -o "$src/named.root" https://www.internic.net/domain/named.root
+    curl -fsSL --retry 3 -o "$tmp" https://data.iana.org/TLD/v1/tlds.json
+    jq -c '{meta, domains: [.domains[] | {name, status, type, nameservers, ds_records}
+        + (if .purpose then {purpose} else {} end)]}' "$tmp" > "$src/tlds.json"
+    jq '.domains |= map(select(.name | IN("arpa", "com", "fr", "onion", "xn--0zwm56d", "xn--p1ai")))' "$tmp" \
+        > crates/dedens-roots/tests/data/tlds.json
 
 # Refresh the bundled root trust anchors (D72): the `KeyDigest` entries of IANA's root-anchors.xml valid now (RFC
 # 9718 §2.2: `validFrom` passed, `validUntil` absent or ahead), as DS zone text. No XML parser in Rust: the file is

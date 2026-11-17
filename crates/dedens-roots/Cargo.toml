@@ -1,0 +1,25 @@
+[package]
+name = "dedens-roots"
+description = "IANA's root hints and TLD list, bundled, and readers for fresh copies (D126)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+# The DS digests of `tlds.json`, in hexadecimal.
+data-encoding.workspace = true
+dedens-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+
+[lints]
+workspace = true
