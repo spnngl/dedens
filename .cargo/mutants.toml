@@ -163,6 +163,9 @@ exclude_re = [
   # D73: the DS records of a bucket grouped by digest type only spare digests; split into groups of one record (two at
   # the change of type), a key with DS records of two types still finds one, at the cost the `trusted_keys_one_tag` bench shows.
   'rrsig/trust\.rs:\d+:\d+: replace == with != in vouched$',
+  # D154: built only for musl Linux, where `tests/huge_pages.rs` catches its mutants (`just musl`); the mutants shards
+  # build for glibc.
+  'dedensd/src/main\.rs:\d+:\d+: (replace huge_pages_off with \(\)|delete ! in huge_pages_off)$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
