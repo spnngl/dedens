@@ -626,8 +626,8 @@ rfc-archive:
 # entries in full, from the same download. For `dedens-dnssec` (D72, D127): `root-anchors.xml` and its `.p7s`, checked
 # against ICANN's CA bundled in `src/icannbundle.pem` (RFC 9718 §3.2), then the DS records of its `KeyDigest` entries
 # valid now in `src/root.ds` and its signing time in `src/root.signed_at`, the earliest `verified` accepts; the pair
-# goes to `testdata/dnssec` with the time of the run. A changed CA bundle stops the recipe before it writes anything: it is the trust root, replaced by
-# hand once checked out of band (D127).
+# goes to `testdata/dnssec` with the time of the run. A changed CA bundle stops the recipe before it writes anything:
+# it is the trust root, replaced by hand once checked out of band (D127).
 roots:
     #!/usr/bin/env bash
     set -euo pipefail

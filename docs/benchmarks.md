@@ -1073,6 +1073,17 @@ The rejected alternative, measured once with a scratch generator (not in the tre
 Rust static tables (addresses kept as strings), the same binary search over them. Nothing is read at start; `get`
 runs in 28 / 41 / 41 ns (medians, at the timer's precision of 41 ns): the same as from the table read.
 
+## Signed root anchors (D127)
+
+`benches/anchors.rs`, medians of one run, Apple M5, macOS 27.2: `TrustAnchors::verified` on the captured pair, and
+on the captured `.p7s` grown with digest algorithms in decreasing DER order (196, 708 and 1732 of them), which
+`der` sorts by insertion as it decodes. Time grows with their square: what bounds the `.p7s` to `MAX_P7S`.
+
+| Measure | Median |
+|---|---|
+| `verified`, the captured 2 523 bytes | 40.5 µs |
+| `verified_grown`, 4 / 8 / 16 KiB | 0.37 / 4.7 / 29.2 ms |
+
 ## Rate limiting and Server Cookies (D113)
 
 `benches/rrl.rs`: `Pipeline::query` over UDP from `198.51.100.7` (not loopback, which the limit skips) for the cached

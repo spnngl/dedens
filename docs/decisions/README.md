@@ -132,7 +132,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D123 [server](server.md): UDP replies sent at once when none is in flight, else queued for one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
-- D126 [scope](scope.md): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
+- D126 [scope](scope.md) (amended by D127): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
 - D127 [scope](scope.md): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only

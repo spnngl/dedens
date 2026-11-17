@@ -307,7 +307,8 @@ pub fn parse_root_anchors(data: &[u8]) {
         TrustAnchors::from_unverified_xml(ROOT_ANCHORS_XML, now).expect("the captured XML");
     if let Ok(signed) = TrustAnchors::verified(ROOT_ANCHORS_XML, data, now, None) {
         assert_eq!(
-            signed.anchors, expected,
+            signed.anchors(),
+            &expected,
             "a signature that holds changed the anchors"
         );
     }
@@ -315,7 +316,11 @@ pub fn parse_root_anchors(data: &[u8]) {
         && let Ok(signed) =
             TrustAnchors::verified_by(ROOT_ANCHORS_XML, ROOT_ANCHORS_P7S, ca, now, None)
     {
-        assert_eq!(signed.anchors, expected, "a CA bundle changed the anchors");
+        assert_eq!(
+            signed.anchors(),
+            &expected,
+            "a CA bundle changed the anchors"
+        );
     }
 }
 

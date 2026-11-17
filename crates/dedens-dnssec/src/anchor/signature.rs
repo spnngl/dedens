@@ -33,8 +33,8 @@ pub enum SignedAnchorError {
     /// The XML or its signature is longer than [`MAX_XML`] or [`MAX_P7S`]: refused before it is read.
     #[error("{file} is longer than {limit} bytes")]
     TooLarge {
-        /// `root-anchors.xml` or `root-anchors.p7s`.
-        file: &'static str,
+        /// Which of the two.
+        file: AnchorFile,
         /// Its limit.
         limit: usize,
     },
@@ -44,6 +44,24 @@ pub enum SignedAnchorError {
     /// The XML is signed, but refused.
     #[error(transparent)]
     Xml(#[from] AnchorXmlError),
+}
+
+/// One of the two files of RFC 9718 §3: the XML and its detached signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorFile {
+    /// `root-anchors.xml`.
+    Xml,
+    /// `root-anchors.p7s`.
+    P7s,
+}
+
+impl std::fmt::Display for AnchorFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Xml => "root-anchors.xml",
+            Self::P7s => "root-anchors.p7s",
+        })
+    }
 }
 
 /// The e-mail address in the subject of the signer's certificate, `unbound-anchor`'s `P7SIGNER`.
@@ -214,8 +232,10 @@ fn check_signer(
     if message_digest.as_bytes() != digest::digest(sha2.digest, xml).as_ref() {
         return Err("the message digest is not the XML's");
     }
+    // Before the signature is verified, so the time is the one claimed: a forged pair is refused either way, and
+    // the bundled floor is shown to hold by the captured pair with an earlier time (no genuine older pair is kept).
     if signed_at < trust.floor {
-        return Err("signed before the last signing time accepted");
+        return Err("a signing time before the floor");
     }
     // Signed as a SET OF, not as the [0] the SignerInfo holds them in (RFC 5652 §5.4). Re-encoded: `der` decodes
     // DER only, so these are the bytes received, a SET OF out of order excepted, which then fails to verify.

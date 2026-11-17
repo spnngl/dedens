@@ -4,6 +4,9 @@
 //! - RFC 9718 (the root zone's trust anchors) §2 and §4.1: the `KeyDigest` entries valid at a time, those whose
 //!   DNSKEY does not match left out; §3.2: the detached CMS signature, by ICANN's `dnssec@iana.org` certificate
 //!   issued by ICANN's CA.
+//! - RFC 5652 (CMS) §5 and §11: the `SignedData`, its signers and their signed attributes.
+//! - RFC 5280 (X.509) §4.1 and §4.2: the signer's certificate, its validity and extensions.
+//! - RFC 5011 §2.1 and RFC 4034 §2.1.1: a revoked key or one not of the zone is no anchor.
 //!
 //! The XML, its `.p7s` and ICANN's CA bundle are those `just roots` fetched, at the time in
 //! `testdata/dnssec/root-anchors.captured_at`.
@@ -15,7 +18,9 @@ use cms::content_info::ContentInfo;
 use cms::signed_data::{SignedData, SignerIdentifier, SignerInfo};
 use data_encoding::{BASE64, HEXUPPER};
 use dedens_dnssec::crypto::{ds_digest, key_tag};
-use dedens_dnssec::{AnchorXmlError, MAX_P7S, MAX_XML, SignedAnchorError, TrustAnchors};
+use dedens_dnssec::{
+    AnchorFile, AnchorXmlError, MAX_P7S, MAX_XML, SignedAnchorError, SignedAnchors, TrustAnchors,
+};
 use dedens_proto::rdata::Ds;
 use dedens_proto::{DigestType, Name};
 use x509_cert::TbsCertificate;
@@ -29,7 +34,7 @@ const SIGNED_AT: u64 = 1_742_934_302;
 
 /// The anchors of a signed pair at `now`, with no signing time accepted before but the bundled one.
 fn verified(xml: &[u8], p7s: &[u8], now: u64) -> Result<TrustAnchors, SignedAnchorError> {
-    TrustAnchors::verified(xml, p7s, now, None).map(|signed| signed.anchors)
+    TrustAnchors::verified(xml, p7s, now, None).map(SignedAnchors::into_anchors)
 }
 
 /// As `verified`, against the CAs of `ca`.
@@ -39,7 +44,7 @@ fn verified_by(
     ca: &str,
     now: u64,
 ) -> Result<TrustAnchors, SignedAnchorError> {
-    TrustAnchors::verified_by(xml, p7s, ca, now, None).map(|signed| signed.anchors)
+    TrustAnchors::verified_by(xml, p7s, ca, now, None).map(SignedAnchors::into_anchors)
 }
 
 /// The captured `.p7s` with the captured XML at the capture time: `Err` with `error` from `verified`.
@@ -99,10 +104,18 @@ fn s3_2_the_captured_anchors_verify_and_are_the_bundled_ones() {
         None,
     )
     .expect("the captured pair");
-    assert_eq!(signed.anchors, TrustAnchors::root());
-    assert_eq!(signed.signed_at, SIGNED_AT);
-    let bundled = include_str!("../src/root.signed_at").trim().parse();
-    assert_eq!(bundled, Ok(SIGNED_AT), "the bundled anchors' signing time");
+    assert_eq!(signed.anchors(), &TrustAnchors::root());
+    assert_eq!(signed.signed_at(), SIGNED_AT);
+    // The file is `include!`d: a comment line, then the number.
+    let bundled = include_str!("../src/root.signed_at")
+        .lines()
+        .last()
+        .map(str::parse);
+    assert_eq!(
+        bundled,
+        Some(Ok(SIGNED_AT)),
+        "the bundled anchors' signing time"
+    );
 }
 
 #[test]
@@ -344,7 +357,7 @@ fn s3_2_a_file_over_its_limit_is_not_read() {
     assert_eq!(
         verified(&padded(&xml, MAX_XML + 1), &p7s, now),
         Err(SignedAnchorError::TooLarge {
-            file: "root-anchors.xml",
+            file: AnchorFile::Xml,
             limit: MAX_XML
         })
     );
@@ -355,9 +368,14 @@ fn s3_2_a_file_over_its_limit_is_not_read() {
     assert_eq!(
         verified(&xml, &padded(&p7s, MAX_P7S + 1), now),
         Err(SignedAnchorError::TooLarge {
-            file: "root-anchors.p7s",
+            file: AnchorFile::P7s,
             limit: MAX_P7S
         })
+    );
+    // The error names the file IANA publishes.
+    assert_eq!(
+        [AnchorFile::Xml, AnchorFile::P7s].map(|file| file.to_string()),
+        ["root-anchors.xml", "root-anchors.p7s"]
     );
 }
 
@@ -370,13 +388,13 @@ fn s3_2_a_pair_signed_before_the_last_accepted_is_refused() {
         file("root-anchors.p7s"),
         captured_at(),
     );
-    let at = |last| TrustAnchors::verified(&xml, &p7s, now, last).map(|signed| signed.signed_at);
+    let at = |last| TrustAnchors::verified(&xml, &p7s, now, last).map(|signed| signed.signed_at());
     assert_eq!(at(Some(0)), Ok(SIGNED_AT));
     assert_eq!(at(Some(SIGNED_AT)), Ok(SIGNED_AT));
     assert_eq!(
         at(Some(SIGNED_AT + 1)),
         Err(SignedAnchorError::Signature(
-            "signed before the last signing time accepted"
+            "a signing time before the floor"
         ))
     );
 }
@@ -384,7 +402,7 @@ fn s3_2_a_pair_signed_before_the_last_accepted_is_refused() {
 #[test]
 fn s3_2_a_pair_signed_before_the_bundled_anchors_is_refused() {
     // The signingTime attribute, UTCTime 2025-03-25 20:25:02: a day earlier is refused before its signature is
-    // checked, a day later fails the signature, which covers it.
+    // checked, even under an older floor of the caller's, a day later fails the signature, which covers it.
     let with_time = |time: &[u8]| {
         let mut p7s = file("root-anchors.p7s");
         let at = p7s
@@ -394,9 +412,13 @@ fn s3_2_a_pair_signed_before_the_bundled_anchors_is_refused() {
         p7s[at..at + 13].copy_from_slice(time);
         p7s
     };
-    refused_as(
-        &with_time(b"250324202502Z"),
-        "signed before the last signing time accepted",
+    let earlier = with_time(b"250324202502Z");
+    refused_as(&earlier, "a signing time before the floor");
+    assert_eq!(
+        TrustAnchors::verified(&file("root-anchors.xml"), &earlier, captured_at(), Some(0)),
+        Err(SignedAnchorError::Signature(
+            "a signing time before the floor"
+        ))
     );
     refused_as(
         &with_time(b"250326202502Z"),

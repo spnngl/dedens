@@ -19,7 +19,8 @@ recorder = ["metrics", "dep:metrics-util"]
 dedens-cache.workspace = true
 # The exchange of `benches/dnscrypt.rs`.
 dedens-dnscrypt.workspace = true
-dedens-dnssec.workspace = true
+# `fetch-anchors`: the signed root anchors of `benches/anchors.rs`.
+dedens-dnssec = { workspace = true, features = ["fetch-anchors"] }
 dedens-net.workspace = true
 # The exchange of `benches/odoh.rs`.
 dedens-odoh.workspace = true
@@ -89,6 +90,10 @@ harness = false
 
 [[bench]]
 name = "roots"
+harness = false
+
+[[bench]]
+name = "anchors"
 harness = false
 
 # D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14).
