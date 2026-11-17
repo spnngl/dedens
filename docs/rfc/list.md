@@ -165,6 +165,12 @@ This section includes older drafts that were superseded, informational RFCs, nic
 ### Data Encodings
 * **[RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648):** The Base16, Base32, and Base64 Data Encodings (base64 and hex in presentation format)
 
+### Registration Data Access Protocol (RDAP)
+* **[RFC 7095](https://datatracker.ietf.org/doc/html/rfc7095):** jCard: The JSON Format for vCard (the contacts of an RDAP entity)
+* **[RFC 7480](https://datatracker.ietf.org/doc/html/rfc7480):** HTTP Usage in the Registration Data Access Protocol (RDAP)
+* **[RFC 9082](https://datatracker.ietf.org/doc/html/rfc9082):** Registration Data Access Protocol (RDAP) Query Format
+* **[RFC 9083](https://datatracker.ietf.org/doc/html/rfc9083):** JSON Responses for the Registration Data Access Protocol (RDAP)
+
 ### Specialized / Niche Resource Records & Extensions
 * **[RFC 1183](https://datatracker.ietf.org/doc/html/rfc1183):** New DNS RR Definitions (AFSDB, RP, X25, ISDN, RT)
 * **[RFC 1706](https://datatracker.ietf.org/doc/html/rfc1706):** DNS NSAP Resource Records (Historic)

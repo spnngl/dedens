@@ -635,6 +635,17 @@ roots:
     jq '.domains |= map(select(.name | IN("arpa", "com", "fr", "onion", "xn--0zwm56d", "xn--p1ai")))' "$tmp" \
         > crates/dedens-roots/tests/data/tlds.json
 
+# Capture IANA's RDAP answers that `dedens +tld` is tested and fuzzed on (D129), as received: `<tld>.json` for
+# `https://rdap.iana.org/domain/<tld>` (RFC 9082 §3.1.3), a 404 for a special-use name and for no TLD at all.
+rdap-capture:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tld in fr com xn--p1ai onion zzzz; do
+        status="$(curl -sS --retry 3 -H 'accept: application/rdap+json' -o "testdata/rdap/$tld.json" \
+            -w '%{http_code}' "https://rdap.iana.org/domain/$tld")"
+        case "$status" in 200|404) ;; *) echo "$tld: HTTP $status" >&2; exit 1 ;; esac
+    done
+
 # Refresh the bundled root trust anchors (D72): the `KeyDigest` entries of IANA's root-anchors.xml valid now (RFC
 # 9718 §2.2: `validFrom` passed, `validUntil` absent or ahead), as DS zone text. No XML parser in Rust: the file is
 # flat, and a time with an offset other than UTC stops the recipe.
