@@ -1,12 +1,26 @@
 //! Trust anchors (RFC 4035 §4.4, RFC 7646, D72); [`TrustAnchors`] says what they are.
 
+#[cfg(feature = "fetch-anchors")]
+mod signature;
+#[cfg(feature = "fetch-anchors")]
+mod xml;
+
 use std::collections::{HashMap, HashSet};
 
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
+#[cfg(feature = "fetch-anchors")]
+pub use signature::SignedAnchorError;
+#[cfg(feature = "fetch-anchors")]
+pub use xml::AnchorXmlError;
 
 /// The root's DS records, written by `just root-anchors` from IANA's `root-anchors.xml` (RFC 9718 §2).
 const ROOT: &str = include_str!("root.ds");
+
+/// ICANN's CA certificates, which issue the certificate signing `root-anchors.xml` (RFC 9718 §3.2), copied from
+/// `https://data.iana.org/root-anchors/icannbundle.pem` by `just root-anchors` (D127).
+#[cfg(feature = "fetch-anchors")]
+const ICANN_CA: &str = include_str!("icannbundle.pem");
 
 /// The records that anchor one zone (RFC 4035 §4.4): at least one, as only [`TrustAnchors::read`] makes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,8 +93,9 @@ pub enum AnchorError {
 ///
 /// An anchor is DS records, DNSKEY records or both, per zone. A DNSKEY anchor is trusted as is; a DS anchor is
 /// trusted through the DNSKEY that matches it (RFC 4035 §4.4), which is the validator's check, not this type's.
-/// The root's anchors are bundled ([`TrustAnchors::root`], RFC 9718); a user's come from zone text
-/// ([`TrustAnchors::read`]). Anchors do not change while running: RFC 5011 is left out (D72).
+/// The root's anchors are bundled ([`TrustAnchors::root`], RFC 9718), or read from IANA's signed
+/// `root-anchors.xml` with the `fetch-anchors` feature (`TrustAnchors::verified`, D127); a user's come from zone
+/// text ([`TrustAnchors::read`]). Anchors do not change while running: RFC 5011 is left out (D72).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustAnchors {
     zones: HashMap<Name<'static>, Anchor>,
@@ -153,6 +168,49 @@ impl TrustAnchors {
             zones,
             negative: HashSet::new(),
         })
+    }
+
+    /// The anchors of IANA's `root-anchors.xml` valid at `now`, in seconds since 1970, once `p7s`, its detached
+    /// CMS signature, is checked against ICANN's bundled CA (RFC 9718 §3.2): see [`TrustAnchors::verified_by`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TrustAnchors::verified_by`].
+    #[cfg(feature = "fetch-anchors")]
+    pub fn verified(xml: &[u8], p7s: &[u8], now: u64) -> Result<Self, SignedAnchorError> {
+        Self::verified_by(xml, p7s, ICANN_CA, now)
+    }
+
+    /// The anchors of `xml`, a `root-anchors.xml`, valid at `now`, once `p7s` is checked as its signature by a
+    /// certificate for `dnssec@iana.org` that a CA of `ca`, PEM certificates, issued; both certificates valid at
+    /// `now` (RFC 9718 §3.2). Then as [`TrustAnchors::from_xml`].
+    ///
+    /// # Errors
+    ///
+    /// [`SignedAnchorError::Ca`] when `ca` holds no certificate, [`SignedAnchorError::Signature`] when the
+    /// signature does not hold, [`SignedAnchorError::Xml`] when the signed XML is refused.
+    #[cfg(feature = "fetch-anchors")]
+    pub fn verified_by(
+        xml: &[u8],
+        p7s: &[u8],
+        ca: &str,
+        now: u64,
+    ) -> Result<Self, SignedAnchorError> {
+        signature::check(xml, p7s, &signature::cas(ca)?, now)
+            .map_err(SignedAnchorError::Signature)?;
+        Ok(Self::from_xml(xml, now)?)
+    }
+
+    /// The anchors of `xml`, a `root-anchors.xml` (RFC 9718 §2), unsigned: the DS records of its `KeyDigest`
+    /// entries valid at `now`, in seconds since 1970. An entry carrying a DNSKEY it does not match is not used
+    /// (§4.1.2). Trust it as far as its source: [`TrustAnchors::verified`] checks the signature.
+    ///
+    /// # Errors
+    ///
+    /// [`AnchorXmlError`] when `xml` is not the XML of RFC 9718 §2, or no entry is valid at `now`.
+    #[cfg(feature = "fetch-anchors")]
+    pub fn from_xml(xml: &[u8], now: u64) -> Result<Self, AnchorXmlError> {
+        xml::read(xml, now)
     }
 
     /// The deepest anchored zone at or above `name`, with its anchor: where the chain of trust of `name` starts.

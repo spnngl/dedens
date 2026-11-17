@@ -24,6 +24,8 @@ chacha20 = { version = "0.10.2", default-features = false, features = [
 clap = { version = "4.6.7", features = ["derive"] }
 # D158: the man pages, checked against the command lines by a test of each binary.
 clap_mangen = "0.3.3"
+# D127: the detached CMS signature of IANA's root-anchors.xml (RFC 9718 §3.2, RFC 5652); x509-cert its certificates.
+cms = { version = "0.2.3", default-features = false }
 # D4, D26: io_uring on Linux, falling back to polling where io_uring is refused; kqueue on macOS. D60: TLS by
 # rustls with ring, QUIC by quinn-proto. D82: HTTP/3 by h3.
 compio = { version = "0.19.2", default-features = false, features = [
@@ -173,6 +175,8 @@ vstd = "=0.0.0-2026-11-01-0251"
 x-wing = { version = "0.1.1", default-features = false, features = ["zeroize"] }
 # D97: DNSCrypt's X25519, the scalar multiplication alone.
 x25519-dalek = { version = "3.0.0", default-features = false }
+# D127: the certificates of the root anchors' signature and of ICANN's CA, read from PEM.
+x509-cert = { version = "0.2.5", default-features = false, features = ["pem"] }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
 # D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.
