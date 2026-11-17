@@ -20,12 +20,12 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Captured responses, example zone files, DNS-over-HTTPS exchanges and blocklists, the directories of the
+/// Captured responses, example zone files, DNS-over-HTTPS exchanges, blocklists and RDAP answers, the directories of the
 /// justfile's `fuzz_seeds`: every target gets every seed, whatever format it parses.
 fn seeds() -> Vec<(String, Vec<u8>)> {
     let mut seeds = Vec::new();
     for dir in [
-        "proto", "zones", "dnssec", "odoh", "dnscrypt", "doh", "plugins",
+        "proto", "zones", "dnssec", "odoh", "dnscrypt", "doh", "plugins", "rdap",
     ] {
         let dir = root().join("../testdata").join(dir);
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {

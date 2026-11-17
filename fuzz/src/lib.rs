@@ -24,7 +24,7 @@ mod server;
 #[cfg(test)]
 mod smoke;
 
-pub use cli::parse_command_line;
+pub use cli::{parse_command_line, parse_rdap};
 pub use coap::{coap_doc, parse_coap, parse_link_format};
 pub use daemon::read_config;
 pub use dnscrypt::{
@@ -100,6 +100,7 @@ targets! {
     coap_doc,
     parse_link_format,
     parse_command_line,
+    parse_rdap,
     read_config,
     parse_root_hints,
     parse_tlds_json,
