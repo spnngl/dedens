@@ -242,6 +242,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Later
 
+- RAPx on dedens-proto (D187): 0.7.75 stops with an internal compiler error (`item_name: no name for DefPath`,
+  a closure of `Iterator::map`, from `rapx::def_ids::other_api::is_align_offset`): `tcx.item_name` is called on
+  items without a name since RAPx 0.7.72 (also `is_box_new`, `is_nonnull_dangling`), so `just rapx` and `rapx.yml`
+  fail. `tcx.opt_item_name` there passes it (tried on a local build), and the analysis of dedens-proto then runs
+  past 25 minutes, as 0.7.71's did past `rapx.yml`'s 90 (runs of 2026-11-16 and 2026-11-17 cancelled). Default:
+  the fix sent upstream and `rapx_version` raised to its release; then find the function the analysis loops on.
 - DoH servers where HTTP/3 does not answer (21 of the 44 URLs of `providers.yaml`, November 2026): 19 do not
   advertise `h3`; the two of UncensoredDNS do, but the QUIC handshake stalls after their first flight. They sit
   under `https_h2`, parsed but not asked, until HTTP/2 (D62). Default: find whether our client or their
