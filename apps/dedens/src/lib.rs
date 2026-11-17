@@ -42,20 +42,29 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<(), clap::
     Ok(())
 }
 
-/// Reads `body` as an RDAP answer of HTTP status 200 to `+tld` (D129) and prints it for humans, into nothing: the
-/// entry of `fuzz/` (D181).
+/// Reads `body` as IANA's bootstrap file (RFC 9224 §4), looking a name up in it, then as an RDAP answer of HTTP
+/// status 200 to `+tld` (D129) or `+rdap` (D130), printing it for humans into nothing: the entry of `fuzz/` (D181).
 ///
 /// # Errors
 ///
-/// `body` is not an RDAP domain (RFC 9083 §5.3), which `+tld` reports, exit 10.
+/// `body` is not an RDAP domain (RFC 9083 §5.3), which `+tld` and `+rdap` report, exit 10.
 pub fn parse_rdap(body: &[u8]) -> anyhow::Result<()> {
-    let answer = run::tld::read(200, body)?;
-    let exchange = run::tld::Exchange {
-        url: "https://rdap.example/domain/fuzz",
+    if let Ok(bootstrap) = serde_json::from_slice::<rdap::Bootstrap>(body) {
+        let _ = bootstrap.servers("www.example.co.uk");
+    }
+    let answer = run::rdap::read(200, body)?;
+    let exchange = run::rdap::Exchange {
+        url: "https://rdap.example/domain/fuzz.example".to_owned(),
         rtt: std::time::Duration::ZERO,
         status: 200,
     };
-    run::tld::human(&mut io::sink(), "fuzz", &answer, &exchange)?;
+    run::rdap::human(
+        &mut io::sink(),
+        "fuzz.example",
+        "domain",
+        &answer,
+        &exchange,
+    )?;
     Ok(())
 }
 

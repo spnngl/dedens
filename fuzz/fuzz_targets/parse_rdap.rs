@@ -1,4 +1,4 @@
-//! Arbitrary bytes as an RDAP answer to `+tld` must never panic its reading nor its printing.
+//! Arbitrary bytes as an RDAP bootstrap file or answer to `+tld` and `+rdap` must never panic their reading nor the printing.
 
 #![no_main]
 

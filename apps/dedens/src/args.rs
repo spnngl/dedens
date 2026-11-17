@@ -71,6 +71,11 @@ pub(crate) struct Cli {
     /// answer as received.
     #[arg(long, value_name = "NAME")]
     pub(crate) tld: Option<String>,
+    /// Ask the RDAP server of a domain's TLD, found in IANA's bootstrap file, about its registration instead: status,
+    /// registrar, contacts, name servers, DS records, dates and redacted fields; under a name not registered, its
+    /// parents up to one that is. JSON and YAML print the answer as received.
+    #[arg(long, value_name = "NAME", conflicts_with = "tld")]
+    pub(crate) rdap: Option<String>,
     /// Print what the exchanges do on stderr: `-v` dropped messages, retries and fallbacks, `-vv` every message too.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
@@ -165,7 +170,7 @@ impl Cli {
             time: cli.options.time,
             ..Options::default()
         };
-        if cli.tld.is_some()
+        if (cli.tld.is_some() || cli.rdap.is_some())
             && (!cli.words.is_empty()
                 || !cli.server.is_empty()
                 || cli.port.is_some()
@@ -180,7 +185,7 @@ impl Cli {
         {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+tld goes with no name, @server, -p, -x, -f, --save-wire, +repeat, +trace, +search, --short or query option but +time"
+                "+tld and +rdap go with no name, @server, -p, -x, -f, --save-wire, +repeat, +trace, +search, --short or query option but +time"
                     .to_owned(),
             );
         }

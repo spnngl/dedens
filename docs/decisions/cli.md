@@ -107,7 +107,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   The human format counts the additional records of a referral hop instead of listing them. `-p` is the port of
   every server asked, roots, glue and name servers looked up, as dig's `-p` (default 53). `DEDENS_ROOTS`,
   addresses with their ports, replaces the roots for tests; `-p` still moves the rest of the trace.
-- D129 `+tld NAME` asks IANA's RDAP server what it knows of one TLD: a GET of `https://rdap.iana.org/domain/NAME`
+- D129 (amended by D130) `+tld NAME` asks IANA's RDAP server what it knows of one TLD: a GET of `https://rdap.iana.org/domain/NAME`
   accepting `application/rdap+json` (RFC 7480 §4.2, RFC 9082 §3.1.3), NAME in A-labels (D32's IDNA), one LDH label
   or a usage error. HTTPS by `ureq`, blocking as `dedensd`'s list downloads (D57): one request needs no runtime;
   the trust is DNS over TLS's (`--tls-ca`, `--tls-insecure`), `+time` bounds the whole exchange. The human format
@@ -122,8 +122,33 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   name, `@server`, `-p`, `-x`, `-f`, `--save-wire`, `+repeat`, `+trace`, `+search`, `--short` and every query
   option but `+time` are refused. The reader (`apps/dedens/src/rdap.rs`, for `+rdap` too) types the members
   printed, others ignored (RFC 9083 §2.1), and is fuzzed (`parse_rdap`). `DEDENS_RDAP` replaces the server for
-  tests; `just rdap-capture` captures their answers (`testdata/rdap/`). Rejected: the contacts and dates of
-  `tlds.json` (it has none, D126), WHOIS (free text), IANA's root zone database pages (HTML).
+  tests (its scheme, host and port, D130); `just rdap-capture` captures their answers (`testdata/rdap/`). Rejected:
+  the contacts and dates of `tlds.json` (it has none, D126), WHOIS (free text), IANA's root zone database pages
+  (HTML).
+- D130 (amends D129) `+rdap NAME` asks the RDAP server of a domain's TLD about its registration. The server is
+  found in IANA's bootstrap file (`https://data.iana.org/rdap/dns.json`, RFC 9224 §4, the label-wise longest
+  match), fetched once per run and kept nowhere: `dedens` holds no state, and a run asks one name. The first HTTPS
+  base URL of the entry is asked for `domain/NAME` (RFC 9082 §3.1.3), NAME in A-labels, two LDH labels at least
+  (one is `+tld`'s, a usage error saying so). HTTPS only, with D129's trust: a TLD served over HTTP alone (`kg`,
+  `mg` in 2026) is exit 10, as is a TLD without an entry (RFC 9224 §7: `de`, `io`), the bundled TLD list (D126)
+  telling "a TLD without RDAP" from "not a TLD". Redirects are followed, 5 at most (RFC 7480 §5.2, a registry
+  that moved), and the URL printed is the last. Where registrations start is not known without a public suffix
+  list, which `dedens` does not carry (bundled it ages, fetched it is one more source): the walk asks NAME, then
+  each parent while the answer is a 404, or a 400 (Public Interest Registry's for a name under one registered),
+  down to the label under the bootstrap entry, never the TLD itself; the first other answer is printed, the last
+  name's 404 is "not found", exit 0. `+tld` shares the client and the printer (`apps/dedens/src/run/rdap.rs`),
+  which adds to D129's sections the registrar (the `registrar` entity: its name, its `publicIds`, as IANA's
+  registrar ID, its contact), the statuses on the status line, the redacted fields (RFC 9537 §4.2: each one's
+  `name` and `method`, `removal` when absent, with its `reason`; the JSONPath not evaluated, §5.1) and, as the
+  RDAP server, a `related` link of RDAP's media type (a thin registry's link to the registrar's server, not
+  followed: one server asked per name). An empty contact name is shown as `redacted` (RFC 9537 §3.2 `emptyValue`),
+  not as nothing. JSON and YAML print the answer as received, an empty 404 as nothing. `+time` bounds each
+  exchange; the refusals, the exit codes and `DEDENS_RDAP`, now replacing the scheme, host and port of every URL
+  asked, path kept, are D129's. `just rdap-capture` captures the bootstrap file and the answers tested (ccTLD
+  `bbc.co.uk` with `emptyValue`, gTLD `wikipedia.org` with a removal, Verisign's empty 404, PIR's 400). Rejected:
+  following the registrar's server (a second answer to merge, the registry's is the authority on the registration),
+  RFC 9224 §8's cache (a file to keep between runs), a bundled bootstrap file (stale within months), HTTP servers
+  (an answer anyone on the path rewrites).
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
   privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
   measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
