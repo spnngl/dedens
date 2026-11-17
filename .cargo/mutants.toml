@@ -16,6 +16,8 @@ exclude_re = [
   'name\.rs:\d+:\d+: replace \| with \^ in (scan|unpack)$',
   # A stamp's properties: three flags each in a bit of its own, so `|` and `^` are the same.
   'stamp\.rs:\d+:\d+: replace \| with \^ in Properties::bits$',
+  # The flags a root file opens with, `O_NOFOLLOW` and `O_NONBLOCK`, each in a bit of its own: the same again.
+  'roots\.rs:\d+:\d+: replace \| with \^ in open$',
   # Reading more than a stream holds is still refused by the length check below; the other changes hang the read.
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
@@ -29,6 +31,9 @@ exclude_re = [
   # dedensd's entry for the simulation: only dedens-sim's `serving` family calls it, and cargo-mutants runs the tests
   # of the mutated package alone (D182).
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
+  # Every plan but `Unprivileged` takes root, or a `user` naming the one running the tests, which no test sets: under
+  # `Unprivileged` `drop_root` applies nothing and returns `Ok(None)` (D122).
+  'dedensd/src/lib\.rs:\d+:\d+: replace drop_root -> .* with Ok\(None\)$',
   # The same for the DNSCrypt provider's entry (D99): dedens-sim's `dnscrypt` test calls it.
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated_dnscrypt(<N>)? (with \(\)|-> anyhow::Result<\(\)> with Ok\(\(\)\))$',
   # A key file is read in one `read` or a few: an interrupted read is retried, which no test makes a file do.

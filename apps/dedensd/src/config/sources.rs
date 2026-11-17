@@ -219,8 +219,6 @@ pub(crate) struct Downloads {
     pub(crate) roots: Used,
     /// Where the root files come from.
     sources: RootsFile,
-    /// Whether the age of the TLD list was checked at this load: once, however many `tlds` stages.
-    stale_warned: bool,
 }
 
 impl StageFile {
@@ -272,7 +270,6 @@ impl Downloads {
             state_dir: state_dir.unwrap_or_else(|| STATE_DIR.into()),
             roots: Used::default(),
             sources: roots,
-            stale_warned: false,
         })
     }
 
@@ -317,9 +314,11 @@ impl Downloads {
                 tlds
             }
         };
-        if !self.stale_warned {
-            self.stale_warned = true;
-            roots::warn_stale(&tlds, unix_seconds());
+        if roots::stale(&tlds, unix_seconds()) {
+            tracing::warn!(
+                generated = tlds.generated(),
+                "the TLD list is older than 30 days: TLDs outside it are passed on, not answered NXDOMAIN"
+            );
         }
         Ok(tlds)
     }
@@ -832,7 +831,6 @@ mod tests {
                 state_dir: STATE_DIR.into(),
                 roots: Used::default(),
                 sources: RootsFile::default(),
-                stale_warned: false,
             }
         );
     }

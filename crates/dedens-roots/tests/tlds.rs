@@ -130,6 +130,7 @@ fn a_list_is_as_old_as_its_generated_time() {
     assert_eq!(at("2024-02-29T00:00:00Z"), Ok(1_709_164_800));
     assert_eq!(at("1970-01-31T00:59:60Z"), Ok(30 * 86_400 + 3600));
     assert_eq!(at("1970-01-01T23:59:00+23:58"), Ok(60));
+    assert_eq!(at("1970-01-02T00:00:00+23:59"), Ok(60));
     for refused in [
         "1969-12-31T23:59:59Z",
         "2026-11-16 23:49:03Z",

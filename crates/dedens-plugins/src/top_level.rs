@@ -84,8 +84,8 @@ pub struct TopLevel {
     counted: Counted,
 }
 
-impl core::fmt::Debug for TopLevel {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl std::fmt::Debug for TopLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TopLevel")
             .field("tlds", &self.tlds.iter().len())
             .field("stale_at", &self.stale_at)

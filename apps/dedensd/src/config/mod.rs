@@ -915,6 +915,7 @@ mod tests {
             ];
             let dirs: Vec<_> = dirs.into_iter().flatten().collect();
             assert_eq!(downloads.roots_dirs(), dirs, "{text}");
+            assert_eq!(downloads.is_empty(), dirs.is_empty(), "{text}");
         }
     }
 

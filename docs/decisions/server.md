@@ -1420,8 +1420,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (`TrustAnchors`'s canonical text, negative anchors included), whatever its source: a new set builds a fresh
   validator, whose keys are proven again, and flushes the caches behind it (D77); the same set kept keeps both. A
   TLD list older than 30 days by its `meta.generated` (`dedens_plugins::MAX_LIST_AGE`) has the stage pass on a
-  TLD outside it instead of NXDOMAIN, as it may since have been delegated: `dedensd` warns of it once per load,
-  `dedensd_tlds_stale_total` counts those passed on. `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is
+  TLD outside it instead of NXDOMAIN, as it may since have been delegated: `dedensd` warns of it at each load, per
+  `tlds` stage, `dedensd_tlds_stale_total` counts those passed on. `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is
   the age of the copy in use, since IANA generated the list or ICANN signed the anchors, set at each refresh. The
   Landlock plan must let `downloads.dir` and `state_dir` be written. Rejected: keeping the signed pair and
   verifying it at each load (the signing certificate expires, a crash between two renames splits the pair, and

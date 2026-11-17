@@ -362,6 +362,21 @@ pub(crate) fn save(
     save_with(copy, text, version, |tag, version| replace(tag, version))
 }
 
+/// Removes the version tag of `copy`, if any, so that the next request for it is unconditional.
+///
+/// # Errors
+///
+/// The tag there and not removed, or the directory not synced.
+pub(crate) fn untag(copy: &Path) -> anyhow::Result<()> {
+    let tag = tag(copy);
+    let dir = copy.parent().unwrap_or(Path::new("."));
+    match fs::remove_file(&tag) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => sync_dir(dir),
+    }
+    .with_context(|| format!("removing `{}`", tag.display()))
+}
+
 /// [`save`], writing the tag with `write_tag`.
 fn save_with(
     copy: &Path,
@@ -369,14 +384,9 @@ fn save_with(
     version: Option<&str>,
     write_tag: impl FnOnce(&Path, &str) -> io::Result<()>,
 ) -> anyhow::Result<()> {
-    let tag = tag(copy);
-    let dir = copy.parent().unwrap_or(Path::new("."));
-    match fs::remove_file(&tag) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => sync_dir(dir),
-    }
-    .with_context(|| format!("removing `{}`", tag.display()))?;
+    untag(copy)?;
     replace(copy, text).with_context(|| format!("writing `{}`", copy.display()))?;
+    let tag = tag(copy);
     if let Some(version) = version
         && let Err(error) = write_tag(&tag, version)
     {
@@ -699,6 +709,17 @@ pub(crate) mod tests {
 
     /// L13: a symlink left at the old, predictable `.part` name is not written through.
     #[cfg(unix)]
+    /// A copy is named by the 64-bit FNV-1a of its URL, so that one saved by an earlier version keeps its name.
+    #[test]
+    fn a_copy_is_named_by_the_fnv_1a_of_its_url() {
+        assert_eq!(hash(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(
+            copy(Path::new("d"), "a"),
+            Path::new("d").join("af63dc4c8601ec8c.list")
+        );
+    }
+
     #[test]
     fn a_copy_is_not_written_through_a_symlink() {
         let dir = tempfile::tempdir().unwrap();
