@@ -56,6 +56,11 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         "tlds.json".into(),
         include_bytes!("../../crates/dedens-roots/tests/data/tlds.json").to_vec(),
     ));
+    // ICANN's CA bundle, which checks the signature of `root-anchors.xml` (D127).
+    seeds.push((
+        "icannbundle.pem".into(),
+        include_bytes!("../../crates/dedens-dnssec/src/icannbundle.pem").to_vec(),
+    ));
     seeds.sort();
     seeds
 }
