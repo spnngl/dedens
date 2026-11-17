@@ -10,17 +10,33 @@ use std::collections::{HashMap, HashSet};
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
 #[cfg(feature = "fetch-anchors")]
-pub use signature::SignedAnchorError;
+pub use signature::{MAX_P7S, MAX_XML, SignedAnchorError};
 #[cfg(feature = "fetch-anchors")]
 pub use xml::AnchorXmlError;
 
 /// The root's DS records, written by `just roots` from IANA's `root-anchors.xml` (RFC 9718 §2).
 const ROOT: &str = include_str!("root.ds");
 
-/// ICANN's CA certificates, which issue the certificate signing `root-anchors.xml` (RFC 9718 §3.2), copied from
-/// `https://data.iana.org/root-anchors/icannbundle.pem` by `just roots` (D127).
+/// ICANN's CA certificates, which issue the certificate signing `root-anchors.xml` (RFC 9718 §3.2): IANA's
+/// `https://data.iana.org/root-anchors/icannbundle.pem`, copied by hand once checked out of band (D127).
 #[cfg(feature = "fetch-anchors")]
 const ICANN_CA: &str = include_str!("icannbundle.pem");
+
+/// When ICANN signed the `root-anchors.xml` that `src/root.ds` was read from, in seconds since 1970, written by
+/// `just roots`: the earliest signing time [`TrustAnchors::verified`] accepts (D127).
+#[cfg(feature = "fetch-anchors")]
+#[expect(clippy::unreadable_literal, reason = "a number `just roots` writes")]
+const ROOT_SIGNED_AT: u64 = include!("root.signed_at");
+
+/// The anchors of a signed `root-anchors.xml` and when ICANN signed it (RFC 5652 §11.3).
+#[cfg(feature = "fetch-anchors")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedAnchors {
+    /// The anchors, as [`TrustAnchors::from_unverified_xml`] reads them.
+    pub anchors: TrustAnchors,
+    /// The signing time, in seconds since 1970: the `last_signed_at` of the next [`TrustAnchors::verified`].
+    pub signed_at: u64,
+}
 
 /// The records that anchor one zone (RFC 4035 §4.4): at least one, as only [`TrustAnchors::read`] makes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,28 +193,52 @@ impl TrustAnchors {
     ///
     /// As [`TrustAnchors::verified_by`].
     #[cfg(feature = "fetch-anchors")]
-    pub fn verified(xml: &[u8], p7s: &[u8], now: u64) -> Result<Self, SignedAnchorError> {
-        Self::verified_by(xml, p7s, ICANN_CA, now)
+    pub fn verified(
+        xml: &[u8],
+        p7s: &[u8],
+        now: u64,
+        last_signed_at: Option<u64>,
+    ) -> Result<SignedAnchors, SignedAnchorError> {
+        Self::verified_by(xml, p7s, ICANN_CA, now, last_signed_at)
     }
 
     /// The anchors of `xml`, a `root-anchors.xml`, valid at `now`, once `p7s` is checked as its signature by a
     /// certificate for `dnssec@iana.org` that a CA of `ca`, PEM certificates, issued; both certificates valid at
-    /// `now` (RFC 9718 §3.2). Then as [`TrustAnchors::from_xml`].
+    /// `now` (RFC 9718 §3.2); signed at or after `last_signed_at`, the [`SignedAnchors::signed_at`] the caller
+    /// last accepted, and the bundled anchors' signing time: an older pair, which may list a key since retired, is
+    /// not replayed (D127). Then as [`TrustAnchors::from_unverified_xml`].
     ///
     /// # Errors
     ///
-    /// [`SignedAnchorError::Ca`] when `ca` holds no certificate, [`SignedAnchorError::Signature`] when the
-    /// signature does not hold, [`SignedAnchorError::Xml`] when the signed XML is refused.
+    /// [`SignedAnchorError::TooLarge`] when `xml` or `p7s` is longer than its limit, [`SignedAnchorError::Ca`]
+    /// when `ca` holds no certificate, [`SignedAnchorError::Signature`] when the signature does not hold or is
+    /// older, [`SignedAnchorError::Xml`] when the signed XML is refused.
     #[cfg(feature = "fetch-anchors")]
     pub fn verified_by(
         xml: &[u8],
         p7s: &[u8],
         ca: &str,
         now: u64,
-    ) -> Result<Self, SignedAnchorError> {
-        signature::check(xml, p7s, &signature::cas(ca)?, now)
-            .map_err(SignedAnchorError::Signature)?;
-        Ok(Self::from_xml(xml, now)?)
+        last_signed_at: Option<u64>,
+    ) -> Result<SignedAnchors, SignedAnchorError> {
+        for (file, bytes, limit) in [
+            ("root-anchors.xml", xml, MAX_XML),
+            ("root-anchors.p7s", p7s, MAX_P7S),
+        ] {
+            if bytes.len() > limit {
+                return Err(SignedAnchorError::TooLarge { file, limit });
+            }
+        }
+        let trust = signature::Trust {
+            cas: &signature::cas(ca)?,
+            now,
+            floor: last_signed_at.map_or(ROOT_SIGNED_AT, |last| last.max(ROOT_SIGNED_AT)),
+        };
+        let signed_at = signature::check(xml, p7s, &trust).map_err(SignedAnchorError::Signature)?;
+        Ok(SignedAnchors {
+            anchors: Self::from_unverified_xml(xml, now)?,
+            signed_at,
+        })
     }
 
     /// The anchors of `xml`, a `root-anchors.xml` (RFC 9718 §2), unsigned: the DS records of its `KeyDigest`
@@ -209,7 +249,7 @@ impl TrustAnchors {
     ///
     /// [`AnchorXmlError`] when `xml` is not the XML of RFC 9718 §2, or no entry is valid at `now`.
     #[cfg(feature = "fetch-anchors")]
-    pub fn from_xml(xml: &[u8], now: u64) -> Result<Self, AnchorXmlError> {
+    pub fn from_unverified_xml(xml: &[u8], now: u64) -> Result<Self, AnchorXmlError> {
         xml::read(xml, now)
     }
 

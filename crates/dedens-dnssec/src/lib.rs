@@ -72,7 +72,7 @@ mod validator;
 // `validator` are flat here.
 pub use anchor::{Anchor, AnchorError, TrustAnchors};
 #[cfg(feature = "fetch-anchors")]
-pub use anchor::{AnchorXmlError, SignedAnchorError};
+pub use anchor::{AnchorXmlError, MAX_P7S, MAX_XML, SignedAnchorError, SignedAnchors};
 pub use validator::{
     Cost, Delegation, InsecureReason, Limits, MAX_CHASES, Next, Validation, Validator, Verdict,
     covered,

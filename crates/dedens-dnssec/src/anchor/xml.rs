@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use data_encoding::{BASE64, HEXUPPER_PERMISSIVE};
-use dedens_proto::rdata::Ds;
+use dedens_proto::rdata::{Dnskey, Ds};
 use dedens_proto::{DigestType, Name, SecAlgorithm};
 use x509_cert::der::DateTime;
 
@@ -105,6 +105,10 @@ pub(super) fn read(xml: &[u8], now: u64) -> Result<TrustAnchors, AnchorXmlError>
         .trim_matches(is_space)
         .parse()
         .map_err(|_| AnchorXmlError::Invalid("a Zone that is not a domain name"))?;
+    // RFC 9718 §2.2: the file anchors the root zone, and this reader only it.
+    if zone != Name::root() {
+        return Err(AnchorXmlError::Invalid("a Zone other than the root"));
+    }
     let mut ds = Vec::new();
     for entry in &entries {
         if let Some(record) = entry.ds(&zone, now)? {
@@ -239,7 +243,7 @@ impl Entry {
                 let mut rdata = Vec::from(flags.to_be_bytes());
                 rdata.extend([3, algorithm.0]);
                 rdata.extend(key);
-                Some(rdata)
+                Some((flags, rdata))
             }
             _ => {
                 return Err(AnchorXmlError::Invalid(
@@ -250,8 +254,11 @@ impl Entry {
         if now < valid_from || valid_until.is_some_and(|until| now >= until) {
             return Ok(None);
         }
-        let matches = dnskey.is_none_or(|rdata| {
-            key_tag(&rdata) == tag
+        // A key that is not a zone key, or that its zone revoked (RFC 4034 §2.1.1, RFC 5011 §2.1), anchors nothing.
+        let matches = dnskey.is_none_or(|(flags, rdata)| {
+            flags & Dnskey::ZONE_KEY != 0
+                && flags & Dnskey::REVOKE == 0
+                && key_tag(&rdata) == tag
                 && ds_digest(digest_type, zone, &rdata).is_ok_and(|d| d.as_ref() == digest)
         });
         Ok(matches.then_some(ds))

@@ -1,7 +1,8 @@
 //! `just roots`: the root's DS records of IANA's `root-anchors.xml` valid now, once its `.p7s` signature
-//! is checked against ICANN's bundled CA (RFC 9718 §3.2, D127), written to stdout as `src/root.ds` holds them.
+//! is checked against ICANN's bundled CA (RFC 9718 §3.2, D127), written to stdout as `src/root.ds` holds them;
+//! its signing time, in seconds since 1970, written to `<signed_at>` as `src/root.signed_at` holds it.
 //!
-//! Usage: `root_anchors <root-anchors.xml> <root-anchors.p7s>`.
+//! Usage: `root_anchors <root-anchors.xml> <root-anchors.p7s> <signed_at>`.
 
 use std::io::Write as _;
 use std::process::ExitCode;
@@ -22,17 +23,21 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
-    let (Some(xml), Some(p7s), None) = (args.next(), args.next(), args.next()) else {
-        return Err("usage: root_anchors <root-anchors.xml> <root-anchors.p7s>".into());
+    let (Some(xml), Some(p7s), Some(signed_at), None) =
+        (args.next(), args.next(), args.next(), args.next())
+    else {
+        return Err("usage: root_anchors <root-anchors.xml> <root-anchors.p7s> <signed_at>".into());
     };
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let anchors = TrustAnchors::verified(&std::fs::read(xml)?, &std::fs::read(p7s)?, now)?;
-    let (_, root) = anchors
+    let signed = TrustAnchors::verified(&std::fs::read(xml)?, &std::fs::read(p7s)?, now, None)?;
+    let (_, root) = signed
+        .anchors
         .closest(&Name::root())
         .ok_or("root-anchors.xml anchors another zone than the root")?;
     let mut out = std::io::stdout().lock();
     for ds in root.ds() {
         writeln!(out, ". IN DS {ds}")?;
     }
+    std::fs::write(signed_at, format!("{}\n", signed.signed_at))?;
     Ok(())
 }
