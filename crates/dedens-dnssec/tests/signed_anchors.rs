@@ -129,10 +129,14 @@ fn s3_2_a_changed_byte_of_the_signers_name_is_refused() {
 }
 
 #[test]
-fn s3_2_a_signature_out_of_its_certificates_validity_is_refused() {
+fn s3_2_a_signature_holds_within_its_certificates_validity_only() {
     let (xml, p7s) = (file("root-anchors.xml"), file("root-anchors.p7s"));
-    // The signer's certificate is valid from 2023-03-15 to 2029-03-13.
-    for now in [day(2023, 3, 14), day(2029, 3, 14)] {
+    // The signer's certificate is valid from 2023-03-15 21:49:35 to 2029-03-13 21:49:35, both included.
+    let (from, until) = (day(2023, 3, 15) + 78_575, day(2029, 3, 13) + 78_575);
+    for now in [from, until] {
+        assert!(TrustAnchors::verified(&xml, &p7s, now).is_ok(), "{now}");
+    }
+    for now in [from - 1, until + 1] {
         assert_eq!(
             TrustAnchors::verified(&xml, &p7s, now),
             Err(SignedAnchorError::Signature(
@@ -225,6 +229,36 @@ fn s2_each_key_digest_holds_within_its_validity() {
     assert_eq!(at(day(2017, 2, 2)), Ok(vec![19036, 20326]));
     assert_eq!(at(day(2019, 1, 11)), Ok(vec![20326]));
     assert_eq!(at(day(2024, 7, 18)), Ok(vec![20326, 38696]));
+}
+
+#[test]
+fn s2_1_2_a_date_reads_in_its_time_zone() {
+    let xml = String::from_utf8(file("root-anchors.xml")).expect("UTF-8");
+    let with = |from: &str| xml.replace("2024-07-18T00:00:00+00:00", from).into_bytes();
+    let at = |xml: &[u8], now| TrustAnchors::from_xml(xml, now).map(|anchors| tags(&anchors));
+    let midnight = day(2024, 7, 18);
+    for same in [
+        "2024-07-18T00:00:00Z",
+        "2024-07-18T02:00:00+02:00",
+        "2024-07-17T19:30:00-04:30",
+    ] {
+        assert_eq!(at(&with(same), midnight - 1), Ok(vec![20326]), "{same}");
+        assert_eq!(at(&with(same), midnight), Ok(vec![20326, 38696]), "{same}");
+    }
+    for wrong in [
+        "2024-07-18T00:00:00",
+        "2024-07-18 00:00:00Z",
+        "2024-07-18T00:00:00.5Z",
+        "2024-07-18T00:00:00+15:00",
+    ] {
+        assert_eq!(
+            at(&with(wrong), midnight),
+            Err(AnchorXmlError::Invalid(
+                "a date that is not YYYY-MM-DDThh:mm:ss and a time zone"
+            )),
+            "{wrong}"
+        );
+    }
 }
 
 #[test]
