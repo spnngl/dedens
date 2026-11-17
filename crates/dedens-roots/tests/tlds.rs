@@ -109,6 +109,54 @@ fn a_copy_of_the_bundled_list_reads_as_it() {
 }
 
 #[test]
+fn a_list_is_as_old_as_its_generated_time() {
+    let generated = "2026-11-16T23:49:03+00:00";
+    assert_eq!(Tlds::bundled().generated(), 1_794_872_943, "{generated}");
+    let bundled = include_str!("../src/tlds.json");
+    assert!(bundled.contains(generated), "the bundled `meta.generated`");
+    let at = |time: &str| {
+        Tlds::read(bundled.replacen(generated, time, 1).as_bytes())
+            .map(|tlds| tlds.generated())
+            .map_err(|error| error.to_string())
+    };
+    for same in [
+        "2026-11-16T23:49:03Z",
+        "2026-11-16t23:49:03.999z",
+        "2026-11-17T01:19:03+01:30",
+        "2026-11-16T22:48:03-01:01",
+    ] {
+        assert_eq!(at(same), Ok(1_794_872_943), "{same}");
+    }
+    assert_eq!(at("2024-02-29T00:00:00Z"), Ok(1_709_164_800));
+    assert_eq!(at("1970-01-31T00:59:60Z"), Ok(30 * 86_400 + 3600));
+    assert_eq!(at("1970-01-01T23:59:00+23:58"), Ok(60));
+    for refused in [
+        "1969-12-31T23:59:59Z",
+        "2026-11-16 23:49:03Z",
+        "2026-11-16T23:49:03",
+        "2026-11-16T23:49:03+0000",
+        "2026-11-16T23:49:03+24:00",
+        "2026-11-16T23:49:03+00:60",
+        "2026-11-16T23:49:03Z ",
+        "2026-00-16T23:49:03Z",
+        "2026-13-16T23:49:03Z",
+        "2026-11-00T23:49:03Z",
+        "2026-11-32T23:49:03Z",
+        "2026-11-16T24:49:03Z",
+        "2026-11-16T23:60:03Z",
+        "2026-11-16T23:49:61Z",
+        "+026-11-16T23:49:03Z",
+        "2026-11-16T23:49",
+    ] {
+        assert_eq!(
+            at(refused),
+            Err(format!("generated {refused:?} is not a time")),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
 fn a_copy_of_half_the_bundled_list_reads_one_less_is_refused() {
     let mut json: serde_json::Value =
         serde_json::from_slice(include_bytes!("../src/tlds.json")).expect("the bundled list");
