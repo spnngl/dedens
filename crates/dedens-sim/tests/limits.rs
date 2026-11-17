@@ -58,6 +58,10 @@ const FEW: &[u64] = &[0, 7];
 /// Three seeds for the property, whose runs go through the stub's timeouts.
 const THREE: &[u64] = &[0, 7, 42];
 
+/// `THREE` and the seed that had three other networks warm the cache with three of the greedy one's names, which
+/// left it within its share, for the property of the shares.
+const SHED_ALONE: &[u64] = &[0, 7, 42, 4_595_816_390_109_292_730];
+
 /// One seed for the scenario that runs twice in two processes.
 const ONE: &[u64] = &[0];
 
@@ -713,9 +717,13 @@ fn a_network_over_its_share_of_validation_is_shed_and_the_others_are_not() {
 /// The property of the shares: a network that asks the five cold names one after the other, over UDP or TCP, is
 /// validated for the first and shed with EDE 14 for some of the others; each of the one to three other networks,
 /// whose single client asks one cold name when the seed says, is validated, however the greedy one was shed. D117.
+///
+/// The other networks ask the same name: a name another network asked first comes from the cache, which costs no
+/// share, and three other names left the greedy network two cold validations, within its share. One name leaves it
+/// four: a cold validation of `COLD` spends 11 units or more, so the fourth is refused if the third was not shed.
 #[test]
 fn whatever_the_seed_picks_a_network_is_shed_alone() {
-    seed::each(THREE, |seed| {
+    seed::each(SHED_ALONE, |seed| {
         let mut rng = Rng::new(seed, SCENE);
         let mut pick = |bound: usize| {
             let bound = u64::try_from(bound).unwrap_or(u64::MAX);
@@ -733,10 +741,10 @@ fn whatever_the_seed_picks_a_network_is_shed_alone() {
             (carrier, Duration::ZERO),
             &COLD,
         );
+        let name = pick(COLD.len());
         let others: Vec<_> = NETS[1..=1 + pick(3)]
             .iter()
             .map(|prefix| {
-                let name = pick(COLD.len());
                 let after = Duration::from_millis(100 * u64::try_from(pick(15)).unwrap_or(0));
                 ask_cold(
                     &mut world,
