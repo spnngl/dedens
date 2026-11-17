@@ -1,17 +1,15 @@
-//! IANA's `root-anchors.xml` (RFC 9718 §2): its `KeyDigest` entries valid at a time, as DS records.
+//! IANA's `root-anchors.xml` (RFC 9718 §2): its `KeyDigest` entries, as DS records with their validity.
 //!
 //! A reader of this one schema, not of XML (D127): elements, attributes, text, comments and the XML declaration.
 //! A DOCTYPE, a CDATA section or an entity reference is refused, as IANA's file holds none. Unknown elements and
 //! attributes are skipped, so that a schema grown by a later RFC still reads.
-
-use std::collections::{HashMap, HashSet};
 
 use data_encoding::{BASE64, HEXUPPER_PERMISSIVE};
 use dedens_proto::rdata::{Dnskey, Ds};
 use dedens_proto::{DigestType, Name, SecAlgorithm};
 use x509_cert::der::DateTime;
 
-use super::{Anchor, TrustAnchors};
+use super::RootKey;
 use crate::crypto::{ds_digest, key_tag};
 
 /// Why `root-anchors.xml` is refused (RFC 9718 §2).
@@ -35,10 +33,9 @@ pub enum AnchorXmlError {
     NoneValid,
 }
 
-/// The anchors of the `KeyDigest` entries of `xml` valid at `now`, in seconds since 1970 (RFC 9718 §2.2,
-/// §4.1.1): from `validFrom` on and before `validUntil`. An entry carrying `PublicKey` and `Flags` whose digest
-/// or key tag does not match that DNSKEY is not used (§4.1.2).
-pub(super) fn read(xml: &[u8], now: u64) -> Result<TrustAnchors, AnchorXmlError> {
+/// The keys of the `KeyDigest` entries of `xml` (RFC 9718 §2.2), in its order, whatever their validity. An entry
+/// carrying `PublicKey` and `Flags` whose digest or key tag does not match that DNSKEY is not used (§4.1.2).
+pub(super) fn read(xml: &[u8]) -> Result<Vec<RootKey>, AnchorXmlError> {
     let text = str::from_utf8(xml).map_err(|error| AnchorXmlError::Syntax {
         at: error.valid_up_to(),
         what: "not UTF-8",
@@ -109,25 +106,11 @@ pub(super) fn read(xml: &[u8], now: u64) -> Result<TrustAnchors, AnchorXmlError>
     if zone != Name::root() {
         return Err(AnchorXmlError::Invalid("a Zone other than the root"));
     }
-    let mut ds = Vec::new();
+    let mut keys = Vec::new();
     for entry in &entries {
-        if let Some(record) = entry.ds(&zone, now)? {
-            ds.push(record);
-        }
+        keys.extend(entry.key(&zone)?);
     }
-    if ds.is_empty() {
-        return Err(AnchorXmlError::NoneValid);
-    }
-    Ok(TrustAnchors {
-        zones: HashMap::from([(
-            zone,
-            Anchor {
-                ds,
-                dnskeys: Vec::new(),
-            },
-        )]),
-        negative: HashSet::new(),
-    })
+    Ok(keys)
 }
 
 /// Sets an element's text once: the schema has each element at most once where this reader looks.
@@ -206,9 +189,8 @@ impl Entry {
         set(field, text)
     }
 
-    /// The DS record of the entry if it is valid at `now`, `None` if not. Every value is read, so that an entry
-    /// out of its time is refused all the same when it is not valid.
-    fn ds(&self, zone: &Name<'_>, now: u64) -> Result<Option<Ds<'static>>, AnchorXmlError> {
+    /// The key of the entry, `None` when the DNSKEY it carries does not match it or anchors nothing.
+    fn key(&self, zone: &Name<'_>) -> Result<Option<RootKey>, AnchorXmlError> {
         let valid_from = date_time(required(
             self.valid_from.as_deref(),
             "a KeyDigest without validFrom",
@@ -251,9 +233,6 @@ impl Entry {
                 ));
             }
         };
-        if now < valid_from || valid_until.is_some_and(|until| now >= until) {
-            return Ok(None);
-        }
         // A key that is not a zone key, or that its zone revoked (RFC 4034 §2.1.1, RFC 5011 §2.1), anchors nothing.
         let matches = dnskey.is_none_or(|(flags, rdata)| {
             flags & Dnskey::ZONE_KEY != 0
@@ -261,7 +240,11 @@ impl Entry {
                 && key_tag(&rdata) == tag
                 && ds_digest(digest_type, zone, &rdata).is_ok_and(|d| d.as_ref() == digest)
         });
-        Ok(matches.then_some(ds))
+        Ok(matches.then_some(RootKey {
+            ds,
+            valid_from,
+            valid_until,
+        }))
     }
 }
 

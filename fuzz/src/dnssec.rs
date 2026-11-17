@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::denial::{self, MaxIterations};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_dnssec::{Limits, Next, TrustAnchors, Validator, Verdict};
+use dedens_dnssec::{Limits, Next, RootAnchors, TrustAnchors, Validator, Verdict};
 use dedens_proto::rdata::RData;
 use dedens_proto::{
     DigestType, Message, Name, Nsec3HashAlgorithm, Question, Record, RecordType, SecAlgorithm, Ttl,
@@ -287,8 +287,9 @@ const ROOT_ANCHORS_P7S: &[u8] = include_bytes!("../../testdata/dnssec/root-ancho
 const ROOT_ANCHORS_AT: &str = include_str!("../../testdata/dnssec/root-anchors.captured_at");
 
 /// IANA's root anchors (RFC 9718 §2, §3.2, D127) from bytes outside: as the XML, as the `.p7s` of the captured
-/// XML, and as the CA bundle checking the captured pair. Nothing panics; a root anchor read from the XML has DS
-/// records; a signature that holds over the captured XML yields its anchors.
+/// XML, as the CA bundle checking the captured pair, and as the text a server keeps of them (D128). Nothing
+/// panics; a root anchor read from the XML has DS records; a signature that holds over the captured XML yields
+/// its anchors; kept text that reads reads back as written.
 ///
 /// # Panics
 ///
@@ -302,6 +303,20 @@ pub fn parse_root_anchors(data: &[u8]) {
         && let Some((_, anchor)) = anchors.closest(&Name::root())
     {
         assert!(!anchor.ds().is_empty(), "a root anchor from XML without DS");
+    }
+    if let Ok(text) = std::str::from_utf8(data)
+        && let Ok(kept) = RootAnchors::read(text)
+    {
+        assert_eq!(
+            RootAnchors::read(&kept.to_string()).as_ref(),
+            Ok(&kept),
+            "kept anchors read other than written"
+        );
+        assert!(
+            kept.at(now)
+                .is_none_or(|anchors| anchors.closest(&Name::root()).is_some()),
+            "kept anchors valid now but none at the root"
+        );
     }
     let expected =
         TrustAnchors::from_unverified_xml(ROOT_ANCHORS_XML, now).expect("the captured XML");

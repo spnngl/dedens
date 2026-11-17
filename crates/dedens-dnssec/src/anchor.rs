@@ -1,14 +1,19 @@
 //! Trust anchors (RFC 4035 §4.4, RFC 7646, D72); [`TrustAnchors`] says what they are.
 
 #[cfg(feature = "fetch-anchors")]
+mod root;
+#[cfg(feature = "fetch-anchors")]
 mod signature;
 #[cfg(feature = "fetch-anchors")]
 mod xml;
 
+use core::fmt;
 use std::collections::{HashMap, HashSet};
 
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
+#[cfg(feature = "fetch-anchors")]
+pub use root::{RootAnchors, RootAnchorsError, RootKey};
 #[cfg(feature = "fetch-anchors")]
 pub use signature::{AnchorFile, MAX_P7S, MAX_XML, SignedAnchorError};
 #[cfg(feature = "fetch-anchors")]
@@ -26,7 +31,7 @@ const ICANN_CA: &str = include_str!("icannbundle.pem");
 /// `just roots` (the example `root_anchors`): the earliest signing time [`TrustAnchors::verified`] accepts (D127).
 #[cfg(feature = "fetch-anchors")]
 #[expect(clippy::unreadable_literal, reason = "a number `just roots` writes")]
-const ROOT_SIGNED_AT: u64 = include!("root.signed_at");
+pub const ROOT_SIGNED_AT: u64 = include!("root.signed_at");
 
 /// The anchors of a signed `root-anchors.xml` and when ICANN signed it (RFC 5652 §11.3): only
 /// [`TrustAnchors::verified`] makes one, so its signing time is one a signature held for.
@@ -35,34 +40,40 @@ const ROOT_SIGNED_AT: u64 = include!("root.signed_at");
 /// // A floor no signature held for, which a caller would keep.
 /// let forged = dedens_dnssec::SignedAnchors {
 ///     anchors: dedens_dnssec::TrustAnchors::root(),
-///     signed_at: u64::MAX,
+///     root: todo!(),
 /// };
 /// ```
 #[cfg(feature = "fetch-anchors")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedAnchors {
     anchors: TrustAnchors,
-    signed_at: u64,
+    root: RootAnchors,
 }
 
 #[cfg(feature = "fetch-anchors")]
 impl SignedAnchors {
-    /// The anchors, as [`TrustAnchors::from_unverified_xml`] reads them.
+    /// The anchors valid when verified, as [`TrustAnchors::from_unverified_xml`] reads them.
     #[must_use]
     pub fn anchors(&self) -> &TrustAnchors {
         &self.anchors
     }
 
-    /// The anchors, `self` dropped.
+    /// The anchors valid when verified, `self` dropped.
     #[must_use]
     pub fn into_anchors(self) -> TrustAnchors {
         self.anchors
     }
 
+    /// Every key of the file, with its validity, and the signing time: what a server keeps (D128).
+    #[must_use]
+    pub fn root(&self) -> &RootAnchors {
+        &self.root
+    }
+
     /// The signing time, in seconds since 1970: the `last_signed_at` of the next [`TrustAnchors::verified`].
     #[must_use]
     pub fn signed_at(&self) -> u64 {
-        self.signed_at
+        self.root.signed_at
     }
 }
 
@@ -263,10 +274,12 @@ impl TrustAnchors {
             floor: last_signed_at.map_or(ROOT_SIGNED_AT, |last| last.max(ROOT_SIGNED_AT)),
         };
         let signed_at = signature::check(xml, p7s, &trust).map_err(SignedAnchorError::Signature)?;
-        Ok(SignedAnchors {
-            anchors: Self::from_unverified_xml(xml, now)?,
+        let root = RootAnchors {
+            keys: xml::read(xml)?,
             signed_at,
-        })
+        };
+        let anchors = root.at(now).ok_or(AnchorXmlError::NoneValid)?;
+        Ok(SignedAnchors { anchors, root })
     }
 
     /// The anchors of `xml`, a `root-anchors.xml` (RFC 9718 §2), unsigned: the DS records of its `KeyDigest`
@@ -278,7 +291,7 @@ impl TrustAnchors {
     /// [`AnchorXmlError`] when `xml` is not the XML of RFC 9718 §2, or no entry is valid at `now`.
     #[cfg(feature = "fetch-anchors")]
     pub fn from_unverified_xml(xml: &[u8], now: u64) -> Result<Self, AnchorXmlError> {
-        xml::read(xml, now)
+        root::valid(&xml::read(xml)?, now).ok_or(AnchorXmlError::NoneValid)
     }
 
     /// The deepest anchored zone at or above `name`, with its anchor: where the chain of trust of `name` starts.
@@ -317,5 +330,36 @@ impl TrustAnchors {
         };
         self.closest(name)
             .is_none_or(|(zone, _)| zone.label_count() <= depth)
+    }
+}
+
+/// The anchors as zone text [`TrustAnchors::read`] reads, one record per line, then each negative anchor as a
+/// comment, `; negative NAME`: all of it sorted, so that equal anchors write the same text, a validator's key
+/// (D128).
+impl fmt::Display for TrustAnchors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut lines: Vec<String> = self
+            .zones
+            .iter()
+            .flat_map(|(zone, anchor)| {
+                let ds = anchor.ds.iter().map(move |ds| format!("{zone} IN DS {ds}"));
+                let keys = anchor
+                    .dnskeys
+                    .iter()
+                    .map(move |key| format!("{zone} IN DNSKEY {key}"));
+                ds.chain(keys)
+            })
+            .collect();
+        lines.sort_unstable();
+        let mut negative: Vec<String> = self
+            .negative
+            .iter()
+            .map(|name| format!("; negative {name}"))
+            .collect();
+        negative.sort_unstable();
+        for line in lines.iter().chain(&negative) {
+            writeln!(f, "{line}")?;
+        }
+        Ok(())
     }
 }

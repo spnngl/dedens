@@ -19,7 +19,8 @@ use cms::signed_data::{SignedData, SignerIdentifier, SignerInfo};
 use data_encoding::{BASE64, HEXUPPER};
 use dedens_dnssec::crypto::{ds_digest, key_tag};
 use dedens_dnssec::{
-    AnchorFile, AnchorXmlError, MAX_P7S, MAX_XML, SignedAnchorError, SignedAnchors, TrustAnchors,
+    AnchorFile, AnchorXmlError, MAX_P7S, MAX_XML, RootAnchors, SignedAnchorError, SignedAnchors,
+    TrustAnchors,
 };
 use dedens_proto::rdata::Ds;
 use dedens_proto::{DigestType, Name};
@@ -683,6 +684,97 @@ fn s3_2_each_signer_must_verify() {
         });
     });
     refused_as(&p7s, "a signature that does not verify");
+}
+
+// --- D128: the text a server keeps of a verified pair ---
+
+/// The keys and signing time of the captured pair, verified.
+fn captured_root() -> RootAnchors {
+    TrustAnchors::verified(
+        &file("root-anchors.xml"),
+        &file("root-anchors.p7s"),
+        captured_at(),
+        None,
+    )
+    .expect("the captured pair")
+    .root()
+    .clone()
+}
+
+#[test]
+fn the_kept_anchors_read_back_as_written_with_each_keys_validity() {
+    let root = captured_root();
+    let text = root.to_string();
+    assert_eq!(
+        text.lines().collect::<Vec<_>>(),
+        [
+            "dedens root anchors 1",
+            "signed-at 1742934302",
+            "ds 19036 8 2 49aac11d7b6f6446702e54a1607371607a1a41855200fd2ce1cdde32f24e8fb5 from 1279152000 \
+             until 1547164800",
+            "ds 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d from 1485993600",
+            "ds 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16 from 1721260800",
+        ]
+    );
+    assert_eq!(RootAnchors::read(&text), Ok(root.clone()));
+    assert_eq!(root.signed_at(), SIGNED_AT);
+    let at = |now| root.at(now).map(|anchors| tags(&anchors));
+    assert_eq!(at(day(2010, 7, 14)), None);
+    assert_eq!(at(day(2017, 2, 2)), Some(vec![19036, 20326]));
+    assert_eq!(at(day(2019, 1, 11)), Some(vec![20326]));
+    assert_eq!(root.at(captured_at()), Some(TrustAnchors::root()));
+}
+
+#[test]
+fn kept_anchors_other_than_written_are_refused() {
+    let text = captured_root().to_string();
+    let refused = |text: &str| RootAnchors::read(text).map_err(|error| error.line);
+    assert_eq!(
+        refused(&text.replace(" 1\n", " 2\n")),
+        Err(1),
+        "another version"
+    );
+    assert_eq!(refused(&text.replace("signed-at ", "signed-at -")), Err(2));
+    assert_eq!(refused(&text.replace("until ", "until  ")), Err(3));
+    assert_eq!(
+        refused(&text.replace("ds 19036", "ds 190360")),
+        Err(3),
+        "a tag over 16 bits"
+    );
+    assert_eq!(
+        refused(&text.replace("5 from", "5G from")),
+        Err(3),
+        "a digest not hex"
+    );
+    assert_eq!(
+        refused(&text.replace("\nds 38696", "\n\nds 38696")),
+        Err(5),
+        "a blank line"
+    );
+    assert_eq!(refused(&format!("{text}; a comment\n")), Err(6));
+    assert_eq!(refused(text.trim_end()), Err(0), "no line feed at the end");
+    let header: String = text.split_inclusive('\n').take(2).collect();
+    assert_eq!(refused(&header), Err(0), "no key");
+    assert_eq!(refused(&"\n".repeat(RootAnchors::MAX_LEN + 1)), Err(0));
+}
+
+#[test]
+fn equal_anchors_write_the_same_text_however_built() {
+    let root = TrustAnchors::root();
+    let text = root.to_string();
+    assert!(text.starts_with(". IN DS 20326 8 2 "), "{text}");
+    assert_eq!(TrustAnchors::read(&text), Ok(root.clone()));
+    assert_eq!(
+        captured_root().at(captured_at()).map(|at| at.to_string()),
+        Some(text.clone())
+    );
+    let mut negative = root;
+    negative.add_negative("b.example.".parse().expect("a name"));
+    negative.add_negative("a.example.".parse().expect("a name"));
+    assert_eq!(
+        negative.to_string(),
+        format!("{text}; negative a.example.\n; negative b.example.\n")
+    );
 }
 
 // --- RFC 9718 §2, §4.1: the KeyDigest entries ---
