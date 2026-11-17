@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::net::UdpSocket;
+use dedens_net::io::Udp;
 use dedens_net::udp::UdpPool;
 use dedens_proto::edns::EdnsOption;
 
@@ -50,6 +51,23 @@ async fn queries_on_one_socket_get_their_own_responses() {
         (one.as_deref().map(id), two.as_deref().map(id)),
         (Some(1), Some(2))
     );
+}
+
+/// A datagram sent without waiting (`Udp::try_send_to`, D123) arrives whole, and its length is what the send says.
+#[compio::test]
+async fn a_datagram_sent_without_waiting_arrives_whole() {
+    let server = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+    let client = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+    let peer = client.local_addr().expect("its address");
+    let datagram = query_with_id(9);
+    let sent = Udp::try_send_to(&server, &datagram, peer).expect("sent");
+    assert_eq!(sent, datagram.len());
+    let receiving = client.recv_from(Vec::with_capacity(SIZE));
+    let BufResult(received, buffer) = compio::time::timeout(Duration::from_secs(5), receiving)
+        .await
+        .expect("received within 5 s");
+    assert_eq!(received.expect("received").0, datagram.len());
+    assert_eq!(buffer, datagram);
 }
 
 #[compio::test]
