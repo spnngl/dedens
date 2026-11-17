@@ -42,6 +42,8 @@ exclude_re = [
   'upstream\.rs:\d+:\d+: replace <impl TryFrom<String> for (Relay|OdohProxy)>::try_from -> Result<Self, String> with Ok\(Default::default\(\)\)$',
   # The fuzzing entry runs `lookups` for its panics and drops what it returns, which `-x` only changes.
   'dedens/src/lib\.rs:\d+:\d+: delete ! in parse_args$',
+  # The fuzzing entry of `+tld`'s reader runs it for its panics; the fuzz target drops what it returns.
+  'dedens/src/lib\.rs:\d+:\d+: replace parse_rdap -> anyhow::Result<\(\)> with Ok\(\(\)\)$',
   # A receive answering at once with a datagram of another ID, or none, never awaits: the client drops it and receives
   # again, so the test hangs, the mutant seen only as a timeout (12 min a run).
   'udp\.rs:\d+:\d+: replace UdpQuery(<N>)?::recv -> io::Result<Option<Vec<u8>>> with Ok\(Some\(vec!\[[01]?\]\)\)$',

@@ -163,6 +163,7 @@ fn s3_1_3_a_tld_is_asked_in_a_labels() {
 fn s5_3_json_and_yaml_print_the_answer_as_received() {
     let rdap = Rdap::start(&[("/domain/fr", 200, FR)]);
     let json = rdap.run(&["+tld", "fr", "--json"], 0);
+    assert!(json.ends_with("}\n"), "{json}");
     let received: serde_json::Value = serde_json::from_slice(FR).expect("JSON");
     let printed: serde_json::Value = serde_json::from_str(&json).expect("JSON");
     assert_eq!(printed, received);
@@ -204,6 +205,45 @@ fn s6_another_status_is_an_error() {
         .stderr(predicates::str::contains("not an RDAP domain"));
 }
 
+/// D33: a server whose certificate does not verify is an error, exit 10, not one that does not answer.
+#[test]
+fn an_untrusted_server_is_exit_10() {
+    let rdap = Rdap::start(&[("/domain/fr", 200, FR)]);
+    dedens()
+        .env(
+            "DEDENS_RDAP",
+            format!("https://127.0.0.1:{}", rdap.addr.port()),
+        )
+        .args(["+tld", "fr"])
+        .assert()
+        .code(10);
+    assert_eq!(rdap.heads(), Vec::<String>::new());
+}
+
+/// `--tls-insecure` accepts any certificate, as for DNS over TLS (D60).
+#[test]
+fn tls_insecure_accepts_any_certificate() {
+    let rdap = Rdap::start(&[("/domain/fr", 200, FR)]);
+    dedens()
+        .env(
+            "DEDENS_RDAP",
+            format!("https://127.0.0.1:{}", rdap.addr.port()),
+        )
+        .args(["+tld", "fr", "--tls-insecure"])
+        .assert()
+        .success();
+}
+
+/// D33: a refused connection is exit 9, as for DNS; `127.0.0.1:1` is never handed out (D89).
+#[test]
+fn a_refused_connection_is_exit_9() {
+    dedens()
+        .env("DEDENS_RDAP", "https://127.0.0.1:1")
+        .args(["+tld", "fr"])
+        .assert()
+        .code(9);
+}
+
 /// D33: a server that does not answer is exit 9, as for DNS.
 #[test]
 fn a_silent_server_is_exit_9() {
@@ -222,14 +262,36 @@ fn a_silent_server_is_exit_9() {
 #[test]
 fn tld_refuses_what_applies_to_dns() {
     for args in [
-        &["+tld", "fr", "example.com"][..],
-        &["+tld", "fr", "+tcp"],
-        &["+tld", "fr", "@127.0.0.1"],
-        &["+tld", "fr", "--short"],
-        &["+tld", "fr", "+trace"],
-        &["+tld", "example.fr"],
-        &["+tld", "."],
+        &["example.com"][..],
+        &["@127.0.0.1"],
+        &["-p", "53"],
+        &["-x", "192.0.2.1"],
+        &["-f", "queries.txt"],
+        &["--save-wire", "wire"],
+        &["+repeat=2"],
+        &["+trace"],
+        &["+search"],
+        &["--short"],
+        &["+tcp"],
     ] {
-        dedens().args(args).assert().code(2);
+        dedens()
+            .env("DEDENS_RDAP", "https://127.0.0.1:1")
+            .args(["+tld", "fr"])
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("+tld goes with no name"));
     }
+    let long = "a".repeat(64);
+    for name in ["example.fr", ".", &long] {
+        dedens()
+            .env("DEDENS_RDAP", "https://127.0.0.1:1")
+            .args(["+tld", name])
+            .assert()
+            .code(2);
+    }
+    // RFC 1035 §2.3.4: a label of 63 octets is a TLD to ask about; the server knows no such path, 500.
+    let rdap = Rdap::start(&[]);
+    rdap.dedens(&["+tld", &long[1..]]).assert().code(10);
+    assert_eq!(rdap.heads().len(), 1);
 }
