@@ -1,4 +1,4 @@
-//! `just root-anchors`: the root's DS records of IANA's `root-anchors.xml` valid now, once its `.p7s` signature
+//! `just roots`: the root's DS records of IANA's `root-anchors.xml` valid now, once its `.p7s` signature
 //! is checked against ICANN's bundled CA (RFC 9718 §3.2, D127), written to stdout as `src/root.ds` holds them.
 //!
 //! Usage: `root_anchors <root-anchors.xml> <root-anchors.p7s>`.
