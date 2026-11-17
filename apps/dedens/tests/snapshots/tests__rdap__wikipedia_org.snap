@@ -1,0 +1,21 @@
+---
+source: apps/dedens/tests/rdap.rs
+expression: out
+---
+wikipedia.org. domain  client delete prohibited, client transfer prohibited, client update prohibited  N ms from https://127.0.0.1:PORT/rdap/domain/wikipedia.org (HTTP 200)
+registrar
+  MarkMonitor Inc.  IANA Registrar ID 292
+name servers
+  ns0.wikimedia.org.  208.80.154.238  2620:0:861:53::1
+  ns1.wikimedia.org.  208.80.153.231  2620:0:860:53::1
+  ns2.wikimedia.org.  198.35.27.27  2a02:ec80:53::1
+dates
+  transfer                      2012-03-09T16:33:50.754Z
+  expiration                    2027-01-13T00:12:14Z
+  registration                  2001-01-13T00:12:14.754Z
+  last changed                  2026-08-12T08:47:19.41Z
+  last update of RDAP database  2026-11-17T10:11:24.971Z
+redacted
+  Registry Domain ID  removal
+rdap server
+  https://rdap.markmonitor.com/rdap/domain/wikipedia.org

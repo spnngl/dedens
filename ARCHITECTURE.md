@@ -32,7 +32,8 @@ Planned: `dedens-resolver`.
   DNSCrypt through `Client::exchange_dnscrypt_via`, D98; `+trace` hop by hop in `src/trace.rs`, D40) →
   `Message::decode` → with `+validate`, `src/validate.rs` over `dedens-dnssec` (D76) → `Report::exchanged` →
   `src/output.rs` (D37), with any `Violation` shown. `+tld`: IANA's RDAP server over HTTPS (`src/run/tld.rs`), its
-  answer read by `src/rdap.rs`, a 404 explained by `dedens-roots` (D129).
+  answer read by `src/rdap.rs`, a 404 explained by `dedens-roots` (D129); `+rdap`: the TLD's server from IANA's
+  bootstrap file, the client and printer both share (`src/run/rdap.rs`, D130).
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
   `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
   `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23) of stages `plugin.rs`, `cache.rs` and

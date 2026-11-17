@@ -1,4 +1,4 @@
-//! The command line of `dedens` (D32) and the RDAP answers of `+tld` (D129), reached through its library (D181).
+//! The command line of `dedens` (D32) and the RDAP answers of `+tld` and `+rdap` (D129, D130), reached through its library (D181).
 
 use std::ffi::OsString;
 use std::iter;
@@ -17,7 +17,7 @@ pub fn parse_command_line(data: &[u8]) {
     let _ = dedens::parse_args(iter::once(OsString::from("dedens")).chain(args));
 }
 
-/// Reads `data` as an RDAP answer to `+tld` (RFC 9083 §5.3) and prints it for humans. A refusal is fine; a panic is
+/// Reads `data` as IANA'"'"'s bootstrap file (RFC 9224 §4), then as an RDAP answer to `+tld` or `+rdap` (RFC 9083 §5.3), and prints it for humans. A refusal is fine; a panic is
 /// a bug.
 ///
 /// # Panics

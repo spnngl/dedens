@@ -42,3 +42,6 @@
 +tld fr
 +tld рф. +time=2 --yaml
 +tld fr +tcp example.com
++rdap example.com
++rdap www.bbc.co.uk. +time=2 --json
++rdap fr +tld fr

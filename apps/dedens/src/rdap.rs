@@ -1,5 +1,6 @@
-//! The RDAP answers `dedens` reads (D129): the members of a domain (RFC 9083 §5.3) it prints, and an error (RFC 9083
-//! §6). Members not read here are ignored (RFC 9083 §2.1); a member read here with another type is an error.
+//! The RDAP answers `dedens` reads (D129, D130): the members of a domain (RFC 9083 §5.3) it prints, its redacted
+//! fields (RFC 9537 §4.2), an error (RFC 9083 §6), and IANA's bootstrap file (RFC 9224 §4). Members not read here are
+//! ignored (RFC 9083 §2.1, RFC 9224 §3); a member read here with another type is an error.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -30,6 +31,9 @@ pub(crate) struct Domain {
     /// Where more is.
     #[serde(default)]
     pub(crate) links: Vec<Link>,
+    /// The fields the server redacted (RFC 9537 §4.2).
+    #[serde(default)]
+    pub(crate) redacted: Vec<Redaction>,
 }
 
 /// The `objectClassName` of a domain (RFC 9083 §4.9): another class is no answer to a domain query.
@@ -94,6 +98,86 @@ pub(crate) struct Entity {
     /// Its contact card.
     #[serde(default)]
     pub(crate) vcard_array: Card,
+    /// Its identifiers in registries (RFC 9083 §4.8), as a registrar's IANA ID.
+    #[serde(default)]
+    pub(crate) public_ids: Vec<PublicId>,
+}
+
+/// An identifier in a registry (RFC 9083 §4.8).
+#[derive(Debug, Deserialize)]
+pub(crate) struct PublicId {
+    /// The registry, as `IANA Registrar ID`.
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    /// The identifier there.
+    pub(crate) identifier: String,
+}
+
+/// A field the server redacted (RFC 9537 §4.2), told by its name: its paths, in JSON path syntax, are not read (§5.1).
+#[derive(Debug, Deserialize)]
+pub(crate) struct Redaction {
+    /// What was redacted.
+    pub(crate) name: Term,
+    /// How, as received: `removal` when absent.
+    #[serde(default = "removal")]
+    pub(crate) method: String,
+    /// Why.
+    #[serde(default)]
+    pub(crate) reason: Term,
+}
+
+/// The method of a redaction that names none (RFC 9537 §4.2).
+fn removal() -> String {
+    "removal".to_owned()
+}
+
+/// A name or a reason of a redaction: a registered type, or a description (RFC 9537 §4.2).
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct Term {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    description: Option<String>,
+}
+
+impl Term {
+    /// Its type, else its description, else nothing.
+    pub(crate) fn text(&self) -> &str {
+        self.kind
+            .as_deref()
+            .or(self.description.as_deref())
+            .unwrap_or_default()
+    }
+}
+
+/// IANA's bootstrap file for domains (RFC 9224 §3, §4): the base URLs of the RDAP servers of each name.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Bootstrap {
+    /// The entries and the base URLs that serve them, both unordered.
+    services: Vec<(Vec<String>, Vec<String>)>,
+}
+
+impl Bootstrap {
+    /// The base URLs serving `name`, lowercase A-labels without the trailing dot, and the labels of the entry they
+    /// serve: the label-wise longest match, from the right (RFC 9224 §4); `""` is the root. None when no entry
+    /// matches (§7).
+    pub(crate) fn servers(&self, name: &str) -> Option<(usize, &[String])> {
+        self.services
+            .iter()
+            .flat_map(|(entries, urls)| entries.iter().map(move |entry| (entry, urls)))
+            .filter_map(|(entry, urls)| Some((labels_matched(name, entry)?, urls.as_slice())))
+            .max_by_key(|&(labels, _)| labels)
+    }
+}
+
+/// The labels of `entry` when `name` ends with them, whole labels, in any case.
+fn labels_matched(name: &str, entry: &str) -> Option<usize> {
+    if entry.is_empty() {
+        return Some(0);
+    }
+    let start = name.len().checked_sub(entry.len())?;
+    let (head, tail) = name.as_bytes().split_at(start);
+    (tail.eq_ignore_ascii_case(entry.as_bytes()) && (head.is_empty() || head.ends_with(b".")))
+        .then(|| entry.split('.').count())
 }
 
 /// An event (RFC 9083 §4.5).
@@ -260,7 +344,32 @@ fn flatten(value: Value, values: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::Card;
+    use super::{Bootstrap, Card};
+
+    /// RFC 9224 §4: the label-wise longest match, `""` the root, `goodexample.com` no match for `example.com`.
+    #[test]
+    fn rfc9224_s4_the_longest_match_by_label_wins() {
+        let bootstrap: Bootstrap = serde_json::from_str(
+            r#"{"services": [[[""], ["https://root/"]], [["net", "com"], ["https://com/"]],
+                [["example.com"], ["https://example/"]], [["goodexample.com"], ["https://good/"]]]}"#,
+        )
+        .expect("a bootstrap file");
+        let servers = |name| {
+            bootstrap
+                .servers(name)
+                .map(|(labels, urls)| (labels, urls[0].as_str()))
+        };
+        assert_eq!(servers("a.b.example.com"), Some((2, "https://example/")));
+        assert_eq!(servers("EXAMPLE.com"), Some((2, "https://example/")));
+        assert_eq!(servers("xexample.com"), Some((1, "https://com/")));
+        assert_eq!(servers("example.net"), Some((1, "https://com/")));
+        assert_eq!(servers("example.org"), Some((0, "https://root/")));
+        let none: Bootstrap =
+            serde_json::from_str(r#"{"services": [[["com"], ["https://com/"]]]}"#)
+                .expect("a bootstrap file");
+        assert!(none.servers("example.org").is_none());
+        assert!(none.servers("com").is_some());
+    }
 
     /// RFC 7095 §3.3.1.3: the example address, its empty components left out.
     #[test]

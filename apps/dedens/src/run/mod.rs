@@ -1,9 +1,10 @@
 //! Running the queries of the command line or of a query file: at most [`IN_FLIGHT`] at a time, each result
-//! printed in order as soon as it is ready. The servers they go to are chosen in the `server` module; `+tld` asks
-//! RDAP instead, in the `tld` module.
+//! printed in order as soon as it is ready. The servers they go to are chosen in the `server` module; `+tld` and
+//! `+rdap` ask RDAP instead, in the `tld` and `rdap` modules.
 
+pub(crate) mod rdap;
 mod server;
-pub(crate) mod tld;
+mod tld;
 
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
@@ -163,6 +164,9 @@ impl std::error::Error for Usage {}
 pub(crate) fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     if let Some(name) = &cli.tld {
         return tld::run(cli, name);
+    }
+    if let Some(name) = &cli.rdap {
+        return rdap::run(cli, name);
     }
     let jobs = jobs(cli)?;
     let trust = cli.trust().map_err(Usage)?;

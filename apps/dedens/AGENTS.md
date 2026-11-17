@@ -17,7 +17,7 @@ The dig-like CLI (D18, D32, D33): a thin binary over `dedens-net` and `dedens-sc
   `+dnscrypt-resume` (D101) and `+trace` checks of `src/args.rs`, and the `Endpoint`'s `dnscrypt` in
   `src/run/mod.rs`; a new option that is a transport goes in all three. Clap docs end in
   `deploy/packages/man/dedens.1`: `just man` writes it again.
-- `+tld` (D129) refuses every query option but `+time` by comparing `Options` whole, and each other field of `Cli`
-  by name in `Cli::try_parse_dig`: a new field `+tld` cannot honour joins that list.
+- `+tld` (D129) and `+rdap` (D130) refuse every query option but `+time` by comparing `Options` whole, and each
+  other field of `Cli` by name in `Cli::try_parse_dig`: a new field they cannot honour joins that list.
 - `src/lib.rs` is the crate, `src/main.rs` only calls `dedens::main` (D181). `parse_args` is the entry of `fuzz/`: a
   usage check in `Cli::try_parse_dig` returns its error, never exits, or it ends the fuzz run.

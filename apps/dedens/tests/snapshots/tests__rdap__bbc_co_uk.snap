@@ -1,0 +1,37 @@
+---
+source: apps/dedens/tests/rdap.rs
+expression: out
+---
+bbc.co.uk. domain  server delete prohibited, server transfer prohibited, server update prohibited  N ms from https://127.0.0.1:PORT/uk/domain/bbc.co.uk (HTTP 200)
+registrar
+  British Broadcasting Corporation  Registry Identifier BBC
+contacts
+  registrant  redacted
+              redacted@nominet.uk
+name servers
+  ddns0.bbc.co.uk.  148.163.199.1  2607:f740:e04e::1
+  ddns0.bbc.com.
+  ddns1.bbc.co.uk.  148.163.199.65  2607:f740:e04e:4::1
+  ddns1.bbc.com.
+  dns0.bbc.co.uk.   198.51.44.9  2620:4d:4000:6259:7:9:0:1
+  dns0.bbc.com.
+  dns1.bbc.co.uk.   198.51.45.9  2a00:edc0:6259:7:9::2
+  dns1.bbc.com.
+dates
+  registration                  1994-12-13T03:49:48Z
+  last changed                  2025-10-29T03:51:11.009091Z
+  expiration                    2034-12-13T03:49:48Z
+  last update of RDAP database  2026-11-17T10:11:21.765Z
+redacted
+  Registrant Name                     emptyValue: Server policy
+  Registrant Organization             removal: Server policy
+  Registrant Organisation Type        removal: Server policy
+  Registrant Identifier Label         removal: Server policy
+  Registrant Organisation Identifier  removal: Server policy
+  Registrant Street                   emptyValue: Server policy
+  Registrant Postal Code              emptyValue: Server policy
+  Registrant City                     emptyValue: Server policy
+  Registrant Country                  emptyValue: Server policy
+  Registrant Region                   emptyValue: Server policy
+  Registrant Email                    replacementValue: Server policy
+  Registrant Phone                    removal: Server policy

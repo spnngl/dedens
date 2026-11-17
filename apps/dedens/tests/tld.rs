@@ -2,120 +2,15 @@
 //! §3.1.3), its answer read as a domain (RFC 9083 §5.3) with jCard contacts (RFC 7095), or a 404, from answers
 //! captured by `just rdap-capture` and served on the loopback.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::net::TcpListener;
 
-use compio::rustls::version::TLS13;
-use compio::rustls::{ServerConfig, ServerConnection, StreamOwned};
-use dedens_testkit::certificates::certificates;
-use tempfile::NamedTempFile;
-
-use crate::util::{dedens, redact};
+use crate::util::{Rdap, dedens};
 
 const COM: &[u8] = include_bytes!("../../../testdata/rdap/com.json");
 const FR: &[u8] = include_bytes!("../../../testdata/rdap/fr.json");
 const XN_P1AI: &[u8] = include_bytes!("../../../testdata/rdap/xn--p1ai.json");
 const ONION: &[u8] = include_bytes!("../../../testdata/rdap/onion.json");
 const ZZZZ: &[u8] = include_bytes!("../../../testdata/rdap/zzzz.json");
-
-/// An HTTPS server on the loopback answering each path of its table with a status and a body, 500 for another, and
-/// the heads of the requests it read.
-struct Rdap {
-    addr: SocketAddr,
-    ca: NamedTempFile,
-    heads: Arc<Mutex<Vec<String>>>,
-}
-
-impl Rdap {
-    fn start(table: &'static [(&'static str, u16, &'static [u8])]) -> Self {
-        let certificates = certificates();
-        let config = Arc::new(certificates.config(&[&TLS13], b"http/1.1"));
-        let mut ca = NamedTempFile::new().expect("a file");
-        ca.write_all(certificates.ca_pem.as_bytes())
-            .expect("the CA");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-        let addr = listener.local_addr().expect("an address");
-        let heads = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&heads);
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let config = Arc::clone(&config);
-                let seen = Arc::clone(&seen);
-                thread::spawn(move || serve(&config, stream, table, &seen));
-            }
-        });
-        Self { addr, ca, heads }
-    }
-
-    /// The command asking this server, trusting its authority.
-    fn dedens(&self, args: &[&str]) -> assert_cmd::Command {
-        let mut command = dedens();
-        command
-            .env(
-                "DEDENS_RDAP",
-                format!("https://127.0.0.1:{}", self.addr.port()),
-            )
-            .arg(format!("--tls-ca={}", self.ca.path().display()))
-            .args(args);
-        command
-    }
-
-    /// The standard output of `args`, exiting with `code`, the RTT and port redacted.
-    fn run(&self, args: &[&str], code: i32) -> String {
-        let out = self
-            .dedens(args)
-            .assert()
-            .code(code)
-            .get_output()
-            .stdout
-            .clone();
-        redact(&String::from_utf8(out).expect("UTF-8"), self.addr.port())
-    }
-
-    fn heads(&self) -> Vec<String> {
-        self.heads.lock().expect("the heads").clone()
-    }
-}
-
-/// Answers the one request of `stream`.
-fn serve(
-    config: &Arc<ServerConfig>,
-    stream: std::net::TcpStream,
-    table: &[(&str, u16, &[u8])],
-    heads: &Mutex<Vec<String>>,
-) {
-    let connection = ServerConnection::new(Arc::clone(config)).expect("a connection");
-    let mut tls = BufReader::new(StreamOwned::new(connection, stream));
-    let mut head = String::new();
-    loop {
-        let mut line = String::new();
-        if tls.read_line(&mut line).unwrap_or(0) == 0 {
-            return;
-        }
-        if line == "\r\n" {
-            break;
-        }
-        head.push_str(&line);
-    }
-    let path = head.split(' ').nth(1).unwrap_or_default().to_owned();
-    heads.lock().expect("the heads").push(head);
-    let (status, body) = table
-        .iter()
-        .find(|(at, _, _)| *at == path)
-        .map_or((500, &b""[..]), |&(_, status, body)| (status, body));
-    let tls = tls.get_mut();
-    let _ = write!(
-        tls,
-        "HTTP/1.1 {status} X\r\ncontent-type: application/rdap+json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = tls.write_all(body);
-    let _ = tls.flush();
-    tls.conn.send_close_notify();
-    let _ = tls.flush();
-}
 
 /// RFC 7480 §4.2 and RFC 9082 §3.1.3: a GET of `/domain/<label>` accepting RDAP's media type, the TLD's status,
 /// contacts, name servers, DS records, dates and own RDAP server printed (RFC 9083 §4.2, §4.5, §4.6, §5.1-5.3).
@@ -210,10 +105,7 @@ fn s6_another_status_is_an_error() {
 fn an_untrusted_server_is_exit_10() {
     let rdap = Rdap::start(&[("/domain/fr", 200, FR)]);
     dedens()
-        .env(
-            "DEDENS_RDAP",
-            format!("https://127.0.0.1:{}", rdap.addr.port()),
-        )
+        .env("DEDENS_RDAP", rdap.origin())
         .args(["+tld", "fr"])
         .assert()
         .code(10);
@@ -225,10 +117,7 @@ fn an_untrusted_server_is_exit_10() {
 fn tls_insecure_accepts_any_certificate() {
     let rdap = Rdap::start(&[("/domain/fr", 200, FR)]);
     dedens()
-        .env(
-            "DEDENS_RDAP",
-            format!("https://127.0.0.1:{}", rdap.addr.port()),
-        )
+        .env("DEDENS_RDAP", rdap.origin())
         .args(["+tld", "fr", "--tls-insecure"])
         .assert()
         .success();
@@ -280,7 +169,7 @@ fn tld_refuses_what_applies_to_dns() {
             .args(args)
             .assert()
             .code(2)
-            .stderr(predicates::str::contains("+tld goes with no name"));
+            .stderr(predicates::str::contains("+tld and +rdap go with no name"));
     }
     let long = "a".repeat(64);
     for name in ["example.fr", ".", &long] {

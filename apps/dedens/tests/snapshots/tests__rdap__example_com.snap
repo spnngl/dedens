@@ -1,0 +1,17 @@
+---
+source: apps/dedens/tests/rdap.rs
+expression: out
+---
+example.com. domain  client delete prohibited, client transfer prohibited, client update prohibited  N ms from https://127.0.0.1:PORT/com/v1/domain/example.com (HTTP 200)
+registrar
+  RESERVED-Internet Assigned Numbers Authority  IANA Registrar ID 376
+name servers
+  ELLIOTT.NS.CLOUDFLARE.COM.
+  HERA.NS.CLOUDFLARE.COM.
+ds
+  example.com.  DS  2371 13 2 C988EC423E3880EB8DD8A46FE06CA230EE23F35B578D64E78B29C3E1C83D245A
+dates
+  registration                  1995-08-14T04:00:00Z
+  expiration                    2027-08-13T04:00:00Z
+  last changed                  2026-08-14T08:01:43Z
+  last update of RDAP database  2026-11-17T10:11:09Z
