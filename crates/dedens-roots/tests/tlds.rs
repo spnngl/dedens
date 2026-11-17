@@ -69,6 +69,27 @@ fn onion_is_special_use_with_its_purpose() {
     assert!(onion.servers().is_empty() && onion.ds().is_empty());
 }
 
+/// D129: `+tld` prints the kind and status of a TLD IANA's RDAP server does not know.
+#[test]
+fn kinds_and_statuses_are_printed_in_words() {
+    let kinds = [
+        Kind::Generic,
+        Kind::CountryCode,
+        Kind::SpecialUse { purpose: None },
+        Kind::Test,
+    ];
+    let kinds: Vec<_> = kinds.iter().map(ToString::to_string).collect();
+    assert_eq!(kinds, ["generic", "country code", "special use", "test"]);
+    let statuses = [
+        Status::Active,
+        Status::Retired,
+        Status::Eligible,
+        Status::Reserved,
+    ];
+    let statuses: Vec<_> = statuses.iter().map(ToString::to_string).collect();
+    assert_eq!(statuses, ["active", "retired", "eligible", "reserved"]);
+}
+
 #[test]
 fn a_copy_cut_short_is_refused_after_its_unknown_members_are_read() {
     let Err(TldsError::Truncated { read, bundled }) = Tlds::read(COPY.as_bytes()) else {

@@ -1,0 +1,29 @@
+---
+source: apps/dedens/tests/tld.rs
+expression: out
+---
+fr. TLD  active  N ms from https://127.0.0.1:PORT/domain/fr (HTTP 200)
+contacts
+  registrant      Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)
+                  7, avenue du 8 mai 1945, Guyancourt 78280, France
+  administrative  TLD Admin Contact, Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)
+                  7, avenue du 8 mai 1945, Guyancourt 78280, France
+                  +33 1 39 30 83 05 (voice)
+                  +33 1 39 30 83 01 (fax)
+                  tld-admin@nic.fr
+  technical       TLD Technical Contact, Association Française pour le Nommage Internet en Coopération (A.F.N.I.C.)
+                  7, avenue du 8 mai 1945, Guyancourt 78280, France
+                  +33 1 39 30 83 00 (voice)
+                  +33 1 39 30 83 01 (fax)
+                  tld-tech@nic.fr
+name servers
+  d.nic.fr.      194.0.9.1  2001:678:c::1
+  f.ext.nic.fr.  194.146.106.46  2001:67c:1010:11::53
+  g.ext.nic.fr.  194.0.36.1  2001:678:4c::1
+ds
+  fr.  DS  65381 13 2 8163ABF45792942CF4EE38CCA31F6A6832FCDC6D402338FC687827690C4132F6
+dates
+  last changed  2025-07-31T00:00:00+00:00
+  registration  1986-09-02T00:00:00+00:00
+rdap server
+  https://rdap.nic.fr/

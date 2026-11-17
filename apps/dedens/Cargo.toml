@@ -21,11 +21,14 @@ dedens-proto.workspace = true
 dedens-roots.workspace = true
 dedens-scenario = { workspace = true, features = ["clap"] }
 idna.workspace = true
+serde.workspace = true
 serde-saphyr.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-script.workspace = true
+# D129: `+tld` asks IANA's RDAP server over HTTPS, a blocking request as `dedensd`'s list downloads (D57).
+ureq.workspace = true
 
 # D154: the global allocator on musl, `src/main.rs`.
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -46,7 +49,6 @@ dedens-odoh.workspace = true
 dedens-testkit = { workspace = true, features = ["responder"] }
 insta.workspace = true
 predicates.workspace = true
-serde.workspace = true
 tempfile.workspace = true
 
 [[test]]

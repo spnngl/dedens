@@ -79,6 +79,18 @@ pub enum Status {
     Reserved,
 }
 
+/// The status as IANA's list words it: `active`, `retired`, `eligible`, `reserved`.
+impl core::fmt::Display for Status {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Active => "active",
+            Self::Retired => "retired",
+            Self::Eligible => "eligible",
+            Self::Reserved => "reserved",
+        })
+    }
+}
+
 /// What a TLD is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -94,6 +106,18 @@ pub enum Kind {
     },
     /// A test TLD.
     Test,
+}
+
+/// The kind in words: `generic`, `country code`, `special use`, `test`; the purpose is not part of it.
+impl core::fmt::Display for Kind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Generic => "generic",
+            Self::CountryCode => "country code",
+            Self::SpecialUse { .. } => "special use",
+            Self::Test => "test",
+        })
+    }
 }
 
 /// A top-level domain.

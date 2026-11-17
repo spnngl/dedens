@@ -4,7 +4,7 @@
 .SH NAME
 dedens \- A dig\-like DNS client
 .SH SYNOPSIS
-\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-relay\fR] [\fB\-\-dnscrypt\-pq\fR] [\fB\-\-dnscrypt\-resume\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
+\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-\-tld\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-relay\fR] [\fB\-\-dnscrypt\-pq\fR] [\fB\-\-dnscrypt\-resume\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
 .SH DESCRIPTION
 A dig\-like DNS client.
 .PP
@@ -73,6 +73,9 @@ true
 .IP \(bu 2
 false
 .RE
+.TP
+\fB\-\-tld\fR \fI<NAME>\fR
+Ask IANA\*(Aqs RDAP server about a top\-level domain instead: its status, contacts, name servers, DS records, dates and own RDAP server; for one it does not know, the purpose of a special\-use name. JSON and YAML print the answer as received
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Print what the exchanges do on stderr: `\-v` dropped messages, retries and fallbacks, `\-vv` every message too

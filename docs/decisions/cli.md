@@ -107,6 +107,23 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   The human format counts the additional records of a referral hop instead of listing them. `-p` is the port of
   every server asked, roots, glue and name servers looked up, as dig's `-p` (default 53). `DEDENS_ROOTS`,
   addresses with their ports, replaces the roots for tests; `-p` still moves the rest of the trace.
+- D129 `+tld NAME` asks IANA's RDAP server what it knows of one TLD: a GET of `https://rdap.iana.org/domain/NAME`
+  accepting `application/rdap+json` (RFC 7480 §4.2, RFC 9082 §3.1.3), NAME in A-labels (D32's IDNA), one LDH label
+  or a usage error. HTTPS by `ureq`, blocking as `dedensd`'s list downloads (D57): one request needs no runtime;
+  the trust is DNS over TLS's (`--tls-ca`, `--tls-insecure`), `+time` bounds the whole exchange. The human format
+  prints a status line (the RDAP statuses, round trip, URL, HTTP status), then sections: contacts (each entity's
+  `roles`, then its jCard's `fn`, `org`, `adr` label, `tel` with its types, `email`, RFC 7095; the jCard's `role`
+  repeats the entity's `roles` and is left out), name servers with their addresses, DS records, dates (`events` as
+  received), the TLD's own RDAP server (the `alternate` link of RDAP's media type). JSON and YAML print the answer
+  as received, not a report (D37): RDAP has its schema, a report would only rename it; YAML is the same tree. A 404
+  is an answer, exit 0 (RFC 7480 §5.3): the bundled TLD list (D126) gives a special-use name's kind, status and
+  purpose (`onion`), else "not a TLD". Another status, or a 200 that is no `domain` object, is exit 10 with the
+  body's title and description (RFC 9083 §6); no answer, a refused or reset connection, exit 9 as for DNS (D33). A
+  name, `@server`, `-p`, `-x`, `-f`, `--save-wire`, `+repeat`, `+trace`, `+search`, `--short` and every query
+  option but `+time` are refused. The reader (`apps/dedens/src/rdap.rs`, for `+rdap` too) types the members
+  printed, others ignored (RFC 9083 §2.1), and is fuzzed (`parse_rdap`). `DEDENS_RDAP` replaces the server for
+  tests; `just rdap-capture` captures their answers (`testdata/rdap/`). Rejected: the contacts and dates of
+  `tlds.json` (it has none, D126), WHOIS (free text), IANA's root zone database pages (HTML).
 - D67 Public resolvers live in `docs/providers/providers.yaml`: a provider's facts (operator, country,
   privacy) and its resolvers, each with what it blocks and what it does with a broken DNSSEC signature, both
   measured, not announced (Quad9's "unsecured" validates, CleanBrowsing's servers disagree, Comodo blocks
