@@ -9,10 +9,17 @@ repository.workspace = true
 publish.workspace = true
 autotests = false
 
+[features]
+# D127: `TrustAnchors::verified`, IANA's root-anchors.xml read and checked by its CMS signature against ICANN's CA.
+fetch-anchors = ["dep:cms", "dep:data-encoding", "dep:x509-cert"]
+
 [dependencies]
+cms = { workspace = true, optional = true }
+data-encoding = { workspace = true, optional = true }
 dedens-proto.workspace = true
 ring.workspace = true
 thiserror.workspace = true
+x509-cert = { workspace = true, optional = true }
 
 # D180: only when `just verus` verifies the crate.
 [target.'cfg(verus_keep_ghost)'.dependencies]
@@ -26,6 +33,11 @@ proptest.workspace = true
 [[test]]
 name = "tests"
 path = "tests/tests.rs"
+
+# `just root-anchors`: the root's DS records of a checked root-anchors.xml, as `src/root.ds` holds them.
+[[example]]
+name = "root_anchors"
+required-features = ["fetch-anchors"]
 
 [lints]
 workspace = true

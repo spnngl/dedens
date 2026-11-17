@@ -5,5 +5,7 @@ mod algorithms;
 mod anchor;
 mod denial;
 mod rrsig;
+#[cfg(feature = "fetch-anchors")]
+mod signed_anchors;
 mod util;
 mod validator;

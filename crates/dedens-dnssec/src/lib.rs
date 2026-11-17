@@ -1,7 +1,8 @@
 //! DNSSEC validation, sans-IO: what a validator does with the records it is given (RFC 4033, 4034, 4035).
 //! [`crypto`] (D71) is the cryptography on `ring`, [`rrsig`] (D73) an `RRset` checked by its signatures,
 //! [`denial`] (D74) what NSEC and NSEC3 records prove; [`TrustAnchors`] (D72) are where the chain of trust
-//! starts, and [`Validator`] (D75) judges a response.
+//! starts, and [`Validator`] (D75) judges a response. The `fetch-anchors` feature reads IANA's signed
+//! `root-anchors.xml` into them (`TrustAnchors::verified`, D127).
 //!
 //! # Validation
 //!
@@ -70,6 +71,8 @@ mod validator;
 // One path per item (D160): `crypto`, `rrsig` and `denial` are the families a reader names; `anchor` and
 // `validator` are flat here.
 pub use anchor::{Anchor, AnchorError, TrustAnchors};
+#[cfg(feature = "fetch-anchors")]
+pub use anchor::{AnchorXmlError, SignedAnchorError};
 pub use validator::{
     Cost, Delegation, InsecureReason, Limits, MAX_CHASES, Next, Validation, Validator, Verdict,
     covered,
