@@ -344,7 +344,18 @@ fn flatten(value: Value, values: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bootstrap, Card};
+    use super::{Bootstrap, Card, Redaction};
+
+    /// RFC 9537 §4.2: a redaction without a method is a removal.
+    #[test]
+    fn rfc9537_s4_2_the_method_is_removal_by_default() {
+        let redaction: Redaction =
+            serde_json::from_str(r#"{"name": {"type": "Registry Domain ID"}}"#)
+                .expect("a redaction");
+        assert_eq!(redaction.method, "removal");
+        assert_eq!(redaction.name.text(), "Registry Domain ID");
+        assert_eq!(redaction.reason.text(), "");
+    }
 
     /// RFC 9224 §4: the label-wise longest match, `""` the root, `goodexample.com` no match for `example.com`.
     #[test]

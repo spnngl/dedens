@@ -248,4 +248,16 @@ fn rdap_refuses_what_applies_to_dns() {
         .args(["+rdap", "fr"])
         .assert()
         .stderr(predicates::str::contains("+tld asks about a TLD"));
+    // RFC 1035 §2.3.4: 253 octets is a name to ask about, the server refusing the connection; 254 is none.
+    let label = "a".repeat(63);
+    let longest = format!("{label}.{label}.{label}.{}.com", &label[..57]);
+    assert_eq!(longest.len(), 253);
+    let too_long = format!("{label}.{label}.{label}.{}.com", &label[..58]);
+    for (name, code) in [(&longest, 9), (&too_long, 2)] {
+        dedens()
+            .env("DEDENS_RDAP", "https://127.0.0.1:1")
+            .args(["+rdap", name])
+            .assert()
+            .code(code);
+    }
 }
