@@ -23,7 +23,9 @@ opt-level = 3
 dedens = { path = "../apps/dedens", features = ["odoh", "doc"] }
 dedens-cache = { path = "../crates/dedens-cache" }
 dedens-dnscrypt = { path = "../crates/dedens-dnscrypt" }
-dedens-dnssec = { path = "../crates/dedens-dnssec" }
+dedens-dnssec = { path = "../crates/dedens-dnssec", features = [
+  "fetch-anchors",
+] }
 dedens-net = { path = "../crates/dedens-net", features = ["odoh", "dnscrypt"] }
 dedens-odoh = { path = "../crates/dedens-odoh" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
@@ -283,6 +285,13 @@ bench = false
 [[bin]]
 name = "parse_trust_anchors"
 path = "fuzz_targets/parse_trust_anchors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_root_anchors"
+path = "fuzz_targets/parse_root_anchors.rs"
 test = false
 doc = false
 bench = false

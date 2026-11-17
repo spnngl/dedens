@@ -1,9 +1,9 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 127, 128, 131, 132, 148, 149 and 173 were
-never assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2`
-in one, `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
+number, and gets its line below; a number is never reused (85, 128, 131, 132, 148, 149 and 173 were never
+assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
+`amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
 (D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions: [`TODECIDE.md`](../TODECIDE.md).
 
@@ -79,7 +79,7 @@ in one, `amended by D5` in the other). A line below: the section file, a gist, a
 - D69 [scope](scope.md) (amended by D71, D74, D75, D76, D78, D79, D80, D97): DNSSEC before the recursive resolver: a validating stub and forwarder
 - D70 [wire format](wire-format.md) (amended by D159): typed DNSSEC RDATA: DS, DNSKEY, RRSIG, NSEC, NSEC3 and kin
 - D71 [scope](scope.md) (amended by D73, D106): DNSSEC crypto on `ring`; which algorithms validate
-- D72 [scope](scope.md): trust anchors per zone, negative ones, the root's bundled
+- D72 [scope](scope.md) (amended by D127): trust anchors per zone, negative ones, the root's bundled
 - D73 [scope](scope.md): `rrsig` authenticates one RRset with one DNSKEY RRset
 - D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
 - D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
@@ -133,6 +133,7 @@ in one, `amended by D5` in the other). A line below: the section file, a gist, a
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D126 [scope](scope.md): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
+- D127 [scope](scope.md): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`

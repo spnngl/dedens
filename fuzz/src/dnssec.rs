@@ -281,6 +281,42 @@ pub fn parse_trust_anchors(data: &[u8]) {
     }
 }
 
+/// The captured `root-anchors.xml` and its `.p7s` (D127), and the Unix time of their capture.
+const ROOT_ANCHORS_XML: &[u8] = include_bytes!("../../testdata/dnssec/root-anchors.xml");
+const ROOT_ANCHORS_P7S: &[u8] = include_bytes!("../../testdata/dnssec/root-anchors.p7s");
+const ROOT_ANCHORS_AT: &str = include_str!("../../testdata/dnssec/root-anchors.captured_at");
+
+/// IANA's root anchors (RFC 9718 §2, §3.2, D127) from bytes outside: as the XML, as the `.p7s` of the captured
+/// XML, and as the CA bundle checking the captured pair. Nothing panics; a root anchor read from the XML has DS
+/// records; a signature that holds over the captured XML yields its anchors.
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on anchors that break one of those rules.
+pub fn parse_root_anchors(data: &[u8]) {
+    let now = ROOT_ANCHORS_AT
+        .trim()
+        .parse()
+        .expect("Unix time in seconds");
+    if let Ok(anchors) = TrustAnchors::from_xml(data, now)
+        && let Some((_, anchor)) = anchors.closest(&Name::root())
+    {
+        assert!(!anchor.ds().is_empty(), "a root anchor from XML without DS");
+    }
+    let expected = TrustAnchors::from_xml(ROOT_ANCHORS_XML, now).expect("the captured XML");
+    if let Ok(anchors) = TrustAnchors::verified(ROOT_ANCHORS_XML, data, now) {
+        assert_eq!(
+            anchors, expected,
+            "a signature that holds changed the anchors"
+        );
+    }
+    if let Ok(ca) = std::str::from_utf8(data)
+        && let Ok(anchors) = TrustAnchors::verified_by(ROOT_ANCHORS_XML, ROOT_ANCHORS_P7S, ca, now)
+    {
+        assert_eq!(anchors, expected, "a CA bundle changed the anchors");
+    }
+}
+
 /// The Unix time of the capture run, "now" for the signatures of the captured seeds.
 const CAPTURED_AT: &str = include_str!("../../testdata/dnssec/captured_at");
 

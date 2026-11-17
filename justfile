@@ -664,46 +664,32 @@ rdap-capture:
     www.wikipedia.org 400
     EOF
 
-# Refresh the bundled root trust anchors (D72): the `KeyDigest` entries of IANA's root-anchors.xml valid now (RFC
-# 9718 §2.2: `validFrom` passed, `validUntil` absent or ahead), as DS zone text. No XML parser in Rust: the file is
-# flat, and a time with an offset other than UTC stops the recipe.
+# Refresh the bundled root trust anchors (D72, D127): IANA's root-anchors.xml and its `.p7s`, checked against ICANN's
+# CA bundled in `src/icannbundle.pem` (RFC 9718 §3.2), then the DS records of its `KeyDigest` entries valid now. The
+# two files go to `testdata/dnssec` with the time of the run. A changed CA bundle stops the recipe: it is the trust
+# root, replaced by hand once checked out of band.
 root-anchors:
     #!/usr/bin/env bash
     set -euo pipefail
+    base=https://data.iana.org/root-anchors
     out=crates/dedens-dnssec/src/root.ds
-    tmp="$(mktemp)"
-    trap 'rm -f "$tmp"' EXIT
-    today="$(date -u +%Y-%m-%d)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    for file in root-anchors.xml root-anchors.p7s icannbundle.pem; do
+        curl -fsSL --retry 3 -o "$tmp/$file" "$base/$file"
+    done
+    if ! cmp -s "$tmp/icannbundle.pem" crates/dedens-dnssec/src/icannbundle.pem; then
+        echo "root-anchors: $base/icannbundle.pem changed: check it out of band, then copy it to crates/dedens-dnssec/src/" >&2
+        exit 1
+    fi
+    now="$(date -u +%s)"
     {
-        echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's root-anchors.xml valid on $today."
-        echo "; Source: https://data.iana.org/root-anchors/root-anchors.xml. Written by \`just root-anchors\`, never by hand."
-        curl -fsSL --retry 3 https://data.iana.org/root-anchors/root-anchors.xml | tr '\n' ' ' \
-            | awk -v now="$(date -u +%Y-%m-%dT%H:%M:%S)" -v RS='</KeyDigest>' '
-                function text(tag,   s) {
-                    if (!match($0, "<" tag ">[^<]*</" tag ">")) return ""
-                    s = substr($0, RSTART + length(tag) + 2, RLENGTH - 2 * length(tag) - 5)
-                    gsub(/[ \t\r]+/, "", s)
-                    return s
-                }
-                function attr(name,   s) {
-                    if (!match($0, name "=\"[^\"]*\"")) return ""
-                    return substr($0, RSTART + length(name) + 2, RLENGTH - length(name) - 3)
-                }
-                function fail(msg) { print "root-anchors: " msg > "/dev/stderr"; failed = 1; exit 1 }
-                function utc(t) {
-                    if (substr(t, 20) !~ /^(\+00:00|Z)$/) fail("time not in UTC: " t)
-                    return substr(t, 1, 19)
-                }
-                NR == 1 && text("Zone") != "." { fail("not the root zone") }
-                index($0, "<KeyDigest") == 0 { next }
-                {
-                    if (utc(attr("validFrom")) > now) next
-                    if (attr("validUntil") != "" && utc(attr("validUntil")) <= now) next
-                    printf ". IN DS %s %s %s %s\n", text("KeyTag"), text("Algorithm"), text("DigestType"), text("Digest")
-                    n++
-                }
-                END { if (!failed && n == 0) fail("no key valid now") }'
-    } > "$tmp"
-    mv "$tmp" "$out"
+        echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's signed root-anchors.xml valid on $(date -u +%Y-%m-%d)."
+        echo "; Source: $base/root-anchors.xml. Written by \`just root-anchors\`, never by hand."
+        cargo run -q -p dedens-dnssec --features fetch-anchors --example root_anchors -- "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s"
+    } > "$tmp/root.ds"
+    cp "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s" testdata/dnssec/
+    echo "$now" > testdata/dnssec/root-anchors.captured_at
+    mv "$tmp/root.ds" "$out"
     chmod 644 "$out"
     cat "$out"

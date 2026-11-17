@@ -243,7 +243,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `nsec3_hash` have the fuzz target `dnssec_crypto`. Rejected: aws-lc-rs (a C build, a second backend beside
   rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone would justify one, see
   TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
-- D72 Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
+- D72 (amended by D127) Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
   and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
   that `just root-anchors` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
   (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
@@ -259,6 +259,32 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](../TODECIDE.md)
   holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
+- D127 (amends D72) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
+  is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
+  signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem` (ICANN
+  Root CA, and Root CA v2 valid to 2045). Behind the feature `fetch-anchors` of `dedens-dnssec`:
+  `TrustAnchors::verified(xml, p7s, now)`, `verified_by(.., ca_pem, ..)` for an operator's CA (as
+  `unbound-anchor -c`), and `from_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The
+  signature holds as `unbound-anchor` checks it: a detached `SignedData` of `id-data`, each `SignerInfo` named by
+  issuer and serial number, its signed attributes present (content type, message digest of the XML) and signed
+  with RSA PKCS #1 v1.5 and SHA-2; the signer's certificate, in the `SignedData`, has the e-mail address
+  `dnssec@iana.org` (`P7SIGNER`) and, if it has key usage, digital signature; a bundled CA of its issuer's name
+  signed it; both certificates valid at `now`. No intermediate CA and no key-identifier signer: ICANN's chain has
+  neither, so no test could show them right. The XML reader reads that schema only (elements, attributes, text,
+  comments), refuses a DOCTYPE, CDATA and entities, takes a time zone of `Z` or `±hh:mm`, keeps the entries
+  valid at `now` (§4.1.1) and drops one whose `PublicKey` and `Flags` do not match its digest or key tag
+  (§4.1.2); the awk of `just root-anchors` is gone, the recipe runs the crate's example `root_anchors` over
+  the downloaded pair, captures it to `testdata/dnssec/` and stops when the CA bundle changed (a trust root is
+  replaced by hand, checked out of band). Tests `tests/signed_anchors.rs`, fuzz target `parse_root_anchors`.
+  Parsing is RustCrypto's `cms` 0.2 and `x509-cert` 0.2 (with `der`, `der_derive`, `spki`, `const-oid`,
+  `flagset`, `base64ct`, `pem-rfc7468`: 9 crates new to the lock, Apache-2.0 OR MIT but `flagset`'s Apache-2.0,
+  no duplicate; `cargo deny` passes), the cryptography `ring`'s, already linked; behind the feature, so
+  `dedens-dnssec` alone gains nothing. Size: the example in release is 619 KiB with the check, 377 KiB with
+  the reader alone, +242 KiB that hold `ring`'s RSA, which a validating `dedensd` links already. Rejected:
+  `x509-parser` (in the lock through rcgen, but no CMS, and `nom`, `time`, `oid-registry`), the `rsa` crate
+  (`ring` verifies RSA), OpenSSL (a C build), an XML crate (one schema of seven elements), x509-cert's
+  `load_pem_chain` (it panics on an empty bundle), checking the CMS against the CA fetched beside it (the
+  same-site objection of D72 again). Anchor rollover (RFC 5011) is the recursive resolver's (TODECIDE).
 - D73 (amends D71) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
   and denial are 05 and 06. `RrSet::group` builds `RRset`s from a section (owner, class, type; RFC 2181 §5.2:
   TTL the minimum); `Signature` and `Key` borrow the RRSIG and DNSKEY records of an `RRset`, a DNSKEY whose
