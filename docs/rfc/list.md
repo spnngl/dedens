@@ -170,6 +170,8 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 7480](https://datatracker.ietf.org/doc/html/rfc7480):** HTTP Usage in the Registration Data Access Protocol (RDAP)
 * **[RFC 9082](https://datatracker.ietf.org/doc/html/rfc9082):** Registration Data Access Protocol (RDAP) Query Format
 * **[RFC 9083](https://datatracker.ietf.org/doc/html/rfc9083):** JSON Responses for the Registration Data Access Protocol (RDAP)
+* **[RFC 9224](https://datatracker.ietf.org/doc/html/rfc9224):** Finding the Authoritative Registration Data Access Protocol (RDAP) Service
+* **[RFC 9537](https://datatracker.ietf.org/doc/html/rfc9537):** Redacted Fields in the Registration Data Access Protocol (RDAP) Response
 
 ### Specialized / Niche Resource Records & Extensions
 * **[RFC 1183](https://datatracker.ietf.org/doc/html/rfc1183):** New DNS RR Definitions (AFSDB, RP, X25, ISDN, RT)
