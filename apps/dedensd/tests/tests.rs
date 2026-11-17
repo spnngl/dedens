@@ -21,4 +21,9 @@ mod privileges;
 mod quic;
 #[cfg(unix)]
 mod reload;
+mod rfc6761;
+#[cfg(unix)]
+mod rfc9718;
+#[cfg(unix)]
+mod tlds;
 mod util;

@@ -35,7 +35,7 @@ enum Source {
 /// The change time is the one an editor or `touch` cannot set back, so a rewrite of the same size under the old
 /// modification time still shows; the device and inode show a file replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
+pub(crate) struct Stamp {
     len: u64,
     modified: SystemTime,
     #[cfg(unix)]
@@ -45,7 +45,8 @@ struct Stamp {
 }
 
 impl Stamp {
-    fn of(file: &File) -> io::Result<Self> {
+    /// The stamp of `file`, as its handle shows it.
+    pub(crate) fn of(file: &File) -> io::Result<Self> {
         let meta = file.metadata()?;
         #[cfg(unix)]
         let (file, changed) = {
@@ -87,6 +88,8 @@ struct Union {
 pub(crate) struct Store {
     held: HashMap<Source, Held>,
     unions: Vec<Union>,
+    /// The TLD list of the `tlds` stages (D128).
+    pub(crate) roots: crate::roots::Held,
 }
 
 impl Store {

@@ -110,7 +110,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D101 [transports](transports.md): PQDNSCrypt: the X-Wing system `0x0003` from the `x-wing` crate, PQ certificates, and resumption tickets, in the core, the client (`+dnscrypt-pq`, `+dnscrypt-resume`) and `dedensd` (`pq` in `systems`)
 - D102 [transports](transports.md) (amended by D98, D100): DNS stamps of DNSCrypt resolvers and relays: typed, canonical, written back byte for byte
 - D103 [performance and safety](performance-and-safety.md) (amended by D142): mutation testing with cargo-mutants, outside the gate
-- D104 [server](server.md) (amended by D120, D122): list downloads: size, retries, logs, files, concurrency
+- D104 [server](server.md) (amended by D120, D122, D128): list downloads: size, retries, logs, files, concurrency
 - D105 [transports](transports.md) (amended by D113): `dedensd` CoAP server limits
 - D106 [server](server.md) (amended by D117): validation cost counts what it costs: bounded debt, NSEC3 in SHA-1 blocks
 - D107 [server](server.md) (amended by D122, D147, D174): io_uring with `COOP_TASKRUN`, `poll` reported; runtimes never dropped; reloads wake threads
@@ -128,13 +128,13 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D119 [server](server.md) (amended by D121): bounds on what a QUIC peer can make the server hold
 - D120 [server](server.md): lists parsed once, kept across reloads
 - D121 [server](server.md): a panic ends one task; a runtime panic ends the process
-- D122 [server](server.md): `dedensd` drops root once its sockets are bound
+- D122 [server](server.md) (amended by D128): `dedensd` drops root once its sockets are bound
 - D123 [server](server.md): UDP replies sent at once when none is in flight, else queued for one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D126 [scope](scope.md) (amended by D127, D128): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
 - D127 [scope](scope.md): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
-- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, and absent ones NXDOMAIN without DO
+- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO; dedensd refreshes TLD list and root anchors
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`

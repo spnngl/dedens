@@ -129,7 +129,12 @@ fn rfc6761_s6_5_rfc9476_s2_names_resolved_normally_follow_the_list() {
         assert!(ask(&pipeline, a(name), true).is_none(), "{name}");
     }
     // Delegated.
-    for name in ["1.0.0.127.in-addr.arpa.", "arpa.", "example.com.", "Example.FR."] {
+    for name in [
+        "1.0.0.127.in-addr.arpa.",
+        "arpa.",
+        "example.com.",
+        "Example.FR.",
+    ] {
         assert!(ask(&pipeline, a(name), false).is_none(), "{name}");
     }
 }

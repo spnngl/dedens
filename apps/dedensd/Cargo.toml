@@ -16,11 +16,14 @@ clap.workspace = true
 compio.workspace = true
 dedens-cache = { workspace = true, features = ["serde"] }
 dedens-dnscrypt = { workspace = true, optional = true }
-dedens-dnssec.workspace = true
+# IANA's signed root anchors, verified before use (D127, D128).
+dedens-dnssec = { workspace = true, features = ["fetch-anchors"] }
 dedens-net = { workspace = true, features = ["tracing"] }
 dedens-odoh = { workspace = true, optional = true }
-dedens-plugins = { workspace = true, features = ["serde"] }
+dedens-plugins = { workspace = true, features = ["metrics", "serde"] }
 dedens-proto.workspace = true
+# IANA's TLD list of the `tlds` stage (D128).
+dedens-roots.workspace = true
 dedens-server = { workspace = true, features = ["metrics", "serde"] }
 flume.workspace = true
 futures-util.workspace = true

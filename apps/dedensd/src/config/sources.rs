@@ -10,6 +10,7 @@ use std::{fs, io};
 
 use anyhow::{Context, anyhow, ensure};
 use dedens_cache::Cache;
+use dedens_dnssec::TrustAnchors;
 use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds, host_names};
 use dedens_proto::{Question, RecordType, Ttl};
 use dedens_server::{Pipeline, Stage};
@@ -17,10 +18,15 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::limits::BudgetFile;
+use super::roots::RootsFile;
 use super::upstream::{Dnssec, Insecure, OdohProxy, Relay, Server};
-use super::{DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES};
+use super::{
+    DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES,
+    unix_seconds,
+};
 use crate::download;
 use crate::lists::{Store, Unsaved};
+use crate::roots::{self, Used};
 
 /// A stage, as written: its settings under its `type`.
 #[derive(Debug, Deserialize)]
@@ -87,6 +93,9 @@ pub(super) enum StageFile {
         #[serde(default)]
         tlds: bool,
     },
+    /// Answers, with no upstream query, the special-use top-level domains as their RFCs ask and the names of TLDs
+    /// not in the root zone (D128), from IANA's list kept fresh as `roots` says. It goes before a cache stage.
+    Tlds {},
 }
 
 /// A cache stage, as written: the settings of `dedens_cache::Config` and, beside them, the names to keep answered
@@ -164,6 +173,17 @@ pub(super) struct Sources {
 #[serde(try_from = "String")]
 pub(super) struct Url(String);
 
+impl Url {
+    /// One of IANA's, written here.
+    pub(super) fn iana(url: &'static str) -> Self {
+        Self(url.to_owned())
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl TryFrom<String> for Url {
     type Error = String;
 
@@ -188,12 +208,16 @@ pub(super) struct DownloadsFile {
     refresh_minutes: Option<NonZeroU64>,
 }
 
-/// Downloaded lists: their URLs, where their copies are kept, how often they are fetched again (D57).
+/// Downloaded lists: their URLs, where their copies are kept, how often they are fetched again (D57); and the root
+/// files used, kept there too and fetched as often (D128).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Downloads {
     pub(crate) urls: Vec<String>,
     pub(crate) dir: PathBuf,
     pub(crate) refresh: Duration,
+    pub(crate) roots: Used,
+    /// Where the root files come from.
+    sources: RootsFile,
 }
 
 impl StageFile {
@@ -211,6 +235,7 @@ impl StageFile {
             } => {
                 file.is_some() || !urls.is_empty() || allow.file.is_some() || !allow.urls.is_empty()
             }
+            Self::Tlds {} => false,
         }
     }
 }
@@ -226,22 +251,62 @@ impl Sources {
 }
 
 impl Downloads {
-    /// No list yet, as `settings` say.
+    /// No list nor root file yet, as `settings` say, root files fetched as `roots` says.
     ///
     /// # Errors
     ///
     /// `refresh_minutes` above a year.
-    pub(super) fn new(settings: DownloadsFile) -> anyhow::Result<Self> {
+    pub(super) fn new(settings: DownloadsFile, roots: RootsFile) -> anyhow::Result<Self> {
         Ok(Self {
             urls: Vec::new(),
             dir: settings.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
             refresh: refresh(settings.refresh_minutes)?,
+            roots: Used::default(),
+            sources: roots,
         })
     }
 
-    /// The directory `user` must write once root is dropped: `dir`, if the configuration downloads lists (D122).
+    /// Whether nothing is downloaded: no list, no root file.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.urls.is_empty() && self.roots.is_empty()
+    }
+
+    /// The directory `user` must write once root is dropped: `dir`, if the configuration downloads lists or root
+    /// files (D122).
     pub(crate) fn written_dir(&self) -> Option<&Path> {
-        (!self.urls.is_empty()).then_some(self.dir.as_path())
+        (!self.is_empty()).then_some(self.dir.as_path())
+    }
+
+    /// The TLD list of a `tlds` stage: the saved copy in `dir`, held in `store`, and fetched from now on, unless
+    /// `roots` is `off`; else, or with no copy, the bundled one.
+    ///
+    /// # Errors
+    ///
+    /// A saved copy that cannot be read (D115).
+    pub(super) fn tlds(&mut self, store: &mut Store) -> anyhow::Result<Arc<dedens_roots::Tlds>> {
+        match &self.sources {
+            RootsFile::Off => Ok(roots::bundled()),
+            RootsFile::Fetched(urls) => {
+                self.roots.tlds = Some(urls.tlds().to_owned());
+                store.roots.tlds(&self.dir)
+            }
+        }
+    }
+
+    /// The root's anchors of a validating forward stage without `trust_anchors`: those of the signed copy in `dir`,
+    /// verified now and fetched from now on, unless `roots` is `off`; `None` for the bundled ones.
+    ///
+    /// # Errors
+    ///
+    /// A saved file that cannot be read (D115).
+    pub(super) fn root_anchors(&mut self) -> anyhow::Result<Option<(TrustAnchors, u64)>> {
+        match &self.sources {
+            RootsFile::Off => Ok(None),
+            RootsFile::Fetched(urls) => {
+                self.roots.anchors = Some((urls.anchors().to_owned(), urls.signature()));
+                roots::anchors(&self.dir, unix_seconds())
+            }
+        }
     }
 
     /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
@@ -662,6 +727,8 @@ mod tests {
                 ],
                 dir: DOWNLOADS_DIR.into(),
                 refresh: Duration::from_hours(24),
+                roots: Used::default(),
+                sources: RootsFile::default(),
             }
         );
     }

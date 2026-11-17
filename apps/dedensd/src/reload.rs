@@ -10,11 +10,12 @@ use std::{io, thread};
 use dedens_net::tls::{Presented, Trust};
 use dedens_server::Pipeline;
 
-use crate::config::{Downloads, Listen};
+use crate::config::{Downloads, Listen, unix_seconds};
 use crate::download::{Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 use crate::lists::Store;
 use crate::privileges::Identity;
+use crate::roots::{self, Refresh};
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
 /// The pipeline in use. Serving threads ask [`Current::newer`] before each query: one atomic load, and the new
@@ -203,14 +204,26 @@ pub(crate) fn control(
             // Held here, so `hangups` is never disconnected, SIGHUP or not.
             let _hangup = hangup;
             let client = Fetcher::new();
-            guarded("leftover sweep", || sweep(&downloads.urls, &downloads.dir));
+            guarded("leftover sweep", || {
+                sweep(&downloads.urls, &roots::FILES, &downloads.dir);
+            });
             let mut ticks = Ticks::new();
+            let mut refresh = Refresh::default();
             loop {
-                let wait = if downloads.urls.is_empty() {
+                let wait = if downloads.is_empty() {
                     Duration::MAX
                 } else {
                     let fetched = guarded("list download", || {
-                        client.fetch(&downloads.urls, &downloads.dir, &mut store)
+                        let mut fetched = client.fetch(&downloads.urls, &downloads.dir, &mut store);
+                        let root = refresh.fetch(
+                            &client,
+                            &downloads.roots,
+                            &downloads.dir,
+                            unix_seconds(),
+                        );
+                        fetched.changed |= root.changed;
+                        fetched.failed |= root.failed;
+                        fetched
                     })
                     // A panic may have come after a list was saved: reload, which costs little when nothing changed.
                     .unwrap_or(Fetched {

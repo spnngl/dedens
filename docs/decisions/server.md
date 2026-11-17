@@ -311,7 +311,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `http://` URLs stay for a server of one's own. A copy and its `ETag` never disagree: the old tag is removed,
     then the copy and the new tag are each written to a `.part` file, flushed, renamed and the directory flushed;
     the list counts as changed once its copy is renamed, a tag that cannot be written only logged.
-- D104 (amends D57, D64; amended by D120, D122) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
+- D104 (amends D57, D64; amended by D120, D122, D128) List downloads, from the audit (S4, S15.a, S15.c, L13, L16):
   - Size: `ureq` is built without `gzip` (`default-features = false`, keeping `rustls` and `platform-verifier`) and
     asks for `Accept-Encoding: identity` (RFC 9110 §12.5.3: no header would let a server send gzip, which is no
     list). The 256 MiB cap counted the compressed bytes, so a gzip body of that size could inflate about a
@@ -1107,7 +1107,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     100 restarts under load, Linux), `serve/isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
-- D122 (amends D42, D44, D55, D66, D104, D107, D115) `dedensd` drops root once its sockets are bound, from the audit (S5): a
+- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128) `dedensd` drops root once its sockets are bound, from the audit (S5): a
   server started as root to bind :53, :443 and :853 kept root while it parsed hostile input.
   - Configuration: top-level `user:` (a name or a numeric id, number or string) and `group:` (the same; only with
     `user`). Linux only: `PR_SET_NO_NEW_PRIVS` and the `/proc/PID/status` that the checks read are Linux's, and
@@ -1371,7 +1371,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up`),
     `crates/dedens-sim/tests/dnssec.rs` (`a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed`),
     `a_query_that_waits_for_the_allowance_is_counted_parked` of `crates/dedens-server/tests/metrics.rs`.
-- D128 (amends D54, D126) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
+- D128 (amends D54, D104, D122, D126) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
   not in the root zone: `type: tlds`, `dedens_plugins::TopLevel` over a `dedens_roots::Tlds`. Its table,
   `SPECIAL`, holds each special-use TLD of IANA's list with what item 4 of its RFC asks of a caching server:
   `localhost` and its subnames the loopback addresses to A, AAAA and ANY (one RRset, RFC 8482 §4.1), no data to
@@ -1390,3 +1390,23 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   Rejected: NXDOMAIN for `example`, `alt` and a special-use TLD of no known use whatever DO (the RFCs ask the
   first two be resolved normally, and a DO client cannot check the denial); a SOA of the root in the NXDOMAIN (it
   would claim a zone's authority for a policy).
+
+  `dedensd` keeps the root's files fresh, from `roots:` (`off`, or the URLs of `tlds` and `anchors`, IANA's by
+  default; the signature is the anchors' URL in `.p7s`). It fetches only what serves: the TLD list when a `tlds`
+  stage is in the pipeline, the anchors when a validating forward stage has no `trust_anchors`. They join D104's
+  downloads: same thread, `refresh_minutes` and `dir`, loopback-testable over HTTP, the leftover sweep. The copies
+  have fixed names in `dir`: `tlds.json` with its ETag in `tlds.etag` (a 304 keeps it); `root-anchors.xml`,
+  `.p7s` and `.signed_at`, the signing time of the accepted pair in decimal seconds, written last, each file
+  atomically (D104). The list is read by `Tlds::read` before it is saved, so a short or broken one never replaces
+  the copy. The anchors are fetched whole each refresh (10 KB, no ETag: the pair and its time stay one), checked by
+  `TrustAnchors::verified` (D127) with the saved `signed_at` as the floor, so a replayed older pair is refused
+  (RFC 9718 §3); a same pair is `unchanged`. A failure of either keeps what is in use, logged with its error. A
+  start and a reload read the copies as the server's user (D122, which makes `dir` before the drop as soon as a
+  root file is used): a copy missing is the bundled one, a copy that exists but cannot be read refuses them (as
+  D115's lists), one that does not parse or verify under its floor is warned of and the bundled one serves. New
+  anchors give the validators a new tag, `root anchors signed at` the time, so the reload builds a fresh validator
+  and flushes the caches behind it (D77). `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is the time
+  since the copy in use was last confirmed at its source, set at each fetch. The Landlock plan must let `dir`'s
+  files be written. Rejected: an ETag for the anchors (a 304 on the XML says nothing of the signature); the
+  floor in memory only (a restart would accept a replayed pair); separate settings of refresh (one schedule, one
+  thread).
