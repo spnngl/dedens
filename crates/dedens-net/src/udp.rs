@@ -431,6 +431,10 @@ mod tests {
         ) -> impl Future<Output = BufResult<usize, B>> {
             ready(BufResult(Err(io::ErrorKind::Unsupported.into()), buffer))
         }
+
+        fn try_send_to(&self, _: &[u8], _: SocketAddr) -> io::Result<usize> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
     }
 
     /// Compio with [`Refusing`] sockets.

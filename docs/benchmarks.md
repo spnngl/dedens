@@ -1791,10 +1791,50 @@ upstream. Median (range) of the CPU a query, avg / p99 ms, and Knot's questions:
   against 1.17× and 1.09× in the first. What the first pass adds over the second, the 5% upstream, is alike: 6.6
   µs a query for `dedensd` and 6.2 for Unbound at 1 core, 3.1 and 4.4 at 3. At the harness's common rate, 2.4
   times higher at 1 core, a hit costs the two the same (`dedensd-8mib` table below: 16.9 and 16.6 µs): the cost is
-  per wake-up, paid at a low rate (`TODECIDE.md`, "CPU and latency ... at a low rate").
+  per wake-up, paid at a low rate: two turns of the runtime a wake-up, below.
 - Unbound asks Knot once per distinct question, coalescing the identical ones in flight (its mesh); `dedensd` asks
   0.3% more at 1 core and 1.1% at 3, the duplicates a thread sends while the first is in flight. Coalescing would
   save no more than that.
+
+The cost of a hit (2026-11-17, `main` at 6b692e9c against the tree of D123's reply sent at once, VPS of above,
+one core at the common rate, five rounds alternating): the CPU from the server's cgroup, and system calls,
+switches and `io_uring` events counted by the host's `perf stat` on the server's process (one run each). Median
+(range) µs a query; calls a query; the second pass of `forward` as above, `udp` primed:
+
+| Run | `main` | tree | Unbound | `main`'s calls | the tree's | Unbound's |
+|---|---|---|---|---|---|---|
+| `forward` second pass, 10 139/s | 21.3 (18.6-25.4) | 18.1 (15.6-19.6) | 18.3 (16.8-18.5) | 0.82 `io_uring_enter`, 0.26 switches | 0.57 `io_uring_enter` + 1 `sendto`, 0.31 | `sendto` 1, `recvfrom` 1.26, `pselect6` 0.26, 0.26 |
+| `udp`, 10 887/s | 22.3 (18.0-24.0) | 18.2 (16.2-21.4) | 17.5 (17.4-18.4) | 1.31, 0.51 | 0.76 + 1 `sendto`, 0.66 | 1, 1.67, 0.67 |
+
+- Where the 3.4 µs went: two turns of the runtime a wake-up, where Unbound sleeps once in `pselect6` and reads
+  until `EAGAIN`. `main` made 2.2 to 2.5 `io_uring_enter` a wake-up (calls over switches). A reply sent on the
+  ring completes during the enter that submits it, and its completion ends the next wait at once: a second enter
+  and a second turn. Two wake-ups of a task by itself made the task hot, which compio follows with an enter that
+  does not wait: `flume` waking the sender, joined in the answering task (D123), and the lock over the socket's
+  datagrams waking the second receiving task of D48. Kernel time a query was alike (12.4 µs against Unbound's
+  12.6 in `udp`, the first table's profile, most of it delivering the reply to dnsperf over loopback); the rest
+  was the user and `io_uring` time of the extra turns. No timer, futex or allocation a query; the cache's hit is 0.2 µs (`server` bench).
+- Tried, in order, each against `main` in the same session: the queue without `flume` alone, 22.2 against 21.7
+  (noise); the `block_on` future made a task (compio polls it every turn), 24.1 against 24.1, dropped; a lone
+  reply by `sendto`, 20.4-20.7; with one receiving task, 19.8-20.0; every reply by `sendto` while none is in flight
+  on the ring, 18.1, kept (D123). `forward` is 0.99 times Unbound's, `udp` 1.04, both within noise.
+- Left: the tree makes 1.9 enters a wake-up in `forward` against 1.2 in `udp`, not explained; within noise of
+  Unbound, not followed.
+
+At saturation, the same session, `main` → tree, medians (range), queries/s; the compare harness three rounds
+(`udp` five), its CPU at the common rate within noise of the table above:
+
+| Mode | 1 core | 3 cores |
+|---|---|---|
+| `udp` | 84.3k (83.1-88.1) → 92.4k (91.4-95.4) | 125.5k (113.3-145.8) → 134.9k (106.4-144.2) |
+| `forward` | 66.2k (65.9-66.9) → 69.5k (66.0-70.6) | 103.6k (101.0-134.9) → 119.1k (115.8-126.0) |
+| `tcp` | 516k (486-516) → 527k (518-528) | 524k (510-537) → 510k (509-554) |
+
+`just bench-dnsperf 6b692e9c <mode>` (D123's harness, `DEDENS_BACK_CPU=2 DEDENS_LOAD_CPUS=3-5`, three rounds):
+`udp` 194.8k-196.8k (196.0k) → 225.0k-228.6k (225.9k), average latency 2.46 → 2.14 ms; `forward` 49.6k-50.6k
+(50.5k) → 51.0k-52.7k (51.3k); `two-sockets`, the second socket's average latency 0.52-0.55 → 0.42-0.48 ms, its
+maximum 4-13 → 8-135 ms (3.7-158 in D123's runs); no query lost. One `sendto` a reply under a flood costs less than D123's batches on the
+ring, and a reply no longer waits behind a batch.
 
 ### Where the memory goes
 

@@ -274,6 +274,10 @@ impl Udp for SimUdp {
         let sent = self.socket.send_to(buffer.as_init(), peer).await;
         BufResult(sent, buffer)
     }
+
+    fn try_send_to(&self, buffer: &[u8], peer: SocketAddr) -> io::Result<usize> {
+        self.socket.try_send_to(buffer, peer)
+    }
 }
 
 /// A datagram [`SimUdp`] received, copied out of turmoil's.

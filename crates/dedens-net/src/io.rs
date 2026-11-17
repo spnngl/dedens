@@ -176,6 +176,13 @@ pub trait Udp: Debug + 'static {
 
     /// Sends `buffer` as one datagram to `peer`.
     async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B>;
+
+    /// Sends `buffer` as one datagram to `peer` without waiting: one system call, without a turn of the runtime.
+    ///
+    /// # Errors
+    ///
+    /// `WouldBlock` when the socket's send buffer is full, or the error of the send.
+    fn try_send_to(&self, buffer: &[u8], peer: SocketAddr) -> io::Result<usize>;
 }
 
 /// A datagram received by [`Udp::recv_multi`]: its buffer goes back to the pool when it drops.
@@ -326,6 +333,17 @@ impl Udp for UdpSocket {
     #[inline]
     async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
         Self::send_to(self, buffer, peer).await
+    }
+
+    /// One `sendto` with `MSG_DONTWAIT`, as [`Udp::try_recv`].
+    #[inline]
+    fn try_send_to(&self, buffer: &[u8], peer: SocketAddr) -> io::Result<usize> {
+        Ok(rustix::net::sendto(
+            self,
+            buffer,
+            rustix::net::SendFlags::DONTWAIT,
+            &peer,
+        )?)
     }
 }
 

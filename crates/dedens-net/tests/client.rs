@@ -354,6 +354,10 @@ impl Udp for FailingSocket {
     async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
         Udp::send_to(&self.socket, buffer, peer).await
     }
+
+    fn try_send_to(&self, buffer: &[u8], peer: SocketAddr) -> io::Result<usize> {
+        Udp::try_send_to(&self.socket, buffer, peer)
+    }
 }
 
 impl Io for FailingOnce {

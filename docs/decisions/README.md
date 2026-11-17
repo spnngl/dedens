@@ -55,7 +55,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D45 [server](server.md) (amended by D77, D115): upstream timeout and the client response timer (RFC 8767)
 - D46 [server](server.md) (amended by D121): a query without RD gets fresh cached data or REFUSED, never goes upstream
 - D47 [server](server.md) (amended by D64, D90, D91, D113, D186): `dedensd` limits per thread: upstream queries, TCP connections
-- D48 [server](server.md) (amended by D123): several tasks answer on each UDP socket of a thread
+- D48 [server](server.md) (amended by D123): tasks answering each UDP socket of a thread: one since D123
 - D49 [server](server.md): UDP queries land in per-thread buffer pools, multishot on Linux, up to 4096 bytes read whole
 - D50 [server](server.md) (amended by D108): upstream UDP queries share a fixed socket pool per server and one receive buffer
 - D51 [server](server.md) (amended by D107, D123): io_uring runs completion work cooperatively; older kernels use poll
@@ -129,7 +129,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D120 [server](server.md): lists parsed once, kept across reloads
 - D121 [server](server.md): a panic ends one task; a runtime panic ends the process
 - D122 [server](server.md): `dedensd` drops root once its sockets are bound
-- D123 [server](server.md): UDP replies through a queue and one sender per socket
+- D123 [server](server.md): UDP replies sent at once when none is in flight, else queued for one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`

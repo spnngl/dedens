@@ -4,13 +4,14 @@
 #![deny(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZero;
 use std::pin::pin;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
@@ -29,8 +30,9 @@ use super::upstream::{Ask, answer};
 use super::{ERROR_PAUSE, Thread, pause};
 
 /// Tasks answering on each UDP socket, taking turns at its datagrams: with the replies queued, 1, 2 and 4 serve
-/// alike within noise, and two keep one free to take a datagram while the other answers (D48, D123).
-pub(super) const UDP_RECEIVES: usize = 2;
+/// alike at saturation, and one is kept: two woke each other through the lock at every query, a turn of the runtime
+/// more at a low rate (D48, D123).
+pub(super) const UDP_RECEIVES: usize = 1;
 
 /// Replies a UDP socket holds queued for its sender, as many in flight at most, and as many spare buffers kept: a
 /// task with a reply waits for room in the queue (D123).
@@ -88,23 +90,23 @@ struct Outgoing {
 }
 
 /// The replies the tasks of one UDP socket hand to its sender, and the buffers it gives back to make the next in.
-/// It holds both ends of the queue, so queueing never fails, and the sender can start again on it.
+/// The queue is the outbox's, not the sender's, so queueing never fails, and the sender can start again on it. One
+/// thread's: a queue and two wakers, no lock.
+#[derive(Default)]
 pub(super) struct Outbox {
-    queue: flume::Sender<Outgoing>,
-    outgoing: flume::Receiver<Outgoing>,
+    /// The replies queued, [`UDP_SENDS`] at most.
+    queue: RefCell<VecDeque<Outgoing>>,
+    /// The sender's waker, woken by each reply queued.
+    sender: RefCell<Option<Waker>>,
+    /// The tasks waiting for room in a full queue, all woken when the sender takes a reply.
+    waiting: RefCell<Vec<Waker>>,
     spare: RefCell<Vec<Vec<u8>>>,
 }
 
 impl Outbox {
     /// An empty outbox: [`UDP_SENDS`] replies wait in its queue.
     pub(super) fn new() -> Self {
-        let (queue, outgoing) = flume::bounded(UDP_SENDS);
-        let spare = RefCell::new(Vec::new());
-        Self {
-            queue,
-            outgoing,
-            spare,
-        }
+        Self::default()
     }
 
     /// A buffer of [`DEFAULT_UDP_PAYLOAD`] bytes: a spare one if there is, else a new one.
@@ -115,9 +117,43 @@ impl Outbox {
 
     /// Queues the first `len` bytes of `buffer` for `peer`, once there is room.
     pub(super) async fn push(&self, buffer: Vec<u8>, len: usize, peer: SocketAddr) {
-        let reply = buffer.slice(..len);
-        // The outbox holds the receiver too: sending cannot fail.
-        let _ = self.queue.send_async(Outgoing { reply, peer }).await;
+        let mut outgoing = Some(Outgoing {
+            reply: buffer.slice(..len),
+            peer,
+        });
+        poll_fn(|cx| {
+            let mut queue = self.queue.borrow_mut();
+            if queue.len() >= UDP_SENDS {
+                self.waiting.borrow_mut().push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            queue.extend(outgoing.take());
+            // The tasks answering a socket are one task with its sender, which is polled after them (`udp`): their
+            // replies need no wake-up, which would cost the runtime another turn, and that turn an `io_uring_enter`.
+            if let Some(sender) = &*self.sender.borrow()
+                && !sender.will_wake(cx.waker())
+            {
+                sender.wake_by_ref();
+            }
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    /// The next reply queued; else pending, the sender woken by the next.
+    fn poll_next(&self, cx: &Context<'_>) -> Poll<Outgoing> {
+        let Some(outgoing) = self.queue.borrow_mut().pop_front() else {
+            let mut sender = self.sender.borrow_mut();
+            match &mut *sender {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => *sender = Some(cx.waker().clone()),
+            }
+            return Poll::Pending;
+        };
+        for waiting in self.waiting.borrow_mut().drain(..) {
+            waiting.wake();
+        }
+        Poll::Ready(outgoing)
     }
 
     /// Keeps a buffer a reply was sent from, if it is one of [`Outbox::buffer`]'s.
@@ -131,15 +167,27 @@ impl Outbox {
 
 /// Sends what `outbox` queues, [`UDP_SENDS`] at once at most, never ends. The tasks answering queue replies without
 /// waiting for them to go out, so one turn of the runtime sends all they made in one submission, not one for each
-/// task (`io_uring_enter` 0.255 → 0.005 a query, D123).
+/// task (`io_uring_enter` 0.255 → 0.005 a query, D123). A lone reply, nothing in flight nor behind it, goes out at
+/// once by one `sendto`: on the ring it would cost another turn of the runtime and another `io_uring_enter`.
 pub(super) async fn send_replies(socket: &impl Udp, outbox: &Outbox) {
-    let mut incoming = outbox.outgoing.clone().into_stream();
     let mut sending = FuturesUnordered::new();
     poll_fn(|cx| {
         loop {
             while sending.len() < UDP_SENDS
-                && let Poll::Ready(Some(Outgoing { reply, peer })) = incoming.poll_next_unpin(cx)
+                && let Poll::Ready(Outgoing { reply, peer }) = outbox.poll_next(cx)
             {
+                if sending.is_empty() {
+                    match socket.try_send_to(&reply, peer) {
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        sent => {
+                            if let Err(error) = sent {
+                                tracing::debug!(%error, %peer, "UDP send");
+                            }
+                            outbox.give_back(reply.into_inner());
+                            continue;
+                        }
+                    }
+                }
                 sending.push(send(socket, reply, peer));
             }
             // A send that ended makes room for a reply the queue already holds, which wakes no one.
@@ -373,9 +421,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use compio::BufResult;
+    use compio::buf::{IoBuf, IoBufMut};
     use compio::driver::op::RecvFromMultiResult;
     use compio::net::UdpSocket;
     use compio::runtime::{Runtime, spawn};
+    use dedens_net::io::Udp;
     use dedens_net::tls::Trust;
     use dedens_server::Pipeline;
     use futures_util::Stream;
@@ -627,6 +677,104 @@ mod tests {
             };
             let seen = seen.expect("every reply within 5 s");
             assert!(seen.iter().all(|seen| *seen), "a reply never came");
+        });
+    }
+
+    /// A loopback socket that counts the sends it takes on the ring, and whose send buffer is full to
+    /// [`Udp::try_send_to`] when `full`.
+    #[derive(Debug)]
+    struct Counted {
+        socket: UdpSocket,
+        full: bool,
+        ring: Cell<usize>,
+    }
+
+    impl Counted {
+        async fn new(full: bool) -> Self {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let ring = Cell::new(0);
+            Self { socket, full, ring }
+        }
+    }
+
+    impl Udp for Counted {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            self.socket.local_addr()
+        }
+
+        async fn connect(&self, addr: SocketAddr) -> io::Result<()> {
+            self.socket.connect(addr).await
+        }
+
+        async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
+            self.socket.recv(buffer).await
+        }
+
+        async fn readable(&self) -> io::Result<()> {
+            Udp::readable(&self.socket).await
+        }
+
+        fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+            Udp::try_recv(&self.socket, buffer)
+        }
+
+        async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
+            self.socket.send(buffer).await
+        }
+
+        type Datagram = <UdpSocket as Udp>::Datagram;
+
+        fn recv_multi(&self) -> impl Stream<Item = io::Result<Self::Datagram>> {
+            Udp::recv_multi(&self.socket)
+        }
+
+        async fn send_to<B: IoBuf>(&self, buffer: B, peer: SocketAddr) -> BufResult<usize, B> {
+            self.ring.set(self.ring.get() + 1);
+            Udp::send_to(&self.socket, buffer, peer).await
+        }
+
+        fn try_send_to(&self, buffer: &[u8], peer: SocketAddr) -> io::Result<usize> {
+            if self.full {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            Udp::try_send_to(&self.socket, buffer, peer)
+        }
+    }
+
+    /// Queues [`UDP_SENDS`] replies for `client`, then sends them from `server`, and says how many went on the ring.
+    async fn ring_sends(server: &Counted) -> usize {
+        let client = client();
+        let peer = client.local_addr().expect("its address");
+        let outbox = Outbox::new();
+        for number in 0..UDP_SENDS {
+            queue_number(&outbox, number, peer).await;
+        }
+        let receiving = compio::time::timeout(Duration::from_secs(5), numbers(&client, UDP_SENDS));
+        let sending = send_replies(server, &outbox);
+        let Either::Left((seen, _)) = select(pin!(receiving), pin!(sending)).await else {
+            panic!("the sender never ends");
+        };
+        let seen = seen.expect("every reply within 5 s");
+        assert!(seen.iter().all(|seen| *seen), "a reply never came");
+        server.ring.get()
+    }
+
+    /// D123: a reply with no send in flight goes out at once, by a system call of its own, not on the ring: at a low
+    /// rate a send on the ring costs a turn of the runtime more.
+    #[test]
+    fn replies_with_no_send_in_flight_go_out_at_once() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            assert_eq!(ring_sends(&Counted::new(false).await).await, 0);
+        });
+    }
+
+    /// D123: a reply the socket cannot take at once (`WouldBlock`) goes out on the ring, with those behind it.
+    #[test]
+    fn replies_a_full_socket_refuses_go_out_on_the_ring() {
+        let runtime = Runtime::new().expect("a runtime");
+        runtime.block_on(async {
+            assert_eq!(ring_sends(&Counted::new(true).await).await, UDP_SENDS);
         });
     }
 
