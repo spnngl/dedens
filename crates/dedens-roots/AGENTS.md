@@ -6,4 +6,5 @@ IANA's root hints and TLD list (D126), bundled and read from fresh copies; `src/
   bundled `tlds.json` is IANA's cut to the members `src/tlds.rs` reads, the test copy six entries of the same download
   in full. A member read from a new place goes in the recipe's `jq` filter too, or the bundled list lacks it.
 - `Tlds::read` refuses a copy holding fewer than half the bundled TLDs; `Tlds::bundled` does not check itself.
+- `meta.generated` is required: a server judges the list's age by it (D128), and the recipe keeps `meta` whole.
 - The DS records of `tlds.json` are hints, never trust anchors: the file is unsigned (D126).

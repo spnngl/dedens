@@ -62,6 +62,9 @@ pub enum TldsError {
         /// The digest as written.
         digest: String,
     },
+    /// A `meta.generated` that is not an RFC 3339 time from 1970 on.
+    #[error("generated {0:?} is not a time")]
+    Generated(String),
 }
 
 /// Where a TLD stands in the root zone.
@@ -166,10 +169,11 @@ impl Tld {
     }
 }
 
-/// The TLDs, sorted by name for [`Tlds::get`].
+/// The TLDs, sorted by name for [`Tlds::get`], and when IANA generated the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tlds {
     tlds: Box<[Tld]>,
+    generated: u64,
 }
 
 impl Tlds {
@@ -220,8 +224,16 @@ impl Tlds {
         self.tlds.iter()
     }
 
+    /// When IANA generated the list, its `meta.generated`, in seconds since 1970: how old what it says is.
+    #[must_use]
+    pub fn generated(&self) -> u64 {
+        self.generated
+    }
+
     fn parse(json: &[u8]) -> Result<Self, TldsError> {
         let list: RawList<'_> = serde_json::from_slice(json)?;
+        let generated = unix_time(&list.meta.generated)
+            .ok_or_else(|| TldsError::Generated(list.meta.generated.clone().into_owned()))?;
         let mut tlds = list
             .domains
             .into_iter()
@@ -237,8 +249,69 @@ impl Tlds {
                 });
             }
         }
-        Ok(Self { tlds: tlds.into() })
+        Ok(Self {
+            tlds: tlds.into(),
+            generated,
+        })
     }
+}
+
+/// Seconds since 1970 of an RFC 3339 time (§5.6), `2026-11-16T23:49:03+00:00`: date, `T`, time, maybe a
+/// fraction (dropped), then `Z` or an offset; `None` for another text or a time before 1970.
+fn unix_time(text: &str) -> Option<u64> {
+    let field = |from: usize, to: usize| -> Option<i64> {
+        let digits = text.get(from..to)?;
+        digits
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| digits.parse().ok())
+            .flatten()
+    };
+    let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
+    if !separators.iter().all(|&(at, byte)| {
+        text.as_bytes()
+            .get(at)
+            .is_some_and(|b| b.eq_ignore_ascii_case(&byte))
+    }) {
+        return None;
+    }
+    let (year, month, day) = (field(0, 4)?, field(5, 7)?, field(8, 10)?);
+    let (hour, minute, second) = (field(11, 13)?, field(14, 16)?, field(17, 19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let rest = text.get(19..)?;
+    let zone = match rest.strip_prefix('.') {
+        Some(fraction) => fraction.trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => rest,
+    };
+    let offset = match zone.as_bytes() {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let (hours, minutes) = (
+                field(text.len() - 5, text.len() - 3)?,
+                field(text.len() - 2, text.len())?,
+            );
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let offset = (hours * 60 + minutes) * 60;
+            if *sign == b'+' { offset } else { -offset }
+        }
+        _ => return None,
+    };
+    // Howard Hinnant's `days_from_civil`.
+    let year = if month <= 2 { year - 1 } else { year };
+    let (era, year_of_era) = (year.div_euclid(400), year.rem_euclid(400));
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second - offset).ok()
 }
 
 impl<'t> IntoIterator for &'t Tlds {
@@ -260,7 +333,15 @@ fn compare(a: &[u8], b: &[u8]) -> Ordering {
 #[derive(Deserialize)]
 struct RawList<'a> {
     #[serde(borrow)]
+    meta: RawMeta<'a>,
+    #[serde(borrow)]
     domains: Vec<RawTld<'a>>,
+}
+
+#[derive(Deserialize)]
+struct RawMeta<'a> {
+    #[serde(borrow)]
+    generated: Cow<'a, str>,
 }
 
 #[derive(Deserialize)]
