@@ -168,9 +168,11 @@ exclude_re = [
   # D154: built only for musl Linux, where `tests/huge_pages.rs` catches its mutants (`just musl`); the mutants shards
   # build for glibc.
   'dedensd/src/main\.rs:\d+:\d+: (replace huge_pages_off with \(\)|delete ! in huge_pages_off)$',
-  # D127: a signer's certificate without digital signature in its key usage needs one ICANN's CA signed so; test
-  # data is captured, and a changed key usage breaks the CA's signature, refused all the same.
+  # D127: a signer's certificate without digital signature in its key usage, or with `dnssec@iana.org` in another
+  # attribute than its e-mail address, needs one ICANN's CA signed so; test data is captured, and a changed subject
+  # or key usage breaks the CA's signature, refused all the same. By column: the function's other `&&` are caught.
   'anchor/signature\.rs:\d+:\d+: replace match guard !usage\.digital_signature\(\) with false in check_certificate$',
+  'anchor/signature\.rs:\d+:47: replace && with \|\| in check_certificate$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
