@@ -347,7 +347,29 @@ fn printable(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::printable;
+    use std::time::Duration;
+
+    use super::{Exchange, human, printable, read};
+
+    /// RFC 9083 §4.6: `status` is optional; a domain without it is found all the same.
+    #[test]
+    fn a_domain_without_status_is_found() {
+        let mut fr: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../../../testdata/rdap/fr.json"))
+                .expect("JSON");
+        fr.as_object_mut().expect("an object").remove("status");
+        let answer = read(200, fr.to_string().as_bytes()).expect("a domain");
+        let exchange = Exchange {
+            url: "https://rdap.iana.org/domain/fr",
+            rtt: Duration::ZERO,
+            status: 200,
+        };
+        let mut out = Vec::new();
+        human(&mut out, "fr", &answer, &exchange).expect("printed");
+        let out = String::from_utf8(out).expect("UTF-8");
+        let out = anstream::adapter::strip_str(&out).to_string();
+        assert!(out.starts_with("fr. TLD  found  0.0 ms from "), "{out}");
+    }
 
     #[test]
     fn control_characters_are_escaped() {

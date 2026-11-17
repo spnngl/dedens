@@ -257,3 +257,19 @@ fn flatten(value: Value, values: &mut Vec<String>) {
         Value::String(_) | Value::Null | Value::Object(_) => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Card;
+
+    /// RFC 7095 §3.3.1.3: the example address, its empty components left out.
+    #[test]
+    fn rfc7095_s3_3_1_3_a_structured_value_is_its_components() {
+        let card: Card = serde_json::from_str(
+            r#"["vcard", [["adr", {}, "text", ["", "", "123 Main Street", "Any Town", "CA", "91921-1234", "U.S.A."]]]]"#,
+        )
+        .expect("a card");
+        let adr: Vec<_> = card.all("adr").map(super::Property::text).collect();
+        assert_eq!(adr, ["123 Main Street, Any Town, CA, 91921-1234, U.S.A."]);
+    }
+}
