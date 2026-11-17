@@ -110,9 +110,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   profile found no system call or wake-up a query of our own; `tcp`'s gap is the kernel's and `dnssec`'s was the
   memo (D86). Left: 3-core `forward` spends 1.3 times Unbound's CPU (28.5 µs against 22.9, the 5% of names sent
   upstream by a cold server, page faults of fresh memory among them), and 1-core `forward` answers in 0.22 ms
-  against 0.13 (p99 1.2 against 0.7), though `miss`, every name upstream, costs less than Unbound's. Default: run
-  the corpus a second time on the same server, to split the cold start's cost (fresh memory, the cache growing) from
-  the answer's, before any change.
+  against 0.13 (p99 1.2 against 0.7), though `miss`, every name upstream, costs less than Unbound's. The second
+  pass split the cold start from the hits, and the hits' gap was two turns of the runtime a wake-up, closed by D123's
+  reply sent at once. Default: profile the first pass the same way (fresh memory, the cache growing) before any
+  change.
 - Memory: idle, `dedensd` holds 11 MiB against Unbound's 4; loaded, 160 MiB in 3-core `miss` against Unbound's 23 and
   85 to 90 for the others (`docs/benchmarks.md`). The cache's 64 MiB capacity (D116) explains part. Default: account
   for the rest (buffer rings, the upstream pool, the allocator) with a heap profile before changing a default.

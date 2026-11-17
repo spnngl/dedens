@@ -106,8 +106,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   allow and block lists come later (`docs/TODECIDE.md`); per-address caps are the deployment's (D90; UDP is limited per network by D113).
 - D48 (amends D42; amended by D123) Several tasks answer on each UDP socket of a thread, so a receive does not wait while one
   answers: one task waited for its reply to go out before receiving again. Four at first; two since D123 queued the
-  replies, which no task waits to see sent. `just bench-dnsperf` (Linux, io_uring, one
-  core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
+  replies, which no task waits to see sent; one since D123 sends a reply at once: two woke each other through the
+  lock on the socket's datagrams at every query, a turn of the runtime more. `just bench-dnsperf` (Linux, io_uring,
+  one core, cache hits) measures `dedensd` against a git ref: 1 task about 310k queries/s, 2 about 340k, 4 about
   415k, 8 and 16 no better. A TCP connection's writer writes the replies queued meanwhile together, up to 65535
   bytes: one write a reply held TCP to about 185k queries/s, batches reach about 1.8M (dnsperf pipelines 500
   queries). Copying each reply for the writer costs nothing measurable there (copying it twice did not move the
@@ -1147,14 +1148,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     process; socket activation does it with no code: `docs/TODECIDE.md`); `user` off Linux (nothing there is tested).
   - Open (`docs/TODECIDE.md`): the systemd unit, and Kubernetes `securityContext`.
 - D123 (amends D48, D51, D63; builds on D107, D121) Replies to UDP queries go through a queue and one sender a
-  socket, the tasks answering on it drop from four to two, and the `io_uring` flags of D51 stay (audit P2, P12). Each
+  socket, the tasks answering on it drop from four to one, and the `io_uring` flags of D51 stay (audit P2, P12). Each
   of D48's tasks waited for its reply to go out before receiving again, so each reply cost its own `io_uring_enter`.
   Now `Outbox` (`serve/udp.rs`), made with the socket beside its supervised loop so a restart (D121) keeps it, takes the
-  replies, made at once or after upstream, in a bounded queue (64, `flume`) that `send_replies`, one more future of
-  the socket's task, sends from, up to 64 at once: the replies of one turn of the runtime go out in one submission.
+  replies, made at once or after upstream, in a bounded queue (64) that `send_replies`, one more future of
+  the socket's task, sends from, up to 64 at once: the replies of one turn of the runtime go out in one submission,
+  when they go on the ring (below).
   A task whose reply finds the queue full waits, so nothing grows. The reply buffers move with the replies (D63: a
   task's buffer is no longer owned by its send) and come back as spare ones, at most 64 of 1232 bytes: a socket
-  holds at most 2 + 64 queued + 64 sending buffers, 130 × 1232 B ≈ 160 KB a thread, of which 79 KB stay after a
+  holds at most 1 + 64 queued + 64 sending buffers, 129 × 1232 B ≈ 159 KB a thread, of which 79 KB stay after a
   burst.
   - Measured (VPS, Linux 6.12, one server core, five rounds, base and tree alternating; `docs/benchmarks.md`): with
     64 queued, cache hits over UDP 192.4k queries/s median against 163.1k-172.0k for the base over four sessions,
@@ -1176,8 +1178,19 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `tcp` 0.0045 → 0.0083 enters a query with `DEFER_TASKRUN`, the other modes equal (`docs/benchmarks.md`).
   - Rejected: `SQPOLL` (D51 again): on the server's core the rates halve; on a core of its own it gains over one core
     but spins it, and two serving threads on the same two cores (D42) gain more in every mode: it loses at equal cores.
+  - A reply goes out at once, by one non-blocking `sendto` (`Udp::try_send_to`), while no send is in flight on the
+    ring; on `WouldBlock` it goes on the ring, with the replies queued behind it until those sends end. On the ring,
+    a lone reply's completion ended the runtime's next wait at once: two `io_uring_enter` and two turns a wake-up at
+    a low rate, where Unbound makes one `sendto`. With it the queue is a `VecDeque` and two wakers, not `flume`: a
+    reply queued by the sender's own task wakes no one, and one task answers a socket, not two (D48). Measured (VPS,
+    five rounds, `docs/benchmarks.md`, "Where the time goes at the common rate"): cache hits at the common rate,
+    1 core, 21.3 → 18.1 µs a query in `forward`'s second pass (Unbound 18.3), 22.3 → 18.2 in `udp` (17.5); at
+    saturation, the compare harness, 1 core `udp` 84.3k → 92.4k, the rest within noise; this decision's harness,
+    `udp` 196.0k → 225.9k, `forward` within noise, the second socket of `two-sockets` 0.52-0.55 → 0.42-0.48 ms on
+    average, no query lost.
   - Tests: `serve/udp.rs` (`a_full_outbox_makes_the_next_reply_wait`, `queued_replies_are_all_sent_and_their_buffers_reused`,
-    `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`).
+    `a_failed_send_costs_only_its_reply`, `a_new_sender_sends_what_the_last_one_left_queued`,
+    `replies_with_no_send_in_flight_go_out_at_once`, `replies_a_full_socket_refuses_go_out_on_the_ring`).
 - D135 (builds on D86, D107) Loom tries every interleaving of the threads of the reload wake-up (`Current`) and of the
   query flights (`Flights`), the two places where `dedensd`'s threads share state by a protocol of their own. D86's
   and D107's tests run real threads, which pass whenever the scheduler misses the bad order; loom runs each order.
