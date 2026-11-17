@@ -89,7 +89,7 @@ mimalloc = { version = "0.1.52", features = ["secure"] }
 metrics-util = { version = "0.20.4", default-features = false }
 # D122: dedensd's privilege drop (`setuid`, `setgid`, `initgroups`, user and group lookup, `PR_SET_NO_NEW_PRIVS`), the
 # libc calls without `unsafe` of our own. Its `setuid` is libc's, which changes every thread. D174: `uname`, the
-# kernel release that picks the driver.
+# kernel release that picks the driver. D154: `PR_SET_THP_DISABLE`, dedensd's heap without transparent huge pages.
 nix = { version = "0.32.0", default-features = false, features = [
   "feature",
   "process",

@@ -1862,6 +1862,45 @@ nothing the runs can see. `cargo bench -p dedens-net --bench pools` on the M5 (k
 first under load): UDP 1 in flight 28801 → 28207, 32 in flight 91174 → 88217 queries a second, medians, within
 the rounds' spread (27921-29776, 83076-97149).
 
+### Transparent huge pages off (D154)
+
+`dedensd` sets `PR_SET_THP_DISABLE` first thing in `main`. `main` at 0c746b60 against `perf/thp-off` on the VPS (THP
+`always`), `just bench-compare`'s musl binaries, lean configurations, the A/A pair `main`, `main#2`. Memory:
+anonymous MiB after the 3-core `miss` corpus from cold at saturation, median of 3 alternating, huge-page MiB in it
+after the slash:
+
+| Run | `main` | THP off |
+|---|---|---|
+| shipped | 106 (106-107) / 46-54 | 89 (85-92) / 2 |
+| `MIMALLOC_ALLOW_THP=0` | 88 (83-88) / 0 | |
+| `MIMALLOC_ALLOW_THP=1` | | 103 (100-108) / 28-56 |
+
+The loaded memory falls 17.5 MiB, what mimalloc's switch saved; the variable still turns them back on. The 2 MiB
+left huge is one page faulted before `main`. Idle / loaded MiB of the comparisons: 1 core 11 / 15 → 5 / 10, 3 cores
+19 / 27 → 9 / 18. CPU: µs a query and average / p99 ms at the common rate, median of 6 alternating:
+
+| Run | `main` | THP off | `main#2` |
+|---|---|---|---|
+| 1 core `udp` at 43 160/s | 13.5 (13.0-13.9), 0.20 / 2.46 | 13.7 (13.0-14.2), 0.18 / 2.21 | 13.1 (12.5-13.9), 0.27 / 4.45 |
+| 3 cores `udp` at 69 412/s | 17.0 (16.2-19.0), 0.48 / 3.87 | 17.4 (16.8-17.8), 0.45 / 3.13 | 16.9 (15.9-18.5), 0.47 / 3.58 |
+| 1 core `forward` at 33 252/s | 15.6 (14.6-17.2), 0.88 / 16.89 | 15.9 (14.2-16.7), 0.79 / 15.87 | 15.4 (15.2-16.6), 0.78 / 16.26 |
+| 3 cores `forward` at 60 584/s | 19.2 (15.3-21.4), 0.63 / 8.83 | 19.8 (16.8-21.3), 0.78 / 14.98 | 19.0 (16.8-20.6), 0.69 / 10.37 |
+| 3 cores `miss` at 16 882/s | 62.3 (56.3-64.1), 0.62 / 10.24 | 62.8 (51.6-67.2), 0.64 / 11.01 | 63.4 (62.5-65.1), 0.62 / 8.77 |
+
+Saturation, thousand queries a second, medians of `bench-compare` (4 rounds, or 6 where two series):
+
+| Mode | `main` | THP off | `main#2` |
+|---|---|---|---|
+| 1 core `udp` | 87.1 | 86.3 | 87.0 |
+| 3 cores `udp` | 146.9; 148.2 (131.7-152.9) | 142.0; 148.6 (135.9-153.9) | 138.8; 146.1 (127.8-151.8) |
+| 1 core `forward` | 67.7 | 67.3 | 66.5 |
+| 3 cores `forward` | 130.2; 132.3 (125.9-140.4) | 121.2; 126.6 (109.7-135.1) | 130.7; 132.1 (119.6-142.6) |
+| 3 cores `miss` | 33.8 | 46.5 | 38.1 |
+
+No mode loses more than its A/A pair spreads. 3 cores `forward` sits 4-7% under `main` in both series, its slow
+runs the first rounds'; a third series with the roles swapped (THP off twice, `main` between, 6 rounds) puts it
+2% under, 130.7 and 130.6 against 133.4 (94.1-140.9), under the 1.15× the comparisons call noise.
+
 ### `dnssec`: `dedensd` validates what its allowance admits
 
 In `dnssec` every query is a new name under the signed wildcard, so each one is validated cold. The first run (5

@@ -103,7 +103,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   exclude one another, so `--all-features` cannot build it: a design that lands an allocator names it per target.
 - D154 (amends D152; builds on D15, D151) The musl binaries, `dedensd` and `dedens`, use mimalloc with `MI_SECURE=4`
   (the `mimalloc` crate's `secure` feature: guard pages, randomised and encoded free lists) as their `#[global_allocator]`,
-  a `[target.'cfg(target_env = "musl")'.dependencies]` entry and four lines in each `main.rs`; glibc, macOS and every
+  a `[target.'cfg(target_env = "musl")'.dependencies]` entry and the `#[global_allocator]` in each `main.rs`; glibc, macOS and every
   tool build (careful, Miri, fuzz, loom, Kani, mutants) keep the system allocator. Chosen by the human over mallocng
   (D152's numbers: the rule selected none): the attacker gains nothing in any probe case, as with mallocng, at 0.89 of
   the fastest against mallocng's 0.68 and a lower p99. Paid: a churn peak of 184 MiB against 94, 0.2 MB of binary, 15,837
@@ -114,8 +114,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   both, and the image on the VPS answers UDP, TCP and DoT as uid 10001 with no capability and blocks a listed name. Two
   tests of that suite are flaky whatever the allocator (each failed in a run and passed on rerun):
   `serve::isolate::tests::the_hook_logs_the_panics_no_catch_has` (the panic hook is process-wide) and `a_client_over_its_share_cannot_shed_another_client`
-  (1 run in 400: two networks hash to one of 256 buckets). Rejected:
-  mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152).
+  (1 run in 400: two networks hash to one of 256 buckets). `dedensd` runs without transparent huge pages: first thing
+  in `main` it sets `PR_SET_THP_DISABLE` (`nix`), the process's flag, for every thread and for the later faults of what
+  was mapped before, unless its environment names `MIMALLOC_ALLOW_THP`, in any case as mimalloc reads it: then
+  mimalloc's own handling stands (`0` sets the same flag before `main`, any other value leaves the pages on). Under
+  THP `always` the kernel backs mimalloc's 2 MiB-aligned segments with whole huge pages over memory never touched:
+  the 3-core `miss` run's loaded memory falls 106 → 89 MiB, the same as `MIMALLOC_ALLOW_THP=0`, at no rate, CPU or
+  latency cost beyond the runs' noise (`docs/benchmarks.md`, "Transparent huge pages off"). `tests/huge_pages.rs` reads
+  `THP_enabled` back from `/proc`. `dedens`, alive for a query, keeps the default. Rejected:
+  mimalloc's other builds (`MI_SECURE=1` and the default let the attacker gain, D152), jemalloc (D152); for THP, the
+  crate's `no_thp` feature (mimalloc v3's `MI_NO_THP` only drops its `madvise(MADV_HUGEPAGE)`, nothing under
+  `always`), `mi_option_set` (`unsafe`, and too late: mimalloc's constructor reads the option before `main`), and
+  `-DMI_DEFAULT_ALLOW_THP=0` in `CFLAGS` (a variable of the build's environment, lost to a build setting its own).
 - D153 (builds on D57, D122, D150, D151; amended by D156, D158) A tag `vX.Y.Z` pushed by the human publishes, from `release.yml` once
   `ci.yml`'s gate has passed on the tagged commit (by hand it builds and attests, and publishes nothing unless on a tag
   with `publish` ticked): per architecture (x86_64, aarch64) an archive of `dedensd`, `dedens` and the
