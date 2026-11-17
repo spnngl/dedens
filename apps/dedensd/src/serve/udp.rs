@@ -653,13 +653,14 @@ mod tests {
         });
     }
 
-    /// D123: a send that fails costs its reply, not the sender nor the replies behind it.
+    /// D123: a send that fails costs its reply, not the sender nor the replies behind it, and is not tried again on
+    /// the ring.
     #[test]
     fn a_failed_send_costs_only_its_reply() {
         const REPLIES: usize = 10;
         let runtime = Runtime::new().expect("a runtime");
         runtime.block_on(async {
-            let server = UdpSocket::bind("127.0.0.1:0").await.expect("bound");
+            let server = Counted::new(false).await;
             let client = client();
             let peer = client.local_addr().expect("its address");
             let outbox = Outbox::new();
@@ -677,6 +678,7 @@ mod tests {
             };
             let seen = seen.expect("every reply within 5 s");
             assert!(seen.iter().all(|seen| *seen), "a reply never came");
+            assert_eq!(server.ring.get(), 0);
         });
     }
 
