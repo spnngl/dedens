@@ -9,6 +9,7 @@ mod odoh;
 mod options;
 mod output;
 mod providers;
+mod tld;
 mod trace;
 mod transports;
 mod util;

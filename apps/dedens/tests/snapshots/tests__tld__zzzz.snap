@@ -1,0 +1,6 @@
+---
+source: apps/dedens/tests/tld.rs
+expression: zzzz
+---
+zzzz. TLD  not found  N ms from https://127.0.0.1:PORT/domain/zzzz (HTTP 404)
+not a TLD

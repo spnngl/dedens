@@ -1,0 +1,9 @@
+---
+source: apps/dedens/tests/tld.rs
+expression: onion
+---
+onion. TLD  not found  N ms from https://127.0.0.1:PORT/domain/onion (HTTP 404)
+tld list
+  kind     special use
+  status   reserved
+  purpose  Used to access devices over the Tor network

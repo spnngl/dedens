@@ -1,5 +1,5 @@
 //! `dedens`: a dig-like DNS client (D18, D32), a library the binary and `fuzz/` reach (D181): [`main`] runs the
-//! command, [`parse_args`] only reads its command line.
+//! command, [`parse_args`] only reads its command line, [`parse_rdap`] an RDAP answer.
 //!
 //! Exit codes (D33): 0 a response came, whatever its rcode; 1 an expectation failed; 2 usage; 9 no reply; 10 any
 //! other error.
@@ -9,6 +9,7 @@
 mod args;
 mod idn;
 mod output;
+mod rdap;
 mod run;
 mod trace;
 mod validate;
@@ -38,6 +39,23 @@ pub fn main() -> ExitCode {
 pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<(), clap::Error> {
     let cli = args::Cli::try_parse_dig(args)?;
     args::lookups(&cli.words, !cli.reverse.is_empty());
+    Ok(())
+}
+
+/// Reads `body` as an RDAP answer of HTTP status 200 to `+tld` (D129) and prints it for humans, into nothing: the
+/// entry of `fuzz/` (D181).
+///
+/// # Errors
+///
+/// `body` is not an RDAP domain (RFC 9083 §5.3), which `+tld` reports, exit 10.
+pub fn parse_rdap(body: &[u8]) -> anyhow::Result<()> {
+    let answer = run::tld::read(200, body)?;
+    let exchange = run::tld::Exchange {
+        url: "https://rdap.example/domain/fuzz",
+        rtt: std::time::Duration::ZERO,
+        status: 200,
+    };
+    run::tld::human(&mut io::sink(), "fuzz", &answer, &exchange)?;
     Ok(())
 }
 

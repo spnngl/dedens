@@ -66,6 +66,11 @@ pub(crate) struct Cli {
     /// Try a name under the search list of /etc/resolv.conf until one is not NXDOMAIN, as dig.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub(crate) search: bool,
+    /// Ask IANA's RDAP server about a top-level domain instead: its status, contacts, name servers, DS records, dates
+    /// and own RDAP server; for one it does not know, the purpose of a special-use name. JSON and YAML print the
+    /// answer as received.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) tld: Option<String>,
     /// Print what the exchanges do on stderr: `-v` dropped messages, retries and fallbacks, `-vv` every message too.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
@@ -152,6 +157,30 @@ impl Cli {
             return usage(
                 ErrorKind::ArgumentConflict,
                 "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert, +dnscrypt-relay, +dnscrypt-pq, +dnscrypt-resume or +validate"
+                    .to_owned(),
+            );
+        }
+        // Only the timeout, the trust of TLS and the output apply to an RDAP query.
+        let timed = Options {
+            time: cli.options.time,
+            ..Options::default()
+        };
+        if cli.tld.is_some()
+            && (!cli.words.is_empty()
+                || !cli.server.is_empty()
+                || cli.port.is_some()
+                || !cli.reverse.is_empty()
+                || cli.file.is_some()
+                || cli.save_wire.is_some()
+                || cli.repeat > 1
+                || cli.trace
+                || cli.search
+                || cli.output.format() == Format::Short
+                || cli.options != timed)
+        {
+            return usage(
+                ErrorKind::ArgumentConflict,
+                "+tld goes with no name, @server, -p, -x, -f, --save-wire, +repeat, +trace, +search, --short or query option but +time"
                     .to_owned(),
             );
         }

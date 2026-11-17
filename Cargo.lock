@@ -915,6 +915,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-script",
+ "ureq",
 ]
 
 [[package]]

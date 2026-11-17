@@ -1,9 +1,9 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 127-132, 148, 149 and 173 were never
-assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
-`amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
+number, and gets its line below; a number is never reused (85, 127, 128, 130-132, 148, 149 and 173 were
+never assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2`
+in one, `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
 (D140, D171). Measurements: [`benchmarks.md`](../benchmarks.md). Open questions: [`TODECIDE.md`](../TODECIDE.md).
 
@@ -133,6 +133,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D126 [scope](scope.md): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
+- D129 [CLI](cli.md): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`
 - D134 [simulation tests](simulation-tests.md) (amended by D182): the client's compio layer behind an `Io` seam, for simulation
 - D135 [server](server.md): loom checks the reload wake-up and the query flights

@@ -346,7 +346,7 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps

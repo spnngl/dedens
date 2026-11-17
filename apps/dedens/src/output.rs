@@ -24,10 +24,10 @@ pub(crate) enum Format {
     Yaml,
 }
 
-const STRONG: Style = Style::new().bold();
-const QUIET: Style = Style::new().dimmed();
-const GOOD: Style = AnsiColor::Green.on_default().bold();
-const BAD: Style = AnsiColor::Red.on_default().bold();
+pub(crate) const STRONG: Style = Style::new().bold();
+pub(crate) const QUIET: Style = Style::new().dimmed();
+pub(crate) const GOOD: Style = AnsiColor::Green.on_default().bold();
+pub(crate) const BAD: Style = AnsiColor::Red.on_default().bold();
 
 /// How to print a response.
 #[derive(Debug, Clone, Copy)]
@@ -420,7 +420,7 @@ pub(crate) fn disagreement(out: &mut impl Write, answers: &[(String, Answers)]) 
 }
 
 /// `us` microseconds in milliseconds, to a tenth: `25.7`.
-fn millis(us: u64) -> String {
+pub(crate) fn millis(us: u64) -> String {
     format!("{}.{}", us / 1000, us % 1000 / 100)
 }
 
