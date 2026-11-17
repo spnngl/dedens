@@ -4,6 +4,7 @@
 listen: ["127.0.0.1:53"]
 downloads:
   dir: /var/cache/dedensd
+state_dir: /var/lib/dedensd
 pipeline: [cache, upstream]
 stages:
   cache:

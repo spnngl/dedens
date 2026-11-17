@@ -1136,9 +1136,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Downloads directory (D104): with `downloads.urls`, a missing `dir` is made before the drop (parents included,
     0755), its last directory given to the user by `lchown`; an existing one is never touched (a `dir` that names
     `/etc` must not be given away), and after the drop the user must be able to create a file in it, or the start ends
-    with the `chown` to run. A `urls` added at reload needs a `dir` writable by the user already. Moving a server from
-    root to `user`: `chown -R` its `/var/cache/dedensd`; the saved copies are 0666 less the umask (`UMask=0077`
-    makes them root's alone).
+    with the `chown` to run. A `urls` added at reload needs a `dir` writable by the user already. The directories of
+    the root files used, `dir` and `state_dir`, are made the same way, but one not writable is only warned of (D128).
+    Moving a server from root to `user`: `chown -R` its `/var/cache/dedensd` and `/var/lib/dedensd`; the saved
+    copies are 0666 less the umask (`UMask=0077` makes them root's alone).
   - io_uring (D107): the rings are made after the drop; with `kernel.io_uring_disabled=1` the user must be in
     `kernel.io_uring_group`, or the threads serve on `poll`, warned at start.
   - Rejected: dropping capabilities only (`CAP_NET_BIND_SERVICE` kept: uid 0 still owns and reads every file, and
@@ -1371,42 +1372,60 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up`),
     `crates/dedens-sim/tests/dnssec.rs` (`a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed`),
     `a_query_that_waits_for_the_allowance_is_counted_parked` of `crates/dedens-server/tests/metrics.rs`.
-- D128 (amends D54, D104, D122, D126) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
+- D128 (amends D54, D104, D122, D126, D127) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
   not in the root zone: `type: tlds`, `dedens_plugins::TopLevel` over a `dedens_roots::Tlds`. Its table,
   `SPECIAL`, holds each special-use TLD of IANA's list with what item 4 of its RFC asks of a caching server:
   `localhost` and its subnames the loopback addresses to A, AAAA and ANY (one RRset, RFC 8482 §4.1), no data to
-  other types, AA set (RFC 6761 §6.3); `invalid` (§6.4), `test` (§6.2), `local` (RFC 6762 §22.1) and `onion`
-  (RFC 7686 §2, a MUST) NXDOMAIN, DO or not; `example` (RFC 6761 §6.5), `alt` (RFC 9476 §2), `internal` (no RFC:
-  ICANN reserved it for private use in 2024) and `arpa` as any TLD, as their RFCs ask not to treat them as special.
-  Any other TLD is in the root zone when the list holds it `active`: else a query without DO is NXDOMAIN, one with
-  DO passed on (no proof could come with the denial, and a validating client would take it for bogus), so
+  other types and classes, AA set (RFC 6761 §6.3); `invalid` (§6.4), `test` (§6.2), `local` (RFC 6762 §22.1)
+  and `onion` (RFC 7686 §2, a MUST) NXDOMAIN, DO or not; `example` (RFC 6761 §6.5), `alt` (RFC 9476 §2),
+  `internal` (no RFC: ICANN reserved it for private use in 2024) and `arpa` as any TLD, as their RFCs ask not to
+  treat them as special. These rows hold in every class: the RFCs name the names, not a class, and an `onion`
+  query in CH or ANY must not leave either. Any other TLD of class IN is in the root zone when the list holds it
+  `active`; other classes go on (`version.bind` in CH is no TLD of the root): else a query without DO is NXDOMAIN,
+  one with DO passed on (no proof could come with the denial, and a validating client would take it for bogus), so
   `example`, `alt` and `internal`, `reserved`, get the NXDOMAIN the root would give. A test checks that every
   special-use TLD of the bundled list has a row: a new one in a fresh list is answered as its status says, and
   `dedensd` warns of it. The stage's NXDOMAIN carry no SOA and AA is clear: it holds no zone, and a SOA would be
   invented. The cost (RFC 2308 §5): no cache downstream keeps them, so a stub or a forwarder in front asks again
   each time, a lookup in memory here; `dedensd`'s own cache stage comes after. A name of one's own network under
   `internal` or `test` comes from a stage before it, as a hosts stage. It goes before a cache stage, as hosts and
-  blocklist do (D64). `dedensd_tlds_answers_total{kind}` counts its answers, `special_use` or `unknown`.
-  Rejected: NXDOMAIN for `example`, `alt` and a special-use TLD of no known use whatever DO (the RFCs ask the
+  blocklist do (D64). `dedensd_tlds_answers_total{kind}` counts its answers, `special_use` or `unknown`. No EDE comes with
+  them: none of RFC 8914 says a policy's answer for a name that exists nowhere (15 Blocked and 17 Filtered say the
+  name exists). Rejected: NXDOMAIN for `example`, `alt` and a special-use TLD of no known use whatever DO (the RFCs ask the
   first two be resolved normally, and a DO client cannot check the denial); a SOA of the root in the NXDOMAIN (it
   would claim a zone's authority for a policy).
 
   `dedensd` keeps the root's files fresh, from `roots:` (`off`, or the URLs of `tlds` and `anchors`, IANA's by
   default; the signature is the anchors' URL in `.p7s`). It fetches only what serves: the TLD list when a `tlds`
   stage is in the pipeline, the anchors when a validating forward stage has no `trust_anchors`. They join D104's
-  downloads: same thread, `refresh_minutes` and `dir`, loopback-testable over HTTP, the leftover sweep. The copies
-  have fixed names in `dir`: `tlds.json` with its ETag in `tlds.etag` (a 304 keeps it); `root-anchors.xml`,
-  `.p7s` and `.signed_at`, the signing time of the accepted pair in decimal seconds, written last, each file
-  atomically (D104). The list is read by `Tlds::read` before it is saved, so a short or broken one never replaces
-  the copy. The anchors are fetched whole each refresh (10 KB, no ETag: the pair and its time stay one), checked by
-  `TrustAnchors::verified` (D127) with the saved `signed_at` as the floor, so a replayed older pair is refused
-  (RFC 9718 §3); a same pair is `unchanged`. A failure of either keeps what is in use, logged with its error. A
-  start and a reload read the copies as the server's user (D122, which makes `dir` before the drop as soon as a
-  root file is used): a copy missing is the bundled one, a copy that exists but cannot be read refuses them (as
-  D115's lists), one that does not parse or verify under its floor is warned of and the bundled one serves. New
-  anchors give the validators a new tag, `root anchors signed at` the time, so the reload builds a fresh validator
-  and flushes the caches behind it (D77). `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is the time
-  since the copy in use was last confirmed at its source, set at each fetch. The Landlock plan must let `dir`'s
-  files be written. Rejected: an ETag for the anchors (a 304 on the XML says nothing of the signature); the
-  floor in memory only (a restart would accept a replayed pair); separate settings of refresh (one schedule, one
-  thread).
+  downloads: same thread, `refresh_minutes`, loopback-testable over HTTP, the leftover sweep. The TLD list is a
+  cache, kept in `downloads.dir` named by its URL (`tlds-<hash>.json`, its ETag beside it: a 304 keeps it, and
+  a new URL never gets another's ETag); it is read by `Tlds::read` before it is saved, so a short or broken one
+  never replaces the copy, and handed to the reload that follows. A saved copy that does not read is warned of, the
+  bundled list serves, and its ETag is removed so the next refresh fetches it whole. The anchors are state: the
+  pair is fetched whole each refresh (10 KB, no ETag), checked by `TrustAnchors::verified` (D127) with the signing
+  time of the anchors kept as the floor (the bundled one with none), so a replayed older pair is refused (RFC 9718
+  §3). Of a pair that verifies, `dedensd` keeps one file, `root-anchors` in `state_dir` (default
+  `/var/lib/dedensd`, systemd's `StateDirectory`), written atomically (D104): `dedens_dnssec::RootAnchors`, a
+  versioned text of every key with its validity and the signing time, as unbound-anchor keeps its own. It is
+  written when its keys or time change; the same keys signed again advance the floor and reload nothing. A start
+  and a reload read it without the signature, as trusted as `state_dir`: no file is the bundled anchors; one that
+  cannot be read or parsed refuses the start (D115) and, at a reload, leaves the anchors in use, warned of. The
+  validators trust the keys valid at the load; each refresh compares those valid then, so a key that ends or
+  starts within a kept file reloads without a restart. Root files are read at start as the starting user, then
+  again as `user` once dropped (D122), never through a symbolic link, a regular file of a capped length only (32
+  MiB for the list, 64 KiB for the anchors). The drop makes the directories of the root files used for `user`,
+  as `downloads.dir` (D122); one that cannot be made or written is warned of at each load and not fetched into:
+  the copy there, or the bundled one, serves, and the server starts. A validator's tag is its anchor set itself
+  (`TrustAnchors`'s canonical text, negative anchors included), whatever its source: a new set builds a fresh
+  validator, whose keys are proven again, and flushes the caches behind it (D77); the same set kept keeps both. A
+  TLD list older than 30 days by its `meta.generated` (`dedens_plugins::MAX_LIST_AGE`) has the stage pass on a
+  TLD outside it instead of NXDOMAIN, as it may since have been delegated: `dedensd` warns of it once per load,
+  `dedensd_tlds_stale_total` counts those passed on. `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is
+  the age of the copy in use, since IANA generated the list or ICANN signed the anchors, set at each refresh. The
+  Landlock plan must let `downloads.dir` and `state_dir` be written. Rejected: keeping the signed pair and
+  verifying it at each load (the signing certificate expires, a crash between two renames splits the pair, and
+  the bundled anchors would replace newer ones); the floor in memory only, or in the cache directory (a restart, or
+  a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
+  signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
+  copies serve); separate settings of refresh (one schedule, one thread).

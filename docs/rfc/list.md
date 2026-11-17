@@ -147,14 +147,14 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 5625](https://datatracker.ietf.org/doc/html/rfc5625):** DNS Proxy Implementation Guidelines
 * **[RFC 6303](https://datatracker.ietf.org/doc/html/rfc6303):** Locally Served DNS Zones
 * **[RFC 6761](https://datatracker.ietf.org/doc/html/rfc6761):** Special-Use Domain Names
-* **[RFC 7686](https://datatracker.ietf.org/doc/html/rfc7686):** The ".onion" Special-Use Domain Name
-* **[RFC 9476](https://datatracker.ietf.org/doc/html/rfc9476):** The .alt Special-Use Top-Level Domain
 * **[RFC 6781](https://datatracker.ietf.org/doc/html/rfc6781):** DNSSEC Operational Practices, Version 2
 * **[RFC 6895](https://datatracker.ietf.org/doc/html/rfc6895):** Domain Name System (DNS) IANA Considerations
+* **[RFC 7686](https://datatracker.ietf.org/doc/html/rfc7686):** The ".onion" Special-Use Domain Name
 * **[RFC 8806](https://datatracker.ietf.org/doc/html/rfc8806):** Running a Root Server Local to a Resolver
 * **[RFC 8901](https://datatracker.ietf.org/doc/html/rfc8901):** Multi-Signer DNSSEC Models
 * **[RFC 8906](https://datatracker.ietf.org/doc/html/rfc8906):** A Common Operational Problem in DNS Servers: Failure to Communicate
 * **[RFC 9210](https://datatracker.ietf.org/doc/html/rfc9210):** DNS Transport over TCP - Operational Requirements
+* **[RFC 9476](https://datatracker.ietf.org/doc/html/rfc9476):** The .alt Special-Use Top-Level Domain
 * **[RFC 9715](https://datatracker.ietf.org/doc/html/rfc9715):** IP Fragmentation Avoidance in DNS over UDP
 
 ### Internationalized Domain Names (IDN)

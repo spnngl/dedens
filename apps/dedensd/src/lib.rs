@@ -379,7 +379,7 @@ fn drop_root(
     file: &Path,
 ) -> anyhow::Result<Option<(String, Store, Config)>> {
     let dropping = matches!(plan, privileges::Plan::Drop { .. });
-    privileges::apply(plan, downloads.written_dir())?;
+    privileges::apply(plan, downloads.written_dir(), &downloads.roots_dirs())?;
     if !dropping {
         return Ok(None);
     }

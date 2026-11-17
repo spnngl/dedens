@@ -11,7 +11,7 @@ use dedens_net::tls::{Presented, Trust};
 use dedens_server::Pipeline;
 
 use crate::config::{Downloads, Listen, unix_seconds};
-use crate::download::{Fetched, Fetcher, sweep};
+use crate::download::{self, Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 use crate::lists::Store;
 use crate::privileges::Identity;
@@ -205,7 +205,15 @@ pub(crate) fn control(
             let _hangup = hangup;
             let client = Fetcher::new();
             guarded("leftover sweep", || {
-                sweep(&downloads.urls, &roots::FILES, &downloads.dir);
+                let mut copies: Vec<_> = (downloads.urls.iter())
+                    .map(|url| download::copy(&downloads.dir, url))
+                    .collect();
+                if let Some(tlds) = &downloads.roots.tlds {
+                    copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
+                }
+                sweep(&copies, &downloads.dir);
+                let anchors = downloads.state_dir.join(roots::ANCHORS);
+                sweep(&[anchors], &downloads.state_dir);
             });
             let mut ticks = Ticks::new();
             let mut refresh = Refresh::default();
@@ -218,7 +226,8 @@ pub(crate) fn control(
                             | refresh.fetch(
                                 &client,
                                 &downloads.roots,
-                                &downloads.dir,
+                                (&downloads.dir, &downloads.state_dir),
+                                &mut store.roots,
                                 unix_seconds(),
                             )
                     })
@@ -230,9 +239,11 @@ pub(crate) fn control(
                     ticks.wait(fetched, downloads.refresh, || {
                         let new =
                             reload(&file, Read::Last, &mut text, &current, &fixed, &mut store)?;
-                        let refresh = new.refresh;
+                        let every = new.refresh;
                         downloads = new;
-                        Some(refresh)
+                        // A directory not writable is warned of again at each load.
+                        refresh = Refresh::default();
+                        Some(every)
                     })
                 };
                 // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
@@ -243,6 +254,7 @@ pub(crate) fn control(
                         reload(&file, Read::File, &mut text, &current, &fixed, &mut store)
                     {
                         downloads = new;
+                        refresh = Refresh::default();
                         // Built from the lists on disk, the pending reload included.
                         ticks.served();
                     }

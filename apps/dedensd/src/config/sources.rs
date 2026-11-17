@@ -10,7 +10,7 @@ use std::{fs, io};
 
 use anyhow::{Context, anyhow, ensure};
 use dedens_cache::Cache;
-use dedens_dnssec::TrustAnchors;
+use dedens_dnssec::{ROOT_SIGNED_AT, RootAnchors, TrustAnchors};
 use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds, host_names};
 use dedens_proto::{Question, RecordType, Ttl};
 use dedens_server::{Pipeline, Stage};
@@ -21,12 +21,12 @@ use super::limits::BudgetFile;
 use super::roots::RootsFile;
 use super::upstream::{Dnssec, Insecure, OdohProxy, Relay, Server};
 use super::{
-    DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES,
+    DOWNLOADS_DIR, MAX_PREWARM_NAMES, MAX_REFRESH_MINUTES, PLUGIN_TTL, REFRESH_MINUTES, STATE_DIR,
     unix_seconds,
 };
 use crate::download;
 use crate::lists::{Store, Unsaved};
-use crate::roots::{self, Used};
+use crate::roots::{self, AnchorsUsed, TldsUsed, Used};
 
 /// A stage, as written: its settings under its `type`.
 #[derive(Debug, Deserialize)]
@@ -209,15 +209,18 @@ pub(super) struct DownloadsFile {
 }
 
 /// Downloaded lists: their URLs, where their copies are kept, how often they are fetched again (D57); and the root
-/// files used, kept there too and fetched as often (D128).
+/// files used, fetched as often: the TLD list kept in `dir` too, the root anchors in `state_dir` (D128).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Downloads {
     pub(crate) urls: Vec<String>,
     pub(crate) dir: PathBuf,
     pub(crate) refresh: Duration,
+    pub(crate) state_dir: PathBuf,
     pub(crate) roots: Used,
     /// Where the root files come from.
     sources: RootsFile,
+    /// Whether the age of the TLD list was checked at this load: once, however many `tlds` stages.
+    stale_warned: bool,
 }
 
 impl StageFile {
@@ -251,18 +254,25 @@ impl Sources {
 }
 
 impl Downloads {
-    /// No list nor root file yet, as `settings` say, root files fetched as `roots` says.
+    /// No list nor root file yet, as `settings` say, root files fetched as `roots` says, the anchors kept in
+    /// `state_dir`.
     ///
     /// # Errors
     ///
     /// `refresh_minutes` above a year.
-    pub(super) fn new(settings: DownloadsFile, roots: RootsFile) -> anyhow::Result<Self> {
+    pub(super) fn new(
+        settings: DownloadsFile,
+        roots: RootsFile,
+        state_dir: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             urls: Vec::new(),
             dir: settings.dir.unwrap_or_else(|| DOWNLOADS_DIR.into()),
             refresh: refresh(settings.refresh_minutes)?,
+            state_dir: state_dir.unwrap_or_else(|| STATE_DIR.into()),
             roots: Used::default(),
             sources: roots,
+            stale_warned: false,
         })
     }
 
@@ -271,42 +281,72 @@ impl Downloads {
         self.urls.is_empty() && self.roots.is_empty()
     }
 
-    /// The directory `user` must write once root is dropped: `dir`, if the configuration downloads lists or root
-    /// files (D122).
+    /// The directory `user` must write once root is dropped: `dir`, if the configuration downloads lists (D122).
     pub(crate) fn written_dir(&self) -> Option<&Path> {
-        (!self.is_empty()).then_some(self.dir.as_path())
+        (!self.urls.is_empty()).then_some(self.dir.as_path())
+    }
+
+    /// The directories of the root files used, made for `user` when root is dropped; not writing them only keeps
+    /// the copies there, or the bundled ones (D128).
+    pub(crate) fn roots_dirs(&self) -> Vec<&Path> {
+        let mut dirs = Vec::new();
+        if self.roots.tlds.is_some() {
+            dirs.push(self.dir.as_path());
+        }
+        if self.roots.anchors.is_some() {
+            dirs.push(self.state_dir.as_path());
+        }
+        dirs
     }
 
     /// The TLD list of a `tlds` stage: the saved copy in `dir`, held in `store`, and fetched from now on, unless
-    /// `roots` is `off`; else, or with no copy, the bundled one.
+    /// `roots` is `off`; else, or with no copy, the bundled one. Warned of when older than 30 days.
     ///
     /// # Errors
     ///
     /// A saved copy that cannot be read (D115).
     pub(super) fn tlds(&mut self, store: &mut Store) -> anyhow::Result<Arc<dedens_roots::Tlds>> {
-        match &self.sources {
-            RootsFile::Off => Ok(roots::bundled()),
+        let tlds = match &self.sources {
+            RootsFile::Off => roots::bundled(),
             RootsFile::Fetched(urls) => {
-                self.roots.tlds = Some(urls.tlds().to_owned());
-                store.roots.tlds(&self.dir)
+                let tlds = store.roots.tlds(&self.dir, urls.tlds())?;
+                self.roots.tlds = Some(TldsUsed {
+                    url: urls.tlds().to_owned(),
+                    generated: tlds.generated(),
+                });
+                tlds
             }
+        };
+        if !self.stale_warned {
+            self.stale_warned = true;
+            roots::warn_stale(&tlds, unix_seconds());
         }
+        Ok(tlds)
     }
 
-    /// The root's anchors of a validating forward stage without `trust_anchors`: those of the signed copy in `dir`,
-    /// verified now and fetched from now on, unless `roots` is `off`; `None` for the bundled ones.
+    /// The root's anchors of a validating forward stage without `trust_anchors`, valid now: those kept in
+    /// `state_dir`, held in `store`, fetched from now on, unless `roots` is `off`; `None` for the bundled ones.
     ///
     /// # Errors
     ///
-    /// A saved file that cannot be read (D115).
-    pub(super) fn root_anchors(&mut self) -> anyhow::Result<Option<(TrustAnchors, u64)>> {
-        match &self.sources {
-            RootsFile::Off => Ok(None),
-            RootsFile::Fetched(urls) => {
-                self.roots.anchors = Some((urls.anchors().to_owned(), urls.signature()));
-                roots::anchors(&self.dir, unix_seconds())
-            }
+    /// A kept file that cannot be read (D115), or with no key valid now.
+    pub(super) fn root_anchors(
+        &mut self,
+        store: &mut Store,
+    ) -> anyhow::Result<Option<TrustAnchors>> {
+        let RootsFile::Fetched(urls) = &self.sources else {
+            return Ok(None);
+        };
+        if self.roots.anchors.is_none() {
+            let kept = store.roots.anchors(&self.state_dir)?;
+            self.roots.anchors = Some(AnchorsUsed {
+                url: urls.anchors().to_owned(),
+                signature: urls.signature(),
+                signed_at: kept.map_or(ROOT_SIGNED_AT, RootAnchors::signed_at),
+                valid: roots::valid(kept, unix_seconds())?,
+            });
         }
+        Ok(self.roots.anchors.as_ref().map(|used| used.valid.clone()))
     }
 
     /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
@@ -674,6 +714,68 @@ mod tests {
         );
     }
 
+    /// D128: the anchors kept in `state_dir`, read without their signature, are those the validator trusts; a kept
+    /// set other than the one in use builds a new validator, whose keys are proven again, and flushes the cache
+    /// filled under the old one. The kept text is the captured pair's, verified (`dedens-dnssec`'s test
+    /// `the_kept_anchors_read_back_as_written_with_each_keys_validity`), then edited: KSK-2017 given an end, as a
+    /// rollover would, gone from the root's anchors since; or a line of another format.
+    #[test]
+    fn kept_root_anchors_key_the_validator_and_a_new_set_flushes_the_cache() {
+        const KEPT: &str = "dedens root anchors 1\nsigned-at 1742934302\n\
+            ds 19036 8 2 49aac11d7b6f6446702e54a1607371607a1a41855200fd2ce1cdde32f24e8fb5 from 1279152000 until 1547164800\n\
+            ds 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d from 1485993600\n\
+            ds 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16 from 1721260800\n";
+        let state = tempfile::tempdir().unwrap();
+        let file = state.path().join(roots::ANCHORS);
+        let text = format!(
+            "listen: ['127.0.0.1:53']\nstate_dir: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n",
+            state.path().display()
+        );
+        let mut store = Store::default();
+        let mut build = |previous: &Pipeline| {
+            crate::config::read(&text, env, previous, &mut store).map(|config| config.pipeline)
+        };
+        let parts = |pipeline: &Pipeline| match pipeline.stages() {
+            [Stage::Cache(cache), Stage::Forward(forward)] => (
+                Arc::clone(cache),
+                forward.validation().unwrap().validator().clone(),
+                forward.validation_tag().unwrap().to_owned(),
+            ),
+            stages => unreachable!("{stages:?}"),
+        };
+        let bundled = build(&Pipeline::default()).unwrap();
+        assert_eq!(
+            parts(&bundled).2,
+            format!("validate\n{}", TrustAnchors::root())
+        );
+
+        // The captured keys valid now are the bundled ones: nothing to flush.
+        fs::write(&file, KEPT).unwrap();
+        let captured = build(&bundled).unwrap();
+        assert!(Arc::ptr_eq(&parts(&bundled).0, &parts(&captured).0));
+        assert!(parts(&bundled).1.shares_cache(&parts(&captured).1));
+
+        let rolled = KEPT.replace("from 1485993600", "from 1485993600 until 1735689600");
+        fs::write(&file, rolled).unwrap();
+        let new = build(&captured).unwrap();
+        let (cache, validator, tag) = parts(&new);
+        assert!(!tag.contains("20326") && tag.contains("38696"), "{tag}");
+        assert!(!Arc::ptr_eq(&parts(&captured).0, &cache), "flushed");
+        assert!(!parts(&captured).1.shares_cache(&validator), "proven again");
+        let same = build(&new).unwrap();
+        assert!(
+            Arc::ptr_eq(&cache, &parts(&same).0),
+            "kept while the set stays"
+        );
+
+        // A kept file that does not read keeps the anchors in use on reload, and refuses a start (D115).
+        fs::write(&file, "dedens root anchors 2\n").unwrap();
+        assert_eq!(parts(&build(&same).unwrap()).2, tag);
+        let error = crate::config::read(&text, env, &Pipeline::default(), &mut Store::default())
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("line 1"), "{error:#}");
+    }
+
     /// D118: a plain line of one label is refused unless the stage says `tlds`.
     #[test]
     fn blocklists_take_top_level_domains_when_told() {
@@ -727,8 +829,10 @@ mod tests {
                 ],
                 dir: DOWNLOADS_DIR.into(),
                 refresh: Duration::from_hours(24),
+                state_dir: STATE_DIR.into(),
                 roots: Used::default(),
                 sources: RootsFile::default(),
+                stale_warned: false,
             }
         );
     }

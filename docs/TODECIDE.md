@@ -16,8 +16,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   answers any type from local records and zone files (`crates/telltale-policy/src/local.rs`): a `zone` plugin
   reading a file with `ZoneReader` would give both; default: with the authoritative phase's zone loading.
 - Private names past the `tlds` stage: RFC 6761 §6.2 asks caching servers for an option to resolve `test` names
-  upstream, and a network may delegate an `internal` zone to its own servers; the stage answers them NXDOMAIN
-  (`internal` with DO excepted), so only a stage before it (hosts) or no `tlds` stage reaches them
+  upstream, and a network may delegate an `internal` zone to its own servers; the stage answers `test` names
+  NXDOMAIN whatever DO, and `internal` names NXDOMAIN without DO, as an absent TLD, so only a stage before it (hosts)
+  or no `tlds` stage reaches them
   (D128). Default: a `pass:` list of names on the `tlds` stage, sent on as the absent TLDs with DO are.
 - A QUIC endpoint whose worker panicked (D89, D121): the panic stays in a compio task, the endpoint goes deaf and
   `wait_incoming` never ends, so `dedensd` serves no DoQ or DoH over HTTP/3 on that socket and sees nothing. Detecting
@@ -74,7 +75,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Service manager and Kubernetes (D122): `dedensd` drops root itself with `user:`, but a unit should not start it as root at
   all. A systemd unit: `DynamicUser=yes` or `User=`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
   `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` (no `user:` in the file: nothing to drop), `NoNewPrivileges=yes`,
-  `ProtectSystem=strict`, `StateDirectory=dedensd` for the downloads `dir` (D104), `ExecReload=kill -HUP $MAINPID`
+  `ProtectSystem=strict`, `CacheDirectory=dedensd` for the downloads `dir` (D104) and `StateDirectory=dedensd` for
+  `state_dir` (D128), `ExecReload=kill -HUP $MAINPID`
   (D55), and a `SystemCallFilter` that allows `io_uring_setup`, `io_uring_enter` and `io_uring_register`, or the threads
   serve on `poll`. Kubernetes (a later phase) sets `securityContext` instead (`runAsUser`, `runAsNonRoot`, `capabilities`
   with `NET_BIND_SERVICE`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem`, `fsGroup` for the key files):

@@ -44,9 +44,10 @@
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
-//! roots:                            # IANA's files, kept in `downloads.dir`, fetched every `refresh_minutes` (D128); `off`: the bundled ones
-//!   tlds: https://data.iana.org/TLD/v1/tlds.json                     # for a tlds stage; IANA's by default
-//!   anchors: https://data.iana.org/root-anchors/root-anchors.xml     # signature beside it, .p7s; for dnssec without trust_anchors
+//! state_dir: /var/lib/dedensd      # what dedensd keeps across restarts: the root anchors verified last (D128)
+//! roots:                            # IANA's files, fetched every `refresh_minutes` (D128); `off`: the bundled ones
+//!   tlds: https://data.iana.org/TLD/v1/tlds.json                     # for a tlds stage, kept in `downloads.dir`; IANA's by default
+//!   anchors: https://data.iana.org/root-anchors/root-anchors.xml     # signature beside it, .p7s; kept in `state_dir`; for dnssec without trust_anchors
 //! pipeline: [hosts, tlds, ads, cache, upstream]
 //! stages:
 //!   tlds:
@@ -102,6 +103,7 @@ mod upstream;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -162,9 +164,11 @@ struct File {
     /// Where downloaded lists are kept, and how often they are fetched again (D57).
     #[serde(default)]
     downloads: DownloadsFile,
-    /// Where IANA's TLD list and the root's trust anchors are fetched from, kept with the downloads, or `off` (D128).
+    /// Where IANA's TLD list and the root's trust anchors are fetched from, or `off` (D128).
     #[serde(default)]
     roots: RootsFile,
+    /// Where what dedensd keeps across restarts is: the root anchors verified last (D128).
+    state_dir: Option<PathBuf>,
     /// A PEM file of the certificate authorities upstream servers over TLS and QUIC are checked against,
     /// instead of the system's (D65).
     upstream_ca: Option<PathBuf>,
@@ -318,7 +322,7 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         rrl: file.rrl,
         cookies: file.cookies,
     };
-    let mut downloads = Downloads::new(file.downloads, file.roots)?;
+    let mut downloads = Downloads::new(file.downloads, file.roots, file.state_dir)?;
     let allowance = Allowance::serving(NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN));
     let (mut built, warmed) = stages(
         &file.pipeline,
@@ -352,6 +356,9 @@ const PLUGIN_TTL: u32 = 3600;
 
 /// Where downloaded lists are kept unless set, as the FHS places a program's cache.
 const DOWNLOADS_DIR: &str = "/var/cache/dedensd";
+
+/// Where what dedensd keeps across restarts is unless set, as the FHS places a program's state.
+const STATE_DIR: &str = "/var/lib/dedensd";
 
 /// How often downloaded lists are fetched again unless set: once a day, as numa and Pi-hole do.
 const REFRESH_MINUTES: u64 = 1440;
@@ -419,11 +426,10 @@ fn stages(
             } => {
                 let validation = Validation {
                     // Read before `dnssec` and `trust_anchors` move in.
-                    root: if matches!(dnssec, Dnssec::Validate) && trust_anchors.is_none() {
-                        downloads.root_anchors()?
-                    } else {
-                        None
-                    },
+                    root: (matches!(dnssec, Dnssec::Validate) && trust_anchors.is_none())
+                        .then(|| downloads.root_anchors(store))
+                        .transpose()?
+                        .flatten(),
                     dnssec,
                     trust_anchors,
                     insecure,
@@ -468,6 +474,7 @@ fn stages(
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),
+                Arc::new(unix_seconds),
             ))),
         });
     }
@@ -847,13 +854,15 @@ mod tests {
         }
     }
 
-    /// D128: only the root files a stage uses are fetched, and only then is the downloads directory written.
+    /// D128: only the root files a stage uses are fetched, and only their directories are made for `user`; the
+    /// downloads directory must be writable for lists only.
     #[test]
     fn roots_fetch_what_the_stages_use() {
         let dir = tempfile::tempdir().unwrap();
         let start = format!(
-            "listen: ['127.0.0.1:53']\ndownloads:\n  dir: '{}'\n",
-            dir.path().display()
+            "listen: ['127.0.0.1:53']\ndownloads:\n  dir: '{}'\nstate_dir: '{}'\n",
+            dir.path().display(),
+            dir.path().join("state").display(),
         );
         let tlds = "pipeline: [tlds, up]\nstages:\n  tlds:\n    type: tlds\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
         let validating = "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n";
@@ -892,13 +901,20 @@ mod tests {
         ] {
             let text = format!("{start}{roots}{stages}");
             let downloads = read(&text, env, &Pipeline::default()).unwrap().downloads;
-            let written = (tlds_url.is_some() || anchors.is_some()).then_some(dir.path());
-            let expected = crate::roots::Used {
-                tlds: tlds_url,
-                anchors,
-            };
-            assert_eq!(downloads.roots, expected, "{text}");
-            assert_eq!(downloads.written_dir(), written, "{text}");
+            let used = &downloads.roots;
+            let urls = (
+                used.tlds.as_ref().map(|tlds| tlds.url.clone()),
+                (used.anchors.as_ref()).map(|used| (used.url.clone(), used.signature.clone())),
+            );
+            assert_eq!(urls, (tlds_url, anchors), "{text}");
+            assert_eq!(downloads.written_dir(), None, "{text}");
+            let state = dir.path().join("state");
+            let dirs = [
+                used.tlds.as_ref().map(|_| dir.path()),
+                used.anchors.as_ref().map(|_| state.as_path()),
+            ];
+            let dirs: Vec<_> = dirs.into_iter().flatten().collect();
+            assert_eq!(downloads.roots_dirs(), dirs, "{text}");
         }
     }
 

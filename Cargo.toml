@@ -95,6 +95,7 @@ metrics-util = { version = "0.20.4", default-features = false }
 # kernel release that picks the driver. D154: `PR_SET_THP_DISABLE`, dedensd's heap without transparent huge pages.
 nix = { version = "0.32.0", default-features = false, features = [
   "feature",
+  "fs",
   "process",
   "user",
 ] }

@@ -8,7 +8,11 @@ use dedens_proto::edns::EdnsFlags;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Name, Query, Rcode, Record, RecordType, Ttl};
 use dedens_roots::{Status, Tlds};
-use dedens_server::{Answer, Plugin, Records};
+use dedens_server::{Answer, Clock, Plugin, Records};
+
+/// How old a TLD list may be, from IANA's generating it, for the stage to answer NXDOMAIN for a TLD it does not
+/// hold: 30 days, in seconds (D128). Past it, a TLD delegated since may be missing from it.
+pub const MAX_LIST_AGE: u64 = 30 * 86_400;
 
 /// What the stage does with a special-use TLD and the names below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,27 +66,42 @@ pub fn special(label: &[u8]) -> Option<Use> {
 /// The `tlds` stage (D128): answers, with no upstream query, the names of [`SPECIAL`] TLDs as their RFCs say and the
 /// names of TLDs that are not in the root zone.
 ///
-/// A TLD is in the root zone when the list holds it as [`Status::Active`]. Below one that is not, a query without DO
-/// is answered NXDOMAIN; one with DO goes on: no proof could come with the denial, which a validating client would
-/// take for bogus. The NXDOMAIN of this stage carry no SOA (RFC 2308 §5): no cache downstream keeps them. AA is set
-/// on the loopback answers, the server's own data, clear on the NXDOMAIN. The root, other classes and other names
-/// go to the next stage.
-#[derive(Debug)]
+/// A TLD is in the root zone when the list holds it as [`Status::Active`]. Below one that is not, a query of class
+/// IN without DO is answered NXDOMAIN while the list is at most [`MAX_LIST_AGE`] old; one with DO goes on: no proof could
+/// come with the denial, which a validating client would take for bogus. The NXDOMAIN of this stage carry no SOA
+/// (RFC 2308 §5): no cache downstream keeps them. AA is set on the loopback answers, the server's own data, clear on
+/// the NXDOMAIN.
+///
+/// The special-use names are special in every class: a [`Use::Nxdomain`] TLD is NXDOMAIN whatever the class, and
+/// `localhost` has its addresses in class IN or ANY, no data in another. The root, other names, and a TLD outside
+/// the list in a class other than IN (`version.bind` in CH) go to the next stage.
 pub struct TopLevel {
     tlds: Arc<Tlds>,
+    stale_at: u64,
+    now: Clock,
     a: Records,
     aaaa: Records,
     counted: Counted,
 }
 
+impl core::fmt::Debug for TopLevel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TopLevel")
+            .field("tlds", &self.tlds.iter().len())
+            .field("stale_at", &self.stale_at)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TopLevel {
-    /// The stage of `tlds`, its loopback records with `ttl`.
+    /// The stage of `tlds`, its loopback records with `ttl`, the age of `tlds` read on `now` when it would answer
+    /// NXDOMAIN for a TLD outside it.
     ///
     /// # Panics
     ///
     /// Never: one address record fits a message.
     #[must_use]
-    pub fn new(tlds: Arc<Tlds>, ttl: Ttl) -> Self {
+    pub fn new(tlds: Arc<Tlds>, ttl: Ttl, now: Clock) -> Self {
         let localhost: Name<'static> = "localhost.".parse().expect("a name");
         let records = |data: RData<'static>| {
             Records::new(
@@ -92,7 +111,9 @@ impl TopLevel {
             .expect("one record fits a message")
         };
         Self {
+            stale_at: tlds.generated().saturating_add(MAX_LIST_AGE),
             tlds,
+            now,
             a: records(RData::A(Ipv4Addr::LOCALHOST)),
             aaaa: records(RData::Aaaa(Ipv6Addr::LOCALHOST)),
             counted: Counted::new(),
@@ -105,11 +126,18 @@ impl TopLevel {
         &self.tlds
     }
 
-    fn loopback(&self, qtype: RecordType) -> Answer<'_> {
+    /// When, in seconds since 1970, the list is older than [`MAX_LIST_AGE`]: from then on a TLD outside it goes on.
+    #[must_use]
+    pub fn stale_at(&self) -> u64 {
+        self.stale_at
+    }
+
+    fn loopback(&self, qclass: Class, qtype: RecordType) -> Answer<'_> {
+        let addresses = qclass == Class::IN || qclass == Class::ANY;
         let records = match qtype {
             // One RRset of the name (RFC 8482 §4.1), as the hosts stage answers.
-            RecordType::A | RecordType::ANY => Some(&self.a),
-            RecordType::AAAA => Some(&self.aaaa),
+            RecordType::A | RecordType::ANY if addresses => Some(&self.a),
+            RecordType::AAAA if addresses => Some(&self.aaaa),
             _ => None,
         };
         Answer {
@@ -132,20 +160,20 @@ const NXDOMAIN: Answer<'static> = Answer {
 impl Plugin for TopLevel {
     fn answer(&self, query: &Query<'_>) -> Option<Answer<'_>> {
         let question = query.question()?;
-        if question.qclass != Class::IN {
-            return None;
-        }
         let label = question.name.labels().last()?;
         match special(label) {
             Some(Use::Loopback) => {
                 self.counted.special_use();
-                return Some(self.loopback(question.qtype));
+                return Some(self.loopback(question.qclass, question.qtype));
             }
             Some(Use::Nxdomain) => {
                 self.counted.special_use();
                 return Some(NXDOMAIN);
             }
             Some(Use::Ordinary) | None => {}
+        }
+        if question.qclass != Class::IN {
+            return None;
         }
         let delegated = self
             .tlds
@@ -157,18 +185,24 @@ impl Plugin for TopLevel {
         if delegated || signed {
             return None;
         }
+        if (self.now)() >= self.stale_at {
+            self.counted.stale();
+            return None;
+        }
         self.counted.unknown();
         Some(NXDOMAIN)
     }
 }
 
 /// The counters of `dedensd_tlds_answers_total{kind}`: queries answered by the stage, `special_use` from [`SPECIAL`],
-/// `unknown` for a TLD not in the root zone.
+/// `unknown` for a TLD not in the root zone; and of `dedensd_tlds_stale_total`, queries for a TLD outside a list
+/// older than [`MAX_LIST_AGE`], gone on.
 #[cfg(feature = "metrics")]
 #[derive(Debug)]
 struct Counted {
     special_use: metrics::Counter,
     unknown: metrics::Counter,
+    stale: metrics::Counter,
 }
 
 /// The counters of answers: none without the `metrics` feature.
@@ -180,13 +214,19 @@ struct Counted;
 impl Counted {
     fn new() -> Self {
         const ANSWERS: &str = "dedensd_tlds_answers_total";
+        const STALE: &str = "dedensd_tlds_stale_total";
         metrics::describe_counter!(
             ANSWERS,
             "Queries the tlds stage answered, by kind: special_use or unknown (a TLD not in the root zone)."
         );
+        metrics::describe_counter!(
+            STALE,
+            "Queries for a TLD outside the list the tlds stage passed on, the list older than 30 days."
+        );
         Self {
             special_use: metrics::counter!(ANSWERS, "kind" => "special_use"),
             unknown: metrics::counter!(ANSWERS, "kind" => "unknown"),
+            stale: metrics::counter!(STALE),
         }
     }
 
@@ -196,6 +236,10 @@ impl Counted {
 
     fn unknown(&self) {
         self.unknown.increment(1);
+    }
+
+    fn stale(&self) {
+        self.stale.increment(1);
     }
 }
 
@@ -212,4 +256,6 @@ impl Counted {
     const fn special_use(&self) {}
 
     const fn unknown(&self) {}
+
+    const fn stale(&self) {}
 }

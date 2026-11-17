@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
 use dedens_plugins::{
-    Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Merged, Names, Origin, Tlds,
+    Action, Blocklist, Hosts, List, Lists, MAX_HOPS, Merged, Names, Origin, Tlds, TopLevel,
 };
 use dedens_proto::rdata::RData;
 use dedens_proto::{
@@ -17,7 +17,8 @@ use dedens_proto::{
 use dedens_server::{Forward, Pipeline, Plugin, Stage, Step};
 
 /// Arbitrary text as a hosts file, as a downloaded blocklist, and its odd lines as an allowlist: when the hosts
-/// file and the blocklist read, queries for its words get replies that decode, whatever the plugins answer.
+/// file and the blocklist read, queries for its words get replies that decode, whatever the plugins answer, the
+/// `tlds` stage (D128) last.
 ///
 /// # Panics
 ///
@@ -47,6 +48,12 @@ pub fn parse_lists(data: &[u8]) {
     let pipeline = Pipeline::new(vec![
         Stage::Plugin(Box::new(Blocklist::new(lists, Action::Null, Ttl::ZERO))),
         Stage::Plugin(Box::new(hosts)),
+        // Last: the names of other TLDs reach the plugins before.
+        Stage::Plugin(Box::new(TopLevel::new(
+            Arc::new(dedens_roots::Tlds::bundled().clone()),
+            Ttl::ZERO,
+            Arc::new(|| 0),
+        ))),
     ]);
     let mut out = vec![0; MAX_MESSAGE_LEN];
     for word in text.split_ascii_whitespace().take(8) {

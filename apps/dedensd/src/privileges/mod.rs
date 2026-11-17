@@ -194,13 +194,14 @@ pub(crate) fn resolve(identity: Option<&Identity>) -> anyhow::Result<Plan> {
 /// The drop `plan` decided, after every socket is bound and every file read at start that needs it; it creates what
 /// the dropped user must write first ([`os::prepare`]), and logs it. `downloads` is the directory of the lists to
 /// download, if the configuration has any: one that `urls` adds at a reload needs a directory the user can write
-/// already.
+/// already. `roots` are the directories of the root files (D128), made for the user too; one that cannot be is warned
+/// of only: its copy, or the bundled one, serves.
 ///
 /// # Errors
 ///
 /// A call the OS refuses, or one that left a way back to root: the process must then end, it may be half dropped;
 /// a second thread; a `downloads` directory the user cannot write.
-pub(crate) fn apply(plan: Plan, downloads: Option<&Path>) -> anyhow::Result<()> {
+pub(crate) fn apply(plan: Plan, downloads: Option<&Path>, roots: &[&Path]) -> anyhow::Result<()> {
     match plan {
         Plan::Unprivileged => {}
         Plan::Root => tracing::warn!(
@@ -218,6 +219,11 @@ pub(crate) fn apply(plan: Plan, downloads: Option<&Path>) -> anyhow::Result<()> 
         Plan::Drop { user, gid } => {
             if let Some(dir) = downloads {
                 os::prepare(dir, user.uid, gid)?;
+            }
+            for dir in roots {
+                if let Err(error) = os::prepare(dir, user.uid, gid) {
+                    tracing::warn!(dir = %dir.display(), error = format!("{error:#}"), "the directory of a root file not made (D128)");
+                }
             }
             os::drop_to(&user, gid)?;
             if let Some(dir) = downloads {

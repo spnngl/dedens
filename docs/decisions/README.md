@@ -133,8 +133,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D126 [scope](scope.md) (amended by D127, D128): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
-- D127 [scope](scope.md): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
-- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO; dedensd refreshes TLD list and root anchors
+- D127 [scope](scope.md) (amended by D128): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
+- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO while the list is under 30 days; dedensd refreshes TLD list and root anchors, kept verified in `state_dir`
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`

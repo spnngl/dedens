@@ -312,9 +312,9 @@ impl TryFrom<String> for Insecure {
 pub(super) struct Validation {
     pub(super) dnssec: Dnssec,
     pub(super) trust_anchors: Option<PathBuf>,
-    /// The root's anchors from IANA's signed copy, and when it was signed, unless they are the bundled ones (D128):
-    /// those validated by without `trust_anchors`.
-    pub(super) root: Option<(TrustAnchors, u64)>,
+    /// The root's anchors of the copy dedensd keeps (D128) valid now, those validated by without `trust_anchors`;
+    /// `None` for the bundled ones.
+    pub(super) root: Option<TrustAnchors>,
     pub(super) insecure: Vec<Insecure>,
     pub(super) client_share: Option<BudgetFile>,
     /// What validation may cost, set by the serving threads (D77).
@@ -354,38 +354,30 @@ impl TryFrom<DnssecText> for Dnssec {
 
 /// The validator of a forward stage: the anchors of `trust_anchors`, the root's unless set, `root` or the bundled
 /// ones, and a negative anchor for each name of `insecure` (RFC 7646), checked against the clock of the system (D77).
-/// Other anchors make another tag: a reload starts a fresh validator, and no key proven under the old anchors stays
-/// trusted (D128).
+/// Its tag is the anchors themselves, as text: other anchors start a fresh validator on reload, and no key proven
+/// under the old ones stays trusted; the same anchors, however they came, keep it (D128).
 ///
 /// # Errors
 ///
 /// A `trust_anchors` file that does not read or holds no anchor.
 fn validating(
     trust_anchors: Option<&Path>,
-    root: Option<(TrustAnchors, u64)>,
+    root: Option<TrustAnchors>,
     insecure: Vec<Insecure>,
 ) -> anyhow::Result<Validating> {
-    let mut tag = String::from("validate");
     let mut anchors = match (trust_anchors, root) {
-        (None, None) => TrustAnchors::root(),
-        (None, Some((anchors, signed_at))) => {
-            tag = format!("{tag}\nroot anchors signed at {signed_at}");
-            anchors
-        }
+        (None, root) => root.unwrap_or_else(TrustAnchors::root),
         (Some(path), _) => {
             let text = fs::read_to_string(path)
                 .with_context(|| format!("`trust_anchors`: cannot read {}", path.display()))?;
-            tag.push_str("\nanchors ");
-            tag.push_str(&text);
             TrustAnchors::read(&text)
                 .with_context(|| format!("`trust_anchors`: {}", path.display()))?
         }
     };
     for Insecure(name) in insecure {
-        tag.push_str("\ninsecure ");
-        tag.push_str(&name.to_string());
         anchors.add_negative(name);
     }
+    let tag = format!("validate\n{anchors}");
     Ok(Validating::new(
         Validator::new(anchors, Limits::default()),
         Arc::new(unix_seconds),
@@ -584,21 +576,38 @@ mod tests {
         }
     }
 
-    /// D128: root anchors from a fresh signed copy that are not the bundled ones make another tag, as does each
-    /// signing: a reload starts a fresh validator, and no key proven under the old anchors stays trusted.
+    /// D128: the tag is the anchors: other root anchors make another, so a reload starts a fresh validator and no
+    /// key proven under the old anchors stays trusted; the same anchors make the same, from the bundle, a kept copy or
+    /// a `trust_anchors` file, the negative ones in any order.
     #[test]
-    fn fresh_root_anchors_start_a_fresh_validator() {
+    fn the_validator_is_keyed_on_its_anchors() {
         // KSK-2010's DS, valid until 2019-01-11 in IANA's `root-anchors.xml` (testdata/dnssec).
         let ksk_2010 = TrustAnchors::read(
             ". IN DS 19036 8 2 49AAC11D7B6F6446702E54A1607371607A1A41855200FD2CE1CDDE32F24E8FB5",
         )
         .unwrap();
-        let tag = |root: Option<(TrustAnchors, u64)>| {
-            validating(None, root, Vec::new()).unwrap().tag().to_owned()
+        let tag = |file: Option<&Path>, root: Option<TrustAnchors>, insecure: &[&str]| {
+            let insecure = insecure
+                .iter()
+                .map(|name| Insecure(name.parse().unwrap()))
+                .collect();
+            validating(file, root, insecure).unwrap().tag().to_owned()
         };
-        let bundled = tag(None);
-        assert_ne!(tag(Some((ksk_2010.clone(), 1))), bundled);
-        assert_ne!(tag(Some((ksk_2010.clone(), 1))), tag(Some((ksk_2010, 2))));
+        let bundled = tag(None, None, &[]);
+        assert_ne!(tag(None, Some(ksk_2010.clone()), &[]), bundled);
+        assert_eq!(tag(None, Some(TrustAnchors::root()), &[]), bundled);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            format!("; the bundled anchors\n{}", TrustAnchors::root()),
+        )
+        .unwrap();
+        assert_eq!(tag(Some(file.path()), Some(ksk_2010), &[]), bundled);
+        assert_eq!(
+            tag(None, None, &["a.example.", "b.example."]),
+            tag(None, None, &["b.example.", "a.example."])
+        );
+        assert_ne!(tag(None, None, &["a.example."]), bundled);
     }
 
     /// D117: a client network's share of the validation allowance is the default's unless `client_share` says; a
