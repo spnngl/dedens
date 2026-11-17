@@ -114,9 +114,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   pass split the cold start from the hits, and the hits' gap was two turns of the runtime a wake-up, closed by D123's
   reply sent at once. Default: profile the first pass the same way (fresh memory, the cache growing) before any
   change.
-- Memory: idle, `dedensd` holds 11 MiB against Unbound's 4; loaded, 160 MiB in 3-core `miss` against Unbound's 23 and
-  85 to 90 for the others (`docs/benchmarks.md`). The cache's 64 MiB capacity (D116) explains part. Default: account
-  for the rest (buffer rings, the upstream pool, the allocator) with a heap profile before changing a default.
+- Memory: idle, `dedensd` holds 11 MiB against Unbound's 4. Loaded, 3-core `miss` went from 168 MiB to 89 (Unbound
+  26) by a receive buffer shared by each upstream pool (D50) and transparent huge pages off (D154); the cache's 64 MiB
+  capacity (D116, kept: the hit ratio of real traffic is worth more than the bench's row) holds 58 of them, and the
+  rest is about Unbound's total (`docs/benchmarks.md`, the 8 MiB cache row). Left: the idle 11 MiB. Default: account
+  for it (buffer rings, threads' stacks, the allocator's arenas) before changing a default.
 
 ## Cache
 
