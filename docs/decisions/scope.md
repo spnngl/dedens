@@ -758,7 +758,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   proven: a name error's proof holds for every type, and a no data of RRSIG at a signed name fails, its bitmap
   having RRSIG. Rejected: verifying each RRSIG by the set it covers, which the response does not hold; insecure
   whatever the response holds, which took a forged name error or empty answer without a proof.
-- D126 (amends D40; amended by D127) IANA's root hints and TLD list are `dedens-roots`, sans-IO: `RootHints`, the root servers of
+- D126 (amends D40; amended by D127, D128) IANA's root hints and TLD list are `dedens-roots`, sans-IO: `RootHints`, the root servers of
   `named.root` with their A and AAAA records (the configured list a resolver primes from, RFC 8109 §2, RFC 1034
   §5.3.3's SBELT), and `Tlds`, each TLD of `tlds.json` (schema version 1) with its type, status, name servers and
   their glue, DS records, and IANA's purpose for a special-use name; nothing else of the file (managers, contacts,

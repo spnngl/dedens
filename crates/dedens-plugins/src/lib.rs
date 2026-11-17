@@ -23,6 +23,7 @@
 mod blocklist;
 mod hosts;
 mod text;
+mod top_level;
 
 pub use blocklist::{
     Action, Blocklist, List, ListError, Lists, MAX_HOPS, Merged, Names, Origin, Read, Tlds,
@@ -30,3 +31,4 @@ pub use blocklist::{
 };
 pub use hosts::Hosts;
 pub use text::{LineError, LineErrorKind};
+pub use top_level::{SPECIAL, TopLevel, Use, special};

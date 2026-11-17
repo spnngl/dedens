@@ -178,7 +178,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amends D23; amended by D64, D110, D118, D120) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amends D23; amended by D64, D110, D118, D120, D128) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -1371,3 +1371,22 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up`),
     `crates/dedens-sim/tests/dnssec.rs` (`a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed`),
     `a_query_that_waits_for_the_allowance_is_counted_parked` of `crates/dedens-server/tests/metrics.rs`.
+- D128 (amends D54, D126) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
+  not in the root zone: `type: tlds`, `dedens_plugins::TopLevel` over a `dedens_roots::Tlds`. Its table,
+  `SPECIAL`, holds each special-use TLD of IANA's list with what item 4 of its RFC asks of a caching server:
+  `localhost` and its subnames the loopback addresses to A, AAAA and ANY (one RRset, RFC 8482 §4.1), no data to
+  other types, AA set (RFC 6761 §6.3); `invalid` (§6.4), `test` (§6.2), `local` (RFC 6762 §22.1) and `onion`
+  (RFC 7686 §2, a MUST) NXDOMAIN, DO or not; `example` (RFC 6761 §6.5), `alt` (RFC 9476 §2), `internal` (no RFC:
+  ICANN reserved it for private use in 2024) and `arpa` as any TLD, as their RFCs ask not to treat them as special.
+  Any other TLD is in the root zone when the list holds it `active`: else a query without DO is NXDOMAIN, one with
+  DO passed on (no proof could come with the denial, and a validating client would take it for bogus), so
+  `example`, `alt` and `internal`, `reserved`, get the NXDOMAIN the root would give. A test checks that every
+  special-use TLD of the bundled list has a row: a new one in a fresh list is answered as its status says, and
+  `dedensd` warns of it. The stage's NXDOMAIN carry no SOA and AA is clear: it holds no zone, and a SOA would be
+  invented. The cost (RFC 2308 §5): no cache downstream keeps them, so a stub or a forwarder in front asks again
+  each time, a lookup in memory here; `dedensd`'s own cache stage comes after. A name of one's own network under
+  `internal` or `test` comes from a stage before it, as a hosts stage. It goes before a cache stage, as hosts and
+  blocklist do (D64). `dedensd_tlds_answers_total{kind}` counts its answers, `special_use` or `unknown`.
+  Rejected: NXDOMAIN for `example`, `alt` and a special-use TLD of no known use whatever DO (the RFCs ask the
+  first two be resolved normally, and a DO client cannot check the denial); a SOA of the root in the NXDOMAIN (it
+  would claim a zone's authority for a policy).

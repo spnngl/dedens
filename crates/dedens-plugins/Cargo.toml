@@ -12,10 +12,15 @@ autotests = false
 [features]
 # `Action` read from configuration files (D24).
 serde = ["dep:serde"]
+# The answers of the `tlds` stage through the `metrics` facade (D30, D128).
+metrics = ["dep:metrics"]
 
 [dependencies]
 dedens-proto.workspace = true
+# The TLD list the `tlds` stage answers from (D128).
+dedens-roots.workspace = true
 dedens-server.workspace = true
+metrics = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
