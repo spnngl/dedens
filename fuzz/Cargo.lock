@@ -695,11 +695,13 @@ dependencies = [
  "dedens-scenario",
  "idna",
  "mimalloc",
+ "serde",
  "serde-saphyr",
  "serde_json",
  "tracing",
  "tracing-subscriber",
  "unicode-script",
+ "ureq",
 ]
 
 [[package]]
