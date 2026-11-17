@@ -718,6 +718,8 @@ fn the_kept_anchors_read_back_as_written_with_each_keys_validity() {
     );
     assert_eq!(RootAnchors::read(&text), Ok(root.clone()));
     assert_eq!(root.signed_at(), SIGNED_AT);
+    let keys: Vec<u16> = root.keys().iter().map(|key| key.ds().key_tag()).collect();
+    assert_eq!(keys, [19036, 20326, 38696]);
     let at = |now| root.at(now).map(|anchors| tags(&anchors));
     assert_eq!(at(day(2010, 7, 14)), None);
     assert_eq!(at(day(2017, 2, 2)), Some(vec![19036, 20326]));
@@ -755,7 +757,14 @@ fn kept_anchors_other_than_written_are_refused() {
     assert_eq!(refused(text.trim_end()), Err(0), "no line feed at the end");
     let header: String = text.split_inclusive('\n').take(2).collect();
     assert_eq!(refused(&header), Err(0), "no key");
-    assert_eq!(refused(&"\n".repeat(RootAnchors::MAX_LEN + 1)), Err(0));
+    // The last key's `from`, its digits led by zeros up to a text of `len` bytes.
+    let head = text.rsplit_once(" from ").expect("a key").0;
+    let padded = |len: usize| {
+        let width = len - head.len() - " from \n".len();
+        format!("{head} from {:0>width$}\n", 1_721_260_800)
+    };
+    assert!(RootAnchors::read(&padded(RootAnchors::MAX_LEN)).is_ok());
+    assert_eq!(refused(&padded(RootAnchors::MAX_LEN + 1)), Err(0));
 }
 
 #[test]

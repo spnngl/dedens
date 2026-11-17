@@ -119,10 +119,9 @@ impl Held {
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "the saved TLD list does not read, using the bundled one");
-                if let Err(error) = fs::remove_file(download::tag(&path))
-                    && error.kind() != io::ErrorKind::NotFound
-                {
-                    tracing::warn!(%error, "the version tag of the saved TLD list not removed");
+                if let Err(error) = download::untag(&path) {
+                    let error = format!("{error:#}");
+                    tracing::warn!(error, "the version tag of the saved TLD list not removed");
                 }
                 bundled()
             }
@@ -268,14 +267,9 @@ fn unknown_special_use(tlds: &Tlds) {
     }
 }
 
-/// Warns when `tlds` is older than [`MAX_LIST_AGE`] at `now`: the `tlds` stage passes on the TLDs outside it.
-pub(crate) fn warn_stale(tlds: &Tlds, now: u64) {
-    if now >= tlds.generated().saturating_add(MAX_LIST_AGE) {
-        tracing::warn!(
-            generated = tlds.generated(),
-            "the TLD list is older than 30 days: TLDs outside it are passed on, not answered NXDOMAIN"
-        );
-    }
+/// Whether `tlds` is older than [`MAX_LIST_AGE`] at `now`: the `tlds` stage then passes on the TLDs outside it.
+pub(crate) fn stale(tlds: &Tlds, now: u64) -> bool {
+    now >= tlds.generated().saturating_add(MAX_LIST_AGE)
 }
 
 /// The root anchors of the validators at `now`: the keys of `kept` valid then, or the bundled ones without it.
@@ -547,6 +541,10 @@ mod tests {
         fs::create_dir(dir.path().join(ANCHORS)).unwrap();
         assert!(Held::default().anchors(dir.path()).is_err(), "a directory");
         fs::remove_dir(dir.path().join(ANCHORS)).unwrap();
+        fs::write(dir.path().join(ANCHORS), "abc").unwrap();
+        let capped = |max| read_capped(File::open(dir.path().join(ANCHORS)).unwrap(), max);
+        assert_eq!(capped(3).unwrap(), b"abc");
+        assert!(capped(2).is_err());
         let long = format!("{KEPT}{}", "x".repeat(RootAnchors::MAX_LEN));
         fs::write(dir.path().join(ANCHORS), long).unwrap();
         let error = Held::default().anchors(dir.path()).unwrap_err();
@@ -615,6 +613,21 @@ mod tests {
         fs::write(&path, KEPT.replace("1742934302", "1742934301")).unwrap();
         held.anchors(dir.path()).unwrap();
         assert_eq!(fetch(&mut held), Fetched::default());
+        assert_eq!(fs::read_to_string(&path).unwrap(), KEPT);
+
+        // Other keys, signed earlier: the fetched ones replace them.
+        let other = KEPT
+            .replace("1742934302", "1742934301")
+            .replace("from 1721260800", "from 1721260801");
+        fs::write(&path, other).unwrap();
+        held.anchors(dir.path()).unwrap();
+        assert_eq!(
+            fetch(&mut held),
+            Fetched {
+                changed: true,
+                failed: false
+            }
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), KEPT);
 
         let later = KEPT.replace("1742934302", "1742934303");
@@ -745,6 +758,14 @@ mod tests {
         let tags = tags.lock().unwrap();
         let sent: Vec<_> = tags.iter().map(|(_, tag)| tag.is_some()).collect();
         assert_eq!(sent, [false, false, false], "{tags:?}");
+    }
+
+    /// D128: a TLD list is stale from 30 days after IANA generated it.
+    #[test]
+    fn a_tld_list_is_stale_from_30_days_after_it_was_generated() {
+        let generated = BUNDLED.generated();
+        assert!(!stale(&BUNDLED, generated + 30 * 86_400 - 1));
+        assert!(stale(&BUNDLED, generated + 30 * 86_400));
     }
 
     /// The age of each root file in use is that of its copy: since IANA generated the TLD list, since ICANN signed

@@ -172,15 +172,13 @@ fn a_list_older_than_its_max_age_lets_a_tld_outside_it_go_on() {
     assert_bare_nxdomain(ask(&stale, a("x.onion."), false), "x.onion.");
     let localhost = ask(&stale, a("localhost."), false).expect("answered");
     assert_eq!(localhost.answer[0].data(), RData::A(Ipv4Addr::LOCALHOST));
-    assert_eq!(
-        TopLevel::new(
-            Arc::new(Tlds::bundled().clone()),
-            Ttl::from_wire(0),
-            Arc::new(|| 0)
-        )
-        .stale_at(),
-        generated + MAX_LIST_AGE
+    assert_eq!(MAX_LIST_AGE, 30 * 86_400, "30 days (D128)");
+    let top_level = TopLevel::new(
+        Arc::new(Tlds::bundled().clone()),
+        Ttl::from_wire(0),
+        Arc::new(|| 0),
     );
+    assert_eq!(top_level.stale_at(), generated + MAX_LIST_AGE);
 }
 
 #[test]
