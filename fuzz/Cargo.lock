@@ -691,6 +691,7 @@ dependencies = [
  "dedens-dnssec",
  "dedens-net",
  "dedens-proto",
+ "dedens-roots",
  "dedens-scenario",
  "idna",
  "mimalloc",
@@ -749,6 +750,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-roots",
  "dedens-scenario",
  "dedens-server",
  "dedensd",
@@ -808,6 +810,17 @@ dependencies = [
  "thiserror",
  "vstd",
  "zerocopy",
+]
+
+[[package]]
+name = "dedens-roots"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "dedens-proto",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

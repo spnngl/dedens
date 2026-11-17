@@ -19,6 +19,7 @@ mod net;
 mod odoh;
 mod plugins;
 mod proto;
+mod roots;
 mod server;
 #[cfg(test)]
 mod smoke;
@@ -39,6 +40,7 @@ pub use plugins::parse_lists;
 pub use proto::{
     decode_message, differential_hickory, parse_name, parse_query_file, parse_zone, read_query,
 };
+pub use roots::{parse_root_hints, parse_tlds_json};
 pub use server::{cache_insert, parse_network, serve_query};
 
 /// A fuzz entry point.
@@ -99,4 +101,6 @@ targets! {
     parse_link_format,
     parse_command_line,
     read_config,
+    parse_root_hints,
+    parse_tlds_json,
 }
