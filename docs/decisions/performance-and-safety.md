@@ -316,3 +316,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   public resolvers or recursion as upstream (the Internet's latency and its changes measured, not the servers);
   one tuned configuration each (who tunes decides the outcome); a single run per server (±30% between sessions,
   `crates/dedens-bench/AGENTS.md`).
+- D187 (builds on D6, D141, D144) The pinned nightly is nightly-2026-11-17, with RAPx 0.7.75 (0.7.71, the one
+  before, does not build on it: rustc's internals moved). Since nightly-2026-11-14 rustc's frontend runs 2 threads
+  by default, and the nightly's builds keep that default: the fuzz targets' (D141) and cargo-careful's (D144).
+  On an Apple M5 of 10 cores, no `--jobs-frontend` of 1, 4 or 8 beats it by more than the noise (1.15) in the round
+  least loaded: `cargo check --workspace` 1.01 to 1.04, the fuzz build at most 1.00, the careful build of
+  dedens-proto 1.146 at 8 threads (`docs/benchmarks.md`, "Parallel frontend"); CI's runners have 3 and 4 vCPUs.
+  Releases are built on stable (D153), whose frontend stays sequential: their reproducibility is untouched. If a
+  nightly build crashes or a fuzz or careful finding does not replay, rerun it with
+  `RUSTFLAGS="-Zunstable-options --jobs-frontend=1"` (cargo-fuzz and cargo-careful append to `RUSTFLAGS`, careful
+  in its sysroot too); a cause found in the parallel frontend puts that flag in the recipe. Rejected: the parallel
+  frontend on stable through `RUSTC_BOOTSTRAP=1` (nightly features in the compiler that builds the releases and
+  runs the gate, against D6's stable toolchain and D153's reproducible build); `--jobs-frontend` in
+  `.cargo/config.toml` (stable reads it too and refuses `-Z` flags); a count above 2 in the recipes (within the
+  noise, more CPU time and memory).

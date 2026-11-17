@@ -187,3 +187,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D184 [server](server.md): `dedensd` asks plain servers over UDP with `0x20`, the response's question given back the client's case
 - D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread
 - D186 [server](server.md): a validating query past the global allowance waits for it on its thread, FIFO, 512 a thread, 1.8 s
+- D187 [performance and safety](performance-and-safety.md): nightly-2026-11-17 and RAPx 0.7.75; its parallel frontend at the default 2 threads; not on stable

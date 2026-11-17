@@ -1350,6 +1350,40 @@ one run.
 - The incremental build is the link's: each binary linked its crate's dependencies again. 14 is a binary per
   package with tests, plus `dedens-cache`'s two that set their own `#[global_allocator]`.
 
+## Parallel frontend (D187)
+
+The builds of the pinned nightly at `RUSTFLAGS="-Zunstable-options --jobs-frontend=N"`, against the nightly's
+default of 2 frontend threads (`RUSTFLAGS` unset). Apple M5, 10 cores (4 performance, 6 efficiency), 24 GB, macOS
+27.2.1, rustc 1.102.0-nightly (5df8c02af 2026-11-16) of nightly-2026-11-17, 2026-11-17. A shared machine: a virtual
+machine and another agent's builds kept the load average between 17 and 70. Each build cold: its target directory
+(and for `careful` the careful sysroot) removed before it; the four variants in a different order each round.
+
+- `check`: `cargo check --workspace --all-features`, 5 rounds.
+- `careful`: `cargo careful test -p dedens-proto --all-features --no-run`, the careful std sysroot built first,
+  5 rounds.
+- `fuzz`: `cargo fuzz build` in `fuzz/` (release, every target), 4 rounds.
+
+Seconds, min / median / max over the rounds; CPU is user plus system seconds, median; memory the peak resident
+set of the largest process, the most over the rounds.
+
+| Build | `N`=1 | default (2) | `N`=4 | `N`=8 |
+|---|---|---|---|---|
+| `check` | 13.1 / 14.3 / 23.0 | 13.6 / 16.3 / 23.1 | 13.4 / 16.8 / 27.2 | 13.2 / 14.7 / 15.6 |
+| `check` CPU, memory | 81 s, 0.48 GB | 88 s, 0.50 GB | 90 s, 0.52 GB | 90 s, 0.53 GB |
+| `careful` | 20.3 / 22.0 / 27.7 | 17.3 / 22.0 / 38.1 | 16.3 / 17.2 / 30.3 | 15.1 / 15.2 / 15.9 |
+| `careful` CPU, memory | 26 s, 0.51 GB | 31 s, 0.51 GB | 32 s, 0.52 GB | 32 s, 0.55 GB |
+| `fuzz` | 129 / 154 / 191 | 94 / 109 / 167 | 102 / 152 / 158 | 94 / 135 / 169 |
+| `fuzz` CPU, memory | 497 s, 2.53 GB | 471 s, 2.48 GB | 490 s, 2.58 GB | 484 s, 2.53 GB |
+
+- By the minimum, the round least disturbed by the load, no `N` beats the default by more than the noise (1.15):
+  `check` 1.01 to 1.04, `fuzz` 0.73 to 1.00, `careful` 1.146 at 8 threads. The workspace's crates are many and
+  small: Cargo already keeps the cores busy, and a frontend thread adds CPU time (`check` 81 s at 1, 90 s at 8).
+- `careful` at 8 threads is the steadiest (15.1 to 15.9 s against 17.3 to 38.1 s): more threads take a larger share
+  of a loaded machine. The package's own build (Cargo's `Finished`) is 6 to 8 s in 16 rounds of 20, at every
+  `N`; the rest is the std sysroot, which a workstation keeps per nightly and each CI job builds
+  (under AddressSanitizer there, without it here). The memory grows by 10% at most.
+- CI's runners have 4 vCPUs (Linux) and 3 (macOS), fewer than the 4 threads where a gain starts here; not measured.
+
 ## Simulation time (D133, D164)
 
 `just sim-time`: wall time of each family of `dedens-sim`'s `tests` binary run alone, then of the binary whole, in
