@@ -159,3 +159,42 @@ fn the_root_and_other_classes_go_on() {
         );
     }
 }
+
+/// `dedensd_tlds_answers_total{kind}` counts the answers of the stage: `special_use` for the table's names,
+/// `unknown` for a TLD not in the root zone; a query passed on counts nothing.
+#[cfg(feature = "metrics")]
+#[test]
+fn answers_are_counted_by_kind() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let pipeline = metrics::with_local_recorder(&recorder, pipeline);
+    for name in [
+        "localhost.",
+        "x.onion.",
+        "x.test.",
+        "nonexistent-tld.",
+        "example.com.",
+    ] {
+        let _ = ask(&pipeline, a(name), false);
+    }
+    let mut counted: Vec<_> = snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _, _, value)| {
+            let DebugValue::Counter(n) = value else {
+                return None;
+            };
+            let (_, key) = key.into_parts();
+            let kind = key.labels().find(|l| l.key() == "kind")?.value().to_owned();
+            (key.name() == "dedensd_tlds_answers_total").then_some((kind, n))
+        })
+        .collect();
+    counted.sort();
+    assert_eq!(
+        counted,
+        [("special_use".to_owned(), 3), ("unknown".to_owned(), 1)]
+    );
+}
