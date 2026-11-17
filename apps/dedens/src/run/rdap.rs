@@ -120,7 +120,7 @@ fn name(text: &str) -> anyhow::Result<String> {
     let name = ascii(text)?;
     if name.len() > 253 || !name.contains('.') || !name.split('.').all(is_ldh) {
         bail!(
-            "{text}: not a domain under a TLD: +rdap takes labels of letters, digits and hyphens, as `example.fr`; +tld asks about a TLD"
+            "{text}: not a domain under a TLD: +rdap takes two labels or more of letters, digits and hyphens, 253 octets at most, as `example.fr`; +tld asks about a TLD"
         );
     }
     Ok(name)
@@ -548,6 +548,10 @@ mod tests {
         assert_eq!(
             relocate("https://rdap.nic.fr", origin),
             "https://127.0.0.1:9"
+        );
+        assert_eq!(
+            relocate("https://a.b/c/d", origin),
+            "https://127.0.0.1:9/c/d"
         );
         assert_eq!(
             relocate("https://rdap.nic.fr/", None),
