@@ -11,6 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dedens_dnssec::TrustAnchors;
 use dedens_proto::Name;
 
+/// The line above the signing time in `src/root.signed_at`, a Rust comment: the file is `include!`d.
+const SIGNED_AT_HEADER: &str = "// The signingTime of root-anchors.xml in seconds since 1970: written by `just roots`, never by hand.\n";
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -31,13 +34,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let signed = TrustAnchors::verified(&std::fs::read(xml)?, &std::fs::read(p7s)?, now, None)?;
     let (_, root) = signed
-        .anchors
+        .anchors()
         .closest(&Name::root())
-        .ok_or("root-anchors.xml anchors another zone than the root")?;
+        .expect("the XML reader refuses a Zone other than the root");
     let mut out = std::io::stdout().lock();
     for ds in root.ds() {
         writeln!(out, ". IN DS {ds}")?;
     }
-    std::fs::write(signed_at, format!("{}\n", signed.signed_at))?;
+    std::fs::write(
+        signed_at,
+        format!("{SIGNED_AT_HEADER}{}\n", signed.signed_at()),
+    )?;
     Ok(())
 }

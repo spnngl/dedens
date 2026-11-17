@@ -246,10 +246,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D72 (amended by D127) Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
   and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
   that `just roots` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
-  (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
-  file. The CMS signature of §3.2 is not checked: the file and its `.p7s` come from the same site, so the
-  check proves nothing the HTTPS fetch does not; the test is that every bundled DS matches a key of the
-  captured root DNSKEY RRset (`tests/anchor.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
+  (RFC 9718 §2.2), once its CMS signature holds (§3.2, D127). The test is that every bundled DS matches a key of
+  the captured root DNSKEY RRset (`tests/anchor.rs`), and the key tags are the two of RFC 9718 §2.2. A user's
   anchors are zone text read by `ZoneReader`, the fuzz target `parse_trust_anchors` feeding the checks above it, as
   Unbound's `trust-anchor-file`: absolute owners, class IN only, TTL defaulted to 0, DS and DNSKEY only (a CDS
   or CDNSKEY is not an anchor), no `$INCLUDE` (the library reads no file), at least one record (an empty set
@@ -259,7 +257,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](../TODECIDE.md)
   holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
-- D127 (amends D72) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
+- D127 (amends D72, D126) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
   is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
   signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem`.
   That bundle, ICANN Root CA (to 2029-12-18) and Root CA v2 (2025-03-20 to 2045-03-20), was checked out of band:
@@ -269,8 +267,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   signer chains to ICANN Root CA: after 2029-12-18, until ICANN signs from v2, every pair is refused and the
   bundled `root.ds` is what stays. Behind the feature `fetch-anchors` of `dedens-dnssec`:
   `TrustAnchors::verified(xml, p7s, now, last_signed_at)`, `verified_by(.., ca_pem, ..)` for an operator's CA
-  (as `unbound-anchor -c`), both giving `SignedAnchors` (anchors and signing time), and
-  `from_unverified_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The signature holds as
+  (as `unbound-anchor -c`), both giving `SignedAnchors` (anchors and signing time, private: only they make one,
+  so its time is one a signature held for), and `from_unverified_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The signature holds as
   `unbound-anchor` checks it, and more: a detached `SignedData` of `id-data`, each `SignerInfo` named by issuer and
   serial number, its digest one the `SignedData` lists, its signed attributes present (content type, message
   digest of the XML, signing time, each once with one value) and signed with RSA PKCS #1 v1.5 (RSA-PSS refused)
@@ -281,13 +279,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `now`. The CA is trusted as bundled: neither its basic constraints nor its self-signature are checked. No
   intermediate CA and no key-identifier signer: ICANN's chain has neither, so no test could show them right. The
   signed attributes are verified as re-encoded: `der` decodes DER only, so they are the bytes received; a CA
-  bundle with text before a certificate is refused. Rollback: a pair signed before `last_signed_at`, the
-  `signed_at` the caller last accepted (`dedensd` is to keep it), or before the pair `root.ds` was read from
+  bundle with text before a certificate is refused. Every `SignerInfo` must verify, as OpenSSL has it: one can be
+  stripped, so this adds no security, but it fails closed on a signer that cannot be checked; a file ICANN signs
+  twice during its move to Root CA v2 is refused once ICANN Root CA expires (2029-12-18), and taking it then is a
+  code change (any signer holding, with a floor rule for several signing times). Rollback: a pair signed before
+  `last_signed_at`, the `signed_at` the caller last accepted (`dedensd` is to keep it), or before the pair `root.ds` was read from
   (`src/root.signed_at`, written by `just roots`), is refused, so an attacker on the path cannot serve an older
   pair listing a since-retired key. Residual: a stateless caller (the CLI, the recipe) only has the bundled floor,
   and any pair ICANN signed after it and the signer's certificate valid now is accepted; the signing time is
-  ICANN's claim, not a timestamp. Sizes are bounded before parsing, the XML to 64 KiB and the `.p7s` to 16 KiB (IANA's
-  are 1 861 and 2 523 bytes): `der` sorts each SET OF it decodes by insertion, quadratic (3.1 s for 128 KiB). The
+  ICANN's claim, not a timestamp. The floor is compared before the signature is verified, as the time claimed: a
+  forged pair is refused either way, and so the captured pair with an earlier time shows the bundled floor holds
+  (no genuine older pair is kept). Withholding newer pairs cannot be detected: ICANN re-signs rarely, so an old
+  pair still valid looks current; the floor bounds how old. Sizes are bounded before parsing, the XML to 64 KiB and
+  the `.p7s` to 16 KiB (IANA's are 1 861 and 2 523 bytes): `der` sorts each SET OF it decodes by insertion,
+  quadratic: 29 ms for 16 KiB of digest algorithms (`benches/anchors.rs`, `docs/benchmarks.md`). The
   XML reader reads that schema only (elements, attributes, text, comments), refuses a DOCTYPE, CDATA and entities,
   and a `Zone` other than the root; takes a time zone of `Z` or `±hh:mm`; keeps the entries valid at `now`
   (§4.1.1); drops one whose `PublicKey` and `Flags` do not match its digest or key tag (§4.1.2), and one whose
@@ -302,8 +307,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the reader alone, +242 KiB that hold `ring`'s RSA, which a validating `dedensd` links already. Rejected:
   `x509-parser` (in the lock through rcgen, but no CMS, and `nom`, `time`, `oid-registry`), the `rsa` crate
   (`ring` verifies RSA), OpenSSL (a C build), an XML crate (one schema of seven elements), x509-cert's
-  `load_pem_chain` (it panics on an empty bundle), checking the CMS against the CA fetched beside it (the
-  same-site objection of D72 again), verifying the received signed-attribute bytes by walking the DER by hand
+  `load_pem_chain` (it panics on an empty bundle), checking the CMS against the CA fetched beside it (from the
+  same site, it proves nothing the HTTPS fetch does not), verifying the received signed-attribute bytes by walking the DER by hand
   (a second parser of outside data, for bytes `der` already gives back). Anchor rollover (RFC 5011) is the
   recursive resolver's (TODECIDE).
 - D73 (amends D71) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
@@ -753,11 +758,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   proven: a name error's proof holds for every type, and a no data of RRSIG at a signed name fails, its bitmap
   having RRSIG. Rejected: verifying each RRSIG by the set it covers, which the response does not hold; insecure
   whatever the response holds, which took a forged name error or empty answer without a proof.
-- D126 (amends D40) IANA's root hints and TLD list are `dedens-roots`, sans-IO: `RootHints`, the root servers of
+- D126 (amends D40; amended by D127) IANA's root hints and TLD list are `dedens-roots`, sans-IO: `RootHints`, the root servers of
   `named.root` with their A and AAAA records (the configured list a resolver primes from, RFC 8109 §2, RFC 1034
   §5.3.3's SBELT), and `Tlds`, each TLD of `tlds.json` (schema version 1) with its type, status, name servers and
   their glue, DS records, and IANA's purpose for a special-use name; nothing else of the file (managers, contacts,
-  dates, RDAP and WHOIS servers). Both are bundled, compiled in as IANA's files that `just roots` writes, `tlds.json`
+  dates, RDAP and WHOIS servers). Both are bundled, compiled in as IANA's files that `just roots` writes (with the
+  root's trust anchors, D127), `tlds.json`
   cut by `jq` to the members read (2.9 MB to 0.9 MB); a fresh copy, which the caller downloads, reads into the same
   type (`RootHints::read`, `Tlds::read`), so one reader serves both. The CLI takes the bundled copies only (`+trace`
   starts from `RootHints::bundled`); `dedensd` is to download fresh ones. `tlds.json` is read by `serde_json`, members

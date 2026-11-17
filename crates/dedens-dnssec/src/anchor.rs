@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
 #[cfg(feature = "fetch-anchors")]
-pub use signature::{MAX_P7S, MAX_XML, SignedAnchorError};
+pub use signature::{AnchorFile, MAX_P7S, MAX_XML, SignedAnchorError};
 #[cfg(feature = "fetch-anchors")]
 pub use xml::AnchorXmlError;
 
@@ -23,19 +23,47 @@ const ROOT: &str = include_str!("root.ds");
 const ICANN_CA: &str = include_str!("icannbundle.pem");
 
 /// When ICANN signed the `root-anchors.xml` that `src/root.ds` was read from, in seconds since 1970, written by
-/// `just roots`: the earliest signing time [`TrustAnchors::verified`] accepts (D127).
+/// `just roots` (the example `root_anchors`): the earliest signing time [`TrustAnchors::verified`] accepts (D127).
 #[cfg(feature = "fetch-anchors")]
 #[expect(clippy::unreadable_literal, reason = "a number `just roots` writes")]
 const ROOT_SIGNED_AT: u64 = include!("root.signed_at");
 
-/// The anchors of a signed `root-anchors.xml` and when ICANN signed it (RFC 5652 §11.3).
+/// The anchors of a signed `root-anchors.xml` and when ICANN signed it (RFC 5652 §11.3): only
+/// [`TrustAnchors::verified`] makes one, so its signing time is one a signature held for.
+///
+/// ```compile_fail,E0451
+/// // A floor no signature held for, which a caller would keep.
+/// let forged = dedens_dnssec::SignedAnchors {
+///     anchors: dedens_dnssec::TrustAnchors::root(),
+///     signed_at: u64::MAX,
+/// };
+/// ```
 #[cfg(feature = "fetch-anchors")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedAnchors {
+    anchors: TrustAnchors,
+    signed_at: u64,
+}
+
+#[cfg(feature = "fetch-anchors")]
+impl SignedAnchors {
     /// The anchors, as [`TrustAnchors::from_unverified_xml`] reads them.
-    pub anchors: TrustAnchors,
+    #[must_use]
+    pub fn anchors(&self) -> &TrustAnchors {
+        &self.anchors
+    }
+
+    /// The anchors, `self` dropped.
+    #[must_use]
+    pub fn into_anchors(self) -> TrustAnchors {
+        self.anchors
+    }
+
     /// The signing time, in seconds since 1970: the `last_signed_at` of the next [`TrustAnchors::verified`].
-    pub signed_at: u64,
+    #[must_use]
+    pub fn signed_at(&self) -> u64 {
+        self.signed_at
+    }
 }
 
 /// The records that anchor one zone (RFC 4035 §4.4): at least one, as only [`TrustAnchors::read`] makes them.
@@ -222,8 +250,8 @@ impl TrustAnchors {
         last_signed_at: Option<u64>,
     ) -> Result<SignedAnchors, SignedAnchorError> {
         for (file, bytes, limit) in [
-            ("root-anchors.xml", xml, MAX_XML),
-            ("root-anchors.p7s", p7s, MAX_P7S),
+            (AnchorFile::Xml, xml, MAX_XML),
+            (AnchorFile::P7s, p7s, MAX_P7S),
         ] {
             if bytes.len() > limit {
                 return Err(SignedAnchorError::TooLarge { file, limit });
