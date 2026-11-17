@@ -147,6 +147,8 @@ This section includes older drafts that were superseded, informational RFCs, nic
 * **[RFC 5625](https://datatracker.ietf.org/doc/html/rfc5625):** DNS Proxy Implementation Guidelines
 * **[RFC 6303](https://datatracker.ietf.org/doc/html/rfc6303):** Locally Served DNS Zones
 * **[RFC 6761](https://datatracker.ietf.org/doc/html/rfc6761):** Special-Use Domain Names
+* **[RFC 7686](https://datatracker.ietf.org/doc/html/rfc7686):** The ".onion" Special-Use Domain Name
+* **[RFC 9476](https://datatracker.ietf.org/doc/html/rfc9476):** The .alt Special-Use Top-Level Domain
 * **[RFC 6781](https://datatracker.ietf.org/doc/html/rfc6781):** DNSSEC Operational Practices, Version 2
 * **[RFC 6895](https://datatracker.ietf.org/doc/html/rfc6895):** Domain Name System (DNS) IANA Considerations
 * **[RFC 8806](https://datatracker.ietf.org/doc/html/rfc8806):** Running a Root Server Local to a Resolver
