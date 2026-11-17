@@ -1,7 +1,7 @@
 # Decisions
 
 Each decision: the choice, its reason, the alternatives rejected. A new one goes in its section's file under the next
-number, and gets its line below; a number is never reused (85, 128, 131, 132, 148, 149 and 173 were never
+number, and gets its line below; a number is never reused (85, 131, 132, 148, 149 and 173 were never
 assigned). A replaced decision is marked superseded, and an amendment is named in both headers (`amends D2` in one,
 `amended by D5` in the other). A line below: the section file, a gist, and the header's `amended by`,
 `superseded by` and `narrowed by`. `crates/dedens-repo/tests/repo.rs` checks the numbers, the pairs and the lines
@@ -61,7 +61,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D51 [server](server.md) (amended by D107, D123): io_uring runs completion work cooperatively; older kernels use poll
 - D52 [server](server.md) (superseded by D63): TCP replies after upstream reuse kept 65535-byte buffers
 - D53 [server](server.md): upstream TCP writer sends queued queries in one write
-- D54 [server](server.md) (amended by D64, D110, D118, D120): plugins: a `Plugin` trait object as a stage
+- D54 [server](server.md) (amended by D64, D110, D118, D120, D128): plugins: a `Plugin` trait object as a stage
 - D55 [server](server.md) (amended by D64, D96, D107, D122): `dedensd` reloads its configuration file on SIGHUP
 - D56 [server](server.md) (amended by D118, D120): blocklist contents: the line formats read
 - D57 [server](server.md) (amended by D64, D104, D115, D118, D120): `dedensd` downloads blocklists and allowlists with `ureq`
@@ -132,8 +132,9 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D123 [server](server.md): UDP replies sent at once when none is in flight, else queued for one sender per socket
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
-- D126 [scope](scope.md) (amended by D127): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
+- D126 [scope](scope.md) (amended by D127, D128): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
 - D127 [scope](scope.md): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
+- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, and absent ones NXDOMAIN without DO
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`

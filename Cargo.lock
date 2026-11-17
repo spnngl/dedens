@@ -1057,8 +1057,10 @@ name = "dedens-plugins"
 version = "0.1.0"
 dependencies = [
  "dedens-proto",
+ "dedens-roots",
  "dedens-server",
  "dedens-testkit",
+ "metrics",
  "serde",
  "thiserror",
 ]
