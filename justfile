@@ -3,8 +3,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # The one pinned nightly: rustfmt (rustfmt.toml uses unstable options), `-Z` flags and RAPx. RAPx builds on rustc
 # internals, so its version and this nightly move together: bump both by hand. Stable is pinned in
 # rust-toolchain.toml.
-nightly := "nightly-2026-10-26"
-rapx_version := "0.7.71"
+nightly := "nightly-2026-11-17"
+rapx_version := "0.7.75"
 # Kani brings a nightly and CBMC of its own (`just kani-install`).
 # renovate: datasource=crate depName=kani-verifier
 kani_version := "0.68.0"
