@@ -149,8 +149,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   DS records as unsupported (insecure), and implementations to keep validating them (D71 validates by default).
   Default: validated; a setting of the validator marking algorithms 5 and 7 unsupported, which
   needs a filter on the DS records and RRSIGs that `rrsig` does not have (D75 leaves it out).
-- Trust anchor rollover (RFC 5011): follow a root key roll while running. Default: bundled anchors and anchor
-  files only, replaced by hand; automate in the recursive phase, when a daemon holds state.
+- Trust anchor rollover (RFC 5011): follow a root key roll while running from the root's DNSKEY RRset. The
+  signed download of `root-anchors.xml` is settled (D127); tracking a roll in the zone itself is left to the
+  recursive resolver, which holds the state. Default: bundled anchors, the signed download, anchor files.
 - NTA end time (RFC 7646 §2.1 SHOULD): a negative trust anchor lasts as long as the `TrustAnchors` holding it
   (D72). Default: none, the caller drops it (`--insecure NAME`, `insecure:` in the configuration); an `until` with the
   clock passed in when `dedensd` keeps state across reloads.

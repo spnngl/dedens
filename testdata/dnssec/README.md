@@ -126,3 +126,7 @@ Each needs the zone's DNSKEY (and the chain to it) above. The name that does not
 ## A name of 34 labels
 
 `ip6_ptr` is the PTR of an IPv6 reverse name (RIPE NCC's `www.ipv6.ripe.net`, 34 labels under `ip6.arpa`, signed by `8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa`, 13), Secure. The validator asks the DS of each label below `arpa`: `ip6_ds_N` is that of the suffix of N labels (`ip6_ds_1` is `arpa`), a DS at the zone cuts (`arpa`, `ip6.arpa`, `6.0.1.0.0.2.ip6.arpa`, `8.e.2.0.c.7.6.0.1.0.0.2.ip6.arpa`) and a signed NODATA elsewhere; `arpa_dnskey`, `ip6_arpa_dnskey`, `ip6_1_0_0_2_dnskey` and `ripe_ip6_arpa_dnskey` are the keys of those zones.
+
+## The root's trust anchors, signed
+
+`root-anchors.xml` and `root-anchors.p7s` are IANA's root trust anchors and their detached CMS signature (RFC 9718 §2, §3.2), from `https://data.iana.org/root-anchors/`, as `just root-anchors` saved them (never edit by hand); `root-anchors.captured_at` is the Unix time of that run, the "now" of `crates/dedens-dnssec/tests/signed_anchors.rs`. ICANN's CA bundle that checks them is `crates/dedens-dnssec/src/icannbundle.pem`, fetched from the same place on 2026-11-17, compared at each run and replaced by hand only (D127). The signer's certificate is valid from 2023-03-15 to 2029-03-13, the KeyDigest entries are 19036 (2010-07-15 to 2019-01-11), 20326 (from 2017-02-02) and 38696 (from 2024-07-18): a recapture changes what the tests name.
