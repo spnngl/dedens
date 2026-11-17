@@ -1,19 +1,30 @@
 //! The `tlds` stage (D128) on IANA's TLD list as bundled: special-use names answered as RFC 6761 §6, RFC 6762 §22.1
 //! and RFC 7686 §2 ask of a caching server, RFC 6761 §6.5 and RFC 9476 §2 names left to the list; a TLD not in the
-//! root zone NXDOMAIN without a SOA (RFC 2308 §5) to a query without DO, passed on with DO.
+//! root zone NXDOMAIN without a SOA (RFC 2308 §5) to a query without DO, passed on with DO or once the list is
+//! older than `MAX_LIST_AGE`, its `meta.generated` shifted from.
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
-use dedens_plugins::{SPECIAL, TopLevel, Use, special};
+use dedens_plugins::{MAX_LIST_AGE, SPECIAL, TopLevel, Use, special};
 use dedens_proto::edns::EdnsFlags;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, RecordType, Transport, Ttl};
 use dedens_roots::{Kind, Tlds};
 use dedens_server::{Forward, Pipeline, Stage, Step};
 
+/// The stage on the bundled list as IANA generated it, then the upstream.
 fn pipeline() -> Pipeline {
-    let stage = TopLevel::new(Arc::new(Tlds::bundled().clone()), Ttl::from_wire(3600));
+    pipeline_at(Tlds::bundled().generated())
+}
+
+/// The stage on the bundled list at `now`, in seconds since 1970, then the upstream.
+fn pipeline_at(now: u64) -> Pipeline {
+    let stage = TopLevel::new(
+        Arc::new(Tlds::bundled().clone()),
+        Ttl::from_wire(3600),
+        Arc::new(move || now),
+    );
     let upstream = SocketAddr::from(([192, 0, 2, 53], 53));
     Pipeline::new(vec![
         Stage::Plugin(Box::new(stage)),
@@ -149,19 +160,67 @@ fn a_tld_not_in_the_root_zone_is_nxdomain_without_do_only() {
 }
 
 #[test]
-fn the_root_and_other_classes_go_on() {
+fn a_list_older_than_its_max_age_lets_a_tld_outside_it_go_on() {
+    let generated = Tlds::bundled().generated();
+    let fresh = pipeline_at(generated + MAX_LIST_AGE - 1);
+    let stale = pipeline_at(generated + MAX_LIST_AGE);
+    for name in ["nonexistent-tld.", "www.example."] {
+        assert_bare_nxdomain(ask(&fresh, a(name), false), name);
+        assert!(ask(&stale, a(name), false).is_none(), "{name}");
+    }
+    // The special-use names do not hang on the list.
+    assert_bare_nxdomain(ask(&stale, a("x.onion."), false), "x.onion.");
+    let localhost = ask(&stale, a("localhost."), false).expect("answered");
+    assert_eq!(localhost.answer[0].data(), RData::A(Ipv4Addr::LOCALHOST));
+    assert_eq!(
+        TopLevel::new(
+            Arc::new(Tlds::bundled().clone()),
+            Ttl::from_wire(0),
+            Arc::new(|| 0)
+        )
+        .stale_at(),
+        generated + MAX_LIST_AGE
+    );
+}
+
+#[test]
+fn special_use_names_are_special_in_every_class_others_go_on() {
     let pipeline = pipeline();
     assert!(ask(&pipeline, (".", RecordType::NS, Class::IN), false).is_none());
-    for name in ["localhost.", "x.onion.", "nonexistent-tld."] {
-        assert!(
-            ask(&pipeline, (name, RecordType::A, Class::CH), false).is_none(),
-            "{name}"
+    for class in [Class::CH, Class::HS, Class::ANY] {
+        assert_bare_nxdomain(
+            ask(&pipeline, ("x.onion.", RecordType::A, class), false),
+            "x.onion.",
         );
+        assert_bare_nxdomain(
+            ask(&pipeline, ("invalid.", RecordType::TXT, class), true),
+            "invalid.",
+        );
+        // The TLD list is of class IN: `version.bind` in CH (RFC 4892 §2) is no TLD outside it.
+        for name in ["nonexistent-tld.", "version.bind.", "example.com."] {
+            assert!(
+                ask(&pipeline, (name, RecordType::TXT, class), false).is_none(),
+                "{name}"
+            );
+        }
+    }
+    // The loopback addresses are of class IN, which ANY takes in; another class has no data at the name.
+    let any = ask(&pipeline, ("localhost.", RecordType::A, Class::ANY), false).expect("answered");
+    assert_eq!(any.answer[0].data(), RData::A(Ipv4Addr::LOCALHOST));
+    for qtype in [RecordType::A, RecordType::AAAA, RecordType::ANY] {
+        let chaos = ask(&pipeline, ("localhost.", qtype, Class::CH), false).expect("answered");
+        assert_eq!(
+            (chaos.rcode(), chaos.answer.len()),
+            (Rcode::NOERROR, 0),
+            "{qtype}"
+        );
+        assert!(chaos.header.flags.contains(Flags::AA));
     }
 }
 
 /// `dedensd_tlds_answers_total{kind}` counts the answers of the stage: `special_use` for the table's names,
-/// `unknown` for a TLD not in the root zone; a query passed on counts nothing.
+/// `unknown` for a TLD not in the root zone; `dedensd_tlds_stale_total` a TLD outside a list too old, passed on;
+/// another query passed on counts nothing.
 #[cfg(feature = "metrics")]
 #[test]
 fn answers_are_counted_by_kind() {
@@ -169,7 +228,12 @@ fn answers_are_counted_by_kind() {
 
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
-    let pipeline = metrics::with_local_recorder(&recorder, pipeline);
+    let (pipeline, stale) = metrics::with_local_recorder(&recorder, || {
+        (
+            pipeline(),
+            pipeline_at(Tlds::bundled().generated() + MAX_LIST_AGE),
+        )
+    });
     for name in [
         "localhost.",
         "x.onion.",
@@ -178,6 +242,9 @@ fn answers_are_counted_by_kind() {
         "example.com.",
     ] {
         let _ = ask(&pipeline, a(name), false);
+    }
+    for name in ["nonexistent-tld.", "x.nonexistent-tld.", "example.com."] {
+        assert!(ask(&stale, a(name), false).is_none());
     }
     let mut counted: Vec<_> = snapshotter
         .snapshot()
@@ -188,13 +255,21 @@ fn answers_are_counted_by_kind() {
                 return None;
             };
             let (_, key) = key.into_parts();
-            let kind = key.labels().find(|l| l.key() == "kind")?.value().to_owned();
-            (key.name() == "dedensd_tlds_answers_total").then_some((kind, n))
+            let kind = key
+                .labels()
+                .find(|l| l.key() == "kind")
+                .map(|l| l.value().to_owned());
+            Some((key.name().to_owned(), kind, n))
         })
         .collect();
     counted.sort();
+    let entry = |name: &str, kind: Option<&str>, n| (name.to_owned(), kind.map(str::to_owned), n);
     assert_eq!(
         counted,
-        [("special_use".to_owned(), 3), ("unknown".to_owned(), 1)]
+        [
+            entry("dedensd_tlds_answers_total", Some("special_use"), 3),
+            entry("dedensd_tlds_answers_total", Some("unknown"), 1),
+            entry("dedensd_tlds_stale_total", None, 2),
+        ]
     );
 }

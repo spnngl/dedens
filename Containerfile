@@ -35,8 +35,8 @@ RUN cargo fetch --locked \
             -o "/out/THIRD-PARTY-$binary.txt" deploy/about.hbs || exit 1; \
     done
 
-# What the scratch image gets and a shell is needed to make: one unprivileged user, a directory for it to write.
-RUN mkdir -p /rootfs/etc /rootfs/var/cache/dedensd \
+# What the scratch image gets and a shell is needed to make: one unprivileged user, directories for it to write.
+RUN mkdir -p /rootfs/etc /rootfs/var/cache/dedensd /rootfs/var/lib/dedensd \
     && echo 'dedens:x:10001:10001:dedens:/nonexistent:/sbin/nologin' > /rootfs/etc/passwd \
     && echo 'dedens:x:10001:' > /rootfs/etc/group
 
@@ -47,6 +47,7 @@ FROM scratch
 COPY --from=build /rootfs/etc/passwd /rootfs/etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=10001:10001 /rootfs/var/cache/dedensd /var/cache/dedensd
+COPY --from=build --chown=10001:10001 /rootfs/var/lib/dedensd /var/lib/dedensd
 COPY --from=build /out/dedensd /dedensd
 COPY --from=build /out/THIRD-PARTY-dedensd.txt /usr/share/licenses/dedensd/THIRD-PARTY.txt
 COPY LICENSE /usr/share/licenses/dedensd/LICENSE

@@ -2,11 +2,13 @@
 //! response, under access lists, a rate limit and cookies; networks of access lists; the cache's hits.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
+use dedens_plugins::TopLevel;
 use dedens_proto::edns::{Cookie, Edns, EdnsOption as CookieOption};
-use dedens_proto::{Flags, Header, MAX_MESSAGE_LEN, Message, Query, Rcode, Transport};
+use dedens_proto::{Flags, Header, MAX_MESSAGE_LEN, Message, Query, Rcode, Transport, Ttl};
+use dedens_roots::Tlds;
 use dedens_server::{
     Access, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit, RateLimitConfig, Secret,
     Secrets, Stage, Standing, Step,
@@ -80,12 +82,16 @@ pub fn cache_insert(data: &[u8]) {
     );
 }
 
+/// The bundled TLD list, parsed and copied once: `serve_query` runs per input.
+static BUNDLED: LazyLock<Arc<Tlds>> = LazyLock::new(|| Arc::new(Tlds::bundled().clone()));
+
 /// Arbitrary bytes as a client's query, and as the upstream response to a query for their question, then that query
 /// again, from the cache: whatever the server sends back is a conforming reply under the query's ID, within the
 /// client's UDP payload. A server whose access lists hold no network answers the first input with nothing or REFUSED
 /// under its ID (D91). A server limiting rates and giving cookies (D113) answers the input, sent over UDP from a
 /// source over its rate, with nothing or a conforming reply (TC=1, BADCOOKIE), and a query for the input's question
 /// with a Client Cookie from the bytes of the input gets a Server Cookie that verifies and lets the next through.
+/// A `tlds` stage (D128) answers the input, any class, with a conforming reply or passes it on.
 ///
 /// # Panics
 ///
@@ -111,6 +117,17 @@ pub fn serve_query(data: &[u8]) {
             Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) => {
                 panic!("a denied client's query goes upstream")
             }
+        }
+        let top_level = Pipeline::new(vec![Stage::Plugin(Box::new(TopLevel::new(
+            Arc::clone(&BUNDLED),
+            Ttl::ZERO,
+            Arc::new(|| 0),
+        )))]);
+        if let Step::Reply(len) =
+            top_level.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out)
+        {
+            let id = Header::peek(data).expect("a reply goes to a header").id;
+            check_reply(&out[..len], id, transport);
         }
         let pipeline = Pipeline::new(vec![
             Stage::Cache(Arc::new(

@@ -31,4 +31,4 @@ pub use blocklist::{
 };
 pub use hosts::Hosts;
 pub use text::{LineError, LineErrorKind};
-pub use top_level::{SPECIAL, TopLevel, Use, special};
+pub use top_level::{MAX_LIST_AGE, SPECIAL, TopLevel, Use, special};

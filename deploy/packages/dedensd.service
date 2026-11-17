@@ -17,6 +17,8 @@ User=dedensd
 Group=dedensd
 # /var/cache/dedensd, the `downloads.dir` of the packaged configuration.
 CacheDirectory=dedensd
+# /var/lib/dedensd, its `state_dir`: the root anchors verified last (D128).
+StateDirectory=dedensd
 # systemd's soft default, 1024, is short of a server's sockets.
 LimitNOFILE=524288
 AmbientCapabilities=CAP_NET_BIND_SERVICE

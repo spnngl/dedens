@@ -1,5 +1,5 @@
 #!/bin/sh
-# dedensd's package (D156), after removal: systemd forgets the unit. The user and /var/cache/dedensd stay.
+# dedensd's package (D156), after removal: systemd forgets the unit. The user, /var/cache/dedensd and /var/lib/dedensd stay.
 set -e
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true

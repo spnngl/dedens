@@ -29,17 +29,20 @@ const PARALLEL: usize = 4;
 /// Downloads by result: `changed`, `unchanged` or `error`.
 const FETCHES: &str = "dedensd_list_fetches_total";
 
-/// The saved copy of the list at `url` in `dir`, named by a hash of the URL that stays the same across versions
-/// and platforms (64-bit FNV-1a).
+/// The saved copy of the list at `url` in `dir`, named by [`hash`] of the URL.
 pub(crate) fn copy(dir: &Path, url: &str) -> PathBuf {
-    let hash = url.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+    dir.join(format!("{:016x}.list", hash(url)))
+}
+
+/// A hash of `url` that stays the same across versions and platforms (64-bit FNV-1a): the name of its copy.
+pub(crate) fn hash(url: &str) -> u64 {
+    url.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
-    dir.join(format!("{hash:016x}.list"))
+    })
 }
 
 /// The version tag of the saved copy `copy`.
-fn tag(copy: &Path) -> PathBuf {
+pub(crate) fn tag(copy: &Path) -> PathBuf {
     copy.with_extension("etag")
 }
 
@@ -281,6 +284,29 @@ impl Fetcher {
         version: Option<&str>,
         limit: u64,
     ) -> anyhow::Result<Option<(Vec<u8>, Option<String>)>> {
+        let response = self.call(url, version)?;
+        // RFC 9110 §15.4.5: a 304 answers a conditional request only; to another, no copy is the latest one.
+        if version.is_some() && response.status() == 304 {
+            return Ok(None);
+        }
+        body(response, limit).map(Some)
+    }
+
+    /// The file at `url`, whole, of at most `limit` bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Fetcher::get`].
+    pub(crate) fn whole(&self, url: &str, limit: u64) -> anyhow::Result<Vec<u8>> {
+        body(self.call(url, None)?, limit).map(|(body, _)| body)
+    }
+
+    /// The response to a GET of `url`, conditional on `version` if given.
+    fn call(
+        &self,
+        url: &str,
+        version: Option<&str>,
+    ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         // A redirect never takes an `https://` file to `http://`, where anyone on the path could change it.
         let mut request = self
             .agent
@@ -291,24 +317,27 @@ impl Fetcher {
         if let Some(version) = version {
             request = request.header("If-None-Match", version.trim());
         }
-        let mut response = request.call()?;
-        // RFC 9110 §15.4.5: a 304 answers a conditional request only; to another, no copy is the latest one.
-        if version.is_some() && response.status() == 304 {
-            return Ok(None);
-        }
-        ensure!(response.status() == 200, "status {}", response.status());
-        let version = response
-            .headers()
-            .get("etag")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = response
-            .body_mut()
-            .with_config()
-            .limit(limit)
-            .read_to_vec()?;
-        Ok(Some((body, version)))
+        request.call()
     }
+}
+
+/// The body of `response`, of at most `limit` bytes, and its version tag; an error for a status other than 200.
+fn body(
+    mut response: ureq::http::Response<ureq::Body>,
+    limit: u64,
+) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    ensure!(response.status() == 200, "status {}", response.status());
+    let version = response
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()?;
+    Ok((body, version))
 }
 
 /// The version tag of the saved copy `copy`, if both are there.
@@ -376,21 +405,16 @@ pub(crate) fn replace(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()>
     sync_dir(dir)
 }
 
-/// Removes from `dir` the `.part` files of the copies and tags of `urls`, and of the files named `also`, that a
-/// killed process left (D104): once at start, while only the thread of the downloads writes there. The `.part` file
+/// Removes from `dir` the `.part` files of `copies` and their tags, that a killed process left (D104): once at start, while only the thread of the downloads writes there. The `.part` file
 /// of an old version, a copy's name and `.part`, is one too.
-pub(crate) fn sweep(urls: &[String], also: &[&str], dir: &Path) {
+pub(crate) fn sweep(copies: &[PathBuf], dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    let owners: Vec<_> = urls
+    let owners: Vec<_> = copies
         .iter()
-        .flat_map(|url| {
-            let copy = copy(dir, url);
-            [tag(&copy), copy]
-        })
+        .flat_map(|copy| [tag(copy), copy.clone()])
         .filter_map(|file| Some(format!("{}.", file.file_name()?.to_string_lossy())))
-        .chain(also.iter().map(|name| format!("{name}.")))
         .collect();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -432,7 +456,7 @@ pub(crate) mod tests {
     }
 
     /// [`serve`], `respond` taking the request's header lines too.
-    fn serve_head(
+    pub(crate) fn serve_head(
         respond: impl Fn(&str, &[String]) -> Vec<u8> + Send + Sync + 'static,
     ) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -728,11 +752,12 @@ pub(crate) mod tests {
         for file in leftovers.iter().chain(&kept) {
             fs::write(dir.path().join(file), "x").unwrap();
         }
-        sweep(&urls, &["tlds.json"], dir.path());
+        let copies = [copy.clone(), dir.path().join("tlds.json")];
+        sweep(&copies, dir.path());
         assert!(leftovers.iter().all(|file| !dir.path().join(file).exists()));
         assert!(kept.iter().all(|file| dir.path().join(file).exists()));
         // A directory that is not there is no error.
-        sweep(&urls, &[], &dir.path().join("missing"));
+        sweep(&copies, &dir.path().join("missing"));
     }
 
     /// L13: nothing but the copy stays, nor is a `.part` file left when the rename fails.

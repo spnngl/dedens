@@ -257,7 +257,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](../TODECIDE.md)
   holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
-- D127 (amends D72, D126) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
+- D127 (amends D72, D126; amended by D128) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
   is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
   signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem`.
   That bundle, ICANN Root CA (to 2029-12-18) and Root CA v2 (2025-03-20 to 2045-03-20), was checked out of band:
@@ -267,8 +267,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   signer chains to ICANN Root CA: after 2029-12-18, until ICANN signs from v2, every pair is refused and the
   bundled `root.ds` is what stays. Behind the feature `fetch-anchors` of `dedens-dnssec`:
   `TrustAnchors::verified(xml, p7s, now, last_signed_at)`, `verified_by(.., ca_pem, ..)` for an operator's CA
-  (as `unbound-anchor -c`), both giving `SignedAnchors` (anchors and signing time, private: only they make one,
-  so its time is one a signature held for), and `from_unverified_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The signature holds as
+  (as `unbound-anchor -c`), both giving `SignedAnchors` (the anchors valid at `now`, and the `RootAnchors` of
+  D128, every key with its validity and the signing time; private: only they make one, so its time is one a
+  signature held for), and `from_unverified_xml(xml, now)`, the reader alone (`src/anchor/{xml,signature}.rs`). The signature holds as
   `unbound-anchor` checks it, and more: a detached `SignedData` of `id-data`, each `SignerInfo` named by issuer and
   serial number, its digest one the `SignedData` lists, its signed attributes present (content type, message
   digest of the XML, signing time, each once with one value) and signed with RSA PKCS #1 v1.5 (RSA-PSS refused)

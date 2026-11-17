@@ -26,3 +26,6 @@ belongs in `crates/dedens-server` and its sans-IO tests.
 - `src/lib.rs` is the crate; `src/main.rs` holds the musl build's allocator and its huge-page flag (D154), then calls
   `dedensd::main` (D181). A configuration setting naming a file
   to read goes in `names_files` (`src/config/`), or `fuzz/`'s `read_config` opens the paths its inputs name.
+- A root file (D128) is read through `roots::open`: no link, a regular file, of a capped length. The anchors kept
+  in `state_dir` are what the validators trust without a signature: written only from a pair `TrustAnchors::verified`
+  accepted, and a reload that cannot read them keeps those `Held` in the `Store`.
