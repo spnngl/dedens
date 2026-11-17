@@ -245,7 +245,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
 - D72 (amended by D127) Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
   and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
-  that `just root-anchors` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
+  that `just roots` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
   (RFC 9718 §2.2), by an awk script, as the file is flat and a Rust XML parser would be a dependency for one
   file. The CMS signature of §3.2 is not checked: the file and its `.p7s` come from the same site, so the
   check proves nothing the HTTPS fetch does not; the test is that every bundled DS matches a key of the
@@ -273,9 +273,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   neither, so no test could show them right. The XML reader reads that schema only (elements, attributes, text,
   comments), refuses a DOCTYPE, CDATA and entities, takes a time zone of `Z` or `±hh:mm`, keeps the entries
   valid at `now` (§4.1.1) and drops one whose `PublicKey` and `Flags` do not match its digest or key tag
-  (§4.1.2); the awk of `just root-anchors` is gone, the recipe runs the crate's example `root_anchors` over
-  the downloaded pair, captures it to `testdata/dnssec/` and stops when the CA bundle changed (a trust root is
-  replaced by hand, checked out of band). Tests `tests/signed_anchors.rs`, fuzz target `parse_root_anchors`.
+  (§4.1.2); the awk of the `root-anchors` recipe is gone, and the recipe folded into `just roots` (D126), which
+  runs the crate's example `root_anchors` over the downloaded pair, captures it to `testdata/dnssec/` and stops
+  when the CA bundle changed (a trust root is replaced by hand, checked out of band). Tests `tests/signed_anchors.rs`, fuzz target `parse_root_anchors`.
   Parsing is RustCrypto's `cms` 0.2 and `x509-cert` 0.2 (with `der`, `der_derive`, `spki`, `const-oid`,
   `flagset`, `base64ct`, `pem-rfc7468`: 9 crates new to the lock, Apache-2.0 OR MIT but `flagset`'s Apache-2.0,
   no duplicate; `cargo deny` passes), the cryptography `ring`'s, already linked; behind the feature, so

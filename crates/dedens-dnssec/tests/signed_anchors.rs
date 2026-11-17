@@ -5,7 +5,7 @@
 //!   DNSKEY does not match left out; §3.2: the detached CMS signature, by ICANN's `dnssec@iana.org` certificate
 //!   issued by ICANN's CA.
 //!
-//! The XML, its `.p7s` and ICANN's CA bundle are those `just root-anchors` fetched, at the time in
+//! The XML, its `.p7s` and ICANN's CA bundle are those `just roots` fetched, at the time in
 //! `testdata/dnssec/root-anchors.captured_at`.
 
 use std::fs;

@@ -34,7 +34,7 @@ proptest.workspace = true
 name = "tests"
 path = "tests/tests.rs"
 
-# `just root-anchors`: the root's DS records of a checked root-anchors.xml, as `src/root.ds` holds them.
+# `just roots`: the root's DS records of a checked root-anchors.xml, as `src/root.ds` holds them.
 [[example]]
 name = "root_anchors"
 required-features = ["fetch-anchors"]

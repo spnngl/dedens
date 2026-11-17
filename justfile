@@ -619,21 +619,47 @@ rfc-archive:
     grep -oE "https://[^ )]+\.txt" docs/rfc/list.md | sort -u | while read -r url; do \
         curl -fsSL --retry 3 -o "docs/rfc/archive/$(basename "$url" | tr '[:upper:]' '[:lower:]')" "$url"; done
 
-# Refresh what `dedens-roots` bundles (D126): IANA's root hints, and its TLD list cut to the members the crate reads
-# (the order of the domains kept, the managers, contacts and dates dropped); the test copy, a few entries in full, from
-# the same download.
+# Refresh IANA's data the crates bundle. For `dedens-roots` (D126): the root hints, and the TLD list cut to the members
+# the crate reads (the order of the domains kept, the managers, contacts and dates dropped); the test copy, a few
+# entries in full, from the same download. For `dedens-dnssec` (D72, D127): `root-anchors.xml` and its `.p7s`, checked
+# against ICANN's CA bundled in `src/icannbundle.pem` (RFC 9718 §3.2), then the DS records of its `KeyDigest` entries
+# valid now in `src/root.ds`; the pair goes to `testdata/dnssec` with the
+# time of the run. A changed CA bundle stops the recipe before it writes anything: it is the trust root, replaced by
+# hand once checked out of band (D127).
 roots:
     #!/usr/bin/env bash
     set -euo pipefail
     src=crates/dedens-roots/src
-    tmp="$(mktemp)"
-    trap 'rm -f "$tmp"' EXIT
-    curl -fsSL --retry 3 -o "$src/named.root" https://www.internic.net/domain/named.root
-    curl -fsSL --retry 3 -o "$tmp" https://data.iana.org/TLD/v1/tlds.json
+    dnssec=crates/dedens-dnssec/src
+    anchors=https://data.iana.org/root-anchors
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    for file in root-anchors.xml root-anchors.p7s icannbundle.pem; do
+        curl -fsSL --retry 3 -o "$tmp/$file" "$anchors/$file"
+    done
+    if ! cmp -s "$tmp/icannbundle.pem" "$dnssec/icannbundle.pem"; then
+        echo "roots: $anchors/icannbundle.pem changed: check it out of band, then copy it to $dnssec/" >&2
+        exit 1
+    fi
+    curl -fsSL --retry 3 -o "$tmp/named.root" https://www.internic.net/domain/named.root
+    curl -fsSL --retry 3 -o "$tmp/tlds.json" https://data.iana.org/TLD/v1/tlds.json
+    now="$(date -u +%s)"
+    {
+        echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's signed root-anchors.xml valid on $(date -u +%Y-%m-%d)."
+        echo "; Source: $anchors/root-anchors.xml. Written by \`just roots\`, never by hand."
+        cargo run -q -p dedens-dnssec --features fetch-anchors --example root_anchors -- \
+            "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s"
+    } > "$tmp/root.ds"
+    cp "$tmp/named.root" "$src/named.root"
     jq -c '{meta, domains: [.domains[] | {name, status, type, nameservers, ds_records}
-        + (if .purpose then {purpose} else {} end)]}' "$tmp" > "$src/tlds.json"
-    jq '.domains |= map(select(.name | IN("arpa", "com", "fr", "onion", "xn--0zwm56d", "xn--p1ai")))' "$tmp" \
+        + (if .purpose then {purpose} else {} end)]}' "$tmp/tlds.json" > "$src/tlds.json"
+    jq '.domains |= map(select(.name | IN("arpa", "com", "fr", "onion", "xn--0zwm56d", "xn--p1ai")))' "$tmp/tlds.json" \
         > crates/dedens-roots/tests/data/tlds.json
+    cp "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s" testdata/dnssec/
+    echo "$now" > testdata/dnssec/root-anchors.captured_at
+    mv "$tmp/root.ds" "$dnssec/root.ds"
+    chmod 644 "$dnssec/root.ds"
+    cat "$dnssec/root.ds"
 
 # Capture the RDAP answers that `dedens +tld` (D129) and `+rdap` (D130) are tested and fuzzed on, as received:
 # `<tld>.json` for `https://rdap.iana.org/domain/<tld>` (RFC 9082 §3.1.3), a 404 for a special-use name and for no
@@ -663,33 +689,3 @@ rdap-capture:
     wikipedia.org 200
     www.wikipedia.org 400
     EOF
-
-# Refresh the bundled root trust anchors (D72, D127): IANA's root-anchors.xml and its `.p7s`, checked against ICANN's
-# CA bundled in `src/icannbundle.pem` (RFC 9718 §3.2), then the DS records of its `KeyDigest` entries valid now. The
-# two files go to `testdata/dnssec` with the time of the run. A changed CA bundle stops the recipe: it is the trust
-# root, replaced by hand once checked out of band.
-root-anchors:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    base=https://data.iana.org/root-anchors
-    out=crates/dedens-dnssec/src/root.ds
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    for file in root-anchors.xml root-anchors.p7s icannbundle.pem; do
-        curl -fsSL --retry 3 -o "$tmp/$file" "$base/$file"
-    done
-    if ! cmp -s "$tmp/icannbundle.pem" crates/dedens-dnssec/src/icannbundle.pem; then
-        echo "root-anchors: $base/icannbundle.pem changed: check it out of band, then copy it to crates/dedens-dnssec/src/" >&2
-        exit 1
-    fi
-    now="$(date -u +%s)"
-    {
-        echo "; Root zone trust anchors (RFC 9718): the KeyDigest entries of IANA's signed root-anchors.xml valid on $(date -u +%Y-%m-%d)."
-        echo "; Source: $base/root-anchors.xml. Written by \`just root-anchors\`, never by hand."
-        cargo run -q -p dedens-dnssec --features fetch-anchors --example root_anchors -- "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s"
-    } > "$tmp/root.ds"
-    cp "$tmp/root-anchors.xml" "$tmp/root-anchors.p7s" testdata/dnssec/
-    echo "$now" > testdata/dnssec/root-anchors.captured_at
-    mv "$tmp/root.ds" "$out"
-    chmod 644 "$out"
-    cat "$out"

@@ -14,11 +14,11 @@ pub use signature::SignedAnchorError;
 #[cfg(feature = "fetch-anchors")]
 pub use xml::AnchorXmlError;
 
-/// The root's DS records, written by `just root-anchors` from IANA's `root-anchors.xml` (RFC 9718 §2).
+/// The root's DS records, written by `just roots` from IANA's `root-anchors.xml` (RFC 9718 §2).
 const ROOT: &str = include_str!("root.ds");
 
 /// ICANN's CA certificates, which issue the certificate signing `root-anchors.xml` (RFC 9718 §3.2), copied from
-/// `https://data.iana.org/root-anchors/icannbundle.pem` by `just root-anchors` (D127).
+/// `https://data.iana.org/root-anchors/icannbundle.pem` by `just roots` (D127).
 #[cfg(feature = "fetch-anchors")]
 const ICANN_CA: &str = include_str!("icannbundle.pem");
 
@@ -104,7 +104,7 @@ pub struct TrustAnchors {
 
 impl TrustAnchors {
     /// The root zone's anchors, bundled: the DS records IANA publishes (RFC 9718 §2.2) that were valid when
-    /// `just root-anchors` last ran.
+    /// `just roots` last ran.
     ///
     /// # Panics
     ///
