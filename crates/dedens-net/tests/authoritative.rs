@@ -713,14 +713,15 @@ async fn an_icmp_error_waits_until_the_deadline() {
 const ICMP: [fn() -> io::Error; 4] = [
     || io::ErrorKind::ConnectionRefused.into(),
     || io::ErrorKind::HostUnreachable.into(),
-    || io::ErrorKind::PermissionDenied.into(),
+    || io::Error::from_raw_os_error(Errno::ACCESS.raw_os_error()),
     || io::Error::from_raw_os_error(Errno::PROTO.raw_os_error()),
 ];
 
-/// Errors of ours: no memory, or no buffer.
-const OURS: [fn() -> io::Error; 2] = [
+/// Errors of ours: no memory, no buffer, or a send a firewall of ours denied (EPERM, of the kind of EACCES).
+const OURS: [fn() -> io::Error; 3] = [
     || io::ErrorKind::OutOfMemory.into(),
     || io::Error::from_raw_os_error(Errno::NOBUFS.raw_os_error()),
+    || io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
 ];
 
 /// The response after ICMP errors, or after a wake-up with no datagram to read, is taken.
@@ -797,41 +798,47 @@ async fn a_receive_failing_for_want_of_ours_fails_at_once() {
     }
 }
 
-/// A send failing with the ICMP error of a datagram before, or the wait for a datagram failing, waits until the
-/// deadline as on a receive; one failing for want of ours fails the query at once, the server not to blame.
+/// A send failing with the ICMP error of a datagram before waits until the deadline as on a receive; one failing
+/// for want of ours fails the query at once, the server not to blame. Any failure of the wait for a datagram is
+/// ours: an ICMP error makes the socket readable, and shows on the receive.
 #[compio::test]
-async fn a_send_or_a_wait_failing_waits_unless_the_failure_is_ours() {
+async fn a_send_failing_waits_unless_ours_and_a_wait_failing_is_ours() {
     let addr = silent();
     let (client, seen) = client(Limits::default());
     let wait = Duration::from_millis(200);
-    let failures = ICMP
-        .map(|error| (error, wait..Duration::MAX))
+    let sends = ICMP
+        .map(|error| (error, false, false))
         .into_iter()
-        .chain(OURS.map(|error| (error, Duration::ZERO..wait)));
-    for (error, elapsed) in failures {
-        for readable in [false, true] {
-            {
-                let mut seen = seen.borrow_mut();
-                let failing = if readable {
-                    &mut seen.readable_errors
-                } else {
-                    &mut seen.send_errors
-                };
-                *failing = vec![error()];
-            }
-            let start = Instant::now();
-            let failed = client
-                .query(google(), addr, Quirks::default(), start + wait)
-                .await;
-            let failure = match failed {
-                Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1, kind })) => {
-                    io::Error::from(kind)
-                }
-                Err(AuthoritativeError::Local(LocalError::Socket(error))) => error,
-                _ => panic!("{failed:?}"),
+        .chain(OURS.map(|error| (error, false, true)));
+    let waits = ICMP
+        .into_iter()
+        .chain(OURS)
+        .map(|error| (error, true, true));
+    for (error, readable, local) in sends.chain(waits) {
+        {
+            let mut seen = seen.borrow_mut();
+            let failing = if readable {
+                &mut seen.readable_errors
+            } else {
+                &mut seen.send_errors
             };
-            assert_eq!(failure.kind(), error().kind(), "{readable}");
-            assert!(elapsed.contains(&start.elapsed()), "{failure:?} {readable}");
+            *failing = vec![error()];
+        }
+        let start = Instant::now();
+        let failed = client
+            .query(google(), addr, Quirks::default(), start + wait)
+            .await;
+        let elapsed = start.elapsed();
+        match &failed {
+            Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1, kind })) => {
+                assert!(!local && *kind == error().kind(), "{failed:?} {readable}");
+                assert!(elapsed >= wait, "{failed:?} {readable}");
+            }
+            Err(AuthoritativeError::Local(LocalError::Socket(failure))) => {
+                assert!(local && same(failure, &error()), "{failed:?} {readable}");
+                assert!(elapsed < wait, "{failed:?} {readable}");
+            }
+            _ => panic!("{failed:?} {readable}"),
         }
     }
 }

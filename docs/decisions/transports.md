@@ -912,10 +912,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     every caller would have to subtract.
   - TCP waits, per pool: the queries waiting for room queue in the order they came, as Unbound's
     `tcp_wait_first`; room wakes the first, which looks and wakes the next, and a query coming meanwhile queues
-    behind them. A query timing out closes its connection, nothing read since its send, only once it waited
-    `tcp::STALLED` (376 ms, Unbound's timeout for a server it knows nothing of, `UNKNOWN_SERVER_NICENESS`): a
-    shorter budget tells nothing of a server other queries share the connection with, where Unbound closes on any
-    timeout (`outnet_tcptimer`). An idle connection closed for a new one is not counted: no query holds it, and
+    behind them. Room coming while those woken have yet to look, a query ending or a retired connection closing,
+    sets `missed`: once the last woken has looked, the line is woken again from the first, which may have looked
+    before it. A query timing out closes its connection only once the connection was silent for `tcp::STALLED`
+    (376 ms, Unbound's timeout for a server it knows nothing of, `UNKNOWN_SERVER_NICENESS`), from the send of its
+    oldest query unanswered, those that stopped waiting included, or its last response, the later: a shorter
+    budget tells nothing of a server other queries share the connection with, where Unbound closes on any timeout
+    (`outnet_tcptimer`). Counted from the oldest query, not the one timing out: queries with deadlines under
+    376 ms (step 07's retransmission timeout), each sent after the last timed out, would keep a dead connection
+    open, each send putting off its idle timeout too. An idle connection closed for a new one is not counted: no query holds it, and
     it closes as it drops. Accepted risk, as Unbound: no bound per zone, so servers answering TC then stalling
     over TCP, 32 addresses of one attacker (cheap in IPv6), hold every connection until their queries' deadlines.
   - Bounds, per thread: `Limits::sockets` 1024 UDP sockets (D47's upstream queries in flight; Unbound opens 4096,
@@ -955,13 +960,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     whether a validating resolver keeps it is its infra cache's (step 07). A server told `Supported` is asked
     without the fallback (`Options::edns_fallback` off): a FORMERR without OPT, as a forger may send, is the
     response, EDNS and DO kept, as Unbound's `edns_lame_known`.
-  - Socket errors: an error of the UDP socket's send, receive or wait may come of an ICMP error, which anyone
-    knowing the port can send, and Linux reports many as hard errors on a connected socket (ECONNREFUSED,
-    EHOSTUNREACH, ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES, EPROTO: `icmp_err_convert`,
-    `icmpv6_err_convert`). So none ends the query but those of ours, an allow-list: no memory or buffer
-    (OutOfMemory, ENOBUFS), and EBADF or EINVAL, bugs; any other waits on to the deadline, as Unbound's on any
-    error (`util/netevent.c:comm_point_udp_callback`), and comes back beside the timeout only,
-    `ServerError::Unreachable`. A query too long for TCP is ours, `LocalError::TooLong`.
+  - Socket errors: an error of the UDP socket's send or receive may come of an ICMP error, which anyone knowing
+    the port can send, and Linux reports many as hard errors on a connected socket (ECONNREFUSED, EHOSTUNREACH,
+    ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES, EPROTO: `icmp_err_convert`, `icmpv6_err_convert`). So
+    none ends the query but those of ours, an allow-list: no memory or buffer (OutOfMemory, ENOBUFS), EBADF or
+    EINVAL, bugs, and EPERM, a send a firewall of ours denied (a netfilter DROP on output), told from ICMP's
+    EACCES of the same kind by its raw errno; any other waits on to the deadline, as Unbound's on any error
+    (`util/netevent.c:comm_point_udp_callback`), and comes back beside the timeout only,
+    `ServerError::Unreachable`. Any error of the wait for the socket to be readable is ours: an error on the
+    socket makes it readable and fails the receive, so the wait failing is its registration, ENOMEM or ENOSPC.
+    A query too long for TCP is ours, `LocalError::TooLong`.
   - Errors: `AuthoritativeError::Local` (randomness, no socket or TCP connection free before the deadline, a
     bind, a socket error of ours, the encoding) is not the server's fault, `AuthoritativeError::Server` (timeout,
     forged responses, unreachable, a TCP failure) is: the caller's server selection counts the second only.
@@ -977,11 +985,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and `a.gtld-servers.net`'s referral as the forger's: 1000 queries from 1000 ports, none twice in a row, each
     block of 1024 hit; a response from another port dropped; a forged referral, FORMERR or TC with the case
     changed moving to TCP with nothing given up, a lowercasing server marked over TCP and asked without `0x20`
-    next; ICMP errors, EACCES and EPROTO among them, waited out on a send, a receive and a wait, through the `Io`
-    seam and on a closed port; EDNS marked only after NOERROR, kept for a server known to do it; TC to TCP
+    next; ICMP errors, EACCES and EPROTO among them, waited out on a send and a receive, through the `Io` seam and
+    on a closed port, EPERM on a send and any error of the wait ours; EDNS marked only after NOERROR, kept for a server known to do it; TC to TCP
     unmarked, BADCOOKIE twice marked; 4 sockets of 4 for 16 queries, a socket wait ending at the deadline, a wait
     for a socket or a TCP connection leaving less than `SERVER_FLOOR` ours, a dropped query giving its socket
     back; a TCP query waiting for the connection of 1; a deadline past the 5 s an exchange waits by default kept;
     a send, a receive, a UDP or a TCP connect failing the server's, but for want of ours.
     `tests/tcp.rs`: a replaced connection counted until it closes, a query timing out short of `STALLED` keeping
-    its connection, waiters taking room in the order they came.
+    its connection, short timeouts one after the other closing a silent one, waiters taking room in the order they
+    came, a retired connection closing during a hand-off waking the line again.
