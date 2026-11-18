@@ -4,6 +4,7 @@ use dedens_proto::Ttl;
 use thiserror::Error;
 
 use crate::cache::SLOT_COST;
+use crate::key::MAX_KEY_LEN;
 use crate::response::Checked;
 use crate::store;
 
@@ -199,9 +200,13 @@ impl Config {
     ///
     /// [`ConfigError`] naming the first setting refused.
     pub const fn validate(&self) -> Result<(), ConfigError> {
-        if let Err(sizes) =
-            store::check(self.capacity, self.shards, self.max_entry_bytes, SLOT_COST)
-        {
+        if let Err(sizes) = store::check(
+            self.capacity,
+            self.shards,
+            self.max_entry_bytes,
+            SLOT_COST,
+            MAX_KEY_LEN,
+        ) {
             return Err(sizes);
         }
         if self.failure_min == 0

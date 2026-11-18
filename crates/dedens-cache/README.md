@@ -55,7 +55,7 @@ nothing without the `metrics` feature. Replacing a response frees the old one un
 | TTL offsets, cuts | O(`b` + `r`) | one walk of the encoded bytes; the cuts of the additional section hash each record by owner, type and class |
 | `Response::serve` | O(`b` + `n` + `r`) | copy, then ID and flags O(1), question case O(`n`), TTLs O(`r`); a response too large for the buffer is cut at a record end, counts and TC patched, no decoding |
 | `Response::ending`, `left`, `Cache::held` | O(1) | |
-| `Shard::update` | expected O(1) + O(`k`) + eviction | probe, a new entry's key copied, byte counts adjusted |
+| `Shard::upsert`, `Shard::update` | expected O(1) + O(`k`) + eviction | probe, a new entry's key copied, byte counts adjusted |
 | `Shard::compact` | O(`e`) | the whole shard, once per as many frees as live slots: amortized O(1) |
 | `Shard::evict` | amortized O(1), worst O(`e`) for moves from small, else O(1) + at most `MAX_ROTATIONS` | see below |
 | Ghost `take` | expected O(1) | |

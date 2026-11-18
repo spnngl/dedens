@@ -1,9 +1,10 @@
 //! The `RRset` cache: what the resolver learned, `RRset` by `RRset`, with how far it trusts each (RFC 2181 §5.4.1).
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use dedens_cache::{Checked, Config, ConfigError, Cost, Store};
-use dedens_proto::{Class, MAX_NAME_LEN, Name, RecordType, Section, Ttl};
+use dedens_proto::{Class, MAX_NAME_LEN, Name, RecordType, Ttl};
 use thiserror::Error;
 
 use crate::metrics::Metrics;
@@ -24,6 +25,10 @@ pub const DEFAULT_CAPACITY: usize = 128 << 20;
 /// are not here: the resolver holds no zone. Data a validator proved secure is trusted above every rank (RFC 2181
 /// §5.4.1: "Unauthenticated RRs received and cached from the least trustworthy of those groupings [...] should not
 /// be cached in preference to authenticated data"), which [`Checked::Secure`] says.
+///
+/// The section an `RRset` came in does not give its rank alone: the answer section of an authoritative answer is
+/// authoritative only at the name the server is authoritative for, the first of a CNAME chain (RFC 2181 §5.4.1),
+/// and data out of the zone asked is not to be kept at all. The scrubber of step 05 ranks what it keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rank {
     /// The additional section of a non-authoritative answer, such as the glue of a referral.
@@ -33,7 +38,7 @@ pub enum Rank {
     /// The additional section of an authoritative answer.
     AdditionalAuthoritative,
     /// The answer section of a non-authoritative answer, and the data of an authoritative answer the server is not
-    /// authoritative for: the records of a CNAME chain past the first name.
+    /// authoritative for: the records of a CNAME chain past the first name. The least rank that answers a client.
     AnswerNonAuthoritative,
     /// The authority section of an authoritative answer.
     AuthorityAuthoritative,
@@ -41,24 +46,13 @@ pub enum Rank {
     AnswerAuthoritative,
 }
 
-impl Rank {
-    /// The rank of the records of `section` in an answer whose AA bit is `authoritative` (RFC 1035 §4.1.1). The
-    /// answer section of an authoritative answer is only [`Rank::AnswerAuthoritative`] at the name the server is
-    /// authoritative for: the caller ranks the rest of a CNAME chain [`Rank::AnswerNonAuthoritative`].
-    #[must_use]
-    pub const fn of(section: Section, authoritative: bool) -> Self {
-        match (section, authoritative) {
-            (Section::Answer, true) => Self::AnswerAuthoritative,
-            (Section::Authority, true) => Self::AuthorityAuthoritative,
-            (Section::Answer, false) => Self::AnswerNonAuthoritative,
-            (Section::Additional, true) => Self::AdditionalAuthoritative,
-            (Section::Authority, false) => Self::AuthorityNonAuthoritative,
-            (Section::Additional, false) => Self::AdditionalNonAuthoritative,
-        }
-    }
-}
-
 /// An `RRset` the cache holds, fresh, and what it knows of it.
+///
+/// Only an `RRset` of [`Rank::AnswerNonAuthoritative`] or above, or proved [`Checked::Secure`], may answer a
+/// client's question: the lesser ranks are the additional sections and the authority section of a
+/// non-authoritative answer, which RFC 2181 §5.4.1 keeps from ever being returned as answers ("Ignoring this would
+/// allow the trustworthiness of relatively untrustworthy data to be increased without cause or excuse"). They
+/// serve the resolution: the glue of a referral to reach its servers, its NS records to know them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
     /// The records, shared with the cache.
@@ -67,11 +61,36 @@ pub struct Hit {
     pub rank: Rank,
     /// What the validator found of them.
     pub checked: Checked,
-    /// What is left of their time in the cache, which a reply gives as their TTL (RFC 1035 §4.1.3).
+    /// What is left of their time in the cache, which a reply gives as their TTL (RFC 1035 §4.1.3); not
+    /// [`Rrset::ttl`], the TTL they were received with.
     pub ttl: Ttl,
 }
 
-/// Why an `RRset` was not stored.
+/// What [`RrsetCache::insert`] did, with what the cache holds after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inserted {
+    /// The `RRset` is stored: the key held none, one expired, or one it replaces (RFC 2181 §5.4.1).
+    Stored(Hit),
+    /// The key held the same data unchecked: it takes the verdict, at the greater of the two ranks, for no longer
+    /// than it had left.
+    Verdict(Hit),
+    /// The key holds an `RRset` trusted more, or as much and the same data: it stays as it was.
+    Kept(Hit),
+}
+
+impl Inserted {
+    /// What the cache holds under the key.
+    #[must_use]
+    pub const fn hit(&self) -> &Hit {
+        match self {
+            Self::Stored(hit) | Self::Verdict(hit) | Self::Kept(hit) => hit,
+        }
+    }
+}
+
+/// Why an `RRset` was not stored. The cache is left as it was: an `RRset` held under the key stays, fresh for as
+/// long as it was stored for. Unlike a refused response, which ends the response cache's entry, an `RRset` refused
+/// says nothing of the one held: its trust decides alone, and it was not offered to replace it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum NotCached {
     /// TTL 0: for the transaction at hand only (RFC 1035 §3.2.1), including a TTL past 2^31 - 1 (RFC 2181 §8).
@@ -108,10 +127,26 @@ struct Cached {
     expires: u32,
 }
 
+/// What an `RRset` offered does to the one held under its key.
+enum Merge {
+    /// It takes the held one's place.
+    Replace,
+    /// The held one takes its verdict.
+    Verdict,
+    /// Nothing.
+    Keep,
+}
+
 impl Cached {
     /// The seconds left at `now`, 0 once expired; never more than it was stored for, whichever way the clock goes.
     fn left(&self, now: u32) -> u32 {
         self.expires.saturating_sub(now).min(self.ttl)
+    }
+
+    /// Sets the time left at `now`.
+    const fn set_left(&mut self, left: u32, now: u32) {
+        self.ttl = left;
+        self.expires = now.saturating_add(left);
     }
 
     /// The trust that decides a replacement: secure data above any rank (RFC 2181 §5.4.1), then the rank.
@@ -136,23 +171,55 @@ impl Cached {
         }
     }
 
-    /// Whether `new` replaces this entry at `now`, as Unbound decides it (`need_to_update_rrset`): an expired entry
-    /// gives way to anything; else more trusted data replaces it, and so does other data of equal trust, the last
-    /// heard of; bogus data gives way to any other data not bogus. More trusted data equal to bogus data does not
-    /// replace it, which would lengthen its life (RFC 4035 §4.7 bounds it).
-    fn replaced_by(&self, new: &Cached, now: u32) -> bool {
+    /// What `new` does to this entry at `now`, as Unbound decides it (`need_to_update_rrset`), but for verdicts: an
+    /// expired entry gives way to anything; the same data unchecked takes a verdict; else more trusted data
+    /// replaces it, and so does other data of equal trust, the last heard of; bogus data gives way to any other
+    /// data not bogus. More trusted data equal to bogus data does not replace it, which would lengthen its life
+    /// (RFC 4035 §4.7 bounds it), unless secure.
+    fn merge(&self, new: &Self, now: u32) -> Merge {
         if self.left(now) == 0 {
-            return true;
+            return Merge::Replace;
         }
         let same = self.rrset == new.rrset;
-        let bogus = |checked| matches!(checked, Checked::Bogus(_));
-        match new.trust().cmp(&self.trust()) {
-            std::cmp::Ordering::Greater => {
-                !(same && bogus(self.checked) && new.checked != Checked::Secure)
-            }
-            std::cmp::Ordering::Equal => !same,
-            std::cmp::Ordering::Less => !same && bogus(self.checked) && !bogus(new.checked),
+        if same && self.checked == Checked::Unchecked && new.checked != Checked::Unchecked {
+            return Merge::Verdict;
         }
+        let bogus = |checked| matches!(checked, Checked::Bogus(_));
+        let replace = match new.trust().cmp(&self.trust()) {
+            Ordering::Greater => !(same && bogus(self.checked) && new.checked != Checked::Secure),
+            Ordering::Equal => !same,
+            Ordering::Less => !same && bogus(self.checked) && !bogus(new.checked),
+        };
+        if replace { Merge::Replace } else { Merge::Keep }
+    }
+
+    /// Bounds the time of `new`, which replaces this entry at `now`, against the ghost domain names (Jiang et al.,
+    /// NDSS 2012): a delegation is only renewed from its parent once expired.
+    ///
+    /// An NS `RRset` lives no longer than the one it replaces, whatever its trust; Unbound does so since
+    /// CVE-2026-40622 (8d8fa4226), but for secure data replacing data not secure and for bogus data replaced by
+    /// other data, which it lets live their own TTL: stricter here, one rule whatever the verdicts, at the cost of
+    /// asking for a delegation again sooner (D193). An A or AAAA `RRset` that
+    /// replaces referral glue ([`Rank::AdditionalNonAuthoritative`]) with more trust, not secure, lives no longer
+    /// either and stays ranked as glue, so that more answers do not lengthen it further, as Unbound does since
+    /// CVE-2026-42955 (13ec8d0f2): a server address taken from glue does not outlive its delegation by an answer.
+    fn bound(&self, new: &mut Self, now: u32) {
+        let left = self.left(now);
+        if left == 0 || new.ttl <= left {
+            return;
+        }
+        match new.rrset.rtype() {
+            RecordType::NS => {}
+            RecordType::A | RecordType::AAAA
+                if self.rank == Rank::AdditionalNonAuthoritative
+                    && new.checked != Checked::Secure
+                    && new.trust() > self.trust() =>
+            {
+                new.rank = self.rank;
+            }
+            _ => return,
+        }
+        new.set_left(left, now);
     }
 }
 
@@ -164,7 +231,7 @@ impl Cached {
 /// [`Config`] (D124), one source for both: [`Config::lifetime`]. Time comes in as seconds from the caller.
 #[derive(Debug)]
 pub struct RrsetCache {
-    store: Store<Option<Entry>>,
+    store: Store<Entry>,
     config: Config,
     metrics: Metrics,
 }
@@ -174,22 +241,28 @@ impl RrsetCache {
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] when `config` is invalid, or `capacity` too small for its shards and entry limit (D116).
+    /// [`ConfigError`] when `config` is invalid, its `capacity`, the response cache's, included; then when
+    /// `capacity` cannot hold an entry of `config.max_entry_bytes`, or a tenth of a shard's share an entry of the
+    /// longest owner name (D116).
     pub fn new(capacity: usize, config: Config) -> Result<Self, ConfigError> {
         config.validate()?;
         Ok(Self {
-            store: Store::new(capacity, config.shards, config.max_entry_bytes)?,
+            store: Store::new(capacity, config.shards, config.max_entry_bytes, KEY_LEN)?,
             config,
             metrics: Metrics::new(),
         })
     }
 
     /// Stores `rrset`, read at `rank` and `checked` so, at `now`, unless the cache holds an `RRset` of the same
-    /// key it trusts more (RFC 2181 §5.4.1, [`Rank`]). Returns what the cache holds after: `rrset` or the one kept.
+    /// key it trusts more (RFC 2181 §5.4.1, [`Rank`]). Returns what it did and what the cache holds after.
     ///
-    /// Its time in the cache is [`Config::lifetime`]. An NS `RRset` that replaces one not expired lives no longer
-    /// than the one it replaces: a delegation is only renewed from its parent once expired, so a name its
-    /// registry deleted does not live on (the ghost domain names of Jiang et al., NDSS 2012; Unbound does the same).
+    /// `rrset` was scrubbed (step 05): in the bailiwick of the server it came from, ranked there. The cache
+    /// trusts the rank as given; data out of bailiwick ranked high would replace good data.
+    ///
+    /// Its time in the cache is [`Config::lifetime`], bounded against ghost domain names when it replaces an NS
+    /// `RRset` or glue (as `Cached::bound` says: CVE-2026-40622, CVE-2026-42955). A validator records its verdict
+    /// on an `RRset` by inserting it again with it: the same data held unchecked takes the verdict, at the greater
+    /// rank, never living longer than it had left nor than the verdict allows ([`Inserted::Verdict`]).
     ///
     /// # Errors
     ///
@@ -200,7 +273,7 @@ impl RrsetCache {
         rank: Rank,
         checked: Checked,
         now: u32,
-    ) -> Result<Hit, NotCached> {
+    ) -> Result<Inserted, NotCached> {
         let ttl = self
             .config
             .lifetime(rrset.ttl(), checked)
@@ -210,42 +283,47 @@ impl RrsetCache {
         if key.len() + rrset.cost() > self.store.entry_limit() {
             return Err(NotCached::TooLarge);
         }
-        let ns = rrset.rtype() == RecordType::NS;
-        let mut new = Cached {
+        let new = Cached {
             rrset: Arc::new(rrset),
             rank,
             checked,
             ttl,
             expires: now.saturating_add(ttl),
         };
-        let ((hit, stored), evicted) = self.store.update(key, |held| {
-            if let Some(Entry::Rrset(cached)) = held {
-                let left = cached.left(now);
-                if !cached.replaced_by(&new, now) {
-                    // Not expired, or it would have been replaced.
-                    return (cached.with_left(left), false);
+        // What the shard lets go of, the `RRset` offered or the one it replaces, is freed once its lock is released.
+        let ((inserted, _freed), evicted) =
+            self.store.upsert(key, Entry::Rrset(new), |held, offered| {
+                let Entry::Rrset(held) = held;
+                let Some(Entry::Rrset(mut new)) = offered else {
+                    return (Inserted::Stored(held.with_left(held.ttl)), None);
+                };
+                match held.merge(&new, now) {
+                    Merge::Keep => (Inserted::Kept(held.with_left(held.left(now))), Some(new)),
+                    Merge::Verdict => {
+                        held.rank = held.rank.max(new.rank);
+                        held.checked = new.checked;
+                        held.set_left(held.left(now).min(new.ttl), now);
+                        (Inserted::Verdict(held.with_left(held.ttl)), Some(new))
+                    }
+                    Merge::Replace => {
+                        held.bound(&mut new, now);
+                        let hit = new.with_left(new.ttl);
+                        (Inserted::Stored(hit), Some(std::mem::replace(held, new)))
+                    }
                 }
-                if ns && left > 0 {
-                    new.ttl = new.ttl.min(left);
-                    new.expires = now.saturating_add(new.ttl);
-                }
-            }
-            let hit = new.with_left(new.ttl);
-            *held = Some(Entry::Rrset(new));
-            (hit, true)
-        });
-        self.metrics.inserted(stored, evicted);
-        Ok(hit)
+            });
+        self.metrics.inserted(&inserted, evicted);
+        Ok(inserted)
     }
 
-    /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`.
+    /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Hit`] for
+    /// the ranks that may answer a client.
     #[must_use]
     pub fn get(&self, owner: &Name<'_>, rtype: RecordType, class: Class, now: u32) -> Option<Hit> {
         let mut key = [0; KEY_LEN];
         let key = key_of(&mut key, owner, rtype, class);
         let hit = self.store.get(key, |held| match held {
-            Some(Entry::Rrset(cached)) => cached.hit(now),
-            None => None,
+            Entry::Rrset(cached) => cached.hit(now),
         });
         self.metrics.lookup(hit.is_some());
         hit

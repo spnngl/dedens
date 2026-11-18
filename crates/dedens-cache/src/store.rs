@@ -5,7 +5,6 @@ use std::hash::{BuildHasher, RandomState};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::config::{ConfigError, DEFAULT_ENTRY_BYTES, MAX_SHARDS};
-use crate::key::MAX_KEY_LEN;
 use crate::shard::Shard;
 
 /// What a value of a [`Store`] takes besides its slot: the heap bytes it owns, charged to the byte budget (D116).
@@ -32,10 +31,11 @@ pub struct Store<V> {
     limit: usize,
 }
 
-impl<V: Cost + Default> Store<V> {
+impl<V: Cost> Store<V> {
     /// An empty store of `capacity` bytes in `shards` shards, whose entries take at most `max_entry_bytes` of key
     /// and value each; `None` takes [`Store::entry_limit`]'s default. The rules of `Config::capacity`,
-    /// `Config::shards` and `Config::max_entry_bytes`, with the slot of `V` (D116).
+    /// `Config::shards` and `Config::max_entry_bytes`, with the slot of `V` and `max_key`, the longest key the
+    /// caller makes (D116).
     ///
     /// # Errors
     ///
@@ -44,9 +44,10 @@ impl<V: Cost + Default> Store<V> {
         capacity: usize,
         shards: usize,
         max_entry_bytes: Option<usize>,
+        max_key: usize,
     ) -> Result<Self, ConfigError> {
         let slot = Shard::<V>::SLOT_COST;
-        check(capacity, shards, max_entry_bytes, slot)?;
+        check(capacity, shards, max_entry_bytes, slot, max_key)?;
         let limit = entry_limit(capacity, shards, max_entry_bytes, slot);
         Ok(Self {
             shards: (0..shards)
@@ -75,20 +76,27 @@ impl<V: Cost + Default> Store<V> {
         Some(found)
     }
 
-    /// Changes the value of `key`, a default one if none is stored, then evicts down to the budget. Returns what
-    /// `change` returned and the number of entries evicted. The changed entry must stay within
-    /// [`Store::entry_limit`]: check the value before.
+    /// Offers `value` for `key`, then evicts down to the budget. If `key` holds a value, `change` gets it and
+    /// `Some(value)`, to merge as it sees fit; else `value` is stored, and `change` gets it and `None`. Returns what
+    /// `change` returned, under the shard's lock, and the number of entries evicted.
     ///
-    /// # Panics
-    ///
-    /// Never: the shard calls `change` on every update.
-    pub fn update<R>(&self, key: &[u8], change: impl FnOnce(&mut V) -> R) -> (R, usize) {
+    /// `key` and `value`, and the value `change` leaves, must stay within [`Store::entry_limit`]: check them
+    /// before. Return what `change` drops, so that it is freed once the lock is released.
+    pub fn upsert<R>(
+        &self,
+        key: &[u8],
+        value: V,
+        change: impl FnOnce(&mut V, Option<V>) -> R,
+    ) -> (R, usize) {
+        debug_assert!(
+            key.len() + value.cost() <= self.limit,
+            "the caller keeps entries within the limit"
+        );
         let (hash, shard) = self.shard(key);
-        let mut changed = None;
-        let evicted = lock(shard).update(hash, key, |entry| {
-            changed = Some(change(&mut entry.value));
+        let (changed, evicted) = lock(shard).upsert(hash, key, value, |entry, offered| {
+            change(&mut entry.value, offered)
         });
-        (changed.expect("`Shard::update` calls `change`"), evicted)
+        (changed, evicted)
     }
 
     /// The shard of `key`, and the hash it is indexed by there.
@@ -148,29 +156,30 @@ pub(crate) const fn entry_limit(
 }
 
 /// Checks the sizes of shards of slot `slot` (D116): a power of two of shards up to [`MAX_SHARDS`], and a share of
-/// `capacity` holding one entry of `max_entry` bytes, at least the longest key, or, unset, a tenth of the share
-/// holding the longest key; each with its slot.
+/// `capacity` holding one entry of `max_entry` bytes, at least `max_key`, the longest key, or, unset, a tenth of
+/// the share holding the longest key; each with its slot.
 pub(crate) const fn check(
     capacity: usize,
     shards: usize,
     max_entry: Option<usize>,
     slot: usize,
+    max_key: usize,
 ) -> Result<(), ConfigError> {
     if !shards.is_power_of_two() || shards > MAX_SHARDS {
         return Err(ConfigError::Shards(shards));
     }
     let share = capacity / shards;
     if let Some(bytes) = max_entry {
-        if bytes < MAX_KEY_LEN {
-            return Err(ConfigError::EntryBytes(MAX_KEY_LEN));
+        if bytes < max_key {
+            return Err(ConfigError::EntryBytes(max_key));
         }
         let least = slot.saturating_add(bytes);
         if share < least {
             return Err(ConfigError::Capacity(least.saturating_mul(shards)));
         }
-    } else if entry_limit(capacity, shards, max_entry, slot) < MAX_KEY_LEN {
-        // A tenth of the share holds a failure record and its slot.
-        let least = (slot + MAX_KEY_LEN) * 10;
+    } else if entry_limit(capacity, shards, max_entry, slot) < max_key {
+        // A tenth of the share holds an entry of the longest key and no value, and its slot.
+        let least = (slot + max_key) * 10;
         return Err(ConfigError::Capacity(least.saturating_mul(shards)));
     }
     Ok(())
@@ -182,7 +191,7 @@ mod tests {
     use crate::config::DEFAULT_ENTRY_BYTES;
 
     /// A value owning its bytes on the heap.
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct Bytes(Box<[u8]>);
 
     impl Cost for Bytes {
@@ -197,24 +206,27 @@ mod tests {
 
     #[test]
     fn a_value_is_found_and_its_bytes_counted() {
-        let store = Store::<Option<Bytes>>::new(1 << 20, 4, None).expect("valid sizes");
+        let store = Store::<Bytes>::new(1 << 20, 4, None, 3).expect("valid sizes");
         assert!(store.is_empty());
         // A tenth of a 256 KiB share is more than the default.
         assert_eq!(store.entry_limit(), DEFAULT_ENTRY_BYTES);
-        let (was, evicted) = store.update(b"key", |value| value.replace(bytes(100)).is_some());
-        assert_eq!((was, evicted), (false, 0));
+        let (offered, evicted) = store.upsert(b"key", bytes(100), |held, offered| {
+            (held.0.len(), offered.is_some())
+        });
+        assert_eq!(
+            (offered, evicted),
+            ((100, false), 0),
+            "stored, nothing held"
+        );
         assert!(!store.is_empty());
         assert_eq!(store.len(), 1);
         let used = store.used();
-        store.update(b"key", |value| *value = Some(bytes(300)));
+        let (old, _) = store.upsert(b"key", bytes(300), |held, offered| {
+            offered.map(|offered| std::mem::replace(held, offered))
+        });
+        assert_eq!(old.map(|old| old.0.len()), Some(100), "merged by `change`");
         assert_eq!(store.used() - used, 200, "the value's cost counted");
-        assert_eq!(
-            store.get(b"key", |value| value.as_ref().map(|b| b.0.len())),
-            Some(300)
-        );
-        assert_eq!(
-            store.get(b"other", |value| value.as_ref().map(|b| b.0.len())),
-            None
-        );
+        assert_eq!(store.get(b"key", |value| Some(value.0.len())), Some(300));
+        assert_eq!(store.get(b"other", |value| Some(value.0.len())), None);
     }
 }

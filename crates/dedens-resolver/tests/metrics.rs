@@ -1,8 +1,7 @@
 //! The counters of the `metrics` feature (D30).
 
 use dedens_cache::{Checked, Config};
-use dedens_proto::Section;
-use dedens_resolver::{Rank, Rrset, RrsetCache};
+use dedens_resolver::{Inserted, Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, message};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
@@ -27,24 +26,26 @@ fn lookups_inserts_and_evictions_count() {
     );
     for set in glue {
         cache
-            .insert(
-                set,
-                Rank::of(Section::Additional, false),
-                Checked::Unchecked,
-                0,
-            )
+            .insert(set, Rank::AdditionalNonAuthoritative, Checked::Unchecked, 0)
             .expect("stored");
     }
     let last = Rrset::group(&referral.additional).pop().expect("glue");
     // Kept: the same data.
-    cache
-        .insert(
-            last.clone(),
-            Rank::AdditionalNonAuthoritative,
-            Checked::Unchecked,
-            0,
-        )
-        .expect("kept");
+    let kept = cache.insert(
+        last.clone(),
+        Rank::AdditionalNonAuthoritative,
+        Checked::Unchecked,
+        0,
+    );
+    assert!(matches!(kept, Ok(Inserted::Kept(_))), "{kept:?}");
+    // A verdict: the same data, checked.
+    let verdict = cache.insert(
+        last.clone(),
+        Rank::AdditionalNonAuthoritative,
+        Checked::Insecure,
+        0,
+    );
+    assert!(matches!(verdict, Ok(Inserted::Verdict(_))), "{verdict:?}");
     assert!(
         cache
             .get(last.owner(), last.rtype(), last.class(), 0)
@@ -77,6 +78,7 @@ fn lookups_inserts_and_evictions_count() {
     assert_eq!(count("dedens_resolver_rrset_lookups_total hit"), 1);
     assert_eq!(count("dedens_resolver_rrset_inserts_total stored"), 26);
     assert_eq!(count("dedens_resolver_rrset_inserts_total kept"), 1);
+    assert_eq!(count("dedens_resolver_rrset_inserts_total verdict"), 1);
     assert!(cache.len() < 26, "{} entries", cache.len());
     let evicted = count("dedens_resolver_rrset_evictions_total ");
     assert_eq!(usize::try_from(evicted).ok(), Some(26 - cache.len()));
