@@ -8,20 +8,14 @@ use std::fs;
 use std::path::Path;
 
 use dedens_proto::{Rcode, RecordType};
-use serde_json::Value;
 
 use crate::rfc6761::{ask, asked};
-use crate::util::{Files, Server, silent};
+use crate::util::{Files, Server, silent, tld_list};
 
-/// The bundled list without `fr`, and with `lan` a special-use TLD as `test` is: a list that tells from the bundled
-/// one, with a special-use TLD of no known use.
+/// The bundled list generated now ([`tld_list`]), without `fr`, and with `lan` a special-use TLD as `test` is: a
+/// list that tells from the bundled one, with a special-use TLD of no known use.
 fn fresh() -> Vec<u8> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/dedens-roots/src/tlds.json"
-    );
-    let mut list: Value =
-        serde_json::from_slice(&fs::read(path).expect("the bundled list")).expect("JSON");
+    let mut list = tld_list();
     let domains = list["domains"].as_array_mut().expect("domains");
     domains.retain(|domain| domain["name"] != "fr");
     let mut lan = domains
