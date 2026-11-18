@@ -959,5 +959,6 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     changed moving to TCP with nothing given up, a lowercasing server marked over TCP and asked without `0x20`
     next; ICMP errors waited out, through the `Io` seam and on a closed port; EDNS marked only after NOERROR; TC to
     TCP unmarked, BADCOOKIE twice marked; 4 sockets of 4 for 16 queries, a socket wait ending at the deadline, a
-    dropped query giving its socket back; a TCP query waiting for the connection of 1. `tests/tcp.rs`: a replaced
-    connection counted until it closes.
+    dropped query giving its socket back; a TCP query waiting for the connection of 1; a deadline past the 5 s an
+    exchange waits by default kept; a send, a UDP or a TCP connect failing the server's, but for want of ours.
+    `tests/tcp.rs`: a replaced connection counted until it closes.
