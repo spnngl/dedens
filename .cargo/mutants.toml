@@ -22,8 +22,7 @@ exclude_re = [
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
   'replace \|\| with && in ResolvConf::candidates',
-  # Equal `Instant`s, an idle timeout equal to the current one: neither happens in a test.
-  'replace < with <= in State::stalled',
+  # An idle timeout equal to the current one: never happens in a test.
   'tcp\.rs:\d+:\d+: replace < with <= in read$',
   # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same: dedens-sim's write
   # half too, which turmoil closes when dropped, right after its close.
