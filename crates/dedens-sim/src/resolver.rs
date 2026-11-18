@@ -203,7 +203,7 @@ impl Resolver {
             host,
             trace: self.trace.clone(),
         });
-        let mut port = Port::bind().await?;
+        let mut port = Port::bind(host).await?;
         loop {
             match port.next().await? {
                 Arrival::Datagram { wire, from } => {

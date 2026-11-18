@@ -9,7 +9,10 @@
 //! What goes wrong is the scenario's: [`Answers::faulty`] decides, for each response and from the host's seeded
 //! stream, whether it is sent, dropped or delayed ([`Verdict`]); [`Answers::silent`] sends none;
 //! [`Answers::tcp`] makes the server answer, ignore or close a connection ([`Behaviour`]), TCP or TLS; [`Answers::attacked_by`] puts an
-//! attacker on its socket.
+//! attacker on its socket; [`Answers::conduct`] changes every response as a broken server does ([`Conduct`]).
+//!
+//! The same server stands at each address of a captured resolution, an authoritative server of the Internet,
+//! answering the exchanges captured from it ([`Answers::exchanges`], D189).
 //!
 //! Left out: the zone data of a real server; a scenario that needs it adds a pipeline with a local-data stage here.
 
@@ -26,6 +29,7 @@ use dedens_net::tcp::{Inbound, Outbound};
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, HEADER_LEN, MAX_NAME_LEN, Message, Question, Rcode, Transport};
 pub(crate) use dedens_testkit::captured;
+use dedens_testkit::recursion::{self, Exchange};
 use tokio::task::JoinSet;
 use turmoil::net::{TcpStream, UdpSocket};
 
@@ -65,6 +69,33 @@ pub enum Behaviour {
     Close(usize),
 }
 
+/// How a server answers, each way but [`Conduct::Faithful`] a broken server of the Internet, the capture changed as it
+/// changes it (D189). A server that never answers, lame by timeout, is [`Answers::silent`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Conduct {
+    /// Answers with the capture.
+    #[default]
+    Faithful,
+    /// Answers REFUSED to every query, the question and nothing else: a lame server, not configured for the zone
+    /// delegated to it (RFC 4697 §2.1.1).
+    Refuses,
+    /// Answers SERVFAIL to every query, as REFUSED: a server failing to load its zone (RFC 4697 §2.1.1).
+    Fails,
+    /// Sets TC in every response over UDP and sends the header, the question and the OPT record alone, as a
+    /// server whose response rate limiting slips every answer does: the whole capture comes over TCP alone (RFC
+    /// 7766 §5).
+    Truncates,
+    /// Implements no EDNS: answers FORMERR without an OPT record to a query with one, and the capture without its
+    /// OPT record, cut to 512 bytes over UDP, to a query without (RFC 6891 §7).
+    NoEdns,
+    /// Writes the question in lowercase, not in the case asked: the server `0x20` loses (D184).
+    FoldsCase,
+    /// Answers with the capture, AA clear: a server answering for a zone it is not authoritative for, from a cache
+    /// or another server's copy, which a resolver takes for lame (RFC 4697 §2.1.1). A referral, never
+    /// authoritative, is what it was.
+    Unauthoritative,
+}
+
 /// What decides the [`Verdict`] for a question, from the host's own stream of the seed.
 type Decide = dyn Fn(&Question<'static>, &mut Rng) -> Verdict;
 
@@ -85,6 +116,7 @@ pub struct Answers {
     cookie: Option<[u8; 8]>,
     fickle: Option<Fickle>,
     tcp: Behaviour,
+    conduct: Conduct,
     /// The connections the host accepted, over every start of it and in every clone of these answers.
     connections: Rc<Cell<usize>>,
     /// The connections that ended, as [`Answers::connections`].
@@ -234,6 +266,45 @@ impl Answers {
         self
     }
 
+    /// Answers the question of each of `exchanges`, those of one server in a captured resolution (D188), with its
+    /// response: over UDP the one captured over UDP, over TCP the one captured over TCP, the UDP one when none was
+    /// (the transport's own response, as [`Answers::truncating`]). A question already held keeps its response.
+    ///
+    /// # Panics
+    ///
+    /// When a response does not decode.
+    #[must_use]
+    pub fn exchanges<'e>(mut self, exchanges: impl IntoIterator<Item = &'e Exchange>) -> Self {
+        let exchanges: Vec<&Exchange> = exchanges.into_iter().collect();
+        for exchange in &exchanges {
+            let question = Question::new(exchange.name.clone(), exchange.rtype);
+            if self.entries.iter().any(|known| known.question == question) {
+                continue;
+            }
+            let over = |transport| {
+                exchanges
+                    .iter()
+                    .find(|other| {
+                        other.transport == transport
+                            && other.name == exchange.name
+                            && other.rtype == exchange.rtype
+                    })
+                    .map(|other| other.response.clone())
+            };
+            let udp = over(recursion::Transport::Udp).unwrap_or_else(|| exchange.response.clone());
+            let tcp = over(recursion::Transport::Tcp).unwrap_or_else(|| udp.clone());
+            self.entries.push(Entry::new(question, udp, tcp));
+        }
+        self
+    }
+
+    /// Has the server answer as `conduct` says.
+    #[must_use]
+    pub const fn conduct(mut self, conduct: Conduct) -> Self {
+        self.conduct = conduct;
+        self
+    }
+
     /// Puts an attacker on the host of the server: it sends what `attacker` says for each query over UDP.
     #[must_use]
     pub fn attacked_by(mut self, attacker: Attacker) -> Self {
@@ -324,9 +395,18 @@ impl Answers {
             return None;
         }
         let asked = query.questions.first()?.clone();
-        let mut reply = match self.entries.iter().find(|entry| entry.question == asked) {
-            Some(entry) => self.answer(entry, &query, transport)?,
-            None => refusal(&query)?,
+        let held = self.entries.iter().find(|entry| entry.question == asked);
+        let mut reply = match (self.conduct, held) {
+            (Conduct::Refuses, _) | (_, None) => refusal(&query, Rcode::REFUSED)?,
+            (Conduct::Fails, _) => refusal(&query, Rcode::SERVFAIL)?,
+            (Conduct::NoEdns, _) if query.edns.is_some() => {
+                let plain = Message {
+                    edns: None,
+                    ..query.clone()
+                };
+                refusal(&plain, Rcode::FORMERR)?
+            }
+            (_, Some(entry)) => self.answer(entry, &query, transport)?,
         };
         reply.get_mut(..2)?.copy_from_slice(wire.get(..2)?);
         // The question as asked, in its case: a server copies it (RFC 1035 §4.1.1), which `0x20` relies on (D184).
@@ -335,12 +415,18 @@ impl Answers {
         if let Some(echo) = reply.get_mut(HEADER_LEN..HEADER_LEN + name.len())
             && echo.eq_ignore_ascii_case(name)
         {
-            echo.copy_from_slice(name);
+            if self.conduct == Conduct::FoldsCase {
+                // The lengths of the labels are at most 63, below `A`: only the letters change.
+                echo.make_ascii_lowercase();
+            } else {
+                echo.copy_from_slice(name);
+            }
         }
         Some((reply, asked))
     }
 
-    /// The capture for `query`: cut to its payload size over UDP, with the cookie if it sent one.
+    /// The capture for `query`: cut to its payload size over UDP, with the cookie if it sent one, changed as
+    /// [`Answers::conduct`] says.
     fn answer(
         &self,
         entry: &Entry,
@@ -363,7 +449,11 @@ impl Answers {
             usize::from(edns.udp_payload).max(PLAIN_PAYLOAD)
         });
         let cookie = self.cookie.zip(client_cookie(query));
-        if cookie.is_none() && (tcp || capture.len() <= limit) {
+        let changed = matches!(
+            self.conduct,
+            Conduct::Truncates | Conduct::NoEdns | Conduct::Unauthoritative
+        );
+        if cookie.is_none() && !changed && (tcp || capture.len() <= limit) {
             return Some(capture.clone());
         }
         let mut message = decode(capture);
@@ -374,6 +464,20 @@ impl Answers {
                 .get_or_insert_with(Edns::default)
                 .options
                 .push(EdnsOption::Cookie(cookie));
+        }
+        match self.conduct {
+            Conduct::Truncates if !tcp => {
+                message.header.flags = message.header.flags.with(Flags::TC);
+                message.answer.clear();
+                message.authority.clear();
+                message.additional.clear();
+            }
+            // The query has no OPT record: one with gets FORMERR (`reply`).
+            Conduct::NoEdns => message.edns = None,
+            Conduct::Unauthoritative => {
+                message.header.flags = message.header.flags.without(Flags::AA);
+            }
+            _ => {}
         }
         let mut out = vec![0; OUT];
         let len = if tcp {
@@ -399,11 +503,12 @@ fn client_cookie(query: &Message<'_>) -> Option<[u8; 8]> {
         })
 }
 
-/// REFUSED, with the question: what a server answers to a zone it is not for (RFC 1035 §4.1.1).
-fn refusal(query: &Message<'static>) -> Option<Vec<u8>> {
+/// `rcode` with the question and nothing else: REFUSED is what a server answers to a zone it is not for (RFC 1035
+/// §4.1.1).
+fn refusal(query: &Message<'static>, rcode: Rcode) -> Option<Vec<u8>> {
     let mut reply = query.clone();
     reply.header.flags = reply.header.flags.with(Flags::QR);
-    reply.set_rcode(Rcode::REFUSED).ok()?;
+    reply.set_rcode(rcode).ok()?;
     if let Some(edns) = reply.edns.as_mut() {
         edns.options.clear();
     }
@@ -425,7 +530,7 @@ pub async fn serve(
     rng: Rc<RefCell<Rng>>,
     trace: Trace,
 ) -> turmoil::Result {
-    let mut port = Port::bind().await?;
+    let mut port = Port::bind(host).await?;
     loop {
         match port.next().await? {
             Arrival::Datagram { wire, from } => {

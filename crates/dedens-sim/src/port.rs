@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::rc::Rc;
 
 use tokio::task::JoinSet;
@@ -10,6 +10,15 @@ use turmoil::net::{TcpListener, TcpStream, UdpSocket};
 
 /// The DNS port.
 pub(crate) const PORT: u16 = 53;
+
+/// The unspecified address of `host`'s family: turmoil binds a socket in the family of its host alone, so an
+/// authoritative server at an IPv6 address of a capture (D189) binds `::`.
+pub(crate) const fn unspecified(host: IpAddr) -> IpAddr {
+    match host {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    }
+}
 
 /// What arrived on the port.
 #[derive(Debug)]
@@ -30,11 +39,12 @@ pub(crate) struct Port {
 }
 
 impl Port {
-    /// Binds the port on every address of the host.
-    pub(crate) async fn bind() -> io::Result<Self> {
+    /// Binds the port on every address of `host`, an IPv4 or an IPv6 one.
+    pub(crate) async fn bind(host: IpAddr) -> io::Result<Self> {
+        let any = unspecified(host);
         Ok(Self {
-            udp: Rc::new(UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, PORT)).await?),
-            tcp: TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, PORT)).await?,
+            udp: Rc::new(UdpSocket::bind((any, PORT)).await?),
+            tcp: TcpListener::bind((any, PORT)).await?,
             tasks: JoinSet::new(),
             buffer: vec![0; usize::from(u16::MAX)],
         })

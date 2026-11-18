@@ -176,7 +176,12 @@ impl Io for Sim {
         Ok(())
     }
 
-    async fn udp_bind(&self, addr: SocketAddr) -> io::Result<SimUdp> {
+    /// An unspecified `addr` is the host's family's: the client binds `[::]:0` to ask an IPv6 server, which a
+    /// turmoil host of IPv4 refuses, and its sockets reach either family (D189).
+    async fn udp_bind(&self, mut addr: SocketAddr) -> io::Result<SimUdp> {
+        if addr.ip().is_unspecified() {
+            addr.set_ip(crate::port::unspecified(self.host));
+        }
         Ok(SimUdp {
             socket: UdpSocket::bind(addr).await?,
             peer: Cell::new(None),

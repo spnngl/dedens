@@ -190,3 +190,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D186 [server](server.md): a validating query past the global allowance waits for it on its thread, FIFO, 512 a thread, 1.8 s
 - D187 [performance and safety](performance-and-safety.md): nightly-2026-11-17 and RAPx 0.7.75; its parallel frontend at the default 2 threads; not on stable
 - D188 [performance and safety](performance-and-safety.md): real resolutions from the root in `testdata/recursion/`, YAML, `just capture-recursion`; replayed by `Authorities`
+- D189 [simulation tests](simulation-tests.md): the captures' authoritative servers hosted at their addresses, each misbehaving on demand (`Conduct`); `Expected::resolved`
