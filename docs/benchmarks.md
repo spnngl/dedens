@@ -292,7 +292,7 @@ builds (load 8 to 30): nanoseconds, median of the medians of 5 runs (3 for `grou
 
 A hit is a lock, a hash and an `Arc` clone, the same for any `RRset` size.
 
-`Rrset::group`, before (`d90c75f5`: each record looked for among the `RRsets` so far) and after (an index by owner,
+`Rrset::group`, before (`f137ae65`: each record looked for among the `RRsets` so far) and after (an index by owner,
 type and class, sized to the records); `group_many` is the captured `a` record renamed to distinct owners:
 
 | Records | before | after |
@@ -306,6 +306,29 @@ type and class, sized to the records); `group_many` is the captured `a` record r
 Linear, not quadratic, at the price of 300 ns on a small response. The index grown from empty cost 1.5 times on the
 zones and 2.5 times on 16 records; sized to the records, 1.05 and 1.4. Hashing a name copies and lowers it (`Name`'s
 `Hash`): most of what is left.
+
+Duplicates and equality among RDATA folding the same, before (`1fc80be5`: each RDATA looked for among those of its
+run) and after (by hash, when a run is longer than one); `case_variants` n is `google.com.`'s first TXT record with
+the case of its first 12 letters varied, n records of one run, as an attacker may send. The two builds alternated,
+5 runs each, load 8 to 30: median of the medians, fastest sample in brackets (the medians swing with the load).
+
+| Measure | before | after |
+|---|---|---|
+| `group`, RFC 4035 Appendix A zone | 4 908 (4 137) | 4 550 (4 168) |
+| `group`, RFC 5155 Appendix A zone | 4 799 (4 580) | 5 182 (4 670) |
+| `group_many` 16 / 128 | 1 112 (977) / 8 236 (7 349) | 1 122 (937) / 7 633 (6 052) |
+| `group_many` 2048 | 115 100 (99 620) | 158 500 (99 970) |
+| `group_case_variants` 16 | 3 516 (3 246) | 1 951 (1 782) |
+| `group_case_variants` 128 | 222 900 (135 300) | 20 270 (13 240) |
+| `group_case_variants` 2048 | 55 840 000 (34 700 000) | 318 000 (205 800) |
+| `eq_case_variants` 16 | 3 082 (2 790) | 3 955 (1 622) |
+| `eq_case_variants` 128 | 241 000 (132 000) | 13 580 (12 870) |
+| `eq_case_variants` 2048 | 170 700 000 (35 780 000) | 509 600 (209 900) |
+
+Linear but for the sort: 16 times the variants, 15.5 times the time (fastest), where it was 256 times. Elsewhere no change, but for one that is
+not made: a `HashSet` for every `RRset` cost the zones about twice the time, so only a run longer than one is
+hashed; and `into_boxed_slice` on the `Vec` grown by pushes, a shrinking `realloc`, cost them a sixth more than
+moving the RDATA into a slice of its size, as before (fastest 4 744 and 5 410).
 
 The response cache before (`origin/main`, `17be9b20`) and after the store's extraction into `Store<V>`,
 `crates/dedens-bench/benches/cache.rs`, runs alternated, fastest sample in brackets. `SLOT_COST`: 272 bytes before

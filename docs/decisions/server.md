@@ -1445,10 +1445,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Arc<Rrset>` (records and the RRSIGs covering them, owned), its rank, the validator's verdict
     (`dedens_cache::Checked`: unchecked, secure, insecure, bogus) and its expiry. The value is an enum of one variant,
     so the negative entries of step 12 share the key space. `Rrset::group` builds the `RRsets` of a section, each
-    record finding its `RRset` by hash (linear in the records): the QTYPEs, meta types and QCLASSes dropped (RFC 6895
-    §3.1, §3.2), duplicates dropped, names in RDATA compared in any case, the RDATA sorted by its bytes with ASCII
-    letters folded so that the same data compares equal whatever order and case it came in, the TTL the smallest of
-    the records and their signatures (RFC 2181 §5.2); equality is the data, not the TTL.
+    record finding its `RRset` by hash and each RDATA its duplicate by hash (work linear in the records but for the
+    sort of each `RRset`, memory linear): the QTYPEs, meta types and QCLASSes dropped (RFC 6895 §3.1, §3.2),
+    duplicates dropped, names in RDATA compared in any case, the RDATA sorted by its bytes with ASCII letters folded
+    so that the same data compares equal whatever order and case it came in, the TTL the smallest of the records and
+    their signatures (RFC 2181 §5.2); equality is the data, not the TTL. RDATA that folds the same but differs (TXT
+    strings, signatures, differing in case only) stays apart, and a run of it is compared by hash: an attacker's
+    4096 case variants of one TXT string cost no quadratic work.
   - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
     non-authoritative (referral NS), additional authoritative, answer non-authoritative (and the CNAME chain of an
     authoritative answer past its first name), authority authoritative, answer authoritative. The RFC's last
@@ -1465,24 +1468,34 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the data other and not bogus. `insert` says which (`Inserted::Stored`, `Verdict`, `Kept`) with what the cache
     holds after. An `RRset` refused (`NotCached`) leaves the entry of its key as it was, where a refused response ends
     the response cache's: the trust of the entry decides alone.
-  - Verdicts. The validator (step 10) records one by inserting the `RRset` again with it, at the rank it holds: the
-    same data held unchecked, fresh, takes the verdict whatever the ranks, at the greater of the two, and lives the
-    least of its time left and the verdict's lifetime (`Inserted::Verdict`); data already checked takes no other
-    verdict but through the replacement rules. Unbound updates in place too (`rrset_update_sec_status`), but sets the
-    TTL the validator gives on types other than NS, which may lengthen it. Before caching a secure `RRset` the
-    validator lowers its TTL to the RRSIG's Original TTL and the time left to its Signature Expiration
+  - Verdicts. The validator (step 10) records one by inserting the `RRset` again with it, at the rank it holds: the same
+    data held unchecked, fresh, takes the verdict whatever the ranks, at the greater of the two unless pinned as glue
+    (below), and lives the least of its time left and the verdict's lifetime (`Inserted::Verdict`); data already checked
+    takes no other verdict but through the replacement rules. Unbound updates in place too (`rrset_update_sec_status`),
+    but sets the TTL the validator gives on types other than NS, which may lengthen it. Before caching a secure `RRset`
+    the validator lowers its TTL to the RRSIG's Original TTL and the time left to its Signature Expiration
     (`Rrset::cap_ttl`, RFC 4035 §5.3.3): secure lifetimes have no floor, so it is never kept past its signature.
     `Checked` has no indeterminate: the validator records none, and the `RRset` stays unchecked (as D77 caches none).
   - Ghost domain names (Jiang et al., NDSS 2012): a delegation is renewed from its parent only once expired. An NS
     `RRset` replacing one not expired lives no longer than the time it had left, whatever the verdicts: Unbound does
     so since CVE-2026-40622 (8d8fa4226), but lets secure data replacing data not secure, and data replacing bogus
     data, live their own TTL; stricter here, one rule, the cost a delegation asked for again sooner (tested on a
-    secure NS `RRset` replacing a bogus one). An A or AAAA `RRset` replacing referral glue with more trust, not
-    secure, lives no longer than the glue had left and keeps its rank, so that an answer does not keep a deleted
-    domain's servers alive through their addresses, as Unbound since CVE-2026-42955 (13ec8d0f2). Step 04 inserts
+    secure NS `RRset` replacing a bogus one). An A or AAAA `RRset` replacing referral glue, or a verdict on it, with
+    more trust and not secure, is pinned: it keeps the glue's rank and lives no longer than the glue had left, so
+    that an answer does not keep a deleted domain's servers alive through their addresses, as Unbound since
+    CVE-2026-42955 (13ec8d0f2). One predicate (`Cached::pins`) decides both. Stricter than Unbound, which pins only
+    when it shortens the TTL and raises the rank on a verdict (`rrset_update_sec_status`): there an answer of a
+    shorter TTL, or an insecure verdict (every answer of an unsigned zone gets one), lifts the address to answer
+    rank, and the next answer of equal trust lives its own TTL. Here the pin holds whatever the TTL, which is
+    shortened only when longer; the cost is an address asked for again sooner. A pinned `RRset` is ranked as glue,
+    so it never answers a client from the `RRset` cache until it expires (`Hit`); only the response cache serves the
+    answer it came in, as in Unbound (`services/cache/dns.c:930`): step 08 must not expect it there. Step 04 inserts
     each NS `RRset` at the time its resolution started, not at its answer's, as Unbound's `qstarttime` since
     CVE-2022-30698 and CVE-2022-30699 (f6753a0f1): an NS `RRset` that expires during a resolution still counts as
-    held, so that the answers of the servers it named do not renew it.
+    held, so that the answers of the servers it named do not renew it. Step 04 keeps Unbound's one exception
+    (`!pside`, `dns.c:91`; the iterator passes `dp->has_parent_side_NS`): an answer from servers found through the
+    parent's NS records, not the child's NS `RRset`, has its NS `RRset` inserted at its answer's time, so that a
+    prefetch may update it (`dns.c:68`): no child NS `RRset` led there to protect.
   - TTLs: one source with the response cache, `dedens_cache::Config::lifetime` (D124): raised to `min_ttl` unless
     secure, capped by `max_ttl`, by the insecure cap when insecure and by `bogus_ttl` when bogus; TTL 0 is not
     cached (`NotCached::ZeroTtl`, RFC 1035 §3.2.1), a TTL past 2^31 - 1 was read as 0 (RFC 2181 §8). `RrsetCache::new`
@@ -1510,9 +1523,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     resolver shows the overhead.
   - Counters (feature `metrics`, D30): `dedens_resolver_rrset_lookups_total{outcome=hit|miss}`,
     `dedens_resolver_rrset_inserts_total{outcome=stored|verdict|kept}`, `dedens_resolver_rrset_evictions_total`.
-  - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, replace, evict, hit, group), and the response
-    cache before and after the store's extraction, no change, in `docs/benchmarks.md`. The response cache's slot
-    stays 272 bytes (`SLOT_COST`): its `failures` count became a `u16` to undo the generic entry's padding. Fuzzed: `rrset_cache_insert`. Tests:
+  - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, replace, evict, hit, group, equality on case
+    variants), and the response cache before and after the store's extraction, no change, in `docs/benchmarks.md`. The response cache's slot
+    stays 272 bytes (`SLOT_COST`, a `const` assert on 64-bit targets): its `failures` count became a `u16` to undo
+    the generic entry's padding. Fuzzed: `rrset_cache_insert`. Tests:
     `crates/dedens-resolver/tests/rrset_cache.rs`.
   - Rejected: a second S3-FIFO in the resolver (two evictions to keep right); moka or another cache crate (a
     dependency for what the store does, and no byte budget of our making); `dedens_dnssec::RrSet` as the value (its

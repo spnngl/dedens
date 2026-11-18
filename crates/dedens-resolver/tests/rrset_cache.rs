@@ -5,7 +5,7 @@
 
 use dedens_cache::{Checked, Config, ConfigError, Cost};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Opaque, RData};
+use dedens_proto::rdata::{Opaque, RData, Rrsig, Txt};
 use dedens_proto::{Class, Message, Record, RecordType, Section, Ttl};
 use dedens_resolver::{DEFAULT_CAPACITY, Hit, Inserted, NotCached, Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, dns, dnssec, message};
@@ -211,6 +211,121 @@ fn rfc4034_3_group_pairs_signatures_with_the_rrset_they_cover() {
         .filter(|r| r.rtype() != RecordType::RRSIG);
     let records: Vec<Record<'static>> = addresses.cloned().chain(shouted(&signatures)).collect();
     assert_eq!(Rrset::group(&records), sets);
+}
+
+/// `google.com.`'s first TXT record, its strings edited by `edit`.
+fn txt(edit: impl FnOnce(&mut Vec<Vec<u8>>)) -> Record<'static> {
+    let record = message(&captured("txt_large")).answer.remove(0);
+    let RData::Txt(txt) = record.data() else {
+        unreachable!("a TXT record: {record:?}");
+    };
+    let mut strings: Vec<Vec<u8>> = txt.strings().map(<[u8]>::to_vec).collect();
+    edit(&mut strings);
+    let txt = Txt::new(strings.iter().map(Vec::as_slice)).expect("the strings of a TXT");
+    Record::new(
+        record.name.clone(),
+        record.class,
+        record.ttl,
+        &RData::Txt(txt),
+    )
+}
+
+/// `google.com.`'s first TXT record with its first letter's case flipped.
+fn flipped() -> Record<'static> {
+    txt(|strings| {
+        let letter = strings
+            .iter_mut()
+            .flatten()
+            .find(|b| b.is_ascii_alphabetic())
+            .expect("a letter");
+        *letter ^= 0x20;
+    })
+}
+
+/// TXT strings differing in case are other data (RFC 4343 §3: only names fold): `google.com.`'s first TXT record
+/// and the same with its first letter's case flipped stay two records, in any order, a duplicate apart dropped.
+#[test]
+fn rfc4343_3_txt_strings_differing_in_case_stay_two_records() {
+    let (record, flipped) = (txt(|_| {}), flipped());
+    let [set] = <[Rrset; 1]>::try_from(Rrset::group(&[record.clone(), flipped.clone()]))
+        .expect("one RRset");
+    assert_eq!(set.rdatas().len(), 2);
+    assert_eq!(
+        Rrset::group(&[flipped.clone(), record.clone(), flipped]),
+        [set]
+    );
+}
+
+/// RDATA differing in case only is compared among itself: a TXT record and its case variant are not that record
+/// and other data of the same count, here sorting after it.
+#[test]
+fn rfc4343_3_case_variants_are_not_one_of_them_and_other_data() {
+    let record = txt(|_| {});
+    let longer = txt(|strings| strings.push(b"z".to_vec()));
+    let variants = Rrset::group(&[record.clone(), flipped()]);
+    let other = Rrset::group(&[record, longer]);
+    assert_ne!(variants, other);
+    assert_ne!(other, variants);
+}
+
+/// Signatures folding the same are told apart by their data: an RRSIG, the same with its signer in capitals (a
+/// duplicate, RFC 4343), and one with a letter of its signature flipped (other data), in any order, the duplicate
+/// not next to its original.
+#[test]
+fn rfc4343_rrsigs_differing_in_case_are_duplicates_only_in_their_signer() {
+    let message = dnssec::response("alg13_a");
+    let (signatures, addresses): (Vec<Record<'static>>, Vec<Record<'static>>) = message
+        .answer
+        .iter()
+        .cloned()
+        .partition(|r| r.rtype() == RecordType::RRSIG);
+    let [signature] = <[Record<'static>; 1]>::try_from(signatures).expect("one RRSIG");
+    let RData::Rrsig(rrsig) = signature.data() else {
+        panic!("an RRSIG record: {signature:?}");
+    };
+    let resigned = |signer: &str, bytes: &[u8]| {
+        let rrsig = Rrsig::new(
+            rrsig.type_covered,
+            rrsig.algorithm,
+            rrsig.labels,
+            rrsig.original_ttl,
+            rrsig.expiration,
+            rrsig.inception,
+            rrsig.key_tag,
+            dns(signer),
+            bytes,
+        )
+        .expect("an RRSIG");
+        Record::new(
+            signature.name.clone(),
+            signature.class,
+            signature.ttl,
+            &RData::Rrsig(rrsig),
+        )
+    };
+    let signer = rrsig.signer.to_string().to_uppercase();
+    let shouted = resigned(&signer, rrsig.signature());
+    let mut bytes = rrsig.signature().to_vec();
+    let letter = bytes
+        .iter_mut()
+        .find(|b| b.is_ascii_alphabetic())
+        .expect("a letter in the signature");
+    *letter ^= 0x20;
+    let other = resigned(&signer, &bytes);
+    let set = |signatures: &[&Record<'static>]| {
+        let records: Vec<Record<'static>> = addresses
+            .iter()
+            .chain(signatures.iter().copied())
+            .cloned()
+            .collect();
+        let [set] = <[Rrset; 1]>::try_from(Rrset::group(&records)).expect("one RRset");
+        set
+    };
+    let all = set(&[&signature, &other, &shouted]);
+    assert_eq!(all.rrsigs().len(), 2);
+    assert_eq!(all, set(&[&other, &signature]));
+    assert_eq!(all, set(&[&shouted, &other]));
+    assert_ne!(all, set(&[&signature, &shouted]));
 }
 
 /// A validator caps the TTL to its signature's (RFC 4035 §5.3.3); secure, it has no floor (D124).
@@ -558,6 +673,69 @@ fn cve_2026_42955_glue_replacing_glue_takes_its_own_ttl() {
         10,
     ));
     assert_eq!(hit.ttl.get(), 60);
+}
+
+/// The pin holds across the validator's verdict, stricter than Unbound (D193): glue, the same address answered,
+/// found insecure (as every answer of an unsigned zone), then other data answered keep the glue's rank and time.
+/// A secure verdict lifts it.
+#[test]
+fn cve_2026_42955_an_insecure_verdict_keeps_an_address_pinned_as_glue() {
+    let cache = cache();
+    stored(cache.insert(a(), Rank::AdditionalNonAuthoritative, Checked::Unchecked, 0));
+    let hit = stored(cache.insert(a(), Rank::AnswerNonAuthoritative, Checked::Unchecked, 10));
+    assert_eq!(
+        (hit.rank, hit.ttl.get()),
+        (Rank::AdditionalNonAuthoritative, 50)
+    );
+    let hit = verdict(cache.insert(a(), Rank::AnswerAuthoritative, Checked::Insecure, 20));
+    assert_eq!(
+        (hit.rank, hit.checked, hit.ttl.get()),
+        (Rank::AdditionalNonAuthoritative, Checked::Insecure, 40)
+    );
+    let hit = stored(cache.insert(
+        fewer("a", Section::Answer),
+        Rank::AnswerAuthoritative,
+        Checked::Unchecked,
+        30,
+    ));
+    assert_eq!(
+        (hit.rank, hit.rrset.rdatas().len(), hit.ttl.get()),
+        (Rank::AdditionalNonAuthoritative, 1, 30)
+    );
+
+    let cache = self::cache();
+    stored(cache.insert(a(), Rank::AdditionalNonAuthoritative, Checked::Unchecked, 0));
+    stored(cache.insert(a(), Rank::AnswerNonAuthoritative, Checked::Unchecked, 10));
+    let hit = verdict(cache.insert(a(), Rank::AnswerAuthoritative, Checked::Secure, 20));
+    assert_eq!(
+        (hit.rank, hit.checked, hit.ttl.get()),
+        (Rank::AnswerAuthoritative, Checked::Secure, 29)
+    );
+}
+
+/// The pin holds whatever the TTL, stricter than Unbound (D193): an answer shorter than the glue's time left keeps
+/// its own TTL but the glue's rank, so that the next answer, other data of equal trust and a longer TTL, lives no
+/// longer either. TTLs as received (`min_ttl` 0): 29, and 10 for the short answer.
+#[test]
+fn cve_2026_42955_a_short_ttl_does_not_unpin_an_address() {
+    let config = Config {
+        min_ttl: 0,
+        ..Config::default()
+    };
+    let cache = RrsetCache::new(1 << 20, config).expect("a valid config");
+    stored(cache.insert(a(), Rank::AdditionalNonAuthoritative, Checked::Unchecked, 0));
+    let mut short = fewer("a", Section::Answer);
+    short.cap_ttl(Ttl::from_wire(10));
+    let hit = stored(cache.insert(short, Rank::AnswerNonAuthoritative, Checked::Unchecked, 5));
+    assert_eq!(
+        (hit.rank, hit.ttl.get()),
+        (Rank::AdditionalNonAuthoritative, 10)
+    );
+    let hit = stored(cache.insert(a(), Rank::AnswerNonAuthoritative, Checked::Unchecked, 6));
+    assert_eq!(
+        (hit.rank, hit.rrset.rdatas().len(), hit.ttl.get()),
+        (Rank::AdditionalNonAuthoritative, 2, 9)
+    );
 }
 
 /// Secure data replacing glue, and an address replacing data that is not glue, take their own TTL; so do other

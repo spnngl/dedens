@@ -1,7 +1,7 @@
 //! An `RRset` and the signatures over it, owned: the unit the resolver caches and reasons on (RFC 2181 §5).
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
 use dedens_cache::Cost;
@@ -32,7 +32,8 @@ impl Rrset {
     /// dropped, and so are the records of the QTYPEs and meta types and those of the QCLASSes, which are not data
     /// (RFC 6895 §3.1, §3.2).
     ///
-    /// Work and memory linear in the number of records: each finds its `RRset` by hash.
+    /// Memory linear in the number of records, work too but for the sort of each `RRset`'s RDATA: each record finds
+    /// its `RRset` by hash, and each RDATA its duplicate, even among RDATA that differs only in case.
     #[must_use]
     pub fn group(records: &[Record<'_>]) -> Vec<Self> {
         let mut sets: Vec<Building<'_, '_>> = Vec::with_capacity(records.len());
@@ -189,29 +190,42 @@ fn folded(a: &WireRdata<'_>, b: &WireRdata<'_>) -> Ordering {
         .cmp(b.iter().map(u8::to_ascii_lowercase))
 }
 
-/// `rdatas` sorted by [`folded`], duplicates dropped (RFC 2181 §5). Duplicates fold the same, so each is looked for
-/// within its run of RDATA folding the same, which also holds RDATA unequal but for the case of bytes not in names
-/// (a TXT string, an RRSIG signature): the sort is stable, and they keep the order they came in.
-fn canonical(mut rdatas: Vec<WireRdata<'static>>) -> Box<[WireRdata<'static>]> {
-    rdatas.sort_by(folded);
-    let mut kept: Vec<WireRdata<'static>> = Vec::with_capacity(rdatas.len());
-    let mut run = 0;
-    for rdata in rdatas {
-        if kept.last().is_none_or(|last| folded(last, &rdata).is_ne()) {
-            run = kept.len();
-        }
-        if !kept[run..].contains(&rdata) {
-            kept.push(rdata);
-        }
-    }
-    kept.into_boxed_slice()
+/// The runs of `rdatas`, sorted by [`folded`]: the RDATA folding the same, which holds duplicates (names differing
+/// in case only, RFC 4343) and RDATA unequal but for the case of bytes not in names (a TXT string, an RRSIG
+/// signature), of which an attacker may send thousands.
+fn runs<'r, 'a>(rdatas: &'r [WireRdata<'a>]) -> impl Iterator<Item = &'r [WireRdata<'a>]> {
+    rdatas.chunk_by(|x, y| folded(x, y).is_eq())
 }
 
-/// Whether `a` and `b`, each of [`canonical`], hold the same RDATA, in whatever order within their runs.
+/// `rdatas` sorted by [`folded`], duplicates dropped (RFC 2181 §5) by hash, as [`WireRdata`]'s `Hash` and `Eq`
+/// read the data, names in any case. Duplicates sort into one of the [`runs`]: without a run longer than one, the
+/// usual, nothing is hashed. The sort is stable: a run keeps the order it came in, and the first of duplicates.
+/// Moved into a slice of their size: shrinking the `Vec`, grown by pushes, cost a sixth more on a zone
+/// (`docs/benchmarks.md`).
+fn canonical(mut rdatas: Vec<WireRdata<'static>>) -> Box<[WireRdata<'static>]> {
+    rdatas.sort_by(folded);
+    if runs(&rdatas).any(|run| run.len() > 1) {
+        let first: Vec<bool> = {
+            let mut seen = HashSet::with_capacity(rdatas.len());
+            rdatas.iter().map(|rdata| seen.insert(rdata)).collect()
+        };
+        let mut first = first.into_iter();
+        rdatas.retain(|_| first.next() == Some(true));
+    }
+    rdatas.drain(..).collect()
+}
+
+/// Whether `a` and `b`, each of [`canonical`], hold the same RDATA, in whatever order within their [`runs`]: a run
+/// of one is compared alone, a longer one by hash. Without duplicates, runs of one length are equal when every RDATA
+/// of one is in the other.
 fn same_rdatas(a: &[WireRdata<'_>], b: &[WireRdata<'_>]) -> bool {
-    let runs = |rdatas| <[WireRdata<'_>]>::chunk_by(rdatas, |x, y| folded(x, y).is_eq());
     a.len() == b.len()
-        && runs(a)
-            .zip(runs(b))
-            .all(|(a, b)| a.len() == b.len() && a.iter().all(|rdata| b.contains(rdata)))
+        && runs(a).zip(runs(b)).all(|(a, b)| match (a, b) {
+            ([a], [b]) => a == b,
+            _ if a.len() == b.len() => {
+                let a: HashSet<&WireRdata<'_>> = a.iter().collect();
+                b.iter().all(|rdata| a.contains(rdata))
+            }
+            _ => false,
+        })
 }

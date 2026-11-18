@@ -16,10 +16,12 @@ eviction changes theirs, so run `cargo test -p dedens-resolver` too. Speed is be
   (`tests/allocations.rs`; the `hit` bench of `crates/dedens-bench/benches/server.rs` counts them too). The cut reads
   the offsets `Response::build` stored; `tests/rfc.rs` holds it to `Message::encode_truncated`, so change both
   together.
-- Every change to an entry goes through `Shard::upsert` (`Shard::update` wraps it), which keeps `small_bytes` and `main_bytes` exact; the
-  proptest in `src/shard.rs` (`Shard::check`) asserts it, so extend `check` with any new field that costs bytes. What a
-  shard holds counts in its budget (`SLOT_COST` a slot, D116): a new table or queue per entry means raising it, and
-  `tests/memory.rs` (counting allocator, at most 1.05 times `capacity`) says whether it is enough.
+- Every change to an entry goes through `Shard::upsert` (`Shard::update` wraps it), which keeps `small_bytes` and
+  `main_bytes` exact; the proptest in `src/shard.rs` (`Shard::check`) asserts it, so extend `check` with any new
+  field that costs bytes. What a shard holds counts in its budget (`SLOT_COST` a slot, D116): a new table or queue
+  per entry means raising it, and `tests/memory.rs` (counting allocator, at most 1.05 times `capacity`) says whether
+  it is enough. The response cache's slot is 272 bytes on 64-bit targets, asserted beside `cache::SLOT_COST`: a
+  field of `Stored` that pads it fails the build (D193).
 - `Shard::evict` rotates at most `MAX_ROTATIONS` entries with hits (D116); measure a change to the eviction with
   `crates/dedens-bench/examples/hit_ratio.rs` and record the ratio in `docs/benchmarks.md`.
 - The shard is picked from bits 40 and up of the hash: `HashMap` takes buckets from the low bits and tags from the
