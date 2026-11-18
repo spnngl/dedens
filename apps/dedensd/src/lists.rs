@@ -88,7 +88,7 @@ struct Union {
 pub(crate) struct Store {
     held: HashMap<Source, Held>,
     unions: Vec<Union>,
-    /// The TLD list of the `tlds` stages (D128).
+    /// The root's files read so far: the TLD list of the `tlds` stages and the root anchors kept (D128).
     pub(crate) roots: crate::roots::Held,
 }
 

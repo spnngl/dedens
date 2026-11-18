@@ -3,6 +3,8 @@
 listen: ["0.0.0.0:53"]
 downloads:
   dir: /var/cache/dedensd
+# Mount a volume on it to keep the root anchors verified last (D128): without, each container starts again from the
+# bundled ones, and accepts any pair signed since them.
 state_dir: /var/lib/dedensd
 pipeline: [cache, upstream]
 stages:

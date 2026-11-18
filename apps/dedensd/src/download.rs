@@ -709,17 +709,6 @@ pub(crate) mod tests {
 
     /// L13: a symlink left at the old, predictable `.part` name is not written through.
     #[cfg(unix)]
-    /// A copy is named by the 64-bit FNV-1a of its URL, so that one saved by an earlier version keeps its name.
-    #[test]
-    fn a_copy_is_named_by_the_fnv_1a_of_its_url() {
-        assert_eq!(hash(""), 0xcbf2_9ce4_8422_2325);
-        assert_eq!(hash("a"), 0xaf63_dc4c_8601_ec8c);
-        assert_eq!(
-            copy(Path::new("d"), "a"),
-            Path::new("d").join("af63dc4c8601ec8c.list")
-        );
-    }
-
     #[test]
     fn a_copy_is_not_written_through_a_symlink() {
         let dir = tempfile::tempdir().unwrap();
@@ -730,6 +719,17 @@ pub(crate) mod tests {
         replace(&path, "a.example\n").unwrap();
         assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
         assert_eq!(fs::read_to_string(&path).unwrap(), "a.example\n");
+    }
+
+    /// A copy is named by the 64-bit FNV-1a of its URL, so that one saved by an earlier version keeps its name.
+    #[test]
+    fn a_copy_is_named_by_the_fnv_1a_of_its_url() {
+        assert_eq!(hash(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(
+            copy(Path::new("d"), "a"),
+            Path::new("d").join("af63dc4c8601ec8c.list")
+        );
     }
 
     /// A copy is created as any file is: its mode is the umask's to decide, not 0600.

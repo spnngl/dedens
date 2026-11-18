@@ -722,6 +722,7 @@ fn the_kept_anchors_read_back_as_written_with_each_keys_validity() {
     assert_eq!(keys, [19036, 20326, 38696]);
     let at = |now| root.at(now).map(|anchors| tags(&anchors));
     assert_eq!(at(day(2010, 7, 14)), None);
+    assert_eq!(tags(&root.undated()), [19036, 20326, 38696]);
     assert_eq!(at(day(2017, 2, 2)), Some(vec![19036, 20326]));
     assert_eq!(at(day(2019, 1, 11)), Some(vec![20326]));
     assert_eq!(root.at(captured_at()), Some(TrustAnchors::root()));

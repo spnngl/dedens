@@ -90,6 +90,13 @@ impl RootAnchors {
         valid(&self.keys, now)
     }
 
+    /// The anchors of every key, their validity ignored: for a clock that no key is valid at, likelier wrong than
+    /// every key ended (D128).
+    #[must_use]
+    pub fn undated(&self) -> TrustAnchors {
+        anchors(self.keys.iter().map(|key| key.ds.clone()).collect())
+    }
+
     /// The anchors written in `text`, as [`fmt::Display`] writes them: the header line, the signing time, then one
     /// key per line, at least one, each line ending with a line feed. Nothing else is read: not a blank, not a
     /// comment.
@@ -147,7 +154,12 @@ pub(super) fn valid(keys: &[RootKey], now: u64) -> Option<TrustAnchors> {
         .filter(|key| key.valid_at(now))
         .map(|key| key.ds.clone())
         .collect();
-    (!ds.is_empty()).then(|| TrustAnchors {
+    (!ds.is_empty()).then(|| anchors(ds))
+}
+
+/// The root's anchors of `ds`.
+fn anchors(ds: Vec<Ds<'static>>) -> TrustAnchors {
+    TrustAnchors {
         zones: HashMap::from([(
             Name::root(),
             Anchor {
@@ -156,7 +168,7 @@ pub(super) fn valid(keys: &[RootKey], now: u64) -> Option<TrustAnchors> {
             },
         )]),
         negative: HashSet::new(),
-    })
+    }
 }
 
 /// What a key's line is when it is not one.
