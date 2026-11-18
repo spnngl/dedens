@@ -1,11 +1,13 @@
 //! Targets of dedens-resolver: the scrubbing of a response (D192), and its `RRset` cache fed the records of
 //! responses off the wire.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dedens_cache::{Checked, Config};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Message, Name, Record, Section};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Name, Record, RecordType, Section};
 use dedens_resolver::{Inserted, Outcome, Rank, Rrset, RrsetCache, scrub};
 
 /// The cache's capacity: small, so that a large response evicts.
@@ -102,8 +104,10 @@ fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
 }
 
 /// A response off the wire, scrubbed as from a server of an ancestor of its question's name, the one the ID picks:
-/// every record kept is of the question's class and within that zone, a referral's child is below it and above the
-/// name, and each record dropped is one of the response's, once.
+/// every record kept is of the question's class, within that zone, and of RDATA that parses; a referral's child is
+/// below the zone and above the name; each record dropped is one of the response's, once; and the records kept and
+/// those dropped are the response's, each in one of the two, but for the CNAMEs synthesised from a DNAME kept. A
+/// lame or unusable response keeps and drops nothing.
 ///
 /// # Panics
 ///
@@ -122,7 +126,17 @@ pub fn scrub_response(data: &[u8]) {
         return;
     };
     let scrubbed = scrub(response, question, &zone);
-    for (rank, record) in scrubbed.ranked() {
+    let kept = scrubbed.ranked();
+    if matches!(scrubbed.outcome, Outcome::Lame | Outcome::Unusable(_)) {
+        assert!(kept.is_empty(), "{:?} keeps records", scrubbed.outcome);
+        assert!(
+            scrubbed.dropped.is_empty(),
+            "{:?} drops records",
+            scrubbed.outcome
+        );
+        return;
+    }
+    for (rank, record) in &kept {
         assert!(
             record.name.is_within(&zone),
             "{rank:?} {} kept outside {zone}",
@@ -132,6 +146,12 @@ pub fn scrub_response(data: &[u8]) {
             record.class, question.qclass,
             "{rank:?} {} kept of another class",
             record.name
+        );
+        assert!(
+            !malformed(record),
+            "{rank:?} {} {} kept malformed",
+            record.name,
+            record.rtype()
         );
     }
     if let Outcome::Referral { child, .. } = &scrubbed.outcome {
@@ -145,15 +165,63 @@ pub fn scrub_response(data: &[u8]) {
             question.name
         );
     }
+    let section = |section| match section {
+        Section::Answer => &response.answer,
+        Section::Authority => &response.authority,
+        Section::Additional => &response.additional,
+    };
+    // How many times each record of the response is neither kept nor dropped yet.
+    let mut left: HashMap<&Record<'_>, usize> = HashMap::new();
+    for record in response
+        .answer
+        .iter()
+        .chain(&response.authority)
+        .chain(&response.additional)
+    {
+        *left.entry(record).or_default() += 1;
+    }
     let mut seen = Vec::new();
     for d in &scrubbed.dropped {
-        let len = match d.section {
-            Section::Answer => response.answer.len(),
-            Section::Authority => response.authority.len(),
-            Section::Additional => response.additional.len(),
-        };
-        assert!(d.index < len, "{d:?} past its section");
+        let records = section(d.section);
+        assert!(d.index < records.len(), "{d:?} past its section");
         assert!(!seen.contains(&(d.section, d.index)), "{d:?} dropped twice");
         seen.push((d.section, d.index));
+        if let Some(n) = left.get_mut(&records[d.index]) {
+            *n -= 1;
+        }
+    }
+    for (rank, record) in &kept {
+        match left.get_mut(*record) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => assert!(
+                record.rtype() == RecordType::CNAME
+                    && kept.iter().any(|(_, d)| d.rtype() == RecordType::DNAME
+                        && record.name.is_within(&d.name)
+                        && record.name != d.name),
+                "{rank:?} {} {} kept, not the response's",
+                record.name,
+                record.rtype()
+            ),
+        }
+    }
+    for (record, n) in left {
+        assert_eq!(
+            n,
+            0,
+            "{} {} neither kept nor dropped",
+            record.name,
+            record.rtype()
+        );
+    }
+}
+
+/// Whether the RDATA of `record` does not parse for its type: a DNAME's target is a name not compressed.
+fn malformed(record: &Record<'_>) -> bool {
+    match record.data() {
+        RData::Opaque(data) if record.rtype() == RecordType::DNAME => {
+            Name::from_uncompressed(data.data()).is_err()
+        }
+        RData::Opaque(_) => RData::has_typed_form(record.rtype()),
+        _ => false,
     }
 }
