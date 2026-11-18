@@ -714,6 +714,19 @@ async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
     }
 }
 
+/// A receive failing for want of a buffer of ours fails the query at once, the server not to blame.
+#[compio::test]
+async fn a_receive_failing_for_want_of_ours_fails_at_once() {
+    let addr = google_server(Duration::ZERO);
+    let (client, seen) = client(Limits::default());
+    seen.borrow_mut().recv_errors = vec![io::ErrorKind::OutOfMemory];
+    let failed = client.query(google(), addr, with_edns(), deadline()).await;
+    assert!(
+        matches!(&failed, Err(AuthoritativeError::Local(LocalError::Socket(error))) if error.kind() == io::ErrorKind::OutOfMemory),
+        "{failed:?}"
+    );
+}
+
 /// A send failing with the ICMP error of a datagram before waits until the deadline as on a receive; one failing
 /// for want of a buffer of ours fails the query at once, the server not to blame.
 #[compio::test]
