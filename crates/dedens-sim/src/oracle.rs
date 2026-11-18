@@ -12,7 +12,9 @@
 
 use dedens_cache::Config;
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Flags, Message, Question, Rcode, Record, RecordType};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Flags, Message, Name, Question, Rcode, Record, RecordType};
+use dedens_testkit::recursion::Resolution;
 
 /// The message an upstream server holds for a question.
 #[derive(Debug, Clone)]
@@ -44,6 +46,108 @@ impl Expected {
             additional: message.additional.clone(),
         }
     }
+
+    /// What a recursive resolver may answer to the question of `resolution` (D189), one per way through its final
+    /// servers: the answer of a server authoritative for the name (AA, RFC 1035 §4.1.1), and when that answer is an
+    /// alias (a CNAME, or a DNAME and the CNAME it makes, RFC 6672 §3.4) without the data, the chain on to a final
+    /// server of the target, as RFC 1034 §4.3.2 step 3.a restarts; the response code and the authority and
+    /// additional sections of the last. The servers of a zone may differ: one answers an alias, another its data.
+    ///
+    /// # Panics
+    ///
+    /// When a response does not decode.
+    #[must_use]
+    pub fn resolved(resolution: &Resolution) -> Vec<Self> {
+        let question = Question::new(resolution.name.clone(), resolution.rtype);
+        // Each link moves to a name another server answers: as many as exchanges at most.
+        chains(resolution, &resolution.name, resolution.exchanges.len())
+            .into_iter()
+            .map(|(answer, last)| Self {
+                question: question.clone(),
+                rcode: last.rcode(),
+                answer,
+                authority: last.authority,
+                additional: last.additional,
+            })
+            .collect()
+    }
+}
+
+/// The answers through the final servers of `resolution` from `name`, `links` deep at most: each the records of
+/// the chain and the last response.
+fn chains(
+    resolution: &Resolution,
+    name: &Name<'static>,
+    links: usize,
+) -> Vec<(Vec<Record<'static>>, Message<'static>)> {
+    let mut found = Vec::new();
+    for response in finals(resolution, name) {
+        match alias(&response, name, resolution.rtype) {
+            Some(target) if response.rcode() == Rcode::NOERROR && links > 0 => {
+                for (rest, last) in chains(resolution, &target, links - 1) {
+                    let mut answer = response.answer.clone();
+                    for record in rest {
+                        if !answer.iter().any(|known| same(known, &record)) {
+                            answer.push(record);
+                        }
+                    }
+                    found.push((answer, last));
+                }
+            }
+            _ => found.push((response.answer.clone(), response)),
+        }
+    }
+    found
+}
+
+/// The distinct responses of the servers authoritative for `name` in `resolution` (AA, and whole: a truncated one
+/// was asked again over TCP).
+fn finals(resolution: &Resolution, name: &Name<'_>) -> Vec<Message<'static>> {
+    let mut finals: Vec<Message<'static>> = Vec::new();
+    let asked = resolution
+        .exchanges
+        .iter()
+        .filter(|exchange| exchange.name == *name && exchange.rtype == resolution.rtype);
+    for exchange in asked {
+        let mut response = Message::decode(&exchange.response)
+            .expect("a captured response decodes")
+            .message
+            .into_owned();
+        // The servers of a zone answer alike but for the ID.
+        response.header.id = 0;
+        let flags = response.header.flags;
+        if flags.contains(Flags::AA) && !flags.contains(Flags::TC) && !finals.contains(&response) {
+            finals.push(response);
+        }
+    }
+    finals
+}
+
+/// The name another server holds the data of, when the chain of CNAME records `response` holds from `name` ends at
+/// a name with no record of `rtype` in it; none when the response is the answer, data or denial. A question for
+/// CNAME records follows no chain, as the capture did (D188).
+fn alias(
+    response: &Message<'static>,
+    name: &Name<'static>,
+    rtype: RecordType,
+) -> Option<Name<'static>> {
+    let mut target = name.clone();
+    // Each step takes a record of the answer: as many steps end a loop.
+    for _ in 0..response.answer.len() {
+        let Some(next) = response.answer.iter().find_map(|r| match r.data() {
+            RData::Cname(next) if r.name == target => Some(next.into_owned()),
+            _ => None,
+        }) else {
+            break;
+        };
+        target = next;
+    }
+    let held = response
+        .answer
+        .iter()
+        .filter(|r| r.name == target)
+        .any(|r| r.rtype() == rtype);
+    (target != *name && rtype != RecordType::CNAME && !held).then_some(target)
 }
 
 /// What a scenario accepts besides the data: its defaults are those of a stub asking a plain forwarder.
@@ -662,6 +766,179 @@ mod tests {
         assert_eq!(
             judge(&[txt, a], &Rules::default(), &question, &message),
             Ok(())
+        );
+    }
+
+    /// The rules of a recursive answer to a query with DO: the captures were asked with it (D188), and no floor.
+    fn recursive() -> Rules {
+        Rules {
+            dnssec: true,
+            floor: 0,
+            ..Rules::default()
+        }
+    }
+
+    /// The responses of the final servers of `resolution` for `name`, as a recursive resolver passes them on: AD is
+    /// its own validation's, not a server's.
+    fn finals_of(resolution: &Resolution, name: &str) -> Vec<Message<'static>> {
+        let mut finals = finals(resolution, &name.parse().expect("a name"));
+        assert!(!finals.is_empty(), "a final server for {name}");
+        for message in &mut finals {
+            message.header.flags = message.header.flags.without(Flags::AA | Flags::AD);
+        }
+        finals
+    }
+
+    #[test]
+    fn every_capture_has_an_answer() {
+        for (id, resolution) in Resolution::all() {
+            assert!(!Expected::resolved(&resolution).is_empty(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_resolution_without_aliases_answers_as_its_final_server() {
+        for id in ["unsigned", "nodata-signed", "nxdomain-nsec3", "truncated"] {
+            let resolution = Resolution::read(id);
+            let expected = Expected::resolved(&resolution);
+            let question = Question::new(resolution.name.clone(), resolution.rtype);
+            for mut message in finals_of(&resolution, &resolution.name.to_string()) {
+                assert_eq!(
+                    judge(&expected, &recursive(), &question, &message),
+                    Ok(()),
+                    "{id}"
+                );
+                // A record kept past its TTL is no answer: TTLs no higher than the server's.
+                let raised = message
+                    .answer
+                    .iter_mut()
+                    .chain(&mut message.authority)
+                    .next();
+                let raised = raised.expect("a record");
+                raised.ttl = Ttl::from_wire(raised.ttl.get() + 1);
+                assert!(
+                    judge(&expected, &recursive(), &question, &message).is_err(),
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_resolution_through_aliases_answers_the_whole_chain() {
+        // `www.microsoft.com` is a CNAME to a name of `edgekey.net`, to one of `akamaiedge.net`, which one server
+        // of the zone answers with a CNAME to one of `cn.akamaiedge.net`, and another with the address.
+        let resolution = Resolution::read("cname");
+        let expected = Expected::resolved(&resolution);
+        assert_eq!(expected.len(), 2, "{expected:#?}");
+        let question = Question::new(resolution.name.clone(), resolution.rtype);
+        let first = |name: &str| finals_of(&resolution, name).swap_remove(0);
+        let chain = |links: &[Message<'static>]| {
+            let mut message = links[links.len() - 1].clone();
+            message.answer = links.iter().flat_map(|link| link.answer.clone()).collect();
+            message.questions = vec![question.clone()];
+            message
+        };
+        let through = first("e13678.dscb.akamaiedge.net.0.1.cn.akamaiedge.net");
+        assert!(
+            judge(
+                &expected,
+                &recursive(),
+                &question,
+                &chain(std::slice::from_ref(&through))
+            )
+            .is_err()
+        );
+        let head = [
+            first("www.microsoft.com"),
+            first("www.microsoft.com-c-3.edgekey.net"),
+        ];
+        let (alias, data): (Vec<_>, Vec<_>) = finals_of(&resolution, "e13678.dscb.akamaiedge.net")
+            .into_iter()
+            .partition(|m| m.answer.iter().any(|r| r.rtype() == RecordType::CNAME));
+        let cut = [head[0].clone(), head[1].clone(), data[0].clone()];
+        assert_eq!(
+            judge(&expected, &recursive(), &question, &chain(&cut)),
+            Ok(())
+        );
+        let whole = [head[0].clone(), head[1].clone(), alias[0].clone(), through];
+        assert_eq!(
+            judge(&expected, &recursive(), &question, &chain(&whole)),
+            Ok(())
+        );
+        // A DNAME's server answers the DNAME, the CNAME it makes, and the target's server the data.
+        let resolution = Resolution::read("dname");
+        let expected = Expected::resolved(&resolution);
+        let question = Question::new(resolution.name.clone(), resolution.rtype);
+        let links = ["www.dname.dns.netmeister.org", "www.netmeister.org"]
+            .map(|name| finals_of(&resolution, name).swap_remove(0));
+        let mut message = links[1].clone();
+        message.answer = links.iter().flat_map(|link| link.answer.clone()).collect();
+        message.questions = vec![question.clone()];
+        assert_eq!(judge(&expected, &recursive(), &question, &message), Ok(()));
+    }
+
+    #[test]
+    fn a_chain_ends_at_an_error_or_at_its_last_link() {
+        let resolution = Resolution::read("cname");
+        let name = resolution.name.clone();
+        let alone = |resolution: &Resolution| -> Vec<_> {
+            finals(resolution, &name)
+                .into_iter()
+                .map(|response| (response.answer.clone(), response))
+                .collect()
+        };
+        // No link left: the alias is the answer.
+        assert_eq!(chains(&resolution, &name, 0), alone(&resolution));
+        // The whole chain in one answer, as a resolver passes it on: the data at its end, no alias. Each link
+        // without the next is one.
+        let links = [
+            "www.microsoft.com",
+            "www.microsoft.com-c-3.edgekey.net",
+            "e13678.dscb.akamaiedge.net",
+            "e13678.dscb.akamaiedge.net.0.1.cn.akamaiedge.net",
+        ]
+        .map(|link| finals(&resolution, &link.parse().expect("a name")));
+        let mut joined = links[0][0].clone();
+        for link in &links[1..] {
+            assert!(alias(&joined, &name, resolution.rtype).is_some());
+            let alias = link
+                .iter()
+                .find(|r| r.answer.iter().all(|r| r.rtype() == RecordType::CNAME));
+            joined
+                .answer
+                .extend(alias.unwrap_or(&link[0]).answer.clone());
+        }
+        assert_eq!(alias(&joined, &name, resolution.rtype), None);
+        // A denial is no alias, whatever it lacks.
+        let nodata = Resolution::read("nodata-unsigned");
+        for response in finals(&nodata, &nodata.name) {
+            assert_eq!(alias(&response, &nodata.name, nodata.rtype), None);
+        }
+        // One link: the chain stops at the next name.
+        let next: Name<'static> = "www.microsoft.com-c-3.edgekey.net".parse().expect("a name");
+        for (_, last) in chains(&resolution, &name, 1) {
+            assert_eq!(last.questions.first().map(|q| &q.name), Some(&next));
+        }
+        // Changed: the server of `www.microsoft.com` answers its CNAME with NXDOMAIN, as one does whose alias
+        // points to a name of its own zone that does not exist (RFC 6604 §3). The chain ends there.
+        let mut denied = resolution.clone();
+        for exchange in &mut denied.exchanges {
+            if exchange.name == name {
+                let mut response = Message::decode(&exchange.response)
+                    .expect("a captured response decodes")
+                    .message
+                    .into_owned();
+                response.set_rcode(Rcode::NXDOMAIN).expect("a header code");
+                let mut wire = vec![0; usize::from(u16::MAX)];
+                let len = response.encode(&mut wire).expect("the response encodes");
+                wire.truncate(len);
+                exchange.response = wire;
+            }
+        }
+        assert_eq!(
+            chains(&denied, &name, denied.exchanges.len()),
+            alone(&denied)
         );
     }
 

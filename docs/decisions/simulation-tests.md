@@ -188,3 +188,30 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     simulated: the buffer pool and its `ResourceBusy` (D107), as `SimUdp` has none.
   - Cost in `docs/benchmarks.md` (dnsperf on Linux, `io_uring`): TCP 8% faster, forwarding 25-35%, UDP within its
     noise.
+- D189 (builds on D133, D184, D188) `dedens-sim` hosts the authoritative servers of D188's captures at their addresses,
+  IPv4 and IPv6, so that a recursive pipeline resolves from the root in a simulation, and a server at a time
+  misbehaves as broken ones do.
+  - API: `Topology::authoritative_at(addr, answers)` hosts a server at `addr` (the host is named by it; `Node::Host`
+    names it to a fault) answering from `Answers::exchanges(exchanges)`: per question, the UDP capture over UDP and
+    the TCP one over TCP (`truncated`), REFUSED to any other question. `Topology::resolution(&Resolution)` loads every
+    server of a capture, appending to servers already loaded (the first capture of a question wins, as `Authorities`
+    replays), and starts the run at the capture's time. The server is `upstream::serve`, the upstreams' (one server:
+    its faults, trace and attacker apply). Its stream of the seed is `3 << 62` and up.
+  - What a behaviour may change, `Answers::conduct(Conduct)`, each a captured response changed as broken servers
+    change it, nothing invented: `Refuses` and `Fails` (REFUSED, SERVFAIL to every query: lame), `Truncates` (every
+    UDP response its header and question, TC set, no records; TCP whole), `NoEdns` (FORMERR without OPT to a query
+    with EDNS, the capture without OPT to one without, RFC 6891 §7), `FoldsCase` (the question in lower case, not
+    the client's: D184's random case catches it), `Unauthoritative` (AA cleared: a zone it is not authoritative for,
+    RFC 4697 §2.1.1). Silent is `Answers::silent`. Rejected: an upward referral or another zone's data, which a
+    capture does not hold.
+  - Oracle: `Expected::resolved(&Resolution)` is the answer a recursive resolver may give: a final server's (AA,
+    not truncated) for the name, then for the target of a CNAME or DNAME chain that leaves the data to another
+    server (RFC 1034 §4.3.2 step 3.a); one per way through the final servers, as servers of one zone answer apart
+    (`cname`: one `akamaiedge.net` server answers the CNAME, the other the address). Rcode, authority and additional
+    of the last. TTLs no higher, as D133's. The servers' own captures are not expected: a referral is no answer.
+  - Hosts: a port binds the unspecified address of its host's family (turmoil refuses a mismatch), and `Sim`'s
+    `udp_bind` maps the client's `[::]:0` to its host's family. Clients start after `max(5 ms, 2 steps)`: at a
+    coarse step a client polled first sent before a server had bound its port.
+  - Tests: `crates/dedens-sim/tests/internet.rs` loads every capture in one run (29 servers, at a 10 ms step for
+    D164's budget) and a client asks each exchange again with 0x20; then one server of each conduct and a
+    silent one, the seed picking which.

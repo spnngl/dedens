@@ -1,6 +1,7 @@
 //! A run's hosts: clients, one resolver and the upstream servers, on a simulated network that a seed shapes.
 
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -10,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_net::tls::{Presented, Trust};
 use dedens_server::{Pipeline, Server, Via};
+use dedens_testkit::recursion::Resolution;
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 use turmoil::Sim;
 
@@ -69,6 +71,10 @@ enum Software {
 /// Which hosts a run has; [`Topology::build`] makes them.
 pub struct Topology {
     upstreams: Vec<(Answers, Speaks)>,
+    /// The authoritative servers, by address: hosts named by it, in its order (D189).
+    authorities: BTreeMap<IpAddr, Answers>,
+    /// The answers of the resolutions loaded, [`Expected::resolved`].
+    resolved: Vec<Expected>,
     epoch: SystemTime,
     duration: Duration,
     tick: Duration,
@@ -83,6 +89,8 @@ impl fmt::Debug for Topology {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Topology")
             .field("upstreams", &self.upstreams)
+            .field("authorities", &self.authorities)
+            .field("resolved", &self.resolved)
             .field("epoch", &self.epoch)
             .field("duration", &self.duration)
             .field("tick", &self.tick)
@@ -96,6 +104,8 @@ impl Default for Topology {
     fn default() -> Self {
         Self {
             upstreams: Vec::new(),
+            authorities: BTreeMap::new(),
+            resolved: Vec::new(),
             epoch: UNIX_EPOCH + EPOCH,
             duration: DURATION,
             tick: TICK,
@@ -127,6 +137,33 @@ impl Topology {
     #[must_use]
     pub fn dot_upstream(mut self, answers: Answers) -> Self {
         self.upstreams.push((answers, Speaks::Tls));
+        self
+    }
+
+    /// Adds an authoritative server of the Internet at `addr`, an address of a captured resolution (D188), answering
+    /// from `answers` ([`Answers::exchanges`]) over UDP and TCP, in place of the one there; [`Node::Host`] names it
+    /// to a fault. No resolver forwards to it: a client asks it, or a pipeline that iterates (D189).
+    ///
+    /// [`Node::Host`]: crate::fault::Node::Host
+    #[must_use]
+    pub fn authoritative_at(mut self, addr: IpAddr, answers: Answers) -> Self {
+        self.authorities.insert(addr, answers);
+        self
+    }
+
+    /// Adds the authoritative servers of `resolution`, each at its address answering the exchanges captured from it
+    /// (after those of the resolutions loaded before), expects [`Expected::resolved`] for its question, and starts
+    /// the simulation at its capture's time, when its signatures are valid (D189).
+    #[must_use]
+    pub fn resolution(mut self, resolution: &Resolution) -> Self {
+        let servers: BTreeSet<IpAddr> = resolution.exchanges.iter().map(|e| e.server).collect();
+        for addr in servers {
+            let held = self.authorities.remove(&addr).unwrap_or_default();
+            let answers = held.exchanges(resolution.exchanges.iter().filter(|e| e.server == addr));
+            self.authorities.insert(addr, answers);
+        }
+        self.resolved.extend(Expected::resolved(resolution));
+        self.epoch = UNIX_EPOCH + Duration::from_secs(resolution.captured_at);
         self
     }
 
@@ -194,8 +231,8 @@ impl Topology {
         self
     }
 
-    /// Makes the simulation: the resolver (`resolver`) and the upstream servers (`upstream-<n>`), on a network
-    /// whose latencies and order of hosts follow `seed`. Clients are added to the [`World`].
+    /// Makes the simulation: the resolver (`resolver`), the upstream servers (`upstream-<n>`) and the authoritative
+    /// ones (named by their address), on a network whose latencies and order of hosts follow `seed`. Clients are added to the [`World`].
     #[must_use]
     pub fn build(self, seed: Seed) -> World {
         let mut builder = turmoil::Builder::new();
@@ -214,6 +251,7 @@ impl Topology {
             .upstreams
             .iter()
             .flat_map(|(answers, _)| answers.expected())
+            .chain(self.resolved)
             .collect();
         // Made by the first server over TLS only: a run with none stays as it was before them.
         let mut certificates = None;
@@ -248,6 +286,13 @@ impl Topology {
                     });
                 }
             }
+        }
+        for (n, (addr, answers)) in self.authorities.into_iter().enumerate() {
+            let rng = Rc::new(RefCell::new(Rng::new(seed, authority_stream(n))));
+            let (answers, trace) = (Rc::new(answers), trace.clone());
+            sim.host(addr, move || {
+                upstream::serve(Rc::clone(&answers), addr, Rc::clone(&rng), trace.clone())
+            });
         }
         let host = sim.lookup("resolver");
         let addrs = servers.iter().map(|server| server.addr).collect();
@@ -289,6 +334,7 @@ impl Topology {
             named: 0,
             dots: 0,
             clients: 0,
+            start: START.max(2 * self.tick),
         }
     }
 }
@@ -308,6 +354,8 @@ pub struct World {
     named: usize,
     dots: usize,
     clients: u64,
+    /// [`START`], or two steps when a step is longer: in the first, every host starts.
+    start: Duration,
 }
 
 impl World {
@@ -363,8 +411,9 @@ impl World {
         self.clients += 1;
         let rng = Rc::new(RefCell::new(Rng::new(self.seed, self.clients)));
         let body = body(Client::new(rng, host, self.trace.clone()));
+        let start = self.start;
         self.sim.client(name, async move {
-            tokio::time::sleep(START).await;
+            tokio::time::sleep(start).await;
             body.await
         });
     }
@@ -416,8 +465,9 @@ impl World {
             Rc::clone(&self.expected),
         );
         let body = body(stub);
+        let start = self.start;
         self.sim.client(name, async move {
-            tokio::time::sleep(START).await;
+            tokio::time::sleep(start).await;
             body.await
         });
     }
@@ -477,11 +527,20 @@ impl World {
 }
 
 /// The streams of the seed: 0 is the resolver's, 1 and up the clients', [`DOTS`] and up the DNS-over-TLS servers',
-/// [`PICKS`] the picks of the scenario, and those below it the upstream servers'.
+/// [`AUTHORITIES`] and up the authoritative servers', [`PICKS`] the picks of the scenario, and those below it the
+/// upstream servers'.
 const PICKS: u64 = u64::MAX;
 
 /// The stream of the first DNS-over-TLS server: halfway, far from the clients' and the upstream servers'.
 const DOTS: u64 = 1 << 63;
+
+/// The stream of the first authoritative server: halfway between the DNS-over-TLS servers' and the upstream ones'.
+const AUTHORITIES: u64 = 3 << 62;
+
+/// The stream of the authoritative server `n`, in the order of the addresses.
+fn authority_stream(n: usize) -> u64 {
+    AUTHORITIES + n as u64
+}
 
 /// The stream of the upstream server `n`.
 fn upstream_stream(n: usize) -> u64 {
@@ -502,6 +561,7 @@ mod tests {
         let streams: Vec<u64> = (0..4)
             .map(upstream_stream)
             .chain((0..4).map(dot_stream))
+            .chain((0..4).map(authority_stream))
             .chain([PICKS])
             .collect();
         let mut distinct = streams.clone();
@@ -510,6 +570,14 @@ mod tests {
         assert_eq!(distinct.len(), streams.len(), "{streams:?}");
         // Apart from the resolver's (0) and the clients' (1 and up).
         assert!(streams.iter().all(|stream| *stream > u64::MAX / 2));
+        // The authoritative servers' from theirs up, in the quarter between the DNS-over-TLS servers' and the
+        // upstream ones'.
+        let authorities = AUTHORITIES..upstream_stream(3);
+        assert!(
+            (0..4)
+                .map(authority_stream)
+                .all(|stream| authorities.contains(&stream))
+        );
     }
 
     #[test]

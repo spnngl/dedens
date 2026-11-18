@@ -19,7 +19,7 @@ dedens-cache.workspace = true
 dedens-net.workspace = true
 dedens-proto.workspace = true
 dedens-server.workspace = true
-dedens-testkit.workspace = true
+dedens-testkit = { workspace = true, features = ["recursion"] }
 dedensd.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

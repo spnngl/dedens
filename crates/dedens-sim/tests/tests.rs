@@ -6,6 +6,7 @@ mod crash;
 mod dnssec;
 mod dot;
 mod forged;
+mod internet;
 mod limits;
 mod loss;
 mod partition;
