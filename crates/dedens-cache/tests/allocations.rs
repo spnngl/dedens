@@ -1,5 +1,7 @@
 //! A hit allocates nothing, even one cut to fit a small buffer (D116). One test per file: the allocator counts
-//! every thread, and a second test's allocations would show in the first's.
+//! every thread, and a second test's allocations would show in the first's. libtest's main thread still books the
+//! test it just started (4 allocations seen on CI), so one quiet round of several proves it: a hit that allocates
+//! would show in every round.
 
 #[expect(
     dead_code,
@@ -31,13 +33,18 @@ fn a_truncated_hit_allocates_nothing() {
     .unwrap();
     let asked = Query::read(&q).unwrap();
     let mut out = [0; 512];
-    let region = Region::new(ALLOC);
-    for _ in 0..100 {
-        let Lookup::Hit(hit) = cache.lookup(&asked, T0, StalePolicy::Never, &mut out) else {
-            panic!("a hit");
-        };
-        assert!(hit.truncated, "too large for 512 bytes");
-    }
-    let stats = region.change();
-    assert_eq!(stats.allocations, 0, "{stats:?}");
+    let rounds: [_; 3] = std::array::from_fn(|_| {
+        let region = Region::new(ALLOC);
+        for _ in 0..100 {
+            let Lookup::Hit(hit) = cache.lookup(&asked, T0, StalePolicy::Never, &mut out) else {
+                panic!("a hit");
+            };
+            assert!(hit.truncated, "too large for 512 bytes");
+        }
+        region.change()
+    });
+    assert!(
+        rounds.iter().any(|stats| stats.allocations == 0),
+        "{rounds:?}"
+    );
 }
