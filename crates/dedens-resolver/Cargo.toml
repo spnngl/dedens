@@ -25,7 +25,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 dedens-roots.workspace = true
-dedens-testkit.workspace = true
+# D188: the captured resolutions the scrubber's tests replay.
+dedens-testkit = { workspace = true, features = ["recursion"] }
+insta.workspace = true
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 stats_alloc.workspace = true

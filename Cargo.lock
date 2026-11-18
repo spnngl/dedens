@@ -1091,6 +1091,7 @@ dependencies = [
  "dedens-proto",
  "dedens-roots",
  "dedens-testkit",
+ "insta",
  "metrics",
  "metrics-util",
  "rand_core 0.10.1",
