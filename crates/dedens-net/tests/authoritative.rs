@@ -12,6 +12,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,7 @@ use compio::buf::{IoBuf, IoBufMut};
 use compio::net::TcpStream;
 use dedens_net::authoritative::{Authoritative, Limits, Quirks};
 use dedens_net::client::ClientError;
+use dedens_net::exchange::Failure;
 use dedens_net::io::{Compio, Io, TimedOut, Udp};
 use dedens_net::tcp::{TcpError, frame};
 use dedens_proto::edns::{EdnsFlags, EdnsOption};
@@ -83,6 +85,19 @@ fn lowercase(mut response: Vec<u8>) -> Vec<u8> {
     response
 }
 
+/// `response` cut to its header and question, FORMERR (RFC 6891 §7: no OPT record): changed by the test.
+fn formerr(response: &[u8]) -> Vec<u8> {
+    let mut formerr = response[..question_end(response)].to_vec();
+    formerr[3] = (formerr[3] & 0xf0) | 1;
+    formerr[6..12].fill(0);
+    formerr
+}
+
+/// Whether `query` has an OPT record: the only additional record a query of these tests carries.
+fn has_edns(query: &[u8]) -> bool {
+    query[10..12] != [0, 0]
+}
+
 /// Where a datagram comes from.
 #[derive(Clone, Copy)]
 enum From {
@@ -141,6 +156,10 @@ struct Seen {
     open: usize,
     /// The most open at once.
     most: usize,
+    /// The errors the next binds fail with, in order, before any socket is bound: a port another program holds.
+    failing: Vec<io::ErrorKind>,
+    /// The binds tried, failed ones included.
+    binds: usize,
 }
 
 /// Compio, its UDP sockets counted and its randomness from a fixed seed, so that each run draws the same ports.
@@ -201,6 +220,13 @@ impl Io for Watched {
     }
 
     async fn udp_bind(&self, addr: SocketAddr) -> io::Result<WatchedUdp> {
+        {
+            let mut seen = self.seen.borrow_mut();
+            seen.binds += 1;
+            if !seen.failing.is_empty() {
+                return Err(seen.failing.remove(0).into());
+            }
+        }
         let udp = Compio.udp_bind(addr).await?;
         let mut seen = self.seen.borrow_mut();
         seen.ports.push(udp.local_addr()?.port());
@@ -423,6 +449,110 @@ async fn a_server_not_repeating_the_case_is_marked_over_tcp() {
         .await
         .expect("answered");
     assert_eq!(again.response.transport, Transport::Udp);
+}
+
+/// One send, waiting the timeout given: trying again is the caller's.
+#[compio::test]
+async fn a_silent_server_costs_one_send_of_the_timeout() {
+    let addr = server(|_| Vec::new(), |_| unreachable!("all over UDP"));
+    let (client, _) = client(Limits::default());
+    let start = Instant::now();
+    let silence = client
+        .query(
+            example(),
+            addr,
+            Quirks::default(),
+            Duration::from_millis(100),
+        )
+        .await;
+    assert!(
+        matches!(
+            silence,
+            Err(ClientError::Exchange(Failure::TimedOut { sends: 1 }))
+        ),
+        "{silence:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+/// A port taken is drawn again, 8 times at most; another error of the bind fails the query.
+#[compio::test]
+async fn a_port_taken_is_drawn_again() {
+    let responder = Responder::start(&["referral_root"]);
+    let (client, seen) = client(Limits::default());
+    seen.borrow_mut().failing = vec![io::ErrorKind::AddrInUse; 7];
+    client
+        .query(example(), responder.addr, Quirks::default(), TIMEOUT)
+        .await
+        .expect("answered");
+    assert_eq!((seen.borrow().binds, seen.borrow().ports.len()), (8, 1));
+    for (kind, binds) in [
+        (io::ErrorKind::AddrInUse, 8),
+        (io::ErrorKind::PermissionDenied, 1),
+    ] {
+        {
+            let mut watched = seen.borrow_mut();
+            watched.failing = vec![kind; 8];
+            watched.binds = 0;
+        }
+        let failed = client
+            .query(example(), responder.addr, Quirks::default(), TIMEOUT)
+            .await;
+        assert!(
+            matches!(&failed, Err(ClientError::Udp(error)) if error.kind() == kind),
+            "{failed:?}"
+        );
+        assert_eq!(seen.borrow().binds, binds);
+    }
+}
+
+/// A closed port refuses the query (ICMP port unreachable), at once: the caller tells it from a timeout.
+#[compio::test]
+async fn a_closed_port_fails_at_once() {
+    let closed = UdpSocket::bind("127.0.0.1:0")
+        .and_then(|socket| socket.local_addr())
+        .expect("a port");
+    let (client, _) = client(Limits::default());
+    let start = Instant::now();
+    let refused = client
+        .query(example(), closed, Quirks::default(), TIMEOUT)
+        .await;
+    assert!(
+        matches!(&refused, Err(ClientError::Udp(error)) if error.kind() == io::ErrorKind::ConnectionRefused),
+        "{refused:?}"
+    );
+    assert!(start.elapsed() < TIMEOUT);
+}
+
+/// RFC 6891 §7: a server answering FORMERR without OPT is asked again without EDNS and marked; the next query,
+/// told of it, goes without.
+#[compio::test]
+async fn a_server_not_knowing_edns_is_marked() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asked);
+    let addr = server(
+        move |query| {
+            seen.lock().expect("not poisoned").push(has_edns(query));
+            let response = if has_edns(query) {
+                formerr(&real(query))
+            } else {
+                real(query)
+            };
+            vec![(From::Server, response)]
+        },
+        |_| unreachable!("all over UDP"),
+    );
+    let (client, _) = client(Limits::default());
+    let answer = client
+        .query(example(), addr, Quirks::default(), TIMEOUT)
+        .await
+        .expect("answered");
+    assert!(answer.quirks.no_edns);
+    client
+        .query(example(), addr, answer.quirks, TIMEOUT)
+        .await
+        .expect("answered");
+    assert_eq!(*asked.lock().expect("not poisoned"), [true, false, false]);
 }
 
 /// RFC 7766 §5: a truncated response asks again over TCP.
