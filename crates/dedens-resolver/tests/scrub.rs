@@ -1,6 +1,7 @@
 //! `scrub` on the captured resolutions of `testdata/recursion` (D188), as captured and changed the way an attacker
-//! would change them (D192): RFC 1034 §4.3.2, RFC 2181 §5.4.1/§6.1, RFC 2308 §2, RFC 4697 §2.2, RFC 5452 §6,
-//! RFC 6672 §2.2/§3.4. Each change is written next to it; a test of a bound reaches it.
+//! would change them (D192): RFC 1034 §4.3.2, RFC 1035 §4.1.1, RFC 2181 §5.4.1/§6.1, RFC 2308 §2/§5, RFC 4035
+//! §3.1.4, RFC 4697 §2.2, RFC 5452 §6, RFC 6672 §2.2/§2.5/§3.4. Each change is written next to it; a test of a bound
+//! reaches it.
 
 use std::fmt::Write as _;
 
@@ -10,7 +11,8 @@ use dedens_proto::{
     ZoneEntry, ZoneReader,
 };
 use dedens_resolver::{
-    MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Outcome, Rank, Reason, Scrubbed, Unusable, scrub,
+    MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Negative, Outcome, Rank, Reason, Scrubbed,
+    Unusable, scrub,
 };
 use dedens_testkit::recursion::Resolution;
 
@@ -59,6 +61,17 @@ fn dname(owner: &str, target: &str) -> Record<'static> {
     )
 }
 
+/// A record of `rtype` at `owner` whose RDATA is `data`, valid for the type or not.
+fn raw(owner: &str, rtype: RecordType, data: &[u8]) -> Record<'static> {
+    let data = Opaque::new(rtype, data).expect("RDATA");
+    Record::new(
+        owner.parse().expect("a name"),
+        Class::IN,
+        Ttl::from_wire(300),
+        &RData::Opaque(data),
+    )
+}
+
 /// Why the record at `index` of `section` was dropped, if it was.
 fn reason(scrubbed: &Scrubbed<'_>, section: Section, index: usize) -> Option<Reason> {
     scrubbed
@@ -75,31 +88,30 @@ fn names(records: &[Record<'_>]) -> Vec<String> {
         .collect()
 }
 
-/// One line of what `scrub` makes of a response: the outcome, the owner and type of each record kept, by field,
-/// and the records dropped.
-fn describe(scrubbed: &Scrubbed<'_>) -> String {
+/// What `scrub` made of a response: the outcome and the owner and type of each record kept, by field.
+fn outcome(scrubbed: &Scrubbed<'_>) -> String {
     let list = |records: &[Record<'_>]| names(records).join(", ");
-    let mut line = match &scrubbed.outcome {
+    match &scrubbed.outcome {
         Outcome::Answer {
             chain,
             records,
-            authority,
+            denials,
             additional,
         } => format!(
-            "Answer chain=[{}] records=[{}] authority=[{}] additional={}",
+            "Answer chain=[{}] records=[{}] denials=[{}] additional={}",
             list(chain),
             list(records),
-            list(authority),
+            list(denials),
             additional.len()
         ),
         Outcome::Cname {
             chain,
             target,
-            authority,
+            denials,
         } => format!(
-            "Cname chain=[{}] target={target} authority=[{}]",
+            "Cname chain=[{}] target={target} denials=[{}]",
             list(chain),
-            list(authority)
+            list(denials)
         ),
         Outcome::Referral {
             child,
@@ -112,17 +124,32 @@ fn describe(scrubbed: &Scrubbed<'_>) -> String {
             list(proof),
             glue.len()
         ),
-        Outcome::NoData { authority } => format!("NoData authority=[{}]", list(authority)),
-        Outcome::NxDomain { chain, authority } => {
-            format!(
-                "NxDomain chain=[{}] authority=[{}]",
-                list(chain),
-                list(authority)
-            )
+        Outcome::NoData { soa, denials } => {
+            format!("NoData soa={} denials=[{}]", soa.name, list(denials))
+        }
+        Outcome::NxDomain {
+            chain,
+            soa,
+            denials,
+        } => format!(
+            "NxDomain chain=[{}] soa={} denials=[{}]",
+            list(chain),
+            soa.name,
+            list(denials)
+        ),
+        Outcome::YxDomain { chain } => format!("YxDomain chain=[{}]", list(chain)),
+        Outcome::NoSoa(Negative::NoData) => "NoSoa NoData".to_owned(),
+        Outcome::NoSoa(Negative::NxDomain { chain }) => {
+            format!("NoSoa NxDomain chain=[{}]", list(chain))
         }
         Outcome::Lame => "Lame".to_owned(),
         Outcome::Unusable(why) => format!("Unusable {why:?}"),
-    };
+    }
+}
+
+/// The outcome, and the place and reason of each record dropped.
+fn describe(scrubbed: &Scrubbed<'_>) -> String {
+    let mut line = outcome(scrubbed);
     for d in &scrubbed.dropped {
         write!(line, " drop={:?}[{}]:{:?}", d.section, d.index, d.reason).expect("a String");
     }
@@ -130,8 +157,7 @@ fn describe(scrubbed: &Scrubbed<'_>) -> String {
 }
 
 /// Every response of every capture scrubs to what it holds (RFC 2181 §6.1): nothing of its answer section is
-/// dropped; what goes is the zone's own NS `RRset` beside an answer (Unbound's `iter-scrub-promiscuous`) and the
-/// addresses of its servers. The snapshot has the outcome of each.
+/// dropped. The snapshot has the outcome of each and every record dropped, by owner and type.
 #[test]
 fn rfc2181_6_1_every_capture_scrubs_to_what_it_holds() {
     let mut out = String::new();
@@ -140,25 +166,27 @@ fn rfc2181_6_1_every_capture_scrubs_to_what_it_holds() {
             let response = decode(&e.response);
             let question = Question::new(e.name.clone(), e.rtype);
             let scrubbed = scrub(&response, &question, &e.zone);
+            let mut line = outcome(&scrubbed);
             for d in &scrubbed.dropped {
                 let record = match d.section {
                     Section::Answer => panic!("{id} {}: answer {} dropped", e.name, d.index),
                     Section::Authority => &response.authority[d.index],
                     Section::Additional => &response.additional[d.index],
                 };
-                let covered = match record.data() {
-                    RData::Rrsig(sig) => sig.type_covered,
-                    _ => record.rtype(),
-                };
-                assert!(
-                    matches!(covered, RecordType::NS | RecordType::A | RecordType::AAAA),
-                    "{id} {}: {} {} dropped",
-                    e.name,
+                write!(
+                    line,
+                    " drop={}:{} {}:{:?}",
+                    if d.section == Section::Authority {
+                        "authority"
+                    } else {
+                        "additional"
+                    },
                     record.name,
-                    record.rtype()
-                );
+                    record.rtype(),
+                    d.reason
+                )
+                .expect("a String");
             }
-            let line = describe(&scrubbed);
             writeln!(
                 out,
                 "{id} {} {} {} @{}: {line}",
@@ -362,16 +390,33 @@ fn rfc6672_3_4_a_dname_to_an_unrelated_zone_stops_the_chain() {
         .iter()
         .position(|r| r.rtype() == RecordType::DNAME)
         .expect("a DNAME");
-    // Changed: the DNAME's target, dns.netmeister.org, replaced by attacker.example; an A for its new name appended.
+    // Changed: the DNAME's target, dns.netmeister.org, replaced by attacker.example; an A for its new name appended;
+    // the RRSIG of the server's CNAME copied as one of the name asked.
     response.answer[at] = dname("dname.dns.netmeister.org.", "attacker.example.");
     response
         .answer
         .push(rr("www.attacker.example. 300 IN A 192.0.2.66"));
+    let sig = response
+        .answer
+        .iter()
+        .find(|r| matches!(r.data(), RData::Rrsig(s) if s.type_covered == RecordType::CNAME))
+        .expect("a CNAME's RRSIG");
+    let sig = Record::new(question.name.clone(), sig.class, sig.ttl, &sig.data());
+    response.answer.push(sig);
     let scrubbed = scrub(&response, &question, &zone);
     let Outcome::Cname { chain, target, .. } = &scrubbed.outcome else {
         panic!("{}", describe(&scrubbed));
     };
     assert_eq!(target.to_string(), "www.attacker.example.");
+    assert!(
+        !names(chain).contains(&format!("{} RRSIG", question.name)),
+        "a synthesised CNAME is never signed: {}",
+        describe(&scrubbed)
+    );
+    assert_eq!(
+        reason(&scrubbed, Section::Answer, response.answer.len() - 1),
+        Some(Reason::OffChain)
+    );
     let cname = chain
         .iter()
         .find_map(|r| match r.data() {
@@ -420,9 +465,10 @@ fn rfc2181_6_1_a_dname_above_the_zone_is_dropped() {
     assert_eq!(target.to_string(), "www.netmeister.org.");
 }
 
-/// An answer without AA is data the server holds from elsewhere (RFC 2181 §5.4.1): nothing of it is kept.
+/// An answer without AA is kept, ranked below an authoritative one (RFC 1035 §4.1.1, RFC 2181 §5.4.1), as Unbound
+/// keeps it; with RA set too it is a cache talking, lame.
 #[test]
-fn rfc2181_5_4_1_an_answer_without_aa_is_lame() {
+fn rfc2181_5_4_1_an_answer_without_aa_is_ranked_below() {
     let (bytes, question, zone) =
         captured("signed-com", "example.com.", "example.com.", RecordType::A);
     let mut response = decode(&bytes);
@@ -430,11 +476,30 @@ fn rfc2181_5_4_1_an_answer_without_aa_is_lame() {
     response.header.flags = response.header.flags.without(Flags::AA);
     let scrubbed = scrub(&response, &question, &zone);
     assert!(
-        matches!(scrubbed.outcome, Outcome::Lame),
+        matches!(scrubbed.outcome, Outcome::Answer { .. }),
         "{}",
         describe(&scrubbed)
     );
+    let ranked = scrubbed.ranked();
+    assert_ne!(ranked.len(), 0);
+    assert!(
+        ranked
+            .iter()
+            .all(|(rank, _)| *rank == Rank::AnswerNonAuthoritative)
+    );
+    let mut response = decode(&bytes);
+    // Changed: RA set; AA still set.
+    response.header.flags = response.header.flags.with(Flags::RA);
+    assert!(matches!(
+        scrub(&response, &question, &zone).outcome,
+        Outcome::Answer { .. }
+    ));
+    // Changed: AA cleared, RA set.
+    response.header.flags = response.header.flags.without(Flags::AA);
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(matches!(scrubbed.outcome, Outcome::Lame));
     assert_eq!(scrubbed.ranked().len(), 0);
+    assert_eq!(scrubbed.dropped.len(), 0);
     let (bytes, question, zone) = captured(
         "nxdomain-unsigned",
         "google.com.",
@@ -444,10 +509,303 @@ fn rfc2181_5_4_1_an_answer_without_aa_is_lame() {
     let mut response = decode(&bytes);
     // Changed: AA cleared from an NXDOMAIN.
     response.header.flags = response.header.flags.without(Flags::AA);
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::NxDomain { .. }),
+        "{}",
+        describe(&scrubbed)
+    );
+    assert_eq!(
+        scrubbed.ranked().first().map(|(rank, _)| *rank),
+        Some(Rank::AuthorityNonAuthoritative)
+    );
+}
+
+/// The com. servers' referral for google.com, as an answer without AA to google.com NS: a referral, as Unbound reads
+/// it (`iter_resptype.c`).
+#[test]
+fn rfc1034_4_3_2_ns_without_aa_in_the_answer_section_is_a_referral() {
+    let (bytes, _, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    let ns = Question::new("google.com.".parse().expect("a name"), RecordType::NS);
+    // Changed: the question made NS, and the NS records moved from the authority section to the answer section.
+    response.questions = vec![ns.clone()];
+    let (records, rest) = response
+        .authority
+        .drain(..)
+        .partition(|r| r.rtype() == RecordType::NS);
+    response.answer = records;
+    response.authority = rest;
+    let scrubbed = scrub(&response, &ns, &zone);
+    let Outcome::Referral {
+        child, ns, proof, ..
+    } = &scrubbed.outcome
+    else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert_eq!(child.to_string(), "google.com.");
+    assert_eq!(ns.len(), 4);
+    assert_ne!(proof.len(), 0);
+}
+
+/// A referral to the zone itself or above it leads nowhere, whatever AA says (RFC 4697 §2.2); with neither SOA nor
+/// NS, a negative answer is not cached (RFC 2308 §5).
+#[test]
+fn rfc4697_2_2_a_referral_to_the_zone_or_above_is_lame_whatever_aa() {
+    let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
+    for ns in [
+        "com. 172800 IN NS a.gtld-servers.net.",
+        ". 518400 IN NS a.root-servers.net.",
+    ] {
+        for aa in [false, true] {
+            let mut response = decode(&bytes);
+            // Changed: the authority section replaced by an NS record at com. or the root; AA set or not.
+            response.authority = vec![rr(ns)];
+            if aa {
+                response.header.flags = response.header.flags.with(Flags::AA);
+            }
+            let scrubbed = scrub(&response, &question, &zone);
+            assert!(
+                matches!(scrubbed.outcome, Outcome::Lame),
+                "{ns} aa={aa}: {}",
+                describe(&scrubbed)
+            );
+        }
+    }
+    let mut response = decode(&bytes);
+    // Changed: the authority section emptied, AA set.
+    response.authority.clear();
+    response.header.flags = response.header.flags.with(Flags::AA);
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::NoSoa(Negative::NoData)),
+        "{}",
+        describe(&scrubbed)
+    );
+}
+
+/// A referral read from the records kept: an SOA outside the zone, or an answer outside it, makes no answer of it.
+#[test]
+fn rfc2181_6_1_records_outside_the_zone_do_not_change_a_referral() {
+    let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    // Changed: an SOA of example.net appended to the authority section, an A of www.example.net to the answer.
+    response.authority.push(rr(
+        "example.net. 300 IN SOA ns.example.net. hostmaster.example.net. 1 2 3 4 5",
+    ));
+    response
+        .answer
+        .push(rr("www.example.net. 300 IN A 192.0.2.66"));
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::Referral { .. }),
+        "{}",
+        describe(&scrubbed)
+    );
+}
+
+/// The NS records of a zone beside its negative answer are dropped: they would replace the delegation the
+/// resolver holds (CVE-2025-11411, Unbound's `iter-scrub-promiscuous`).
+#[test]
+fn rfc2308_2_ns_beside_a_negative_answer_is_dropped() {
+    let ns = "google.com. 300 IN NS ns.attacker.example.";
+    for (id, name, rtype) in [
+        (
+            "nxdomain-unsigned",
+            "dedens-nxdomain.google.com.",
+            RecordType::A,
+        ),
+        ("nodata-unsigned", "google.com.", RecordType::SRV),
+    ] {
+        let (bytes, question, zone) = captured(id, "google.com.", name, rtype);
+        let mut response = decode(&bytes);
+        // Changed: an NS record of google.com appended to the authority section.
+        response.authority.push(rr(ns));
+        let scrubbed = scrub(&response, &question, &zone);
+        let (Outcome::NxDomain { soa, .. } | Outcome::NoData { soa, .. }) = &scrubbed.outcome
+        else {
+            panic!("{id}: {}", describe(&scrubbed));
+        };
+        assert_eq!(soa.rtype(), RecordType::SOA);
+        assert_eq!(
+            reason(&scrubbed, Section::Authority, response.authority.len() - 1),
+            Some(Reason::NotAllowed)
+        );
+    }
+}
+
+/// The same negative answers without their SOA: their TTL is unknown, so nothing caches them (RFC 2308 §5).
+#[test]
+fn rfc2308_5_a_negative_answer_without_its_soa_is_not_cached() {
+    for (id, name, rtype) in [
+        (
+            "nxdomain-unsigned",
+            "dedens-nxdomain.google.com.",
+            RecordType::A,
+        ),
+        ("nodata-unsigned", "google.com.", RecordType::SRV),
+    ] {
+        let (bytes, question, zone) = captured(id, "google.com.", name, rtype);
+        let mut response = decode(&bytes);
+        // Changed: the SOA removed from the authority section.
+        response.authority.retain(|r| r.rtype() != RecordType::SOA);
+        let scrubbed = scrub(&response, &question, &zone);
+        assert!(
+            matches!(
+                scrubbed.outcome,
+                Outcome::NoSoa(Negative::NoData | Negative::NxDomain { .. })
+            ),
+            "{id}: {}",
+            describe(&scrubbed)
+        );
+        assert_eq!(scrubbed.ranked().len(), 0);
+    }
+}
+
+/// RDATA that does not parse for its type is dropped (Unbound dfc00271d): a 3-byte address is no glue and no
+/// answer.
+#[test]
+fn d9_malformed_rdata_is_dropped() {
+    let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    let glue = response.additional.len();
+    // Changed: a 3-byte A record for ns1.google.com appended to the additional section.
+    response
+        .additional
+        .push(raw("ns1.google.com.", RecordType::A, &[192, 0, 2]));
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Referral { glue: kept, .. } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert_eq!(kept.len(), glue);
+    assert_eq!(
+        reason(&scrubbed, Section::Additional, glue),
+        Some(Reason::Malformed)
+    );
+    let (bytes, question, zone) =
+        captured("signed-com", "example.com.", "example.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    // Changed: a 3-byte A record for example.com put first in the answer section.
+    response
+        .answer
+        .insert(0, raw("example.com.", RecordType::A, &[192, 0, 2]));
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Answer { records, .. } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert!(
+        records
+            .iter()
+            .all(|r| !matches!(r.data(), RData::Opaque(_)))
+    );
+    assert_eq!(
+        reason(&scrubbed, Section::Answer, 0),
+        Some(Reason::Malformed)
+    );
+}
+
+/// A DNAME's target is never compressed (RFC 6672 §2.5): one that is, and the CNAME the server made of it, which
+/// nothing can check, are dropped.
+#[test]
+fn rfc6672_2_5_a_compressed_dname_is_dropped_with_its_cname() {
+    let (bytes, question, zone) = captured(
+        "dname",
+        "dns.netmeister.org.",
+        "www.dname.dns.netmeister.org.",
+        RecordType::A,
+    );
+    let mut response = decode(&bytes);
+    let at = response
+        .answer
+        .iter()
+        .position(|r| r.rtype() == RecordType::DNAME)
+        .expect("a DNAME");
+    let cname = response
+        .answer
+        .iter()
+        .position(|r| r.rtype() == RecordType::CNAME && r.name == question.name)
+        .expect("the server's CNAME");
+    // Changed: the DNAME's target, dns.netmeister.org, written as `dns` and a pointer to offset 12, the question.
+    response.answer[at] = raw(
+        "dname.dns.netmeister.org.",
+        RecordType::DNAME,
+        &[3, b'd', b'n', b's', 0xC0, 12],
+    );
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::NoSoa(Negative::NoData)),
+        "{}",
+        describe(&scrubbed)
+    );
+    assert_eq!(
+        reason(&scrubbed, Section::Answer, at),
+        Some(Reason::Malformed)
+    );
+    assert_eq!(
+        reason(&scrubbed, Section::Answer, cname),
+        Some(Reason::Malformed)
+    );
+}
+
+/// The same DNAME to a target that makes the name asked longer than 255 bytes: the answer is YXDOMAIN with the
+/// DNAME (RFC 6672 §2.2), whether the server says so or not; a YXDOMAIN without such a DNAME says nothing.
+#[test]
+fn rfc6672_2_2_an_over_long_synthesis_is_yxdomain() {
+    let (bytes, question, zone) = captured(
+        "dname",
+        "dns.netmeister.org.",
+        "www.dname.dns.netmeister.org.",
+        RecordType::A,
+    );
+    let at = decode(&bytes)
+        .answer
+        .iter()
+        .position(|r| r.rtype() == RecordType::DNAME)
+        .expect("a DNAME");
+    // A 253-byte target: www. makes 257.
+    let long = format!("{0}.{0}.{0}.{1}.", "a".repeat(63), "b".repeat(59));
+    for rcode in [Rcode::YXDOMAIN, Rcode::NOERROR] {
+        let mut response = decode(&bytes);
+        // Changed: the DNAME's target replaced by the long name; the response code set to `rcode`.
+        response.answer[at] = dname("dname.dns.netmeister.org.", &long);
+        response.set_rcode(rcode).expect("a code");
+        let scrubbed = scrub(&response, &question, &zone);
+        let Outcome::YxDomain { chain } = &scrubbed.outcome else {
+            panic!("{rcode}: {}", describe(&scrubbed));
+        };
+        assert_eq!(
+            names(chain),
+            [
+                "dname.dns.netmeister.org. DNAME",
+                "dname.dns.netmeister.org. RRSIG"
+            ]
+        );
+    }
+    let (bytes, question, zone) =
+        captured("signed-com", "example.com.", "example.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    // Changed: the response code set to YXDOMAIN.
+    response.set_rcode(Rcode::YXDOMAIN).expect("a code");
     assert!(matches!(
         scrub(&response, &question, &zone).outcome,
-        Outcome::Lame
+        Outcome::Unusable(Unusable::Rcode(Rcode::YXDOMAIN))
     ));
+}
+
+/// The com. servers' referral for example.com, as the answer to example.com DS: the DS records are the parent's
+/// (RFC 4035 §3.1.4.1), so they are the answer, as in Unbound (6cb75924d); the child would deny them.
+#[test]
+fn rfc4035_3_1_4_1_a_referral_to_the_name_asked_for_its_ds_is_the_answer() {
+    let (bytes, _, zone) = captured("signed-com", "com.", "example.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    let ds = Question::new("example.com.".parse().expect("a name"), RecordType::DS);
+    // Changed: the question made DS.
+    response.questions = vec![ds.clone()];
+    let scrubbed = scrub(&response, &ds, &zone);
+    let Outcome::Answer { records, .. } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert_eq!(names(records), ["example.com. DS", "example.com. RRSIG"]);
 }
 
 /// An AA answer is an answer, not a referral, though its authority section names a zone between the one asked and
@@ -573,7 +931,7 @@ fn max_ns_bounds_a_referral() {
     assert_eq!(ns.len(), MAX_NS);
     assert_eq!(
         reason(&scrubbed, Section::Authority, before + MAX_NS - 4),
-        Some(Reason::TooManyNs)
+        Some(Reason::TooManyRecords)
     );
 }
 
@@ -703,10 +1061,10 @@ fn rfc2308_2_an_soa_beside_an_answer_or_a_chain_is_dropped() {
     // Changed: an SOA of example.com appended to the authority section.
     response.authority.push(rr(soa));
     let scrubbed = scrub(&response, &question, &zone);
-    let Outcome::Answer { authority, .. } = &scrubbed.outcome else {
+    let Outcome::Answer { denials, .. } = &scrubbed.outcome else {
         panic!("{}", describe(&scrubbed));
     };
-    assert!(names(authority).iter().all(|n| !n.ends_with(" SOA")));
+    assert!(names(denials).iter().all(|n| !n.ends_with(" SOA")));
     let last = response.authority.len() - 1;
     assert_eq!(
         reason(&scrubbed, Section::Authority, last),
@@ -718,13 +1076,13 @@ fn rfc2308_2_an_soa_beside_an_answer_or_a_chain_is_dropped() {
     response.authority.push(rr(soa));
     let scrubbed = scrub(&response, &question, &zone);
     let Outcome::Cname {
-        target, authority, ..
+        target, denials, ..
     } = &scrubbed.outcome
     else {
         panic!("{}", describe(&scrubbed));
     };
     assert_eq!(target.to_string(), "www.example.com.");
-    assert!(names(authority).iter().all(|n| !n.ends_with(" SOA")));
+    assert!(names(denials).iter().all(|n| !n.ends_with(" SOA")));
     let last = response.authority.len() - 1;
     assert_eq!(
         reason(&scrubbed, Section::Authority, last),
@@ -732,8 +1090,9 @@ fn rfc2308_2_an_soa_beside_an_answer_or_a_chain_is_dropped() {
     );
 }
 
-/// The ranks of RFC 2181 §5.4.1: a referral's records are the non-authoritative authority and additional data, an
-/// answer's chain is authoritative at the name asked only.
+/// The ranks of RFC 2181 §5.4.1: a referral's records are the non-authoritative authority and additional data; an
+/// answer's chain is authoritative at the name asked and at the owner of its first record, a DNAME, as Unbound ranks
+/// it (RFC 1035 §4.1.1); an authoritative answer's additional data is ranked authoritative additional data.
 #[test]
 fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
@@ -759,12 +1118,28 @@ fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     );
     let response = decode(&bytes);
     let scrubbed = scrub(&response, &question, &zone);
+    let dname: Name<'_> = "dname.dns.netmeister.org.".parse().expect("a name");
     for (rank, r) in scrubbed.ranked() {
-        let expected = if r.name == question.name {
+        let expected = if r.name == question.name || r.name == dname {
             Rank::AnswerAuthoritative
         } else {
             Rank::AnswerNonAuthoritative
         };
         assert_eq!(rank, expected, "{} {}", r.name, r.rtype());
     }
+    let (bytes, question, zone) = captured("priming", ".", ".", RecordType::NS);
+    let response = decode(&bytes);
+    let ranks: Vec<_> = scrub(&response, &question, &zone)
+        .ranked()
+        .into_iter()
+        .map(|(rank, r)| (rank, r.rtype()))
+        .collect();
+    assert!(
+        ranks.contains(&(Rank::AnswerAuthoritative, RecordType::NS)),
+        "{ranks:?}"
+    );
+    assert!(
+        ranks.contains(&(Rank::AdditionalAuthoritative, RecordType::AAAA)),
+        "{ranks:?}"
+    );
 }
