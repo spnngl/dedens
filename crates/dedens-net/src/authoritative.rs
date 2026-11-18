@@ -15,8 +15,12 @@
 //! Only that TCP response, which an off-path forger cannot send, tells the server does not repeat the case:
 //! [`Quirks::no_case`]. A forged mismatch costs a TCP query, never the `0x20` check.
 //!
-//! An ICMP error, which anyone knowing the port can send, never ends a query: the wait goes on to the deadline,
-//! and the error comes back beside the timeout only, [`ServerError::Unreachable`].
+//! A socket error on the UDP exchange may be an ICMP error, which anyone knowing the port can send: it never ends
+//! the query but for one of ours, no memory or buffer left, or a bug. The wait goes on to the deadline, and the
+//! error comes back beside the timeout only, [`ServerError::Unreachable`].
+//!
+//! The server is asked on [`SERVER_FLOOR`] at least: a query that waited for a socket or a TCP connection until
+//! less is left fails as ours, so that the caller does not count our queueing against the server.
 //!
 //! What a server shows of itself, [`Quirks`], goes back to the caller, whose infra cache keeps it and passes it in
 //! with the next query (step 07 of the recursive resolver).
@@ -30,7 +34,8 @@ use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::{Duration, Instant};
 
 use dedens_proto::edns::EdnsFlags;
-use dedens_proto::{EncodeError, Flags, Message, Query, Question, Rcode, Transport};
+use dedens_proto::{EncodeError, Flags, Message, Question, Rcode, Transport};
+use rustix::io::Errno;
 
 use crate::client::{Random, local_io};
 use crate::cookies::{COOKIES, Jar, Pair};
@@ -56,6 +61,12 @@ const FIRST_PORT: u16 = 1024;
 /// something else holds the ports then. BIND draws six (`lib/dns/dispatch.c:setup_socket`), Unbound up to 10000
 /// (`MAX_PORT_RETRY`, `services/outside_network.c`).
 const PORT_TRIES: usize = 8;
+
+/// The least time a server is asked on after a wait of ours, for a socket or a TCP connection: a query left with
+/// less fails as ours, [`LocalError::NoSocket`] or [`LocalError::TcpBusy`], rather than time out as the server's,
+/// which the caller's server selection would count against it (D190). 50 ms is the least timeout Unbound gives a
+/// server (`RTT_MIN_TIMEOUT`, `util/rtt.c`), as an infra cache passes it in through the deadline.
+pub const SERVER_FLOOR: Duration = Duration::from_millis(50);
 
 /// The default [`Limits::sockets`].
 const SOCKETS: NonZeroUsize = NonZeroUsize::new(1024).expect("1024 is not zero");
@@ -132,17 +143,15 @@ pub enum Edns {
 impl Quirks {
     /// These quirks, with those `response` showed.
     fn with(self, response: &Response) -> Self {
-        let read = Query::read(&response.wire).ok();
-        let answered = read.as_ref().map(Query::rcode);
-        let edns = match (read.as_ref().and_then(Query::edns), response.edns_dropped) {
-            (Some(_), _) => Edns::Supported,
-            (None, Some(rejected))
-                if let Some(answered) = answered
-                    && [Rcode::NOERROR, Rcode::NXDOMAIN, Rcode::YXDOMAIN].contains(&answered) =>
+        let answered = response.rcode;
+        let edns = match (response.opt, response.edns_dropped) {
+            (true, _) => Edns::Supported,
+            (false, Some(rejected))
+                if [Rcode::NOERROR, Rcode::NXDOMAIN, Rcode::YXDOMAIN].contains(&answered) =>
             {
                 Edns::Unsupported { rejected, answered }
             }
-            (None, _) => self.edns,
+            (false, _) => self.edns,
         };
         Self {
             edns,
@@ -181,7 +190,7 @@ pub enum LocalError {
     /// No randomness for the ID, the port, the `0x20` bits or the cookie.
     #[error("no randomness")]
     Random(#[source] io::Error),
-    /// No UDP socket free before the deadline, [`Limits::sockets`] in flight.
+    /// No UDP socket free in time to ask the server, [`Limits::sockets`] in flight.
     #[error("no UDP socket free before the deadline")]
     NoSocket,
     /// No UDP socket bound: eight ports drawn all in use, or another error, no descriptor left or a port not allowed.
@@ -193,6 +202,9 @@ pub enum LocalError {
     /// No TCP connection free before the deadline, [`Limits::tcp`] busy, or four to the server.
     #[error("no TCP connection free before the deadline")]
     TcpBusy,
+    /// The query is too long to go over TCP, 65535 bytes at most.
+    #[error("a query of {0} bytes cannot go over TCP")]
+    TooLong(usize),
     /// The query cannot be encoded.
     #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
@@ -279,7 +291,8 @@ impl<N: Io> Authoritative<N> {
         Self {
             tcp: TcpPool::with_io(io.clone(), TCP_IDLE)
                 .at_most(limits.tcp)
-                .per_server(TCP_PER_SERVER),
+                .per_server(TCP_PER_SERVER)
+                .leaving(SERVER_FLOOR),
             io,
             sockets,
             cookies: RefCell::new(Jar::new(limits.cookies)),
@@ -289,11 +302,12 @@ impl<N: Io> Authoritative<N> {
     }
 
     /// Asks `server` for `question`, once, until `deadline`: the wait for a socket, the query over UDP, and its
-    /// fallbacks, to TCP on a truncated response or a case mismatch, without EDNS, or with a fresh server cookie
-    /// (D27), all end by then. The query has RD clear, and its question's name in the case given comes back in
-    /// [`Answer::response`]. With [`Quirks::tcp`], the query goes over TCP from the start, without `0x20`, which an
-    /// off-path forger cannot answer anyway, nor a cookie, the source being known to the server's handshake. Trying
-    /// again, maybe another server, is the caller's.
+    /// fallbacks, to TCP on a truncated response or a case mismatch, without EDNS unless [`Edns::Supported`], or
+    /// with a fresh server cookie (D27), all end by then; a wait for a socket or a TCP connection leaves the server
+    /// [`SERVER_FLOOR`] at least, or fails. The query has RD clear, and its question's name in the case given comes
+    /// back in [`Answer::response`]. With [`Quirks::tcp`], the query goes over TCP from the start, without `0x20`,
+    /// which an off-path forger cannot answer anyway, nor a cookie, the source being known to the server's
+    /// handshake. Trying again, maybe another server, is the caller's.
     ///
     /// # Errors
     ///
@@ -317,7 +331,9 @@ impl<N: Io> Authoritative<N> {
             });
         let mut options = Options {
             tries: NonZeroU8::MIN,
-            timeout: deadline.saturating_duration_since(self.io.now()),
+            // A FORMERR without OPT from a server known to answer with it is a forger's, as Unbound's
+            // `edns_lame_known` (`services/outside_network.c`).
+            edns_fallback: quirks.edns != Edns::Supported,
             case_mismatch: CaseMismatch::Tcp,
             ..Options::default()
         };
@@ -359,8 +375,13 @@ impl<N: Io> Authoritative<N> {
         for id in &mut spare_ids {
             *id = u16::from_be_bytes(self.draw()?);
         }
-        let exchange = Exchange::start(query, server, options, spare_ids, self.io.now())
-            .map_err(LocalError::Encode)?;
+        let now = self.io.now();
+        let options = Options {
+            timeout: deadline.saturating_duration_since(now),
+            ..options
+        };
+        let exchange =
+            Exchange::start(query, server, options, spare_ids, now).map_err(LocalError::Encode)?;
         // The last ICMP error, told beside the timeout only.
         let mut unreachable = None;
         let mut progress = Progress::Send(exchange);
@@ -392,9 +413,11 @@ impl<N: Io> Authoritative<N> {
                         Some(socket) => {
                             match send(&socket.udp, next.wire()).await {
                                 Ok(()) => {}
-                                // An ICMP error of a send before: as on the receive.
-                                Err(error) if !local_io(&error) => unreachable = Some(error.kind()),
-                                Err(error) => return Err(LocalError::Socket(error).into()),
+                                Err(error) if ours(&error) => {
+                                    return Err(LocalError::Socket(error).into());
+                                }
+                                // The ICMP error of a send before, maybe: as on the receive.
+                                Err(error) => unreachable = Some(error.kind()),
                             }
                             Progress::Wait(next)
                         }
@@ -440,6 +463,7 @@ impl<N: Io> Authoritative<N> {
             }
             Err(TcpError::TimedOut) => Ok(exchange.lose(self.io.now())),
             Err(TcpError::Busy) => Err(LocalError::TcpBusy.into()),
+            Err(TcpError::BadLength(len)) => Err(LocalError::TooLong(len).into()),
             Err(TcpError::Connect(error)) if local_io(&error) => {
                 Err(LocalError::Socket(error).into())
             }
@@ -447,20 +471,23 @@ impl<N: Io> Authoritative<N> {
         }
     }
 
-    /// A UDP socket to `server` from a random port, once one is free before `deadline`.
+    /// A UDP socket to `server` from a random port, once one is free with [`SERVER_FLOOR`] left before `deadline`.
     async fn open(
         &self,
         server: SocketAddr,
         deadline: Instant,
     ) -> Result<Socket<N::Udp>, AuthoritativeError> {
-        let token = self
-            .io
-            .timeout_at(deadline, self.sockets.1.recv_async())
-            .await;
-        let Ok(Ok(())) = token else {
-            debug!(%server, "no UDP socket free before the deadline");
-            return Err(LocalError::NoSocket.into());
-        };
+        if self.sockets.1.try_recv().is_err() {
+            let room_by = deadline.checked_sub(SERVER_FLOOR).unwrap_or(deadline);
+            let token = self
+                .io
+                .timeout_at(room_by, self.sockets.1.recv_async())
+                .await;
+            let Ok(Ok(())) = token else {
+                debug!(%server, "no UDP socket free in time to ask");
+                return Err(LocalError::NoSocket.into());
+            };
+        }
         let token = Token(self.sockets.0.clone());
         let mut in_use = None;
         for _ in 0..PORT_TRIES {
@@ -501,8 +528,9 @@ impl<N: Io> Authoritative<N> {
         }
     }
 
-    /// The next datagram on `udp`, or `None` past `deadline`. An ICMP error, such as a port unreachable, goes in
-    /// `unreachable` and the wait goes on (Unbound's `util/netevent.c:comm_point_udp_callback`).
+    /// The next datagram on `udp`, or `None` past `deadline`. An error but [`ours`], such as the port unreachable
+    /// of an ICMP error, goes in `unreachable` and the wait goes on, as Unbound's on any error
+    /// (`util/netevent.c:comm_point_udp_callback`); one waiting for the socket ends the reading, not the wait.
     async fn recv(
         &self,
         udp: &N::Udp,
@@ -512,7 +540,17 @@ impl<N: Io> Authoritative<N> {
         loop {
             match self.io.timeout_at(deadline, udp.readable()).await {
                 Err(_) => return Ok(None),
-                Ok(ready) => ready?,
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if ours(&error) => return Err(error),
+                Ok(Err(error)) => {
+                    debug!(error = %error, "cannot wait for the socket: waiting on");
+                    *unreachable = Some(error.kind());
+                    let _ = self
+                        .io
+                        .timeout_at(deadline, std::future::pending::<()>())
+                        .await;
+                    return Ok(None);
+                }
             }
             let mut scratch = self.scratch.borrow_mut();
             match udp.try_recv(&mut scratch) {
@@ -522,11 +560,11 @@ impl<N: Io> Authoritative<N> {
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) => {}
-                Err(error) if !local_io(&error) => {
-                    debug!(error = %error, "ICMP error: waiting on");
+                Err(error) if ours(&error) => return Err(error),
+                Err(error) => {
+                    debug!(error = %error, "ICMP error, maybe: waiting on");
                     *unreachable = Some(error.kind());
                 }
-                Err(error) => return Err(error),
             }
         }
     }
@@ -538,6 +576,22 @@ impl<N: Io> Authoritative<N> {
             .take(&self.io)
             .map_err(LocalError::Random)
     }
+}
+
+/// Whether an error of a query's UDP socket is ours: no memory or buffer left, or a bad descriptor or argument, a
+/// bug. Any other may come of an ICMP error, which anyone knowing the port can send: on a connected socket, Linux
+/// turns those of `ICMPv4` into ECONNREFUSED, EHOSTUNREACH, ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES or
+/// EPROTO (`net/ipv4/icmp.c:icmp_err_convert`), and those of `ICMPv6` into EACCES or EPROTO among others
+/// (`net/ipv6/icmp.c:icmpv6_err_convert`); so the list is of ours, not of the network's.
+fn ours(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::OutOfMemory | io::ErrorKind::InvalidInput
+    ) || error.raw_os_error().is_some_and(|raw| {
+        [Errno::NOBUFS, Errno::BADF]
+            .map(Errno::raw_os_error)
+            .contains(&raw)
+    })
 }
 
 /// Sends `wire` whole on `udp`.

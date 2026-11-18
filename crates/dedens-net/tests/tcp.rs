@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use dedens_net::exchange::Options;
 use dedens_net::io::{Compio, Io, Stream};
-use dedens_net::tcp::{TcpError, TcpPool, frame};
+use dedens_net::tcp::{STALLED, TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Flags, Message, Rcode, Record, Transport};
 
@@ -201,7 +201,7 @@ async fn no_response_before_the_deadline_times_out() {
     let (listener, server) = listen().await;
     let pool = pool();
     let accepted = compio::runtime::spawn(async move { Peer::accept(&listener).await });
-    let soon = Instant::now() + Duration::from_millis(50);
+    let soon = Instant::now() + STALLED + Duration::from_millis(50);
     let result = pool.exchange(server, &query_with_id(6), soon).await;
     assert!(matches!(result, Err(TcpError::TimedOut)), "{result:?}");
     drop(accepted);
@@ -460,7 +460,7 @@ async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
     let pool = pool();
     let timed_out = {
         let pool = Rc::clone(&pool);
-        let soon = Instant::now() + Duration::from_millis(50);
+        let soon = Instant::now() + STALLED + Duration::from_millis(50);
         compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(16), soon).await })
     };
     let mut silent = Peer::accept(&listener).await;
@@ -484,6 +484,70 @@ async fn a_connection_silent_since_a_query_timed_out_is_replaced() {
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
 }
 
+/// D190: a query timing out short of [`STALLED`], as one with little of its deadline left, tells nothing of the
+/// server: the connection takes the next query.
+#[compio::test]
+async fn a_query_timing_out_short_of_stalled_keeps_the_connection() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let soon = Instant::now() + Duration::from_millis(50);
+    let timed_out = pool.exchange(server, &query_with_id(16), soon).await;
+    assert!(
+        matches!(timed_out, Err(TcpError::TimedOut)),
+        "{timed_out:?}"
+    );
+    let mut peer = Peer::accept(&listener).await;
+    peer.read().await.expect("the query that timed out");
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(server, &query_with_id(17), deadline()).await
+        })
+    };
+    let query = peer
+        .read()
+        .await
+        .expect("the next query on the same connection");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
+}
+
+/// D190: queries waiting for room take it in the order they came, as Unbound's `tcp_wait_first`.
+#[compio::test]
+async fn queries_waiting_for_room_take_it_in_the_order_they_came() {
+    let (holding, held) = listen().await;
+    let (first, second) = (listen().await, listen().await);
+    let pool = Rc::new(TcpPool::new(Duration::from_secs(5)).at_most(NonZeroUsize::MIN));
+    let ask = |server, n| {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(
+            async move { pool.exchange(server, &query_with_id(n), deadline()).await },
+        )
+    };
+    let holder = ask(held, 16);
+    let mut peer = Peer::accept(&holding).await;
+    let query = peer.read().await.expect("a query");
+    let (one, two) = (ask(first.1, 17), ask(second.1, 18));
+    // Both wait for room, in that order.
+    compio::time::sleep(Duration::from_millis(50)).await;
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert!(holder.await.expect("joined").is_ok());
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&first.0))
+        .await
+        .expect("the first in line connects");
+    let early = compio::time::timeout(Duration::from_millis(100), Peer::accept(&second.0)).await;
+    assert!(early.is_err(), "the second in line connected first");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(one.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&second.0))
+        .await
+        .expect("the second in line connects");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(two.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
+}
+
 /// A response read before the query that timed out was sent does not keep the connection: the next query goes on
 /// a new one.
 #[compio::test]
@@ -500,7 +564,7 @@ async fn a_connection_answering_before_a_query_that_timed_out_is_replaced() {
     let query = silent.read().await.expect("a query");
     silent.write(&[answer(&query, Vec::new())]).await;
     assert!(answered.await.expect("joined").is_ok());
-    let soon = Instant::now() + Duration::from_millis(50);
+    let soon = Instant::now() + STALLED + Duration::from_millis(50);
     let timed_out = pool.exchange(server, &query_with_id(22), soon).await;
     assert!(
         matches!(timed_out, Err(TcpError::TimedOut)),
@@ -529,13 +593,13 @@ async fn a_connection_trickling_unasked_frames_is_replaced() {
     let pool = pool();
     let timed_out = {
         let pool = Rc::clone(&pool);
-        let soon = Instant::now() + Duration::from_millis(100);
+        let soon = Instant::now() + STALLED + Duration::from_millis(100);
         compio::runtime::spawn(async move { pool.exchange(server, &query_with_id(16), soon).await })
     };
     let mut trickling = Peer::accept(&listener).await;
     trickling.read().await.expect("a query");
     // The client may close the connection before the trickle ends.
-    for _ in 0..5 {
+    for _ in 0..20 {
         if !trickling
             .offer(&[answer(&query_with_id(3), Vec::new())])
             .await
