@@ -11,12 +11,14 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 ## Invariants
 
 - Nothing reaches a cache or a client but through `scrub`: it alone knows the zone a server was asked as, which
-  bounds what the server is trusted with (RFC 2181 §6.1). Its `Rank`s are what the cache's replacement reads.
+  bounds what the server is trusted with (RFC 2181 §6.1). `Scrubbed::ranked` is what `insert` takes: its `RRsets`,
+  each with its signatures and `Rank` (one type, `src/rank.rs`), which the cache's replacement reads.
 - A rule of `scrub` changes with D192 and a test in `tests/scrub.rs`; a bound is a named constant with its Unbound
   value, and a test reaches it.
 - `scrub` is total: any message, any zone, no panic. The fuzz target `scrub_response` checks that what it keeps is
-  within the zone and parses, and that every record of the response is kept or dropped, once; its seeds are the
-  captures of `testdata/recursion`.
+  within the zone and parses, that every record of the response is kept or dropped, once, and that each kept is in
+  an `RRset` of its rank; its seeds are the captures of `testdata/recursion`. A record no `RRset` holds (a meta
+  type) is dropped, not kept: grouping loses nothing.
 - A scrubbed `Lame` or `Unusable` keeps and drops nothing: the iteration asks another server, nothing is logged per
   record.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,
@@ -39,8 +41,7 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 ## Traps
 
 - `Rank::AnswerNonAuthoritative` is never a non-AA answer: a response without AA but a referral is `Lame` (D192, a
-  deviation from Unbound). It is the chain past an AA answer's first owner. The RRset cache's ranks say the same.
-
+  deviation from Unbound). It is the chain past an AA answer's first owner.
 - A DS question referred to the name asked without a DS: the referral's proof holds the NSEC or NSEC3 denying it;
   the iteration must read it there, not ask the child, whose answer would be NODATA from the wrong side of the cut.
 - NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost

@@ -11,7 +11,7 @@ use dedens_proto::{
     ZoneEntry, ZoneReader,
 };
 use dedens_resolver::{
-    MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Negative, Outcome, Rank, Reason, Scrubbed,
+    MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Negative, Outcome, Rank, Reason, Rrset, Scrubbed,
     Unusable, scrub,
 };
 use dedens_testkit::recursion::Resolution;
@@ -196,6 +196,59 @@ fn rfc2181_6_1_every_capture_scrubs_to_what_it_holds() {
         }
     }
     insta::assert_snapshot!(out);
+}
+
+/// Every capture's records kept come out as `RRsets` (RFC 2181 §5), none lost, each RRSIG kept with the `RRset` it
+/// covers at the rank of its records (RFC 4034 §3): what the `RRset` cache takes.
+#[test]
+fn rfc4034_3_every_capture_groups_each_signature_with_its_rrset() {
+    let mut signed = 0;
+    for (id, resolution) in Resolution::all() {
+        for e in &resolution.exchanges {
+            let response = decode(&e.response);
+            let question = Question::new(e.name.clone(), e.rtype);
+            let scrubbed = scrub(&response, &question, &e.zone);
+            let (records, ranked) = (scrubbed.records(), scrubbed.ranked());
+            let (sigs, data): (Vec<_>, Vec<_>) = records
+                .iter()
+                .partition(|(_, r)| r.rtype() == RecordType::RRSIG);
+            let set_of = |rank: Rank, r: &Record<'_>, rtype: RecordType| {
+                ranked.iter().find(|(k, set)| {
+                    *k == rank
+                        && *set.owner() == r.name
+                        && set.rtype() == rtype
+                        && set.class() == r.class
+                })
+            };
+            for (rank, r) in &data {
+                assert!(
+                    set_of(*rank, r, r.rtype()).is_some(),
+                    "{id} {}: {rank:?} {} {} in no RRset",
+                    e.name,
+                    r.name,
+                    r.rtype()
+                );
+            }
+            for (rank, r) in &sigs {
+                let RData::Rrsig(sig) = r.data() else {
+                    panic!("{id} {}: an RRSIG that does not parse kept", e.name);
+                };
+                let set = set_of(*rank, r, sig.type_covered);
+                assert!(
+                    set.is_some_and(|(_, set)| !set.rrsigs().is_empty()),
+                    "{id} {}: {rank:?} {} RRSIG {} with no RRset",
+                    e.name,
+                    r.name,
+                    sig.type_covered
+                );
+            }
+            let count = |f: fn(&Rrset) -> usize| ranked.iter().map(|(_, s)| f(s)).sum::<usize>();
+            assert_eq!(count(|s| s.rdatas().len()), data.len(), "{id} {}", e.name);
+            assert_eq!(count(|s| s.rrsigs().len()), sigs.len(), "{id} {}", e.name);
+            signed += sigs.len();
+        }
+    }
+    assert!(signed > 0, "the captures hold signatures");
 }
 
 /// The `com.` servers' referral for google.com: glue for a name of another zone is the Kaminsky attack, dropped
@@ -856,12 +909,12 @@ fn rfc4035_3_1_4_1_a_referral_to_the_name_asked_for_its_ds_is_the_answer() {
     assert_eq!(names(records), ["example.com. DS", "example.com. RRSIG"]);
     // The parent's authoritative data (RFC 4035 §2.3), though the referral is without AA.
     assert!(!response.header.flags.contains(Flags::AA));
-    assert!(
-        scrubbed
-            .ranked()
-            .iter()
-            .all(|(rank, _)| *rank == Rank::AnswerAuthoritative)
-    );
+    let ranked = scrubbed.ranked();
+    let [(rank, set)] = ranked.as_slice() else {
+        panic!("{ranked:?}");
+    };
+    assert_eq!(*rank, Rank::AnswerAuthoritative);
+    assert_eq!((set.rtype(), set.rrsigs().len()), (RecordType::DS, 1));
 }
 
 /// An AA answer is an answer, not a referral, though its authority section names a zone between the one asked and
@@ -966,6 +1019,35 @@ fn rfc2181_6_1_an_nsec_past_the_zone_and_another_class_are_dropped() {
         reason(&scrubbed, Section::Authority, added + 1),
         Some(Reason::OtherClass)
     );
+}
+
+/// A record of a QTYPE or meta type is no data (RFC 6895 §3.1): no `RRset` holds it, so the scrubber drops it rather
+/// than rank what the cache would not take.
+#[test]
+fn rfc6895_3_1_a_qtype_or_meta_type_is_dropped() {
+    let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    let added = response.additional.len();
+    // Changed: a TKEY (249, meta) and an ANY (255, QTYPE) at ns1.google.com, appended.
+    response
+        .additional
+        .push(raw("ns1.google.com.", RecordType::from(249), b""));
+    response
+        .additional
+        .push(raw("ns1.google.com.", RecordType::ANY, b""));
+    let scrubbed = scrub(&response, &question, &zone);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::Referral { .. }),
+        "{}",
+        describe(&scrubbed)
+    );
+    for i in added..added + 2 {
+        assert_eq!(
+            reason(&scrubbed, Section::Additional, i),
+            Some(Reason::NotData),
+            "{i}"
+        );
+    }
 }
 
 /// [`MAX_NS`]: a referral of more name servers keeps the first ones.
@@ -1156,7 +1238,7 @@ fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     let ranks: Vec<_> = scrub(&response, &question, &zone)
         .ranked()
         .into_iter()
-        .map(|(rank, r)| (rank, r.rtype()))
+        .map(|(rank, set)| (rank, set.rtype()))
         .collect();
     assert!(
         ranks.contains(&(Rank::AuthorityNonAuthoritative, RecordType::NS)),
@@ -1175,20 +1257,20 @@ fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     let response = decode(&bytes);
     let scrubbed = scrub(&response, &question, &zone);
     let dname: Name<'_> = "dname.dns.netmeister.org.".parse().expect("a name");
-    for (rank, r) in scrubbed.ranked() {
-        let expected = if r.name == question.name || r.name == dname {
+    for (rank, set) in scrubbed.ranked() {
+        let expected = if *set.owner() == question.name || *set.owner() == dname {
             Rank::AnswerAuthoritative
         } else {
             Rank::AnswerNonAuthoritative
         };
-        assert_eq!(rank, expected, "{} {}", r.name, r.rtype());
+        assert_eq!(rank, expected, "{} {}", set.owner(), set.rtype());
     }
     let (bytes, question, zone) = captured("priming", ".", ".", RecordType::NS);
     let response = decode(&bytes);
     let ranks: Vec<_> = scrub(&response, &question, &zone)
         .ranked()
         .into_iter()
-        .map(|(rank, r)| (rank, r.rtype()))
+        .map(|(rank, set)| (rank, set.rtype()))
         .collect();
     assert!(
         ranks.contains(&(Rank::AnswerAuthoritative, RecordType::NS)),

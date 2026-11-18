@@ -171,13 +171,13 @@ struct Building<'r, 'a> {
 
 /// Whether records of `rtype` are data: not 0, OPT, the QTYPEs and meta types of 128 to 255 nor the reserved 65535
 /// (RFC 6895 §3.1).
-fn data_type(rtype: RecordType) -> bool {
+pub(crate) fn data_type(rtype: RecordType) -> bool {
     rtype != RecordType::OPT && !matches!(u16::from(rtype), 0 | 128..=255 | 65535)
 }
 
 /// Whether records of `class` are data: not the reserved 0 and 65535, nor the QCLASSes NONE (254) and ANY (255)
 /// (RFC 6895 §3.2).
-fn data_class(class: Class) -> bool {
+pub(crate) fn data_class(class: Class) -> bool {
     !matches!(u16::from(class), 0 | 254 | 255 | 65535)
 }
 

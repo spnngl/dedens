@@ -1445,8 +1445,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   cannot finish), `Referral { child, ns, proof, glue }`, `NoData { soa, denials }`, `NxDomain { chain, soa, denials }`,
   `YxDomain { chain }`, `NoSoa` (a negative answer without its SOA: no negative TTL, so not cached, RFC 2308 §5),
   `Lame` or `Unusable(why)`. A negative outcome holds its SOA, not an `Option`: one without is `NoSoa`. Each record
-  dropped is returned with its section, index and `Reason`, for the iteration to log and count; each kept with its
-  `Rank` (`Scrubbed::ranked`). The rules, as Unbound's `iterator/iter_scrub.c` (`scrub_normalize`,
+  dropped is returned with its section, index and `Reason`, for the iteration to log and count; those kept are
+  grouped into `RRsets` (D193), each with the RRSIGs covering it and its `Rank`, what `RrsetCache::insert` takes
+  (`Scrubbed::ranked`; `Scrubbed::records` lists them one by one). A signature shares its `RRset`'s owner and
+  section, so its rank: the scrubber pairs them, not the cache. `Rank` is one type, in `rank.rs`, the scrubber's
+  output and the cache's input. The rules, as Unbound's `iterator/iter_scrub.c` (`scrub_normalize`,
   `scrub_sanitize`) and `iter_resptype.c` (`response_type_from_server`) have them, but for the deviations below:
   - unusable, nothing kept: QR unset or an opcode other than QUERY, TC set (asked again over TCP, RFC 7766 §5), a
     code other than NOERROR, NXDOMAIN and YXDOMAIN, a YXDOMAIN without the DNAME that makes it, not exactly the
@@ -1454,7 +1457,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - every section: a record of another class, or owned outside `zone`, is dropped (RFC 2181 §6.1); so is one of a
     type `dedens-proto` decodes whose RDATA does not parse (decoded `Opaque`, D9), and a DNAME whose target is
     compressed or no name (RFC 6672 §2.5), with the CNAME the server made of it: `Malformed` (Unbound dfc00271d drops
-    A and AAAA of the wrong size; every typed type here, as the cache would serve them);
+    A and AAAA of the wrong size; every typed type here, as the cache would serve them); so is one of a QTYPE, meta
+    type or QCLASS (RFC 6895 §3.1, §3.2), `NotData`, which no `RRset` holds: nothing kept is lost in grouping;
   - AA: only authoritative data from the zone's servers is trusted (RFC 2181 §5.4.1). A response without AA that
     is not a referral is `Lame`, NXDOMAIN and NODATA included, RA set or not; a response referring nowhere below
     `zone` (an NS `RRset` of the zone itself, above it or a sibling, and nothing else) is `Lame` whatever AA says
@@ -1521,13 +1525,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     strings, signatures, differing in case only) stays apart, and a run of it is compared by hash: an attacker's
     4096 case variants of one TXT string cost no quadratic work.
   - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
-    non-authoritative (referral NS), additional authoritative, answer non-authoritative (and the CNAME chain of an
-    authoritative answer past its first name), authority authoritative, answer authoritative. The RFC's last
+    non-authoritative (referral NS), additional authoritative, answer non-authoritative (the chain of an authoritative
+    answer past its first owner, never a response without AA, which is lame, D192), authority authoritative, answer authoritative. The RFC's last
     bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
     (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
     holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph). Step 05's scrubber ranks
-    what it keeps: `insert` takes scrubbed data, in the bailiwick of the server it came from, and trusts the
-    rank given. `get` returns any rank: only answer non-authoritative and above, or secure data, may answer a client
+    what it keeps: `insert` takes its `Scrubbed::ranked` `RRsets`, in the bailiwick of the server they came from,
+    and trusts the rank given. `get` returns any rank: only answer non-authoritative and above, or secure data, may answer a client
     (RFC 2181 §5.4.1), which `Hit` says and its caller checks; the rest serves the resolution.
   - Replacement, Unbound's `need_to_update_rrset` (`services/cache/rrset.c`): an expired entry gives way to anything;
     more trusted data replaces, except data equal to bogus data that is not itself secure (it would lengthen the
