@@ -428,7 +428,8 @@ impl Waiters {
     /// Waits at the place of `ticket` until woken.
     async fn wait(&self, ticket: u64) {
         let (wake, woken) = flume::bounded(1);
-        self.queue.borrow_mut().insert(ticket, wake);
+        let taken = self.queue.borrow_mut().insert(ticket, wake);
+        debug_assert!(taken.is_none(), "one query waits at a place");
         let place = Place {
             waiters: self,
             ticket,

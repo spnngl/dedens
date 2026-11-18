@@ -743,6 +743,43 @@ async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
     }
 }
 
+/// A wake-up with no datagram to read is no error of the server: a server sending only a datagram of another ID
+/// times out, not unreachable.
+#[compio::test]
+async fn a_spurious_wakeup_tells_nothing_of_the_server() {
+    let addr = server(
+        |query| {
+            let mut other = real(query);
+            other[0] ^= 0xff;
+            vec![(From::Server, other)]
+        },
+        |_| unreachable!("all over UDP"),
+    );
+    let (client, seen) = client(Limits::default());
+    seen.borrow_mut().recv_errors = vec![
+        io::ErrorKind::WouldBlock.into(),
+        io::ErrorKind::Interrupted.into(),
+    ];
+    let silence = client
+        .query(
+            google(),
+            addr,
+            with_edns(),
+            Instant::now() + Duration::from_millis(200),
+        )
+        .await;
+    assert!(
+        matches!(
+            silence,
+            Err(AuthoritativeError::Server(ServerError::TimedOut {
+                sends: 1
+            }))
+        ),
+        "{silence:?}"
+    );
+    assert!(seen.borrow().recv_errors.is_empty());
+}
+
 /// A receive failing for want of ours fails the query at once, the server not to blame.
 #[compio::test]
 async fn a_receive_failing_for_want_of_ours_fails_at_once() {
