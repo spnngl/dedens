@@ -108,18 +108,23 @@ fn a_copy_of_the_bundled_list_reads_as_it() {
     );
 }
 
+/// RFC 3339 §5.6 and §5.7: the bundled list with its `meta.generated` replaced; each `just roots` moves the bundled
+/// one, so the times are fixed here.
 #[test]
 fn a_list_is_as_old_as_its_generated_time() {
-    let generated = "2026-11-16T23:49:03+00:00";
-    assert_eq!(Tlds::bundled().generated(), 1_794_872_943, "{generated}");
     let bundled = include_str!("../src/tlds.json");
-    assert!(bundled.contains(generated), "the bundled `meta.generated`");
+    let json: serde_json::Value = serde_json::from_str(bundled).expect("JSON");
+    let generated = json["meta"]["generated"]
+        .as_str()
+        .expect("the bundled `meta.generated`");
     let at = |time: &str| {
         Tlds::read(bundled.replacen(generated, time, 1).as_bytes())
             .map(|tlds| tlds.generated())
             .map_err(|error| error.to_string())
     };
+    assert_eq!(at(generated), Ok(Tlds::bundled().generated()));
     for same in [
+        "2026-11-16T23:49:03+00:00",
         "2026-11-16T23:49:03Z",
         "2026-11-16t23:49:03.999z",
         "2026-11-17T01:19:03+01:30",
@@ -128,6 +133,8 @@ fn a_list_is_as_old_as_its_generated_time() {
         assert_eq!(at(same), Ok(1_794_872_943), "{same}");
     }
     assert_eq!(at("2024-02-29T00:00:00Z"), Ok(1_709_164_800));
+    assert_eq!(at("2000-02-29T00:00:00Z"), Ok(951_782_400));
+    assert_eq!(at("2026-04-30T00:00:00Z"), Ok(1_777_507_200));
     assert_eq!(at("1970-01-31T00:59:60Z"), Ok(30 * 86_400 + 3600));
     assert_eq!(at("1970-01-01T23:59:00+23:58"), Ok(60));
     assert_eq!(at("1970-01-02T00:00:00+23:59"), Ok(60));
@@ -143,6 +150,10 @@ fn a_list_is_as_old_as_its_generated_time() {
         "2026-13-16T23:49:03Z",
         "2026-11-00T23:49:03Z",
         "2026-11-32T23:49:03Z",
+        "2026-02-29T00:00:00Z",
+        "2100-02-29T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-11-16T23:49:03.Z",
         "2026-11-16T24:49:03Z",
         "2026-11-16T23:60:03Z",
         "2026-11-16T23:49:61Z",
