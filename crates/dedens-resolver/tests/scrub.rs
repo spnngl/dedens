@@ -440,6 +440,55 @@ fn rfc6672_3_4_a_dname_to_an_unrelated_zone_stops_the_chain() {
     );
 }
 
+/// A server CNAME that is not the DNAME's goes with the signatures at its name (RFC 6672 §3.4); the signatures of
+/// the DNAME and of the chain past it stay.
+#[test]
+fn rfc6672_3_4_a_replaced_cname_loses_its_signatures_alone() {
+    let (bytes, question, zone) = captured(
+        "dname",
+        "dns.netmeister.org.",
+        "www.dname.dns.netmeister.org.",
+        RecordType::A,
+    );
+    let mut response = decode(&bytes);
+    let at = response
+        .answer
+        .iter()
+        .position(|r| r.rtype() == RecordType::CNAME && r.name == question.name)
+        .expect("the server's CNAME");
+    // Changed: the server's CNAME pointed at evil.dns.netmeister.org; the RRSIG of www.dns.netmeister.org's CNAME
+    // copied as one of the name asked.
+    response.answer[at] = rr("www.dname.dns.netmeister.org. 300 IN CNAME evil.dns.netmeister.org.");
+    let sig = response
+        .answer
+        .iter()
+        .find(|r| matches!(r.data(), RData::Rrsig(s) if s.type_covered == RecordType::CNAME))
+        .expect("a CNAME's RRSIG");
+    let sig = Record::new(question.name.clone(), sig.class, sig.ttl, &sig.data());
+    response.answer.push(sig);
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Cname { chain, .. } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    let chain = names(chain);
+    for kept in [
+        "dname.dns.netmeister.org. RRSIG",
+        "www.dns.netmeister.org. RRSIG",
+    ] {
+        assert!(chain.iter().any(|n| n == kept), "{kept}: {chain:?}");
+    }
+    assert!(
+        !chain.contains(&format!("{} RRSIG", question.name)),
+        "{chain:?}"
+    );
+    for i in [at, response.answer.len() - 1] {
+        assert_eq!(
+            reason(&scrubbed, Section::Answer, i),
+            Some(Reason::OffChain)
+        );
+    }
+}
+
 /// A DNAME above the zone asked is not the server's to say (RFC 2181 §6.1).
 #[test]
 fn rfc2181_6_1_a_dname_above_the_zone_is_dropped() {
@@ -646,19 +695,31 @@ fn rfc2308_5_a_negative_answer_without_its_soa_is_not_cached() {
         ("nodata-unsigned", "google.com.", RecordType::SRV),
     ] {
         let (bytes, question, zone) = captured(id, "google.com.", name, rtype);
-        let mut response = decode(&bytes);
-        // Changed: the SOA removed from the authority section.
-        response.authority.retain(|r| r.rtype() != RecordType::SOA);
-        let scrubbed = scrub(&response, &question, &zone);
-        assert!(
-            matches!(
-                scrubbed.outcome,
-                Outcome::NoSoa(Negative::NoData | Negative::NxDomain { .. })
-            ),
-            "{id}: {}",
-            describe(&scrubbed)
-        );
-        assert_eq!(scrubbed.ranked().len(), 0);
+        let below: Name<'static> = format!("below.{name}").parse().expect("a name");
+        for moved in [false, true] {
+            let mut response = decode(&bytes);
+            if moved {
+                // Changed: the SOA's owner made a name below the name asked, not its zone's apex.
+                for r in &mut response.authority {
+                    if r.rtype() == RecordType::SOA {
+                        r.name = below.clone();
+                    }
+                }
+            } else {
+                // Changed: the SOA removed from the authority section.
+                response.authority.retain(|r| r.rtype() != RecordType::SOA);
+            }
+            let scrubbed = scrub(&response, &question, &zone);
+            assert!(
+                matches!(
+                    scrubbed.outcome,
+                    Outcome::NoSoa(Negative::NoData | Negative::NxDomain { .. })
+                ),
+                "{id} moved={moved}: {}",
+                describe(&scrubbed)
+            );
+            assert_eq!(scrubbed.ranked().len(), 0);
+        }
     }
 }
 
