@@ -137,6 +137,21 @@ mod unknown {
     }
 
     #[test]
+    fn s4_opaque_rdata_of_a_typed_type_is_invalid_rdata() {
+        // A 3-byte A record: kept as bytes (D9), which the type's typed form tells apart from an unknown type.
+        let decoded = decode_record(&record_wire(RecordType::A, &[192, 0, 2])).unwrap();
+        assert!(decoded.invalid_rdata.is_some());
+        assert!(
+            matches!(decoded.record.data(), RData::Opaque(o) if RData::has_typed_form(o.rtype()))
+        );
+        assert!(!RData::has_typed_form(RecordType(65280)));
+        assert!(
+            !RData::has_typed_form(RecordType::DNAME),
+            "DNAME has no typed form"
+        );
+    }
+
+    #[test]
     fn s4_empty_rdata_is_valid() {
         let decoded = decode_record(&record_wire(RecordType(65280), &[])).unwrap();
         assert_eq!(decoded.invalid_rdata, None);
