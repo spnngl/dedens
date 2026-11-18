@@ -528,9 +528,10 @@ impl<N: Io> Authoritative<N> {
         }
     }
 
-    /// The next datagram on `udp`, or `None` past `deadline`. An error but [`ours`], such as the port unreachable
-    /// of an ICMP error, goes in `unreachable` and the wait goes on, as Unbound's on any error
-    /// (`util/netevent.c:comm_point_udp_callback`); one waiting for the socket ends the reading, not the wait.
+    /// The next datagram on `udp`, or `None` past `deadline`. An error of the receive but [`ours`], such as the port
+    /// unreachable of an ICMP error, goes in `unreachable` and the wait goes on, as Unbound's on any error
+    /// (`util/netevent.c:comm_point_udp_callback`). Any error of the wait for the socket is ours: an error on the
+    /// socket only makes it readable, and fails the receive.
     async fn recv(
         &self,
         udp: &N::Udp,
@@ -541,16 +542,7 @@ impl<N: Io> Authoritative<N> {
             match self.io.timeout_at(deadline, udp.readable()).await {
                 Err(_) => return Ok(None),
                 Ok(Ok(())) => {}
-                Ok(Err(error)) if ours(&error) => return Err(error),
-                Ok(Err(error)) => {
-                    debug!(error = %error, "cannot wait for the socket: waiting on");
-                    *unreachable = Some(error.kind());
-                    let _ = self
-                        .io
-                        .timeout_at(deadline, std::future::pending::<()>())
-                        .await;
-                    return Ok(None);
-                }
+                Ok(Err(error)) => return Err(error),
             }
             let mut scratch = self.scratch.borrow_mut();
             match udp.try_recv(&mut scratch) {
@@ -578,17 +570,19 @@ impl<N: Io> Authoritative<N> {
     }
 }
 
-/// Whether an error of a query's UDP socket is ours: no memory or buffer left, or a bad descriptor or argument, a
-/// bug. Any other may come of an ICMP error, which anyone knowing the port can send: on a connected socket, Linux
-/// turns those of `ICMPv4` into ECONNREFUSED, EHOSTUNREACH, ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES or
-/// EPROTO (`net/ipv4/icmp.c:icmp_err_convert`), and those of `ICMPv6` into EACCES or EPROTO among others
-/// (`net/ipv6/icmp.c:icmpv6_err_convert`); so the list is of ours, not of the network's.
+/// Whether an error of a query's UDP socket is ours: no memory or buffer left, a bad descriptor or argument, a bug,
+/// or a send a firewall of ours denied (EPERM, as a netfilter DROP on output). Any other may come of an ICMP error,
+/// which anyone knowing the port can send: on a connected socket, Linux turns those of `ICMPv4` into ECONNREFUSED,
+/// EHOSTUNREACH, ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES or EPROTO
+/// (`net/ipv4/icmp.c:icmp_err_convert`), and those of `ICMPv6` into EACCES or EPROTO among others
+/// (`net/ipv6/icmp.c:icmpv6_err_convert`); so the list is of ours, not of the network's. EPERM and EACCES share
+/// a kind, so the raw errno tells them apart.
 fn ours(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::OutOfMemory | io::ErrorKind::InvalidInput
     ) || error.raw_os_error().is_some_and(|raw| {
-        [Errno::NOBUFS, Errno::BADF]
+        [Errno::NOBUFS, Errno::BADF, Errno::PERM]
             .map(Errno::raw_os_error)
             .contains(&raw)
     })

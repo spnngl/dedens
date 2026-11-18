@@ -652,6 +652,108 @@ async fn a_query_gone_once_woken_passes_its_turn_on() {
     assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(19));
 }
 
+/// D190: room coming while the queries woken for it have yet to look is not lost: once the last has looked, the line
+/// is woken again from the first. One connection allowed to each of two servers, each retired by a keepalive of 0
+/// with a query still waiting on it, and a query waiting for room to each, in that order. A query ending on the
+/// first server's connection wakes the first in line, which finds no room and wakes the second; the first server's
+/// connection closes before the second looks, which finds no room to its server and is last in line: the first is
+/// woken again, and connects.
+#[compio::test]
+async fn room_coming_during_a_hand_off_wakes_the_line_again() {
+    let servers = [listen().await, listen().await];
+    let pool = TcpPool::new(Duration::from_secs(5)).per_server(NonZeroUsize::MIN);
+    let queries = [16, 17, 18, 19, 20, 21, 22].map(query_with_id);
+    let ask = |n: usize, server: usize| {
+        Box::pin(pool.exchange(servers[server].1, &queries[n], deadline()))
+    };
+    let (mut waiting, mut other_waiting) = (ask(0, 0), ask(1, 1));
+    let (mut retiring, mut other_retiring, mut ending) = (ask(2, 0), ask(3, 1), ask(4, 0));
+    for query in [
+        &mut waiting,
+        &mut other_waiting,
+        &mut retiring,
+        &mut other_retiring,
+        &mut ending,
+    ] {
+        assert!(query.now_or_never().is_none());
+    }
+    let mut peers = Vec::new();
+    for (listener, _) in &servers {
+        peers.push(Peer::accept(listener).await);
+    }
+    let mut sent = Vec::new();
+    for (peer, queries) in peers.iter_mut().zip([3, 2]) {
+        for _ in 0..queries {
+            sent.push(peer.read().await.expect("a query"));
+        }
+    }
+    sent.sort_by_key(|query| id(query));
+    // A keepalive of 0: neither connection takes more queries.
+    for (peer, retired) in peers.iter_mut().zip([&sent[2], &sent[3]]) {
+        peer.write(&[answer(retired, vec![EdnsOption::Keepalive(Some(0))])])
+            .await;
+    }
+    assert_eq!(retiring.await.map(|r| id(&r)).ok(), Some(18));
+    assert_eq!(other_retiring.await.map(|r| id(&r)).ok(), Some(19));
+    let (mut first, mut second) = (ask(5, 0), ask(6, 1));
+    // Both wait for room, in that order: a retired connection counts while a query waits on it.
+    assert!((&mut first).now_or_never().is_none());
+    assert!((&mut second).now_or_never().is_none());
+    peers[0].write(&[answer(&sent[4], Vec::new())]).await;
+    // Its end wakes the first in line.
+    assert_eq!(ending.await.map(|r| id(&r)).ok(), Some(20));
+    // A query still waits on its server's connection: no room. It wakes the second and waits.
+    assert!((&mut first).now_or_never().is_none());
+    // The first server's connection closes while the second, woken, has yet to look.
+    drop(peers.remove(0));
+    compio::time::sleep(Duration::from_millis(100)).await;
+    // No room to its server: it waits again, last in line.
+    assert!((&mut second).now_or_never().is_none());
+    let (asked, ()) = futures_util::join!(first, async {
+        let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&servers[0].0))
+            .await
+            .expect("the first in line connects");
+        let query = peer.read().await.expect("a query");
+        peer.write(&[answer(&query, Vec::new())]).await;
+    });
+    assert_eq!(asked.map(|r| id(&r)).ok(), Some(21));
+    drop((waiting, other_waiting, second));
+}
+
+/// D190: a connection is found stalled from the send of its oldest query unanswered, not from the query timing
+/// out: queries timing out each short of [`STALLED`], sent one after the other to a server that stopped answering,
+/// close it once [`STALLED`] passed, and the next goes on a new one.
+#[compio::test]
+async fn short_timeouts_one_after_the_other_close_a_silent_connection() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    // 4 × 100 ms, from the first send to the last deadline: past `STALLED`, each short of it.
+    for n in 16..20 {
+        let soon = Instant::now() + Duration::from_millis(100);
+        let timed_out = pool.exchange(server, &query_with_id(n), soon).await;
+        assert!(
+            matches!(timed_out, Err(TcpError::TimedOut)),
+            "{timed_out:?}"
+        );
+    }
+    let _silent = Peer::accept(&listener).await;
+    let last = query_with_id(20);
+    let (asked, ()) = futures_util::join!(pool.exchange(server, &last, deadline()), async {
+        let mut fresh = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+            .await
+            .expect("a new connection");
+        // A late timer may have closed the first connection a query earlier: the last went on this one then.
+        let query = loop {
+            let query = fresh.read().await.expect("a query on a new connection");
+            if id(&query) == 20 {
+                break query;
+            }
+        };
+        fresh.write(&[answer(&query, Vec::new())]).await;
+    });
+    assert_eq!(asked.map(|r| id(&r)).ok(), Some(20));
+}
+
 /// A response read before the query that timed out was sent does not keep the connection: the next query goes on
 /// a new one.
 #[compio::test]

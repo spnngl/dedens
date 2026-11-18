@@ -35,10 +35,13 @@ use crate::exchange::after;
 use crate::io::{Compio, Io, Stream};
 use crate::tls::{self, Trust};
 
-/// The least a query waits from its send before its timeout, nothing read since, closes the connection: a shorter
-/// wait, as a query with a short deadline left, tells nothing of a server other queries share the connection with.
-/// Unbound closes the connection on any query's timeout (`outnet_tcptimer`, `services/outside_network.c`); 376 ms
-/// is the timeout it gives a server it knows nothing of (`UNKNOWN_SERVER_NICENESS`, `iterator/iterator.c`).
+/// The least silence of a connection before a query's timeout closes it, from the send of its oldest query
+/// unanswered or the last response read, the later: a shorter one, as of a query with a short deadline left, tells
+/// nothing of a server other queries share the connection with. Counted from the oldest query, not from the one
+/// timing out, so that queries with short deadlines, each sent after the last timed out, do not keep a dead
+/// connection open. Unbound closes the connection on any
+/// query's timeout (`outnet_tcptimer`, `services/outside_network.c`); 376 ms is the timeout it gives a server it
+/// knows nothing of (`UNKNOWN_SERVER_NICENESS`, `iterator/iterator.c`).
 pub const STALLED: Duration = Duration::from_millis(376);
 
 /// Why a TCP or TLS exchange failed.
@@ -209,8 +212,9 @@ impl<N: Io> TcpPool<N> {
     /// back with the ID of `wire` (RFC 7766 §6.2.1). The ID of a query that stopped waiting stays taken until its
     /// response comes or the connection closes. Opens a connection when there is none or the last one takes no
     /// more queries, all its IDs taken for one; a connection that closes before the response is replaced once and
-    /// the query sent again (D27). A query that times out after waiting [`STALLED`] at least, nothing read on its
-    /// open connection since it was sent, closes the connection: the server stopped answering, or reading. With no
+    /// the query sent again (D27). A query that times out closes its open connection when it has been silent for
+    /// [`STALLED`] at least, from the send of its oldest query unanswered or its last response, the later: the
+    /// server stopped answering, or reading. With no
     /// room for a connection, see [`TcpPool::at_most`], the query waits for one until `deadline`, less
     /// [`TcpPool::leaving`].
     ///
@@ -230,7 +234,7 @@ impl<N: Io> TcpPool<N> {
         let link = link.into();
         // However the query ends, its connection may make room: dropped last, once the connection is let go.
         let _ended = Ended(&self.waiters);
-        // The connection of the last try, and when the query went on it.
+        // The connection of the last try.
         let mut last = None;
         let roomless = Cell::new(false);
         let attempt = async {
@@ -272,7 +276,7 @@ impl<N: Io> TcpPool<N> {
                     Err(TcpError::Closed) => continue,
                     Err(error) => return Err(error),
                 };
-                let connection = last.insert((connection, sent)).0.clone();
+                let connection = last.insert(connection).clone();
                 if let Ok(mut response) = response.recv_async().await {
                     if let Some(head) = response.first_chunk_mut() {
                         *head = id.to_be_bytes();
@@ -291,10 +295,8 @@ impl<N: Io> TcpPool<N> {
                 debug!(server = %link.addr(), "no connection free before the deadline");
                 return Err(TcpError::Busy);
             }
-            if let Some((connection, sent)) = last
-                && deadline.saturating_duration_since(sent) >= STALLED
-            {
-                connection.state.borrow_mut().stalled(sent);
+            if let Some(connection) = last {
+                connection.state.borrow_mut().stalled(deadline);
             }
             Err(TcpError::TimedOut)
         })
@@ -401,7 +403,8 @@ impl<N: Io> TcpPool<N> {
 /// The queries waiting for room in a pool, in the order they came, as Unbound's `tcp_wait_first` list
 /// (`services/outside_network.c`). Room may come when a query ends or a connection closes: the first query waiting
 /// is woken, looks for room, and wakes the next, and so on down the line, so that each looks before those behind
-/// it. A query coming while one woken has yet to look waits behind the line.
+/// it. A query coming while one woken has yet to look waits behind the line. Room coming meanwhile, which those
+/// that looked already missed, wakes the line again from the first once its last has looked.
 #[derive(Debug, Default)]
 struct Waiters {
     /// By ticket, in the order they came.
@@ -410,6 +413,8 @@ struct Waiters {
     next: Cell<u64>,
     /// The queries woken that have yet to look for room.
     woken: Cell<usize>,
+    /// Whether room came while queries woken had yet to look: those that looked before it missed it.
+    missed: Cell<bool>,
 }
 
 impl Waiters {
@@ -442,20 +447,30 @@ impl Waiters {
 
     /// Room may have come: wakes the first query waiting, unless one woken has yet to look, which wakes the next.
     fn room(&self) {
-        if !self.passing() {
+        if self.passing() {
+            self.missed.set(true);
+        } else {
             self.wake_after(None);
         }
     }
 
-    /// Wakes the first query waiting behind `ticket`, or the first of all.
+    /// Wakes the first query waiting behind `ticket`, or the first of all; with none behind and room missed, the
+    /// first of all.
     fn wake_after(&self, ticket: Option<u64>) {
         let mut queue = self.queue.borrow_mut();
-        let behind = ticket.map_or(Bound::Unbounded, Bound::Excluded);
-        while let Some(next) = queue
-            .range((behind, Bound::Unbounded))
-            .next()
-            .map(|(next, _)| *next)
-        {
+        let mut behind = ticket.map_or(Bound::Unbounded, Bound::Excluded);
+        loop {
+            let Some(next) = queue
+                .range((behind, Bound::Unbounded))
+                .next()
+                .map(|(next, _)| *next)
+            else {
+                if !self.missed.replace(false) {
+                    return;
+                }
+                behind = Bound::Unbounded;
+                continue;
+            };
             if queue
                 .remove(&next)
                 .is_some_and(|wake| wake.try_send(()).is_ok())
@@ -557,7 +572,7 @@ struct State {
     /// The queries sent and not answered, by the ID they went with. The sender of a query that stopped waiting is
     /// disconnected, and stays so that its ID is not reused before the response comes (RFC 7766 §6.2.1). Ordered,
     /// so that the queries a close wakes wake in ID order on every run and a seeded simulation replays (D134).
-    waiting: BTreeMap<u16, flume::Sender<Vec<u8>>>,
+    waiting: BTreeMap<u16, Asked>,
     /// Framed messages for the writer, at most [`QUEUE`], until the connection closes: dropping it ends the writer.
     /// An empty message only wakes the writer to look at a shorter idle timeout.
     outgoing: Option<flume::Sender<Vec<u8>>>,
@@ -583,7 +598,7 @@ impl State {
     fn busy(&self) -> bool {
         self.waiting
             .values()
-            .any(|sender| !sender.is_disconnected())
+            .any(|asked| !asked.response.is_disconnected())
     }
 
     /// Closes: no new query, the writer ends, and the queries waiting see their channel close.
@@ -592,12 +607,27 @@ impl State {
         self.waiting.clear();
     }
 
-    /// Closes the open connection when nothing was read since `sent`, when a query that went then timed out.
-    fn stalled(&mut self, sent: Instant) {
-        if self.local.is_some() && self.read.is_none_or(|read| read < sent) {
+    /// Closes the open connection, as a query timed out at `now`, when it has been silent for [`STALLED`] at least:
+    /// nothing read since its oldest query unanswered was sent, that of a query that stopped waiting included, or
+    /// since the last response read when later.
+    fn stalled(&mut self, now: Instant) {
+        let Some(oldest) = self.waiting.values().map(|asked| asked.sent).min() else {
+            return;
+        };
+        let silent = self.read.map_or(oldest, |read| read.max(oldest));
+        if self.local.is_some() && now.saturating_duration_since(silent) >= STALLED {
             self.close();
         }
     }
+}
+
+/// A query sent on a connection and not answered.
+#[derive(Debug)]
+struct Asked {
+    /// Where its response goes; disconnected once it stopped waiting.
+    response: flume::Sender<Vec<u8>>,
+    /// When it was sent.
+    sent: Instant,
 }
 
 impl<N: Io> Connection<N> {
@@ -675,7 +705,13 @@ impl<N: Io> Connection<N> {
             Err(flume::TrySendError::Disconnected(_)) => return Err(TcpError::Closed),
         }
         let (sender, response) = flume::bounded(1);
-        state.waiting.insert(id, sender);
+        state.waiting.insert(
+            id,
+            Asked {
+                response: sender,
+                sent: now,
+            },
+        );
         state.last = now;
         Ok(response)
     }
@@ -942,7 +978,7 @@ async fn read<N: Io>(io: N, mut stream: impl Inbound, state: Rc<RefCell<State>>)
             }
         }
         // The query may have stopped waiting; then the response goes nowhere.
-        let _ = waiting.try_send(message);
+        let _ = waiting.response.try_send(message);
     }
     state.borrow_mut().close();
 }
