@@ -1,7 +1,7 @@
 # dedens-resolver
 
 The recursive resolver. Sans-IO: the caller passes the time in seconds and the random source, so tests drive
-both. The rustdoc holds the rules; D193 the `RRset` cache's choices, D194 the infra cache's.
+both. The rustdoc holds the rules; D192 the scrubber's choices, D193 the `RRset` cache's, D194 the infra cache's.
 
 The caches keep their entries in `dedens_cache::Store` (D193): its sharding, byte budget and S3-FIFO are
 `dedens-cache`'s, tested there. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in `tests/metrics.rs`.
@@ -10,6 +10,12 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 
 ## Invariants
 
+- Nothing reaches a cache or a client but through `scrub`: it alone knows the zone a server was asked as, which
+  bounds what the server is trusted with (RFC 2181 §6.1). Its `Rank`s are what the cache's replacement reads.
+- A rule of `scrub` changes with D192 and a test in `tests/scrub.rs`; a bound is a named constant with its Unbound
+  value, and a test reaches it.
+- `scrub` is total: any message, any zone, no panic. The fuzz target `scrub_response` checks that what it keeps is
+  within the zone.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,
   the RDATA slices, each RDATA); `tests/memory.rs` checks it against the allocator's count. The allocator's rounding
   and headers are not counted: up to 1.5 times more on glue (D193). A new owned field means a new term.

@@ -6,3 +6,4 @@ mod infra_cache;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod rrset_cache;
+mod scrub;
