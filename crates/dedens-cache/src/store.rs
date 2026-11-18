@@ -9,15 +9,9 @@ use crate::shard::Shard;
 
 /// What a value of a [`Store`] takes besides its slot: the heap bytes it owns, charged to the byte budget (D116).
 pub trait Cost {
-    /// Heap bytes the value owns. Exact, or the budget does not hold: count what the allocator gives, as a boxed
-    /// slice's length does, never a `Vec`'s capacity unseen.
+    /// Heap bytes the value owns: the bytes it asked the allocator for, as a boxed slice's length says, never a
+    /// `Vec`'s capacity unseen. The allocator's rounding and headers are not counted (D193).
     fn cost(&self) -> usize;
-}
-
-impl<T: Cost> Cost for Option<T> {
-    fn cost(&self) -> usize {
-        self.as_ref().map_or(0, T::cost)
-    }
 }
 
 /// Values `V` under byte keys, shared by threads, sharded to keep lock waits short, within a byte budget.

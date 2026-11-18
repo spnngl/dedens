@@ -302,6 +302,17 @@ fn rfc2181_5_4_1_equal_rank_other_data_replaces_same_data_keeps() {
         10,
     ));
     assert_eq!((other.rrset.rdatas().len(), other.ttl.get()), (1, 60));
+    // Other data of the same size, the first record alone: not the same, so the last heard of again.
+    let records = message(&captured("a")).answer;
+    let [first] = <[Rrset; 1]>::try_from(Rrset::group(&records[..1])).expect("one RRset");
+    let last = stored(cache.insert(
+        first.clone(),
+        Rank::AnswerNonAuthoritative,
+        Checked::Unchecked,
+        20,
+    ));
+    assert_eq!(*last.rrset, first);
+    assert_ne!(*last.rrset, *other.rrset);
 }
 
 /// The glue of a referral does not replace an answer: `example.com. NS` answered, then from `com`'s referral.
@@ -533,6 +544,20 @@ fn cve_2026_42955_authoritative_additional_data_replacing_glue_does_not_extend_i
         (hit.rank, hit.rrset.rdatas().len(), hit.ttl.get()),
         (Rank::AdditionalNonAuthoritative, 1, 20)
     );
+}
+
+/// Other glue replacing glue, trusted the same, takes its own TTL, as Unbound: the bound is for more trust.
+#[test]
+fn cve_2026_42955_glue_replacing_glue_takes_its_own_ttl() {
+    let cache = cache();
+    stored(cache.insert(a(), Rank::AdditionalNonAuthoritative, Checked::Unchecked, 0));
+    let hit = stored(cache.insert(
+        fewer("a", Section::Answer),
+        Rank::AdditionalNonAuthoritative,
+        Checked::Unchecked,
+        10,
+    ));
+    assert_eq!(hit.ttl.get(), 60);
 }
 
 /// Secure data replacing glue, and an address replacing data that is not glue, take their own TTL; so do other
