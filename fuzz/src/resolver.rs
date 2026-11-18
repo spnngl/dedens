@@ -1,11 +1,12 @@
-//! Targets of dedens-resolver: its `RRset` cache fed the records of responses off the wire.
+//! Targets of dedens-resolver: the scrubbing of a response (D192), and its `RRset` cache fed the records of
+//! responses off the wire.
 
 use std::sync::Arc;
 
 use dedens_cache::{Checked, Config};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Message, Record};
-use dedens_resolver::{Inserted, Rank, Rrset, RrsetCache};
+use dedens_proto::{Message, Name, Record, Section};
+use dedens_resolver::{Inserted, Outcome, Rank, Rrset, RrsetCache, scrub};
 
 /// The cache's capacity: small, so that a large response evicts.
 const CAPACITY: usize = 64 << 10;
@@ -97,5 +98,62 @@ fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
             again.iter().any(|a| a == rrset && a.ttl() == rrset.ttl()),
             "the same RRsets in any order"
         );
+    }
+}
+
+/// A response off the wire, scrubbed as from a server of an ancestor of its question's name, the one the ID picks:
+/// every record kept is of the question's class and within that zone, a referral's child is below it and above the
+/// name, and each record dropped is one of the response's, once.
+///
+/// # Panics
+///
+/// On a panic of `scrub`, or on a record kept or dropped against those rules.
+pub fn scrub_response(data: &[u8]) {
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let response = &decoded.message;
+    let Some(question) = response.questions.first() else {
+        return;
+    };
+    let labels = question.name.label_count();
+    let cut = usize::from(response.header.id) % (labels + 1);
+    let Ok(zone) = Name::from_labels(question.name.labels().skip(cut)) else {
+        return;
+    };
+    let scrubbed = scrub(response, question, &zone);
+    for (rank, record) in scrubbed.ranked() {
+        assert!(
+            record.name.is_within(&zone),
+            "{rank:?} {} kept outside {zone}",
+            record.name
+        );
+        assert_eq!(
+            record.class, question.qclass,
+            "{rank:?} {} kept of another class",
+            record.name
+        );
+    }
+    if let Outcome::Referral { child, .. } = &scrubbed.outcome {
+        assert!(
+            child.is_within(&zone) && *child != zone,
+            "a referral to {child} from {zone}"
+        );
+        assert!(
+            question.name.is_within(child),
+            "a referral to {child} for {}",
+            question.name
+        );
+    }
+    let mut seen = Vec::new();
+    for d in &scrubbed.dropped {
+        let len = match d.section {
+            Section::Answer => response.answer.len(),
+            Section::Authority => response.authority.len(),
+            Section::Additional => response.additional.len(),
+        };
+        assert!(d.index < len, "{d:?} past its section");
+        assert!(!seen.contains(&(d.section, d.index)), "{d:?} dropped twice");
+        seen.push((d.section, d.index));
     }
 }
