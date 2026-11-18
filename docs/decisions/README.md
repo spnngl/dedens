@@ -34,7 +34,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D24 [server](server.md) (narrowed by D44): configuration: merged directory of TOML, YAML or JSON; errors, not warnings
 - D25 [presentation format](presentation-format.md): zone text: own lexer, BIND TTL units, `\#` for every type
 - D26 [transports](transports.md) (amended by D133, D134): `dedens-net`: sans-IO client core, a thin compio layer moves bytes
-- D27 [transports](transports.md) (amended by D50, D53, D108, D114, D184): client behaviour: UDP socket pool, random IDs, matching, fallbacks
+- D27 [transports](transports.md) (amended by D50, D53, D108, D114, D184, D190): client behaviour: UDP socket pool, random IDs, matching, fallbacks
 - D28 [wire format](wire-format.md): `Record` keeps RDATA as checked wire bytes with its type
 - D29 [presentation format](presentation-format.md): a quoted string ends on its line, as in BIND
 - D30 [observability](observability.md): metrics and tracing facades behind each library's Cargo features
@@ -191,5 +191,6 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D187 [performance and safety](performance-and-safety.md): nightly-2026-11-17 and RAPx 0.7.75; its parallel frontend at the default 2 threads; not on stable
 - D188 [performance and safety](performance-and-safety.md): real resolutions from the root in `testdata/recursion/`, YAML, `just capture-recursion`; replayed by `Authorities`
 - D189 [simulation tests](simulation-tests.md): the captures' authoritative servers hosted at their addresses, each misbehaving on demand (`Conduct`); `Expected::resolved`
+- D190 [transports](transports.md): authoritative mode: a socket per query from a random port, 1024 open per thread; `0x20` fallback over TCP only; cookies LRU
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
 - D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms

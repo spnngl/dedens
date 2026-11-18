@@ -9,7 +9,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the whole exchange, and the UDP and TCP exchanges for callers that pick the transport (`+tcp`, the
   forwarder). Rejected: an in-process test server (slower, less exact), real servers in CI (cannot forge a
   wrong ID or a drop). compio 0.19.2 until 0.20 is released.
-- D27 (amended by D50, D53, D108, D114, D184) Client behaviour:
+- D27 (amended by D50, D53, D108, D114, D184, D190) Client behaviour:
   - UDP: a pool of sockets per server (D50); a random ID from `getrandom`, drawn 256 bytes at a time: a call costs
     846 ns on macOS, 14 ns on Linux (vDSO).
   - Matching: source address, ID and question (case-insensitive) or the datagram is dropped and the wait goes
@@ -886,3 +886,43 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     memory, `docs/TODECIDE.md`), the decapsulation budgets as settings (`docs/TODECIDE.md`), and the network-change
     rule of the ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
     the order a resumed query is checked are the places a mistake would matter.
+- D190 (amends D27; builds on D31, D47, D50, D108, D184) The client's authoritative mode
+  (`dedens_net::authoritative::Authoritative`, per thread), for the recursive resolver: one query to one of the
+  thousands of servers it asks, with RFC 5452's defences and bounded resources.
+  - Ports (RFC 5452 §9.2, §10): each query over UDP binds a socket of its own to a port drawn by `Io::random` from
+    1024-65535, each as likely, drawn again on `AddrInUse` up to 8 times, connected to the server (a datagram from
+    another address or port never reaches it), held for the exchange and closed on its end. Not port 0: the kernel
+    draws from its ephemeral range, 28232 ports on Linux, 16384 on macOS, and how well depends on the system; drawn
+    here, the range is the same everywhere and a test sees each port. Unbound draws from 1024-65535 too, without
+    the ports IANA assigned (`util/config_file.c:init_outgoing_availports`); BIND from the system's range
+    (`lib/dns/dispatch.c:setup_socket`).
+  - Not D50's pools: a pool keeps up to 256 sockets per server for the life of the client, thousands of descriptors
+    over the servers a resolver meets, and each kept port is known to whoever saw one query: ID and socket give 24
+    bits a forger has to guess, a fresh port about 32.
+  - Bounds, per thread: `Limits::sockets` 1024 UDP sockets open at once (D47's upstream queries in flight; Unbound
+    opens 4096, `outgoing-range`), a query past them waiting for one until its deadline; `Limits::tcp` 32 TCP
+    connections (Unbound 10, `outgoing-num-tcp`), past them the one idle longest closes, or the query fails with
+    `TcpError::Busy` when each has a query waiting; a connection closes after 10 s idle, as D27's (Unbound 60 s,
+    `tcp-reuse-timeout`); `Limits::cookies` 4096 pairs.
+  - The query: random ID, RD clear, EDNS of 1232 bytes (DNS flag day 2020) with DO, a cookie, and `0x20` on (D184);
+    one send, `timeout` each: retrying, maybe another server, is the caller's. TC goes to TCP (RFC 7766 §5), as
+    BADCOOKIE twice (D27).
+  - `0x20` fallback (draft-vixie-dnsext-dns0x20 §6.3: one a forger cannot force): a response matching the query
+    but for the case of its question ends the UDP exchange, and the query goes again over TCP (RFC 5452 §9.3), the
+    same letters in the same case, its response taken whatever its case. Only that TCP response, which an off-path
+    forger cannot send, marks the server as not repeating the case; a forged mismatch costs a TCP query and turns
+    nothing off. Rejected: Unbound's `use-caps-for-id` fallback (D184 says why), and a mark from a cookie-verified
+    UDP exchange (a forger that read the server cookie is on the path, where `0x20` protects nothing anyway, but the
+    rule is shorter with TCP alone).
+  - What a server shows, `Quirks { no_edns, no_case, tcp }`, goes back in `Answer` and comes in with the next
+    query: the infra cache keeps it, and its marks expire with its entry; nothing here remembers a server.
+  - Cookies (RFC 7873 §5.1, §5.3): a table of 4096 pairs of source address and server, the one used longest ago
+    going first (`cookies::Jar`), about 400 KiB; the forwarding client's table is the same now, where D27 kept each
+    pair for the life of the client. A pair is the source address without its port (§4.1), so the fresh ports
+    keep the cookie of the server.
+    Unbound sends none to upstreams; BIND keeps them per server address (`lib/dns/adb.c:dns_adb_setcookie`).
+  - Tests: `crates/dedens-net/tests/authoritative.rs`: 1000 queries from 1000 ports, none twice in a row, over
+    half of the range; a forged response from another port dropped; a forged case mismatch moving to TCP with
+    `0x20` kept, a lowercasing server marked over TCP and asked without it next; TC to TCP; at most 4 sockets of 4
+    open for 16 queries; one TCP connection of 1 refused while busy, closed when idle. Test data:
+    `testdata/proto/referral_root.bin` and `referral_com.bin` (step 01's `testdata/recursion/` was not merged).

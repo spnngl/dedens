@@ -617,7 +617,7 @@ fn same_question(got: &Question<'_>, sent: &Question<'_>, exact: bool) -> bool {
 /// Writes `given`, the question's name in the case the caller gave, over the question of `wire`, the response that
 /// repeated it in the random case: an uncompressed name at the start of the question section (RFC 1035 §4.1.2), the
 /// same one in any case (D184).
-fn give_case(wire: &mut [u8], given: &[u8]) {
+pub(crate) fn give_case(wire: &mut [u8], given: &[u8]) {
     if let Some(name) = wire.get_mut(HEADER_LEN..HEADER_LEN + given.len())
         && name.eq_ignore_ascii_case(given)
     {
@@ -626,7 +626,7 @@ fn give_case(wire: &mut [u8], given: &[u8]) {
 }
 
 /// `name` with the case of its letters from `bits`, one bit a letter in order.
-fn random_case(name: &Name<'_>, bits: &[u8; 32]) -> Name<'static> {
+pub(crate) fn random_case(name: &Name<'_>, bits: &[u8; 32]) -> Name<'static> {
     let mut letter = 0usize;
     let labels: Vec<Vec<u8>> = name
         .labels()
