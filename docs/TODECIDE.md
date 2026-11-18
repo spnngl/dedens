@@ -157,6 +157,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `infra-cache-numhosts` and `infra-host-ttl` options. Default: options of
   `dedensd`'s `recurse` stage (recursive step 08), sized with the `RRset` cache's.
 
+## Recursive resolver
+
+- Authoritative servers answering their zone without AA: the scrubber makes every response without AA but a referral
+  `Lame` (D192), where Unbound keeps it ranked lower. Default: as is; if a real capture (`testdata/recursion`) shows
+  a zone's servers answering without AA, keep such answers ranked answer non-authoritative, as Unbound, RA clear.
+
 ## DNSSEC and experimental transports
 
 - ODoQ (Oblivious DNS over QUIC): no RFC exists. Default: dropped; revisit when the IETF publishes one.

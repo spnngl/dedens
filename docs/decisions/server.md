@@ -1447,7 +1447,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `Lame` or `Unusable(why)`. A negative outcome holds its SOA, not an `Option`: one without is `NoSoa`. Each record
   dropped is returned with its section, index and `Reason`, for the iteration to log and count; each kept with its
   `Rank` (`Scrubbed::ranked`). The rules, as Unbound's `iterator/iter_scrub.c` (`scrub_normalize`,
-  `scrub_sanitize`) and `iter_resptype.c` (`response_type_from_server`) have them:
+  `scrub_sanitize`) and `iter_resptype.c` (`response_type_from_server`) have them, but for the deviations below:
   - unusable, nothing kept: QR unset or an opcode other than QUERY, TC set (asked again over TCP, RFC 7766 §5), a
     code other than NOERROR, NXDOMAIN and YXDOMAIN, a YXDOMAIN without the DNAME that makes it, not exactly the
     question (name, type, class), the name outside `zone`;
@@ -1455,18 +1455,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     type `dedens-proto` decodes whose RDATA does not parse (decoded `Opaque`, D9), and a DNAME whose target is
     compressed or no name (RFC 6672 §2.5), with the CNAME the server made of it: `Malformed` (Unbound dfc00271d drops
     A and AAAA of the wrong size; every typed type here, as the cache would serve them);
-  - AA and RA: an answer, an NXDOMAIN or a NODATA without AA is kept, ranked non-authoritative (RFC 1035 §4.1.1, RFC
-    2181 §5.4.1), as Unbound keeps it; with RA set and AA clear it is a cache talking, `Lame` (Unbound's
-    `REC_LAME`); a response referring nowhere below `zone` (an NS `RRset` of the zone itself, above it or a sibling,
-    and nothing else) is `Lame` whatever AA says (RFC 4697 §2.2);
-  - a referral (NOERROR, no SOA, and an empty answer section or no AA): the first NS owner strictly below `zone` and
+  - AA: only authoritative data from the zone's servers is trusted (RFC 2181 §5.4.1). A response without AA that
+    is not a referral is `Lame`, NXDOMAIN and NODATA included, RA set or not; a response referring nowhere below
+    `zone` (an NS `RRset` of the zone itself, above it or a sibling, and nothing else) is `Lame` whatever AA says
+    (RFC 4697 §2.2);
+  - a referral (NOERROR, no SOA and no answer within `zone`, AA or not): the first NS owner strictly below `zone` and
     at or above the name (RFC 1034 §4.3.2 step 3b) is the child; its NS records are kept, any other NS `RRset`
     dropped (a sibling, the zone itself, a second one); its DS, or the NSEC and NSEC3 proving none (RFC 4035
     §3.1.4); as glue, the A and AAAA records at its name servers' names within `zone`, the parent's to give, sibling
     glue too (as Unbound's `harden-glue`), not only within the child: a parent that may redirect the child may give
-    its addresses. NS records without AA in the answer section to a question of type NS or ANY are read the same
-    way, as Unbound reads them. A DS question answered by a referral to the name asked, with the DS at it, is answered
-    by that DS (RFC 4035 §3.1.4.1, Unbound 6cb75924d): the DS is the parent's, the child would deny it;
+    its addresses. A DS question answered by a referral to the name asked, with the DS at it, is answered by that DS
+    (RFC 4035 §3.1.4.1, Unbound 6cb75924d): the DS is the parent's, the child would deny it;
   - an answer: from the name, a DNAME above it then the records of the type asked then a CNAME at it (RFC 1034
     §4.3.2 step 3a, RFC 6672 §2.2), hop after hop; a DNAME's CNAME is synthesised (RFC 6672 §3.4), unsigned, and the
     server's kept only when it is the same; a qtype of CNAME is answered by the synthesised CNAME (RFC 6672 §2.3). A
@@ -1483,25 +1482,31 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   Bounds, Unbound's defaults (`util/config_file.c`): `MAX_NS` = 20 NS or DS records an `RRset` (`iter-scrub-ns`);
   `MAX_CHAIN` = 11 CNAME and DNAME hops (`iter-scrub-cname`); `MAX_SIGNATURES` = 8 RRSIGs an `RRset`
   (`iter-scrub-rrsig`); `MAX_GLUE` = 100 addresses (`iter-scrub-glue-count`); past each, the rest is dropped.
-  Ranks (RFC 2181 §5.4.1, as Unbound's `get_rrset_trust`): with AA, the records of the answer section at the name
-  asked and at the owner of its first record (a DNAME above it) answer authoritative, the rest of the chain answer
+  Ranks (RFC 2181 §5.4.1, as Unbound's `get_rrset_trust`): the records of the answer section at the name asked and
+  at the owner of its first record (a DNAME above it) answer authoritative, the rest of the chain answer
   non-authoritative (AA covers the first owner, RFC 1035 §4.1.1), the authority section authority authoritative, the
-  additional additional authoritative; without AA, each section non-authoritative. A referral's NS and proof are
-  authority non-authoritative, its glue additional non-authoritative, whatever AA says. Deviations from Unbound, and
-  why: a NOERROR whose DNAME synthesis is too long is `YxDomain` (Unbound fails it as a scrub error): the zone said
-  what RFC 6672 §2.2 makes of it; an NS `RRset` of the zone itself without SOA and without answer is `Lame` even
-  with AA (Unbound reads an AA one as an answer): it delegates to itself, nothing to cache; a response without AA
-  holding both an answer and a delegation below the zone is a referral, also after a CNAME (Unbound may answer with
-  the chain first): data without AA beside a delegation is the parent's view; a referral's ranks ignore AA (Unbound
+  additional additional authoritative. A referral's NS and proof are authority non-authoritative, its glue additional
+  non-authoritative, whatever AA says; the DS of a referral answering a DS question answer authoritative, AA or not:
+  the parent holds it as authoritative data (RFC 4035 §2.3). No rank is that of a non-authoritative answer, which is
+  `Lame`: answer non-authoritative means the chain past its first owner only. Deviations from Unbound, and why:
+  every response without AA but a referral is `Lame` (Unbound's `response_type_from_server` accepts an answer, an
+  NXDOMAIN or a NODATA without AA, ranked non-authoritative, and calls it lame only with RA set, `REC_LAME`; it reads
+  NS records without AA in the answer section to an NS or ANY question as a referral): no answer is trusted from a
+  server not authoritative for it, and a non-authoritative answer with RA clear is a stale copy or a forwarder
+  answering, which a cache must not rank beside the zone's data. The cost: a misconfigured server answering its zone
+  without AA is lame, and the iteration tries the next server, failing the zone if every server does so. A NOERROR
+  whose DNAME synthesis is too long is `YxDomain` (Unbound fails it as a scrub error): the zone said what RFC 6672
+  §2.2 makes of it; an NS `RRset` of the zone itself without SOA and without answer is `Lame` even with AA (Unbound
+  reads an AA one as an answer): it delegates to itself, nothing to cache; a referral's ranks ignore AA (Unbound
   ranks an AA referral's NS authority authoritative): a parent is not authoritative for the child's NS. Forwarding
   is not scrubbed: an upstream resolver answers for every zone, so no zone bounds it; and forwarded data never enters
   the recursive resolver's `RRset` cache (MaginotDNS, USENIX Security 2023: a server both forwarder and resolver let
   its forwarded answers, checked against no zone, poison the cache its recursion reads). Rejected:
   editing the message in place as Unbound does (a decoded message borrows its bytes; the caller gets the drops);
   `Message::referral`, which checks no zone; glue only within the child (refuses sibling glue the parent holds);
-  trusting the server's CNAME beside a DNAME; following a chain out of the zone (Kaminsky, RFC 5452 §6); `Lame` for
-  an answer without AA (Unbound and RFC 1035 accept it, ranked lower: refusing it fails zones served from
-  non-authoritative copies).
+  trusting the server's CNAME beside a DNAME; following a chain out of the zone (Kaminsky, RFC 5452 §6); keeping an
+  answer without AA ranked lower, as Unbound (a cache would hold data no zone's server vouched for; reopened if real
+  captures show servers answering their zones without AA, `docs/TODECIDE.md`).
 - D193 (amends D116; builds on D22, D124) The recursive resolver's `RRset` cache, `dedens_resolver::RrsetCache`
   (recursive step 06), in the new crate `dedens-resolver`:
   - Key and value. An `RRset` (RFC 2181 §5) under its owner name lowered (RFC 4343), type and class; the value an
