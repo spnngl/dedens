@@ -39,6 +39,7 @@
 "downloads"
 "dir"
 "refresh_minutes"
+"state_dir"
 "roots"
 "tlds"
 "anchors"

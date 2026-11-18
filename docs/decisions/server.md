@@ -1402,7 +1402,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   cache, kept in `downloads.dir` named by its URL (`tlds-<hash>.json`, its ETag beside it: a 304 keeps it, and
   a new URL never gets another's ETag); it is read by `Tlds::read` before it is saved, so a short or broken one
   never replaces the copy, and handed to the reload that follows. A saved copy that does not read is warned of, the
-  bundled list serves, and its ETag is removed so the next refresh fetches it whole. The anchors are state: the
+  bundled list serves, and its ETag is removed so the next refresh fetches it whole; one IANA generated before the
+  bundled one is not used either, the newer of the two serves. The anchors are state: the
   pair is fetched whole each refresh (10 KB, no ETag), checked by `TrustAnchors::verified` (D127) with the signing
   time of the anchors kept as the floor (the bundled one with none), so a replayed older pair is refused (RFC 9718
   §3). Of a pair that verifies, `dedensd` keeps one file, `root-anchors` in `state_dir` (default
@@ -1412,9 +1413,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   and a reload read it without the signature, as trusted as `state_dir`: no file is the bundled anchors; one that
   cannot be read or parsed refuses the start (D115) and, at a reload, leaves the anchors in use, warned of. The
   validators trust the keys valid at the load; each refresh compares those valid then, so a key that ends or
-  starts within a kept file reloads without a restart. Root files are read at start as the starting user, then
-  again as `user` once dropped (D122), never through a symbolic link, a regular file of a capped length only (32
-  MiB for the list, 64 KiB for the anchors). The drop makes the directories of the root files used for `user`,
+  starts within a kept file reloads without a restart. A kept file with no key valid at the load has every key
+  trusted, dates ignored, warned of at each load: a wrong clock is likelier than ICANN ending every key, and
+  refusing would stop a server a clock set back, as `RootAnchors` was read from a verified pair; the next refresh
+  brings the keys of now. Root files are read at start as the starting user, then
+  again as `user` once dropped (D122), a regular file of a capped length only (32 MiB for the list, 64 KiB for the
+  anchors), the file itself never a symbolic link (`O_NOFOLLOW`; the directories above it are the operator's, as
+  `downloads.dir` is). The drop makes the directories of the root files used for `user`,
   as `downloads.dir` (D122); one that cannot be made or written is warned of at each load and not fetched into:
   the copy there, or the bundled one, serves, and the server starts. A validator's tag is its anchor set itself
   (`TrustAnchors`'s canonical text, negative anchors included), whatever its source: a new set builds a fresh
@@ -1422,7 +1427,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   TLD list older than 30 days by its `meta.generated` (`dedens_plugins::MAX_LIST_AGE`) has the stage pass on a
   TLD outside it instead of NXDOMAIN, as it may since have been delegated: `dedensd` warns of it at each load, per
   `tlds` stage, `dedensd_tlds_stale_total` counts those passed on. `dedensd_roots_age_seconds{file}`, `tlds` or `anchors`, is
-  the age of the copy in use, since IANA generated the list or ICANN signed the anchors, set at each refresh. The
+  the age of the copy in use, since IANA generated the list or ICANN signed the anchors, set at each refresh: the anchors' from the kept
+  file, whose signing time a pair signed again advances. A list generated in the future is 0 seconds old. The
+  bundled copies age: 30 days after `just roots` a server with `roots: off`, or IANA out of reach, passes on the
+  TLDs outside the list; a container without a volume for `state_dir` (and `downloads.dir`) starts again from the
+  bundled anchors' floor and list. No test compares the real clock with the bundled list's age: the stage takes
+  a clock, and `dedensd`'s tests fetch the captured list with its `meta.generated` edited to now. The
   Landlock plan must let `downloads.dir` and `state_dir` be written. Rejected: keeping the signed pair and
   verifying it at each load (the signing certificate expires, a crash between two renames splits the pair, and
   the bundled anchors would replace newer ones); the floor in memory only, or in the cache directory (a restart, or

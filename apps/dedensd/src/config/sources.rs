@@ -10,7 +10,7 @@ use std::{fs, io};
 
 use anyhow::{Context, anyhow, ensure};
 use dedens_cache::Cache;
-use dedens_dnssec::{ROOT_SIGNED_AT, RootAnchors, TrustAnchors};
+use dedens_dnssec::TrustAnchors;
 use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds, host_names};
 use dedens_proto::{Question, RecordType, Ttl};
 use dedens_server::{Pipeline, Stage};
@@ -328,7 +328,7 @@ impl Downloads {
     ///
     /// # Errors
     ///
-    /// A kept file that cannot be read (D115), or with no key valid now.
+    /// A kept file that cannot be read (D115). One with no key valid now is warned of, and every key of it trusted.
     pub(super) fn root_anchors(
         &mut self,
         store: &mut Store,
@@ -338,11 +338,20 @@ impl Downloads {
         };
         if self.roots.anchors.is_none() {
             let kept = store.roots.anchors(&self.state_dir)?;
+            let now = unix_seconds();
+            if let Some(kept) = kept
+                && kept.at(now).is_none()
+            {
+                tracing::warn!(
+                    now,
+                    signed_at = kept.signed_at(),
+                    "no key of the kept root trust anchors is valid now, is the clock right? trusting every one"
+                );
+            }
             self.roots.anchors = Some(AnchorsUsed {
                 url: urls.anchors().to_owned(),
                 signature: urls.signature(),
-                signed_at: kept.map_or(ROOT_SIGNED_AT, RootAnchors::signed_at),
-                valid: roots::valid(kept, unix_seconds())?,
+                valid: roots::valid(kept, now),
             });
         }
         Ok(self.roots.anchors.as_ref().map(|used| used.valid.clone()))
@@ -713,23 +722,40 @@ mod tests {
         );
     }
 
+    /// The text kept of the captured anchors, verified: `dedens-dnssec`'s test
+    /// `the_kept_anchors_read_back_as_written_with_each_keys_validity`.
+    const KEPT: &str = "dedens root anchors 1\nsigned-at 1742934302\n\
+        ds 19036 8 2 49aac11d7b6f6446702e54a1607371607a1a41855200fd2ce1cdde32f24e8fb5 from 1279152000 until 1547164800\n\
+        ds 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d from 1485993600\n\
+        ds 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16 from 1721260800\n";
+
+    /// A configuration of a cache and a validating forward stage keeping its root anchors in `state`.
+    fn validating(state: &Path) -> String {
+        format!(
+            "listen: ['127.0.0.1:53']\nstate_dir: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n",
+            state.display()
+        )
+    }
+
+    /// The validation tag of the forward stage of `pipeline`, built by [`validating`].
+    fn validation_tag(pipeline: &Pipeline) -> String {
+        match pipeline.stages() {
+            [Stage::Cache(_), Stage::Forward(forward)] => {
+                forward.validation_tag().unwrap().to_owned()
+            }
+            stages => unreachable!("{stages:?}"),
+        }
+    }
+
     /// D128: the anchors kept in `state_dir`, read without their signature, are those the validator trusts; a kept
     /// set other than the one in use builds a new validator, whose keys are proven again, and flushes the cache
-    /// filled under the old one. The kept text is the captured pair's, verified (`dedens-dnssec`'s test
-    /// `the_kept_anchors_read_back_as_written_with_each_keys_validity`), then edited: KSK-2017 given an end, as a
-    /// rollover would, gone from the root's anchors since; or a line of another format.
+    /// filled under the old one. The kept text is [`KEPT`], edited: KSK-2017 given an end, as a rollover would,
+    /// gone from the root's anchors since; or a line of another format.
     #[test]
     fn kept_root_anchors_key_the_validator_and_a_new_set_flushes_the_cache() {
-        const KEPT: &str = "dedens root anchors 1\nsigned-at 1742934302\n\
-            ds 19036 8 2 49aac11d7b6f6446702e54a1607371607a1a41855200fd2ce1cdde32f24e8fb5 from 1279152000 until 1547164800\n\
-            ds 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d from 1485993600\n\
-            ds 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16 from 1721260800\n";
         let state = tempfile::tempdir().unwrap();
         let file = state.path().join(roots::ANCHORS);
-        let text = format!(
-            "listen: ['127.0.0.1:53']\nstate_dir: '{}'\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n",
-            state.path().display()
-        );
+        let text = validating(state.path());
         let mut store = Store::default();
         let mut build = |previous: &Pipeline| {
             crate::config::read(&text, env, previous, &mut store).map(|config| config.pipeline)
@@ -773,6 +799,35 @@ mod tests {
         let error = crate::config::read(&text, env, &Pipeline::default(), &mut Store::default())
             .unwrap_err();
         assert!(format!("{error:#}").contains("line 1"), "{error:#}");
+    }
+
+    /// D128: kept anchors with no key valid now, by a clock likelier wrong than every key ended, refuse neither a
+    /// start nor a reload: every key of them is trusted, dates ignored. The kept text is [`KEPT`], each key edited
+    /// to start in 2100.
+    #[test]
+    fn kept_root_anchors_with_no_key_valid_now_are_trusted_whole() {
+        let state = tempfile::tempdir().unwrap();
+        let undated = KEPT
+            .replace("from 1279152000 until 1547164800", "from 4102444800")
+            .replace("from 1485993600", "from 4102444800")
+            .replace("from 1721260800", "from 4102444800");
+        fs::write(state.path().join(roots::ANCHORS), undated).unwrap();
+        let text = validating(state.path());
+        let mut store = Store::default();
+        let started = crate::config::read(&text, env, &Pipeline::default(), &mut store)
+            .unwrap()
+            .pipeline;
+        let tag = validation_tag(&started);
+        assert!(
+            ["19036", "20326", "38696"]
+                .iter()
+                .all(|key| tag.contains(key)),
+            "{tag}"
+        );
+        let reloaded = crate::config::read(&text, env, &started, &mut store)
+            .unwrap()
+            .pipeline;
+        assert_eq!(validation_tag(&reloaded), tag);
     }
 
     /// D118: a plain line of one label is refused unless the stage says `tlds`.

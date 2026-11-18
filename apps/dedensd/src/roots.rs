@@ -1,7 +1,8 @@
 //! IANA's root files kept fresh (D128): the TLD list of the `tlds` stage, kept in `downloads.dir`, and the root's
 //! trust anchors of the validating forward stages without `trust_anchors`, kept in `state_dir`. Fetched at each
-//! refresh (D104), read at start and on each reload: as the starting user, then as `user` once dropped (D122); never
-//! through a symbolic link, a regular file only, of a capped length.
+//! refresh (D104), read at start and on each reload: as the starting user, then as `user` once dropped (D122); a
+//! regular file of a capped length, itself no symbolic link (`O_NOFOLLOW`: the directories above it may be).
+//! A kept anchors file with no key valid now, by a clock likelier wrong than every key ended, has every key trusted.
 //!
 //! The anchors and their signature are fetched whole, about 10 KB, and verified (RFC 9718 §3) against the signing
 //! time of the anchors kept, the floor: a server cannot roll them back to an older signed set. Of a pair that
@@ -19,8 +20,8 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
-use anyhow::{Context, anyhow};
-use dedens_dnssec::{MAX_P7S, MAX_XML, RootAnchors, TrustAnchors};
+use anyhow::Context;
+use dedens_dnssec::{MAX_P7S, MAX_XML, ROOT_SIGNED_AT, RootAnchors, TrustAnchors};
 use dedens_plugins::MAX_LIST_AGE;
 use dedens_roots::{Kind, Tlds};
 
@@ -72,8 +73,6 @@ pub(crate) struct TldsUsed {
 pub(crate) struct AnchorsUsed {
     pub(crate) url: String,
     pub(crate) signature: String,
-    /// When ICANN signed them, in seconds since 1970: [`dedens_dnssec::ROOT_SIGNED_AT`] for the bundled ones.
-    pub(crate) signed_at: u64,
     /// The keys valid at the load, which the validators trust.
     pub(crate) valid: TrustAnchors,
 }
@@ -93,9 +92,9 @@ pub(crate) struct Held {
 }
 
 impl Held {
-    /// The TLD list of `url` saved in `dir`: the saved copy, or the bundled one when there is none, or it does not
-    /// read as a list at least half the bundled one's length, which is warned of: its version tag is then removed,
-    /// so that the next refresh fetches it whole.
+    /// The TLD list of `url` saved in `dir`: the saved copy, or the bundled one when there is none, IANA generated
+    /// it later, or the copy does not read as a list at least half the bundled one's length, which is warned of: its
+    /// version tag is then removed, so that the next refresh fetches it whole.
     ///
     /// # Errors
     ///
@@ -113,6 +112,13 @@ impl Held {
         }
         let json = read_capped(file, MAX_TLDS_LEN).with_context(reading)?;
         let tlds = match Tlds::read(&json) {
+            Ok(tlds) if tlds.generated() < BUNDLED.generated() => {
+                tracing::info!(
+                    path = %path.display(),
+                    "the saved TLD list is older than the bundled one, using the bundled one"
+                );
+                bundled()
+            }
             Ok(tlds) => {
                 unknown_special_use(&tlds);
                 Arc::new(tlds)
@@ -203,8 +209,8 @@ fn read_anchors(
     }
 }
 
-/// The saved file at `path` opened for reading, with its stamp: not through a symbolic link, a regular file only;
-/// `None` when not there.
+/// The saved file at `path` opened for reading, with its stamp: a regular file, itself no symbolic link (its
+/// directories may be); `None` when not there.
 fn open(path: &Path) -> io::Result<Option<(File, Stamp)>> {
     let mut options = File::options();
     options.read(true);
@@ -272,22 +278,12 @@ pub(crate) fn stale(tlds: &Tlds, now: u64) -> bool {
     now >= tlds.generated().saturating_add(MAX_LIST_AGE)
 }
 
-/// The root anchors of the validators at `now`: the keys of `kept` valid then, or the bundled ones without it.
-///
-/// # Errors
-///
-/// No key of `kept` valid at `now`: one not valid yet, or ended, by a clock that is wrong.
-pub(crate) fn valid(kept: Option<&RootAnchors>, now: u64) -> anyhow::Result<TrustAnchors> {
-    kept.map_or_else(
-        || Ok(TrustAnchors::root()),
-        |kept| {
-            kept.at(now).ok_or_else(|| {
-                anyhow!(
-                    "no key of the kept root trust anchors is valid at {now}: is the clock right?"
-                )
-            })
-        },
-    )
+/// The root anchors of the validators at `now`: the keys of `kept` valid then, or every key of it when none is, by
+/// a clock likelier wrong than every key ended (the load warns of it); the bundled ones without `kept`.
+pub(crate) fn valid(kept: Option<&RootAnchors>, now: u64) -> TrustAnchors {
+    kept.map_or_else(TrustAnchors::root, |kept| {
+        kept.at(now).unwrap_or_else(|| kept.undated())
+    })
 }
 
 /// Fetches the root files at each refresh; kept by the thread of the downloads, and made again at each reload.
@@ -362,18 +358,14 @@ impl Refresh {
                 };
                 note(&mut fetched, outcome);
             }
-            match valid(held.kept_anchors(), now) {
-                Ok(valid) if valid != anchors.valid => {
-                    tracing::info!("the root trust anchors valid now are not those in use");
-                    fetched.changed = true;
-                }
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    error = format!("{error:#}"),
-                    "keeping the root trust anchors in use"
-                ),
+            if valid(held.kept_anchors(), now) != anchors.valid {
+                tracing::info!("the root trust anchors valid now are not those in use");
+                fetched.changed = true;
             }
-            age("anchors", anchors.signed_at, now);
+            let signed_at = held
+                .kept_anchors()
+                .map_or(ROOT_SIGNED_AT, RootAnchors::signed_at);
+            age("anchors", signed_at, now);
         }
         fetched
     }
@@ -496,7 +488,6 @@ mod tests {
             anchors: Some(AnchorsUsed {
                 url: format!("http://{addr}/root-anchors.xml"),
                 signature: format!("http://{addr}/root-anchors.p7s"),
-                signed_at: dedens_dnssec::ROOT_SIGNED_AT,
                 valid: TrustAnchors::root(),
             }),
         }
@@ -513,13 +504,11 @@ mod tests {
         fs::write(&path, KEPT).unwrap();
         let kept = held.anchors(dir.path()).unwrap().cloned().unwrap();
         assert_eq!(kept, RootAnchors::read(KEPT).unwrap());
+        assert_eq!(valid(Some(&kept), captured_at()), TrustAnchors::root());
         assert_eq!(
-            valid(Some(&kept), captured_at()).unwrap(),
-            TrustAnchors::root()
-        );
-        assert!(
-            valid(Some(&kept), 1_000_000_000).is_err(),
-            "no key valid in 2001"
+            valid(Some(&kept), 1_000_000_000),
+            kept.undated(),
+            "no key valid in 2001: every one"
         );
         fs::write(&path, KEPT.replace("signed-at", "signed")).unwrap();
         assert_eq!(held.anchors(dir.path()).unwrap(), Some(&kept));
@@ -528,7 +517,7 @@ mod tests {
         assert_eq!(held.anchors(dir.path()).unwrap(), None);
     }
 
-    /// D128, D122: a root file is read as a regular file of a capped length, never through a symbolic link.
+    /// D128, D122: a root file is read as a regular file of a capped length, itself no symbolic link.
     #[cfg(unix)]
     #[test]
     fn root_files_are_read_through_no_link_and_of_a_capped_length() {
@@ -555,7 +544,9 @@ mod tests {
     }
 
     /// No saved list is the bundled one; a saved one is read once while unchanged; one that does not read is the
-    /// bundled one, its version tag removed so that the next refresh fetches it whole.
+    /// bundled one, its version tag removed so that the next refresh fetches it whole; one generated before the
+    /// bundled one is the bundled one too. The saved list is the bundled one, captured from IANA, and that list
+    /// with its `meta.generated` in 2020.
     #[test]
     fn the_saved_tld_list_is_read_once_and_one_that_does_not_read_is_fetched_whole() {
         let dir = tempfile::tempdir().unwrap();
@@ -577,6 +568,13 @@ mod tests {
         fs::write(&copy, b"{}").unwrap();
         assert!(Arc::ptr_eq(&held.tlds(dir.path(), url).unwrap(), &BUNDLED));
         assert_eq!(download::saved_tag(&copy), None);
+
+        let mut older: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../../crates/dedens-roots/src/tlds.json"))
+                .unwrap();
+        older["meta"]["generated"] = "2020-01-01T00:00:00Z".into();
+        fs::write(&copy, serde_json::to_vec(&older).unwrap()).unwrap();
+        assert!(Arc::ptr_eq(&held.tlds(dir.path(), url).unwrap(), &BUNDLED));
     }
 
     /// RFC 9718 §3, D128: a fetched pair is kept once verified, as the text of its keys and signing time; fetched
@@ -659,7 +657,7 @@ mod tests {
         let kept = held.anchors(dir.path()).unwrap().cloned();
         let mut used = anchors_used(addr);
         if let Some(anchors) = &mut used.anchors {
-            anchors.valid = valid(kept.as_ref(), ends - 1).unwrap();
+            anchors.valid = valid(kept.as_ref(), ends - 1);
         }
         let (client, mut refresh) = (Fetcher::new(), Refresh::default());
         let dirs = (dir.path(), dir.path());
@@ -772,8 +770,6 @@ mod tests {
     /// the anchors; fetched or not.
     #[test]
     fn the_age_of_a_root_file_is_that_of_the_copy_in_use() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
         let mut used = anchors_used(serve(|_| status("404 Not Found")));
         used.tlds = Some(TldsUsed {
             url: "http://127.0.0.1:9/tlds.json".to_owned(),
@@ -782,7 +778,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let unwritable = dir.path().join(ANCHORS);
         fs::write(&unwritable, "").unwrap();
-        metrics::with_local_recorder(&recorder, || {
+        let ages = ages(|| {
             let dirs = (unwritable.as_path(), dir.path());
             Refresh::default().fetch(
                 &Fetcher::new(),
@@ -790,8 +786,46 @@ mod tests {
                 dirs,
                 &mut Held::default(),
                 5_000_000_000,
-            );
+            )
         });
+        assert_eq!(
+            ages,
+            [
+                ("anchors".to_owned(), since(ROOT_SIGNED_AT, 5_000_000_000)),
+                ("tlds".to_owned(), since(1_000, 5_000_000_000)),
+            ]
+        );
+    }
+
+    /// D128: the same keys signed again are written with their new signing time, which the age of the anchors
+    /// follows from that refresh on, though nothing reloads.
+    #[test]
+    fn the_age_of_the_anchors_follows_their_signing_again() {
+        let (xml, p7s) = (captured("root-anchors.xml"), captured("root-anchors.p7s"));
+        let addr = serve(move |path| ok("", if path.ends_with("p7s") { &p7s } else { &xml }));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ANCHORS);
+        fs::write(&path, KEPT.replace("1742934302", "1742934301")).unwrap();
+        let mut held = Held::default();
+        held.anchors(dir.path()).unwrap();
+        let ages = ages(|| {
+            let dirs = (dir.path(), dir.path());
+            let used = anchors_used(addr);
+            Refresh::default().fetch(&Fetcher::new(), &used, dirs, &mut held, captured_at())
+        });
+        assert_eq!(fs::read_to_string(&path).unwrap(), KEPT);
+        assert_eq!(
+            ages,
+            [("anchors".to_owned(), since(1_742_934_302, captured_at()))]
+        );
+    }
+
+    /// The [`AGE`] gauges `fetch` sets, by `file`, and that it reloads nothing.
+    fn ages(fetch: impl FnOnce() -> Fetched) -> Vec<(String, f64)> {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let fetched = metrics::with_local_recorder(&recorder, fetch);
+        assert!(!fetched.changed, "reloaded");
         let mut ages: Vec<_> = (snapshotter.snapshot().into_vec().into_iter())
             .filter_map(|(key, _, _, value)| match value {
                 DebugValue::Gauge(age) if key.key().name() == AGE => Some((
@@ -802,14 +836,12 @@ mod tests {
             })
             .collect();
         ages.sort_by(|a, b| a.0.cmp(&b.0));
-        #[expect(clippy::cast_precision_loss, reason = "exact below 2^53")]
-        let since = |at: u64| (5_000_000_000 - at) as f64;
-        assert_eq!(
-            ages,
-            [
-                ("anchors".to_owned(), since(dedens_dnssec::ROOT_SIGNED_AT)),
-                ("tlds".to_owned(), since(1_000)),
-            ]
-        );
+        ages
+    }
+
+    /// Seconds from `at` to `now`, as a gauge holds them.
+    #[expect(clippy::cast_precision_loss, reason = "exact below 2^53")]
+    fn since(at: u64, now: u64) -> f64 {
+        (now - at) as f64
     }
 }

@@ -45,7 +45,8 @@
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
 //! state_dir: /var/lib/dedensd      # what dedensd keeps across restarts: the root anchors verified last (D128)
-//! roots:                            # IANA's files, fetched every `refresh_minutes` (D128); `off`: the bundled ones
+//! roots:                            # IANA's files, fetched every `refresh_minutes` (D128); `off`: the bundled ones, the
+//!                                   # list of which, 30 days after its generated time, has a tlds stage pass on what it lacks
 //!   tlds: https://data.iana.org/TLD/v1/tlds.json                     # for a tlds stage, kept in `downloads.dir`; IANA's by default
 //!   anchors: https://data.iana.org/root-anchors/root-anchors.xml     # signature beside it, .p7s; kept in `state_dir`; for dnssec without trust_anchors
 //! pipeline: [hosts, tlds, ads, cache, upstream]
