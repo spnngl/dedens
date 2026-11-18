@@ -450,7 +450,8 @@ async fn a_query_asks_as_a_resolver_asks_an_authoritative_server() {
         },
         |_| unreachable!("all over UDP"),
     );
-    let (client, _) = client(Limits::default());
+    // A fixed seed: one draw in 2^9 leaves the nine letters of `google.com.` as they were.
+    let client = Authoritative::with_io(Watched::seeded(0x0020), Limits::default());
     let answer = client
         .query(google(), addr, Quirks::default(), deadline())
         .await
@@ -581,7 +582,8 @@ async fn a_server_not_repeating_the_case_is_marked_over_tcp() {
         |query| vec![(From::Server, lowercase(real(query)))],
         |query| lowercase(real(query)),
     );
-    let (client, _) = client(Limits::default());
+    // A fixed seed: one draw in 2^9 is all lowercase, which the server repeats.
+    let client = Authoritative::with_io(Watched::seeded(0x0020), Limits::default());
     let question = Question::new(
         Name::from_labels([b"Google".as_slice(), b"COM"]).expect("a name"),
         RecordType::A,
