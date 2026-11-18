@@ -167,6 +167,21 @@ fn rfc6298_5_5_back_off_skip_and_probe() {
 }
 
 #[test]
+fn rfc6298_5_7_estimate_restarted_after_backing_off() {
+    let cache = cache();
+    let [a, ..] = roots()[..] else {
+        panic!("13 roots")
+    };
+    cache.reply(a, 100 * MS, Marks::default(), 0);
+    for _ in 0..InfraCache::TIMEOUT_LIMIT {
+        cache.timeout(a, timeout(&cache, a, 0), 0);
+    }
+    // As a first measurement, not smoothed into the old 100 ms (which would give 311 ms).
+    cache.reply(a, 30 * MS, Marks::default(), 5);
+    assert_eq!(timeout(&cache, a, 5), 90 * MS);
+}
+
+#[test]
 fn rfc6298_5_5_queries_in_flight_back_off_once() {
     let cache = cache();
     let [a, ..] = roots()[..] else {
@@ -352,10 +367,12 @@ fn skipped_server_stays_skipped_past_expiry() {
 #[test]
 fn default_capacity_holds_unbounds_hosts() {
     let cache = cache();
+    assert!(cache.is_empty());
     for n in 0..10_000 {
         cache.reply(documentation(n), 20 * MS, Marks::default(), 0);
     }
     assert_eq!(cache.len(), 10_000);
+    assert!(!cache.is_empty());
 }
 
 #[test]
@@ -369,6 +386,8 @@ fn size_bound_evicts() {
         assert!(cache.used() <= capacity, "{} bytes", cache.used());
     }
     assert!(cache.len() < 2000, "{} entries", cache.len());
+    // Full, within two entries (about 270 bytes each) of each shard's share.
+    assert!(cache.used() > capacity - 4 * 600, "{} bytes", cache.used());
     // The last heard of is still held.
     assert_eq!(timeout(&cache, documentation(9_999), 0), 60 * MS);
 }
@@ -383,6 +402,12 @@ fn sizes_checked() {
         InfraCache::new(256, 1),
         Err(ConfigError::Capacity(_))
     ));
+    // Room for the longest entry, a lame IPv6 server for a zone of 255 octets.
+    let small = InfraCache::new(4096, 1).expect("a valid size");
+    let label = "a".repeat(63);
+    let longest = name(&format!("{label}.{label}.{label}.{}.", &label[..61]));
+    small.lame(documentation(1), &longest, 0);
+    assert_eq!(small.len(), 1);
 }
 
 /// The `n`th address of the documentation prefix, RFC 3849.
