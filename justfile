@@ -497,6 +497,17 @@ capture-dnssec:
     rm -f "$dir"/*.bin
     cp "$tmp"/*.bin "$tmp/captured_at" "$dir/"
 
+# Capture the resolutions of testdata/recursion/ anew (D188): every case of the capture tool, or those with the ids
+# given, each resolved from the root servers. The files are replaced only when every resolution succeeded.
+capture-recursion *ids:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    cargo run -q -p dedens-testkit --features recursion --example capture_recursion -- "$tmp" {{ ids }}
+    mkdir -p testdata/recursion
+    cp "$tmp"/*.yaml testdata/recursion/
+
 # Ask every public resolver of docs/providers/providers.yaml over the network, IPv4 and IPv6 (D67).
 providers:
     cargo test -p dedens --features dnscrypt --test tests -- --ignored providers:: --nocapture

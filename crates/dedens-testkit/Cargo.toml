@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 compio = { workspace = true, optional = true }
@@ -17,6 +18,8 @@ dedens-odoh = { workspace = true, optional = true }
 dedens-proto.workspace = true
 http = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde-saphyr = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 
 [features]
@@ -26,6 +29,23 @@ certificates = ["dep:compio", "dep:dedens-net", "dep:rcgen"]
 responder = ["certificates", "dep:http", "dep:tempfile"]
 odoh = ["responder", "dedens-net/odoh", "dep:dedens-odoh"]
 doc = ["responder", "dedens-net/doc"]
+# The captured resolutions of the recursive resolver and the servers replaying them (`recursion`, D188).
+recursion = ["dep:serde", "dep:serde-saphyr"]
+
+[dev-dependencies]
+# The tool capturing the resolutions (`examples/capture_recursion.rs`, run by `just capture-recursion`).
+compio.workspace = true
+dedens-net.workspace = true
+dedens-roots.workspace = true
+
+[[example]]
+name = "capture_recursion"
+required-features = ["recursion"]
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+required-features = ["recursion"]
 
 [lints]
 workspace = true

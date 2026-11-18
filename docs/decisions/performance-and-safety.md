@@ -330,3 +330,25 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   runs the gate, against D6's stable toolchain and D153's reproducible build); `--jobs-frontend` in
   `.cargo/config.toml` (stable reads it too and refuses `-Z` flags); a count above 2 in the recipes (within the
   noise, more CPU time and memory).
+- D188 (builds on D10, D40, D126, D161, D162) The recursive resolver's test data is real resolutions from the root
+  servers in `testdata/recursion/`, one YAML file per name, captured by `just capture-recursion [ids]`: the example
+  `capture_recursion` of `dedens-testkit` (its network crates dev-dependencies) iterates as `+trace` does (D40) from the bundled
+  root hints (D126), primes (RFC 8109 §3), asks each zone's DS at its parent and DNSKEY at the zone, follows referrals
+  (glue within the parent zone, RFC 9471 §2.1-2.2; other server names resolved from the root) and CNAME chains (a
+  DNAME's synthesised CNAME included), and records every exchange. Each question goes to one server of each family,
+  the first in address order that answers, so a recapture asks the same servers while they stay; queries set DO alone
+  (no RD, cookie or 0x20) with a 1232-byte payload (D10, RFC 9715 §3.2), and a truncated response is asked again over
+  TCP. A file: `captured_at` (Unix time of the run's end, the "now" of the signatures, as `testdata/dnssec/`), the name
+  and type, then each exchange: server address, zone asked as, question name and type, query flags, transport (`udp`
+  or `tcp`), response bytes in base64. The cases (`testdata/recursion/README.md`): priming, signed names under com and
+  nl, an unsigned name, a CNAME chain across three zones, a DNAME, a glueless delegation, NXDOMAIN and NODATA signed
+  and unsigned, NXDOMAIN by NSEC3, an answer over 1232 bytes; no zone served by IPv6 servers alone was found. The
+  recipe replaces only the files of a run that succeeded; a recapture keeps the cases, not the bytes. The feature
+  `recursion` of `dedens-testkit` (on serde and serde-saphyr; the default build stays as D161 left it) reads them
+  (`Resolution`) and replays them in memory (`Authorities`): by server address and question (name without case, type),
+  the response over the transport asked when there is one, under the query's ID and question; anything else gets
+  REFUSED, so a resolver under test that picks a server never asked moves on as from a lame one. YAML through serde
+  adds no parser of outside data: no fuzz target. Rejected: a `dedens` flag (CLI surface for a test tool; `+trace`
+  stays dig's, D40); the `.bin` files and `capture.yaml` of `testdata/dnssec/` (a resolution is an ordered list of
+  exchanges, each needing its server and zone); a server per capture listening on loopback (the resolver's tests
+  drive its I/O themselves; a socket front over `Authorities` can come with them).

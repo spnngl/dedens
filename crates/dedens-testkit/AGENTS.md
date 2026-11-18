@@ -7,3 +7,6 @@ nothing is re-exported.
 
 The responder's delays are wall-clock time, for the tests of the `dedensd` process alone (D161): a test of a library
 timer runs on `dedens-sim`'s clock, not against a slow responder.
+
+The integration tests need the feature `recursion` (`required-features`): `cargo test -p dedens-testkit` alone skips
+them; the gate's `--all-features` runs them.

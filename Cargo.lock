@@ -1158,8 +1158,11 @@ dependencies = [
  "dedens-net",
  "dedens-odoh",
  "dedens-proto",
+ "dedens-roots",
  "http",
  "rcgen",
+ "serde",
+ "serde-saphyr",
  "tempfile",
 ]
 
