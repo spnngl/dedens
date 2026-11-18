@@ -1,0 +1,39 @@
+[package]
+name = "dedens-resolver"
+description = "The recursive resolver, sans-IO: its caches and resolution."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[features]
+# Counters through the `metrics` facade (D30).
+metrics = ["dep:metrics"]
+
+[dependencies]
+# D193: the sharded byte-budgeted store and the TTL rules of the response cache.
+dedens-cache.workspace = true
+dedens-proto.workspace = true
+metrics = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+dedens-testkit.workspace = true
+metrics.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
+stats_alloc.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+
+# A test that sets its own `#[global_allocator]` keeps its binary (D162).
+[[test]]
+name = "memory"
+path = "tests/memory.rs"
+
+[lints]
+workspace = true

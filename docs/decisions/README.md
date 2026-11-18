@@ -122,7 +122,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D113 [server](server.md) (amended by D136): response rate limits over UDP and DoC; Server Cookies exempt
 - D114 [server](server.md): checks on what answers carry: AD is ours alone
 - D115 [server](server.md) (amended by D120, D122): configuration bounded by what the server can bear
-- D116 [server](server.md) (amended by D118): the cache's memory, evictions and truncated hits
+- D116 [server](server.md) (amended by D118, D193): the cache's memory, evictions and truncated hits
 - D117 [server](server.md) (amended by D186): per-client budgets within the shared limits
 - D118 [server](server.md) (amended by D120): blocklist targets: CNAMEs to blocked names, one-label entries
 - D119 [server](server.md) (amended by D121): bounds on what a QUIC peer can make the server hold
@@ -191,3 +191,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D187 [performance and safety](performance-and-safety.md): nightly-2026-11-17 and RAPx 0.7.75; its parallel frontend at the default 2 threads; not on stable
 - D188 [performance and safety](performance-and-safety.md): real resolutions from the root in `testdata/recursion/`, YAML, `just capture-recursion`; replayed by `Authorities`
 - D189 [simulation tests](simulation-tests.md): the captures' authoritative servers hosted at their addresses, each misbehaving on demand (`Conduct`); `Expected::resolved`
+- D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store

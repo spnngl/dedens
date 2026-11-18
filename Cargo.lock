@@ -953,6 +953,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-resolver",
  "dedens-roots",
  "dedens-server",
  "dedens-testkit",
@@ -1081,6 +1082,19 @@ dependencies = [
 [[package]]
 name = "dedens-repo"
 version = "0.1.0"
+
+[[package]]
+name = "dedens-resolver"
+version = "0.1.0"
+dependencies = [
+ "dedens-cache",
+ "dedens-proto",
+ "dedens-testkit",
+ "metrics",
+ "metrics-util",
+ "stats_alloc",
+ "thiserror",
+]
 
 [[package]]
 name = "dedens-roots"
