@@ -514,28 +514,29 @@ fn rfc2181_6_1_a_dname_above_the_zone_is_dropped() {
     assert_eq!(target.to_string(), "www.netmeister.org.");
 }
 
-/// An answer without AA is kept, ranked below an authoritative one (RFC 1035 §4.1.1, RFC 2181 §5.4.1), as Unbound
-/// keeps it; with RA set too it is a cache talking, lame.
+/// Only authoritative data from the zone's servers is trusted (RFC 2181 §5.4.1): a response without AA that is not
+/// a referral is lame, RA set or not, NXDOMAIN included, where Unbound keeps it unless RA is set (D192). RA beside
+/// AA changes nothing.
 #[test]
-fn rfc2181_5_4_1_an_answer_without_aa_is_ranked_below() {
+fn rfc2181_5_4_1_an_answer_without_aa_is_lame() {
     let (bytes, question, zone) =
         captured("signed-com", "example.com.", "example.com.", RecordType::A);
-    let mut response = decode(&bytes);
-    // Changed: AA cleared.
-    response.header.flags = response.header.flags.without(Flags::AA);
-    let scrubbed = scrub(&response, &question, &zone);
-    assert!(
-        matches!(scrubbed.outcome, Outcome::Answer { .. }),
-        "{}",
-        describe(&scrubbed)
-    );
-    let ranked = scrubbed.ranked();
-    assert_ne!(ranked.len(), 0);
-    assert!(
-        ranked
-            .iter()
-            .all(|(rank, _)| *rank == Rank::AnswerNonAuthoritative)
-    );
+    for ra in [false, true] {
+        let mut response = decode(&bytes);
+        // Changed: AA cleared; RA set or not.
+        response.header.flags = response.header.flags.without(Flags::AA);
+        if ra {
+            response.header.flags = response.header.flags.with(Flags::RA);
+        }
+        let scrubbed = scrub(&response, &question, &zone);
+        assert!(
+            matches!(scrubbed.outcome, Outcome::Lame),
+            "ra={ra}: {}",
+            describe(&scrubbed)
+        );
+        assert_eq!(scrubbed.ranked().len(), 0);
+        assert_eq!(scrubbed.dropped.len(), 0);
+    }
     let mut response = decode(&bytes);
     // Changed: RA set; AA still set.
     response.header.flags = response.header.flags.with(Flags::RA);
@@ -543,12 +544,6 @@ fn rfc2181_5_4_1_an_answer_without_aa_is_ranked_below() {
         scrub(&response, &question, &zone).outcome,
         Outcome::Answer { .. }
     ));
-    // Changed: AA cleared, RA set.
-    response.header.flags = response.header.flags.without(Flags::AA);
-    let scrubbed = scrub(&response, &question, &zone);
-    assert!(matches!(scrubbed.outcome, Outcome::Lame));
-    assert_eq!(scrubbed.ranked().len(), 0);
-    assert_eq!(scrubbed.dropped.len(), 0);
     let (bytes, question, zone) = captured(
         "nxdomain-unsigned",
         "google.com.",
@@ -560,20 +555,16 @@ fn rfc2181_5_4_1_an_answer_without_aa_is_ranked_below() {
     response.header.flags = response.header.flags.without(Flags::AA);
     let scrubbed = scrub(&response, &question, &zone);
     assert!(
-        matches!(scrubbed.outcome, Outcome::NxDomain { .. }),
+        matches!(scrubbed.outcome, Outcome::Lame),
         "{}",
         describe(&scrubbed)
     );
-    assert_eq!(
-        scrubbed.ranked().first().map(|(rank, _)| *rank),
-        Some(Rank::AuthorityNonAuthoritative)
-    );
 }
 
-/// The com. servers' referral for google.com, as an answer without AA to google.com NS: a referral, as Unbound reads
-/// it (`iter_resptype.c`).
+/// The com. servers' referral for google.com, as an answer without AA to google.com NS: no referral, which the
+/// authority section carries (RFC 1034 §4.3.2 step 3b), and no authoritative answer, so lame (D192).
 #[test]
-fn rfc1034_4_3_2_ns_without_aa_in_the_answer_section_is_a_referral() {
+fn rfc2181_5_4_1_ns_without_aa_in_the_answer_section_is_lame() {
     let (bytes, _, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
     let mut response = decode(&bytes);
     let ns = Question::new("google.com.".parse().expect("a name"), RecordType::NS);
@@ -586,15 +577,11 @@ fn rfc1034_4_3_2_ns_without_aa_in_the_answer_section_is_a_referral() {
     response.answer = records;
     response.authority = rest;
     let scrubbed = scrub(&response, &ns, &zone);
-    let Outcome::Referral {
-        child, ns, proof, ..
-    } = &scrubbed.outcome
-    else {
-        panic!("{}", describe(&scrubbed));
-    };
-    assert_eq!(child.to_string(), "google.com.");
-    assert_eq!(ns.len(), 4);
-    assert_ne!(proof.len(), 0);
+    assert!(
+        matches!(scrubbed.outcome, Outcome::Lame),
+        "{}",
+        describe(&scrubbed)
+    );
 }
 
 /// A referral to the zone itself or above it leads nowhere, whatever AA says (RFC 4697 §2.2); with neither SOA nor
@@ -867,6 +854,14 @@ fn rfc4035_3_1_4_1_a_referral_to_the_name_asked_for_its_ds_is_the_answer() {
         panic!("{}", describe(&scrubbed));
     };
     assert_eq!(names(records), ["example.com. DS", "example.com. RRSIG"]);
+    // The parent's authoritative data (RFC 4035 §2.3), though the referral is without AA.
+    assert!(!response.header.flags.contains(Flags::AA));
+    assert!(
+        scrubbed
+            .ranked()
+            .iter()
+            .all(|(rank, _)| *rank == Rank::AnswerAuthoritative)
+    );
 }
 
 /// An AA answer is an answer, not a referral, though its authority section names a zone between the one asked and

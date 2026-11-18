@@ -38,6 +38,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 
 ## Traps
 
+- `Rank::AnswerNonAuthoritative` is never a non-AA answer: a response without AA but a referral is `Lame` (D192, a
+  deviation from Unbound). It is the chain past an AA answer's first owner. The RRset cache's ranks say the same.
+
 - A DS question referred to the name asked without a DS: the referral's proof holds the NSEC or NSEC3 denying it;
   the iteration must read it there, not ask the child, whose answer would be NODATA from the wrong side of the cut.
 - NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost
