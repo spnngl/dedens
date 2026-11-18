@@ -15,7 +15,10 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - A rule of `scrub` changes with D192 and a test in `tests/scrub.rs`; a bound is a named constant with its Unbound
   value, and a test reaches it.
 - `scrub` is total: any message, any zone, no panic. The fuzz target `scrub_response` checks that what it keeps is
-  within the zone.
+  within the zone and parses, and that every record of the response is kept or dropped, once; its seeds are the
+  captures of `testdata/recursion`.
+- A scrubbed `Lame` or `Unusable` keeps and drops nothing: the iteration asks another server, nothing is logged per
+  record.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,
   the RDATA slices, each RDATA); `tests/memory.rs` checks it against the allocator's count. The allocator's rounding
   and headers are not counted: up to 1.5 times more on glue (D193). A new owned field means a new term.
@@ -32,3 +35,14 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   variant, not a second store.
 - Time is `u32` seconds from any origin and may go back: use saturating arithmetic.
 - The metric names are public: Prometheus series.
+
+## Traps
+
+- A DS question referred to the name asked without a DS: the referral's proof holds the NSEC or NSEC3 denying it;
+  the iteration must read it there, not ask the child, whose answer would be NODATA from the wrong side of the cut.
+- NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost
+  (KeyTrap, CVE-2023-50387 and CVE-2023-50868).
+- Names keep the case the server sent: `Name`'s equality folds case, so `scrub` matches a `0x20` question, and
+  nothing restores the client's case. The cache and the server must.
+- The budgets against NXNS and TsuNAME (fetches per resolution, cycles between delegations) are the iteration's:
+  `scrub` sees one response.

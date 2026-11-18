@@ -3,23 +3,29 @@
 //!
 //! A server is trusted for the zone it was asked as and nothing else (RFC 2181 §6.1, RFC 5452 §6): a record owned
 //! outside that zone, or of another class, is dropped whatever its section, as Unbound's `scrub_sanitize`
-//! (`iterator/iter_scrub.c`) does. Within the zone, each section keeps only what its outcome needs:
+//! (`iterator/iter_scrub.c`) does; so is a record whose RDATA does not parse for its type (D9). Within the zone,
+//! each section keeps only what its outcome needs:
 //!
-//! - an authoritative answer (AA) keeps the records at the name asked, or the CNAME and DNAME chain from it
-//!   (RFC 1034 §4.3.2 step 3a) and the records at its end. A DNAME's CNAME is synthesised and the server's kept
-//!   only when it is the same (RFC 6672 §3.4: a resolver synthesises); a chain leaving the zone, or ending without
-//!   data, is [`Outcome::Cname`]: the zone's servers say nothing past it;
+//! - an answer keeps the records at the name asked, or the CNAME and DNAME chain from it (RFC 1034 §4.3.2 step 3a)
+//!   and the records at its end. A DNAME's CNAME is synthesised and the server's kept only when it is the same
+//!   (RFC 6672 §3.4: a resolver synthesises); a chain leaving the zone, or ending without data, is
+//!   [`Outcome::Cname`]: the zone's servers say nothing past it. A DNAME whose synthesis is longer than 255 bytes
+//!   is the answer [`Outcome::YxDomain`] (RFC 6672 §2.2);
 //! - a referral keeps one NS `RRset`, owned strictly below the zone and at or above the name asked (RFC 1034
 //!   §4.3.2 step 3b), its DS records or the NSEC or NSEC3 records proving it has none (RFC 4035 §3.1.4), and the
-//!   address records of its name servers within the zone as glue;
+//!   address records of its name servers within the zone as glue. A referral to the name asked, for its DS, is the
+//!   answer: DS records are the parent's (RFC 4035 §3.1.4.1);
 //! - a negative answer keeps one SOA at or above the name and the NSEC and NSEC3 records (RFC 2308 §2, RFC 4035
-//!   §3.1.3); an answer keeps the NSEC and NSEC3 records of its wildcard proofs. Their NS records are dropped:
-//!   Unbound's `iter-scrub-promiscuous`;
+//!   §3.1.3); without the SOA it is [`Outcome::NoSoa`], which nothing caches (RFC 2308 §5). An answer keeps the
+//!   NSEC and NSEC3 records of its wildcard proofs. Their NS records are dropped: Unbound's
+//!   `iter-scrub-promiscuous`;
 //! - an NSEC whose next name leaves the zone is dropped (Unbound's `sanitize_nsec_is_overreach`); an RRSIG stays
 //!   with the `RRset` it covers, in its section, or goes.
 //!
-//! A response without AA is a referral or nothing ([`Outcome::Lame`]): its answer and authority would be data the
-//! server holds from elsewhere (RFC 2181 §5.4.1, RFC 4697 §2.2). Every bound is a named constant below.
+//! AA ranks the records (RFC 1035 §4.1.1, RFC 2181 §5.4.1) and does not decide the outcome, as in Unbound's
+//! `response_type_from_server` (`iterator/iter_resptype.c`): a response without AA but with RA set is a cache
+//! talking, [`Outcome::Lame`]; so is a referral that leads nowhere below the zone, whatever AA. Every bound is a
+//! named constant below.
 
 use std::collections::{HashMap, HashSet};
 
@@ -49,18 +55,18 @@ pub const MAX_GLUE: usize = 100;
 /// [`Rank::AnswerNonAuthoritative`] and above may answer a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rank {
-    /// The additional section of a non-authoritative answer: the glue of a referral.
+    /// The additional section of a non-authoritative answer, or a referral's glue.
     AdditionalNonAuthoritative,
-    /// The authority section of a non-authoritative answer: the NS, DS and NSEC records of a referral.
+    /// The authority section of a non-authoritative answer, or a referral's NS, DS and NSEC records.
     AuthorityNonAuthoritative,
     /// The additional section of an authoritative answer.
     AdditionalAuthoritative,
-    /// A CNAME chain of an authoritative answer past the name asked: the server answers for the first owner name
-    /// only (RFC 1035 §4.1.1, AA). The least rank that answers a client.
+    /// The answer section of a non-authoritative answer, or of an authoritative one past its first owner name: AA
+    /// covers that name only (RFC 1035 §4.1.1). The least rank that answers a client.
     AnswerNonAuthoritative,
     /// The authority section of an authoritative answer.
     AuthorityAuthoritative,
-    /// The answer section of an authoritative answer, at the name asked.
+    /// The answer section of an authoritative answer, at the name asked or the first owner name (a DNAME's).
     AnswerAuthoritative,
 }
 
@@ -74,6 +80,8 @@ pub struct Scrubbed<'m> {
     pub dropped: Vec<Dropped>,
     /// The name asked, which ranks a chain.
     name: Name<'m>,
+    /// Whether AA was set, which ranks every record.
+    authoritative: bool,
 }
 
 /// What a scrubbed response says.
@@ -86,7 +94,7 @@ pub enum Outcome<'m> {
         /// The records of the type asked at the chain's end, with their RRSIGs.
         records: Vec<Record<'m>>,
         /// NSEC and NSEC3 records proving a wildcard expansion, with their RRSIGs.
-        authority: Vec<Record<'m>>,
+        denials: Vec<Record<'m>>,
         /// The addresses of the name servers of an NS answer, within the zone.
         additional: Vec<Record<'m>>,
     },
@@ -97,7 +105,7 @@ pub enum Outcome<'m> {
         /// The name to resolve next.
         target: Name<'m>,
         /// NSEC and NSEC3 records, as in [`Outcome::Answer`].
-        authority: Vec<Record<'m>>,
+        denials: Vec<Record<'m>>,
     },
     /// A delegation toward the name asked (RFC 1034 §4.3.2 step 3b).
     Referral {
@@ -112,21 +120,45 @@ pub enum Outcome<'m> {
     },
     /// The name exists, without data of the type asked (RFC 2308 §2.2).
     NoData {
-        /// The SOA and NSEC or NSEC3 records, with their RRSIGs.
-        authority: Vec<Record<'m>>,
+        /// The zone's SOA, whose TTL and MINIMUM bound the negative answer's (RFC 2308 §5).
+        soa: Record<'m>,
+        /// The NSEC or NSEC3 records, with their RRSIGs and the SOA's.
+        denials: Vec<Record<'m>>,
     },
     /// The name, or the end of its chain, does not exist (RFC 2308 §2.1).
     NxDomain {
         /// The CNAME and DNAME records followed, as in [`Outcome::Answer`].
         chain: Vec<Record<'m>>,
-        /// The SOA and NSEC or NSEC3 records, with their RRSIGs.
-        authority: Vec<Record<'m>>,
+        /// As in [`Outcome::NoData`].
+        soa: Record<'m>,
+        /// As in [`Outcome::NoData`].
+        denials: Vec<Record<'m>>,
     },
-    /// The server is not authoritative for the name: an answer without AA, or a referral that leads nowhere below
-    /// the zone (RFC 4697 §2.2).
+    /// A DNAME makes a name longer than 255 bytes of the name asked, or of its chain: the answer is YXDOMAIN
+    /// (RFC 6672 §2.2).
+    YxDomain {
+        /// The CNAME and DNAME records followed, as in [`Outcome::Answer`], the DNAME last.
+        chain: Vec<Record<'m>>,
+    },
+    /// A negative answer without the zone's SOA: nothing caches it (RFC 2308 §5).
+    NoSoa(Negative<'m>),
+    /// The server is not authoritative for the name: a cache answering (RA set, AA clear), or a referral that
+    /// leads nowhere below the zone (RFC 4697 §2.2).
     Lame,
     /// The response cannot be read as one to the question.
     Unusable(Unusable),
+}
+
+/// The negative answer of an [`Outcome::NoSoa`].
+#[derive(Debug, Clone)]
+pub enum Negative<'m> {
+    /// As [`Outcome::NoData`].
+    NoData,
+    /// As [`Outcome::NxDomain`].
+    NxDomain {
+        /// The CNAME and DNAME records followed, as in [`Outcome::Answer`].
+        chain: Vec<Record<'m>>,
+    },
 }
 
 /// Why a response cannot be read as one to the question.
@@ -136,15 +168,13 @@ pub enum Unusable {
     NotResponse,
     /// TC is set: the question goes again over TCP (RFC 7766 §5).
     Truncated,
-    /// A response code other than NOERROR and NXDOMAIN.
+    /// A response code other than NOERROR, NXDOMAIN and YXDOMAIN; or YXDOMAIN without a DNAME whose synthesis is
+    /// too long (RFC 6672 §2.2).
     Rcode(Rcode),
     /// Not exactly the question asked, name, type and class.
     QuestionMismatch,
     /// The name asked is outside the zone the server was asked as: the caller's error.
     OutsideZone,
-    /// A DNAME's synthesised name is longer than 255 bytes, which the server should have answered with YXDOMAIN
-    /// (RFC 6672 §2.2).
-    DnameTooLong,
 }
 
 /// A record dropped: its place in the response and why.
@@ -165,6 +195,9 @@ pub enum Reason {
     OtherClass,
     /// Its owner is outside the zone the server was asked as.
     OutsideZone,
+    /// Its RDATA does not parse for its type (D9), or a DNAME's is compressed (RFC 6672 §2.5); or it is the CNAME a
+    /// DNAME so dropped would have made.
+    Malformed,
     /// An answer record on no chain from the name asked, or not of the type asked at its end.
     OffChain,
     /// An NS `RRset` other than the referral's: at or above the zone, beside the name asked, or a second one.
@@ -175,8 +208,8 @@ pub enum Reason {
     NotGlue,
     /// An NSEC whose next name is outside the zone.
     Overreach,
-    /// Past [`MAX_NS`].
-    TooManyNs,
+    /// Past [`MAX_NS`], in an NS or DS `RRset`.
+    TooManyRecords,
     /// Past [`MAX_CHAIN`].
     ChainTooLong,
     /// Past [`MAX_SIGNATURES`].
@@ -189,8 +222,18 @@ impl<'m> Scrubbed<'m> {
     /// Every record kept with its rank, in the order of the outcome's fields.
     #[must_use]
     pub fn ranked(&self) -> Vec<(Rank, &Record<'m>)> {
-        let answer = |r: &Record<'m>| {
-            if r.name == self.name {
+        let aa = self.authoritative;
+        let (authority, additional) = if aa {
+            (Rank::AuthorityAuthoritative, Rank::AdditionalAuthoritative)
+        } else {
+            (
+                Rank::AuthorityNonAuthoritative,
+                Rank::AdditionalNonAuthoritative,
+            )
+        };
+        // AA covers the name asked, and the first owner name: a DNAME's, above it.
+        let answer = |chain: &[Record<'m>], r: &Record<'m>| {
+            if aa && (r.name == self.name || chain.first().is_some_and(|f| f.name == r.name)) {
                 Rank::AnswerAuthoritative
             } else {
                 Rank::AnswerNonAuthoritative
@@ -201,27 +244,37 @@ impl<'m> Scrubbed<'m> {
             Outcome::Answer {
                 chain,
                 records,
-                authority,
-                additional,
+                denials,
+                additional: glue,
             } => chain
                 .iter()
                 .chain(records)
-                .map(|r| (answer(r), r))
-                .chain(authority.iter().map(with(Rank::AuthorityAuthoritative)))
-                .chain(additional.iter().map(with(Rank::AdditionalAuthoritative)))
+                .map(|r| (answer(chain, r), r))
+                .chain(denials.iter().map(with(authority)))
+                .chain(glue.iter().map(with(additional)))
                 .collect(),
-            Outcome::Cname {
-                chain, authority, ..
+            Outcome::Cname { chain, denials, .. } => chain
+                .iter()
+                .map(|r| (answer(chain, r), r))
+                .chain(denials.iter().map(with(authority)))
+                .collect(),
+            Outcome::NxDomain {
+                chain,
+                soa,
+                denials,
+            } => chain
+                .iter()
+                .map(|r| (answer(chain, r), r))
+                .chain([soa].into_iter().chain(denials).map(with(authority)))
+                .collect(),
+            Outcome::NoData { soa, denials } => [soa]
+                .into_iter()
+                .chain(denials)
+                .map(with(authority))
+                .collect(),
+            Outcome::YxDomain { chain } | Outcome::NoSoa(Negative::NxDomain { chain }) => {
+                chain.iter().map(|r| (answer(chain, r), r)).collect()
             }
-            | Outcome::NxDomain { chain, authority } => chain
-                .iter()
-                .map(|r| (answer(r), r))
-                .chain(authority.iter().map(with(Rank::AuthorityAuthoritative)))
-                .collect(),
-            Outcome::NoData { authority } => authority
-                .iter()
-                .map(with(Rank::AuthorityAuthoritative))
-                .collect(),
             Outcome::Referral {
                 ns, proof, glue, ..
             } => ns
@@ -230,7 +283,7 @@ impl<'m> Scrubbed<'m> {
                 .map(with(Rank::AuthorityNonAuthoritative))
                 .chain(glue.iter().map(with(Rank::AdditionalNonAuthoritative)))
                 .collect(),
-            Outcome::Lame | Outcome::Unusable(_) => Vec::new(),
+            Outcome::NoSoa(Negative::NoData) | Outcome::Lame | Outcome::Unusable(_) => Vec::new(),
         }
     }
 }
@@ -248,6 +301,7 @@ pub fn scrub<'m>(
         outcome: Outcome::Unusable(why),
         dropped: Vec::new(),
         name: Name::root(),
+        authoritative: false,
     };
     if !header.flags.contains(Flags::QR) || header.opcode != Opcode::QUERY {
         return unusable(Unusable::NotResponse);
@@ -256,7 +310,7 @@ pub fn scrub<'m>(
         return unusable(Unusable::Truncated);
     }
     let rcode = response.rcode();
-    if rcode != Rcode::NOERROR && rcode != Rcode::NXDOMAIN {
+    if ![Rcode::NOERROR, Rcode::NXDOMAIN, Rcode::YXDOMAIN].contains(&rcode) {
         return unusable(Unusable::Rcode(rcode));
     }
     let [asked] = response.questions.as_slice() else {
@@ -271,35 +325,21 @@ pub fn scrub<'m>(
     if !asked.name.is_within(zone) {
         return unusable(Unusable::OutsideZone);
     }
-    let name = asked.name.clone();
     let aa = header.flags.contains(Flags::AA);
-    let nxdomain = rcode == Rcode::NXDOMAIN;
     let mut s = Scrub::new(response, asked, zone);
-    let referral = !nxdomain
-        && response.answer.is_empty()
-        && !response
-            .authority
-            .iter()
-            .any(|r| r.rtype() == RecordType::SOA);
-    let outcome = match referral.then(|| s.referral(&name)).flatten() {
-        Some(referral) => referral,
-        None if !aa => Outcome::Lame,
-        None => match s.answer(&name, asked.qtype, nxdomain) {
-            Ok(outcome) => outcome,
-            Err(why) => return unusable(why),
-        },
+    let outcome = match s.outcome(&asked.name, asked.qtype, rcode, header.flags) {
+        Ok(outcome) => outcome,
+        Err(why) => return unusable(why),
     };
-    if matches!(outcome, Outcome::Lame) {
-        return Scrubbed {
-            outcome,
-            dropped: Vec::new(),
-            name,
-        };
-    }
     Scrubbed {
+        dropped: if matches!(outcome, Outcome::Lame) {
+            Vec::new()
+        } else {
+            s.dropped()
+        },
         outcome,
-        dropped: s.dropped(),
-        name,
+        name: asked.name.clone(),
+        authoritative: aa,
     }
 }
 
@@ -312,6 +352,17 @@ enum Fate {
     Dropped(Reason),
 }
 
+/// Why the way from the name asked stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// At the data, or where the answer section says no more.
+    End,
+    /// Before its end: at [`MAX_CHAIN`], or out of the zone.
+    Cut,
+    /// At a DNAME whose synthesis is longer than 255 bytes.
+    TooLong,
+}
+
 /// The way from the name asked through the answer section.
 struct Walk<'m> {
     /// The CNAME and DNAME records followed, synthesised CNAMEs included.
@@ -320,8 +371,7 @@ struct Walk<'m> {
     records: Vec<Record<'m>>,
     /// Where the chain ends.
     end: Name<'m>,
-    /// Whether the chain stops before its end: at [`MAX_CHAIN`], or out of the zone.
-    cut: bool,
+    stop: Stop,
 }
 
 /// A response being scrubbed: the fate of each record, by section.
@@ -340,8 +390,26 @@ const fn slot(section: Section) -> usize {
     }
 }
 
+/// The target of a DNAME, a name not compressed (RFC 6672 §2.1, §2.5); `None` for any other RDATA.
+fn dname_target(r: &Record<'_>) -> Option<Name<'static>> {
+    match r.data() {
+        RData::Opaque(data) => Name::from_uncompressed(data.data())
+            .ok()
+            .map(Name::into_owned),
+        _ => None,
+    }
+}
+
+/// Whether the RDATA of `r` does not parse for its type.
+fn malformed(r: &Record<'_>) -> bool {
+    if r.rtype() == RecordType::DNAME {
+        return dname_target(r).is_none();
+    }
+    RData::has_typed_form(r.rtype()) && matches!(r.data(), RData::Opaque(_))
+}
+
 impl<'m, 'z> Scrub<'m, 'z> {
-    /// Drops the records of another class, and those owned outside `zone`.
+    /// Drops the records of another class, those owned outside `zone`, and those whose RDATA does not parse.
     fn new(response: &'m Message<'m>, question: &Question<'_>, zone: &'z Name<'z>) -> Self {
         let fates = |records: &[Record<'_>]| {
             records
@@ -351,6 +419,8 @@ impl<'m, 'z> Scrub<'m, 'z> {
                         Fate::Dropped(Reason::OtherClass)
                     } else if !r.name.is_within(zone) {
                         Fate::Dropped(Reason::OutsideZone)
+                    } else if malformed(r) {
+                        Fate::Dropped(Reason::Malformed)
                     } else {
                         Fate::Pending
                     }
@@ -416,41 +486,95 @@ impl<'m, 'z> Scrub<'m, 'z> {
         }
     }
 
-    /// The referral toward `name`, if the authority section holds an NS `RRset` owned strictly below the zone and
-    /// at or above `name`.
-    fn referral(&mut self, name: &Name<'_>) -> Option<Outcome<'m>> {
+    /// What the response to `name` and `qtype` says. As Unbound's `response_type_from_server`, a NOERROR response
+    /// without an SOA is a referral when the authority section holds one, or an answer section without AA holds
+    /// one for an NS question; a delegation that leads nowhere below the zone is lame.
+    fn outcome(
+        &mut self,
+        name: &Name<'m>,
+        qtype: RecordType,
+        rcode: Rcode,
+        flags: Flags,
+    ) -> Result<Outcome<'m>, Unusable> {
+        let aa = flags.contains(Flags::AA);
+        if rcode == Rcode::NOERROR {
+            let soa = self
+                .pending(Section::Authority)
+                .any(|(_, r)| r.rtype() == RecordType::SOA);
+            let answered = self.pending(Section::Answer).next().is_some();
+            if !soa && (!answered || !aa) {
+                if let Some(referral) = self.referral(name, qtype, Section::Authority) {
+                    return Ok(referral);
+                }
+                // NS at the zone or above it, the latter dropped as outside it.
+                if !answered
+                    && self
+                        .records(Section::Authority)
+                        .iter()
+                        .any(|r| r.rtype() == RecordType::NS)
+                {
+                    return Ok(Outcome::Lame);
+                }
+            }
+            if !aa
+                && matches!(qtype, RecordType::NS | RecordType::ANY)
+                && let Some(referral) = self.referral(name, qtype, Section::Answer)
+            {
+                return Ok(referral);
+            }
+        }
+        if !aa && flags.contains(Flags::RA) {
+            return Ok(Outcome::Lame);
+        }
+        self.answer(name, qtype, rcode)
+    }
+
+    /// The referral toward `name` from the NS records of `section`, if the first one owned strictly below the zone
+    /// is at or above `name`; the other NS records are dropped. For a DS question at that NS owner, its DS records
+    /// are the answer, as in Unbound (6cb75924d).
+    fn referral(
+        &mut self,
+        name: &Name<'_>,
+        qtype: RecordType,
+        section: Section,
+    ) -> Option<Outcome<'m>> {
         let child = self
-            .pending(Section::Authority)
+            .pending(section)
             .find(|(_, r)| {
                 r.rtype() == RecordType::NS && r.name != *self.zone && name.is_within(&r.name)
             })
             .map(|(_, r)| r.name.clone())?;
-        let mut ns = Vec::new();
-        let is_ns = |r: &Record<'_>| r.rtype() == RecordType::NS;
-        self.take(
-            Section::Authority,
-            |r| is_ns(r) && r.name == child,
-            MAX_NS,
-            Reason::TooManyNs,
-            &mut ns,
-        );
-        self.take(
-            Section::Authority,
-            is_ns,
-            0,
-            Reason::NotDelegation,
-            &mut Vec::new(),
-        );
-        let mut proof = Vec::new();
+        let mut ds = Vec::new();
         self.take(
             Section::Authority,
             |r| r.rtype() == RecordType::DS && r.name == child,
             MAX_NS,
-            Reason::TooManyNs,
-            &mut proof,
+            Reason::TooManyRecords,
+            &mut ds,
         );
+        if qtype == RecordType::DS && child == *name && !ds.is_empty() {
+            self.sign(Section::Authority, &mut [&mut ds]);
+            return Some(Outcome::Answer {
+                chain: Vec::new(),
+                records: ds,
+                denials: Vec::new(),
+                additional: Vec::new(),
+            });
+        }
+        let mut ns = Vec::new();
+        let is_ns = |r: &Record<'_>| r.rtype() == RecordType::NS;
+        self.take(
+            section,
+            |r| is_ns(r) && r.name == child,
+            MAX_NS,
+            Reason::TooManyRecords,
+            &mut ns,
+        );
+        self.take(section, is_ns, 0, Reason::NotDelegation, &mut Vec::new());
+        let mut proof = ds;
         self.denials(&mut proof);
-        self.sign(Section::Authority, &mut [&mut ns, &mut proof]);
+        self.sign(section, &mut [&mut ns]);
+        self.sign(Section::Authority, &mut [&mut proof]);
         let glue = self.glue(&ns);
         Some(Outcome::Referral {
             child,
@@ -460,99 +584,117 @@ impl<'m, 'z> Scrub<'m, 'z> {
         })
     }
 
-    /// The answer, or negative answer, of an authoritative response to `name` and `qtype`.
+    /// The answer, or negative answer, to `name` and `qtype`.
     fn answer(
         &mut self,
         name: &Name<'m>,
         qtype: RecordType,
-        nxdomain: bool,
+        rcode: Rcode,
     ) -> Result<Outcome<'m>, Unusable> {
         let Walk {
             mut chain,
             mut records,
             end: at,
-            cut,
-        } = self.walk(name, qtype, nxdomain)?;
+            stop,
+        } = self.walk(name, qtype, rcode == Rcode::NOERROR);
         self.sign(Section::Answer, &mut [&mut chain, &mut records]);
-        let mut authority = Vec::new();
-        if records.is_empty() && !cut && (nxdomain || chain.is_empty()) {
-            self.take(
-                Section::Authority,
-                |r| r.rtype() == RecordType::SOA && at.is_within(&r.name),
-                1,
-                Reason::NotAllowed,
-                &mut authority,
-            );
+        if stop == Stop::TooLong {
+            return Ok(Outcome::YxDomain { chain });
         }
-        self.denials(&mut authority);
-        self.sign(Section::Authority, &mut [&mut authority]);
-        Ok(if !records.is_empty() {
-            let additional = self.glue(&records);
-            Outcome::Answer {
+        if rcode == Rcode::YXDOMAIN {
+            return Err(Unusable::Rcode(rcode));
+        }
+        let nxdomain = rcode == Rcode::NXDOMAIN;
+        let mut denials = Vec::new();
+        if !records.is_empty() || stop == Stop::Cut || !(nxdomain || chain.is_empty()) {
+            self.denials(&mut denials);
+            self.sign(Section::Authority, &mut [&mut denials]);
+            return Ok(if records.is_empty() {
+                Outcome::Cname {
+                    chain,
+                    target: at,
+                    denials,
+                }
+            } else {
+                let additional = self.glue(&records);
+                Outcome::Answer {
+                    chain,
+                    records,
+                    denials,
+                    additional,
+                }
+            });
+        }
+        let Some((i, _)) = self
+            .pending(Section::Authority)
+            .find(|(_, r)| r.rtype() == RecordType::SOA && at.is_within(&r.name))
+        else {
+            return Ok(Outcome::NoSoa(if nxdomain {
+                Negative::NxDomain { chain }
+            } else {
+                Negative::NoData
+            }));
+        };
+        let soa = self.set(Section::Authority, i, Fate::Kept).clone();
+        let mut signed = vec![soa.clone()];
+        self.denials(&mut denials);
+        self.sign(Section::Authority, &mut [&mut signed, &mut denials]);
+        denials.extend(signed.into_iter().skip(1));
+        Ok(if nxdomain {
+            Outcome::NxDomain {
                 chain,
-                records,
-                authority,
-                additional,
+                soa,
+                denials,
             }
-        } else if cut || !(nxdomain || chain.is_empty()) {
-            Outcome::Cname {
-                chain,
-                target: at,
-                authority,
-            }
-        } else if nxdomain {
-            Outcome::NxDomain { chain, authority }
         } else {
-            Outcome::NoData { authority }
+            Outcome::NoData { soa, denials }
         })
     }
 
     /// Follows the CNAME and DNAME records of the answer section from `name`, and keeps the records of `qtype` at the
-    /// end; none for an NXDOMAIN.
-    fn walk(
-        &mut self,
-        name: &Name<'m>,
-        qtype: RecordType,
-        nxdomain: bool,
-    ) -> Result<Walk<'m>, Unusable> {
+    /// end when `answers`.
+    fn walk(&mut self, name: &Name<'m>, qtype: RecordType, answers: bool) -> Walk<'m> {
         let (mut chain, mut records) = (Vec::new(), Vec::new());
         let mut at = name.clone();
         let mut hops = 0;
-        let mut cut = false;
-        loop {
+        let stop = loop {
             if !at.is_within(self.zone) {
-                cut = true;
-                break;
+                break Stop::Cut;
             }
-            if let Some((i, alias)) = self.dname(&at)? {
+            if let Some((i, alias)) = self.dname(&at) {
                 if hops == MAX_CHAIN {
                     self.set(Section::Answer, i, Fate::Dropped(Reason::ChainTooLong));
-                    cut = true;
-                    break;
+                    break Stop::Cut;
                 }
                 let dname = self.set(Section::Answer, i, Fate::Kept);
                 chain.push(dname.clone());
-                let cname = self.cname(&at).filter(|(_, target)| *target == alias);
-                let cname = match cname {
-                    Some((j, _)) => self.set(Section::Answer, j, Fate::Kept).clone(),
-                    None => Record::new(
-                        at.clone(),
-                        dname.class,
-                        dname.ttl,
-                        &RData::Cname(alias.clone()),
-                    ),
+                let Some(alias) = alias else {
+                    break Stop::TooLong;
                 };
+                let cname =
+                    if let Some((j, _)) = self.cname(&at).filter(|(_, target)| *target == alias) {
+                        self.set(Section::Answer, j, Fate::Kept).clone()
+                    } else {
+                        // The server's signatures cover its own CNAME, not this one.
+                        self.drop_signatures(&at, RecordType::CNAME);
+                        Record::new(
+                            at.clone(),
+                            dname.class,
+                            dname.ttl,
+                            &RData::Cname(alias.clone()),
+                        )
+                    };
                 hops += 1;
                 at = alias;
                 // A question for the CNAME is answered by it (RFC 6672 §2.3), not by the alias's data.
                 if qtype == RecordType::CNAME {
                     records.push(cname);
-                    break;
+                    break Stop::End;
                 }
                 chain.push(cname);
                 continue;
             }
-            if !nxdomain {
+            if answers {
                 let max = if matches!(qtype, RecordType::NS | RecordType::DS) {
                     MAX_NS
                 } else {
@@ -566,61 +708,88 @@ impl<'m, 'z> Scrub<'m, 'z> {
                                 || qtype == RecordType::ANY && r.rtype() != RecordType::RRSIG)
                     },
                     max,
-                    Reason::TooManyNs,
+                    Reason::TooManyRecords,
                     &mut records,
                 );
                 if !records.is_empty() {
-                    break;
+                    break Stop::End;
                 }
             }
             let Some((i, target)) = self.cname(&at) else {
-                break;
+                break Stop::End;
             };
+            if self.under_malformed_dname(&at) {
+                self.set(Section::Answer, i, Fate::Dropped(Reason::Malformed));
+                break Stop::End;
+            }
             if hops == MAX_CHAIN {
                 self.set(Section::Answer, i, Fate::Dropped(Reason::ChainTooLong));
-                cut = true;
-                break;
+                break Stop::Cut;
             }
             chain.push(self.set(Section::Answer, i, Fate::Kept).clone());
             hops += 1;
             at = target;
-        }
-        Ok(Walk {
+        };
+        Walk {
             chain,
             records,
             end: at,
-            cut,
+            stop,
+        }
+    }
+
+    /// The first pending DNAME strictly above `at` (RFC 6672 §2.2), with the name it makes of `at`: `None` when
+    /// longer than 255 bytes.
+    fn dname(&self, at: &Name<'_>) -> Option<(usize, Option<Name<'static>>)> {
+        self.pending(Section::Answer).find_map(|(i, r)| {
+            if r.rtype() != RecordType::DNAME || r.name == *at || !at.is_within(&r.name) {
+                return None;
+            }
+            let target = dname_target(r)?;
+            let kept = at.label_count() - r.name.label_count();
+            let alias = Name::from_labels(at.labels().take(kept).chain(target.labels())).ok();
+            Some((i, alias))
         })
     }
 
-    /// The first pending DNAME strictly above `at` (RFC 6672 §2.2), with the name it makes of `at`; `None` too for a
-    /// DNAME whose RDATA is not a name, left to be dropped.
-    fn dname(&self, at: &Name<'_>) -> Result<Option<(usize, Name<'static>)>, Unusable> {
-        for (i, r) in self.pending(Section::Answer) {
-            if r.rtype() != RecordType::DNAME || r.name == *at || !at.is_within(&r.name) {
-                continue;
-            }
-            let RData::Opaque(data) = r.data() else {
-                continue;
-            };
-            let Ok(target) = Name::from_uncompressed(data.data()) else {
-                continue;
-            };
-            let kept = at.label_count() - r.name.label_count();
-            return Name::from_labels(at.labels().take(kept).chain(target.labels()))
-                .map(|alias| Some((i, alias)))
-                .map_err(|_| Unusable::DnameTooLong);
-        }
-        Ok(None)
+    /// Whether a DNAME dropped as [`Reason::Malformed`] is strictly above `at`: the CNAME there is its synthesis,
+    /// which nothing checks.
+    fn under_malformed_dname(&self, at: &Name<'_>) -> bool {
+        self.records(Section::Answer)
+            .iter()
+            .zip(&self.fates[slot(Section::Answer)])
+            .any(|(r, fate)| {
+                *fate == Fate::Dropped(Reason::Malformed)
+                    && r.rtype() == RecordType::DNAME
+                    && r.name != *at
+                    && at.is_within(&r.name)
+            })
     }
 
     /// The first pending CNAME at `at`, with its target.
     fn cname(&self, at: &Name<'_>) -> Option<(usize, Name<'m>)> {
         self.pending(Section::Answer)
+            .filter(|(_, r)| r.rtype() == RecordType::CNAME && r.name == *at)
             .find_map(|(i, r)| match r.data() {
-                RData::Cname(target) if r.name == *at => Some((i, target)),
+                RData::Cname(target) => Some((i, target)),
                 _ => None,
             })
+    }
+
+    /// Drops the pending RRSIGs of the answer section at `at` covering `rtype`, as off the chain.
+    fn drop_signatures(&mut self, at: &Name<'_>, rtype: RecordType) {
+        let found: Vec<usize> = self
+            .pending(Section::Answer)
+            .filter(|(_, r)| {
+                r.rtype() == RecordType::RRSIG
+                    && r.name == *at
+                    && matches!(r.data(), RData::Rrsig(sig) if sig.type_covered == rtype)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in found {
+            self.set(Section::Answer, i, Fate::Dropped(Reason::OffChain));
+        }
     }
 
     /// Keeps the NSEC and NSEC3 records of the authority section into `into`; an NSEC whose next name is outside

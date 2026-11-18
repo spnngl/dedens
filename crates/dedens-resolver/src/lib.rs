@@ -29,5 +29,6 @@ pub use infra_cache::{Choice, Edns, InfraCache, Marks};
 pub use rrset::Rrset;
 pub use rrset_cache::{DEFAULT_CAPACITY, Hit, Inserted, NotCached, Rank, RrsetCache};
 pub use scrub::{
-    Dropped, MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Outcome, Reason, Scrubbed, Unusable, scrub,
+    Dropped, MAX_CHAIN, MAX_GLUE, MAX_NS, MAX_SIGNATURES, Negative, Outcome, Reason, Scrubbed,
+    Unusable, scrub,
 };
