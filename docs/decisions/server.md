@@ -1524,8 +1524,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Counters (feature `metrics`, D30): `dedens_resolver_rrset_lookups_total{outcome=hit|miss}`,
     `dedens_resolver_rrset_inserts_total{outcome=stored|verdict|kept}`, `dedens_resolver_rrset_evictions_total`.
   - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, replace, evict, hit, group, equality on case
-    variants), and the response cache before and after the store's extraction, no change, in `docs/benchmarks.md`. The response cache's slot
-    stays 272 bytes (`SLOT_COST`, a `const` assert on 64-bit targets): its `failures` count became a `u16` to undo
+    variants), and the response cache before and after the store's extraction, no change, in `docs/benchmarks.md`.
+    The response cache's slot stays 272 bytes (`SLOT_COST`, a `const` assert on 64-bit targets): its `failures` count became a `u16` to undo
     the generic entry's padding. Fuzzed: `rrset_cache_insert`. Tests:
     `crates/dedens-resolver/tests/rrset_cache.rs`.
   - Rejected: a second S3-FIFO in the resolver (two evictions to keep right); moka or another cache crate (a

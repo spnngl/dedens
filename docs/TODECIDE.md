@@ -128,6 +128,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Cache
 
+- Glue refreshing glue (D193): an address pinned at glue rank is replaced by other glue of equal trust, which lives
+  its own TTL, so a child zone's server can keep `ns.x.`'s address alive through referrals to a sub-zone naming it
+  (Unbound the same: only NS is clamped at equal trust). Bound A/AAAA glue over unexpired glue too, or let the
+  scrubber (step 05) drop glue for names outside the referral's child. Default: as is, until step 14's ghost-domain
+  tests (plan/16-recursive) show it.
 - Minimum TTL of secure answers (D124): `min_ttl` does not raise a `Checked::Secure` answer, as the cache cannot tell a
   TTL the validator lowered for the signatures' expiration (RFC 4035 §5.3.3) from a short one. Raising them needs the
   verdict to carry the expiration (`dedens-dnssec` `Verdict`, `denial`) so the cache may floor up to it. Default: as
