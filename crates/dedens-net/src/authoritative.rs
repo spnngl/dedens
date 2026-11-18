@@ -173,7 +173,7 @@ impl<N: Io> Authoritative<N> {
     ///
     /// # Errors
     ///
-    /// [`ClientError`]: no randomness, a socket that cannot be opened or a send that fails, a TCP failure,
+    /// [`ClientError`]: no randomness, a socket that cannot be opened, a send that fails or a refusal, a TCP failure,
     /// [`TcpError::Busy`] included, and [`Failure::TimedOut`] when no socket was free before the deadline or no
     /// response came.
     pub async fn query(
@@ -227,8 +227,8 @@ impl<N: Io> Authoritative<N> {
                 }
             }
         };
-        let no_edns =
-            quirks.no_edns || Query::read(&response.query).is_ok_and(|sent| sent.edns().is_none());
+        // The query that got the response went without EDNS: asked so, or dropped on FORMERR or NOTIMP.
+        let no_edns = Query::read(&response.query).is_ok_and(|sent| sent.edns().is_none());
         Ok(Answer {
             response,
             quirks: Quirks { no_edns, ..quirks },
@@ -295,8 +295,10 @@ impl<N: Io> Authoritative<N> {
         udp: Option<&N::Udp>,
         pair: Option<Pair>,
     ) -> Result<Outcome, ClientError> {
-        let spare = self.draw::<{ 2 * SPARE_IDS }>()?;
-        let spare_ids = [0, 2, 4, 6].map(|at| u16::from_be_bytes([spare[at], spare[at + 1]]));
+        let mut spare_ids = [0; SPARE_IDS];
+        for id in &mut spare_ids {
+            *id = u16::from_be_bytes(self.draw()?);
+        }
         let exchange = Exchange::start(query, server, options, spare_ids, self.io.now())
             .map_err(ClientError::Encode)?;
         let mut progress = Progress::Send(exchange);
@@ -311,13 +313,12 @@ impl<N: Io> Authoritative<N> {
                     self.io.sending(&next);
                     self.cookies.borrow_mut().keep(pair, next.cookie());
                     match (next.transport(), udp) {
-                        (Transport::Udp, Some(udp)) => match send(udp, next.wire()).await {
-                            Ok(()) => Progress::Wait(next),
-                            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                                next.lose(self.io.now())
-                            }
-                            Err(error) => return Err(ClientError::Udp(error)),
-                        },
+                        // A refusal (ICMP port unreachable) shows on the receive after the send; one that a
+                        // later send of the same exchange sees fails the query as any error of the socket.
+                        (Transport::Udp, Some(udp)) => {
+                            send(udp, next.wire()).await.map_err(ClientError::Udp)?;
+                            Progress::Wait(next)
+                        }
                         _ => self.tcp(next).await?,
                     }
                 }
@@ -338,9 +339,7 @@ impl<N: Io> Authoritative<N> {
                     match received {
                         Ok(Some(bytes)) => next.receive(server, Transport::Udp, bytes, now),
                         Ok(None) => next.time_out(now.max(deadline)),
-                        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                            next.lose(now)
-                        }
+                        // A refusal too: the caller, which picks the next server, tells it from a timeout.
                         Err(error) => return Err(ClientError::Udp(error)),
                     }
                 }
