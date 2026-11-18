@@ -3,11 +3,12 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
+use dedens_proto::edns::EdnsFlags;
 use dedens_proto::{Flags, Message, Rcode, RecordType};
-use dedens_testkit::recursion::{Authorities, Resolution, Transport};
+use dedens_testkit::recursion::{self, Authorities, QueryFlag, Resolution, Transport};
 use dedens_testkit::{dns, message};
 
-/// The ID of the replayed queries, unlike any of the captures' (0).
+/// The ID of the replayed queries; the captures' are random.
 const ID: u16 = 0x1234;
 
 /// The last response of `id`: the one answering its question.
@@ -164,6 +165,30 @@ fn authorities_replay_every_exchange_under_the_query_id() {
 }
 
 #[test]
+fn authorities_answer_over_tcp_what_came_over_udp_alone() {
+    let resolution = Resolution::read("priming");
+    let exchange = &resolution.exchanges[0];
+    assert_eq!(exchange.transport, Transport::Udp);
+    let query = exchange.query(ID).to_vec().expect("a query");
+    let replayed = Authorities::new([&resolution]).answer(exchange.server, Transport::Tcp, &query);
+    assert_eq!(replayed[2..], exchange.response[2..]);
+}
+
+#[test]
+fn a_query_sets_the_flags_given() {
+    let name = dns("example.com");
+    let bare = recursion::query(ID, &name, RecordType::A, &[]);
+    assert_eq!(bare.header.flags, Flags::NONE);
+    assert!(!bare.edns.expect("EDNS").flags.contains(EdnsFlags::DO));
+    let all = [QueryFlag::Rd, QueryFlag::Cd, QueryFlag::Do];
+    let flagged = recursion::query(ID, &name, RecordType::A, &all);
+    assert_eq!(flagged.header.flags, Flags::RD.with(Flags::CD));
+    let edns = flagged.edns.expect("EDNS");
+    assert!(edns.flags.contains(EdnsFlags::DO));
+    assert_eq!(edns.udp_payload, 1232);
+}
+
+#[test]
 fn authorities_answer_in_the_case_of_the_query() {
     let resolution = Resolution::read("signed-com");
     let exchange = resolution
@@ -194,11 +219,18 @@ fn authorities_refuse_another_server_or_question() {
     let mut other = exchange.query(ID);
     other.questions[0].qtype = RecordType::TXT;
     let other = other.to_vec().expect("a query");
-    for (server, query) in [(elsewhere, &query), (exchange.server, &other)] {
+    let mut recursive = exchange.query(ID);
+    recursive.header.flags = Flags::RD;
+    let recursive = recursive.to_vec().expect("a query");
+    for (server, query, flags) in [
+        (elsewhere, &query, Flags::QR),
+        (exchange.server, &other, Flags::QR),
+        (elsewhere, &recursive, Flags::QR.with(Flags::RD)),
+    ] {
         let refused = message(&authorities.answer(server, Transport::Udp, query));
         assert_eq!(refused.rcode(), Rcode::REFUSED);
         assert_eq!(refused.header.id, ID);
-        assert!(refused.header.flags.contains(Flags::QR));
+        assert_eq!(refused.header.flags, flags);
         assert_eq!(refused.questions, message(query).questions);
     }
 }
