@@ -50,3 +50,6 @@ GOST = "GOST"
 Inh = "Inh"
 # Nominet, the registry of `uk` (D130)
 Nominet = "Nominet"
+# Retransmission timeout (RFC 6298), `rto` in code (D194)
+rto = "rto"
+RTO = "RTO"

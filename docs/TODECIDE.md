@@ -150,6 +150,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   each entry aged by the downtime, a dump of other routes ignored (`crates/telltale-cache/src/persist.rs`). D43
   prefetches what is asked, D96 prewarms listed names. Default: none, a restart's misses costing one upstream
   question each; revisit if a restart is measured to hurt.
+- Round-trip times per (address, zone) in the infra cache, as Unbound keys them (`services/cache/infra.c`), instead
+  of per address (D194): one server could answer one zone slower than another (a zone loaded from elsewhere).
+  Default: per address, until a server is measured so.
+- The infra cache's size, `InfraCache::DEFAULT_CAPACITY` 4 MiB (D194), and `LAME_TTL` are constants; Unbound has
+  `infra-cache-numhosts` and `infra-host-ttl` options. Default: options of
+  `dedensd`'s `recurse` stage (recursive step 08), sized with the `RRset` cache's.
 
 ## DNSSEC and experimental transports
 
