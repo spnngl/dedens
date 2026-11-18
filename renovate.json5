@@ -29,6 +29,11 @@
             "groupName": "Rust",
         },
         {
+            "description": "D127: the anchors' signature check passes x509-cert's types to cms: a major of one without the other does not build.",
+            "matchPackageNames": ["cms", "x509-cert"],
+            "groupName": "cms and x509-cert",
+        },
+        {
             "description": "D180: Verus's releases, `0.<date>.<commit>`, by date.",
             "matchPackageNames": ["verus-lang/verus"],
             "versioning": "loose",
