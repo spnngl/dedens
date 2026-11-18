@@ -3,7 +3,9 @@
 The server's response cache (D22). The rustdoc holds its rules; `README.md` the memory an entry costs and the
 complexity of each operation: update both in the same change as the behaviour they describe.
 
-Sans-IO: the caller passes the time in seconds, so tests drive the clock. Speed is benched in
+Sans-IO: the caller passes the time in seconds, so tests drive the clock. `Store` (`src/store.rs`) is the sharded
+S3-FIFO store under the cache, public for `dedens-resolver`'s caches (D193): a change to its shards, sizing or
+eviction changes theirs, so run `cargo test -p dedens-resolver` too. Speed is benched in
 `crates/dedens-bench/benches/cache.rs`. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in
 `tests/metrics.rs`. The integration tests are one binary, `tests/tests.rs` (D162), but for `allocations.rs` and
 `memory.rs`: each sets the process's `#[global_allocator]`, so each is a binary of its own.

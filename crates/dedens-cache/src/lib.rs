@@ -11,6 +11,9 @@
 //! validating caller kept with a response, [`Checked`]: the AD bit follows it, bad data is kept for
 //! `Config::bogus_ttl`, insecure data for `Config::insecure_ttl` at most; D77, D93).
 //!
+//! [`Store`] is the sharded, byte-budgeted S3-FIFO store the cache keeps its entries in, public so that the
+//! resolver's caches hold their own values in it (D116, D193).
+//!
 //! Feature `metrics`: lookup, insert, prefetch and eviction counters through the `metrics` facade; without it
 //! they compile away.
 
@@ -23,8 +26,10 @@ mod key;
 mod metrics;
 mod response;
 mod shard;
+mod store;
 
 pub use cache::{Cache, Freshness, Hit, Lookup, StalePolicy};
 pub use config::{Config, ConfigError};
 pub use key::Key;
 pub use response::{Checked, NotCached, Refresh};
+pub use store::{Cost, Store};

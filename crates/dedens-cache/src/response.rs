@@ -157,13 +157,7 @@ impl Response {
         if for_subnet(message) {
             return Err(NotCached::ClientSubnet);
         }
-        // A secure answer is not raised: only the validator knows how long its signatures hold (D124).
-        let floor = if checked == Checked::Secure {
-            0
-        } else {
-            config.min_ttl
-        };
-        let mut ttl = lifetime(message, question, rcode, floor, config)?;
+        let mut ttl = lifetime(message, question, rcode, config.floor(checked), config)?;
         if checked == Checked::Insecure {
             ttl = ttl.min(config.insecure_ttl());
         }
