@@ -209,6 +209,18 @@ fn formerr_and_notimp_may_leave_the_question_out() {
     }
 }
 
+/// A query without a question, such as one asking for a cookie alone (RFC 7873 §5.4), is answered without one,
+/// whatever the rcode.
+#[test]
+fn a_query_without_a_question_is_answered_without_one() {
+    let now = t0();
+    let mut query = query();
+    query.questions.clear();
+    let answer = wire(&response(&query, Rcode::NOERROR));
+    let got = expect_response(udp(start(&query, Options::default(), now), &answer, now));
+    assert_eq!(got.wire, answer);
+}
+
 /// D114: a FORMERR or NOTIMP without a question is what a server that cannot read the query sends, and what an
 /// off-path forger that guessed the ID sends too: it is the response, never a reason to drop EDNS, DO and the
 /// cookie (RFC 6891 §7 needs the server to say it does not know EDNS).

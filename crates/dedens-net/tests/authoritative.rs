@@ -8,11 +8,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::hash::{BuildHasher as _, RandomState};
 use std::io::{self, Read as _, Write as _};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use dedens_net::authoritative::{
 };
 use dedens_net::exchange::Moved;
 use dedens_net::io::{Compio, Io, TimedOut, Udp};
-use dedens_net::tcp::frame;
+use dedens_net::tcp::{TcpError, frame};
 use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_testkit::recursion::{self, Authorities, Resolution};
@@ -231,10 +231,11 @@ struct Seen {
     binds: usize,
     /// The errors the next receives on a socket fail with, in order, before any datagram is read.
     recv_errors: Vec<io::ErrorKind>,
+    /// The errors the next sends on a socket fail with, in order, sending nothing.
+    send_errors: Vec<io::ErrorKind>,
+    /// The errors the next connects, of a UDP socket or a TCP stream, fail with, in order.
+    connect_errors: Vec<io::ErrorKind>,
 }
-
-/// The seed of the next [`Watched`]: each its own, or the tests running at once would draw the same ports.
-static SEEDS: AtomicU64 = AtomicU64::new(1);
 
 /// Compio, its UDP sockets counted and its randomness from a seed.
 #[derive(Debug, Clone)]
@@ -246,7 +247,9 @@ struct Watched {
 
 impl Watched {
     fn new() -> Self {
-        Self::seeded(SEEDS.fetch_add(1, Ordering::Relaxed))
+        // A seed of its own: one shared by the tests running at once, here or in another run of them, would draw
+        // the same ports at once.
+        Self::seeded(RandomState::new().hash_one(()))
     }
 
     /// Drawing from `seed`, the same ports at each run.
@@ -318,7 +321,14 @@ impl Io for Watched {
     }
 
     async fn tcp_connect(&self, addr: SocketAddr) -> io::Result<TcpStream> {
-        Compio.tcp_connect(addr).await
+        let failing = {
+            let mut seen = self.seen.borrow_mut();
+            (!seen.connect_errors.is_empty()).then(|| seen.connect_errors.remove(0))
+        };
+        match failing {
+            Some(kind) => Err(kind.into()),
+            None => Compio.tcp_connect(addr).await,
+        }
     }
 }
 
@@ -343,7 +353,14 @@ impl Udp for WatchedUdp {
     }
 
     async fn connect(&self, addr: SocketAddr) -> io::Result<()> {
-        self.udp.connect(addr).await
+        let failing = {
+            let mut seen = self.seen.borrow_mut();
+            (!seen.connect_errors.is_empty()).then(|| seen.connect_errors.remove(0))
+        };
+        match failing {
+            Some(kind) => Err(kind.into()),
+            None => self.udp.connect(addr).await,
+        }
     }
 
     async fn recv<B: IoBufMut>(&self, buffer: B) -> BufResult<usize, B> {
@@ -364,7 +381,14 @@ impl Udp for WatchedUdp {
     }
 
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
-        self.udp.send(buffer).await
+        let failing = {
+            let mut seen = self.seen.borrow_mut();
+            (!seen.send_errors.is_empty()).then(|| seen.send_errors.remove(0))
+        };
+        match failing {
+            Some(kind) => BufResult(Err(kind.into()), buffer),
+            None => self.udp.send(buffer).await,
+        }
     }
 
     fn recv_multi(&self) -> impl futures_util::Stream<Item = io::Result<Self::Datagram>> {
@@ -592,19 +616,16 @@ async fn a_tcp_response_without_the_question_marks_nothing() {
     assert_eq!(answer.quirks, Quirks::default());
 }
 
-/// One send, waiting until the deadline: trying again is the caller's.
+/// One send, waiting until the deadline, even past the 5 s an exchange waits by default: trying again is the
+/// caller's.
 #[compio::test]
 async fn a_silent_server_costs_one_send_until_the_deadline() {
     let addr = silent();
     let (client, _) = client(Limits::default());
     let start = Instant::now();
+    let wait = Duration::from_millis(5500);
     let silence = client
-        .query(
-            google(),
-            addr,
-            Quirks::default(),
-            start + Duration::from_millis(100),
-        )
+        .query(google(), addr, Quirks::default(), start + wait)
         .await;
     assert!(
         matches!(
@@ -615,7 +636,7 @@ async fn a_silent_server_costs_one_send_until_the_deadline() {
         ),
         "{silence:?}"
     );
-    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!((wait..wait + Duration::from_secs(1)).contains(&start.elapsed()));
 }
 
 /// A port taken is drawn again, 8 times at most; another error of the bind, as a port not allowed, fails the
@@ -690,6 +711,87 @@ async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
             .expect("answered");
         assert_eq!(answer.response.transport, Transport::Udp);
         assert_eq!(seen.borrow().recv_errors, []);
+    }
+}
+
+/// A send failing with the ICMP error of a datagram before waits until the deadline as on a receive; one failing
+/// for want of a buffer of ours fails the query at once, the server not to blame.
+#[compio::test]
+async fn a_send_failing_waits_unless_the_failure_is_ours() {
+    let addr = silent();
+    let (client, seen) = client(Limits::default());
+    let wait = Duration::from_millis(200);
+    for (kind, elapsed) in [
+        (io::ErrorKind::ConnectionRefused, wait..Duration::MAX),
+        (io::ErrorKind::OutOfMemory, Duration::ZERO..wait),
+    ] {
+        seen.borrow_mut().send_errors = vec![kind];
+        let start = Instant::now();
+        let failed = client
+            .query(google(), addr, Quirks::default(), start + wait)
+            .await;
+        let to_blame = match &failed {
+            Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1, kind })) => *kind,
+            Err(AuthoritativeError::Local(LocalError::Socket(error))) => error.kind(),
+            _ => panic!("{failed:?}"),
+        };
+        assert_eq!(to_blame, kind);
+        assert!(elapsed.contains(&start.elapsed()), "{kind:?}");
+    }
+}
+
+/// A TCP connection refused is the server's failure; one not made for want of a buffer of ours is ours.
+#[compio::test]
+async fn a_tcp_connect_failing_is_ours_only_for_want_of_ours() {
+    let addr = silent();
+    let (client, seen) = client(Limits::default());
+    let tcp = Quirks {
+        tcp: true,
+        ..Quirks::default()
+    };
+    for kind in [io::ErrorKind::ConnectionRefused, io::ErrorKind::OutOfMemory] {
+        seen.borrow_mut().connect_errors = vec![kind; 2];
+        let failed = client.query(google(), addr, tcp, deadline()).await;
+        let (local, to_blame) = match &failed {
+            Err(AuthoritativeError::Server(ServerError::Tcp(TcpError::Connect(error)))) => {
+                (false, error.kind())
+            }
+            Err(AuthoritativeError::Local(LocalError::Socket(error))) => (true, error.kind()),
+            _ => panic!("{failed:?}"),
+        };
+        assert_eq!(
+            (local, to_blame),
+            (kind == io::ErrorKind::OutOfMemory, kind)
+        );
+        seen.borrow_mut().connect_errors.clear();
+    }
+}
+
+/// A UDP socket not connected for want of a route is the network's failure, no query sent; for want of a buffer
+/// of ours, ours.
+#[compio::test]
+async fn a_udp_connect_failing_is_ours_only_for_want_of_ours() {
+    let addr = silent();
+    let (client, seen) = client(Limits::default());
+    for kind in [
+        io::ErrorKind::NetworkUnreachable,
+        io::ErrorKind::OutOfMemory,
+    ] {
+        seen.borrow_mut().connect_errors = vec![kind];
+        let failed = client
+            .query(google(), addr, Quirks::default(), deadline())
+            .await;
+        let (local, to_blame) = match &failed {
+            Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 0, kind })) => {
+                (false, *kind)
+            }
+            Err(AuthoritativeError::Local(LocalError::Socket(error))) => (true, error.kind()),
+            _ => panic!("{failed:?}"),
+        };
+        assert_eq!(
+            (local, to_blame),
+            (kind == io::ErrorKind::OutOfMemory, kind)
+        );
     }
 }
 
@@ -906,7 +1008,7 @@ async fn a_dropped_query_gives_its_socket_back() {
         client.query(google(), silent(), with_edns(), deadline()),
     )
     .await;
-    assert!(dropped.is_err());
+    assert!(dropped.is_err(), "{dropped:?}");
     assert_eq!(seen.borrow().open, 0);
     client
         .query(
