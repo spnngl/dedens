@@ -77,6 +77,12 @@ macro_rules! rdata_types {
                 }
             }
 
+            /// Whether `rtype` has a typed form, so that its RDATA read as [`RData::Opaque`] is invalid for it (D9).
+            #[must_use]
+            pub const fn has_typed_form(rtype: RecordType) -> bool {
+                matches!(rtype, $(RecordType::$code)|*)
+            }
+
             fn decode_fields(rtype: RecordType, r: &mut Reader<'a>) -> Result<Self, DecodeError> {
                 match rtype {
                     $(RecordType::$code => $codec::decode(r).map(Self::$variant),)*
