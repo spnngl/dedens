@@ -6,7 +6,7 @@ use dedens_cache::{
     Cache, Checked, Config, ConfigError, Freshness, Hit, Lookup, NotCached, StalePolicy,
 };
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Flags, Message, Query, Rcode, RecordType};
+use dedens_proto::{Flags, Message, Query, Rcode, RecordType, Ttl};
 use dedens_testkit::{captured, dns};
 
 use crate::util::{T0, a, lookup, query_with, response, small_cache, small_config, ttls};
@@ -314,6 +314,39 @@ fn the_minimum_does_not_raise_a_secure_or_bogus_response() {
     );
     // Off: the 29 seconds of the zone.
     assert_eq!(captured_ttl(config(0), Checked::Unchecked), (29, 29));
+}
+
+/// D124, D193: an `RRset`'s lifetime takes the bounds of a response's, within `max_ttl`. TTL 0 is not cached, nor a
+/// TTL bounded down to 0 (RFC 1035 §3.2.1).
+#[test]
+fn rfc1035_3_2_1_an_rrset_lifetime_has_the_bounds_of_a_response() {
+    let config = Config {
+        min_ttl: 60,
+        max_ttl: 3600,
+        max_insecure_ttl: Some(600),
+        bogus_ttl: 30,
+        ..small_config()
+    };
+    let bogus = Checked::Bogus(InfoCode::DNSSEC_BOGUS);
+    let lifetime = |ttl, checked| config.lifetime(Ttl::from_wire(ttl), checked);
+    assert_eq!(lifetime(29, Checked::Unchecked), Some(60));
+    assert_eq!(lifetime(29, Checked::Secure), Some(29));
+    assert_eq!(lifetime(29, Checked::Insecure), Some(60));
+    assert_eq!(lifetime(29, bogus), Some(30));
+    assert_eq!(lifetime(86_400, Checked::Unchecked), Some(3600));
+    assert_eq!(lifetime(86_400, Checked::Secure), Some(3600));
+    assert_eq!(lifetime(86_400, Checked::Insecure), Some(600));
+    assert_eq!(lifetime(86_400, bogus), Some(30));
+    assert_eq!(lifetime(0, Checked::Unchecked), None);
+    assert_eq!(lifetime(0, Checked::Secure), None);
+    let closed = Config {
+        max_ttl: 0,
+        ..config
+    };
+    assert_eq!(
+        closed.lifetime(Ttl::from_wire(29), Checked::Unchecked),
+        None
+    );
 }
 
 /// D124: an insecure answer is raised within its cap.

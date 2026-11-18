@@ -161,30 +161,28 @@ impl Config {
         }
     }
 
-    /// The least a TTL of data `checked` is raised to: `min_ttl` (D124), but for secure data, whose signatures only
-    /// the validator knows the life of.
-    pub(crate) fn floor(&self, checked: Checked) -> u32 {
-        if checked == Checked::Secure {
-            0
-        } else {
-            self.min_ttl
-        }
-    }
-
-    /// How long a positive `RRset` of TTL `ttl`, `checked`, may be cached: raised to `min_ttl` unless secure,
-    /// capped by `max_ttl`, by [`Config::insecure_ttl`] when insecure and by `bogus_ttl` when bogus (RFC 4035 §4.7, D93,
-    /// D124). `None` for TTL 0, which is not cached and not raised (RFC 1035 §3.2.1); a TTL past 2^31 - 1 was read as
-    /// 0 already (RFC 2181 §8, [`Ttl::from_wire`]).
+    /// How long a positive `RRset` of TTL `ttl`, `checked`, may be cached within `max_ttl`, bounded as a response
+    /// is (D124): raised to `min_ttl` unless secure, whose signatures only the validator knows the life of; capped
+    /// by [`Config::insecure_ttl`] when insecure and by `bogus_ttl` when bogus (RFC 4035 §4.7, D93). `None` for TTL
+    /// 0, which is not cached and not raised (RFC 1035 §3.2.1; a TTL past 2^31 - 1 was read as 0 already, RFC 2181
+    /// §8, [`Ttl::from_wire`]).
     #[must_use]
     pub fn lifetime(&self, ttl: Ttl, checked: Checked) -> Option<u32> {
-        let cap = match checked {
-            Checked::Unchecked | Checked::Secure => self.max_ttl,
-            Checked::Insecure => self.insecure_ttl(),
-            Checked::Bogus(_) => self.bogus_ttl,
+        self.bound(ttl.get(), self.max_ttl, checked)
+    }
+
+    /// The bounds of [`Config::lifetime`] within `cap` instead of `max_ttl`, `None` for a cap of 0: the lifetime of
+    /// an `RRset` and of a response.
+    pub(crate) fn bound(&self, ttl: u32, cap: u32, checked: Checked) -> Option<u32> {
+        let (floor, cap) = match checked {
+            Checked::Unchecked => (self.min_ttl, cap),
+            Checked::Secure => (0, cap),
+            Checked::Insecure => (self.min_ttl, cap.min(self.insecure_ttl())),
+            Checked::Bogus(_) => (self.min_ttl, cap.min(self.bogus_ttl)),
         };
-        match ttl.get() {
+        match ttl {
             0 => None,
-            ttl => Some(ttl.max(self.floor(checked)).min(cap)).filter(|&ttl| ttl > 0),
+            ttl => Some(ttl.max(floor).min(cap)).filter(|&ttl| ttl > 0),
         }
     }
 

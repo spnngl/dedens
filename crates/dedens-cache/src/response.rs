@@ -157,15 +157,16 @@ impl Response {
         if for_subnet(message) {
             return Err(NotCached::ClientSubnet);
         }
-        let mut ttl = lifetime(message, question, rcode, config.floor(checked), config)?;
-        if checked == Checked::Insecure {
-            ttl = ttl.min(config.insecure_ttl());
-        }
-        let mut stale = config.max_stale;
-        if bad {
-            ttl = ttl.min(config.bogus_ttl);
-            stale = 0;
-        }
+        let (smallest, cap) = smallest_ttl(message, question, rcode, config)?;
+        // Bad data is stored as bogus, or as insecure for the clients that check for themselves (D77).
+        let (cap, stale) = if bad {
+            (cap.min(config.bogus_ttl), 0)
+        } else {
+            (cap, config.max_stale)
+        };
+        let ttl = config
+            .bound(smallest, cap, checked)
+            .ok_or(NotCached::ZeroTtl)?;
         // The caller adds its own OPT record to each response served.
         let wire = message.to_vec_without_edns()?;
         // The entry takes more than the wire: refuse before building the rest of it.
@@ -388,23 +389,22 @@ fn for_subnet(message: &Message<'_>) -> bool {
     })
 }
 
-/// How long `message`, answering `question`, may be cached: the smallest TTL of its records, raised to `floor`
-/// (D124), within `max_ttl`. A smallest TTL of 0 is not raised: the answer is not cached (RFC 1035 §3.2.1, RFC 2181
+/// The smallest TTL of `message`, answering `question`, and its cap, `max_ttl`: [`Config::bound`] raises it to
+/// `min_ttl` (D124) unless secure, but not a smallest TTL of 0: the answer is not cached (RFC 1035 §3.2.1, RFC 2181
 /// §8). The raise keeps data past the time its zone allows (RFC 1035 §3.2.1: how long a record may be cached): a
 /// deviation, chosen by the operator.
 ///
 /// A negative answer (RFC 2308 §2: NXDOMAIN, or NODATA, NOERROR without a record of the type asked at the name the
 /// answer ends at, both maybe after a CNAME chain) lives at most as long as its SOA's TTL and MINIMUM allow, the
-/// records of the chain included, raised to `floor` as well and within `max_negative_ttl` (§5). The SOA must be at
+/// records of the chain included, raised as well and within `max_negative_ttl` (§5). The SOA must be at
 /// or above the name the answer ends at: the zone that denies it (§2.1, §2.2). A record of the type asked at
 /// another name is no answer (§2.2: "no relevant answers").
-fn lifetime(
+fn smallest_ttl(
     message: &Message<'_>,
     question: &Question<'_>,
     rcode: Rcode,
-    floor: u32,
     config: &Config,
-) -> Result<u32, NotCached> {
+) -> Result<(u32, u32), NotCached> {
     let records = || {
         message
             .answer
@@ -431,13 +431,7 @@ fn lifetime(
     } else {
         (smallest, config.max_ttl)
     };
-    if smallest == 0 {
-        return Err(NotCached::ZeroTtl);
-    }
-    match smallest.max(floor).min(cap) {
-        0 => Err(NotCached::ZeroTtl),
-        ttl => Ok(ttl),
-    }
+    Ok((smallest, cap))
 }
 
 /// The name the answer to `question` ends at: its name, after the CNAME records of `answer` in whatever order they

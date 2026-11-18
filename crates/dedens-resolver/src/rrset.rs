@@ -2,6 +2,7 @@
 
 use std::mem::size_of;
 
+use dedens_cache::Cost;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Name, Record, RecordType, Ttl, WireRdata};
 
@@ -108,10 +109,12 @@ impl Rrset {
     pub fn rrsigs(&self) -> &[WireRdata<'static>] {
         &self.rrsigs
     }
+}
 
-    /// Heap bytes the `RRset` takes behind an `Arc`: the `Arc`'s allocation, the owner name and the RDATA, each
-    /// counted as the allocator was asked for it.
-    pub(crate) fn cost(&self) -> usize {
+/// The heap bytes an `RRset` takes behind an `Arc`, as the cache holds it: the `Arc`'s allocation, the owner name
+/// and the RDATA, each counted as the allocator is asked for it (`tests/memory.rs` checks it on captures).
+impl Cost for Rrset {
+    fn cost(&self) -> usize {
         let rdata = |rdatas: &[WireRdata<'_>]| {
             rdatas
                 .iter()
