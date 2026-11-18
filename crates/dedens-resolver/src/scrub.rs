@@ -1,9 +1,10 @@
 //! What a response may say: the records a server asked as one zone is trusted with, sorted by what they are for,
-//! each with its [`Rank`] (D192).
+//! grouped into `RRsets` with their signatures, each with its [`Rank`] (D192).
 //!
 //! A server is trusted for the zone it was asked as and nothing else (RFC 2181 §6.1, RFC 5452 §6): a record owned
 //! outside that zone, or of another class, is dropped whatever its section, as Unbound's `scrub_sanitize`
-//! (`iterator/iter_scrub.c`) does; so is a record whose RDATA does not parse for its type (D9). Within the zone,
+//! (`iterator/iter_scrub.c`) does; so is a record whose RDATA does not parse for its type (D9), and one of a QTYPE,
+//! meta type or QCLASS (RFC 6895 §3.1, §3.2), which no `RRset` holds. Within the zone,
 //! each section keeps only what its outcome needs:
 //!
 //! - an answer keeps the records at the name asked, or the CNAME and DNAME chain from it (RFC 1034 §4.3.2 step 3a)
@@ -32,6 +33,9 @@ use std::collections::{HashMap, HashSet};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Name, Opcode, Question, Rcode, Record, RecordType, Section};
 
+use crate::rank::Rank;
+use crate::rrset::{Rrset, data_class, data_type};
+
 /// The most records of an NS or DS `RRset` kept, in a referral or an answer: 20, Unbound's `iter-scrub-ns`
 /// (`shorten_rrset`). A referral's name servers are each a lookup more: a long list is a resolver's work
 /// multiplied for one response (the NXNS attack).
@@ -47,32 +51,6 @@ pub const MAX_SIGNATURES: usize = 8;
 
 /// The most address records kept from an additional section: 100, Unbound's `iter-scrub-glue-count`.
 pub const MAX_GLUE: usize = 100;
-
-/// Where a record was read, which decides whether later data replaces it (RFC 2181 §5.4.1), least trusted first.
-///
-/// The RFC puts the additional section of an authoritative answer and the authority and additional sections of a
-/// non-authoritative one at one level; they are three here, as in Unbound (`rrset_trust`). Only
-/// [`Rank::AnswerNonAuthoritative`] and above may answer a client. A response without AA is a referral or lame
-/// (D192): no rank here is that of a non-authoritative answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Rank {
-    /// A referral's glue.
-    AdditionalNonAuthoritative,
-    /// A referral's NS, DS and NSEC records.
-    AuthorityNonAuthoritative,
-    /// The additional section of an authoritative answer.
-    AdditionalAuthoritative,
-    /// The answer section of an authoritative answer past its first owner name: AA covers that name only (RFC 1035
-    /// §4.1.1). Never the answer section of a response without AA, which is lame. The least rank that answers a
-    /// client.
-    AnswerNonAuthoritative,
-    /// The authority section of an authoritative answer.
-    AuthorityAuthoritative,
-    /// The answer section of an authoritative answer, at the name asked or the first owner name (a DNAME's); or the
-    /// DS records of a referral to the name asked for them, which the parent holds as authoritative data (RFC 4035
-    /// §2.3), AA or not.
-    AnswerAuthoritative,
-}
 
 /// A response scrubbed: what it says, and what was dropped from it.
 #[derive(Debug, Clone)]
@@ -197,6 +175,8 @@ pub enum Reason {
     OtherClass,
     /// Its owner is outside the zone the server was asked as.
     OutsideZone,
+    /// Of a QTYPE or meta type, or of the QCLASS asked (RFC 6895 §3.1, §3.2): not data.
+    NotData,
     /// Its RDATA does not parse for its type (D9), or a DNAME's is compressed (RFC 6672 §2.5); or it is the CNAME a
     /// DNAME so dropped would have made.
     Malformed,
@@ -221,9 +201,32 @@ pub enum Reason {
 }
 
 impl<'m> Scrubbed<'m> {
-    /// Every record kept with its rank, in the order of the outcome's fields.
+    /// What [`RrsetCache::insert`](crate::RrsetCache::insert) takes: the records kept grouped into `RRsets`, each
+    /// with the RRSIG records covering it, and its rank. One rank after the other, in the order of the outcome's
+    /// fields; within a rank, in the order of their first records. A record and the signatures kept over it share an
+    /// owner and a section, so a rank: the scrubber alone decides which signature goes with which `RRset`.
     #[must_use]
-    pub fn ranked(&self) -> Vec<(Rank, &Record<'m>)> {
+    pub fn ranked(&self) -> Vec<(Rank, Rrset)> {
+        let mut ranks: Vec<(Rank, Vec<Record<'m>>)> = Vec::new();
+        for (rank, record) in self.records() {
+            match ranks.iter_mut().find(|(r, _)| *r == rank) {
+                Some((_, records)) => records.push(record.clone()),
+                None => ranks.push((rank, vec![record.clone()])),
+            }
+        }
+        ranks
+            .into_iter()
+            .flat_map(|(rank, records)| {
+                Rrset::group(&records)
+                    .into_iter()
+                    .map(move |set| (rank, set))
+            })
+            .collect()
+    }
+
+    /// Every record kept with its rank, as the response held it, in the order of the outcome's fields.
+    #[must_use]
+    pub fn records(&self) -> Vec<(Rank, &Record<'m>)> {
         // Every outcome but a referral is from a response with AA, or the parent's DS records from a referral.
         let (authority, additional) = (Rank::AuthorityAuthoritative, Rank::AdditionalAuthoritative);
         // AA covers the name asked, and the first owner name: a DNAME's, above it.
@@ -402,7 +405,8 @@ fn malformed(r: &Record<'_>) -> bool {
 }
 
 impl<'m, 'z> Scrub<'m, 'z> {
-    /// Drops the records of another class, those owned outside `zone`, and those whose RDATA does not parse.
+    /// Drops the records of another class, those not data, those owned outside `zone`, and those whose RDATA does
+    /// not parse.
     fn new(response: &'m Message<'m>, question: &Question<'_>, zone: &'z Name<'z>) -> Self {
         let fates = |records: &[Record<'_>]| {
             records
@@ -410,6 +414,8 @@ impl<'m, 'z> Scrub<'m, 'z> {
                 .map(|r| {
                     if r.class != question.qclass {
                         Fate::Dropped(Reason::OtherClass)
+                    } else if !data_type(r.rtype()) || !data_class(r.class) {
+                        Fate::Dropped(Reason::NotData)
                     } else if !r.name.is_within(zone) {
                         Fate::Dropped(Reason::OutsideZone)
                     } else if malformed(r) {

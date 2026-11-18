@@ -8,6 +8,7 @@ use dedens_proto::{Class, MAX_NAME_LEN, Name, RecordType, Ttl};
 use thiserror::Error;
 
 use crate::metrics::Metrics;
+use crate::rank::Rank;
 use crate::rrset::Rrset;
 
 /// The default capacity, in bytes: twice the response cache's 64 MiB default, as Unbound's performance guide sets
@@ -15,36 +16,6 @@ use crate::rrset::Rrset;
 /// `config_create`, small for a busy resolver). BIND has no separate budget: its `max-cache-size`, 90 % of memory by
 /// default, holds every cache of a view.
 pub const DEFAULT_CAPACITY: usize = 128 << 20;
-
-/// How far an `RRset` is trusted, from where it was read: RFC 2181 §5.4.1, least trusted first, so that a greater
-/// rank replaces a lesser one.
-///
-/// The RFC puts the additional section of an authoritative answer and the authority and additional sections of a
-/// non-authoritative one at one level; they are three here, as in Unbound (`rrset_trust`): authoritative data first,
-/// then the authority section over the additional. The ranks of zone data (a primary zone, a transfer, their glue)
-/// are not here: the resolver holds no zone. Data a validator proved secure is trusted above every rank (RFC 2181
-/// §5.4.1: "Unauthenticated RRs received and cached from the least trustworthy of those groupings [...] should not
-/// be cached in preference to authenticated data"), which [`Checked::Secure`] says.
-///
-/// The section an `RRset` came in does not give its rank alone: the answer section of an authoritative answer is
-/// authoritative only at the name the server is authoritative for, the first of a CNAME chain (RFC 2181 §5.4.1),
-/// and data out of the zone asked is not to be kept at all. The scrubber of step 05 ranks what it keeps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Rank {
-    /// The additional section of a non-authoritative answer, such as the glue of a referral.
-    AdditionalNonAuthoritative,
-    /// The authority section of a non-authoritative answer, such as the NS records of a referral.
-    AuthorityNonAuthoritative,
-    /// The additional section of an authoritative answer.
-    AdditionalAuthoritative,
-    /// The answer section of a non-authoritative answer, and the data of an authoritative answer the server is not
-    /// authoritative for: the records of a CNAME chain past the first name. The least rank that answers a client.
-    AnswerNonAuthoritative,
-    /// The authority section of an authoritative answer.
-    AuthorityAuthoritative,
-    /// The answer section of an authoritative answer, at the name asked.
-    AnswerAuthoritative,
-}
 
 /// An `RRset` the cache holds, fresh, and what it knows of it.
 ///

@@ -8,7 +8,7 @@ use dedens_cache::{Checked, Config};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Name, Record, RecordType, Section};
-use dedens_resolver::{Inserted, Outcome, Rank, Rrset, RrsetCache, scrub};
+use dedens_resolver::{Inserted, Outcome, Rank, Rrset, RrsetCache, Scrubbed, scrub};
 
 /// The cache's capacity: small, so that a large response evicts.
 const CAPACITY: usize = 64 << 10;
@@ -106,8 +106,9 @@ fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
 /// A response off the wire, scrubbed as from a server of an ancestor of its question's name, the one the ID picks:
 /// every record kept is of the question's class, within that zone, and of RDATA that parses; a referral's child is
 /// below the zone and above the name; each record dropped is one of the response's, once; and the records kept and
-/// those dropped are the response's, each in one of the two, but for the CNAMEs synthesised from a DNAME kept. A
-/// lame or unusable response keeps and drops nothing.
+/// those dropped are the response's, each in one of the two, but for the CNAMEs synthesised from a DNAME kept;
+/// each record kept is in an `RRset` of its rank, an RRSIG with the `RRset` it covers. A lame or unusable response
+/// keeps and drops nothing.
 ///
 /// # Panics
 ///
@@ -126,7 +127,7 @@ pub fn scrub_response(data: &[u8]) {
         return;
     };
     let scrubbed = scrub(response, question, &zone);
-    let kept = scrubbed.ranked();
+    let kept = scrubbed.records();
     if matches!(scrubbed.outcome, Outcome::Lame | Outcome::Unusable(_)) {
         assert!(kept.is_empty(), "{:?} keeps records", scrubbed.outcome);
         assert!(
@@ -154,6 +155,7 @@ pub fn scrub_response(data: &[u8]) {
             record.rtype()
         );
     }
+    grouped(&scrubbed);
     if let Outcome::Referral { child, .. } = &scrubbed.outcome {
         assert!(
             child.is_within(&zone) && *child != zone,
@@ -209,6 +211,26 @@ pub fn scrub_response(data: &[u8]) {
             n,
             0,
             "{} {} neither kept nor dropped",
+            record.name,
+            record.rtype()
+        );
+    }
+}
+
+/// Whether each record `scrubbed` keeps is in an `RRset` of its rank, an RRSIG with the `RRset` it covers.
+fn grouped(scrubbed: &Scrubbed<'_>) {
+    let ranked = scrubbed.ranked();
+    for (rank, record) in &scrubbed.records() {
+        let rtype = match record.data() {
+            RData::Rrsig(sig) => sig.type_covered,
+            _ => record.rtype(),
+        };
+        assert!(
+            ranked.iter().any(|(k, set)| *k == *rank
+                && *set.owner() == record.name
+                && set.rtype() == rtype
+                && (record.rtype() != RecordType::RRSIG || !set.rrsigs().is_empty())),
+            "{rank:?} {} {} kept in no RRset of its rank",
             record.name,
             record.rtype()
         );
