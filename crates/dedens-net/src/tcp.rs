@@ -17,6 +17,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,9 @@ pub enum TcpError {
     /// No response before the deadline.
     #[error("no response before the deadline")]
     TimedOut,
+    /// No connection to open: as many as the pool may hold are open, each with a query waiting (D190).
+    #[error("every connection allowed has a query waiting")]
+    Busy,
 }
 
 impl TcpError {
@@ -68,6 +72,7 @@ impl TcpError {
             Self::Closed => Self::Closed,
             Self::BadLength(len) => Self::BadLength(*len),
             Self::TimedOut => Self::TimedOut,
+            Self::Busy => Self::Busy,
         }
     }
 }
@@ -117,6 +122,8 @@ pub struct TcpPool<N: Io = Compio> {
     /// Built at the first TLS connection.
     tls: OnceCell<TlsConnector>,
     connections: RefCell<HashMap<Link, Connection<N>>>,
+    /// The connections held at most, see [`TcpPool::at_most`].
+    most: NonZeroUsize,
 }
 
 impl TcpPool {
@@ -138,6 +145,7 @@ impl<N: Io> TcpPool<N> {
             trust: Trust::System,
             tls: OnceCell::new(),
             connections: RefCell::default(),
+            most: NonZeroUsize::MAX,
         }
     }
 
@@ -145,6 +153,14 @@ impl<N: Io> TcpPool<N> {
     #[must_use]
     pub fn trusting(self, trust: Trust) -> Self {
         Self { trust, ..self }
+    }
+
+    /// The pool, holding at most `most` connections, those closed or closing included: a new one closes the one
+    /// idle longest, with no query waiting, or fails with [`TcpError::Busy`] when there is none (D190). No bound by
+    /// default.
+    #[must_use]
+    pub fn at_most(self, most: NonZeroUsize) -> Self {
+        Self { most, ..self }
     }
 
     /// Sends `wire` over `link` and returns the response, waiting until `deadline`.
@@ -239,6 +255,24 @@ impl<N: Io> TcpPool<N> {
             && open.state.borrow().takes_queries()
         {
             return Ok(open.clone());
+        }
+        // A connection replaced in the map makes no room.
+        if !connections.contains_key(link) && connections.len() >= self.most.get() {
+            // The connection idle longest goes, first those that take no more queries.
+            let idle = connections
+                .iter()
+                .filter(|(_, connection)| !connection.state.borrow().busy())
+                .min_by_key(|(_, connection)| {
+                    let state = connection.state.borrow();
+                    (state.takes_queries(), state.last)
+                })
+                .map(|(link, _)| link.clone());
+            let Some(idle) = idle else {
+                debug!(server = %link.addr(), "no connection: every one allowed has a query waiting");
+                return Err(TcpError::Busy);
+            };
+            debug!(server = %idle.addr(), "closed: idle longest, for a new connection");
+            connections.remove(&idle);
         }
         let tls = match link {
             Link::Tcp(_) => None,

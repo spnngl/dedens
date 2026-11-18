@@ -13,17 +13,16 @@
 #![deny(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
 use compio::rustls::pki_types::ServerName;
-use dedens_proto::edns::{Cookie, EdnsOption};
+use dedens_proto::edns::Cookie;
 use dedens_proto::{EncodeError, Message, Transport};
 
+use crate::cookies::{COOKIES, Jar, Pair};
 #[cfg(feature = "dnscrypt")]
 use crate::dnscrypt::{self, DnsCryptError, Reply};
 #[cfg(feature = "doc")]
@@ -292,14 +291,14 @@ pub struct Client<N: Io = Compio> {
     #[cfg(feature = "dnscrypt")]
     dnscrypt: dnscrypt::Resolvers,
     /// By source and server address: the client cookie and the last cookie the server sent.
-    cookies: RefCell<HashMap<(IpAddr, SocketAddr), Cookies>>,
+    cookies: RefCell<Jar>,
     random: RefCell<Random>,
 }
 
 /// Random bytes from [`Io::random`], drawn [`RANDOM_BATCH`] at a time and each used once: one system call per
 /// [`RANDOM_BATCH`] bytes taken instead of one per draw.
 #[derive(Debug)]
-struct Random {
+pub(crate) struct Random {
     bytes: [u8; RANDOM_BATCH],
     used: usize,
 }
@@ -308,8 +307,19 @@ struct Random {
 const RANDOM_BATCH: usize = 256;
 
 impl Random {
+    /// None drawn yet.
+    pub(crate) const fn new() -> Self {
+        Self {
+            bytes: [0; RANDOM_BATCH],
+            used: RANDOM_BATCH,
+        }
+    }
+
     /// The next `LEN` bytes.
-    fn take<const LEN: usize>(&mut self, io: &impl Io) -> Result<[u8; LEN], ClientError> {
+    pub(crate) fn take<const LEN: usize>(
+        &mut self,
+        io: &impl Io,
+    ) -> Result<[u8; LEN], ClientError> {
         if self.used + LEN > RANDOM_BATCH {
             io.random(&mut self.bytes).map_err(ClientError::Random)?;
             self.used = 0;
@@ -319,14 +329,6 @@ impl Random {
         self.used += LEN;
         Ok(taken)
     }
-}
-
-/// The cookies of one source and server pair.
-#[derive(Debug)]
-struct Cookies {
-    client: [u8; 8],
-    /// The last cookie returned, its client cookie checked by the exchange.
-    returned: Option<Cookie>,
 }
 
 impl Default for Client {
@@ -357,11 +359,8 @@ impl<N: Io> Client<N> {
             odoh: odoh::client::Configs::default(),
             #[cfg(feature = "dnscrypt")]
             dnscrypt: dnscrypt::Resolvers::default(),
-            cookies: RefCell::default(),
-            random: RefCell::new(Random {
-                bytes: [0; RANDOM_BATCH],
-                used: RANDOM_BATCH,
-            }),
+            cookies: RefCell::new(Jar::new(COOKIES)),
+            random: RefCell::new(Random::new()),
         }
     }
 
@@ -722,13 +721,8 @@ impl<N: Io> Client<N> {
 
     /// Keeps the server cookie of `cookie`, if it has one, for the next query of `pair` (RFC 7873 §5.3): a cookie
     /// with the client cookie alone leaves the known one.
-    fn keep_cookie(&self, pair: Option<(IpAddr, SocketAddr)>, cookie: Option<Cookie>) {
-        if let (Some(pair), Some(cookie)) = (pair, cookie)
-            && cookie.server().is_some()
-            && let Some(cookies) = self.cookies.borrow_mut().get_mut(&pair)
-        {
-            cookies.returned = Some(cookie);
-        }
+    fn keep_cookie(&self, pair: Option<Pair>, cookie: Option<Cookie>) {
+        self.cookies.borrow_mut().keep(pair, cookie);
     }
 
     /// Sends the query of `exchange` and waits for what comes back: a message, or the deadline.
@@ -923,34 +917,8 @@ impl<N: Io> Client<N> {
     }
 
     /// Adds a cookie to a query with EDNS and none of its own, and returns the pair of addresses it belongs to.
-    fn add_cookie(
-        &self,
-        query: &mut Message<'_>,
-        pair: (IpAddr, SocketAddr),
-    ) -> Result<Option<(IpAddr, SocketAddr)>, ClientError> {
-        let Some(edns) = &mut query.edns else {
-            return Ok(None);
-        };
-        if edns
-            .options
-            .iter()
-            .any(|option| matches!(option, EdnsOption::Cookie(_)))
-        {
-            return Ok(None);
-        }
-        let mut all = self.cookies.borrow_mut();
-        let cookies = match all.entry(pair) {
-            Entry::Occupied(known) => known.into_mut(),
-            Entry::Vacant(slot) => slot.insert(Cookies {
-                client: self.draw()?,
-                returned: None,
-            }),
-        };
-        let cookie = cookies.returned.unwrap_or_else(|| {
-            Cookie::new(cookies.client, None).expect("a client cookie alone is valid")
-        });
-        edns.options.push(EdnsOption::Cookie(cookie));
-        Ok(Some(pair))
+    fn add_cookie(&self, query: &mut Message<'_>, pair: Pair) -> Result<Option<Pair>, ClientError> {
+        self.cookies.borrow_mut().add(query, pair, || self.draw())
     }
 }
 

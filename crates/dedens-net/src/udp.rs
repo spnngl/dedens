@@ -45,7 +45,7 @@ type Sockets<N> = Box<[Option<Rc<Mux<N>>>]>;
 type Scratch = Rc<RefCell<Box<[u8]>>>;
 
 /// The largest UDP payload: a query may advertise any size (RFC 6891 §6.2.3), and a datagram is received whole.
-const MAX_DATAGRAM: usize = 65535;
+pub(crate) const MAX_DATAGRAM: usize = 65535;
 
 impl UdpPool {
     /// A pool of `size` sockets per server on compio, none open yet.

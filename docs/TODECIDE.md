@@ -282,8 +282,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   names) often time out, one per process never does; IPv4 does not show it. Default: find whether the servers'
   load balancers or quinn cause it before giving each connection its own socket.
 - Renewing the pooled upstream UDP sockets (D50) now and then, for the port entropy of RFC 5452 §9.2 against
-  an attacker who learned a kept port. Default: keep the sockets, relying on cookies (RFC 7873); `dedensd` sends no
-  `0x20` (D77), which would be the next step.
+  an attacker who learned a kept port, or a port per query as the authoritative mode draws (D190). Default: keep
+  the sockets for forwarders, relying on cookies (RFC 7873) and `0x20` (D184).
 - QUIC datagram without control data (D89): `compio-io`'s `CMsgIter::new` panics on an empty control buffer, which
   macOS gives for a datagram queued before the socket options were set. Default: as is (`serving` waits for the
   endpoints); an upstream fix (accept an empty buffer), then drop the note.
