@@ -257,7 +257,8 @@ impl Tlds {
 }
 
 /// Seconds since 1970 of an RFC 3339 time (§5.6), `2026-11-16T23:49:03+00:00`: date, `T`, time, maybe a
-/// fraction (dropped), then `Z` or an offset; `None` for another text or a time before 1970.
+/// fraction of a digit or more (dropped), then `Z` or an offset; `None` for another text, a day the month does not
+/// have (§5.7) or a time before 1970.
 fn unix_time(text: &str) -> Option<u64> {
     let field = |from: usize, to: usize| -> Option<i64> {
         let digits = text.get(from..to)?;
@@ -277,8 +278,16 @@ fn unix_time(text: &str) -> Option<u64> {
     }
     let (year, month, day) = (field(0, 4)?, field(5, 7)?, field(8, 10)?);
     let (hour, minute, second) = (field(11, 13)?, field(14, 16)?, field(17, 19)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    // The days of each month (§5.7).
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
     if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+        || !(1..=days).contains(&day)
         || hour > 23
         || minute > 59
         || second > 60
@@ -287,7 +296,14 @@ fn unix_time(text: &str) -> Option<u64> {
     }
     let rest = text.get(19..)?;
     let zone = match rest.strip_prefix('.') {
-        Some(fraction) => fraction.trim_start_matches(|c: char| c.is_ascii_digit()),
+        Some(fraction) => {
+            let zone = fraction.trim_start_matches(|c: char| c.is_ascii_digit());
+            // At least one digit (§5.6).
+            if zone.len() == fraction.len() {
+                return None;
+            }
+            zone
+        }
         None => rest,
     };
     let offset = match zone.as_bytes() {
