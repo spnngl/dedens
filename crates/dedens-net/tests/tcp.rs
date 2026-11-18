@@ -14,6 +14,7 @@ use dedens_net::io::{Compio, Io, Stream};
 use dedens_net::tcp::{STALLED, TcpError, TcpPool, frame};
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::{Flags, Message, Rcode, Record, Transport};
+use futures_util::FutureExt;
 
 use crate::util::loopback::{CLOSED, Peer, answer, id, listen, query_with_id};
 use crate::util::{expect_response, expect_send, query, response, server, start, t0, udp, wire};
@@ -546,6 +547,109 @@ async fn queries_waiting_for_room_take_it_in_the_order_they_came() {
     let query = peer.read().await.expect("a query");
     peer.write(&[answer(&query, Vec::new())]).await;
     assert_eq!(two.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
+}
+
+/// D190: a query coming while one woken for room has yet to look waits behind it.
+#[compio::test]
+async fn a_query_coming_while_one_woken_has_yet_to_look_waits_behind_it() {
+    let (holding, held) = listen().await;
+    let (waiting, coming) = (listen().await, listen().await);
+    let pool = Rc::new(TcpPool::new(Duration::from_secs(5)).at_most(NonZeroUsize::MIN));
+    let holder_then_newcomer = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            let held = pool.exchange(held, &query_with_id(16), deadline()).await;
+            // Its end woke the query waiting, which has yet to run: this one comes meanwhile.
+            let came = pool
+                .exchange(coming.1, &query_with_id(18), deadline())
+                .await;
+            (held.map(|r| id(&r)).ok(), came.map(|r| id(&r)).ok())
+        })
+    };
+    let mut peer = Peer::accept(&holding).await;
+    let query = peer.read().await.expect("a query");
+    let waiter = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(waiting.1, &query_with_id(17), deadline())
+                .await
+        })
+    };
+    compio::time::sleep(Duration::from_millis(50)).await;
+    peer.write(&[answer(&query, Vec::new())]).await;
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&waiting.0))
+        .await
+        .expect("the query waiting connects");
+    let early = compio::time::timeout(Duration::from_millis(100), Peer::accept(&coming.0)).await;
+    assert!(early.is_err(), "the query coming connected first");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(waiter.await.expect("joined").map(|r| id(&r)).ok(), Some(17));
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&coming.0))
+        .await
+        .expect("the query coming connects");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(
+        holder_then_newcomer.await.expect("joined"),
+        (Some(16), Some(18))
+    );
+}
+
+/// D190: a query woken for room but dropped before it looked passes the wake to the next in line.
+#[compio::test]
+async fn a_query_gone_once_woken_passes_its_turn_on() {
+    let (holding, held) = listen().await;
+    let (gone, next) = (listen().await, listen().await);
+    let pool = Rc::new(TcpPool::new(Duration::from_secs(5)).at_most(NonZeroUsize::MIN));
+    let holder = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            let (first, second) = (query_with_id(16), query_with_id(17));
+            let mut held = Box::pin(pool.exchange(held, &first, deadline()));
+            let mut gone = Box::pin(pool.exchange(gone.1, &second, deadline()));
+            assert!((&mut held).now_or_never().is_none());
+            // It waits first in line for room.
+            assert!((&mut gone).now_or_never().is_none());
+            let held = held.await.map(|r| id(&r)).ok();
+            // Woken by the end of the query held, it goes before looking.
+            drop(gone);
+            held
+        })
+    };
+    let mut peer = Peer::accept(&holding).await;
+    let query = peer.read().await.expect("a query");
+    let waiter = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(async move {
+            pool.exchange(next.1, &query_with_id(18), deadline()).await
+        })
+    };
+    compio::time::sleep(Duration::from_millis(50)).await;
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(holder.await.expect("joined"), Some(16));
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&next.0))
+        .await
+        .expect("the next in line connects");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(waiter.await.expect("joined").map(|r| id(&r)).ok(), Some(18));
+    let early = compio::time::timeout(Duration::from_millis(10), Peer::accept(&gone.0)).await;
+    assert!(early.is_err(), "the query gone connected");
+    // No wake is left pending: a query coming now does not wait behind one.
+    let (later, at) = listen().await;
+    let asked = {
+        let pool = Rc::clone(&pool);
+        compio::runtime::spawn(
+            async move { pool.exchange(at, &query_with_id(19), deadline()).await },
+        )
+    };
+    let mut peer = compio::time::timeout(Duration::from_secs(2), Peer::accept(&later))
+        .await
+        .expect("a query coming later connects");
+    let query = peer.read().await.expect("a query");
+    peer.write(&[answer(&query, Vec::new())]).await;
+    assert_eq!(asked.await.expect("joined").map(|r| id(&r)).ok(), Some(19));
 }
 
 /// A response read before the query that timed out was sent does not keep the connection: the next query goes on
