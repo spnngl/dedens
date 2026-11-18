@@ -346,25 +346,27 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
 # of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
 # packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the example of its config module, in
 # fuzz/target/seeds/configs (D181); the root hints, the test copy of the TLD list (D126) and ICANN's CA bundle (D127) in
-# fuzz/target/seeds/roots.
+# fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion (D188), kept there in
+# base64, one to a file in fuzz/target/seeds/recursion.
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
     cp crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json crates/dedens-dnssec/src/icannbundle.pem \
         fuzz/target/seeds/roots/
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/stamps/$." or die; print $out $_' fuzz/seeds/stamps.txt
+    perl -MMIME::Base64 -ne 'if ($b64) { open my $out, ">", "fuzz/target/seeds/recursion/" . ++$n or die; print $out decode_base64($_) } $b64 = /^\s*response: >-$/' testdata/recursion/*.yaml
     cp deploy/dedensd.yaml fuzz/target/seeds/configs/dedensd.yaml
     cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
     cp fuzz/seeds/dnscrypt.yaml fuzz/target/seeds/configs/dnscrypt.yaml
