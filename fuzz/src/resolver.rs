@@ -85,7 +85,8 @@ pub fn rrset_cache_insert(data: &[u8]) {
     }
 }
 
-/// `records` reversed group into `rrsets`, in whatever order, with the same TTLs.
+/// `records` reversed group into `rrsets`, in whatever order, with the same TTLs. Quadratic in the `RRsets`, cheap
+/// at libFuzzer's default 4 KiB inputs: index `again` by key if the fuzz job raises `-max_len`.
 fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
     let mut reversed = records.to_vec();
     reversed.reverse();

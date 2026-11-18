@@ -52,7 +52,9 @@ pub enum Rank {
 /// client's question: the lesser ranks are the additional sections and the authority section of a
 /// non-authoritative answer, which RFC 2181 §5.4.1 keeps from ever being returned as answers ("Ignoring this would
 /// allow the trustworthiness of relatively untrustworthy data to be increased without cause or excuse"). They
-/// serve the resolution: the glue of a referral to reach its servers, its NS records to know them.
+/// serve the resolution: the glue of a referral to reach its servers, its NS records to know them. An A or AAAA
+/// `RRset` answered over glue not yet expired is held at the glue's rank until it expires (D193, CVE-2026-42955), so
+/// it never answers a client from this cache: the response cache serves the answer it came in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
     /// The records, shared with the cache.
@@ -71,8 +73,8 @@ pub struct Hit {
 pub enum Inserted {
     /// The `RRset` is stored: the key held none, one expired, or one it replaces (RFC 2181 §5.4.1).
     Stored(Hit),
-    /// The key held the same data unchecked: it takes the verdict, at the greater of the two ranks, for no longer
-    /// than it had left.
+    /// The key held the same data unchecked: it takes the verdict, at the greater of the two ranks unless it is an
+    /// address pinned to glue (D193), for no longer than it had left.
     Verdict(Hit),
     /// The key holds an `RRset` trusted more, or as much and the same data: it stays as it was.
     Kept(Hit),
@@ -193,33 +195,39 @@ impl Cached {
         if replace { Merge::Replace } else { Merge::Keep }
     }
 
+    /// Whether `new`, an A or AAAA `RRset` replacing this entry or a verdict on it, is pinned to this entry as
+    /// referral glue ([`Rank::AdditionalNonAuthoritative`]): trusted more, not secure. Pinned, it keeps the glue's
+    /// rank, so that the next answer is pinned too, and lives no longer than the glue had left ([`Cached::bound`]): a
+    /// server address taken from glue does not outlive its delegation by answers, as Unbound since CVE-2026-42955
+    /// (13ec8d0f2). Stricter than Unbound, which pins only when it shortens the TTL and raises the rank on a verdict:
+    /// there an answer of a shorter TTL, or an insecure verdict, unpins the address for the next answer to live its
+    /// own TTL (D193).
+    fn pins(&self, new: &Self) -> bool {
+        matches!(new.rrset.rtype(), RecordType::A | RecordType::AAAA)
+            && self.rank == Rank::AdditionalNonAuthoritative
+            && new.checked != Checked::Secure
+            && new.trust() > self.trust()
+    }
+
     /// Bounds the time of `new`, which replaces this entry at `now`, against the ghost domain names (Jiang et al.,
     /// NDSS 2012): a delegation is only renewed from its parent once expired.
     ///
     /// An NS `RRset` lives no longer than the one it replaces, whatever its trust; Unbound does so since
     /// CVE-2026-40622 (8d8fa4226), but for secure data replacing data not secure and for bogus data replaced by
     /// other data, which it lets live their own TTL: stricter here, one rule whatever the verdicts, at the cost of
-    /// asking for a delegation again sooner (D193). An A or AAAA `RRset` that
-    /// replaces referral glue ([`Rank::AdditionalNonAuthoritative`]) with more trust, not secure, lives no longer
-    /// either and stays ranked as glue, so that more answers do not lengthen it further, as Unbound does since
-    /// CVE-2026-42955 (13ec8d0f2): a server address taken from glue does not outlive its delegation by an answer.
+    /// asking for a delegation again sooner (D193). An A or AAAA `RRset` that [`Cached::pins`] says is pinned to
+    /// glue lives no longer either, and keeps the glue's rank whatever its TTL.
     fn bound(&self, new: &mut Self, now: u32) {
         let left = self.left(now);
-        if left == 0 || new.ttl <= left {
+        if left == 0 {
             return;
         }
-        match new.rrset.rtype() {
-            RecordType::NS => {}
-            RecordType::A | RecordType::AAAA
-                if self.rank == Rank::AdditionalNonAuthoritative
-                    && new.checked != Checked::Secure
-                    && new.trust() > self.trust() =>
-            {
-                new.rank = self.rank;
-            }
-            _ => return,
+        if self.pins(new) {
+            new.rank = self.rank;
+        } else if new.rrset.rtype() != RecordType::NS {
+            return;
         }
-        new.set_left(left, now);
+        new.set_left(left.min(new.ttl), now);
     }
 }
 
@@ -262,7 +270,8 @@ impl RrsetCache {
     /// Its time in the cache is [`Config::lifetime`], bounded against ghost domain names when it replaces an NS
     /// `RRset` or glue (as `Cached::bound` says: CVE-2026-40622, CVE-2026-42955). A validator records its verdict
     /// on an `RRset` by inserting it again with it: the same data held unchecked takes the verdict, at the greater
-    /// rank, never living longer than it had left nor than the verdict allows ([`Inserted::Verdict`]).
+    /// rank unless an address pinned to glue, never living longer than it had left nor than the verdict allows
+    /// ([`Inserted::Verdict`]).
     ///
     /// # Errors
     ///
@@ -300,7 +309,9 @@ impl RrsetCache {
                 match held.merge(&new, now) {
                     Merge::Keep => (Inserted::Kept(held.with_left(held.left(now))), Some(new)),
                     Merge::Verdict => {
-                        held.rank = held.rank.max(new.rank);
+                        if !held.pins(&new) {
+                            held.rank = held.rank.max(new.rank);
+                        }
                         held.checked = new.checked;
                         held.set_left(held.left(now).min(new.ttl), now);
                         (Inserted::Verdict(held.with_left(held.ttl)), Some(new))

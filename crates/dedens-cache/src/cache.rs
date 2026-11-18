@@ -34,6 +34,13 @@ impl Cost for Stored {
 /// response is counted in it (D118).
 pub(crate) const SLOT_COST: usize = Shard::<Stored>::SLOT_COST;
 
+// The slot `docs/benchmarks.md` measured (D193): a field of `Stored` that pads it shows here first.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    SLOT_COST == 272,
+    "the response cache's slot grew: measure it (D116, D193)"
+);
+
 /// When expired data may answer (RFC 8767 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StalePolicy {

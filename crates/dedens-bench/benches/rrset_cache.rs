@@ -1,6 +1,7 @@
 //! The resolver's `RRset` cache (D193): `insert` stores a captured `RRset` into an empty cache, `replace` over the
 //! other data of its key held at a lesser rank, `evict` into a full cache, evicting; `hit` looks one up; `group`
-//! groups the records of a large response: a whole zone, or up to 2048 A records.
+//! groups the records of a large response: a whole zone, up to 2048 A records, or up to 2048 TXT records differing
+//! only in the case of their strings.
 //!
 //! The `RRsets`: `a`, the two A records of `example.com.`; `ns`, its two NS records; `root_ns`, the 13 NS records of
 //! `com.` from a root server's referral. `insert` takes the `RRset` already grouped, as the resolver has it. The
@@ -9,6 +10,7 @@
 use std::hint::black_box;
 
 use dedens_cache::{Checked, Config};
+use dedens_proto::rdata::{RData, Txt};
 use dedens_proto::{Record, Section};
 use dedens_resolver::{Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, dns, message, zone};
@@ -165,4 +167,53 @@ fn many(n: usize) -> Vec<Record<'static>> {
 fn group_many(bencher: Bencher<'_, '_>, n: usize) {
     let records = many(n);
     bencher.bench(|| Rrset::group(black_box(&records)));
+}
+
+/// `n` TXT records of `google.com.`, from the captured `txt_large`'s first, the case of its first 12 letters flipped
+/// as the bits of `i` says: one `RRset` of RDATA all distinct and all folding the same, which an attacker can send.
+fn case_variants(n: usize) -> Vec<Record<'static>> {
+    const LETTERS: usize = 12;
+    assert!(n <= 1 << LETTERS, "as many variants as the letters make");
+    let record = message(&captured("txt_large")).answer.remove(0);
+    let RData::Txt(txt) = record.data() else {
+        unreachable!("a TXT record: {record:?}");
+    };
+    let strings: Vec<Vec<u8>> = txt.strings().map(<[u8]>::to_vec).collect();
+    (0..n)
+        .map(|i| {
+            let mut strings = strings.clone();
+            let letters = strings
+                .iter_mut()
+                .flatten()
+                .filter(|b| b.is_ascii_alphabetic());
+            for (bit, letter) in letters.take(LETTERS).enumerate() {
+                if i >> bit & 1 == 1 {
+                    *letter ^= 0x20;
+                }
+            }
+            let txt = Txt::new(strings.iter().map(Vec::as_slice)).expect("the strings of a TXT");
+            Record::new(
+                record.name.clone(),
+                record.class,
+                record.ttl,
+                &RData::Txt(txt),
+            )
+        })
+        .collect()
+}
+
+#[divan::bench(args = [16, 128, 2048])]
+fn group_case_variants(bencher: Bencher<'_, '_>, n: usize) {
+    let records = case_variants(n);
+    bencher.bench(|| Rrset::group(black_box(&records)));
+}
+
+/// `RRset` equality, as an insert checks it under the shard lock, of the variants received in two orders.
+#[divan::bench(args = [16, 128, 2048])]
+fn eq_case_variants(bencher: Bencher<'_, '_>, n: usize) {
+    let mut records = case_variants(n);
+    let set = Rrset::group(&records).remove(0);
+    records.reverse();
+    let reversed = Rrset::group(&records).remove(0);
+    bencher.bench(|| black_box(&set) == black_box(&reversed));
 }
