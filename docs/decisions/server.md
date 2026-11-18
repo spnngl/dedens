@@ -1444,44 +1444,78 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Key and value. An `RRset` (RFC 2181 §5) under its owner name lowered (RFC 4343), type and class; the value an
     `Arc<Rrset>` (records and the RRSIGs covering them, owned), its rank, the validator's verdict
     (`dedens_cache::Checked`: unchecked, secure, insecure, bogus) and its expiry. The value is an enum of one variant,
-    so the negative entries of step 12 share the key space. `Rrset::group` builds the `RRsets` of a section:
-    duplicates dropped, the RDATA in one order so that the same data compares equal whatever order it came in, the
-    TTL the smallest of the records and their signatures (RFC 2181 §5.2); equality is the data, not the TTL.
+    so the negative entries of step 12 share the key space. `Rrset::group` builds the `RRsets` of a section, each
+    record finding its `RRset` by hash (linear in the records): the QTYPEs, meta types and QCLASSes dropped (RFC 6895
+    §3.1, §3.2), duplicates dropped, names in RDATA compared in any case, the RDATA sorted by its bytes with ASCII
+    letters folded so that the same data compares equal whatever order and case it came in, the TTL the smallest of
+    the records and their signatures (RFC 2181 §5.2); equality is the data, not the TTL.
   - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
     non-authoritative (referral NS), additional authoritative, answer non-authoritative (and the CNAME chain of an
     authoritative answer past its first name), authority authoritative, answer authoritative. The RFC's last
     bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
     (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
-    holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph).
+    holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph). Step 05's scrubber ranks
+    what it keeps: `insert` takes scrubbed data, in the bailiwick of the server it came from, and trusts the
+    rank given. `get` returns any rank: only answer non-authoritative and above, or secure data, may answer a client
+    (RFC 2181 §5.4.1), which `Hit` says and its caller checks; the rest serves the resolution.
   - Replacement, Unbound's `need_to_update_rrset` (`services/cache/rrset.c`): an expired entry gives way to anything;
     more trusted data replaces, except data equal to bogus data that is not itself secure (it would lengthen the
     bogus data's life, RFC 4035 §4.7); other data of equal trust replaces (the last heard of); the same data of equal
     trust keeps the entry and its running time; less trusted data does not replace, unless the entry is bogus and
-    the data other and not bogus. An NS `RRset` replacing one not expired lives no longer than the time it had left,
-    whatever its trust: a delegation is renewed from its parent only once expired, so a deleted domain does not live
-    on (ghost domain names, Jiang et al., NDSS 2012; Unbound the same). `insert` returns what the cache holds after.
+    the data other and not bogus. `insert` says which (`Inserted::Stored`, `Verdict`, `Kept`) with what the cache
+    holds after. An `RRset` refused (`NotCached`) leaves the entry of its key as it was, where a refused response ends
+    the response cache's: the trust of the entry decides alone.
+  - Verdicts. The validator (step 10) records one by inserting the `RRset` again with it, at the rank it holds: the
+    same data held unchecked, fresh, takes the verdict whatever the ranks, at the greater of the two, and lives the
+    least of its time left and the verdict's lifetime (`Inserted::Verdict`); data already checked takes no other
+    verdict but through the replacement rules. Unbound updates in place too (`rrset_update_sec_status`), but sets the
+    TTL the validator gives on types other than NS, which may lengthen it. Before caching a secure `RRset` the
+    validator lowers its TTL to the RRSIG's Original TTL and the time left to its Signature Expiration
+    (`Rrset::cap_ttl`, RFC 4035 §5.3.3): secure lifetimes have no floor, so it is never kept past its signature.
+    `Checked` has no indeterminate: the validator records none, and the `RRset` stays unchecked (as D77 caches none).
+  - Ghost domain names (Jiang et al., NDSS 2012): a delegation is renewed from its parent only once expired. An NS
+    `RRset` replacing one not expired lives no longer than the time it had left, whatever the verdicts: Unbound does
+    so since CVE-2026-40622 (8d8fa4226), but lets secure data replacing data not secure, and data replacing bogus
+    data, live their own TTL; stricter here, one rule, the cost a delegation asked for again sooner (tested on a
+    secure NS `RRset` replacing a bogus one). An A or AAAA `RRset` replacing referral glue with more trust, not
+    secure, lives no longer than the glue had left and keeps its rank, so that an answer does not keep a deleted
+    domain's servers alive through their addresses, as Unbound since CVE-2026-42955 (13ec8d0f2). Step 04 inserts
+    each NS `RRset` at the time its resolution started, not at its answer's, as Unbound's `qstarttime` since
+    CVE-2022-30698 and CVE-2022-30699 (f6753a0f1): an NS `RRset` that expires during a resolution still counts as
+    held, so that the answers of the servers it named do not renew it.
   - TTLs: one source with the response cache, `dedens_cache::Config::lifetime` (D124): raised to `min_ttl` unless
     secure, capped by `max_ttl`, by the insecure cap when insecure and by `bogus_ttl` when bogus; TTL 0 is not
     cached (`NotCached::ZeroTtl`, RFC 1035 §3.2.1), a TTL past 2^31 - 1 was read as 0 (RFC 2181 §8). `RrsetCache::new`
-    takes the response cache's `Config` and a capacity of its own.
+    takes the response cache's `Config`, validated whole, its `capacity` included, and a capacity of its own. No
+    stale data (RFC 8767): an expired entry holds its bytes until evicted or replaced.
   - Sizing (amends D116). The response cache's store is extracted from `Cache` as `dedens_cache::Store<V>`: the
     shards, their locks (held for one call, never across an `.await`), keyed SipHash, S3-FIFO and the byte budget,
     generic over a value that says its heap bytes (`Cost`); `SLOT_COST` is per value type (`Shard::<V>::SLOT_COST`),
-    and the sizing rules of D116 (`capacity`, `shards`, `max_entry_bytes`, the derived entry limit) are one pair of
-    functions both use. The `RRset` cache holds `Store<Option<Entry>>`, the `Arc`'s allocation, the owner name and
-    each RDATA counted as allocated; an `RRset` over the entry limit is not cached (`NotCached::TooLarge`).
+    and the sizing rules of D116 (`capacity`, `shards`, `max_entry_bytes`, the derived entry limit, the longest key
+    a tenth of a shard's share must hold) are one pair of functions both use. `Store::upsert` stores a value or
+    changes the one held, and hands back what it lets go of to be dropped once the lock is released. The `RRset`
+    cache holds `Store<Entry>`; an `RRset` over the entry limit is not cached (`NotCached::TooLarge`).
     `DEFAULT_CAPACITY` is 128 MiB, twice the response cache's 64 MiB, as Unbound's performance guide sets
     `rrset-cache-size` to twice `msg-cache-size` (its defaults are 4 MiB each, `util/config_file.c`); BIND bounds all
-    its caches together by `max-cache-size`, 90 % of memory. `tests/memory.rs` holds the allocator's count within
-    1.05 times the capacity (0.94 on a referral churn). An `RRset` a `Hit` still holds after its eviction is the
+    its caches together by `max-cache-size`, 90 % of memory. An `RRset` a `Hit` still holds after its eviction is the
     caller's, outside the budget.
+  - What the budget counts: the bytes asked of the allocator, the `Arc`'s allocation, the owner name, the two RDATA
+    slices and each RDATA (`tests/memory.rs` checks `Rrset::cost` against the allocator's
+    count, and holds the count within 1.05 times the capacity on a referral churn). The allocator's rounding and
+    headers are not counted, most on small allocations: a glue A `RRset` asks 128 bytes in four allocations (80, 20,
+    24 and 4), which take 160 from macOS's malloc (16-byte quanta) and 192 from glibc's (an 8-byte header, 16-byte
+    granules, 32 bytes at least), 1.25 and 1.5 times (computed from the allocators' rules, not measured). Rejected
+    for now: one allocation for the RDATA and offsets into it, which needs
+    `dedens-proto` to read RDATA borrowed from a buffer without decoding it again; revisit if a heap profile of a
+    resolver shows the overhead.
   - Counters (feature `metrics`, D30): `dedens_resolver_rrset_lookups_total{outcome=hit|miss}`,
-    `dedens_resolver_rrset_inserts_total{outcome=stored|kept}`, `dedens_resolver_rrset_evictions_total`.
-  - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, hit), in `docs/benchmarks.md`. Fuzzed:
-    `rrset_cache_insert`. Tests: `crates/dedens-resolver/tests/rrset_cache.rs`.
+    `dedens_resolver_rrset_inserts_total{outcome=stored|verdict|kept}`, `dedens_resolver_rrset_evictions_total`.
+  - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, replace, evict, hit, group), and the response
+    cache before and after the store's extraction, no change, in `docs/benchmarks.md`. The response cache's slot
+    stays 272 bytes (`SLOT_COST`): its `failures` count became a `u16` to undo the generic entry's padding. Fuzzed: `rrset_cache_insert`. Tests:
+    `crates/dedens-resolver/tests/rrset_cache.rs`.
   - Rejected: a second S3-FIFO in the resolver (two evictions to keep right); moka or another cache crate (a
     dependency for what the store does, and no byte budget of our making); `dedens_dnssec::RrSet` as the value (its
     `Vec`s' capacity is not the bytes the budget sees, and it would make the cache depend on the validator); the
-    RFC's three-way tie (glue would replace an authoritative additional section); zone-data ranks (no zones).
-    Open: capping an A or AAAA `RRset` that replaces referral glue, as Unbound does since CVE-2022-30699
-    (TODECIDE, step 14).
+    RFC's three-way tie (glue would replace an authoritative additional section); zone-data ranks (no zones); a
+    public `Rank::of(section, authoritative)` (an answer's section and AA do not rank it alone).

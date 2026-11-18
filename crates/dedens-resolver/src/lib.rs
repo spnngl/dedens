@@ -17,4 +17,4 @@ mod rrset;
 mod rrset_cache;
 
 pub use rrset::Rrset;
-pub use rrset_cache::{DEFAULT_CAPACITY, Hit, NotCached, Rank, RrsetCache};
+pub use rrset_cache::{DEFAULT_CAPACITY, Hit, Inserted, NotCached, Rank, RrsetCache};

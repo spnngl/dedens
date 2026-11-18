@@ -2,11 +2,14 @@
 //! method is empty and compiles away.
 //!
 //! - `dedens_resolver_rrset_lookups_total{outcome}`: lookups by result, `hit` (fresh) or `miss`.
-//! - `dedens_resolver_rrset_inserts_total{outcome}`: inserts by result, `stored` or `kept` (the cache trusted what
-//!   it held more, RFC 2181 §5.4.1); those refused, TTL 0 or too large, are not counted.
+//! - `dedens_resolver_rrset_inserts_total{outcome}`: inserts by result, as [`Inserted`]: `stored`, `verdict` (the
+//!   same data held unchecked took a verdict) or `kept` (the cache trusted what it held more, RFC 2181 §5.4.1);
+//!   those refused, TTL 0 or too large, are not counted.
 //! - `dedens_resolver_rrset_evictions_total`: entries evicted to stay under the byte budget.
 //!
 //! Handles are taken once, when the cache is built, from the recorder installed then: install the recorder first.
+
+use crate::rrset_cache::Inserted;
 
 /// The counters of one cache.
 #[cfg(feature = "metrics")]
@@ -15,6 +18,7 @@ pub(crate) struct Metrics {
     hits: metrics::Counter,
     misses: metrics::Counter,
     stored: metrics::Counter,
+    verdict: metrics::Counter,
     kept: metrics::Counter,
     evictions: metrics::Counter,
 }
@@ -31,7 +35,10 @@ impl Metrics {
         const INSERTS: &str = "dedens_resolver_rrset_inserts_total";
         const EVICTIONS: &str = "dedens_resolver_rrset_evictions_total";
         metrics::describe_counter!(LOOKUPS, "RRset cache lookups by outcome: hit or miss.");
-        metrics::describe_counter!(INSERTS, "RRset cache inserts by outcome: stored or kept.");
+        metrics::describe_counter!(
+            INSERTS,
+            "RRset cache inserts by outcome: stored, verdict or kept."
+        );
         metrics::describe_counter!(
             EVICTIONS,
             "RRset cache entries evicted to stay under the byte budget."
@@ -40,6 +47,7 @@ impl Metrics {
             hits: metrics::counter!(LOOKUPS, "outcome" => "hit"),
             misses: metrics::counter!(LOOKUPS, "outcome" => "miss"),
             stored: metrics::counter!(INSERTS, "outcome" => "stored"),
+            verdict: metrics::counter!(INSERTS, "outcome" => "verdict"),
             kept: metrics::counter!(INSERTS, "outcome" => "kept"),
             evictions: metrics::counter!(EVICTIONS),
         }
@@ -53,12 +61,13 @@ impl Metrics {
         }
     }
 
-    pub(crate) fn inserted(&self, stored: bool, evicted: usize) {
-        if stored {
-            self.stored.increment(1);
-        } else {
-            self.kept.increment(1);
+    pub(crate) fn inserted(&self, inserted: &Inserted, evicted: usize) {
+        match inserted {
+            Inserted::Stored(_) => &self.stored,
+            Inserted::Verdict(_) => &self.verdict,
+            Inserted::Kept(_) => &self.kept,
         }
+        .increment(1);
         self.evictions
             .increment(u64::try_from(evicted).unwrap_or(u64::MAX));
     }
@@ -80,5 +89,5 @@ impl Metrics {
         clippy::unused_self,
         reason = "the same calls with and without the feature"
     )]
-    pub(crate) const fn inserted(&self, _: bool, _: usize) {}
+    pub(crate) const fn inserted(&self, _: &Inserted, _: usize) {}
 }

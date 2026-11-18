@@ -1,5 +1,7 @@
 //! An `RRset` and the signatures over it, owned: the unit the resolver caches and reasons on (RFC 2181 §5).
 
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::mem::size_of;
 
 use dedens_cache::Cost;
@@ -9,12 +11,11 @@ use dedens_proto::{Class, Name, Record, RecordType, Ttl, WireRdata};
 /// The records of one owner name, class and type (RFC 2181 §5), with the RRSIG records covering them (RFC 4034
 /// §3), owned.
 ///
-/// [`Rrset::group`] builds them from the records of a section: duplicates dropped (RFC 2181 §5), the RDATA in one
-/// order, so that two `RRsets` of the same data compare equal whatever order their records came in, and one TTL,
-/// the smallest of the records and their signatures (RFC 2181 §5.2).
+/// [`Rrset::group`] builds them from the records of a section: duplicates dropped (RFC 2181 §5), the RDATA sorted,
+/// and one TTL, the smallest of the records and their signatures (RFC 2181 §5.2).
 ///
-/// Two `RRsets` are equal when they hold the same data: owner name (any case), class, type, records and signatures.
-/// The TTL is not data: it only says how long the data may be kept.
+/// Two `RRsets` are equal when they hold the same data: owner name (any case), class, type, records and signatures,
+/// whatever order the records came in. The TTL is not data: it only says how long the data may be kept.
 #[derive(Debug, Clone)]
 pub struct Rrset {
     owner: Name<'static>,
@@ -28,36 +29,42 @@ pub struct Rrset {
 impl Rrset {
     /// The `RRsets` of `records`, the records of one section, in the order their first records come. Each takes the
     /// RRSIG records at its name and class covering its type; signatures covering no `RRset` of `records` are
-    /// dropped, and so are the records of the QTYPEs and meta types, which are not data (RFC 6895 §3.1).
+    /// dropped, and so are the records of the QTYPEs and meta types and those of the QCLASSes, which are not data
+    /// (RFC 6895 §3.1, §3.2).
+    ///
+    /// Work and memory linear in the number of records: each finds its `RRset` by hash.
     #[must_use]
     pub fn group(records: &[Record<'_>]) -> Vec<Self> {
-        let mut sets: Vec<Building<'_, '_>> = Vec::new();
-        for record in records
-            .iter()
-            .filter(|r| data_type(r.rtype()) && r.rtype() != RecordType::RRSIG)
-        {
+        let mut sets: Vec<Building<'_, '_>> = Vec::with_capacity(records.len());
+        let mut index: HashMap<(&Name<'_>, RecordType, Class), usize> =
+            HashMap::with_capacity(records.len());
+        let data = records.iter().filter(|r| data_class(r.class));
+        let covered = data
+            .clone()
+            .filter(|r| r.rtype() != RecordType::RRSIG && data_type(r.rtype()));
+        for record in covered {
             let rdata = record.rdata.clone().into_owned();
-            match sets.iter_mut().find(|s| s.holds(record, record.rtype())) {
-                Some(set) => {
-                    set.ttl = set.ttl.min(record.ttl);
-                    set.rdatas.push(rdata);
-                }
-                None => sets.push(Building {
-                    first: record,
-                    ttl: record.ttl,
-                    rdatas: vec![rdata],
-                    rrsigs: Vec::new(),
-                }),
-            }
+            let at = *index
+                .entry((&record.name, record.rtype(), record.class))
+                .or_insert_with(|| {
+                    sets.push(Building {
+                        first: record,
+                        ttl: record.ttl,
+                        rdatas: Vec::new(),
+                        rrsigs: Vec::new(),
+                    });
+                    sets.len() - 1
+                });
+            let set = &mut sets[at];
+            set.ttl = set.ttl.min(record.ttl);
+            set.rdatas.push(rdata);
         }
-        for record in records.iter().filter(|r| r.rtype() == RecordType::RRSIG) {
+        for record in data.filter(|r| r.rtype() == RecordType::RRSIG) {
             let RData::Rrsig(rrsig) = record.data() else {
                 continue;
             };
-            if let Some(set) = sets
-                .iter_mut()
-                .find(|s| s.holds(record, rrsig.type_covered))
-            {
+            if let Some(&at) = index.get(&(&record.name, rrsig.type_covered, record.class)) {
+                let set = &mut sets[at];
                 set.ttl = set.ttl.min(record.ttl);
                 set.rrsigs.push(record.rdata.clone().into_owned());
             }
@@ -92,19 +99,30 @@ impl Rrset {
         self.rtype
     }
 
-    /// The TTL received: the smallest of the records and their signatures (RFC 2181 §5.2).
+    /// The TTL received, the smallest of the records and their signatures (RFC 2181 §5.2), or as
+    /// [`Rrset::cap_ttl`] lowered it: what the cache bounds into the time it keeps the `RRset`. What is left of
+    /// that time is the `ttl` of a cache hit.
     #[must_use]
     pub const fn ttl(&self) -> Ttl {
         self.ttl
     }
 
-    /// The RDATA of the records, without duplicates, in one order.
+    /// Lowers the TTL to `cap`, if above. A validator that accepts the `RRset` as authentic caps it to the least of
+    /// the Original TTL of the RRSIG that proved it and the seconds left to that RRSIG's Signature Expiration
+    /// (RFC 4035 §5.3.3; the TTLs received are in [`Rrset::ttl`] already), then caches it
+    /// [`Checked::Secure`](dedens_cache::Checked::Secure), whose lifetime has no floor: an `RRset` is never kept
+    /// past its signature.
+    pub fn cap_ttl(&mut self, cap: Ttl) {
+        self.ttl = self.ttl.min(cap);
+    }
+
+    /// The RDATA of the records, without duplicates, sorted.
     #[must_use]
     pub fn rdatas(&self) -> &[WireRdata<'static>] {
         &self.rdatas
     }
 
-    /// The RDATA of the RRSIG records covering the `RRset`, without duplicates, in one order.
+    /// The RDATA of the RRSIG records covering the `RRset`, without duplicates, sorted.
     #[must_use]
     pub fn rrsigs(&self) -> &[WireRdata<'static>] {
         &self.rrsigs
@@ -112,7 +130,8 @@ impl Rrset {
 }
 
 /// The heap bytes an `RRset` takes behind an `Arc`, as the cache holds it: the `Arc`'s allocation, the owner name
-/// and the RDATA, each counted as the allocator is asked for it (`tests/memory.rs` checks it on captures).
+/// and the RDATA, each counted as the allocator is asked for it (`tests/memory.rs` checks it on captures). The
+/// allocator's own rounding and bookkeeping are not counted (D193).
 impl Cost for Rrset {
     fn cost(&self) -> usize {
         let rdata = |rdatas: &[WireRdata<'_>]| {
@@ -134,8 +153,8 @@ impl PartialEq for Rrset {
         self.owner == other.owner
             && self.class == other.class
             && self.rtype == other.rtype
-            && self.rdatas == other.rdatas
-            && self.rrsigs == other.rrsigs
+            && same_rdatas(&self.rdatas, &other.rdatas)
+            && same_rdatas(&self.rrsigs, &other.rrsigs)
     }
 }
 
@@ -149,34 +168,50 @@ struct Building<'r, 'a> {
     rrsigs: Vec<WireRdata<'static>>,
 }
 
-impl Building<'_, '_> {
-    /// Whether `record`, of type `rtype` or covering it, belongs to this `RRset`: same type, class and owner name,
-    /// whatever its case (RFC 4343).
-    fn holds(&self, record: &Record<'_>, rtype: RecordType) -> bool {
-        self.first.rtype() == rtype
-            && self.first.class == record.class
-            && self.first.name == record.name
-    }
-}
-
 /// Whether records of `rtype` are data: not 0, OPT, the QTYPEs and meta types of 128 to 255 nor the reserved 65535
 /// (RFC 6895 §3.1).
 fn data_type(rtype: RecordType) -> bool {
     rtype != RecordType::OPT && !matches!(u16::from(rtype), 0 | 128..=255 | 65535)
 }
 
-/// `rdatas` in one order, duplicates dropped (RFC 2181 §5): by wire bytes, ASCII letters folded, then by the bytes
-/// themselves. Names in RDATA compare case-insensitively (RFC 4343), so two spellings of one name end up side by
-/// side and only the first stays.
+/// Whether records of `class` are data: not the reserved 0 and 65535, nor the QCLASSes NONE (254) and ANY (255)
+/// (RFC 6895 §3.2).
+fn data_class(class: Class) -> bool {
+    !matches!(u16::from(class), 0 | 254 | 255 | 65535)
+}
+
+/// Orders RDATA by wire bytes, ASCII letters folded. Equal RDATA, whose names may differ in case only (RFC 4343),
+/// folds to the same bytes: it sorts together.
+fn folded(a: &WireRdata<'_>, b: &WireRdata<'_>) -> Ordering {
+    let (a, b) = (a.wire(), b.wire());
+    a.iter()
+        .map(u8::to_ascii_lowercase)
+        .cmp(b.iter().map(u8::to_ascii_lowercase))
+}
+
+/// `rdatas` sorted by [`folded`], duplicates dropped (RFC 2181 §5). Duplicates fold the same, so each is looked for
+/// within its run of RDATA folding the same, which also holds RDATA unequal but for the case of bytes not in names
+/// (a TXT string, an RRSIG signature): the sort is stable, and they keep the order they came in.
 fn canonical(mut rdatas: Vec<WireRdata<'static>>) -> Box<[WireRdata<'static>]> {
-    rdatas.sort_by(|a, b| {
-        let (a, b) = (a.wire(), b.wire());
-        let folded = a
-            .iter()
-            .map(u8::to_ascii_lowercase)
-            .cmp(b.iter().map(u8::to_ascii_lowercase));
-        folded.then_with(|| a.cmp(&b))
-    });
-    rdatas.dedup();
-    rdatas.into_boxed_slice()
+    rdatas.sort_by(folded);
+    let mut kept: Vec<WireRdata<'static>> = Vec::with_capacity(rdatas.len());
+    let mut run = 0;
+    for rdata in rdatas {
+        if kept.last().is_none_or(|last| folded(last, &rdata).is_ne()) {
+            run = kept.len();
+        }
+        if !kept[run..].contains(&rdata) {
+            kept.push(rdata);
+        }
+    }
+    kept.into_boxed_slice()
+}
+
+/// Whether `a` and `b`, each of [`canonical`], hold the same RDATA, in whatever order within their runs.
+fn same_rdatas(a: &[WireRdata<'_>], b: &[WireRdata<'_>]) -> bool {
+    let runs = |rdatas| <[WireRdata<'_>]>::chunk_by(rdatas, |x, y| folded(x, y).is_eq());
+    a.len() == b.len()
+        && runs(a)
+            .zip(runs(b))
+            .all(|(a, b)| a.len() == b.len() && a.iter().all(|rdata| b.contains(rdata)))
 }

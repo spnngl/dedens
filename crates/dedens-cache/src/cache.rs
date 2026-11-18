@@ -4,7 +4,7 @@ use dedens_proto::edns::EDE_LEN;
 use dedens_proto::{Decoded, HEADER_LEN, MAX_NAME_LEN, Query};
 
 use crate::config::{Config, ConfigError};
-use crate::key::Key;
+use crate::key::{Key, MAX_KEY_LEN};
 use crate::metrics::Metrics;
 use crate::response::{Checked, NotCached, Refresh, Response};
 use crate::shard::Shard;
@@ -17,8 +17,9 @@ pub(crate) struct Stored {
     pub(crate) response: Option<Response>,
     /// Whether a prefetch was already asked for the current response.
     pub(crate) prefetched: bool,
-    /// Resolution failures in a row (RFC 9520 §3.2).
-    pub(crate) failures: u32,
+    /// Resolution failures in a row (RFC 9520 §3.2), saturating: past 32 the hold is `failure_max` anyway. A
+    /// `u16` keeps `Stored` and its slot (`SLOT_COST`) as small as before the store was made generic (D193).
+    pub(crate) failures: u16,
     /// No resolution before this time.
     pub(crate) hold_until: u32,
 }
@@ -103,7 +104,12 @@ impl Cache {
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         config.validate()?;
         Ok(Self {
-            store: Store::new(config.capacity, config.shards, config.max_entry_bytes)?,
+            store: Store::new(
+                config.capacity,
+                config.shards,
+                config.max_entry_bytes,
+                MAX_KEY_LEN,
+            )?,
             config,
             metrics: Metrics::new(),
         })
@@ -390,7 +396,9 @@ impl Cache {
                 entry.failures = 0;
             }
             entry.failures = entry.failures.saturating_add(1);
-            let doubling = 1_u32.checked_shl(entry.failures - 1).unwrap_or(u32::MAX);
+            let doubling = 1_u32
+                .checked_shl(u32::from(entry.failures) - 1)
+                .unwrap_or(u32::MAX);
             hold = config
                 .failure_min
                 .saturating_mul(doubling)

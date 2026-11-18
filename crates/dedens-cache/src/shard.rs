@@ -76,14 +76,14 @@ pub(crate) struct Entry<V> {
     pub(crate) value: V,
 }
 
-impl<V: Cost + Default> Entry<V> {
-    fn new(hash: u64, key: &[u8], queue: Queue) -> Self {
+impl<V: Cost> Entry<V> {
+    fn new(hash: u64, key: &[u8], queue: Queue, value: V) -> Self {
         Self {
             hash,
             key: key.into(),
             queue,
             freq: 0,
-            value: V::default(),
+            value,
         }
     }
 
@@ -197,7 +197,7 @@ impl<V> Shard<V> {
     }
 }
 
-impl<V: Cost + Default> Shard<V> {
+impl<V: Cost> Shard<V> {
     /// A shard of `budget` bytes whose entries take at most `max_entry` bytes of key and value each (an entry of
     /// the shard in all costs [`Shard::SLOT_COST`] more).
     pub(crate) fn new(budget: usize, max_entry: usize) -> Self {
@@ -222,34 +222,39 @@ impl<V: Cost + Default> Shard<V> {
         (*entry.key == *key).then_some(entry)
     }
 
-    /// Changes the entry of `key`, creating it if needed, then evicts down to the budget, and returns the number of
-    /// entries evicted. An entry of another key with the same hash is replaced.
-    pub(crate) fn update(
+    /// Offers `value` for `key`, then evicts down to the budget: if the shard holds `key`, `change` gets its entry
+    /// and `Some(value)`, to merge as it sees fit; else `value` is stored in a new entry, which `change` gets with
+    /// `None`. Returns what `change` returned and the number of entries evicted. An entry of another key with the
+    /// same hash is replaced.
+    pub(crate) fn upsert<R>(
         &mut self,
         hash: u64,
         key: &[u8],
-        change: impl FnOnce(&mut Entry<V>),
-    ) -> usize {
-        let (slot, mut evicted) = if let Some(&slot) = self.index.get(&hash) {
+        value: V,
+        change: impl FnOnce(&mut Entry<V>, Option<V>) -> R,
+    ) -> (R, usize) {
+        let (slot, changed, mut evicted) = if let Some(&slot) = self.index.get(&hash) {
             let entry = self.slab[slot as usize]
                 .as_mut()
                 .expect("indexed slots hold an entry");
             let before = entry.cost();
-            if *entry.key != *key {
-                *entry = Entry::new(hash, key, entry.queue);
-            }
-            change(entry);
+            let changed = if *entry.key == *key {
+                change(entry, Some(value))
+            } else {
+                *entry = Entry::new(hash, key, entry.queue, value);
+                change(entry, None)
+            };
             let (queue, after) = (entry.queue, entry.cost());
             *self.bytes(queue) = *self.bytes(queue) - before + after;
-            (slot, 0)
+            (slot, changed, 0)
         } else {
             let queue = if self.ghosts.take(hash) {
                 Queue::Main
             } else {
                 Queue::Small
             };
-            let mut entry = Entry::new(hash, key, queue);
-            change(&mut entry);
+            let mut entry = Entry::new(hash, key, queue, value);
+            let changed = change(&mut entry, None);
             let evicted = self.evict(Room::Entry(entry.cost()));
             *self.bytes(queue) += entry.cost();
             let slot = self.alloc(entry);
@@ -258,14 +263,14 @@ impl<V: Cost + Default> Shard<V> {
                 Queue::Small => self.small.push_back(slot),
                 Queue::Main => self.main.push_back(slot),
             }
-            (slot, evicted)
+            (slot, changed, evicted)
         };
         evicted += self.evict(Room::Budget(slot));
         // Free slots are charged like live ones: with over half of them free, drop them and the tables' slack.
         if self.free.len() > self.slab.len() / 2 {
             self.compact();
         }
-        evicted
+        (changed, evicted)
     }
 
     /// Renumbers the entries to fill the slab and gives back the room of the free slots and of what the tables held
@@ -295,20 +300,6 @@ impl<V: Cost + Default> Shard<V> {
         // Ghosts count as slots too, and the evictions from main left more of them than entries.
         self.ghosts.trim(self.slab.len());
         self.ghosts.shrink();
-    }
-
-    /// [`Shard::update`] if the shard holds `key`, else nothing.
-    pub(crate) fn update_existing(
-        &mut self,
-        hash: u64,
-        key: &[u8],
-        change: impl FnOnce(&mut Entry<V>),
-    ) -> usize {
-        if self.get(hash, key).is_some() {
-            self.update(hash, key, change)
-        } else {
-            0
-        }
     }
 
     fn bytes(&mut self, queue: Queue) -> &mut usize {
@@ -415,6 +406,34 @@ impl<V: Cost + Default> Shard<V> {
         *self.bytes(entry.queue) -= entry.cost();
         self.index.remove(&entry.hash);
         self.free.push(slot);
+    }
+}
+
+impl<V: Cost + Default> Shard<V> {
+    /// Changes the entry of `key`, a default one if none is held, as [`Shard::upsert`]; returns the number of entries
+    /// evicted.
+    pub(crate) fn update(
+        &mut self,
+        hash: u64,
+        key: &[u8],
+        change: impl FnOnce(&mut Entry<V>),
+    ) -> usize {
+        self.upsert(hash, key, V::default(), |entry, _| change(entry))
+            .1
+    }
+
+    /// [`Shard::update`] if the shard holds `key`, else nothing.
+    pub(crate) fn update_existing(
+        &mut self,
+        hash: u64,
+        key: &[u8],
+        change: impl FnOnce(&mut Entry<V>),
+    ) -> usize {
+        if self.get(hash, key).is_some() {
+            self.update(hash, key, change)
+        } else {
+            0
+        }
     }
 }
 
@@ -539,7 +558,7 @@ mod tests {
             Shard::new(usize::MAX / 2, MAX_KEY_LEN),
             Shard::SLAB,
             |shard, n| {
-                shard.alloc(Entry::new(n, &[], Queue::Small));
+                shard.alloc(Entry::new(n, &[], Queue::Small, Stored::default()));
             },
             |shard| shard.slab.capacity() * size_of::<Option<Entry>>(),
         );

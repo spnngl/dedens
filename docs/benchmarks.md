@@ -279,17 +279,51 @@ The other benches (`insert`, `insert_evicting_hot`, `hit_truncated`) are equal o
 
 ## Resolver `RRset` cache (D193)
 
-`crates/dedens-bench/benches/rrset_cache.rs`, Apple M5, macOS 27.2, one run, one shard. Nanoseconds, median, for
-`a` (`example.com.` A, 2 records), `ns` (`example.com.` NS, 2) and `root_ns` (`com.` NS from a root referral, 13).
+`crates/dedens-bench/benches/rrset_cache.rs`, Apple M5, macOS 27.2.1, one shard, on a machine shared with other
+builds (load 8 to 30): nanoseconds, median of the medians of 5 runs (3 for `group` after). `a` is `example.com.` A
+(2 records), `ns` `example.com.` NS (2), `root_ns` `com.` NS from a root referral (13).
 
 | Measure | `a` | `ns` | `root_ns` |
 |---|---|---|---|
-| `hit`: `get`, an `Arc` cloned, no allocation | 41 | 34 | 41 |
-| `insert` into an empty cache, the `RRset` already grouped | 113 | 260 | 384 |
+| `hit`: `get`, an `Arc` cloned, no allocation | 37 | 40 | 39 |
+| `insert` into an empty cache, the `RRset` already grouped | 91 | 110 | 314 |
+| `replace`: other data of the key held at a lesser rank | 88 | 181 | 193 |
+| `evict`: `a` renamed, into a full 256 KiB cache | 142 | | |
 
-An insert allocates 6 times (about 300 bytes): the `Arc` around the `Rrset` moved in, the key, and the first growth
-of an empty shard's tables, which a cache in use has done. A hit is a lock, a hash and an
-`Arc` clone, the same for any `RRset` size.
+A hit is a lock, a hash and an `Arc` clone, the same for any `RRset` size.
+
+`Rrset::group`, before (`d90c75f5`: each record looked for among the `RRsets` so far) and after (an index by owner,
+type and class, sized to the records); `group_many` is the captured `a` record renamed to distinct owners:
+
+| Records | before | after |
+|---|---|---|
+| RFC 4035 Appendix A zone | 4 074 | 4 269 |
+| RFC 5155 Appendix A zone | 4 566 | 4 754 |
+| `group_many` 16 | 778 | 1 072 |
+| `group_many` 128 | 17 930 | 14 610 |
+| `group_many` 2048, a 64 KiB response | 3 921 000 | 102 500 |
+
+Linear, not quadratic, at the price of 300 ns on a small response. The index grown from empty cost 1.5 times on the
+zones and 2.5 times on 16 records; sized to the records, 1.05 and 1.4. Hashing a name copies and lowers it (`Name`'s
+`Hash`): most of what is left.
+
+The response cache before (`origin/main`, `17be9b20`) and after the store's extraction into `Store<V>`,
+`crates/dedens-bench/benches/cache.rs`, runs alternated, fastest sample in brackets. `SLOT_COST`: 272 bytes before
+and after. The generic `Entry<Stored>` had padded a slot to 96 bytes, 288 with the slot's tables; `failures` as a
+`u16` (it saturates, and the hold reaches its cap long before) brings it back to 88 and 272.
+
+| Measure | before | after |
+|---|---|---|
+| `hit` a / mx / txt_large | 125 (77) / 155 (77) / 185 (93) | 125 (81) / 83 (78) / 186 (88) |
+| `hit_hot` t=1 / 4 / 8 | 155 / 271 / 289 | 155 / 229 / 198 |
+| `hit_spread` t=1 / 4 / 8 | 604 / 708 / 750 | 693 / 812 / 667 |
+| `hit_truncated` | 105 (86) | 107 (85) |
+| `insert` a / mx / txt_large | 497 (232) / 1 429 (696) / 1 788 (855) | 229 (213) / 721 (690) / 866 (814) |
+| `insert_evicting_hot` | 3 690 (1 940) | 3 813 (2 022) |
+| `insert_under_hits` | 1 221 (222) | 867 (200) |
+
+The fastest samples agree within 5 % (`hit_spread` aside, whose medians move both ways from run to run): no change
+measured. The medians' gaps, both ways, are the load's.
 
 ## Server hit path (D23, D43)
 
